@@ -210,6 +210,20 @@ fn test_sidebar_workspace_name() {
     window.imp().sidebar.set_workspace_name("test workspace");
 }
 
+#[test]
+fn test_sidebar_single_click_activate_enabled() {
+    ensure_gtk_init();
+    let window = test_window();
+    // GtkTreeExpander's internal gesture swallows double-click events,
+    // so single-click-activate must be true for file activation to work.
+    assert!(window
+        .imp()
+        .sidebar
+        .imp()
+        .file_tree_view
+        .is_single_click_activate());
+}
+
 // --- Action enabled/disabled state ---
 
 #[test]

@@ -42,6 +42,7 @@ LushtextWindow (AdwApplicationWindow)
 - Never use deprecated `GtkTreeView`.
 - Sort: directories first, then alphabetical (case-insensitive).
 - Skip hidden files (starting with `.`).
+- **`single-click-activate` must be `true`**: `GtkTreeExpander` installs an internal exclusive `GtkGestureClick` (BUBBLE phase) that claims click events for ALL rows — even non-expandable files. This prevents `GtkListView`'s built-in double-click activation from ever firing. Setting `single-click-activate=true` works around this because activation fires on the first click before the expander gesture can interfere. The `!is_dir()` guard in `connect_file_activated` already filters out directory activations.
 
 ## UI Templates
 
