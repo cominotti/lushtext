@@ -51,25 +51,75 @@ impl LushtextSidebar {
     }
 
     /// Connect a handler for when a file is activated (double-clicked or Enter).
+    ///
+    /// Two activation paths are needed because `GtkTreeExpander` installs an
+    /// internal `GtkGestureClick` (BUBBLE phase, exclusive) that claims click
+    /// events for ALL rows — even non-expandable files. This prevents
+    /// `GtkListView`'s built-in double-click activation from ever firing via
+    /// mouse. The workaround: a CAPTURE-phase gesture that fires before the
+    /// expander can claim the event.
     pub fn connect_file_activated<F: Fn(&std::path::Path) + 'static>(&self, f: F) {
+        let callback = std::rc::Rc::new(f);
+
+        // Keyboard activation (Enter key) — GtkListView::activate fires normally
+        // because GtkTreeExpander only intercepts mouse gestures, not key events.
+        let cb = callback.clone();
         self.imp()
             .file_tree_view
             .connect_activate(move |list_view, position| {
-                let model = list_view.model().expect("list view has a model");
-                if let Some(item) = model.item(position) {
-                    let tree_row = item
-                        .downcast_ref::<gtk4::TreeListRow>()
-                        .expect("item is a TreeListRow");
-                    if let Some(file_item) = tree_row
-                        .item()
-                        .and_then(|i| i.downcast::<file_tree_item::FileTreeItem>().ok())
-                    {
-                        if !file_item.is_dir() {
-                            f(&file_item.path());
-                        }
-                    }
-                }
+                activate_file_at(list_view, position, &*cb);
             });
+
+        // Mouse double-click — CAPTURE phase fires before the expander's
+        // BUBBLE-phase gesture can claim the event. The first click's BUBBLE
+        // phase sets the selection; on n_press==2, we read that selection.
+        let cb = callback;
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        gesture.connect_released(move |gesture, n_press, _, _| {
+            if n_press != 2 {
+                return;
+            }
+            let Some(widget) = gesture.widget() else {
+                return;
+            };
+            let Ok(list_view) = widget.downcast::<gtk4::ListView>() else {
+                return;
+            };
+            let Some(model) = list_view.model() else {
+                return;
+            };
+            if let Some(sel) = model.downcast_ref::<gtk4::SingleSelection>() {
+                let pos: u32 = sel.selected();
+                if pos != u32::MAX {
+                    activate_file_at(&list_view, pos, &*cb);
+                }
+            }
+        });
+        self.imp().file_tree_view.add_controller(gesture);
+    }
+}
+
+/// Extract the file item at the given position and call the callback if it's a file.
+fn activate_file_at(
+    list_view: &gtk4::ListView,
+    position: u32,
+    callback: &dyn Fn(&std::path::Path),
+) {
+    let Some(model) = list_view.model() else {
+        return;
+    };
+    if let Some(item) = model.item(position) {
+        if let Some(tree_row) = item.downcast_ref::<gtk4::TreeListRow>() {
+            if let Some(file_item) = tree_row
+                .item()
+                .and_then(|i| i.downcast::<file_tree_item::FileTreeItem>().ok())
+            {
+                if !file_item.is_dir() {
+                    callback(&file_item.path());
+                }
+            }
+        }
     }
 }
 

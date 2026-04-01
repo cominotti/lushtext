@@ -42,7 +42,7 @@ LushtextWindow (AdwApplicationWindow)
 - Never use deprecated `GtkTreeView`.
 - Sort: directories first, then alphabetical (case-insensitive).
 - Skip hidden files (starting with `.`).
-- **`single-click-activate` must be `true`**: `GtkTreeExpander` installs an internal exclusive `GtkGestureClick` (BUBBLE phase) that claims click events for ALL rows — even non-expandable files. This prevents `GtkListView`'s built-in double-click activation from ever firing. Setting `single-click-activate=true` works around this because activation fires on the first click before the expander gesture can interfere. The `!is_dir()` guard in `connect_file_activated` already filters out directory activations.
+- **Double-click activation requires a CAPTURE-phase gesture**: `GtkTreeExpander` installs an internal exclusive `GtkGestureClick` (BUBBLE phase) that claims click events for ALL rows — even non-expandable files. This prevents `GtkListView`'s built-in double-click activation from ever firing. The fix: add a `GtkGestureClick` at `PropagationPhase::Capture` on the `GtkListView`, detect `n_press == 2`, read the `SingleSelection`'s selected position (set by the first click's BUBBLE phase), and activate the file. Keep `GtkListView::connect_activate` for Enter key activation (keyboard is unaffected by gesture interception). Do NOT use `single-click-activate=true` — it changes the UX to single-click, which is not the expected behavior.
 
 ## UI Templates
 
