@@ -2,6 +2,7 @@
 
 //! Main application window.
 
+mod dialogs;
 mod imp;
 
 use crate::ui::editor_page::LushtextEditorPage;
@@ -94,7 +95,7 @@ impl LushtextWindow {
             stack.set_visible_child_name("empty");
         }
 
-        for name in ["toggle-search", "save", "close-tab"] {
+        for name in ["toggle-search", "save", "save-as", "close-tab"] {
             if let Some(action) = self.lookup_action(name) {
                 if let Some(simple) = action.downcast_ref::<gio::SimpleAction>() {
                     simple.set_enabled(has_tabs);
@@ -139,6 +140,10 @@ impl LushtextWindow {
             gio::ActionEntry::builder("save")
                 .activate(|window: &Self, _, _| {
                     if let Some(editor) = window.active_editor() {
+                        if editor.file_path().is_none() {
+                            window.show_save_as_dialog();
+                            return;
+                        }
                         match editor.save_file() {
                             Ok(()) => {
                                 window
@@ -157,6 +162,9 @@ impl LushtextWindow {
                         }
                     }
                 })
+                .build(),
+            gio::ActionEntry::builder("save-as")
+                .activate(|window: &Self, _, _| window.show_save_as_dialog())
                 .build(),
             gio::ActionEntry::builder("toggle-search")
                 .activate(|window: &Self, _, _| {
@@ -186,6 +194,7 @@ impl LushtextWindow {
             ("win.new-tab", "<Control>t"),
             ("win.open-file", "<Control>o"),
             ("win.save", "<Control>s"),
+            ("win.save-as", "<Control><Shift>s"),
             ("win.toggle-search", "<Control>f"),
             ("win.close-tab", "<Control>w"),
         ];
@@ -198,43 +207,5 @@ impl LushtextWindow {
         }
 
         self.add_controller(controller);
-    }
-
-    fn show_open_file_dialog(&self) {
-        let dialog = gtk4::FileDialog::builder()
-            .title("Open File")
-            .modal(true)
-            .build();
-
-        let window = self.clone();
-        dialog.open(Some(self), gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
-                    window.open_document(&path);
-                }
-            }
-        });
-    }
-
-    fn show_open_folder_dialog(&self) {
-        let dialog = gtk4::FileDialog::builder()
-            .title("Open Folder")
-            .modal(true)
-            .build();
-
-        let window = self.clone();
-        dialog.select_folder(Some(self), gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
-                    window.load_directory(&path);
-                    window.imp().sidebar.set_workspace_name(
-                        path.file_name()
-                            .map(|n| n.to_string_lossy())
-                            .as_deref()
-                            .unwrap_or("workspace"),
-                    );
-                }
-            }
-        });
     }
 }

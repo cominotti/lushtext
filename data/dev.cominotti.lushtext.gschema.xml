@@ -40,5 +40,23 @@
       <summary>Custom Font</summary>
       <description>Pango font description used when system font is disabled</description>
     </key>
+    <!-- Window state -->
+    <key name="window-width" type="i">
+      <default>1200</default>
+      <summary>Window Width</summary>
+    </key>
+    <key name="window-height" type="i">
+      <default>800</default>
+      <summary>Window Height</summary>
+    </key>
+    <key name="window-maximized" type="b">
+      <default>false</default>
+      <summary>Window Maximized</summary>
+    </key>
+    <key name="sidebar-position" type="i">
+      <default>250</default>
+      <summary>Sidebar Position</summary>
+      <description>GtkPaned divider position in pixels</description>
+    </key>
   </schema>
 </schemalist>

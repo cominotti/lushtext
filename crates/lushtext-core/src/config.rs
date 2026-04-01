@@ -15,4 +15,10 @@ pub mod keys {
     pub const STYLE_SCHEME: &str = "style-scheme";
     pub const USE_SYSTEM_FONT: &str = "use-system-font";
     pub const CUSTOM_FONT: &str = "custom-font";
+
+    // Window state
+    pub const WINDOW_WIDTH: &str = "window-width";
+    pub const WINDOW_HEIGHT: &str = "window-height";
+    pub const WINDOW_MAXIMIZED: &str = "window-maximized";
+    pub const SIDEBAR_POSITION: &str = "sidebar-position";
 }

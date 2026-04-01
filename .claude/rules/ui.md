@@ -68,6 +68,15 @@ Editor preferences use GSettings (`dev.cominotti.lushtext` schema) with `gio::Se
 - **Font customization**: display-wide CSS provider in `load_css()` targeting `.monospace` widgets. Updated reactively via `connect_changed()` on `use-system-font` and `custom-font` keys.
 - **Word wrap default**: enabled (`true`). Maps to `WrapMode::Word`.
 
+## Window State Persistence
+
+Window geometry and sidebar position are persisted via GSettings (not JSON session files):
+
+- **Keys**: `window-width` (i), `window-height` (i), `window-maximized` (b), `sidebar-position` (i)
+- **Restore**: in `window/imp.rs` `constructed()` via `set_default_size()` + `maximize()` + `set_position()`, all before `present()`
+- **Persist**: via `connect_notify_local` on `default-width`, `default-height`, `maximized` properties. Width/height only persisted when `!is_maximized()` to avoid overwriting normal dimensions with maximized size.
+- **Sidebar clamp**: `clamp_sidebar_position()` free function in `window/imp.rs` enforces `position <= window.width() / 3`. Called from `notify::position`, `notify::default-width`, `notify::maximized`, and `connect_map`.
+
 ## Syntax Highlighting
 
 Supported via GtkSourceView built-in language specs: JSON, TOML, YAML, Markdown.

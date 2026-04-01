@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use crate::config::{self, keys};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::sidebar::LushtextSidebar;
 use crate::ui::status_bar::LushtextStatusBar;
 use glib::prelude::*;
-use gtk4::{self, glib, CompositeTemplate};
+use gtk4::prelude::*;
+use gtk4::{self, gio, glib, CompositeTemplate};
 use libadwaita::subclass::prelude::*;
 
-#[derive(Default, CompositeTemplate)]
+#[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
 pub struct LushtextWindow {
     #[template_child]
@@ -26,6 +28,24 @@ pub struct LushtextWindow {
     pub sidebar: TemplateChild<LushtextSidebar>,
     #[template_child]
     pub status_bar: TemplateChild<LushtextStatusBar>,
+
+    pub settings: gio::Settings,
+}
+
+impl Default for LushtextWindow {
+    fn default() -> Self {
+        Self {
+            header_bar: TemplateChild::default(),
+            title_widget: TemplateChild::default(),
+            tab_bar: TemplateChild::default(),
+            tab_view: TemplateChild::default(),
+            content_stack: TemplateChild::default(),
+            main_paned: TemplateChild::default(),
+            sidebar: TemplateChild::default(),
+            status_bar: TemplateChild::default(),
+            settings: gio::Settings::new(config::APP_ID),
+        }
+    }
 }
 
 #[glib::object_subclass]
@@ -35,7 +55,6 @@ impl ObjectSubclass for LushtextWindow {
     type ParentType = libadwaita::ApplicationWindow;
 
     fn class_init(klass: &mut Self::Class) {
-        // Ensure custom widget types are registered
         LushtextSidebar::ensure_type();
         LushtextEditorPage::ensure_type();
         LushtextStatusBar::ensure_type();
@@ -53,21 +72,90 @@ impl ObjectImpl for LushtextWindow {
         self.parent_constructed();
 
         let obj = self.obj();
+        let settings = &self.settings;
 
-        // Connect sidebar file activation to open documents
+        // --- Restore window geometry from GSettings ---
+        let w = settings.int(keys::WINDOW_WIDTH);
+        let h = settings.int(keys::WINDOW_HEIGHT);
+        obj.set_default_size(w, h);
+        if settings.boolean(keys::WINDOW_MAXIMIZED) {
+            obj.maximize();
+        }
+
+        // --- Restore sidebar position ---
+        let saved_pos = settings.int(keys::SIDEBAR_POSITION);
+        self.main_paned.set_position(saved_pos);
+
+        // --- Persist window geometry incrementally via notify signals ---
+        {
+            let settings = settings.clone();
+            let paned = self.main_paned.downgrade();
+            obj.connect_notify_local(Some("default-width"), move |window, _| {
+                if !window.is_maximized() {
+                    let (w, _) = window.default_size();
+                    let _ = settings.set_int(keys::WINDOW_WIDTH, w);
+                }
+                if let Some(paned) = paned.upgrade() {
+                    clamp_sidebar_position(&paned, window.width(), &settings);
+                }
+            });
+        }
+        {
+            let settings = settings.clone();
+            obj.connect_notify_local(Some("default-height"), move |window, _| {
+                if !window.is_maximized() {
+                    let (_, h) = window.default_size();
+                    let _ = settings.set_int(keys::WINDOW_HEIGHT, h);
+                }
+            });
+        }
+        {
+            let settings = settings.clone();
+            let paned = self.main_paned.downgrade();
+            obj.connect_notify_local(Some("maximized"), move |window, _| {
+                let _ = settings.set_boolean(keys::WINDOW_MAXIMIZED, window.is_maximized());
+                if let Some(paned) = paned.upgrade() {
+                    clamp_sidebar_position(&paned, window.width(), &settings);
+                }
+            });
+        }
+
+        // --- Sidebar position clamp + persist ---
+        {
+            let settings = settings.clone();
+            let window_weak = obj.downgrade();
+            self.main_paned
+                .connect_notify_local(Some("position"), move |paned, _| {
+                    if let Some(window) = window_weak.upgrade() {
+                        clamp_sidebar_position(paned, window.width(), &settings);
+                    }
+                });
+        }
+
+        // --- Initial sidebar clamp on first map (window has real width) ---
+        {
+            let settings = settings.clone();
+            let paned = self.main_paned.downgrade();
+            obj.connect_map(move |window| {
+                if let Some(paned) = paned.upgrade() {
+                    clamp_sidebar_position(&paned, window.width(), &settings);
+                }
+            });
+        }
+
+        // --- Sidebar file activation ---
         let window = obj.clone();
         self.sidebar.connect_file_activated(move |path| {
             window.open_document(path);
         });
 
-        // Update stack when tabs change
+        // --- Tab change signals ---
         let window = obj.clone();
         self.tab_view
             .connect_notify_local(Some("n-pages"), move |_, _| {
                 window.update_content_stack();
             });
 
-        // Refresh status bar metadata when the active tab changes
         let window = obj.clone();
         self.tab_view
             .connect_notify_local(Some("selected-page"), move |_, _| {
@@ -83,3 +171,21 @@ impl WidgetImpl for LushtextWindow {}
 impl WindowImpl for LushtextWindow {}
 impl ApplicationWindowImpl for LushtextWindow {}
 impl AdwApplicationWindowImpl for LushtextWindow {}
+
+/// Clamp the sidebar pane position to at most 1/3 of the window width,
+/// and persist the (possibly clamped) value to GSettings.
+fn clamp_sidebar_position(paned: &gtk4::Paned, window_width: i32, settings: &gio::Settings) {
+    if window_width <= 0 {
+        return;
+    }
+    let max = window_width / 3;
+    let current = paned.position();
+    let clamped = current.min(max);
+    if clamped != current {
+        paned.set_position(clamped);
+    }
+    let final_pos = paned.position();
+    if settings.int(keys::SIDEBAR_POSITION) != final_pos {
+        let _ = settings.set_int(keys::SIDEBAR_POSITION, final_pos);
+    }
+}

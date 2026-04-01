@@ -7,6 +7,7 @@ use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::app::LushtextApplication;
+use lushtext_core::config::keys;
 use lushtext_core::ui::editor_page::LushtextEditorPage;
 use lushtext_core::ui::window::LushtextWindow;
 
@@ -386,4 +387,87 @@ fn test_status_bar_push_message_from_window() {
     );
     let msg_text = window.imp().status_bar.imp().message_label.label();
     assert_eq!(msg_text.as_str(), "Test message");
+}
+
+// --- Save-as action enabled/disabled ---
+
+#[test]
+fn test_save_as_action_disabled_when_no_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(!action_enabled(&window, "save-as"));
+}
+
+#[test]
+fn test_save_as_action_enabled_when_tab_exists() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    assert!(action_enabled(&window, "save-as"));
+}
+
+#[test]
+fn test_save_as_action_disabled_after_closing_all_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    assert!(action_enabled(&window, "save-as"));
+
+    activate_action(&window, "close-tab");
+    assert!(!action_enabled(&window, "save-as"));
+}
+
+// --- GSettings window state keys exist with correct defaults ---
+
+#[test]
+fn test_gsettings_window_width_default() {
+    ensure_gtk_init();
+    let window = test_window();
+    let width = window.imp().settings.int(keys::WINDOW_WIDTH);
+    assert_eq!(width, 1200);
+}
+
+#[test]
+fn test_gsettings_window_height_default() {
+    ensure_gtk_init();
+    let window = test_window();
+    let height = window.imp().settings.int(keys::WINDOW_HEIGHT);
+    assert_eq!(height, 800);
+}
+
+#[test]
+fn test_gsettings_window_maximized_default() {
+    ensure_gtk_init();
+    let window = test_window();
+    let maximized = window.imp().settings.boolean(keys::WINDOW_MAXIMIZED);
+    assert!(!maximized);
+}
+
+#[test]
+fn test_gsettings_sidebar_position_default() {
+    ensure_gtk_init();
+    let window = test_window();
+    let pos = window.imp().settings.int(keys::SIDEBAR_POSITION);
+    assert_eq!(pos, 250);
+}
+
+// --- Sidebar paned position ---
+
+#[test]
+fn test_sidebar_paned_restores_default_position() {
+    ensure_gtk_init();
+    let window = test_window();
+    // The paned should start at the GSettings default (250)
+    assert_eq!(window.imp().main_paned.position(), 250);
+}
+
+// --- Window default size restored from GSettings ---
+
+#[test]
+fn test_window_restores_default_size() {
+    ensure_gtk_init();
+    let window = test_window();
+    let (w, h) = window.default_size();
+    assert_eq!(w, 1200);
+    assert_eq!(h, 800);
 }

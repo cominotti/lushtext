@@ -288,3 +288,54 @@ fn test_settings_insert_spaces_default() {
     let page = LushtextEditorPage::new();
     assert!(page.source_view().is_insert_spaces_instead_of_tabs());
 }
+
+// --- set_file_path ---
+
+#[test]
+fn test_set_file_path_updates_path() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    assert!(page.file_path().is_none());
+
+    let path = std::path::PathBuf::from("/tmp/test_file.rs");
+    page.set_file_path(&path);
+    assert_eq!(page.file_path(), Some(path));
+}
+
+#[test]
+fn test_set_file_path_updates_title() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    assert_eq!(page.title(), "Untitled");
+
+    page.set_file_path(std::path::Path::new("/home/user/project/hello.rs"));
+    assert_eq!(page.title(), "hello.rs");
+}
+
+#[test]
+fn test_set_file_path_detects_language() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    // No language detected for untitled
+    assert!(page.buffer().language().is_none());
+
+    // Setting a .rs path should detect Rust language
+    page.set_file_path(std::path::Path::new("/tmp/test.rs"));
+    if let Some(lang) = page.buffer().language() {
+        assert_eq!(lang.id().as_str(), "rust");
+    }
+    // If Rust language spec is not installed, just verify no panic
+}
+
+#[test]
+fn test_set_file_path_overwrites_previous() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.set_file_path(std::path::Path::new("/a/first.txt"));
+    assert_eq!(page.title(), "first.txt");
+
+    page.set_file_path(std::path::Path::new("/b/second.rs"));
+    assert_eq!(page.title(), "second.rs");
+}

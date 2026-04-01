@@ -45,6 +45,25 @@ mod imp {
             let window = LushtextWindow::new(app.upcast_ref());
             window.present();
         }
+
+        fn open(&self, files: &[gio::File], _hint: &str) {
+            let app = self.obj();
+
+            let window = if let Some(w) = app.active_window() {
+                w.downcast::<LushtextWindow>()
+                    .expect("active window is LushtextWindow")
+            } else {
+                LushtextWindow::new(app.upcast_ref())
+            };
+
+            for file in files {
+                if let Some(path) = file.path() {
+                    window.open_document(&path);
+                }
+            }
+
+            window.present();
+        }
     }
 
     impl GtkApplicationImpl for LushtextApplication {}

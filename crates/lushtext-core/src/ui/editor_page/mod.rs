@@ -54,11 +54,22 @@ impl LushtextEditorPage {
         let start = buffer.start_iter();
         buffer.place_cursor(&start);
 
+        self.reapply_language();
+    }
+
+    /// Set the file path (used by save-as). Updates syntax highlighting
+    /// based on the new filename's extension.
+    pub fn set_file_path(&self, path: &Path) {
+        self.imp().file_path.replace(Some(path.to_path_buf()));
+        self.reapply_language();
+    }
+
+    /// Detect and apply syntax language from the current file path.
+    fn reapply_language(&self) {
+        let buffer = self.buffer();
         if let Some(ref fp) = *self.imp().file_path.borrow() {
             let lang_manager = sourceview5::LanguageManager::default();
-            if let Some(language) =
-                lang_manager.guess_language(Some(&fp.display().to_string()), None)
-            {
+            if let Some(language) = lang_manager.guess_language(fp.to_str(), None) {
                 buffer.set_language(Some(&language));
             }
         }

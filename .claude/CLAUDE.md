@@ -36,6 +36,7 @@ src/
 │   └── file_tree.rs    # Builds GListModel hierarchy for sidebar
 └── ui/                 # GTK4/Libadwaita widgets (each has mod.rs + imp.rs)
     ├── window/          # Main window: HeaderBar, TabBar, Paned, Stack, StatusBar
+    │   └── dialogs.rs   # File dialogs: open file, open folder, save as
     ├── editor_page/     # GtkSourceView + search bar revealer
     ├── sidebar/         # File tree: ListView + TreeListModel + TreeExpander
     │   └── file_tree_item.rs  # GObject wrapper for tree entries
@@ -55,6 +56,10 @@ src/
 - **Status bar**: per-window bottom bar below `GtkPaned`, always visible. Three sections: feedback message area (left), encoding label (right), file size label (right). The window orchestrates all updates via `refresh_status_bar()`, called from `new_tab()`, `open_document()`, `close-tab` action, `save` action, and the `selected-page` notify handler.
 - **Status bar auto-dismiss**: messages auto-dismiss after 5 seconds using a generation counter (`Cell<u32>`). Each `push_message` increments the counter; the timer closure captures the value and no-ops if the counter has advanced (a newer message replaced the old one). This avoids storing/cancelling `glib::SourceId` handles entirely.
 - **File metadata on EditorPage**: `file_size: Cell<Option<u64>>` is populated during async load (from `fs::metadata`) and updated on save (from written byte count). The window pulls this on tab switch via `editor.file_size()`.
+- **Window state persistence**: Window width, height, maximized state, and sidebar position are persisted via GSettings (`window-width`, `window-height`, `window-maximized`, `sidebar-position` keys). Width/height/maximized use `connect_notify_local` on their respective properties for incremental persistence — no `close_request` override needed. On construction, `set_default_size()` and `maximize()` restore from GSettings before `present()`.
+- **Sidebar 1/3 max width constraint**: The GtkPaned sidebar position is clamped to `window.width() / 3` via a `notify::position` handler. The clamp also re-triggers on `notify::default-width` (window resize) and `notify::maximized` (maximize/unmaximize). A `connect_map` handler ensures the constraint is enforced on first presentation. The `clamp_sidebar_position` free function in `window/imp.rs` guards with `window_width <= 0` for pre-realization safety.
+- **CLI file opening**: `ApplicationImpl::open()` is overridden in `app.rs` to handle `HANDLES_OPEN`. File arguments open as tabs via `open_document()`, with window reuse for single-instance behavior.
+- **Save As dialog**: `show_save_as_dialog()` in `window/dialogs.rs` uses `FileDialog::save()`. After saving, `set_file_path()` updates the path and re-detects syntax language via `reapply_language()`, then the tab title and status bar are refreshed.
 
 ## Build Commands
 
