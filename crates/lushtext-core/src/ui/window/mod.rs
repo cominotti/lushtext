@@ -41,13 +41,10 @@ impl LushtextWindow {
         }
 
         let editor_page = LushtextEditorPage::new();
-        let title = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Untitled".to_string());
+        editor_page.load_file_async(path);
 
         let page = tab_view.append(&editor_page);
-        page.set_title(&title);
+        page.set_title(&editor_page.title());
 
         let page_weak = page.downgrade();
         editor_page.buffer().connect_modified_changed(move |buf| {
@@ -63,7 +60,6 @@ impl LushtextWindow {
             }
         });
 
-        editor_page.load_file_async(path);
         tab_view.set_selected_page(&page);
         self.update_content_stack();
     }
