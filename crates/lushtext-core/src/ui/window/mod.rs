@@ -31,6 +31,7 @@ impl LushtextWindow {
     }
 
     /// Open a file in a new tab, or focus existing tab if already open.
+    /// The tab appears immediately; file content loads asynchronously.
     pub fn open_document(&self, path: &Path) {
         let tab_view = &self.imp().tab_view;
         for i in 0..tab_view.n_pages() {
@@ -44,12 +45,11 @@ impl LushtextWindow {
         }
 
         let editor_page = LushtextEditorPage::new();
-        if let Err(e) = editor_page.load_file(path) {
-            tracing::error!("Failed to load file: {}", e);
-            return;
-        }
+        let title = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".to_string());
 
-        let title = editor_page.title();
         let page = tab_view.append(&editor_page);
         page.set_title(&title);
 
@@ -67,6 +67,7 @@ impl LushtextWindow {
             }
         });
 
+        editor_page.load_file_async(path);
         tab_view.set_selected_page(&page);
         self.update_content_stack();
     }

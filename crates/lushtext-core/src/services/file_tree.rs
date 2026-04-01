@@ -1,52 +1,72 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! File tree model builder for the sidebar GtkListView + GtkTreeListModel.
+//!
+//! Directory scanning runs on a background thread. The returned `ListStore`
+//! is initially empty and populates asynchronously, keeping the main thread
+//! responsive for large directories.
 
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
 use gtk4::gio;
-use std::path::Path;
+use gtk4::glib;
+use std::path::{Path, PathBuf};
 
 /// Build the root `ListStore` for the tree model from a list of root paths.
-pub fn build_root_model(roots: &[std::path::PathBuf]) -> gio::ListStore {
+pub fn build_root_model(roots: &[PathBuf]) -> gio::ListStore {
     let store = gio::ListStore::new::<FileTreeItem>();
     for root in roots {
-        let is_dir = root.is_dir();
-        store.append(&FileTreeItem::new(root.clone(), is_dir));
+        store.append(&FileTreeItem::new(root.clone(), root.is_dir()));
     }
     store
 }
 
 /// Build a child `ListStore` for a directory's contents.
-/// Returns a sorted list with directories first, then files, both alphabetical.
+///
+/// Returns an empty store immediately and populates it from a background
+/// thread. The `TreeListModel` reacts to `items-changed` signals
+/// automatically, so the tree updates when entries arrive.
 pub fn build_children_model(dir_path: &Path) -> gio::ListStore {
     let store = gio::ListStore::new::<FileTreeItem>();
 
-    let mut entries: Vec<(String, std::path::PathBuf, bool)> = Vec::new();
-
-    if let Ok(read_dir) = std::fs::read_dir(dir_path) {
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-
-            // Skip hidden files/dirs
-            if name.starts_with('.') {
-                continue;
+    let path = dir_path.to_path_buf();
+    let guarded_store = glib::thread_guard::ThreadGuard::new(store.clone());
+    std::thread::spawn(move || {
+        let entries = scan_directory(&path);
+        glib::idle_add_once(move || {
+            let store = guarded_store.into_inner();
+            for (path, is_dir) in entries {
+                store.append(&FileTreeItem::new(path, is_dir));
             }
+        });
+    });
 
+    store
+}
+
+/// Scan a directory and return sorted entries (directories first, then alphabetical).
+fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
+    let read_dir = match std::fs::read_dir(dir_path) {
+        Ok(rd) => rd,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut entries: Vec<(String, PathBuf, bool)> = read_dir
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                return None;
+            }
+            let path = entry.path();
             let is_dir = path.is_dir();
-            entries.push((name, path, is_dir));
-        }
-    }
+            Some((name, path, is_dir))
+        })
+        .collect();
 
-    // Sort: directories first, then alphabetical (case-insensitive)
     entries.sort_by(|a, b| {
-        b.2.cmp(&a.2) // dirs first
+        b.2.cmp(&a.2)
             .then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase()))
     });
 
-    for (_, path, is_dir) in entries {
-        store.append(&FileTreeItem::new(path, is_dir));
-    }
-
-    store
+    entries.into_iter().map(|(_, p, d)| (p, d)).collect()
 }

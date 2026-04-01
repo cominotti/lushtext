@@ -21,28 +21,45 @@ impl LushtextEditorPage {
         Object::builder().build()
     }
 
-    /// Load a file into the editor buffer, detecting language from the path.
-    pub fn load_file(&self, path: &Path) -> anyhow::Result<()> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
+    /// Start loading a file asynchronously. Sets the file path immediately
+    /// so duplicate detection works before content arrives. The buffer
+    /// populates when the background read completes.
+    pub fn load_file_async(&self, path: &Path) {
+        self.imp().file_path.replace(Some(path.to_path_buf()));
 
+        let file_path = path.to_path_buf();
+        let guarded_editor = glib::thread_guard::ThreadGuard::new(self.clone());
+        std::thread::spawn(move || {
+            let result = std::fs::read_to_string(&file_path);
+            let fp = file_path;
+            glib::idle_add_once(move || {
+                let editor = guarded_editor.into_inner();
+                match result {
+                    Ok(content) => editor.apply_loaded_content(&content),
+                    Err(e) => tracing::error!("Failed to read {}: {}", fp.display(), e),
+                }
+            });
+        });
+    }
+
+    fn apply_loaded_content(&self, content: &str) {
         let buffer = self.buffer();
         buffer.begin_irreversible_action();
-        buffer.set_text(&content);
+        buffer.set_text(content);
         buffer.end_irreversible_action();
         buffer.set_modified(false);
 
         let start = buffer.start_iter();
         buffer.place_cursor(&start);
 
-        let lang_manager = sourceview5::LanguageManager::default();
-        if let Some(language) = lang_manager.guess_language(Some(&path.display().to_string()), None)
-        {
-            buffer.set_language(Some(&language));
+        if let Some(ref fp) = *self.imp().file_path.borrow() {
+            let lang_manager = sourceview5::LanguageManager::default();
+            if let Some(language) =
+                lang_manager.guess_language(Some(&fp.display().to_string()), None)
+            {
+                buffer.set_language(Some(&language));
+            }
         }
-
-        self.imp().file_path.replace(Some(path.to_path_buf()));
-        Ok(())
     }
 
     /// Save the buffer contents back to the file.
