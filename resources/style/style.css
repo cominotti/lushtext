@@ -10,6 +10,26 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
 }
 
+/* Status bar: bottom strip spanning full window width */
+.status-bar {
+  background-color: @headerbar_bg_color;
+  border-top: 1px solid @borders;
+  min-height: 26px;
+}
+
+/* Message severity — uses Adwaita semantic colors, adapts to light/dark */
+.status-bar .status-info {
+  color: @accent_color;
+}
+
+.status-bar .status-warning {
+  color: @warning_color;
+}
+
+.status-bar .status-error {
+  color: @error_color;
+}
+
 /* Sidebar separator */
 .sidebar > separator {
   min-height: 1px;

@@ -103,6 +103,11 @@
             </property>
           </object>
         </child>
+
+        <!-- Bottom status bar: always visible, spans full window width -->
+        <child>
+          <object class="LushtextStatusBar" id="status_bar"/>
+        </child>
       </object>
     </property>
   </template>

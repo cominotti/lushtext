@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <requires lib="gtk" version="4.14"/>
+
+  <template class="LushtextStatusBar" parent="GtkBox">
+    <property name="orientation">horizontal</property>
+    <property name="spacing">0</property>
+
+    <style>
+      <class name="status-bar"/>
+    </style>
+
+    <!-- Left: feedback message area -->
+    <child>
+      <object class="GtkLabel" id="message_label">
+        <property name="hexpand">true</property>
+        <property name="xalign">0.0</property>
+        <property name="ellipsize">end</property>
+        <property name="margin-start">12</property>
+        <property name="margin-top">4</property>
+        <property name="margin-bottom">4</property>
+        <style>
+          <class name="caption"/>
+        </style>
+      </object>
+    </child>
+
+    <!-- Right: file metadata (hidden when no tab open) -->
+    <child>
+      <object class="GtkBox" id="metadata_box">
+        <property name="orientation">horizontal</property>
+        <property name="spacing">0</property>
+
+        <child>
+          <object class="GtkSeparator">
+            <property name="orientation">vertical</property>
+            <property name="margin-top">6</property>
+            <property name="margin-bottom">6</property>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkLabel" id="encoding_label">
+            <property name="label">UTF-8</property>
+            <property name="margin-start">10</property>
+            <property name="margin-end">10</property>
+            <property name="margin-top">4</property>
+            <property name="margin-bottom">4</property>
+            <style>
+              <class name="caption"/>
+              <class name="dim-label"/>
+            </style>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkSeparator">
+            <property name="orientation">vertical</property>
+            <property name="margin-top">6</property>
+            <property name="margin-bottom">6</property>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkLabel" id="file_size_label">
+            <property name="label"></property>
+            <property name="margin-start">10</property>
+            <property name="margin-end">12</property>
+            <property name="margin-top">4</property>
+            <property name="margin-bottom">4</property>
+            <style>
+              <class name="caption"/>
+              <class name="dim-label"/>
+            </style>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>

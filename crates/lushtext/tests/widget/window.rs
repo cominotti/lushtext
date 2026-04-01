@@ -47,6 +47,17 @@ fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
         .unwrap()
 }
 
+/// Read the metadata_box's own "visible" property, bypassing is_visible()
+/// which checks the parent chain (and returns false for unrealized windows).
+fn metadata_box_visible(window: &LushtextWindow) -> bool {
+    window
+        .imp()
+        .status_bar
+        .imp()
+        .metadata_box
+        .property::<bool>("visible")
+}
+
 /// Get the visible child name of the content stack.
 fn visible_stack_name(window: &LushtextWindow) -> String {
     window
@@ -306,4 +317,73 @@ fn test_close_tab_disables_tab_actions() {
     assert!(!action_enabled(&window, "toggle-search"));
     assert!(!action_enabled(&window, "save"));
     assert!(!action_enabled(&window, "close-tab"));
+}
+
+// --- Status bar integration ---
+
+#[test]
+fn test_status_bar_accessible() {
+    ensure_gtk_init();
+    let window = test_window();
+    let _status_bar = &window.imp().status_bar;
+}
+
+#[test]
+fn test_status_bar_metadata_hidden_when_no_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(!metadata_box_visible(&window));
+}
+
+#[test]
+fn test_status_bar_metadata_visible_after_new_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+    // Note: is_visible() checks the parent chain, so it returns false for
+    // unrealized windows. Use the "visible" property directly instead.
+    assert!(metadata_box_visible(&window));
+}
+
+#[test]
+fn test_status_bar_metadata_hidden_after_closing_all_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+    activate_action(&window, "close-tab");
+    assert!(!metadata_box_visible(&window));
+}
+
+#[test]
+fn test_status_bar_file_size_empty_for_untitled_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+    let size_text = window.imp().status_bar.imp().file_size_label.label();
+    assert_eq!(size_text.as_str(), "");
+}
+
+#[test]
+fn test_status_bar_encoding_shows_utf8() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+    let enc_text = window.imp().status_bar.imp().encoding_label.label();
+    assert_eq!(enc_text.as_str(), "UTF-8");
+}
+
+#[test]
+fn test_status_bar_push_message_from_window() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.imp().status_bar.push_message(
+        "Test message",
+        lushtext_core::ui::status_bar::MessageKind::Info,
+    );
+    let msg_text = window.imp().status_bar.imp().message_label.label();
+    assert_eq!(msg_text.as_str(), "Test message");
 }

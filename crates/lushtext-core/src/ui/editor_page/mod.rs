@@ -35,7 +35,10 @@ impl LushtextEditorPage {
                     .map_err(|e| format!("Failed to read {}: {}", file_path.display(), e))
             },
             |editor, result| match result {
-                Ok(content) => editor.apply_loaded_content(&content),
+                Ok(content) => {
+                    editor.imp().file_size.set(Some(content.len() as u64));
+                    editor.apply_loaded_content(&content);
+                }
                 Err(e) => tracing::error!("{}", e),
             },
         );
@@ -73,6 +76,7 @@ impl LushtextEditorPage {
         let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
         std::fs::write(&path, text.as_str())
             .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))?;
+        self.imp().file_size.set(Some(text.len() as u64));
         buffer.set_modified(false);
         Ok(())
     }
@@ -90,6 +94,12 @@ impl LushtextEditorPage {
 
     pub fn file_path(&self) -> Option<std::path::PathBuf> {
         self.imp().file_path.borrow().clone()
+    }
+
+    /// On-disk size in bytes, populated after async load completes.
+    /// `None` for untitled tabs or before the load finishes.
+    pub fn file_size(&self) -> Option<u64> {
+        self.imp().file_size.get()
     }
 
     pub fn title(&self) -> String {

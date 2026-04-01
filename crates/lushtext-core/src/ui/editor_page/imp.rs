@@ -4,7 +4,7 @@ use crate::ui::search_bar::LushtextSearchBar;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, glib, CompositeTemplate};
 use sourceview5::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
 #[derive(Default, CompositeTemplate)]
@@ -20,6 +20,7 @@ pub struct LushtextEditorPage {
     pub search_bar: TemplateChild<LushtextSearchBar>,
 
     pub file_path: RefCell<Option<PathBuf>>,
+    pub file_size: Cell<Option<u64>>,
 }
 
 #[glib::object_subclass]

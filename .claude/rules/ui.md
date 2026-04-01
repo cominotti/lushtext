@@ -17,11 +17,14 @@ LushText should look and feel like GNOME Text Editor, with these differences:
 LushtextWindow (AdwApplicationWindow)
 ├── AdwHeaderBar
 ├── AdwTabBar → bound to AdwTabView
-└── GtkPaned (horizontal)
-    ├── [start] LushtextSidebar (always visible)
-    └── [end] GtkStack
-        ├── "tabs": AdwTabView → LushtextEditorPage per tab
-        └── "empty": AdwStatusPage
+├── GtkPaned (horizontal)
+│   ├── [start] LushtextSidebar (always visible)
+│   └── [end] GtkStack
+│       ├── "tabs": AdwTabView → LushtextEditorPage per tab
+│       └── "empty": AdwStatusPage
+└── LushtextStatusBar (always visible, full width)
+    ├── GtkLabel [message_label] — feedback messages (left, hexpand)
+    └── GtkBox [metadata_box] — encoding + file size (right, hidden when no tabs)
 ```
 
 ## Libadwaita Widgets to Use
@@ -46,6 +49,14 @@ LushtextWindow (AdwApplicationWindow)
 - GResource XML at `resources/dev.cominotti.lushtext.gresource.xml`.
 - Compiled by `glib-build-tools` in `build.rs` for dev builds.
 - Template `class` attribute must exactly match `ObjectSubclass::NAME`.
+
+## Status Bar
+
+- Per-window, below `GtkPaned`, always visible regardless of tab count.
+- `metadata_box` (encoding + file size) is hidden via `set_visible(false)` when no tabs are open; the message area remains available.
+- Messages use Adwaita semantic color tokens: `@accent_color` (Info), `@warning_color` (Warning), `@error_color` (Error). These adapt to light/dark mode automatically — no Rust-side dark mode handling needed.
+- Background uses `@headerbar_bg_color` to visually distinguish from the editor area.
+- Use the `caption` Adwaita CSS class for status bar text (small font, standard GNOME HIG for secondary UI).
 
 ## Syntax Highlighting
 

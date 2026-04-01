@@ -5,6 +5,7 @@
 mod imp;
 
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
 use gtk4::gio;
@@ -24,6 +25,7 @@ impl LushtextWindow {
         window.setup_actions();
         window.setup_shortcuts();
         window.update_content_stack();
+        window.refresh_status_bar();
         window
     }
 
@@ -63,6 +65,7 @@ impl LushtextWindow {
 
         tab_view.set_selected_page(&page);
         self.update_content_stack();
+        self.refresh_status_bar();
     }
 
     /// Create a new untitled tab.
@@ -72,6 +75,7 @@ impl LushtextWindow {
         page.set_title("Untitled");
         self.imp().tab_view.set_selected_page(&page);
         self.update_content_stack();
+        self.refresh_status_bar();
     }
 
     /// Load a directory tree into the sidebar.
@@ -99,6 +103,20 @@ impl LushtextWindow {
         }
     }
 
+    /// Refresh the status bar metadata (encoding, file size) for the active tab.
+    fn refresh_status_bar(&self) {
+        let status_bar = &self.imp().status_bar;
+        match self.active_editor() {
+            Some(editor) => {
+                status_bar.set_metadata_visible(true);
+                status_bar.set_file_size(editor.file_size());
+            }
+            None => {
+                status_bar.set_metadata_visible(false);
+            }
+        }
+    }
+
     /// Get the currently active editor page, if any.
     fn active_editor(&self) -> Option<LushtextEditorPage> {
         self.imp()
@@ -121,8 +139,21 @@ impl LushtextWindow {
             gio::ActionEntry::builder("save")
                 .activate(|window: &Self, _, _| {
                     if let Some(editor) = window.active_editor() {
-                        if let Err(e) = editor.save_file() {
-                            tracing::error!("Failed to save: {}", e);
+                        match editor.save_file() {
+                            Ok(()) => {
+                                window
+                                    .imp()
+                                    .status_bar
+                                    .push_message("File saved", MessageKind::Info);
+                                window.refresh_status_bar();
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to save: {}", e);
+                                window.imp().status_bar.push_message(
+                                    &format!("Save failed: {}", e),
+                                    MessageKind::Error,
+                                );
+                            }
                         }
                     }
                 })
@@ -141,6 +172,7 @@ impl LushtextWindow {
                         tab_view.close_page(&page);
                     }
                     window.update_content_stack();
+                    window.refresh_status_bar();
                 })
                 .build(),
         ]);

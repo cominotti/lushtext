@@ -2,6 +2,7 @@
 
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::sidebar::LushtextSidebar;
+use crate::ui::status_bar::LushtextStatusBar;
 use glib::prelude::*;
 use gtk4::{self, glib, CompositeTemplate};
 use libadwaita::subclass::prelude::*;
@@ -23,6 +24,8 @@ pub struct LushtextWindow {
     pub main_paned: TemplateChild<gtk4::Paned>,
     #[template_child]
     pub sidebar: TemplateChild<LushtextSidebar>,
+    #[template_child]
+    pub status_bar: TemplateChild<LushtextStatusBar>,
 }
 
 #[glib::object_subclass]
@@ -35,6 +38,7 @@ impl ObjectSubclass for LushtextWindow {
         // Ensure custom widget types are registered
         LushtextSidebar::ensure_type();
         LushtextEditorPage::ensure_type();
+        LushtextStatusBar::ensure_type();
 
         klass.bind_template();
     }
@@ -61,6 +65,13 @@ impl ObjectImpl for LushtextWindow {
         self.tab_view
             .connect_notify_local(Some("n-pages"), move |_, _| {
                 window.update_content_stack();
+            });
+
+        // Refresh status bar metadata when the active tab changes
+        let window = obj.clone();
+        self.tab_view
+            .connect_notify_local(Some("selected-page"), move |_, _| {
+                window.refresh_status_bar();
             });
 
         // Start with empty state

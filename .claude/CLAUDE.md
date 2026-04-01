@@ -34,11 +34,12 @@ src/
 │   ├── session_service.rs
 │   └── file_tree.rs    # Builds GListModel hierarchy for sidebar
 └── ui/                 # GTK4/Libadwaita widgets (each has mod.rs + imp.rs)
-    ├── window/          # Main window: HeaderBar, TabBar, Paned, Stack
+    ├── window/          # Main window: HeaderBar, TabBar, Paned, Stack, StatusBar
     ├── editor_page/     # GtkSourceView + search bar revealer
     ├── sidebar/         # File tree: ListView + TreeListModel + TreeExpander
     │   └── file_tree_item.rs  # GObject wrapper for tree entries
     ├── search_bar/      # Find/replace widget
+    ├── status_bar/      # Bottom bar: feedback messages + file metadata
     └── preferences/     # AdwPreferencesDialog
 ```
 
@@ -49,6 +50,9 @@ src/
 - **File tree uses modern GTK4 model**: `GtkListView` + `GtkTreeListModel` + `GtkTreeExpander` (NOT the deprecated `GtkTreeView`).
 - **Workspace concept**: a named collection of root directories/files, persisted to `$XDG_DATA_HOME/lushtext/workspaces.json`.
 - **Session persistence**: open tabs per workspace, persisted to `$XDG_DATA_HOME/lushtext/session-{id}.json`.
+- **Status bar**: per-window bottom bar below `GtkPaned`, always visible. Three sections: feedback message area (left), encoding label (right), file size label (right). The window orchestrates all updates via `refresh_status_bar()`, called from `new_tab()`, `open_document()`, `close-tab` action, `save` action, and the `selected-page` notify handler.
+- **Status bar auto-dismiss**: messages auto-dismiss after 5 seconds using a generation counter (`Cell<u32>`). Each `push_message` increments the counter; the timer closure captures the value and no-ops if the counter has advanced (a newer message replaced the old one). This avoids storing/cancelling `glib::SourceId` handles entirely.
+- **File metadata on EditorPage**: `file_size: Cell<Option<u64>>` is populated during async load (from `fs::metadata`) and updated on save (from written byte count). The window pulls this on tab switch via `editor.file_size()`.
 
 ## Build Commands
 

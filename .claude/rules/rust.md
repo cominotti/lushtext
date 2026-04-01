@@ -54,6 +54,12 @@ Never pass GTK objects directly across threads — they are not `Send`/`Sync`. U
 
 Never set `autoexpand = true` on `GtkTreeListModel`.
 
+## Mutable State on GObject Structs
+
+- Use `Cell<T>` for `Copy` types (e.g., `Cell<Option<u64>>`, `Cell<u32>`). No borrow overhead, no panic risk from overlapping borrows.
+- Use `RefCell<T>` for non-`Copy` types (e.g., `RefCell<Option<PathBuf>>`, `RefCell<Option<String>>`).
+- Both default correctly via `#[derive(Default)]` on the imp struct (`Cell<Option<T>>` defaults to `Cell::new(None)`).
+
 ## Error Handling
 
 - Services return `anyhow::Result`.

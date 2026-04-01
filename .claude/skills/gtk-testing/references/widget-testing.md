@@ -195,6 +195,25 @@ fn isolated_test() {
 }
 ```
 
+## `is_visible()` vs `visible` Property
+
+**Critical pitfall for widget tests.** `WidgetExt::is_visible()` maps to `gtk_widget_is_visible()`, which checks the widget **and all its parents** up to the toplevel. In tests, windows are never `present()`ed, so:
+
+- `is_visible()` returns `false` for ANY widget inside an unrealized window, regardless of the widget's own state
+- `set_visible(true)` changes the property but `is_visible()` still returns `false` because the parent window is invisible
+
+**Solution**: Read the `visible` property directly:
+
+```rust
+// WRONG in test context (always false for parented widgets):
+assert!(widget.is_visible());
+
+// CORRECT (reads the widget's own property):
+assert!(widget.property::<bool>("visible"));
+```
+
+This only affects widgets inside a window. Standalone widgets (no parent) work correctly with `is_visible()`.
+
 ## Limitations of Widget Testing
 
 Things that are hard/impossible to test without a full compositor:
