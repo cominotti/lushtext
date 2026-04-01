@@ -3,6 +3,7 @@
 //! Tests for the LushtextEditorPage widget.
 
 use crate::common::ensure_gtk_init;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::ui::editor_page::LushtextEditorPage;
 
@@ -99,7 +100,6 @@ fn test_save_file_writes_content() {
     let path = tmp.path().to_path_buf();
 
     // Set path via the internal RefCell (load_file_async sets this synchronously)
-    use glib::subclass::prelude::ObjectSubclassIsExt;
     page.imp().file_path.replace(Some(path.clone()));
 
     // Set buffer content
@@ -119,7 +119,6 @@ fn test_title_with_file_path() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    use glib::subclass::prelude::ObjectSubclassIsExt;
     page.imp()
         .file_path
         .replace(Some("/home/user/project/main.rs".into()));
@@ -132,7 +131,6 @@ fn test_toggle_search_changes_revealer_state() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    use glib::subclass::prelude::ObjectSubclassIsExt;
     let revealer = &page.imp().search_revealer;
 
     // Initially hidden
@@ -152,4 +150,73 @@ fn test_default_equals_new() {
     ensure_gtk_init();
     // Verify Default impl works (it delegates to new())
     let _page: LushtextEditorPage = Default::default();
+}
+
+// --- Search bar integration ---
+
+#[test]
+fn test_search_bar_starts_hidden() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    assert!(!page.imp().search_revealer.reveals_child());
+}
+
+#[test]
+fn test_close_button_hides_search() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    // Show the search bar
+    page.toggle_search();
+
+    assert!(page.imp().search_revealer.reveals_child());
+
+    // Click the close button
+    page.imp().search_bar.close_button().emit_clicked();
+
+    // Search bar should be hidden
+    assert!(!page.imp().search_revealer.reveals_child());
+}
+
+#[test]
+fn test_escape_hides_search() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    // Show the search bar
+    page.toggle_search();
+
+    assert!(page.imp().search_revealer.reveals_child());
+
+    // Emit stop-search (Escape key)
+    page.imp().search_bar.search_entry().emit_stop_search();
+
+    // Search bar should be hidden
+    assert!(!page.imp().search_revealer.reveals_child());
+}
+
+#[test]
+fn test_search_show_hide_cycle() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    // Cycle: show → close → show → escape → show → toggle
+    page.toggle_search();
+    assert!(page.imp().search_revealer.reveals_child());
+
+    page.imp().search_bar.close_button().emit_clicked();
+    assert!(!page.imp().search_revealer.reveals_child());
+
+    page.toggle_search();
+    assert!(page.imp().search_revealer.reveals_child());
+
+    page.imp().search_bar.search_entry().emit_stop_search();
+    assert!(!page.imp().search_revealer.reveals_child());
+
+    page.toggle_search();
+    assert!(page.imp().search_revealer.reveals_child());
+
+    page.toggle_search();
+    assert!(!page.imp().search_revealer.reveals_child());
 }

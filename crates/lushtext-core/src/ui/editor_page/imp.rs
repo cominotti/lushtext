@@ -55,6 +55,12 @@ impl ObjectImpl for LushtextEditorPage {
         libadwaita::StyleManager::default().connect_dark_notify(move |_| {
             apply_color_scheme(&buffer_for_signal);
         });
+
+        // Close button and Escape key hide the search bar
+        let revealer = self.search_revealer.clone();
+        self.search_bar.connect_close(move || {
+            revealer.set_reveal_child(false);
+        });
     }
 }
 
