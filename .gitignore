@@ -1,0 +1,21 @@
+# Rust build artifacts
+/target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor swap/backup files
+*.swp
+*.swo
+*~
+
+# Flatpak / Meson build artifacts
+.flatpak-builder/
+builddir/
+_build/

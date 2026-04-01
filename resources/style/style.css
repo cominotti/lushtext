@@ -1,0 +1,16 @@
+/* LushText custom styles */
+
+/* Search bar container: card-like appearance */
+.search-bar-container {
+  background-color: @card_bg_color;
+  border-radius: 12px;
+  border: 1px solid @card_shade_color;
+  padding: 6px;
+  margin: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+/* Sidebar separator */
+.sidebar > separator {
+  min-height: 1px;
+}

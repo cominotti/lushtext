@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <requires lib="gtk" version="4.14"/>
+
+  <template class="LushtextSidebar" parent="GtkBox">
+    <property name="orientation">vertical</property>
+    <property name="width-request">200</property>
+
+    <style>
+      <class name="sidebar"/>
+    </style>
+
+    <!-- Workspace header -->
+    <child>
+      <object class="GtkBox" id="workspace_header">
+        <property name="orientation">horizontal</property>
+        <property name="spacing">6</property>
+        <property name="margin-start">12</property>
+        <property name="margin-end">6</property>
+        <property name="margin-top">6</property>
+        <property name="margin-bottom">6</property>
+
+        <child>
+          <object class="GtkLabel" id="workspace_label">
+            <property name="label">workspace</property>
+            <property name="hexpand">true</property>
+            <property name="xalign">0</property>
+            <property name="ellipsize">end</property>
+            <style>
+              <class name="heading"/>
+            </style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="add_folder_button">
+            <property name="icon-name">folder-new-symbolic</property>
+            <property name="tooltip-text" translatable="yes">Add Folder to Workspace</property>
+            <property name="action-name">win.open-folder</property>
+            <style>
+              <class name="flat"/>
+            </style>
+          </object>
+        </child>
+      </object>
+    </child>
+
+    <child>
+      <object class="GtkSeparator"/>
+    </child>
+
+    <!-- File tree -->
+    <child>
+      <object class="GtkScrolledWindow" id="tree_scrolled_window">
+        <property name="vexpand">true</property>
+        <property name="hscrollbar-policy">never</property>
+        <property name="child">
+          <object class="GtkListView" id="file_tree_view">
+            <style>
+              <class name="navigation-sidebar"/>
+            </style>
+          </object>
+        </property>
+      </object>
+    </child>
+  </template>
+</interface>

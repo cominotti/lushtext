@@ -1,0 +1,5 @@
+# cargo-nextest configuration.
+# See: https://nexte.st/docs/configuration/
+
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }

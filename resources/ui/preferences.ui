@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <requires lib="gtk" version="4.14"/>
+  <requires lib="libadwaita" version="1.6"/>
+
+  <template class="LushtextPreferences" parent="AdwPreferencesDialog">
+    <property name="title" translatable="yes">Preferences</property>
+
+    <child>
+      <object class="AdwPreferencesPage">
+        <property name="title" translatable="yes">Editor</property>
+        <property name="icon-name">document-edit-symbolic</property>
+
+        <!-- Appearance group -->
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title" translatable="yes">Appearance</property>
+
+            <child>
+              <object class="AdwComboRow" id="style_scheme_row">
+                <property name="title" translatable="yes">Color Scheme</property>
+              </object>
+            </child>
+
+            <child>
+              <object class="AdwSwitchRow" id="use_system_font_row">
+                <property name="title" translatable="yes">Use System Monospace Font</property>
+                <property name="active">true</property>
+              </object>
+            </child>
+
+            <child>
+              <object class="AdwActionRow" id="custom_font_row">
+                <property name="title" translatable="yes">Custom Font</property>
+                <property name="sensitive">false</property>
+                <child type="suffix">
+                  <object class="GtkFontDialogButton" id="font_button">
+                    <property name="valign">center</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+
+        <!-- Behavior group -->
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title" translatable="yes">Behavior</property>
+
+            <child>
+              <object class="AdwSpinRow" id="tab_width_row">
+                <property name="title" translatable="yes">Tab Width</property>
+                <property name="adjustment">
+                  <object class="GtkAdjustment">
+                    <property name="lower">1</property>
+                    <property name="upper">12</property>
+                    <property name="step-increment">1</property>
+                    <property name="value">4</property>
+                  </object>
+                </property>
+              </object>
+            </child>
+
+            <child>
+              <object class="AdwSwitchRow" id="insert_spaces_row">
+                <property name="title" translatable="yes">Insert Spaces Instead of Tabs</property>
+                <property name="active">true</property>
+              </object>
+            </child>
+
+            <child>
+              <object class="AdwSwitchRow" id="show_line_numbers_row">
+                <property name="title" translatable="yes">Show Line Numbers</property>
+                <property name="active">true</property>
+              </object>
+            </child>
+
+            <child>
+              <object class="AdwSwitchRow" id="highlight_line_row">
+                <property name="title" translatable="yes">Highlight Current Line</property>
+                <property name="active">true</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>

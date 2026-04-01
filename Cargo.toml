@@ -1,0 +1,63 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lushtext-core",
+    "crates/lushtext",
+    "workspace-hack",
+]
+
+# Default binary for `cargo run`
+default-members = ["crates/lushtext"]
+
+# --- Centralized dependencies (union of features across all crates) ---
+
+[workspace.dependencies]
+# Internal crates
+lushtext-core = { path = "crates/lushtext-core" }
+
+# GTK / GNOME stack
+gtk4        = { version = "0.11", features = ["v4_16"] }
+libadwaita  = { version = "0.9",  features = ["v1_6"] }
+sourceview5 = "0.11"
+gio         = "0.22"
+glib        = "0.22"
+gdk4        = "0.11"
+pango       = "0.22"
+
+# Serialization (workspace config, session persistence)
+serde      = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow    = "1.0"
+thiserror = "2.0"
+
+# Filesystem
+dirs = "6.0"
+
+# Logging
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Dev / test
+tempfile   = "3.14"
+assert_cmd = "2.0"
+predicates = "3.0"
+
+# --- Compilation speed profiles ---
+
+[profile.dev]
+debug = "line-tables-only"
+lto = "off"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.build-override]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 1

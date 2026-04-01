@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/dev/cominotti/lushtext">
+    <!-- UI templates -->
+    <file compressed="true" preprocess="xml-stripblanks">ui/window.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ui/editor-page.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ui/sidebar.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ui/search-bar.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ui/preferences.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ui/shortcuts.ui</file>
+
+    <!-- Styling -->
+    <file compressed="true">style/style.css</file>
+  </gresource>
+</gresources>
