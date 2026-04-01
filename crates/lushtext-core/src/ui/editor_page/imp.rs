@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use crate::config::keys;
 use crate::ui::search_bar::LushtextSearchBar;
+use gtk4::gio;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, glib, CompositeTemplate};
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
-#[derive(Default, CompositeTemplate)]
+#[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/editor-page.ui")]
 pub struct LushtextEditorPage {
     #[template_child]
@@ -21,6 +23,21 @@ pub struct LushtextEditorPage {
 
     pub file_path: RefCell<Option<PathBuf>>,
     pub file_size: Cell<Option<u64>>,
+    pub settings: gio::Settings,
+}
+
+impl Default for LushtextEditorPage {
+    fn default() -> Self {
+        Self {
+            source_view: TemplateChild::default(),
+            scrolled_window: TemplateChild::default(),
+            search_revealer: TemplateChild::default(),
+            search_bar: TemplateChild::default(),
+            file_path: RefCell::default(),
+            file_size: Cell::default(),
+            settings: gio::Settings::new(crate::config::APP_ID),
+        }
+    }
 }
 
 #[glib::object_subclass]
@@ -50,14 +67,64 @@ impl ObjectImpl for LushtextEditorPage {
             .expect("GtkSourceView buffer");
         buffer.set_highlight_syntax(true);
 
-        apply_color_scheme(&buffer);
+        let settings = &self.settings;
 
-        let buffer_for_signal = buffer.clone();
-        libadwaita::StyleManager::default().connect_dark_notify(move |_| {
-            apply_color_scheme(&buffer_for_signal);
+        settings
+            .bind(
+                keys::SHOW_LINE_NUMBERS,
+                &*self.source_view,
+                "show-line-numbers",
+            )
+            .flags(gio::SettingsBindFlags::GET)
+            .build();
+        settings
+            .bind(
+                keys::HIGHLIGHT_CURRENT_LINE,
+                &*self.source_view,
+                "highlight-current-line",
+            )
+            .flags(gio::SettingsBindFlags::GET)
+            .build();
+        settings
+            .bind(keys::TAB_WIDTH, &*self.source_view, "tab-width")
+            .flags(gio::SettingsBindFlags::GET)
+            .build();
+        settings
+            .bind(
+                keys::INSERT_SPACES,
+                &*self.source_view,
+                "insert-spaces-instead-of-tabs",
+            )
+            .flags(gio::SettingsBindFlags::GET)
+            .build();
+
+        // bool → WrapMode: no direct settings binding
+        apply_word_wrap(&self.source_view, settings);
+        let view = self.source_view.clone();
+        settings.connect_changed(Some(keys::WORD_WRAP), move |s, _| {
+            apply_word_wrap(&view, s);
         });
 
-        // Close button and Escape key hide the search bar
+        apply_color_scheme(&buffer, settings);
+        {
+            let buf = buffer.clone();
+            let s = settings.clone();
+            settings.connect_changed(Some(keys::STYLE_SCHEME), move |_, _| {
+                apply_color_scheme(&buf, &s);
+            });
+        }
+        {
+            // Use a weak ref: StyleManager is a singleton that outlives every tab.
+            // Without this, closed tabs would leave zombie handlers.
+            let buf = buffer.downgrade();
+            let s = settings.clone();
+            libadwaita::StyleManager::default().connect_dark_notify(move |_| {
+                if let Some(buf) = buf.upgrade() {
+                    apply_color_scheme(&buf, &s);
+                }
+            });
+        }
+
         let revealer = self.search_revealer.clone();
         self.search_bar.connect_close(move || {
             revealer.set_reveal_child(false);
@@ -68,15 +135,30 @@ impl ObjectImpl for LushtextEditorPage {
 impl WidgetImpl for LushtextEditorPage {}
 impl BoxImpl for LushtextEditorPage {}
 
-fn apply_color_scheme(buffer: &sourceview5::Buffer) {
-    let style_manager = libadwaita::StyleManager::default();
-    let scheme_id = if style_manager.is_dark() {
-        "Adwaita-dark"
+fn apply_word_wrap(view: &sourceview5::View, settings: &gio::Settings) {
+    let mode = if settings.boolean(keys::WORD_WRAP) {
+        gtk4::WrapMode::Word
     } else {
-        "Adwaita"
+        gtk4::WrapMode::None
     };
+    view.set_wrap_mode(mode);
+}
+
+fn apply_color_scheme(buffer: &sourceview5::Buffer, settings: &gio::Settings) {
+    let base_id = settings.string(keys::STYLE_SCHEME);
+    let style_manager = libadwaita::StyleManager::default();
     let scheme_manager = sourceview5::StyleSchemeManager::default();
-    if let Some(scheme) = scheme_manager.scheme(scheme_id) {
+
+    let scheme = if style_manager.is_dark() {
+        let dark_id = format!("{base_id}-dark");
+        scheme_manager
+            .scheme(&dark_id)
+            .or_else(|| scheme_manager.scheme(&base_id))
+    } else {
+        scheme_manager.scheme(&base_id)
+    };
+
+    if let Some(scheme) = scheme {
         buffer.set_style_scheme(Some(&scheme));
     }
 }

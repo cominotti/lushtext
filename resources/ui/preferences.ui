@@ -49,6 +49,13 @@
             <property name="title" translatable="yes">Behavior</property>
 
             <child>
+              <object class="AdwSwitchRow" id="word_wrap_row">
+                <property name="title" translatable="yes">Word Wrap</property>
+                <property name="active">true</property>
+              </object>
+            </child>
+
+            <child>
               <object class="AdwSpinRow" id="tab_width_row">
                 <property name="title" translatable="yes">Tab Width</property>
                 <property name="adjustment">

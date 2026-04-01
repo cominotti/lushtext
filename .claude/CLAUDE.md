@@ -6,6 +6,7 @@ A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text
 
 - **Language:** Rust (MSRV: 1.83+)
 - **GUI:** GTK4 (0.11) + Libadwaita (0.9) + GtkSourceView 5 (0.11)
+- **Config:** GSettings (`data/dev.cominotti.lushtext.gschema.xml`)
 - **Build:** Cargo workspace + Makefile (dev), Meson (Flatpak — planned)
 - **App ID:** `dev.cominotti.lushtext`
 - **License:** GPL-3.0-or-later
@@ -23,7 +24,7 @@ Two-crate workspace (plus workspace-hack for cargo-hakari):
 src/
 ├── app.rs              # LushtextApplication (AdwApplication subclass)
 ├── config.rs           # Compile-time constants (APP_ID, VERSION)
-├── lib.rs              # Entry point: GResource registration, CSS loading, app.run()
+├── lib.rs              # Entry point: GResource registration, CSS loading, GSettings schema dir, app.run()
 ├── model/              # Domain types (no GTK deps)
 │   ├── workspace.rs    # WorkspaceId, WorkspaceEntry, WorkspaceConfig, WorkspacesFile
 │   ├── document.rs     # DocumentId
@@ -46,7 +47,8 @@ src/
 ### Key Design Decisions
 
 - **GtkSourceView owns editing**: language detection, syntax highlighting, style schemes, and undo/redo are all delegated to GtkSourceView, not reimplemented.
-- **Dark mode**: GtkSourceView has its own style scheme system separate from GTK CSS. We query `libadwaita::StyleManager::is_dark()` and react to `connect_dark_notify()` to switch between `"Adwaita"` and `"Adwaita-dark"` schemes.
+- **GSettings for preferences**: Editor settings (word wrap, tab width, line numbers, etc.) are stored in GSettings (`dev.cominotti.lushtext` schema). `gio::Settings::bind()` creates two-way bindings between settings keys and widget properties. Each `EditorPage` binds its own source view to GSettings in `constructed()` — when a setting changes, all editors update automatically with no manual iteration.
+- **Dark mode**: GtkSourceView has its own style scheme system separate from GTK CSS. The base scheme ID is read from GSettings (`style-scheme` key) and the dark variant (e.g., `"Adwaita-dark"`) is selected automatically based on `libadwaita::StyleManager::is_dark()`, with live switching via `connect_dark_notify()`.
 - **File tree uses modern GTK4 model**: `GtkListView` + `GtkTreeListModel` + `GtkTreeExpander` (NOT the deprecated `GtkTreeView`).
 - **Workspace concept**: a named collection of root directories/files, persisted to `$XDG_DATA_HOME/lushtext/workspaces.json`.
 - **Session persistence**: open tabs per workspace, persisted to `$XDG_DATA_HOME/lushtext/session-{id}.json`.

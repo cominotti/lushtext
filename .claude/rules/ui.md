@@ -58,6 +58,16 @@ LushtextWindow (AdwApplicationWindow)
 - Background uses `@headerbar_bg_color` to visually distinguish from the editor area.
 - Use the `caption` Adwaita CSS class for status bar text (small font, standard GNOME HIG for secondary UI).
 
+## GSettings Bindings
+
+Editor preferences use GSettings (`dev.cominotti.lushtext` schema) with `gio::Settings::bind()`:
+
+- **Direct bindings** for properties with matching types: `show-line-numbers`, `highlight-current-line`, `tab-width`, `insert-spaces-instead-of-tabs`. Preferences dialog uses two-way (`DEFAULT`), editor pages use one-way (`GET`).
+- **Manual mapping** for `word-wrap` (bool → `GtkWrapMode`): use `connect_changed()` to convert.
+- **Color scheme**: stored as base ID string, dark variant appended automatically. Combo row uses manual wiring (position ↔ string ID).
+- **Font customization**: display-wide CSS provider in `load_css()` targeting `.monospace` widgets. Updated reactively via `connect_changed()` on `use-system-font` and `custom-font` keys.
+- **Word wrap default**: enabled (`true`). Maps to `WrapMode::Word`.
+
 ## Syntax Highlighting
 
 Supported via GtkSourceView built-in language specs: JSON, TOML, YAML, Markdown.

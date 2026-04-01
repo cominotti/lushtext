@@ -6,6 +6,7 @@ use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::ui::editor_page::LushtextEditorPage;
+use sourceview5::prelude::*;
 
 #[test]
 fn test_new() {
@@ -248,4 +249,42 @@ fn test_search_show_hide_cycle() {
 
     page.toggle_search();
     assert!(!page.imp().search_revealer.reveals_child());
+}
+
+// --- GSettings integration ---
+
+#[test]
+fn test_settings_word_wrap_default_enabled() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    // Schema default: word-wrap = true → WrapMode::Word
+    assert_eq!(page.source_view().wrap_mode(), gtk4::WrapMode::Word);
+}
+
+#[test]
+fn test_settings_show_line_numbers_default() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    assert!(page.source_view().shows_line_numbers());
+}
+
+#[test]
+fn test_settings_highlight_current_line_default() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    assert!(page.source_view().is_highlight_current_line());
+}
+
+#[test]
+fn test_settings_tab_width_default() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    assert_eq!(page.source_view().tab_width(), 4);
+}
+
+#[test]
+fn test_settings_insert_spaces_default() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    assert!(page.source_view().is_insert_spaces_instead_of_tabs());
 }

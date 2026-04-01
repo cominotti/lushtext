@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="dev.cominotti.lushtext" path="/dev/cominotti/lushtext/">
+    <!-- Editor behavior -->
+    <key name="word-wrap" type="b">
+      <default>true</default>
+      <summary>Word Wrap</summary>
+      <description>Wrap long lines at word boundaries</description>
+    </key>
+    <key name="tab-width" type="u">
+      <default>4</default>
+      <summary>Tab Width</summary>
+      <range min="1" max="12"/>
+    </key>
+    <key name="insert-spaces-instead-of-tabs" type="b">
+      <default>true</default>
+      <summary>Insert Spaces Instead of Tabs</summary>
+    </key>
+    <key name="show-line-numbers" type="b">
+      <default>true</default>
+      <summary>Show Line Numbers</summary>
+    </key>
+    <key name="highlight-current-line" type="b">
+      <default>true</default>
+      <summary>Highlight Current Line</summary>
+    </key>
+
+    <!-- Appearance -->
+    <key name="style-scheme" type="s">
+      <default>'Adwaita'</default>
+      <summary>Color Scheme</summary>
+      <description>Base GtkSourceView style scheme ID (dark variant selected automatically)</description>
+    </key>
+    <key name="use-system-font" type="b">
+      <default>true</default>
+      <summary>Use System Monospace Font</summary>
+    </key>
+    <key name="custom-font" type="s">
+      <default>'Monospace 11'</default>
+      <summary>Custom Font</summary>
+      <description>Pango font description used when system font is disabled</description>
+    </key>
+  </schema>
+</schemalist>

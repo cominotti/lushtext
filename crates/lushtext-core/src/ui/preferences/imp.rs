@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use gtk4::{self, glib, CompositeTemplate};
+use crate::config::keys;
+use gtk4::{self, gio, glib, CompositeTemplate};
+use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
 
-#[derive(Default, CompositeTemplate)]
+#[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/preferences.ui")]
 pub struct LushtextPreferences {
     #[template_child]
     pub style_scheme_row: TemplateChild<libadwaita::ComboRow>,
     #[template_child]
     pub use_system_font_row: TemplateChild<libadwaita::SwitchRow>,
+    #[template_child]
+    pub custom_font_row: TemplateChild<libadwaita::ActionRow>,
+    #[template_child]
+    pub font_button: TemplateChild<gtk4::FontDialogButton>,
+    #[template_child]
+    pub word_wrap_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
     pub tab_width_row: TemplateChild<libadwaita::SpinRow>,
     #[template_child]
@@ -18,6 +26,25 @@ pub struct LushtextPreferences {
     pub show_line_numbers_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
     pub highlight_line_row: TemplateChild<libadwaita::SwitchRow>,
+
+    pub settings: gio::Settings,
+}
+
+impl Default for LushtextPreferences {
+    fn default() -> Self {
+        Self {
+            style_scheme_row: TemplateChild::default(),
+            use_system_font_row: TemplateChild::default(),
+            custom_font_row: TemplateChild::default(),
+            font_button: TemplateChild::default(),
+            word_wrap_row: TemplateChild::default(),
+            tab_width_row: TemplateChild::default(),
+            insert_spaces_row: TemplateChild::default(),
+            show_line_numbers_row: TemplateChild::default(),
+            highlight_line_row: TemplateChild::default(),
+            settings: gio::Settings::new(crate::config::APP_ID),
+        }
+    }
 }
 
 #[glib::object_subclass]
@@ -35,7 +62,96 @@ impl ObjectSubclass for LushtextPreferences {
     }
 }
 
-impl ObjectImpl for LushtextPreferences {}
+impl ObjectImpl for LushtextPreferences {
+    fn constructed(&self) {
+        self.parent_constructed();
+
+        let s = &self.settings;
+
+        s.bind(keys::WORD_WRAP, &*self.word_wrap_row, "active")
+            .build();
+        s.bind(
+            keys::SHOW_LINE_NUMBERS,
+            &*self.show_line_numbers_row,
+            "active",
+        )
+        .build();
+        s.bind(
+            keys::HIGHLIGHT_CURRENT_LINE,
+            &*self.highlight_line_row,
+            "active",
+        )
+        .build();
+        s.bind(keys::INSERT_SPACES, &*self.insert_spaces_row, "active")
+            .build();
+        s.bind(keys::USE_SYSTEM_FONT, &*self.use_system_font_row, "active")
+            .build();
+        s.bind(keys::TAB_WIDTH, &self.tab_width_row.adjustment(), "value")
+            .build();
+
+        s.bind(keys::USE_SYSTEM_FONT, &*self.custom_font_row, "sensitive")
+            .flags(gio::SettingsBindFlags::GET | gio::SettingsBindFlags::INVERT_BOOLEAN)
+            .build();
+
+        self.setup_color_scheme_row();
+        self.setup_font_button();
+    }
+}
+
+impl LushtextPreferences {
+    fn setup_color_scheme_row(&self) {
+        let scheme_manager = sourceview5::StyleSchemeManager::default();
+        let model = gtk4::StringList::new(&[]);
+
+        // Collect base scheme IDs (exclude "-dark" variants)
+        let scheme_ids: Vec<String> = scheme_manager
+            .scheme_ids()
+            .iter()
+            .map(|id| id.to_string())
+            .filter(|id| !id.ends_with("-dark"))
+            .collect();
+
+        for id in &scheme_ids {
+            if let Some(scheme) = scheme_manager.scheme(id) {
+                model.append(&scheme.name());
+            }
+        }
+
+        self.style_scheme_row.set_model(Some(&model));
+
+        let current = self.settings.string(keys::STYLE_SCHEME);
+        let selected_pos = scheme_ids
+            .iter()
+            .position(|id| id == current.as_str())
+            .unwrap_or(0) as u32;
+        self.style_scheme_row.set_selected(selected_pos);
+
+        let settings = self.settings.clone();
+        self.style_scheme_row.connect_selected_notify(move |row| {
+            let pos = row.selected() as usize;
+            if pos < scheme_ids.len() {
+                let _ = settings.set_string(keys::STYLE_SCHEME, &scheme_ids[pos]);
+            }
+        });
+    }
+
+    fn setup_font_button(&self) {
+        self.font_button
+            .set_dialog(&gtk4::FontDialog::builder().build());
+
+        let current = self.settings.string(keys::CUSTOM_FONT);
+        let desc = pango::FontDescription::from_string(&current);
+        self.font_button.set_font_desc(&desc);
+
+        let settings = self.settings.clone();
+        self.font_button.connect_font_desc_notify(move |btn| {
+            if let Some(desc) = btn.font_desc() {
+                let _ = settings.set_string(keys::CUSTOM_FONT, &desc.to_string());
+            }
+        });
+    }
+}
+
 impl WidgetImpl for LushtextPreferences {}
 impl AdwDialogImpl for LushtextPreferences {}
 impl PreferencesDialogImpl for LushtextPreferences {}

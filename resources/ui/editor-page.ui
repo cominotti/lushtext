@@ -20,14 +20,13 @@
                 <property name="auto-indent">true</property>
                 <property name="smart-backspace">true</property>
                 <property name="monospace">true</property>
-                <property name="show-line-numbers">true</property>
-                <property name="highlight-current-line">true</property>
-                <property name="tab-width">4</property>
-                <property name="insert-spaces-instead-of-tabs">true</property>
                 <property name="top-margin">6</property>
                 <property name="bottom-margin">6</property>
                 <property name="left-margin">12</property>
                 <property name="right-margin">12</property>
+                <!-- show-line-numbers, highlight-current-line, tab-width,
+                     insert-spaces-instead-of-tabs, and wrap-mode are set
+                     via GSettings bindings in constructed() -->
               </object>
             </property>
           </object>

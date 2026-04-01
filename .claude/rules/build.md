@@ -39,6 +39,14 @@ These patterns are replicated from invowk-rust and must be maintained:
 - Resources are embedded in the binary via `include_bytes!` in `lib.rs`.
 - For Flatpak, Meson compiles and installs resources separately (planned).
 
+## GSettings Schemas
+
+- Schema XML: `data/dev.cominotti.lushtext.gschema.xml`
+- `build.rs` in `lushtext-core` runs `glib-compile-schemas data/` to produce `data/gschemas.compiled` (gitignored).
+- `lib.rs::init_schema_dir()` sets `GSETTINGS_SCHEMA_DIR` to point to `data/` for dev builds. Installed builds use the system schema directory.
+- Requires `glib-compile-schemas` on the build machine (from `glib2-devel` / `libglib2.0-dev`).
+- Widget tests use `GSETTINGS_BACKEND=memory` for isolation (set in `ensure_gtk_init()`).
+
 ## Flatpak (Planned)
 
 See `docs/next/flatpak-packaging.md` for the full plan. Key requirements:
