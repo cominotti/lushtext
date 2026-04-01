@@ -15,10 +15,9 @@ use gio::prelude::*;
 use glib::ExitCode;
 use gtk4::gio;
 
-/// Entry point called from `main()`. Sets up GResources, creates the application,
+/// Entry point called from `main()`. Registers GResources, creates the application,
 /// and runs the GTK main loop.
 pub fn run() -> ExitCode {
-    // Register GResources compiled by build.rs
     let resource_bytes = glib::Bytes::from_static(include_bytes!(concat!(
         env!("OUT_DIR"),
         "/lushtext.gresource"
@@ -26,7 +25,12 @@ pub fn run() -> ExitCode {
     let resource = gio::Resource::from_data(&resource_bytes).expect("failed to load GResource");
     gio::resources_register(&resource);
 
-    // Load CSS
+    let app = app::LushtextApplication::new();
+    app.run()
+}
+
+/// Load the application CSS. Must be called after GTK is initialized (i.e. during startup).
+pub(crate) fn load_css() {
     let css_provider = gtk4::CssProvider::new();
     css_provider.load_from_resource("/dev/cominotti/lushtext/style/style.css");
     gtk4::style_context_add_provider_for_display(
@@ -34,7 +38,4 @@ pub fn run() -> ExitCode {
         &css_provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-
-    let app = app::LushtextApplication::new();
-    app.run()
 }

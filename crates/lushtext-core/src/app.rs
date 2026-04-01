@@ -27,6 +27,11 @@ mod imp {
     impl ObjectImpl for LushtextApplication {}
 
     impl ApplicationImpl for LushtextApplication {
+        fn startup(&self) {
+            self.parent_startup();
+            crate::load_css();
+        }
+
         fn activate(&self) {
             let binding = self.obj();
             let app: &super::LushtextApplication = binding.as_ref();
