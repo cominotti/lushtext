@@ -215,8 +215,8 @@ fn test_sidebar_double_click_activate() {
     ensure_gtk_init();
     let window = test_window();
     // single-click-activate must be false — user expects double-click to open files.
-    // A CAPTURE-phase gesture in connect_file_activated handles double-click
-    // because GtkTreeExpander's BUBBLE-phase gesture steals clicks.
+    // The TreeExpander's internal gesture is disabled for file rows in connect_bind,
+    // allowing GtkListView's built-in double-click activation to work.
     assert!(!window
         .imp()
         .sidebar

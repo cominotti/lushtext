@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::file_tree_item::FileTreeItem;
+use gtk4::gio::prelude::ListModelExt;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, glib, CompositeTemplate};
@@ -108,6 +109,24 @@ impl LushtextSidebar {
                 };
                 icon.set_icon_name(Some(icon_name));
                 label.set_label(&file_item.name());
+
+                // Disable the TreeExpander's internal GestureClick for file rows.
+                // It intercepts clicks for ALL rows (even non-expandable files),
+                // preventing GtkListView's double-click activation from firing.
+                // Setting phase to None for files lets clicks reach the ListView.
+                let phase = if file_item.is_dir() {
+                    gtk4::PropagationPhase::Bubble
+                } else {
+                    gtk4::PropagationPhase::None
+                };
+                let controllers = expander.observe_controllers();
+                for i in 0..controllers.n_items() {
+                    if let Some(obj) = controllers.item(i) {
+                        if let Ok(gesture) = obj.downcast::<gtk4::GestureClick>() {
+                            gesture.set_propagation_phase(phase);
+                        }
+                    }
+                }
             }
         });
 
