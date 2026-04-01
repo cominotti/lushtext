@@ -155,6 +155,35 @@ fn test_default_equals_new() {
 // --- Search bar integration ---
 
 #[test]
+fn test_stop_search_does_not_fire_during_grab_focus() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+    let fired_clone = fired.clone();
+
+    // Attach a spy to detect unexpected stop-search emissions
+    page.imp()
+        .search_bar
+        .search_entry()
+        .connect_stop_search(move |_| {
+            fired_clone.set(true);
+        });
+
+    // Show the search bar (which calls grab_focus on the entry)
+    page.toggle_search();
+    while glib::MainContext::default().iteration(false) {}
+
+    assert!(
+        !fired.get(),
+        "stop-search should NOT fire during grab_focus"
+    );
+    assert!(
+        page.imp().search_revealer.reveals_child(),
+        "search bar should remain visible"
+    );
+}
+
+#[test]
 fn test_search_bar_starts_hidden() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();

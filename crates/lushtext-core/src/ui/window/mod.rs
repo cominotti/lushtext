@@ -23,6 +23,7 @@ impl LushtextWindow {
         let window: Self = Object::builder().property("application", app).build();
         window.setup_actions();
         window.setup_shortcuts();
+        window.update_content_stack();
         window
     }
 
@@ -78,13 +79,23 @@ impl LushtextWindow {
         self.imp().sidebar.load_roots(&[path.to_path_buf()]);
     }
 
-    /// Switch the content stack between "tabs" and "empty" states.
+    /// Switch the content stack between "tabs" and "empty" states,
+    /// and enable/disable actions that require an active tab.
     fn update_content_stack(&self) {
+        let has_tabs = self.imp().tab_view.n_pages() > 0;
         let stack = &self.imp().content_stack;
-        if self.imp().tab_view.n_pages() > 0 {
+        if has_tabs {
             stack.set_visible_child_name("tabs");
         } else {
             stack.set_visible_child_name("empty");
+        }
+
+        for name in ["toggle-search", "save", "close-tab"] {
+            if let Some(action) = self.lookup_action(name) {
+                if let Some(simple) = action.downcast_ref::<gio::SimpleAction>() {
+                    simple.set_enabled(has_tabs);
+                }
+            }
         }
     }
 

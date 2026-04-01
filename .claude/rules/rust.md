@@ -60,9 +60,20 @@ Never set `autoexpand = true` on `GtkTreeListModel`.
 - For file I/O: try the operation and handle errors (no TOCTOU `exists()` checks).
 - In GTK signal handlers: log errors with `tracing::error!`, don't panic.
 
+## File Size Limit
+
+**Hard limit: 1000 lines per `.rs` file.** This is a non-negotiable constraint.
+
+When a file approaches 1000 lines:
+1. **Split by responsibility.** Extract cohesive groups of functions into new modules. For UI widgets, the `mod.rs` / `imp.rs` split already helps — if `mod.rs` grows, extract helpers (e.g., `actions.rs`, `dialogs.rs`). For services, split by sub-domain.
+2. **Extract `#[cfg(test)]` modules.** If the test module is large, move tests to `tests/` integration or widget tests instead of inline `#[cfg(test)]`.
+3. **Never split mid-impl block.** Keep all trait impls for a type in one file. Split by extracting private helper functions into sibling modules, then calling them from the main impl.
+4. **Prefer vertical, not horizontal splitting.** A 900-line file with one clear responsibility is better than 3 files that constantly cross-reference each other.
+
 ## Testing
 
 - Unit tests: `#[cfg(test)]` inside service modules, no GTK dependency.
 - Integration tests: `crates/lushtext/tests/integration.rs` with `#[path]` split pattern.
+- Widget tests: `crates/lushtext/tests/widget.rs` with `#[path]` split pattern; require display server.
 - Use `TestContext` for filesystem isolation (tempdir + simulated XDG dirs).
 - Run `cargo hakari generate` after adding/removing dependencies.

@@ -1,8 +1,8 @@
 /* LushText custom styles */
 
-/* Search bar container: card-like appearance */
+/* Search bar container: opaque overlay above the editor */
 .search-bar-container {
-  background-color: @card_bg_color;
+  background-color: @window_bg_color;
   border-radius: 12px;
   border: 1px solid @card_shade_color;
   padding: 6px;
