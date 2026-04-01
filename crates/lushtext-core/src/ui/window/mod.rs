@@ -5,6 +5,8 @@
 mod dialogs;
 mod imp;
 
+pub use imp::clamp_sidebar_position;
+
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;

@@ -75,7 +75,7 @@ Window geometry and sidebar position are persisted via GSettings (not JSON sessi
 - **Keys**: `window-width` (i), `window-height` (i), `window-maximized` (b), `sidebar-position` (i)
 - **Restore**: in `window/imp.rs` `constructed()` via `set_default_size()` + `maximize()` + `set_position()`, all before `present()`
 - **Persist**: via `connect_notify_local` on `default-width`, `default-height`, `maximized` properties. Width/height only persisted when `!is_maximized()` to avoid overwriting normal dimensions with maximized size.
-- **Sidebar clamp**: `clamp_sidebar_position()` free function in `window/imp.rs` enforces `position <= window.width() / 3`. Called from `notify::position`, `notify::default-width`, `notify::maximized`, and `connect_map`.
+- **Sidebar clamp**: `clamp_sidebar_position()` function in `window/imp.rs` enforces `position <= width / 3`. Called from two places: (1) `WidgetImpl::size_allocate()` — uses the definitive allocated width parameter, catches all resize/maximize/unmaximize transitions; (2) `notify::position` on the paned — catches user drag. **Do not use property notifications for clamping** — `notify::default-width`/`notify::maximized` fire before the new allocation is applied, so `window.width()` returns the old stale value.
 
 ## Syntax Highlighting
 

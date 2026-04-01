@@ -87,16 +87,13 @@ impl ObjectImpl for LushtextWindow {
         self.main_paned.set_position(saved_pos);
 
         // --- Persist window geometry incrementally via notify signals ---
+        // (Sidebar clamping is handled in size_allocate, not here.)
         {
             let settings = settings.clone();
-            let paned = self.main_paned.downgrade();
             obj.connect_notify_local(Some("default-width"), move |window, _| {
                 if !window.is_maximized() {
                     let (w, _) = window.default_size();
                     let _ = settings.set_int(keys::WINDOW_WIDTH, w);
-                }
-                if let Some(paned) = paned.upgrade() {
-                    clamp_sidebar_position(&paned, window.width(), &settings);
                 }
             });
         }
@@ -111,16 +108,12 @@ impl ObjectImpl for LushtextWindow {
         }
         {
             let settings = settings.clone();
-            let paned = self.main_paned.downgrade();
             obj.connect_notify_local(Some("maximized"), move |window, _| {
                 let _ = settings.set_boolean(keys::WINDOW_MAXIMIZED, window.is_maximized());
-                if let Some(paned) = paned.upgrade() {
-                    clamp_sidebar_position(&paned, window.width(), &settings);
-                }
             });
         }
 
-        // --- Sidebar position clamp + persist ---
+        // --- Sidebar position persist on user drag ---
         {
             let settings = settings.clone();
             let window_weak = obj.downgrade();
@@ -130,17 +123,6 @@ impl ObjectImpl for LushtextWindow {
                         clamp_sidebar_position(paned, window.width(), &settings);
                     }
                 });
-        }
-
-        // --- Initial sidebar clamp on first map (window has real width) ---
-        {
-            let settings = settings.clone();
-            let paned = self.main_paned.downgrade();
-            obj.connect_map(move |window| {
-                if let Some(paned) = paned.upgrade() {
-                    clamp_sidebar_position(&paned, window.width(), &settings);
-                }
-            });
         }
 
         // --- Sidebar file activation ---
@@ -167,14 +149,22 @@ impl ObjectImpl for LushtextWindow {
     }
 }
 
-impl WidgetImpl for LushtextWindow {}
+impl WidgetImpl for LushtextWindow {
+    fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+        self.parent_size_allocate(width, height, baseline);
+        // Clamp sidebar on every allocation — this is the definitive width,
+        // free from the stale-value timing issues of property notifications.
+        clamp_sidebar_position(&self.main_paned, width, &self.settings);
+    }
+}
+
 impl WindowImpl for LushtextWindow {}
 impl ApplicationWindowImpl for LushtextWindow {}
 impl AdwApplicationWindowImpl for LushtextWindow {}
 
 /// Clamp the sidebar pane position to at most 1/3 of the window width,
 /// and persist the (possibly clamped) value to GSettings.
-fn clamp_sidebar_position(paned: &gtk4::Paned, window_width: i32, settings: &gio::Settings) {
+pub fn clamp_sidebar_position(paned: &gtk4::Paned, window_width: i32, settings: &gio::Settings) {
     if window_width <= 0 {
         return;
     }

@@ -26,6 +26,15 @@ Any UI element that displays per-tab state (status bar metadata, title bar subti
 
 **Pair every structural tab operation** (`new_tab`, `open_document`, `close-tab`) with explicit refresh calls for all tab-dependent UI. Do not rely solely on GTK property notifications — signal ordering during `close_page()` is not guaranteed, and `selected-page` may not fire when closing a non-selected tab.
 
+## Size-Dependent Constraints (size_allocate vs notify)
+
+When a widget's behavior depends on its parent's size (e.g., sidebar ≤ 1/3 window width), use `WidgetImpl::size_allocate()` — NOT property notifications:
+
+- **`notify::default-width` / `notify::maximized`** fire *before* the new allocation is applied. Reading `window.width()` in these handlers returns the **old** stale value. This causes constraints to silently fail during maximize/unmaximize transitions.
+- **`size_allocate(width, height, baseline)`** receives the **actual allocated dimensions as parameters**. No timing issues.
+- **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes (e.g., user drags a `GtkPaned` divider), also connect `notify::position` on the child.
+- `size_allocate` fires on every layout pass. Keep the handler cheap (comparison + maybe one `set_position`). Guard GSettings writes with a value-change check to avoid D-Bus overhead.
+
 ## Auto-Dismiss Timers (Generation Counter)
 
 For timed UI operations (e.g., status bar message auto-dismiss), use a **generation counter** (`Cell<u32>`) instead of storing/cancelling `glib::SourceId` handles:

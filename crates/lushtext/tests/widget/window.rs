@@ -9,6 +9,7 @@ use gtk4::prelude::*;
 use lushtext_core::app::LushtextApplication;
 use lushtext_core::config::keys;
 use lushtext_core::ui::editor_page::LushtextEditorPage;
+use lushtext_core::ui::window::clamp_sidebar_position;
 use lushtext_core::ui::window::LushtextWindow;
 
 /// Create a window attached to a test application (not registered with D-Bus).
@@ -470,4 +471,93 @@ fn test_window_restores_default_size() {
     let (w, h) = window.default_size();
     assert_eq!(w, 1200);
     assert_eq!(h, 800);
+}
+
+// --- Sidebar clamp function unit tests ---
+
+#[test]
+fn test_clamp_noop_when_within_limit() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(300);
+
+    // Window width 1200 → max 400. Position 300 is fine.
+    clamp_sidebar_position(paned, 1200, &window.imp().settings);
+    assert_eq!(paned.position(), 300);
+}
+
+#[test]
+fn test_clamp_reduces_when_over_limit() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(500);
+
+    // Window width 1200 → max 400. Position 500 exceeds.
+    clamp_sidebar_position(paned, 1200, &window.imp().settings);
+    assert_eq!(paned.position(), 400);
+}
+
+#[test]
+fn test_clamp_at_exact_limit() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(400);
+
+    // Window width 1200 → max 400. Position 400 is exactly at limit.
+    clamp_sidebar_position(paned, 1200, &window.imp().settings);
+    assert_eq!(paned.position(), 400);
+}
+
+#[test]
+fn test_clamp_noop_when_window_width_zero() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(500);
+
+    // Width 0 = unrealized window. Should not clamp.
+    clamp_sidebar_position(paned, 0, &window.imp().settings);
+    assert_eq!(paned.position(), 500);
+}
+
+#[test]
+fn test_clamp_simulates_unmaximize_scenario() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+
+    // Simulate: sidebar was at 1/3 of 1920px maximized window
+    paned.set_position(640);
+
+    // Window un-maximizes to 1200px — sidebar must be clamped to 400
+    clamp_sidebar_position(paned, 1200, &window.imp().settings);
+    assert_eq!(paned.position(), 400);
+}
+
+#[test]
+fn test_clamp_persists_to_gsettings() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    let settings = &window.imp().settings;
+    paned.set_position(350);
+
+    clamp_sidebar_position(paned, 1200, settings);
+    assert_eq!(settings.int(keys::SIDEBAR_POSITION), 350);
+}
+
+#[test]
+fn test_clamp_persists_clamped_value_to_gsettings() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    let settings = &window.imp().settings;
+    paned.set_position(600);
+
+    // Clamp to 400, should persist 400 not 600
+    clamp_sidebar_position(paned, 1200, settings);
+    assert_eq!(settings.int(keys::SIDEBAR_POSITION), 400);
 }
