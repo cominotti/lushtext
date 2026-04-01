@@ -19,7 +19,6 @@ pub struct LushtextEditorPage {
     #[template_child]
     pub search_bar: TemplateChild<LushtextSearchBar>,
 
-    /// The file path this editor page is associated with.
     pub file_path: RefCell<Option<PathBuf>>,
 }
 
@@ -30,7 +29,6 @@ impl ObjectSubclass for LushtextEditorPage {
     type ParentType = gtk4::Box;
 
     fn class_init(klass: &mut Self::Class) {
-        // Ensure child widget types are registered before template parsing
         LushtextSearchBar::ensure_type();
         klass.bind_template();
     }
@@ -44,7 +42,6 @@ impl ObjectImpl for LushtextEditorPage {
     fn constructed(&self) {
         self.parent_constructed();
 
-        // Set up the source buffer with syntax highlighting enabled
         let buffer = self
             .source_view
             .buffer()
@@ -52,13 +49,27 @@ impl ObjectImpl for LushtextEditorPage {
             .expect("GtkSourceView buffer");
         buffer.set_highlight_syntax(true);
 
-        // Apply default style scheme
-        let scheme_manager = sourceview5::StyleSchemeManager::default();
-        if let Some(scheme) = scheme_manager.scheme("Adwaita") {
-            buffer.set_style_scheme(Some(&scheme));
-        }
+        apply_color_scheme(&buffer);
+
+        let buffer_for_signal = buffer.clone();
+        libadwaita::StyleManager::default().connect_dark_notify(move |_| {
+            apply_color_scheme(&buffer_for_signal);
+        });
     }
 }
 
 impl WidgetImpl for LushtextEditorPage {}
 impl BoxImpl for LushtextEditorPage {}
+
+fn apply_color_scheme(buffer: &sourceview5::Buffer) {
+    let style_manager = libadwaita::StyleManager::default();
+    let scheme_id = if style_manager.is_dark() {
+        "Adwaita-dark"
+    } else {
+        "Adwaita"
+    };
+    let scheme_manager = sourceview5::StyleSchemeManager::default();
+    if let Some(scheme) = scheme_manager.scheme(scheme_id) {
+        buffer.set_style_scheme(Some(&scheme));
+    }
+}
