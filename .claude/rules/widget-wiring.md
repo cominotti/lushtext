@@ -45,8 +45,20 @@ For timed UI operations (e.g., status bar message auto-dismiss), use a **generat
 
 This avoids all `SourceId` lifecycle bugs (double-remove panics, stale handle references) and requires no cancellation logic.
 
+## GTK4 Signal Delivery Pitfalls
+
+Code that "looks wired correctly" can silently fail if GTK4's internal gesture system intercepts events before signals are emitted. When verifying that a user interaction reaches application code, check all three layers:
+
+1. **Application wiring** — is the signal handler connected? (e.g., `connect_file_activated` → `open_document`)
+2. **Widget signal emission** — does the widget actually emit the signal on user input? (e.g., `GtkListView::activate` on click)
+3. **Gesture interception** — does an internal gesture on a child widget claim the event before the parent can process it?
+
+**Lesson learned:** The sidebar file-activation code was correctly wired (`connect_activate` → `open_document` → `tab_view.append`), and `open_document` always creates tabs. But `GtkTreeExpander`'s internal gesture claimed all click events at BUBBLE phase, preventing `GtkListView::activate` from ever firing. The code passed review because it was logically correct at the application layer — the silent failure was at the widget layer. Always verify that signals actually fire for the intended user interaction, not just that handlers are connected.
+
 ## Testing
 
 Every wired signal must have a widget test that asserts the expected state change (button click hides widget, entry propagates value, toggle flips state). Tests must also cover the action enabled/disabled lifecycle (disabled when no tabs, enabled after tab creation, disabled again after closing all tabs).
+
+**Test the preconditions, not just the wiring:** When a feature depends on a GTK widget property (like `single-click-activate=true`), write a test that asserts the property value directly. This catches template regressions even when end-to-end click simulation isn't possible in headless tests.
 
 **`is_visible()` in widget tests:** `WidgetExt::is_visible()` checks the entire parent chain — it returns `false` for any widget inside an unrealized/unpresented window (which is the case in all widget tests). To check a widget's own visibility property, use `widget.property::<bool>("visible")` instead.
