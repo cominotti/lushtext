@@ -4,9 +4,7 @@
 
 mod imp;
 
-use crate::services;
 use crate::ui::editor_page::LushtextEditorPage;
-use crate::ui::sidebar::file_tree_item::FileTreeItem;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
 use gtk4::gio;
@@ -22,9 +20,7 @@ glib::wrapper! {
 
 impl LushtextWindow {
     pub fn new(app: &libadwaita::Application) -> Self {
-        let window: Self = Object::builder()
-            .property("application", app)
-            .build();
+        let window: Self = Object::builder().property("application", app).build();
         window.setup_actions();
         window.setup_shortcuts();
         window
@@ -83,14 +79,7 @@ impl LushtextWindow {
 
     /// Load a directory tree into the sidebar.
     pub fn load_directory(&self, path: &Path) {
-        let root_model = services::file_tree::build_root_model(&[path.to_path_buf()]);
-        let tree_model = gtk4::TreeListModel::new(root_model, false, false, |item| {
-            item.downcast_ref::<FileTreeItem>()
-                .filter(|fi| fi.is_dir())
-                .map(|fi| services::file_tree::build_children_model(&fi.path()))
-                .map(|m| m.upcast::<gio::ListModel>())
-        });
-        self.imp().sidebar.set_model(&tree_model);
+        self.imp().sidebar.load_roots(&[path.to_path_buf()]);
     }
 
     /// Switch the content stack between "tabs" and "empty" states.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use libadwaita::subclass::prelude::*;
 use gtk4::{self, glib, CompositeTemplate};
+use libadwaita::subclass::prelude::*;
 
 #[derive(Default, CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/preferences.ui")]

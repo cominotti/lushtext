@@ -5,9 +5,12 @@
 pub mod file_tree_item;
 mod imp;
 
+use crate::services;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
+use gtk4::gio;
 use gtk4::prelude::*;
+use std::path::{Path, PathBuf};
 
 glib::wrapper! {
     pub struct LushtextSidebar(ObjectSubclass<imp::LushtextSidebar>)
@@ -25,32 +28,69 @@ impl LushtextSidebar {
         self.imp().workspace_label.set_label(name);
     }
 
-    /// Set the tree model for the file list view.
-    pub fn set_model(&self, model: &gtk4::TreeListModel) {
-        let selection = gtk4::SingleSelection::new(Some(model.clone()));
+    /// Load root paths into the file tree. Builds the `TreeListModel`
+    /// and child models asynchronously for responsive UI.
+    pub fn load_roots(&self, roots: &[PathBuf]) {
+        let root_store = gio::ListStore::new::<file_tree_item::FileTreeItem>();
+        for root in roots {
+            root_store.append(&file_tree_item::FileTreeItem::new(
+                root.clone(),
+                root.is_dir(),
+            ));
+        }
+
+        let tree_model = gtk4::TreeListModel::new(root_store, false, false, |item| {
+            item.downcast_ref::<file_tree_item::FileTreeItem>()
+                .filter(|fi| fi.is_dir())
+                .map(|fi| build_children_model(&fi.path()))
+                .map(|m| m.upcast::<gio::ListModel>())
+        });
+
+        let selection = gtk4::SingleSelection::new(Some(tree_model));
         self.imp().file_tree_view.set_model(Some(&selection));
     }
 
     /// Connect a handler for when a file is activated (double-clicked or Enter).
     pub fn connect_file_activated<F: Fn(&std::path::Path) + 'static>(&self, f: F) {
-        self.imp().file_tree_view.connect_activate(move |list_view, position| {
-            let model = list_view.model().expect("list view has a model");
-            if let Some(item) = model.item(position) {
-                // Unwrap through SingleSelection → TreeListRow → FileTreeItem
-                let tree_row = item
-                    .downcast_ref::<gtk4::TreeListRow>()
-                    .expect("item is a TreeListRow");
-                if let Some(file_item) = tree_row
-                    .item()
-                    .and_then(|i| i.downcast::<file_tree_item::FileTreeItem>().ok())
-                {
-                    if !file_item.is_dir() {
-                        f(&file_item.path());
+        self.imp()
+            .file_tree_view
+            .connect_activate(move |list_view, position| {
+                let model = list_view.model().expect("list view has a model");
+                if let Some(item) = model.item(position) {
+                    let tree_row = item
+                        .downcast_ref::<gtk4::TreeListRow>()
+                        .expect("item is a TreeListRow");
+                    if let Some(file_item) = tree_row
+                        .item()
+                        .and_then(|i| i.downcast::<file_tree_item::FileTreeItem>().ok())
+                    {
+                        if !file_item.is_dir() {
+                            f(&file_item.path());
+                        }
                     }
                 }
-            }
-        });
+            });
     }
+}
+
+/// Build a child `ListStore` for a directory's contents.
+/// Returns an empty store immediately and populates it from a background
+/// thread via `spawn_blocking_then`.
+fn build_children_model(dir_path: &Path) -> gio::ListStore {
+    let store = gio::ListStore::new::<file_tree_item::FileTreeItem>();
+    let path = dir_path.to_path_buf();
+
+    services::async_task::spawn_blocking_then(
+        store.clone(),
+        move || services::file_tree::scan_directory(&path),
+        |store, entries| {
+            for (path, is_dir) in entries {
+                store.append(&file_tree_item::FileTreeItem::new(path, is_dir));
+            }
+        },
+    );
+
+    store
 }
 
 impl Default for LushtextSidebar {

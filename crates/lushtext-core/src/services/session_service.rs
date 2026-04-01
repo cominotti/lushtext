@@ -6,6 +6,7 @@ use crate::model::session::SessionData;
 use crate::model::workspace::WorkspaceId;
 use crate::services::json_store;
 use anyhow::Result;
+use std::collections::HashSet;
 use std::path::Path;
 
 fn session_filename(ws_id: &WorkspaceId) -> String {
@@ -23,24 +24,20 @@ pub fn load(data_dir: &Path, ws_id: &WorkspaceId) -> Result<SessionData> {
 
 /// Save session to disk.
 pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
-    json_store::save(
-        data_dir,
-        &session_filename(&session.workspace_id),
-        session,
-    )
+    json_store::save(data_dir, &session_filename(&session.workspace_id), session)
 }
 
 /// Filter session tabs to only those whose files still exist on disk.
+/// Performs I/O to check file existence, then delegates the mutation
+/// to the domain method `SessionData::retain_tabs_by_path`.
 pub fn filter_existing_tabs(session: &mut SessionData) {
-    session
+    let existing: HashSet<_> = session
         .tabs
-        .retain(|tab| std::fs::metadata(&tab.path).is_ok());
-
-    if let Some(ref active) = session.active_tab {
-        if !session.tabs.iter().any(|t| &t.path == active) {
-            session.active_tab = None;
-        }
-    }
+        .iter()
+        .filter(|tab| tab.path.exists())
+        .map(|tab| tab.path.clone())
+        .collect();
+    session.retain_tabs_by_path(&existing);
 }
 
 #[cfg(test)]

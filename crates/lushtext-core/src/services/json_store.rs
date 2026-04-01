@@ -31,6 +31,5 @@ pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<
         .with_context(|| format!("failed to create {}", data_dir.display()))?;
     let path = data_dir.join(filename);
     let content = serde_json::to_string_pretty(value)?;
-    std::fs::write(&path, content)
-        .with_context(|| format!("failed to write {}", path.display()))
+    std::fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))
 }

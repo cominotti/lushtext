@@ -3,7 +3,7 @@
 //! Integration tests for workspace management.
 
 use crate::common::TestContext;
-use lushtext_core::model::workspace::{WorkspaceEntry, WorkspaceId};
+use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceEntry, WorkspaceId};
 use lushtext_core::services::workspace_manager;
 
 #[test]
@@ -15,14 +15,13 @@ fn test_full_workspace_lifecycle() {
     assert!(file.workspaces.is_empty());
 
     // Get active workspace (creates default)
-    let ws = workspace_manager::active_workspace(&mut file);
+    let ws = file.active_workspace();
     assert_eq!(ws.name, "workspace");
     let ws_id = ws.id.clone();
 
     // Add entries
     let project_dir = ctx.mkdir("projects/my-app");
-    workspace_manager::add_entry(
-        &mut file,
+    file.add_entry(
         &ws_id,
         WorkspaceEntry::Directory {
             path: project_dir.clone(),
@@ -30,8 +29,7 @@ fn test_full_workspace_lifecycle() {
     );
 
     let readme = ctx.write_file("projects/README.md", "# Hello");
-    workspace_manager::add_entry(
-        &mut file,
+    file.add_entry(
         &ws_id,
         WorkspaceEntry::File {
             path: readme.clone(),
@@ -44,14 +42,11 @@ fn test_full_workspace_lifecycle() {
     workspace_manager::save(ctx.data_dir(), &file).unwrap();
     let reloaded = workspace_manager::load(ctx.data_dir()).unwrap();
     assert_eq!(reloaded.workspaces[0].entries.len(), 2);
-    assert_eq!(
-        reloaded.active_workspace,
-        Some(ws_id.clone())
-    );
+    assert_eq!(reloaded.active_workspace, Some(ws_id.clone()));
 
     // Remove an entry
     let mut file = reloaded;
-    workspace_manager::remove_entry(&mut file, &ws_id, &project_dir);
+    file.remove_entry(&ws_id, &project_dir);
     assert_eq!(file.workspaces[0].entries.len(), 1);
 }
 
@@ -61,10 +56,10 @@ fn test_multiple_workspaces() {
     let mut file = workspace_manager::load(ctx.data_dir()).unwrap();
 
     // Create default workspace
-    let _ = workspace_manager::active_workspace(&mut file);
+    let _ = file.active_workspace();
 
     // Add a second workspace manually
-    let ws2 = lushtext_core::model::workspace::WorkspaceConfig {
+    let ws2 = WorkspaceConfig {
         id: WorkspaceId("second".into()),
         name: "rust-projects".into(),
         entries: vec![],

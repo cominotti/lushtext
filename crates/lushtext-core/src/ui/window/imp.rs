@@ -58,9 +58,10 @@ impl ObjectImpl for LushtextWindow {
 
         // Update stack when tabs change
         let window = obj.clone();
-        self.tab_view.connect_notify_local(Some("n-pages"), move |_, _| {
-            window.update_content_stack();
-        });
+        self.tab_view
+            .connect_notify_local(Some("n-pages"), move |_, _| {
+                window.update_content_stack();
+            });
 
         // Start with empty state
         obj.update_content_stack();

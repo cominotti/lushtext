@@ -11,10 +11,6 @@ fn main() {
 
     // Only compile resources if the XML exists (skip during early scaffold)
     if std::path::Path::new(&resource_xml).exists() {
-        glib_build_tools::compile_resources(
-            &[resource_dir],
-            &resource_xml,
-            "lushtext.gresource",
-        );
+        glib_build_tools::compile_resources(&[resource_dir], &resource_xml, "lushtext.gresource");
     }
 }
