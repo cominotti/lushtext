@@ -83,7 +83,7 @@ impl LushtextWindow {
     /// Load a directory tree into the sidebar.
     pub fn load_directory(&self, path: &Path) {
         let root_model = services::file_tree::build_root_model(&[path.to_path_buf()]);
-        let tree_model = gtk4::TreeListModel::new(root_model, false, true, |item| {
+        let tree_model = gtk4::TreeListModel::new(root_model, false, false, |item| {
             item.downcast_ref::<FileTreeItem>()
                 .filter(|fi| fi.is_dir())
                 .map(|fi| services::file_tree::build_children_model(&fi.path()))
