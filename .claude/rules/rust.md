@@ -43,6 +43,17 @@ GtkSourceView has its own theming separate from GTK CSS. Always:
 1. Query `libadwaita::StyleManager::is_dark()` to pick `"Adwaita"` vs `"Adwaita-dark"`.
 2. Connect to `connect_dark_notify()` for runtime changes.
 
+## Background I/O
+
+Use `services::async_task::spawn_blocking_then(state, work, then)` for any I/O that may block:
+- `state`: non-Send GTK object (auto-wrapped in `ThreadGuard`)
+- `work`: runs on background thread, must be `Send`
+- `then`: runs on main thread with result, does NOT need to be `Send`
+
+Never pass GTK objects directly across threads — they are not `Send`/`Sync`. Use `glib::thread_guard::ThreadGuard` or `glib::SendWeakRef`.
+
+Never set `autoexpand = true` on `GtkTreeListModel`.
+
 ## Error Handling
 
 - Services return `anyhow::Result`.

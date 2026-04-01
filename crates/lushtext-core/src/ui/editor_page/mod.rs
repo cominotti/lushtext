@@ -4,6 +4,7 @@
 
 mod imp;
 
+use crate::services::async_task;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
 use gtk4::prelude::*;
@@ -22,24 +23,22 @@ impl LushtextEditorPage {
     }
 
     /// Start loading a file asynchronously. Sets the file path immediately
-    /// so duplicate detection works before content arrives. The buffer
-    /// populates when the background read completes.
+    /// so duplicate detection works before content arrives.
     pub fn load_file_async(&self, path: &Path) {
-        self.imp().file_path.replace(Some(path.to_path_buf()));
-
         let file_path = path.to_path_buf();
-        let guarded_editor = glib::thread_guard::ThreadGuard::new(self.clone());
-        std::thread::spawn(move || {
-            let result = std::fs::read_to_string(&file_path);
-            let fp = file_path;
-            glib::idle_add_once(move || {
-                let editor = guarded_editor.into_inner();
-                match result {
-                    Ok(content) => editor.apply_loaded_content(&content),
-                    Err(e) => tracing::error!("Failed to read {}: {}", fp.display(), e),
-                }
-            });
-        });
+        self.imp().file_path.replace(Some(file_path.clone()));
+
+        async_task::spawn_blocking_then(
+            self.clone(),
+            move || {
+                std::fs::read_to_string(&file_path)
+                    .map_err(|e| format!("Failed to read {}: {}", file_path.display(), e))
+            },
+            |editor, result| match result {
+                Ok(content) => editor.apply_loaded_content(&content),
+                Err(e) => tracing::error!("{}", e),
+            },
+        );
     }
 
     fn apply_loaded_content(&self, content: &str) {
@@ -62,7 +61,6 @@ impl LushtextEditorPage {
         }
     }
 
-    /// Save the buffer contents back to the file.
     pub fn save_file(&self) -> anyhow::Result<()> {
         let path = self
             .imp()

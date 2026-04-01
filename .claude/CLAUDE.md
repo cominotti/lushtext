@@ -101,3 +101,16 @@ All versions centralized in workspace root `Cargo.toml` under `[workspace.depend
 ## GTK Initialization Order
 
 CSS and Display access require GTK to be initialized. Initialization happens during `app.run()` → `startup()`. GResource registration can happen before (in `run()`), but CSS loading must happen in the `startup()` callback.
+
+## Async I/O Pattern
+
+Background I/O uses `services::async_task::spawn_blocking_then(state, work, then)`:
+1. `state` — non-Send GTK object, wrapped in `ThreadGuard` automatically
+2. `work` — `FnOnce() -> T + Send`, runs on a background thread
+3. `then` — `FnOnce(state, T)`, runs on the main thread via `glib::idle_add_once`
+
+Both `state` and `then` are wrapped in `glib::thread_guard::ThreadGuard` to safely cross thread boundaries. `ThreadGuard` implements `Send` and asserts same-thread access on `.into_inner()`.
+
+**Key constraint:** GTK objects are NOT `Send`/`Sync` (raw pointers inside). Never pass them directly across threads. Always use `ThreadGuard` or `SendWeakRef`.
+
+**TreeListModel caveat:** Never set `autoexpand = true` on `TreeListModel` — it recursively calls the child-model callback for every directory, which with background I/O spawns unbounded threads, and with synchronous I/O freezes the UI.

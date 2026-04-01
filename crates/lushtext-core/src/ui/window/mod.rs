@@ -112,59 +112,41 @@ impl LushtextWindow {
     }
 
     fn setup_actions(&self) {
-        // New tab
-        let action_new_tab = gio::ActionEntry::builder("new-tab")
-            .activate(|window: &Self, _, _| window.new_tab())
-            .build();
-
-        // Open file
-        let action_open = gio::ActionEntry::builder("open-file")
-            .activate(|window: &Self, _, _| window.show_open_file_dialog())
-            .build();
-
-        // Open folder
-        let action_open_folder = gio::ActionEntry::builder("open-folder")
-            .activate(|window: &Self, _, _| window.show_open_folder_dialog())
-            .build();
-
-        // Save
-        let action_save = gio::ActionEntry::builder("save")
-            .activate(|window: &Self, _, _| {
-                if let Some(editor) = window.active_editor() {
-                    if let Err(e) = editor.save_file() {
-                        tracing::error!("Failed to save: {}", e);
-                    }
-                }
-            })
-            .build();
-
-        // Toggle search
-        let action_search = gio::ActionEntry::builder("toggle-search")
-            .activate(|window: &Self, _, _| {
-                if let Some(editor) = window.active_editor() {
-                    editor.toggle_search();
-                }
-            })
-            .build();
-
-        // Close tab
-        let action_close_tab = gio::ActionEntry::builder("close-tab")
-            .activate(|window: &Self, _, _| {
-                let tab_view = &window.imp().tab_view;
-                if let Some(page) = tab_view.selected_page() {
-                    tab_view.close_page(&page);
-                }
-                window.update_content_stack();
-            })
-            .build();
-
         self.add_action_entries([
-            action_new_tab,
-            action_open,
-            action_open_folder,
-            action_save,
-            action_search,
-            action_close_tab,
+            gio::ActionEntry::builder("new-tab")
+                .activate(|window: &Self, _, _| window.new_tab())
+                .build(),
+            gio::ActionEntry::builder("open-file")
+                .activate(|window: &Self, _, _| window.show_open_file_dialog())
+                .build(),
+            gio::ActionEntry::builder("open-folder")
+                .activate(|window: &Self, _, _| window.show_open_folder_dialog())
+                .build(),
+            gio::ActionEntry::builder("save")
+                .activate(|window: &Self, _, _| {
+                    if let Some(editor) = window.active_editor() {
+                        if let Err(e) = editor.save_file() {
+                            tracing::error!("Failed to save: {}", e);
+                        }
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("toggle-search")
+                .activate(|window: &Self, _, _| {
+                    if let Some(editor) = window.active_editor() {
+                        editor.toggle_search();
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("close-tab")
+                .activate(|window: &Self, _, _| {
+                    let tab_view = &window.imp().tab_view;
+                    if let Some(page) = tab_view.selected_page() {
+                        tab_view.close_page(&page);
+                    }
+                    window.update_content_stack();
+                })
+                .build(),
         ]);
     }
 

@@ -6,9 +6,9 @@
 //! is initially empty and populates asynchronously, keeping the main thread
 //! responsive for large directories.
 
+use crate::services::async_task;
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
 use gtk4::gio;
-use gtk4::glib;
 use std::path::{Path, PathBuf};
 
 /// Build the root `ListStore` for the tree model from a list of root paths.
@@ -27,18 +27,17 @@ pub fn build_root_model(roots: &[PathBuf]) -> gio::ListStore {
 /// automatically, so the tree updates when entries arrive.
 pub fn build_children_model(dir_path: &Path) -> gio::ListStore {
     let store = gio::ListStore::new::<FileTreeItem>();
-
     let path = dir_path.to_path_buf();
-    let guarded_store = glib::thread_guard::ThreadGuard::new(store.clone());
-    std::thread::spawn(move || {
-        let entries = scan_directory(&path);
-        glib::idle_add_once(move || {
-            let store = guarded_store.into_inner();
+
+    async_task::spawn_blocking_then(
+        store.clone(),
+        move || scan_directory(&path),
+        |store, entries| {
             for (path, is_dir) in entries {
                 store.append(&FileTreeItem::new(path, is_dir));
             }
-        });
-    });
+        },
+    );
 
     store
 }
@@ -47,7 +46,10 @@ pub fn build_children_model(dir_path: &Path) -> gio::ListStore {
 fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
     let read_dir = match std::fs::read_dir(dir_path) {
         Ok(rd) => rd,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!("Cannot read {}: {}", dir_path.display(), e);
+            return Vec::new();
+        }
     };
 
     let mut entries: Vec<(String, PathBuf, bool)> = read_dir
