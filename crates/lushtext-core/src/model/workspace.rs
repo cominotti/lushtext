@@ -93,6 +93,15 @@ fn generate_id() -> String {
 mod tests {
     use super::*;
 
+    /// Create a `WorkspacesFile` with a default workspace already initialized.
+    /// Returns the file and the active workspace's id.
+    fn file_with_default_workspace() -> (WorkspacesFile, WorkspaceId) {
+        let mut file = WorkspacesFile::default();
+        let _ = file.active_workspace();
+        let ws_id = file.workspaces[0].id.clone();
+        (file, ws_id)
+    }
+
     #[test]
     fn test_active_workspace_creates_default() {
         let mut file = WorkspacesFile::default();
@@ -103,9 +112,7 @@ mod tests {
 
     #[test]
     fn test_add_entry_deduplicates() {
-        let mut file = WorkspacesFile::default();
-        let _ = file.active_workspace();
-        let ws_id = file.workspaces[0].id.clone();
+        let (mut file, ws_id) = file_with_default_workspace();
 
         file.add_entry(
             &ws_id,
@@ -125,9 +132,7 @@ mod tests {
 
     #[test]
     fn test_remove_entry() {
-        let mut file = WorkspacesFile::default();
-        let _ = file.active_workspace();
-        let ws_id = file.workspaces[0].id.clone();
+        let (mut file, ws_id) = file_with_default_workspace();
 
         file.add_entry(
             &ws_id,
@@ -138,6 +143,164 @@ mod tests {
         assert_eq!(file.workspaces[0].entries.len(), 1);
 
         file.remove_entry(&ws_id, Path::new("/tmp/test"));
-        assert_eq!(file.workspaces[0].entries.len(), 0);
+        assert!(file.workspaces[0].entries.is_empty());
+    }
+
+    #[test]
+    fn test_workspace_entry_path_directory() {
+        let entry = WorkspaceEntry::Directory {
+            path: "/tmp/project".into(),
+        };
+        assert_eq!(entry.path(), Path::new("/tmp/project"));
+    }
+
+    #[test]
+    fn test_workspace_entry_path_file() {
+        let entry = WorkspaceEntry::File {
+            path: "/tmp/notes.md".into(),
+        };
+        assert_eq!(entry.path(), Path::new("/tmp/notes.md"));
+    }
+
+    #[test]
+    fn test_active_workspace_fallback_when_id_not_found() {
+        let mut file = WorkspacesFile {
+            active_workspace: Some(WorkspaceId("nonexistent".into())),
+            workspaces: vec![WorkspaceConfig {
+                id: WorkspaceId("real".into()),
+                name: "real-workspace".into(),
+                entries: vec![],
+            }],
+        };
+        let ws = file.active_workspace();
+        assert_eq!(ws.id, WorkspaceId("real".into()));
+        assert_eq!(ws.name, "real-workspace");
+    }
+
+    #[test]
+    fn test_add_entry_noop_for_unknown_workspace() {
+        let (mut file, _) = file_with_default_workspace();
+
+        file.add_entry(
+            &WorkspaceId("nonexistent".into()),
+            WorkspaceEntry::File {
+                path: "/tmp/file".into(),
+            },
+        );
+        assert!(file.workspaces[0].entries.is_empty());
+    }
+
+    #[test]
+    fn test_remove_entry_noop_for_unknown_workspace() {
+        let (mut file, ws_id) = file_with_default_workspace();
+
+        file.add_entry(
+            &ws_id,
+            WorkspaceEntry::File {
+                path: "/tmp/file".into(),
+            },
+        );
+
+        file.remove_entry(&WorkspaceId("nonexistent".into()), Path::new("/tmp/file"));
+        assert_eq!(file.workspaces[0].entries.len(), 1);
+    }
+
+    #[test]
+    fn test_remove_entry_noop_for_nonexistent_path() {
+        let (mut file, ws_id) = file_with_default_workspace();
+
+        file.add_entry(
+            &ws_id,
+            WorkspaceEntry::File {
+                path: "/tmp/file".into(),
+            },
+        );
+
+        file.remove_entry(&ws_id, Path::new("/tmp/other"));
+        assert_eq!(file.workspaces[0].entries.len(), 1);
+    }
+
+    #[test]
+    fn test_add_entry_deduplicates_across_kinds() {
+        let (mut file, ws_id) = file_with_default_workspace();
+
+        file.add_entry(
+            &ws_id,
+            WorkspaceEntry::Directory {
+                path: "/tmp/target".into(),
+            },
+        );
+        file.add_entry(
+            &ws_id,
+            WorkspaceEntry::File {
+                path: "/tmp/target".into(),
+            },
+        );
+
+        assert_eq!(file.workspaces[0].entries.len(), 1);
+    }
+
+    #[test]
+    fn test_workspaces_file_default_is_empty() {
+        let file = WorkspacesFile::default();
+        assert!(file.workspaces.is_empty());
+        assert!(file.active_workspace.is_none());
+    }
+
+    #[test]
+    fn test_workspace_entry_serialization_directory() {
+        let entry = WorkspaceEntry::Directory {
+            path: "/tmp/project".into(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: WorkspaceEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.path(), entry.path());
+        assert!(matches!(deserialized, WorkspaceEntry::Directory { .. }));
+    }
+
+    #[test]
+    fn test_workspace_entry_serialization_file() {
+        let entry = WorkspaceEntry::File {
+            path: "/tmp/notes.md".into(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: WorkspaceEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.path(), entry.path());
+        assert!(matches!(deserialized, WorkspaceEntry::File { .. }));
+    }
+
+    #[test]
+    fn test_workspace_config_serialization_roundtrip() {
+        let config = WorkspaceConfig {
+            id: WorkspaceId("ws-123".into()),
+            name: "my project".into(),
+            entries: vec![
+                WorkspaceEntry::Directory {
+                    path: "/home/user/src".into(),
+                },
+                WorkspaceEntry::File {
+                    path: "/home/user/notes.md".into(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: WorkspaceConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, config.id);
+        assert_eq!(deserialized.name, config.name);
+        assert_eq!(deserialized.entries.len(), 2);
+        assert!(matches!(
+            deserialized.entries[0],
+            WorkspaceEntry::Directory { .. }
+        ));
+        assert!(matches!(
+            deserialized.entries[1],
+            WorkspaceEntry::File { .. }
+        ));
+    }
+
+    #[test]
+    fn test_generated_ids_are_nonempty() {
+        let (file, _) = file_with_default_workspace();
+        assert!(!file.workspaces[0].id.0.is_empty());
     }
 }

@@ -38,3 +38,135 @@ pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
 
     entries.into_iter().map(|(_, p, d)| (p, d)).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Helper: extract file names from scan results.
+    fn names(entries: &[(PathBuf, bool)]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn test_empty_directory() {
+        let dir = TempDir::new().unwrap();
+        let entries = scan_directory(dir.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_hidden_files_skipped() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".hidden"), "").unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "").unwrap();
+        std::fs::write(dir.path().join("visible.txt"), "").unwrap();
+
+        let entries = scan_directory(dir.path());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(names(&entries), vec!["visible.txt"]);
+    }
+
+    #[test]
+    fn test_hidden_directories_skipped() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+
+        let entries = scan_directory(dir.path());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(names(&entries), vec!["src"]);
+    }
+
+    #[test]
+    fn test_files_marked_not_dir() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+
+        let entries = scan_directory(dir.path());
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].1);
+    }
+
+    #[test]
+    fn test_directories_marked_as_dir() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        let entries = scan_directory(dir.path());
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].1);
+    }
+
+    #[test]
+    fn test_directories_sorted_before_files() {
+        let dir = TempDir::new().unwrap();
+        // File sorts alphabetically before directory, but dirs should come first
+        std::fs::write(dir.path().join("aaa.txt"), "").unwrap();
+        std::fs::create_dir(dir.path().join("zzz_dir")).unwrap();
+
+        let entries = scan_directory(dir.path());
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].1, "first entry should be directory");
+        assert!(!entries[1].1, "second entry should be file");
+    }
+
+    #[test]
+    fn test_alphabetical_case_insensitive_sort() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("Banana.txt"), "").unwrap();
+        std::fs::write(dir.path().join("apple.txt"), "").unwrap();
+        std::fs::write(dir.path().join("Cherry.txt"), "").unwrap();
+
+        let entries = scan_directory(dir.path());
+        assert_eq!(
+            names(&entries),
+            vec!["apple.txt", "Banana.txt", "Cherry.txt"]
+        );
+    }
+
+    #[test]
+    fn test_nonexistent_directory_returns_empty() {
+        let entries = scan_directory(Path::new("/nonexistent/path/that/does/not/exist"));
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_mixed_entries_sorted_correctly() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("readme.md"), "").unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+        std::fs::create_dir(dir.path().join("docs")).unwrap();
+
+        let entries = scan_directory(dir.path());
+        assert_eq!(
+            names(&entries),
+            vec!["docs", "src", "Cargo.toml", "readme.md"]
+        );
+    }
+
+    #[test]
+    fn test_all_hidden_entries_produces_empty() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "").unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".env"), "").unwrap();
+
+        let entries = scan_directory(dir.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_paths_are_absolute() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "").unwrap();
+
+        let entries = scan_directory(dir.path());
+        assert!(entries[0].0.is_absolute());
+    }
+}

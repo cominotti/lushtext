@@ -79,6 +79,20 @@ mod tests {
     }
 
     #[test]
+    fn test_load_backfills_empty_workspace_id() {
+        let dir = TempDir::new().unwrap();
+        let ws_id = WorkspaceId("my-ws".into());
+
+        // Write a session file with empty workspace_id (legacy format)
+        let json = r#"{"workspace_id": "", "tabs": [], "active_tab": null}"#;
+        let filename = format!("session-{}.json", ws_id.0);
+        std::fs::write(dir.path().join(filename), json).unwrap();
+
+        let session = load(dir.path(), &ws_id).unwrap();
+        assert_eq!(session.workspace_id, ws_id);
+    }
+
+    #[test]
     fn test_filter_existing_tabs_removes_missing() {
         let dir = TempDir::new().unwrap();
 

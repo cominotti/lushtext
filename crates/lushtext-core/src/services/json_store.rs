@@ -33,3 +33,93 @@ pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<
     let content = serde_json::to_string_pretty(value)?;
     std::fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use tempfile::TempDir;
+
+    #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+    struct TestData {
+        name: String,
+        value: i32,
+    }
+
+    #[test]
+    fn test_load_missing_file_returns_default() {
+        let dir = TempDir::new().unwrap();
+        let result: TestData = load(dir.path(), "missing.json").unwrap();
+        assert_eq!(result, TestData::default());
+    }
+
+    #[test]
+    fn test_save_and_load_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let data = TestData {
+            name: "test".into(),
+            value: 42,
+        };
+        save(dir.path(), "data.json", &data).unwrap();
+        let loaded: TestData = load(dir.path(), "data.json").unwrap();
+        assert_eq!(loaded, data);
+    }
+
+    #[test]
+    fn test_load_malformed_json_returns_error() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("bad.json"), "not valid json {{{").unwrap();
+        let result: Result<TestData> = load(dir.path(), "bad.json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_save_creates_nested_directories() {
+        let dir = TempDir::new().unwrap();
+        let nested = dir.path().join("deeply/nested/dir");
+        let data = TestData {
+            name: "nested".into(),
+            value: 1,
+        };
+        save(&nested, "data.json", &data).unwrap();
+        let loaded: TestData = load(&nested, "data.json").unwrap();
+        assert_eq!(loaded, data);
+    }
+
+    #[test]
+    fn test_save_overwrites_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let data1 = TestData {
+            name: "first".into(),
+            value: 1,
+        };
+        save(dir.path(), "data.json", &data1).unwrap();
+
+        let data2 = TestData {
+            name: "second".into(),
+            value: 2,
+        };
+        save(dir.path(), "data.json", &data2).unwrap();
+
+        let loaded: TestData = load(dir.path(), "data.json").unwrap();
+        assert_eq!(loaded, data2);
+    }
+
+    #[test]
+    fn test_save_produces_pretty_printed_json() {
+        let dir = TempDir::new().unwrap();
+        let data = TestData {
+            name: "pretty".into(),
+            value: 99,
+        };
+        save(dir.path(), "data.json", &data).unwrap();
+        let content = std::fs::read_to_string(dir.path().join("data.json")).unwrap();
+        assert!(content.contains('\n'));
+    }
+
+    #[test]
+    fn test_data_dir_ends_with_lushtext() {
+        let dir = data_dir();
+        assert_eq!(dir.file_name().unwrap(), "lushtext");
+    }
+}

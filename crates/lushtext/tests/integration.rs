@@ -15,3 +15,6 @@ mod workspace;
 
 #[path = "integration/session.rs"]
 mod session;
+
+#[path = "integration/file_tree.rs"]
+mod file_tree;
