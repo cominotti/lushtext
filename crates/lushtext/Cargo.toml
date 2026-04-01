@@ -20,3 +20,7 @@ workspace-hack     = { version = "0.1", path = "../../workspace-hack" }
 tempfile   = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+gtk4       = { workspace = true }
+libadwaita = { workspace = true }
+sourceview5 = { workspace = true }
+gio        = { workspace = true }

@@ -13,7 +13,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run test test-unit test-int check clean help
+.PHONY: build build-debug run test test-unit test-int test-widget check clean help
 
 .DEFAULT_GOAL := help
 
@@ -29,11 +29,13 @@ endif
 # Falls back to cargo test when nextest is not installed.
 HAS_NEXTEST := $(shell command -v cargo-nextest 2>/dev/null && echo 1)
 ifdef HAS_NEXTEST
-CARGO_TEST     = cargo nextest run
-CARGO_TEST_INT = cargo nextest run --test integration
+CARGO_TEST        = cargo nextest run
+CARGO_TEST_INT    = cargo nextest run --test integration
+CARGO_TEST_WIDGET = cargo nextest run --test widget
 else
-CARGO_TEST     = cargo test
-CARGO_TEST_INT = cargo test --test integration
+CARGO_TEST        = cargo test
+CARGO_TEST_INT    = cargo test --test integration
+CARGO_TEST_WIDGET = cargo test --test widget
 endif
 
 # Build the project (release, optimized)
@@ -66,6 +68,11 @@ test-int:
 	@echo "Running integration tests..."
 	$(CARGO_TEST_INT)
 
+# Widget tests (require display server; use `xvfb-run make test-widget` for headless)
+test-widget:
+	@echo "Running widget tests..."
+	$(CARGO_TEST_WIDGET)
+
 # Lint + format check
 check:
 	@echo "Running clippy..."
@@ -93,6 +100,7 @@ help:
 	@echo "  test         All tests (unit + integration)"
 	@echo "  test-unit    Unit tests only (fast)"
 	@echo "  test-int     Integration tests only"
+	@echo "  test-widget  Widget tests (needs display or xvfb-run)"
 	@echo ""
 	@echo "Other targets:"
 	@echo "  check        Clippy + format check"

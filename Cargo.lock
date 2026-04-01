@@ -636,9 +636,13 @@ name = "lushtext"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
+ "gio",
  "glib",
+ "gtk4",
+ "libadwaita",
  "lushtext-core",
  "predicates",
+ "sourceview5",
  "tempfile",
  "tracing-subscriber",
  "workspace-hack",

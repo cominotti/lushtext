@@ -15,15 +15,21 @@ use gio::prelude::*;
 use glib::ExitCode;
 use gtk4::gio;
 
-/// Entry point called from `main()`. Registers GResources, creates the application,
-/// and runs the GTK main loop.
-pub fn run() -> ExitCode {
+/// Register the compiled GResource bundle. Must be called before constructing
+/// any widgets that use composite templates.
+pub fn register_resources() {
     let resource_bytes = glib::Bytes::from_static(include_bytes!(concat!(
         env!("OUT_DIR"),
         "/lushtext.gresource"
     )));
     let resource = gio::Resource::from_data(&resource_bytes).expect("failed to load GResource");
     gio::resources_register(&resource);
+}
+
+/// Entry point called from `main()`. Registers GResources, creates the application,
+/// and runs the GTK main loop.
+pub fn run() -> ExitCode {
+    register_resources();
 
     let app = app::LushtextApplication::new();
     app.run()
