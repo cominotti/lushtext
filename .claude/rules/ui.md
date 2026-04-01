@@ -44,6 +44,17 @@ LushtextWindow (AdwApplicationWindow)
 - Skip hidden files (starting with `.`).
 - **Disable TreeExpander's gesture for file rows**: `GtkTreeExpander` installs an internal `GtkGestureClick` (BUBBLE phase) that intercepts click events for ALL rows — even non-expandable files. This prevents `GtkListView`'s built-in double-click activation from firing. The fix: in `connect_bind`, use `expander.observe_controllers()` to find the `GtkGestureClick` and set `propagation_phase` to `None` for file rows (disabling it) and `Bubble` for directory rows (preserving expand/collapse). This runs on every bind (including ListItem recycling). Do NOT use `single-click-activate=true` (changes UX) or CAPTURE-phase gestures (fragile, fails for first file due to `SingleSelection::selected()` timing).
 
+## Sidebar Context Menu
+
+- Single `GtkPopoverMenu` (from `gio::Menu`) attached to the `GtkListView`, not per-row popovers.
+- Right-click detection: `GtkGestureClick(button=3)` on the ListView. Use `Widget::pick(x, y)` + `find_ancestor_expander()` to locate the `TreeExpander` → `list_row()` → `FileTreeItem` at click position. No `unsafe` data storage needed.
+- Sidebar labels use the `.monospace` CSS class (same font as the editor via the shared font provider).
+- Actions are in a `sidebar` action group (`insert_action_group`) with `rename` and `delete`.
+- Inline rename: dynamically append a `GtkEntry` to the row's content box, hide the label. Guard against double-fire from focus-out after confirm/cancel using `entry.parent().is_none()`.
+- `connect_bind` cleanup: remove any lingering rename `GtkEntry` from row recycling and restore label visibility.
+- Window integration via callback pattern: `connect_file_renamed(Fn(&Path, &Path))` and `connect_file_deleted(Fn(&Path))`, consistent with `connect_file_activated`.
+- Directory operations must use `Path::starts_with` prefix matching for tab path updates and closures (not just exact equality).
+
 ## UI Templates
 
 - Composite templates in `resources/ui/*.ui` (GTK XML format).

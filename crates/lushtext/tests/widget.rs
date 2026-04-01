@@ -22,6 +22,9 @@ mod status_bar;
 #[path = "widget/editor_page.rs"]
 mod editor_page;
 
+#[path = "widget/sidebar.rs"]
+mod sidebar;
+
 #[path = "widget/window.rs"]
 mod window;
 

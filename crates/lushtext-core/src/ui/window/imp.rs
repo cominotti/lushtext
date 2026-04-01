@@ -3,7 +3,7 @@
 use crate::config::{self, keys};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::sidebar::LushtextSidebar;
-use crate::ui::status_bar::LushtextStatusBar;
+use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
 use glib::prelude::*;
 use gtk4::prelude::*;
 use gtk4::{self, gio, glib, CompositeTemplate};
@@ -128,6 +128,35 @@ impl ObjectImpl for LushtextWindow {
         // --- Sidebar file activation ---
         let window = obj.clone();
         self.sidebar.connect_file_activated(move |path| {
+            window.open_document(path);
+        });
+
+        // --- Sidebar rename/delete notifications ---
+        let window = obj.clone();
+        self.sidebar
+            .connect_file_renamed(move |old_path, new_path| {
+                window.update_tab_path(old_path, new_path);
+                let name = new_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                window
+                    .imp()
+                    .status_bar
+                    .push_message(&format!("Renamed to {name}"), MessageKind::Info);
+            });
+
+        let window = obj.clone();
+        self.sidebar.connect_file_deleted(move |path| {
+            window.close_tab_for_path(path);
+            window
+                .imp()
+                .status_bar
+                .push_message("Deleted", MessageKind::Info);
+        });
+
+        let window = obj.clone();
+        self.sidebar.connect_file_created(move |path| {
             window.open_document(path);
         });
 

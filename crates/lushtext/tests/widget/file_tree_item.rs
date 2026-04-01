@@ -58,3 +58,14 @@ fn test_path_preserves_full_path() {
     let item = FileTreeItem::new(long_path.clone(), false);
     assert_eq!(item.path(), long_path);
 }
+
+#[test]
+fn test_set_path_updates_path_and_name() {
+    ensure_gtk_init();
+    let item = FileTreeItem::new(PathBuf::from("/tmp/old.txt"), false);
+    assert_eq!(item.name(), "old.txt");
+
+    item.set_path(PathBuf::from("/tmp/new.txt"));
+    assert_eq!(item.path(), PathBuf::from("/tmp/new.txt"));
+    assert_eq!(item.name(), "new.txt");
+}

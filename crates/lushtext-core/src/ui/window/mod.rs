@@ -188,6 +188,49 @@ impl LushtextWindow {
         ]);
     }
 
+    /// Update the file path and title for any tab matching `old_path`.
+    /// For directory renames, rewrites paths of all files inside the directory.
+    pub fn update_tab_path(&self, old_path: &Path, new_path: &Path) {
+        let tab_view = &self.imp().tab_view;
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                let Some(ref ep) = editor.file_path() else {
+                    continue;
+                };
+                if ep.as_path() == old_path {
+                    editor.set_file_path(new_path);
+                    page.set_title(&editor.title());
+                } else if let Ok(suffix) = ep.strip_prefix(old_path) {
+                    // Directory rename: rewrite child paths
+                    let updated = new_path.join(suffix);
+                    editor.set_file_path(&updated);
+                    page.set_title(&editor.title());
+                }
+            }
+        }
+    }
+
+    /// Close any tab whose file path matches `path` or is inside it (for directories).
+    pub fn close_tab_for_path(&self, path: &Path) {
+        let tab_view = &self.imp().tab_view;
+        // Iterate in reverse so removing pages doesn't shift indices
+        for i in (0..tab_view.n_pages()).rev() {
+            let page = tab_view.nth_page(i);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                let matches = editor
+                    .file_path()
+                    .as_ref()
+                    .is_some_and(|p| p.as_path() == path || p.starts_with(path));
+                if matches {
+                    tab_view.close_page(&page);
+                }
+            }
+        }
+        self.update_content_stack();
+        self.refresh_status_bar();
+    }
+
     fn setup_shortcuts(&self) {
         let controller = gtk4::ShortcutController::new();
         controller.set_scope(gtk4::ShortcutScope::Managed);

@@ -7,7 +7,7 @@
 
 use glib::subclass::prelude::*;
 use gtk4::glib;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
 mod imp {
@@ -17,6 +17,7 @@ mod imp {
     pub struct FileTreeItem {
         pub path: RefCell<PathBuf>,
         pub is_dir: RefCell<bool>,
+        pub pending_rename: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -54,7 +55,19 @@ impl FileTreeItem {
             .unwrap_or_else(|| self.imp().path.borrow().display().to_string())
     }
 
+    pub fn set_path(&self, new_path: PathBuf) {
+        self.imp().path.replace(new_path);
+    }
+
     pub fn is_dir(&self) -> bool {
         *self.imp().is_dir.borrow()
+    }
+
+    pub fn is_pending_rename(&self) -> bool {
+        self.imp().pending_rename.get()
+    }
+
+    pub fn set_pending_rename(&self, pending: bool) {
+        self.imp().pending_rename.set(pending);
     }
 }
