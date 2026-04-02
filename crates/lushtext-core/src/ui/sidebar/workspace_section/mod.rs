@@ -339,8 +339,6 @@ impl LushtextWorkspaceSection {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let imp = self.imp();
-
         if new_name.is_empty() || new_name == old_name {
             if is_new {
                 self.cancel_new_item(old_path, entry, label, content_box);
@@ -351,40 +349,64 @@ impl LushtextWorkspaceSection {
         }
 
         let new_path = old_path.with_file_name(new_name);
+        let new_name_owned = new_name.to_string();
+        let is_dir = self.imp().context_is_dir.get();
 
-        match std::fs::rename(old_path, &new_path) {
-            Ok(()) => {
-                if let Some(ref expander) = *imp.context_expander.borrow() {
-                    if let Some(tree_row) = expander.list_row() {
-                        if let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() {
-                            file_item.set_path(new_path.clone());
+        // Remove the inline entry immediately — label shows old name until rename completes
+        let label = label.clone();
+        cancel_rename(entry, &label, content_box);
+
+        let old_path = old_path.to_path_buf();
+        let new_path_c = new_path.clone();
+        services::async_task::spawn_blocking_then(
+            self.clone(),
+            move || {
+                let result = std::fs::rename(&old_path, &new_path_c);
+                (old_path, new_path_c, result)
+            },
+            move |section, (old_path, new_path, result)| {
+                let imp = section.imp();
+                match result {
+                    Ok(()) => {
+                        if let Some(ref expander) = *imp.context_expander.borrow() {
+                            if let Some(tree_row) = expander.list_row() {
+                                if let Some(file_item) =
+                                    tree_row.item().and_downcast::<FileTreeItem>()
+                                {
+                                    file_item.set_path(new_path.clone());
+                                }
+                            }
+                        }
+                        label.set_label(&new_name_owned);
+                        imp.is_new_item.set(false);
+
+                        if is_new && !is_dir {
+                            if let Some(ref cb) = *imp.create_callback.borrow() {
+                                cb(&new_path);
+                            }
+                        } else if !is_new {
+                            if let Some(ref cb) = *imp.rename_callback.borrow() {
+                                cb(&old_path, &new_path);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to rename {}: {}", old_path.display(), e);
+                        if is_new {
+                            // Entry already removed before async dispatch (line above);
+                            // clean up the temp item (single empty file/dir, always fast)
+                            imp.is_new_item.set(false);
+                            if is_dir {
+                                let _ = std::fs::remove_dir(&old_path);
+                            } else {
+                                let _ = std::fs::remove_file(&old_path);
+                            }
+                            section.remove_from_model(&old_path);
                         }
                     }
                 }
-
-                label.set_label(new_name);
-                cancel_rename(entry, label, content_box);
-                imp.is_new_item.set(false);
-
-                if is_new && !imp.context_is_dir.get() {
-                    if let Some(ref cb) = *imp.create_callback.borrow() {
-                        cb(&new_path);
-                    }
-                } else if !is_new {
-                    if let Some(ref cb) = *imp.rename_callback.borrow() {
-                        cb(old_path, &new_path);
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to rename {}: {}", old_path.display(), e);
-                if is_new {
-                    self.cancel_new_item(old_path, entry, label, content_box);
-                } else {
-                    cancel_rename(entry, label, content_box);
-                }
-            }
-        }
+            },
+        );
     }
 
     fn cancel_new_item(
@@ -442,23 +464,29 @@ impl LushtextWorkspaceSection {
                 return;
             };
 
-            let result = if is_dir {
-                std::fs::remove_dir_all(&path_c)
-            } else {
-                std::fs::remove_file(&path_c)
-            };
-
-            match result {
-                Ok(()) => {
-                    section.remove_from_model(&path_c);
-                    if let Some(ref cb) = *section.imp().delete_callback.borrow() {
-                        cb(&path_c);
+            let path_for_io = path_c.clone();
+            services::async_task::spawn_blocking_then(
+                section,
+                move || {
+                    let result = if is_dir {
+                        std::fs::remove_dir_all(&path_for_io)
+                    } else {
+                        std::fs::remove_file(&path_for_io)
+                    };
+                    (path_for_io, result)
+                },
+                |section, (path, result)| match result {
+                    Ok(()) => {
+                        section.remove_from_model(&path);
+                        if let Some(ref cb) = *section.imp().delete_callback.borrow() {
+                            cb(&path);
+                        }
                     }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to delete {}: {}", path_c.display(), e);
-                }
-            }
+                    Err(e) => {
+                        tracing::error!("Failed to delete {}: {}", path.display(), e);
+                    }
+                },
+            );
         });
 
         if let Some(root) = self.root() {

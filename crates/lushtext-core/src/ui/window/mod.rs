@@ -58,6 +58,31 @@ impl LushtextWindow {
         self.refresh_status_bar();
     }
 
+    /// Save the active tab's file. If untitled, shows Save As dialog.
+    fn save_current(&self) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        if editor.file_path().is_none() {
+            self.show_save_as_dialog();
+            return;
+        }
+        match editor.save_file() {
+            Ok(()) => {
+                self.imp()
+                    .status_bar
+                    .push_message("File saved", MessageKind::Info);
+                self.refresh_status_bar();
+            }
+            Err(e) => {
+                tracing::error!("Failed to save: {}", e);
+                self.imp()
+                    .status_bar
+                    .push_message(&format!("Save failed: {}", e), MessageKind::Error);
+            }
+        }
+    }
+
     /// Create a new untitled tab.
     pub fn new_tab(&self) {
         let editor_page = LushtextEditorPage::new();
@@ -187,30 +212,7 @@ impl LushtextWindow {
                 })
                 .build(),
             gio::ActionEntry::builder("save")
-                .activate(|window: &Self, _, _| {
-                    if let Some(editor) = window.active_editor() {
-                        if editor.file_path().is_none() {
-                            window.show_save_as_dialog();
-                            return;
-                        }
-                        match editor.save_file() {
-                            Ok(()) => {
-                                window
-                                    .imp()
-                                    .status_bar
-                                    .push_message("File saved", MessageKind::Info);
-                                window.refresh_status_bar();
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to save: {}", e);
-                                window.imp().status_bar.push_message(
-                                    &format!("Save failed: {}", e),
-                                    MessageKind::Error,
-                                );
-                            }
-                        }
-                    }
-                })
+                .activate(|window: &Self, _, _| window.save_current())
                 .build(),
             gio::ActionEntry::builder("save-as")
                 .activate(|window: &Self, _, _| window.show_save_as_dialog())

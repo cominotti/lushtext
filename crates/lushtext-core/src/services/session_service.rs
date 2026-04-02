@@ -10,13 +10,13 @@ use std::collections::HashSet;
 use std::path::Path;
 
 fn session_filename(ws_id: &WorkspaceId) -> String {
-    format!("session-{}.json", ws_id.0)
+    format!("session-{}.json", ws_id.as_str())
 }
 
 /// Load session for a workspace. Returns default (no tabs) if file doesn't exist.
 pub fn load(data_dir: &Path, ws_id: &WorkspaceId) -> Result<SessionData> {
     let mut session: SessionData = json_store::load(data_dir, &session_filename(ws_id))?;
-    if session.workspace_id.0.is_empty() {
+    if session.workspace_id.is_empty() {
         session.workspace_id = ws_id.clone();
     }
     Ok(session)
@@ -49,7 +49,7 @@ mod tests {
     #[test]
     fn test_load_missing_returns_default() {
         let dir = TempDir::new().unwrap();
-        let ws_id = WorkspaceId("test".into());
+        let ws_id = WorkspaceId::new("test");
         let session = load(dir.path(), &ws_id).unwrap();
         assert!(session.tabs.is_empty());
         assert_eq!(session.workspace_id, ws_id);
@@ -58,7 +58,7 @@ mod tests {
     #[test]
     fn test_save_and_load_roundtrip() {
         let dir = TempDir::new().unwrap();
-        let ws_id = WorkspaceId("test".into());
+        let ws_id = WorkspaceId::new("test");
         let session = SessionData {
             workspace_id: ws_id.clone(),
             tabs: vec![SessionTab {
@@ -81,11 +81,11 @@ mod tests {
     #[test]
     fn test_load_backfills_empty_workspace_id() {
         let dir = TempDir::new().unwrap();
-        let ws_id = WorkspaceId("my-ws".into());
+        let ws_id = WorkspaceId::new("my-ws");
 
         // Write a session file with empty workspace_id (legacy format)
         let json = r#"{"workspace_id": "", "tabs": [], "active_tab": null}"#;
-        let filename = format!("session-{}.json", ws_id.0);
+        let filename = format!("session-{}.json", ws_id.as_str());
         std::fs::write(dir.path().join(filename), json).unwrap();
 
         let session = load(dir.path(), &ws_id).unwrap();
@@ -99,7 +99,7 @@ mod tests {
         let real_file = dir.path().join("exists.txt");
         std::fs::write(&real_file, "hello").unwrap();
 
-        let ws_id = WorkspaceId("test".into());
+        let ws_id = WorkspaceId::new("test");
         let mut session = SessionData {
             workspace_id: ws_id,
             tabs: vec![

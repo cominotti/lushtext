@@ -239,10 +239,12 @@ impl LushtextSidebar {
         let imp = self.imp();
         let name = folder_display_name(&path);
 
-        let ws_id = imp.workspaces_file.borrow_mut().add_workspace(&name);
-        imp.workspaces_file
-            .borrow_mut()
-            .add_entry(&ws_id, WorkspaceEntry::Directory { path: path.clone() });
+        let ws_id = {
+            let mut wf = imp.workspaces_file.borrow_mut();
+            let ws_id = wf.add_workspace(&name);
+            wf.add_entry(&ws_id, WorkspaceEntry::Directory { path: path.clone() });
+            ws_id
+        };
         self.persist();
 
         let section = self.create_section(ws_id, &name, &[path]);
@@ -280,20 +282,11 @@ impl LushtextSidebar {
                     if let Some(sidebar) = sidebar_weak.upgrade() {
                         let name = folder_display_name(&path);
 
-                        // Replace entries and rename via model API
-                        {
-                            let mut wf = sidebar.imp().workspaces_file.borrow_mut();
-                            // Clear existing entries for this workspace
-                            if let Some(ws) = wf.workspaces.iter().find(|w| w.id == ws_id) {
-                                let old_paths: Vec<_> =
-                                    ws.entries.iter().map(|e| e.path().to_path_buf()).collect();
-                                for p in &old_paths {
-                                    wf.remove_entry(&ws_id, p);
-                                }
-                            }
-                            wf.add_entry(&ws_id, WorkspaceEntry::Directory { path: path.clone() });
-                            wf.rename_workspace(&ws_id, &name);
-                        }
+                        sidebar.imp().workspaces_file.borrow_mut().replace_root(
+                            &ws_id,
+                            WorkspaceEntry::Directory { path: path.clone() },
+                            &name,
+                        );
                         sidebar.persist();
 
                         sidebar.with_section(&ws_id, |section| {

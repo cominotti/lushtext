@@ -36,7 +36,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut file = WorkspacesFile::default();
         let ws = WorkspaceConfig {
-            id: WorkspaceId("test-id".into()),
+            id: WorkspaceId::new("test-id"),
             name: "my workspace".into(),
             entries: vec![
                 WorkspaceEntry::Directory {
@@ -48,7 +48,7 @@ mod tests {
             ],
         };
         file.workspaces.push(ws);
-        file.active_workspace = Some(WorkspaceId("test-id".into()));
+        file.active_workspace = Some(WorkspaceId::new("test-id"));
 
         save(dir.path(), &file).unwrap();
         let loaded = load(dir.path()).unwrap();

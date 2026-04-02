@@ -18,14 +18,14 @@ use std::rc::Rc;
 #[test]
 fn test_workspace_section_new() {
     ensure_gtk_init();
-    let _section = LushtextWorkspaceSection::new(WorkspaceId("test-id".into()));
+    let _section = LushtextWorkspaceSection::new(WorkspaceId::new("test-id"));
 }
 
 #[test]
 fn test_workspace_section_stores_id() {
     ensure_gtk_init();
-    let section = LushtextWorkspaceSection::new(WorkspaceId("my-ws-id".into()));
-    assert_eq!(section.workspace_id(), WorkspaceId("my-ws-id".into()));
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("my-ws-id"));
+    assert_eq!(section.workspace_id(), WorkspaceId::new("my-ws-id"));
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn test_create_callback_fires() {
 #[test]
 fn test_add_folder_callback_fires() {
     ensure_gtk_init();
-    let section = LushtextWorkspaceSection::new(WorkspaceId("test-ws".into()));
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("test-ws"));
 
     let called = Rc::new(Cell::new(false));
     let id_seen = Rc::new(Cell::new(String::new()));
@@ -229,7 +229,7 @@ fn test_add_folder_callback_fires() {
     let id_c = id_seen.clone();
     section.connect_add_folder_requested(move |ws_id| {
         called_c.set(true);
-        id_c.set(ws_id.0.clone());
+        id_c.set(ws_id.as_str().to_string());
     });
 
     section.notify_add_folder_requested();
@@ -243,7 +243,7 @@ fn test_add_folder_callback_fires() {
 #[test]
 fn test_rename_workspace_callback_fires() {
     ensure_gtk_init();
-    let section = LushtextWorkspaceSection::new(WorkspaceId("ws-123".into()));
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("ws-123"));
 
     let called = Rc::new(Cell::new(false));
     let id_seen = Rc::new(Cell::new(String::new()));
@@ -252,7 +252,7 @@ fn test_rename_workspace_callback_fires() {
     let id_c = id_seen.clone();
     section.connect_rename_workspace_requested(move |ws_id| {
         called_c.set(true);
-        id_c.set(ws_id.0.clone());
+        id_c.set(ws_id.as_str().to_string());
     });
 
     section.notify_rename_workspace_requested();
@@ -264,7 +264,7 @@ fn test_rename_workspace_callback_fires() {
 #[test]
 fn test_unlist_workspace_callback_fires() {
     ensure_gtk_init();
-    let section = LushtextWorkspaceSection::new(WorkspaceId("ws-456".into()));
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("ws-456"));
 
     let called = Rc::new(Cell::new(false));
     let id_seen = Rc::new(Cell::new(String::new()));
@@ -273,7 +273,7 @@ fn test_unlist_workspace_callback_fires() {
     let id_c = id_seen.clone();
     section.connect_unlist_workspace_requested(move |ws_id| {
         called_c.set(true);
-        id_c.set(ws_id.0.clone());
+        id_c.set(ws_id.as_str().to_string());
     });
 
     section.notify_unlist_workspace_requested();

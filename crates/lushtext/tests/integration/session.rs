@@ -10,7 +10,7 @@ use lushtext_core::services::session_service;
 #[test]
 fn test_session_save_restore_roundtrip() {
     let ctx = TestContext::new();
-    let ws_id = WorkspaceId("test-ws".into());
+    let ws_id = WorkspaceId::new("test-ws");
 
     // Create some real files to reference
     let file1 = ctx.write_file("src/main.rs", "fn main() {}");
@@ -50,7 +50,7 @@ fn test_session_save_restore_roundtrip() {
 #[test]
 fn test_session_filter_removes_deleted_files() {
     let ctx = TestContext::new();
-    let ws_id = WorkspaceId("test-ws".into());
+    let ws_id = WorkspaceId::new("test-ws");
 
     let real_file = ctx.write_file("still-here.txt", "content");
 

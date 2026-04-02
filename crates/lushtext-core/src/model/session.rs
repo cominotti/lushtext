@@ -56,7 +56,7 @@ mod tests {
     #[test]
     fn test_retain_tabs_keeps_matching_clears_active() {
         let mut session = SessionData {
-            workspace_id: WorkspaceId("test".into()),
+            workspace_id: WorkspaceId::new("test"),
             tabs: vec![
                 tab("/a/exists.rs", 1),
                 SessionTab {
@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn test_retain_tabs_empty_set_removes_all() {
         let mut session = SessionData {
-            workspace_id: WorkspaceId("test".into()),
+            workspace_id: WorkspaceId::new("test"),
             tabs: vec![tab("/a.rs", 1), tab("/b.rs", 2)],
             active_tab: Some("/a.rs".into()),
         };
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn test_retain_tabs_all_matching_keeps_all() {
         let mut session = SessionData {
-            workspace_id: WorkspaceId("test".into()),
+            workspace_id: WorkspaceId::new("test"),
             tabs: vec![tab("/a.rs", 1), tab("/b.rs", 2)],
             active_tab: Some("/a.rs".into()),
         };
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn test_retain_tabs_none_active_stays_none() {
         let mut session = SessionData {
-            workspace_id: WorkspaceId("test".into()),
+            workspace_id: WorkspaceId::new("test"),
             tabs: vec![tab("/a.rs", 1)],
             active_tab: None,
         };
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn test_session_data_serialization_roundtrip() {
         let session = SessionData {
-            workspace_id: WorkspaceId("test-ws".into()),
+            workspace_id: WorkspaceId::new("test-ws"),
             tabs: vec![SessionTab {
                 path: "/a.rs".into(),
                 cursor_line: 10,

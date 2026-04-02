@@ -27,13 +27,12 @@ src/
 ├── lib.rs              # Entry point: GResource registration, CSS loading, GSettings schema dir, app.run()
 ├── model/              # Domain types (no GTK deps)
 │   ├── workspace.rs    # WorkspaceId, WorkspaceEntry, WorkspaceConfig, WorkspacesFile
-│   ├── document.rs     # DocumentId
 │   └── session.rs      # SessionTab, SessionData
 ├── services/           # Business logic
 │   ├── json_store.rs   # Generic JSON load/save + data_dir()
 │   ├── workspace_manager.rs
 │   ├── session_service.rs
-│   └── file_tree.rs    # Builds GListModel hierarchy for sidebar
+│   └── file_tree.rs    # Directory scanning (pure I/O, returns Vec<(PathBuf, bool)>)
 └── ui/                 # GTK4/Libadwaita widgets (each has mod.rs + imp.rs)
     ├── window/          # Main window: HeaderBar, TabBar, Paned, Stack, StatusBar
     │   └── dialogs.rs   # File dialogs: open file, open folder, save as
@@ -57,8 +56,8 @@ src/
 - **File tree uses modern GTK4 model**: `GtkListView` + `GtkTreeListModel` + `GtkTreeExpander` (NOT the deprecated `GtkTreeView`). File tree labels use the `.monospace` CSS class, sharing the editor's font customization provider.
 - **File context menu**: Per-`WorkspaceSection`. Right-click on a file or directory shows a `GtkPopoverMenu` with New File, New Folder, Rename, and Delete actions. Uses `Widget::pick()` + ancestor traversal to find the `TreeExpander` → `TreeListRow` → `FileTreeItem`. Actions are in a `section` action group on each section widget.
 - **Workspace header context menu**: Per-`WorkspaceSection`. Right-click on the workspace header shows a `GtkPopoverMenu` with Rename Workspace and Unlist Workspace. Rename shows an `AdwAlertDialog` with text entry. Unlist shows a confirmation dialog. Actions are in a `ws-header` action group.
-- **Inline rename**: Rename swaps the row's `GtkLabel` for a `GtkEntry` dynamically. Enter confirms (`std::fs::rename` + in-place `FileTreeItem::set_path` + label update), Escape and focus-out cancel. A guard (`entry.parent().is_none()`) prevents double-fire from focus-out after confirm/cancel removes the entry. The window is notified via `connect_file_renamed` callback for tab path updates.
-- **Delete with confirmation**: Delete shows an `AdwAlertDialog` with a destructive "Delete" response. On confirm, `std::fs::remove_file` or `std::fs::remove_dir_all` is called, the item is removed from the parent `ListStore` (found by iterating the `TreeListModel` for the parent directory row), and the window is notified via `connect_file_deleted` callback to close affected tabs. Directory operations use `Path::starts_with` for prefix matching (closing all tabs inside deleted/renamed directories).
+- **Inline rename**: Rename swaps the row's `GtkLabel` for a `GtkEntry` dynamically. Enter confirms (removes entry immediately, then `std::fs::rename` runs on a background thread via `spawn_blocking_then`; on success the `FileTreeItem` path and label are updated on the main thread), Escape and focus-out cancel. A guard (`entry.parent().is_none()`) prevents double-fire from focus-out after confirm/cancel removes the entry. The window is notified via `connect_file_renamed` callback for tab path updates.
+- **Delete with confirmation**: Delete shows an `AdwAlertDialog` with a destructive "Delete" response. On confirm, `std::fs::remove_file` or `std::fs::remove_dir_all` runs on a background thread via `spawn_blocking_then`; on success the item is removed from the parent `ListStore` and the window is notified via `connect_file_deleted` callback to close affected tabs. Directory operations use `Path::starts_with` for prefix matching (closing all tabs inside deleted/renamed directories).
 - **New File / New Folder**: Context menu "New File" and "New Folder" actions create a temp-named item on disk, add a `FileTreeItem` with `pending_rename = true` to the target `ListStore`, and `connect_bind` detects the flag to automatically trigger inline rename. On confirm, the temp file is renamed to the user's chosen name and `connect_file_created` opens files in tabs. On cancel, the temp file is deleted and removed from the model. The `build_children_model` callback deduplicates items already in the store to prevent duplicates when an expanded directory's async scan finds the temp file.
 - **Workspace concept**: a named collection of root directories/files, persisted to `$XDG_DATA_HOME/lushtext/workspaces.json`. Methods: `add_workspace()`, `remove_workspace()`, `rename_workspace()`, `add_entry()`, `remove_entry()`.
 - **Session persistence**: open tabs per workspace, persisted to `$XDG_DATA_HOME/lushtext/session-{id}.json`.

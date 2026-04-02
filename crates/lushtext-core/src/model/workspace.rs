@@ -7,7 +7,21 @@ use std::path::{Path, PathBuf};
 
 /// Stable identifier for a workspace (not user-visible name).
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct WorkspaceId(pub String);
+pub struct WorkspaceId(String);
+
+impl WorkspaceId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 /// A single entry in a workspace: either a directory root or a standalone file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,7 +60,7 @@ impl WorkspacesFile {
     pub fn active_workspace(&mut self) -> &WorkspaceConfig {
         if self.workspaces.is_empty() {
             let default_ws = WorkspaceConfig {
-                id: WorkspaceId(generate_id()),
+                id: WorkspaceId::new(generate_id()),
                 name: "New Workspace".to_string(),
                 entries: Vec::new(),
             };
@@ -80,7 +94,7 @@ impl WorkspacesFile {
 
     /// Add a new workspace with the given name. Returns the generated ID.
     pub fn add_workspace(&mut self, name: &str) -> WorkspaceId {
-        let id = WorkspaceId(generate_id());
+        let id = WorkspaceId::new(generate_id());
         self.workspaces.push(WorkspaceConfig {
             id: id.clone(),
             name: name.to_string(),
@@ -102,6 +116,16 @@ impl WorkspacesFile {
     pub fn rename_workspace(&mut self, ws_id: &WorkspaceId, new_name: &str) {
         if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id) {
             ws.name = new_name.to_string();
+        }
+    }
+
+    /// Replace all entries in a workspace with a single new root, updating the name.
+    /// No-op if the workspace ID is not found.
+    pub fn replace_root(&mut self, ws_id: &WorkspaceId, entry: WorkspaceEntry, name: &str) {
+        if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id) {
+            ws.entries.clear();
+            ws.entries.push(entry);
+            ws.name = name.to_string();
         }
     }
 }
@@ -192,15 +216,15 @@ mod tests {
     #[test]
     fn test_active_workspace_fallback_when_id_not_found() {
         let mut file = WorkspacesFile {
-            active_workspace: Some(WorkspaceId("nonexistent".into())),
+            active_workspace: Some(WorkspaceId::new("nonexistent")),
             workspaces: vec![WorkspaceConfig {
-                id: WorkspaceId("real".into()),
+                id: WorkspaceId::new("real"),
                 name: "real-workspace".into(),
                 entries: vec![],
             }],
         };
         let ws = file.active_workspace();
-        assert_eq!(ws.id, WorkspaceId("real".into()));
+        assert_eq!(ws.id, WorkspaceId::new("real"));
         assert_eq!(ws.name, "real-workspace");
     }
 
@@ -209,7 +233,7 @@ mod tests {
         let (mut file, _) = file_with_default_workspace();
 
         file.add_entry(
-            &WorkspaceId("nonexistent".into()),
+            &WorkspaceId::new("nonexistent"),
             WorkspaceEntry::File {
                 path: "/tmp/file".into(),
             },
@@ -228,7 +252,7 @@ mod tests {
             },
         );
 
-        file.remove_entry(&WorkspaceId("nonexistent".into()), Path::new("/tmp/file"));
+        file.remove_entry(&WorkspaceId::new("nonexistent"), Path::new("/tmp/file"));
         assert_eq!(file.workspaces[0].entries.len(), 1);
     }
 
@@ -299,7 +323,7 @@ mod tests {
     #[test]
     fn test_workspace_config_serialization_roundtrip() {
         let config = WorkspaceConfig {
-            id: WorkspaceId("ws-123".into()),
+            id: WorkspaceId::new("ws-123"),
             name: "my project".into(),
             entries: vec![
                 WorkspaceEntry::Directory {
@@ -328,7 +352,7 @@ mod tests {
     #[test]
     fn test_generated_ids_are_nonempty() {
         let (file, _) = file_with_default_workspace();
-        assert!(!file.workspaces[0].id.0.is_empty());
+        assert!(!file.workspaces[0].id.is_empty());
     }
 
     #[test]
@@ -377,7 +401,7 @@ mod tests {
     fn test_remove_workspace_noop_for_unknown() {
         let (mut file, _) = file_with_default_workspace();
         let count_before = file.workspaces.len();
-        file.remove_workspace(&WorkspaceId("nonexistent".into()));
+        file.remove_workspace(&WorkspaceId::new("nonexistent"));
         assert_eq!(file.workspaces.len(), count_before);
     }
 
@@ -393,7 +417,59 @@ mod tests {
     fn test_rename_workspace_noop_for_unknown() {
         let (mut file, _) = file_with_default_workspace();
         let original_name = file.workspaces[0].name.clone();
-        file.rename_workspace(&WorkspaceId("nonexistent".into()), "changed");
+        file.rename_workspace(&WorkspaceId::new("nonexistent"), "changed");
         assert_eq!(file.workspaces[0].name, original_name);
+    }
+
+    #[test]
+    fn test_replace_root_clears_and_replaces() {
+        let (mut file, ws_id) = file_with_default_workspace();
+        file.add_entry(
+            &ws_id,
+            WorkspaceEntry::Directory {
+                path: "/old/dir".into(),
+            },
+        );
+        file.add_entry(
+            &ws_id,
+            WorkspaceEntry::File {
+                path: "/old/file.txt".into(),
+            },
+        );
+        assert_eq!(file.workspaces[0].entries.len(), 2);
+
+        file.replace_root(
+            &ws_id,
+            WorkspaceEntry::Directory {
+                path: "/new/root".into(),
+            },
+            "new-name",
+        );
+
+        assert_eq!(file.workspaces[0].entries.len(), 1);
+        assert_eq!(file.workspaces[0].entries[0].path(), Path::new("/new/root"));
+        assert_eq!(file.workspaces[0].name, "new-name");
+    }
+
+    #[test]
+    fn test_replace_root_noop_for_unknown() {
+        let (mut file, ws_id) = file_with_default_workspace();
+        file.add_entry(
+            &ws_id,
+            WorkspaceEntry::Directory {
+                path: "/keep".into(),
+            },
+        );
+
+        file.replace_root(
+            &WorkspaceId::new("nonexistent"),
+            WorkspaceEntry::Directory {
+                path: "/new".into(),
+            },
+            "ignored",
+        );
+
+        assert_eq!(file.workspaces[0].entries.len(), 1);
+        assert_eq!(file.workspaces[0].entries[0].path(), Path::new("/keep"));
     }
 }

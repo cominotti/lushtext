@@ -62,23 +62,20 @@ fn test_multiple_workspaces() {
 
     // Add a second workspace manually
     let ws2 = WorkspaceConfig {
-        id: WorkspaceId("second".into()),
+        id: WorkspaceId::new("second"),
         name: "rust-projects".into(),
         entries: vec![],
     };
     file.workspaces.push(ws2);
 
     // Switch active
-    file.active_workspace = Some(WorkspaceId("second".into()));
+    file.active_workspace = Some(WorkspaceId::new("second"));
 
     workspace_manager::save(ctx.data_dir(), &file).unwrap();
     let reloaded = workspace_manager::load(ctx.data_dir()).unwrap();
 
     assert_eq!(reloaded.workspaces.len(), 2);
-    assert_eq!(
-        reloaded.active_workspace,
-        Some(WorkspaceId("second".into()))
-    );
+    assert_eq!(reloaded.active_workspace, Some(WorkspaceId::new("second")));
 }
 
 #[test]
