@@ -435,6 +435,8 @@ name_label.set_markup(&markup);
 
 ## 6. SIMD Crate Adoption Beyond Search {#6-simd-crates}
 
+> **Cross-reference**: For a comprehensive SIMD adoption guide covering the full file-load path (simdutf8 for all file sizes, not just >10MB), see `gtk-perf-rust-optimize/references/simd-opportunities.md`.
+
 With x86-64-v3 + Apple Silicon as the target baseline, several SIMD-accelerated crates provide free performance gains for operations LushText already performs.
 
 ### `memchr` — Fast byte scanning

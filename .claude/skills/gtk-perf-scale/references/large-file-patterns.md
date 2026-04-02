@@ -163,7 +163,7 @@ pub fn save_file_async(&self) -> bool {
 
 Design choice: `buffer.set_modified(false)` is called *before* the async write, not after. This gives instant visual feedback (tab title loses the dot). If the write fails, the `then` callback re-marks the buffer as modified. This is the UX pattern used by VS Code and most modern editors — optimistic UI with rollback on failure.
 
-**RAM impact**: The `text.to_string()` call creates a copy of the buffer content for the background thread. For a 50MB file, this temporarily adds ~50MB to memory (the original buffer content + the String copy). The copy is freed when the background closure completes. This is unavoidable — GTK buffer content cannot be sent across threads directly.
+**RAM impact**: The `text.to_string()` call creates a copy of the buffer content for the background thread. For a 50MB file, this temporarily adds ~50MB to memory (the original buffer content + the String copy). The copy is freed when the background closure completes. This is unavoidable — GTK buffer content cannot be sent across threads directly. For full analysis of this save-path memory doubling pattern, see `gtk-perf-rust-optimize/references/allocation-patterns.md` section 2.
 
 ---
 

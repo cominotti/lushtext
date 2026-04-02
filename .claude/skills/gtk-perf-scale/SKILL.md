@@ -207,6 +207,7 @@ Anti-patterns to flag:
 - [FLAG] Capturing entire FileIndex or Vec<IndexedFile> (~20MB for 100k files) in a signal closure
 - [RECOMMEND] Missing Vec::with_capacity for known-size collections (up to 50% waste from doubling)
 - [RECOMMEND] String::clone() where &str would suffice
+- [RECOMMEND] to_string_lossy().to_string() where .into_owned() suffices — see gtk-perf-rust-optimize/references/allocation-patterns.md for full pattern catalog
 - [RECOMMEND] retain() without shrink_to_fit() after removing >25% of entries
 - [RECOMMEND] Unbounded concurrent spawn_blocking_then without a thread spawn guard — 50 simultaneous file loads peak at 50 * file_size RAM. Check for semaphore or batching (groups of 8).
 - [CONSIDER] Buffer eviction for apps with many large-file tabs (threshold: >256MB total)
