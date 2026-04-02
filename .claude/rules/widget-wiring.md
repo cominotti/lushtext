@@ -35,6 +35,20 @@ When a widget's behavior depends on its parent's size (e.g., sidebar ≤ 1/3 win
 - **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes (e.g., user drags a `GtkPaned` divider), also connect `notify::position` on the child.
 - `size_allocate` fires on every layout pass. Keep the handler cheap (comparison + maybe one `set_position`). Guard GSettings writes with a value-change check to avoid D-Bus overhead.
 
+## Focus Restoration on Overlay Close
+
+When an overlay widget steals focus (command palette, search bar, inline rename), the close path **must** explicitly restore focus. GTK4's default behavior after `GtkRevealer.set_reveal_child(false)` walks the widget tree to the first focusable widget — typically a sidebar button, not the editor.
+
+**Pattern for window-level overlays** (command palette):
+1. Before opening: save `window.focus()` into a `RefCell<Option<glib::WeakRef<gtk4::Widget>>>` on the imp struct.
+2. On close: take the saved ref, `upgrade()` it, and call `grab_focus()`. If the widget is gone (tab closed), fall back to `active_editor().source_view().grab_focus()`. If no editor exists, call `window.set_focus(Widget::NONE)`.
+3. Use `glib::WeakRef` (not a strong ref) to avoid preventing widget finalization.
+
+**Pattern for editor-level overlays** (search bar):
+- The focus target is always the same editor's `source_view` — no saved state needed. Call `source_view.grab_focus()` in the close handler.
+
+**Do not rely on GTK4's automatic focus assignment** after hiding a revealer or removing a widget from the focus chain.
+
 ## Auto-Dismiss Timers (Generation Counter)
 
 For timed UI operations (e.g., status bar message auto-dismiss), use a **generation counter** (`Cell<u32>`) instead of storing/cancelling `glib::SourceId` handles:

@@ -232,6 +232,8 @@ impl LushtextEditorPage {
         revealer.set_reveal_child(!visible);
         if !visible {
             self.imp().search_bar.search_entry().grab_focus();
+        } else {
+            self.imp().source_view.grab_focus();
         }
     }
 }

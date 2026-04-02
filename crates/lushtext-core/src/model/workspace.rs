@@ -37,6 +37,10 @@ impl WorkspaceEntry {
             WorkspaceEntry::Directory { path } | WorkspaceEntry::File { path } => path,
         }
     }
+
+    pub fn is_dir(&self) -> bool {
+        matches!(self, WorkspaceEntry::Directory { .. })
+    }
 }
 
 /// A named workspace persisted to disk.

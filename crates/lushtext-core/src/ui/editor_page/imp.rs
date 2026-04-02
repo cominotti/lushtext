@@ -135,8 +135,10 @@ impl ObjectImpl for LushtextEditorPage {
         }
 
         let revealer = self.search_revealer.clone();
+        let source_view = self.source_view.clone();
         self.search_bar.connect_close(move || {
             revealer.set_reveal_child(false);
+            source_view.grab_focus();
         });
     }
 }

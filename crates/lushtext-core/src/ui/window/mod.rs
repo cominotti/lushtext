@@ -301,6 +301,13 @@ impl LushtextWindow {
         if imp.palette_revealer.reveals_child() {
             self.close_command_palette();
         } else {
+            // Save the currently focused widget before the palette steals focus
+            let weak = glib::WeakRef::new();
+            if let Some(focused) = gtk4::prelude::GtkWindowExt::focus(self) {
+                weak.set(Some(&focused));
+            }
+            imp.saved_focus.replace(Some(weak));
+
             imp.palette_revealer.set_reveal_child(true);
             imp.command_palette.open();
         }
@@ -310,6 +317,28 @@ impl LushtextWindow {
         let imp = self.imp();
         imp.command_palette.close();
         imp.palette_revealer.set_reveal_child(false);
+        self.restore_saved_focus();
+    }
+
+    /// Restore focus to the widget saved before an overlay was opened.
+    /// Falls back to the active editor's source view if the saved widget
+    /// is gone (e.g., tab closed while palette was open).
+    /// If no editor is active (empty state), clears window focus.
+    fn restore_saved_focus(&self) {
+        let saved = self.imp().saved_focus.take();
+        let target = saved.as_ref().and_then(glib::WeakRef::upgrade).or_else(|| {
+            self.active_editor()
+                .map(|e| e.source_view().clone().upcast::<gtk4::Widget>())
+        });
+
+        match target {
+            Some(widget) => {
+                widget.grab_focus();
+            }
+            None => {
+                gtk4::prelude::GtkWindowExt::set_focus(self, gtk4::Widget::NONE);
+            }
+        }
     }
 
     /// If the active tab was evicted, reload its content from disk.
@@ -382,11 +411,12 @@ impl LushtextWindow {
             if window.imp().index_rebuild_generation.get() != gen {
                 return; // superseded by a newer rebuild request
             }
+            let prev_count = window.imp().command_palette.file_index_len();
             let roots = window.imp().sidebar.workspace_roots();
             let window_weak = window.downgrade();
             async_task::spawn_blocking_then(
                 (),
-                move || FileIndex::rebuild(&roots),
+                move || FileIndex::rebuild_with_hint(&roots, prev_count),
                 move |(), index| {
                     if let Some(window) = window_weak.upgrade() {
                         window.imp().command_palette.set_file_index(index);

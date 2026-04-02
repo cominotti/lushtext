@@ -19,6 +19,19 @@ pub struct IndexedFile {
 }
 
 impl IndexedFile {
+    /// Create an indexed file, deriving the name from the path's last component.
+    pub fn new(path: PathBuf, workspace_root: Arc<PathBuf>) -> Self {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Self {
+            path,
+            name,
+            workspace_root,
+        }
+    }
+
     /// Path relative to the workspace root, for display purposes.
     pub fn relative_display(&self) -> String {
         self.path
@@ -39,6 +52,15 @@ pub struct CommandDef {
     pub category: CommandCategory,
     /// Keyboard shortcut hint, e.g. `"Ctrl+S"`.
     pub shortcut: Option<&'static str>,
+}
+
+impl CommandDef {
+    pub fn display_subtitle(&self) -> String {
+        match self.shortcut {
+            Some(s) => format!("{} · {}", self.category.label(), s),
+            None => self.category.label().to_string(),
+        }
+    }
 }
 
 /// Categories for organizing commands in the palette.

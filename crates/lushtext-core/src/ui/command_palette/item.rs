@@ -42,6 +42,25 @@ const KIND_FILE: u8 = 0;
 const KIND_COMMAND: u8 = 1;
 
 impl PaletteItem {
+    /// Create a palette item from pre-computed display data.
+    /// Used by the background search thread which cannot create GObjects.
+    pub fn new_raw(
+        display_name: String,
+        subtitle: String,
+        file_path: Option<PathBuf>,
+        action_id: String,
+        is_file: bool,
+    ) -> Self {
+        let obj: Self = glib::Object::builder().build();
+        let imp = obj.imp();
+        imp.display_name.replace(display_name);
+        imp.subtitle.replace(subtitle);
+        imp.file_path.replace(file_path);
+        imp.action_id.replace(action_id);
+        imp.kind.set(if is_file { KIND_FILE } else { KIND_COMMAND });
+        obj
+    }
+
     /// Create a palette item from an indexed file.
     pub fn from_indexed_file(file: &IndexedFile) -> Self {
         let obj: Self = glib::Object::builder().build();
@@ -58,11 +77,7 @@ impl PaletteItem {
         let obj: Self = glib::Object::builder().build();
         let imp = obj.imp();
         imp.display_name.replace(cmd.label.to_string());
-        let subtitle = match cmd.shortcut {
-            Some(shortcut) => format!("{} · {}", cmd.category.label(), shortcut),
-            None => cmd.category.label().to_string(),
-        };
-        imp.subtitle.replace(subtitle);
+        imp.subtitle.replace(cmd.display_subtitle());
         imp.action_id.replace(cmd.id.to_string());
         imp.kind.set(KIND_COMMAND);
         obj

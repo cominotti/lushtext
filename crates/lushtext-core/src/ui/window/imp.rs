@@ -9,7 +9,7 @@ use glib::prelude::*;
 use gtk4::prelude::*;
 use gtk4::{self, gio, glib, CompositeTemplate};
 use libadwaita::subclass::prelude::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
@@ -37,6 +37,7 @@ pub struct LushtextWindow {
 
     pub settings: gio::Settings,
     pub index_rebuild_generation: Cell<u32>,
+    pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
 }
 
 impl Default for LushtextWindow {
@@ -54,6 +55,7 @@ impl Default for LushtextWindow {
             command_palette: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
             index_rebuild_generation: Cell::new(0),
+            saved_focus: RefCell::new(None),
         }
     }
 }
@@ -150,6 +152,10 @@ impl ObjectImpl for LushtextWindow {
             .connect_file_renamed(move |old_path, new_path| {
                 if let Some(window) = window_weak.upgrade() {
                     window.update_tab_path(old_path, new_path);
+                    window
+                        .imp()
+                        .command_palette
+                        .update_index_file_renamed(old_path, new_path);
                     let name = new_path
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -165,6 +171,7 @@ impl ObjectImpl for LushtextWindow {
         self.sidebar.connect_file_deleted(move |path| {
             if let Some(window) = window_weak.upgrade() {
                 window.close_tab_for_path(path);
+                window.imp().command_palette.update_index_file_deleted(path);
                 window
                     .imp()
                     .status_bar
@@ -176,6 +183,7 @@ impl ObjectImpl for LushtextWindow {
         self.sidebar.connect_file_created(move |path| {
             if let Some(window) = window_weak.upgrade() {
                 window.open_document(path);
+                window.imp().command_palette.update_index_file_created(path);
             }
         });
 
@@ -239,9 +247,9 @@ impl ObjectImpl for LushtextWindow {
         // Start with empty state
         obj.update_content_stack();
 
-        // Load workspaces from disk and build initial file index
+        // Load workspaces from disk asynchronously; the completion callback
+        // triggers notify_workspace_changed which rebuilds the file index.
         self.sidebar.load_workspaces();
-        obj.rebuild_file_index();
     }
 }
 

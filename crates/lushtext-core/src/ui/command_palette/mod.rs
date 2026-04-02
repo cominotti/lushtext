@@ -5,12 +5,14 @@
 mod imp;
 pub mod item;
 
-use crate::model::palette::SearchMode;
+use crate::model::palette::{IndexedFile, SearchMode};
 use crate::services::palette::FileIndex;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
 use gtk4::prelude::*;
 use item::PaletteItem;
+use std::path::Path;
+use std::sync::Arc;
 
 glib::wrapper! {
     pub struct LushtextCommandPalette(ObjectSubclass<imp::LushtextCommandPalette>)
@@ -25,7 +27,7 @@ impl LushtextCommandPalette {
 
     /// Replace the file index. Called when workspace roots change.
     pub fn set_file_index(&self, index: FileIndex) {
-        *self.imp().file_index.borrow_mut() = index;
+        *self.imp().file_index.borrow_mut() = Arc::new(index);
         // Re-run search if the palette is currently showing results
         let query = self.imp().search_entry.text();
         self.imp().rebuild_results(&query);
@@ -62,6 +64,36 @@ impl LushtextCommandPalette {
     /// The current search mode.
     pub fn mode(&self) -> SearchMode {
         self.imp().mode.get()
+    }
+
+    /// Number of files in the current index (used as capacity hint for rebuilds).
+    pub fn file_index_len(&self) -> usize {
+        self.imp().file_index.borrow().len()
+    }
+
+    // --- Incremental index updates ---
+
+    /// Add a newly created file to the search index.
+    /// Uses `Arc::make_mut` for copy-on-write if a background search holds a ref.
+    pub fn update_index_file_created(&self, path: &Path) {
+        let mut arc_ref = self.imp().file_index.borrow_mut();
+        let root = arc_ref.workspace_root_for(path).map(|r| Arc::clone(&r));
+        if let Some(workspace_root) = root {
+            Arc::make_mut(&mut arc_ref)
+                .add_file(IndexedFile::new(path.to_path_buf(), workspace_root));
+        }
+    }
+
+    /// Remove a deleted file (or all files under a directory) from the index.
+    pub fn update_index_file_deleted(&self, path: &Path) {
+        let mut arc_ref = self.imp().file_index.borrow_mut();
+        Arc::make_mut(&mut arc_ref).remove_path(path);
+    }
+
+    /// Update a renamed file (or directory prefix) in the index.
+    pub fn update_index_file_renamed(&self, old_path: &Path, new_path: &Path) {
+        let mut arc_ref = self.imp().file_index.borrow_mut();
+        Arc::make_mut(&mut arc_ref).rename_path(old_path, new_path);
     }
 }
 

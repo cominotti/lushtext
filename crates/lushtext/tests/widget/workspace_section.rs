@@ -318,7 +318,7 @@ fn test_add_root_initializes_tree() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().unwrap();
-    section.add_root(dir.path());
+    section.add_root(dir.path(), true);
 
     assert!(section.imp().root_store.borrow().is_some());
     let root_store = section.imp().root_store.borrow();
@@ -332,8 +332,8 @@ fn test_add_root_deduplicates() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().unwrap();
-    section.add_root(dir.path());
-    section.add_root(dir.path()); // duplicate
+    section.add_root(dir.path(), true);
+    section.add_root(dir.path(), true); // duplicate
 
     let root_store = section.imp().root_store.borrow();
     let root_store = root_store.as_ref().unwrap();
@@ -347,8 +347,8 @@ fn test_add_root_appends_multiple() {
 
     let dir1 = tempfile::tempdir().unwrap();
     let dir2 = tempfile::tempdir().unwrap();
-    section.add_root(dir1.path());
-    section.add_root(dir2.path());
+    section.add_root(dir1.path(), true);
+    section.add_root(dir2.path(), true);
 
     let root_store = section.imp().root_store.borrow();
     let root_store = root_store.as_ref().unwrap();
@@ -387,7 +387,7 @@ fn test_button_switches_to_replace_icon_after_load_roots() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().unwrap();
-    section.load_roots(&[dir.path().to_path_buf()]);
+    section.load_roots(&[(dir.path().to_path_buf(), true)]);
 
     assert_eq!(
         section
@@ -415,7 +415,7 @@ fn test_button_switches_to_replace_icon_after_add_root() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().unwrap();
-    section.add_root(dir.path());
+    section.add_root(dir.path(), true);
 
     assert_eq!(
         section
@@ -441,6 +441,6 @@ fn test_has_roots_true_after_load() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().unwrap();
-    section.load_roots(&[dir.path().to_path_buf()]);
+    section.load_roots(&[(dir.path().to_path_buf(), true)]);
     assert!(section.has_roots());
 }

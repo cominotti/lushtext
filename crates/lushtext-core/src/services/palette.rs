@@ -33,7 +33,14 @@ impl FileIndex {
     /// Uses visited-path tracking and depth limiting to handle symlink cycles
     /// (e.g., Wine/Proton `dosdevices/` symlink loops).
     pub fn rebuild(roots: &[PathBuf]) -> Self {
-        let mut files = Vec::with_capacity(10_000);
+        Self::rebuild_with_hint(roots, 10_000)
+    }
+
+    /// Like [`rebuild`], but uses `capacity_hint` for the initial `Vec` allocation.
+    /// Pass the previous index's `len()` to avoid repeated doublings for large
+    /// workspaces (e.g., 100k files would otherwise double through 10k→20k→40k→80k→160k).
+    pub fn rebuild_with_hint(roots: &[PathBuf], capacity_hint: usize) -> Self {
+        let mut files = Vec::with_capacity(capacity_hint.max(64));
         let mut visited = HashSet::new();
         for root in roots {
             let canonical_root = match root.canonicalize() {
@@ -63,6 +70,53 @@ impl FileIndex {
 
     pub fn files(&self) -> &[IndexedFile] {
         &self.files
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// Add a single file to the index. Used for incremental updates when a
+    /// file is created in the sidebar, avoiding a full rebuild.
+    pub fn add_file(&mut self, file: IndexedFile) {
+        self.files.push(file);
+    }
+
+    /// Remove a file (or all files under a directory) from the index.
+    /// Uses `starts_with` prefix matching so directory deletes remove all children.
+    pub fn remove_path(&mut self, path: &Path) {
+        self.files
+            .retain(|f| f.path != path && !f.path.starts_with(path));
+    }
+
+    /// Rename a file or directory in the index. For directories, rewrites all
+    /// paths inside the old prefix to the new prefix.
+    pub fn rename_path(&mut self, old_path: &Path, new_path: &Path) {
+        // Exact file match — replace with fresh IndexedFile to update name
+        if let Some(f) = self.files.iter_mut().find(|f| f.path == old_path) {
+            let root = Arc::clone(&f.workspace_root);
+            *f = IndexedFile::new(new_path.to_path_buf(), root);
+            return;
+        }
+        // Directory rename — update all files inside
+        for f in &mut self.files {
+            if let Ok(suffix) = f.path.strip_prefix(old_path) {
+                f.path = new_path.join(suffix);
+            }
+        }
+    }
+
+    /// Find the workspace root that contains the given path.
+    /// Returns `None` if the path is not under any known workspace root.
+    pub fn workspace_root_for(&self, path: &Path) -> Option<Arc<PathBuf>> {
+        self.files
+            .iter()
+            .find(|f| path.starts_with(f.workspace_root.as_path()))
+            .map(|f| Arc::clone(&f.workspace_root))
     }
 
     /// Search the file index with a fuzzy query, returning up to `max` scored results.
@@ -140,15 +194,7 @@ fn collect_files_recursive(
                 depth + 1,
             );
         } else {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            out.push(IndexedFile {
-                path,
-                name,
-                workspace_root: Arc::clone(workspace_root),
-            });
+            out.push(IndexedFile::new(path, Arc::clone(workspace_root)));
         }
     }
 }
@@ -264,13 +310,38 @@ pub fn search_all<'a>(
             let file_max = max - half;
             let cmd_max = half.max(1);
 
-            let mut results: Vec<ScoredResult<'a>> = index.search(query, file_max);
-            results.extend(search_commands(query, cmd_max));
-            results.sort_by(|a, b| b.score.cmp(&a.score));
-            results.truncate(max);
-            results
+            let files = index.search(query, file_max);
+            let commands = search_commands(query, cmd_max);
+            merge_sorted(files, commands, max)
         }
     }
+}
+
+/// Two-pointer merge of two score-descending sorted vectors, capped at `max`.
+/// O(n) instead of O(n log n) sort-and-truncate.
+fn merge_sorted<'a>(
+    a: Vec<ScoredResult<'a>>,
+    b: Vec<ScoredResult<'a>>,
+    max: usize,
+) -> Vec<ScoredResult<'a>> {
+    let mut result = Vec::with_capacity(max.min(a.len() + b.len()));
+    let mut a = a.into_iter().peekable();
+    let mut b = b.into_iter().peekable();
+    while result.len() < max {
+        match (a.peek(), b.peek()) {
+            (Some(x), Some(y)) => {
+                if x.score >= y.score {
+                    result.push(a.next().unwrap());
+                } else {
+                    result.push(b.next().unwrap());
+                }
+            }
+            (Some(_), None) => result.push(a.next().unwrap()),
+            (None, Some(_)) => result.push(b.next().unwrap()),
+            (None, None) => break,
+        }
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +356,11 @@ pub fn search_all<'a>(
 ///
 /// Uses SIMD-accelerated matching via nucleo-matcher (AVX2 on x86-64-v3,
 /// NEON on aarch64).
+///
+/// **Note:** Allocates a new `Matcher`, `Atom`, and char buffer on every call.
+/// For batch scoring (e.g., scoring many candidates against the same query),
+/// use [`search_items`] instead — it reuses a single `Matcher` and buffer
+/// across all candidates.
 pub fn fuzzy_score(query: &str, candidate: &str) -> Option<u32> {
     if query.is_empty() {
         return Some(0);

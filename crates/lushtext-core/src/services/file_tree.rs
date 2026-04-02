@@ -18,11 +18,10 @@ pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
         }
     };
 
-    let mut entries: Vec<(String, PathBuf, bool)> = read_dir
+    let mut entries: Vec<(PathBuf, bool)> = read_dir
         .flatten()
         .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
+            if entry.file_name().as_encoded_bytes().first() == Some(&b'.') {
                 return None;
             }
             let path = entry.path();
@@ -34,16 +33,19 @@ pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
                 Ok(m) => m,
                 Err(_) => return None, // broken symlink or permission denied
             };
-            Some((name, path, meta.is_dir()))
+            Some((path, meta.is_dir()))
         })
         .collect();
 
-    entries.sort_by(|a, b| {
-        b.2.cmp(&a.2)
-            .then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase()))
+    entries.sort_by_cached_key(|(path, is_dir)| {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        (std::cmp::Reverse(*is_dir), name)
     });
 
-    entries.into_iter().map(|(_, p, d)| (p, d)).collect()
+    entries
 }
 
 #[cfg(test)]

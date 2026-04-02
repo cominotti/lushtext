@@ -31,11 +31,18 @@ impl LushtextSidebar {
     }
 
     /// Load workspaces from disk and build sections.
-    /// Called once from window `constructed()`.
+    /// Called once from window `constructed()`. Runs I/O on a background thread
+    /// to avoid blocking the UI on slow filesystems (NFS, USB).
     pub fn load_workspaces(&self) {
         let data_dir = json_store::data_dir();
-        let workspaces_file = workspace_manager::load(&data_dir).unwrap_or_default();
-        self.build_sections_from_file(workspaces_file);
+        crate::services::async_task::spawn_blocking_then(
+            self.clone(),
+            move || workspace_manager::load(&data_dir).unwrap_or_default(),
+            |sidebar, workspaces_file| {
+                sidebar.build_sections_from_file(workspaces_file);
+                sidebar.notify_workspace_changed();
+            },
+        );
     }
 
     /// Create a new workspace by opening a folder dialog.
@@ -132,7 +139,7 @@ impl LushtextSidebar {
                 &ws_config
                     .entries
                     .iter()
-                    .map(|e| e.path().to_path_buf())
+                    .map(|e| (e.path().to_path_buf(), e.is_dir()))
                     .collect::<Vec<_>>(),
             );
             imp.sections_box.append(&section);
@@ -147,7 +154,7 @@ impl LushtextSidebar {
         &self,
         ws_id: WorkspaceId,
         name: &str,
-        roots: &[PathBuf],
+        roots: &[(PathBuf, bool)],
     ) -> LushtextWorkspaceSection {
         let section = LushtextWorkspaceSection::new(ws_id);
         section.set_workspace_name(name);
@@ -268,7 +275,7 @@ impl LushtextSidebar {
         };
         self.persist();
 
-        let section = self.create_section(ws_id, &name, &[path]);
+        let section = self.create_section(ws_id, &name, &[(path, true)]);
         imp.sections_box.append(&section);
         imp.sections.borrow_mut().push(section);
         self.notify_workspace_changed();
@@ -312,7 +319,7 @@ impl LushtextSidebar {
                         sidebar.persist();
 
                         sidebar.with_section(&ws_id, |section| {
-                            section.load_roots(&[path]);
+                            section.load_roots(&[(path, true)]);
                             section.set_workspace_name(&name);
                         });
                         sidebar.notify_workspace_changed();

@@ -41,10 +41,10 @@ impl LushtextWorkspaceSection {
 
     /// Load root paths into the file tree. Builds the `TreeListModel`
     /// and child models asynchronously for responsive UI.
-    pub fn load_roots(&self, roots: &[PathBuf]) {
+    pub fn load_roots(&self, roots: &[(PathBuf, bool)]) {
         let root_store = gio::ListStore::new::<FileTreeItem>();
-        for root in roots {
-            root_store.append(&FileTreeItem::new(root.clone(), root.is_dir()));
+        for (root, is_dir) in roots {
+            root_store.append(&FileTreeItem::new(root.clone(), *is_dir));
         }
 
         let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, |item| {
@@ -63,7 +63,8 @@ impl LushtextWorkspaceSection {
     }
 
     /// Add a single root path to an existing file tree.
-    pub fn add_root(&self, path: &Path) {
+    /// `is_dir` avoids a `stat(2)` call — callers already know the entry type.
+    pub fn add_root(&self, path: &Path, is_dir: bool) {
         let has_store = self.imp().root_store.borrow().is_some();
         if has_store {
             let store_ref = self.imp().root_store.borrow();
@@ -75,10 +76,10 @@ impl LushtextWorkspaceSection {
                     .is_some_and(|fi| fi.path() == path)
             });
             if !already_exists {
-                root_store.append(&FileTreeItem::new(path.to_path_buf(), path.is_dir()));
+                root_store.append(&FileTreeItem::new(path.to_path_buf(), is_dir));
             }
         } else {
-            self.load_roots(&[path.to_path_buf()]);
+            self.load_roots(&[(path.to_path_buf(), is_dir)]);
         }
         self.update_button_state();
     }
@@ -401,14 +402,17 @@ impl LushtextWorkspaceSection {
                     Err(e) => {
                         tracing::error!("Failed to rename {}: {}", old_path.display(), e);
                         if is_new {
-                            // Entry already removed before async dispatch (line above);
-                            // clean up the temp item (single empty file/dir, always fast)
                             imp.is_new_item.set(false);
-                            if is_dir {
-                                let _ = std::fs::remove_dir(&old_path);
-                            } else {
-                                let _ = std::fs::remove_file(&old_path);
-                            }
+                            // Fire-and-forget cleanup on a background thread to avoid
+                            // blocking the main thread on slow filesystems (NFS, FUSE).
+                            let old_path_bg = old_path.clone();
+                            std::thread::spawn(move || {
+                                if is_dir {
+                                    let _ = std::fs::remove_dir(&old_path_bg);
+                                } else {
+                                    let _ = std::fs::remove_file(&old_path_bg);
+                                }
+                            });
                             section.remove_from_model(&old_path);
                         }
                     }

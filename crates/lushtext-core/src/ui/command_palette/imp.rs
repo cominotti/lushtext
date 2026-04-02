@@ -8,6 +8,41 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, gio, glib, CompositeTemplate};
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+/// Owned transport type for search results that can cross thread boundaries.
+/// Created on the background thread, converted to `PaletteItem` GObjects
+/// on the main thread.
+struct SearchHit {
+    display_name: String,
+    subtitle: String,
+    file_path: Option<PathBuf>,
+    action_id: String,
+    is_file: bool,
+}
+
+impl SearchHit {
+    fn from_file(f: &crate::model::palette::IndexedFile) -> Self {
+        Self {
+            display_name: f.name.clone(),
+            subtitle: f.relative_display(),
+            file_path: Some(f.path.clone()),
+            action_id: String::new(),
+            is_file: true,
+        }
+    }
+
+    fn from_command(c: &crate::model::palette::CommandDef) -> Self {
+        Self {
+            display_name: c.label.to_string(),
+            subtitle: c.display_subtitle(),
+            file_path: None,
+            action_id: c.id.to_string(),
+            is_file: false,
+        }
+    }
+}
 
 type ActivateCallback = Box<dyn Fn(&PaletteItem)>;
 type CloseCallback = Box<dyn Fn()>;
@@ -26,7 +61,7 @@ pub struct LushtextCommandPalette {
 
     pub mode: Cell<SearchMode>,
     pub results_store: gio::ListStore,
-    pub file_index: RefCell<FileIndex>,
+    pub file_index: RefCell<Arc<FileIndex>>,
     pub activate_callback: RefCell<Option<ActivateCallback>>,
     pub close_callback: RefCell<Option<CloseCallback>>,
     pub search_generation: Cell<u32>,
@@ -41,7 +76,7 @@ impl Default for LushtextCommandPalette {
             no_results_label: TemplateChild::default(),
             mode: Cell::new(SearchMode::All),
             results_store: gio::ListStore::new::<PaletteItem>(),
-            file_index: RefCell::new(FileIndex::default()),
+            file_index: RefCell::new(Arc::new(FileIndex::default())),
             activate_callback: RefCell::default(),
             close_callback: RefCell::default(),
             search_generation: Cell::new(0),
@@ -149,6 +184,13 @@ impl LushtextCommandPalette {
             imp.search_generation.set(gen);
 
             let query = entry.text().to_string();
+
+            // Empty queries bypass debounce for instant clear (expected UX).
+            if query.is_empty() {
+                imp.rebuild_results(&query);
+                return;
+            }
+
             let obj_weak = obj.downgrade();
             glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
                 let Some(obj) = obj_weak.upgrade() else {
@@ -224,34 +266,63 @@ impl LushtextCommandPalette {
     }
 
     /// Rebuild the results list from the current query and mode.
-    /// Uses `splice` to emit a single `items-changed` signal instead of
-    /// N individual `append` calls.
+    /// Runs the SIMD fuzzy search on a background thread to keep the main
+    /// thread under the 16ms frame budget, even at 100k indexed files.
+    /// Uses `splice` to emit a single `items-changed` signal for the batch.
     pub fn rebuild_results(&self, query: &str) {
+        let gen = self.search_generation.get().wrapping_add(1);
+        self.search_generation.set(gen);
+
         let mode = self.mode.get();
-        let index = self.file_index.borrow();
-        let results = palette::search_all(&index, query, mode, 50);
+        let index = Arc::clone(&self.file_index.borrow());
+        let query_owned = query.to_string();
 
-        let items: Vec<PaletteItem> = results
-            .iter()
-            .map(|r| match &r.item {
-                SearchResultItem::File(f) => PaletteItem::from_indexed_file(f),
-                SearchResultItem::Command(c) => PaletteItem::from_command_def(c),
-            })
-            .collect();
+        crate::services::async_task::spawn_blocking_then(
+            self.obj().clone(),
+            move || {
+                let results = palette::search_all(&index, &query_owned, mode, 50);
+                let hits: Vec<SearchHit> = results
+                    .iter()
+                    .map(|r| match &r.item {
+                        SearchResultItem::File(f) => SearchHit::from_file(f),
+                        SearchResultItem::Command(c) => SearchHit::from_command(c),
+                    })
+                    .collect();
+                (hits, query_owned)
+            },
+            move |obj, (hits, query)| {
+                let imp = obj.imp();
+                if imp.search_generation.get() != gen {
+                    return; // superseded by a newer search
+                }
 
-        let old_count = self.results_store.n_items();
-        self.results_store.splice(0, old_count, &items);
+                let items: Vec<PaletteItem> = hits
+                    .into_iter()
+                    .map(|h| {
+                        PaletteItem::new_raw(
+                            h.display_name,
+                            h.subtitle,
+                            h.file_path,
+                            h.action_id,
+                            h.is_file,
+                        )
+                    })
+                    .collect();
 
-        let has_results = !items.is_empty();
-        self.no_results_label
-            .set_visible(!has_results && !query.is_empty());
+                let old_count = imp.results_store.n_items();
+                imp.results_store.splice(0, old_count, &items);
 
-        // Auto-select first item
-        if has_results {
-            if let Some(selection) = self.selection_model() {
-                selection.set_selected(0);
-            }
-        }
+                let has_results = !items.is_empty();
+                imp.no_results_label
+                    .set_visible(!has_results && !query.is_empty());
+
+                if has_results {
+                    if let Some(selection) = imp.selection_model() {
+                        selection.set_selected(0);
+                    }
+                }
+            },
+        );
     }
 
     fn move_selection(&self, delta: i32) {

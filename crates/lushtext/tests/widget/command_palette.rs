@@ -18,6 +18,19 @@ fn flush_events() {
     while glib::MainContext::default().iteration(false) {}
 }
 
+/// Spin the main loop (blocking) until the predicate returns true.
+/// Panics after ~2 seconds to prevent infinite hangs.
+fn spin_until(predicate: impl Fn() -> bool) {
+    let start = std::time::Instant::now();
+    while !predicate() {
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "spin_until timed out after 2s"
+        );
+        glib::MainContext::default().iteration(true);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PaletteItem GObject adapter
 // ---------------------------------------------------------------------------
@@ -120,10 +133,10 @@ fn test_command_palette_open_populates_results() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
     palette.open();
-    flush_events();
 
-    // With no file index, should still have command results
-    let store = &palette.imp().results_store;
+    // rebuild_results runs on a background thread — spin until results arrive
+    let store = palette.imp().results_store.clone();
+    spin_until(|| store.n_items() > 0);
     assert!(
         store.n_items() > 0,
         "open() should populate results with commands"
@@ -145,11 +158,13 @@ fn test_command_palette_close_clears_results() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
     palette.open();
-    flush_events();
-    assert!(palette.imp().results_store.n_items() > 0);
+
+    let store = palette.imp().results_store.clone();
+    spin_until(|| store.n_items() > 0);
+    assert!(store.n_items() > 0);
 
     palette.close();
-    assert_eq!(palette.imp().results_store.n_items(), 0);
+    assert_eq!(store.n_items(), 0);
 }
 
 #[test]
@@ -175,19 +190,15 @@ fn test_command_palette_set_file_index() {
 
     // Open and verify files appear in results
     palette.open();
-    flush_events();
-    let store = &palette.imp().results_store;
-
-    let has_file = (0..store.n_items()).any(|i| {
-        store
-            .item(i)
-            .and_downcast_ref::<PaletteItem>()
-            .is_some_and(|item| item.is_file())
+    let store = palette.imp().results_store.clone();
+    spin_until(|| {
+        (0..store.n_items()).any(|i| {
+            store
+                .item(i)
+                .and_downcast_ref::<PaletteItem>()
+                .is_some_and(|item| item.is_file())
+        })
     });
-    assert!(
-        has_file,
-        "results should contain file items after set_file_index"
-    );
 }
 
 #[test]
@@ -205,7 +216,16 @@ fn test_command_palette_search_filters_results() {
     // Search for "main" — should match main.rs but not Cargo.toml
     palette.imp().rebuild_results("main");
 
-    let store = &palette.imp().results_store;
+    let store = palette.imp().results_store.clone();
+    spin_until(|| {
+        (0..store.n_items()).any(|i| {
+            store
+                .item(i)
+                .and_downcast_ref::<PaletteItem>()
+                .is_some_and(|item| item.is_file())
+        })
+    });
+
     let file_items: Vec<String> = (0..store.n_items())
         .filter_map(|i| {
             store
@@ -236,7 +256,9 @@ fn test_command_palette_connect_item_activated() {
 
     // Populate with commands and activate first item
     palette.open();
-    flush_events();
+    let store = palette.imp().results_store.clone();
+    spin_until(|| store.n_items() > 0);
+
     palette.imp().activate_selected();
     assert!(activated.get(), "activate callback should have fired");
 }
@@ -270,10 +292,14 @@ fn test_command_palette_no_results_label_on_no_match() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
     palette.open();
-    flush_events();
+    let store = palette.imp().results_store.clone();
+    spin_until(|| store.n_items() > 0);
 
     // Search for something that won't match anything
     palette.imp().rebuild_results("xyzzynonexistent");
+
+    let no_results_label = palette.imp().no_results_label.clone();
+    spin_until(|| no_results_label.property::<bool>("visible"));
 
     assert!(
         palette.imp().no_results_label.property::<bool>("visible"),
@@ -430,4 +456,80 @@ fn test_palette_width_request_set() {
     // Width request should be set by size_allocate; before realization
     // we can at least verify the command_palette widget is accessible
     let _cp = &window.imp().command_palette;
+}
+
+// ---------------------------------------------------------------------------
+// Focus restoration state tracking
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_open_palette_saves_focus_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(
+        window.imp().saved_focus.borrow().is_none(),
+        "saved_focus should be None before opening palette"
+    );
+
+    activate_action(&window, "toggle-command-palette");
+    assert!(
+        window.imp().saved_focus.borrow().is_some(),
+        "saved_focus should be Some after opening palette"
+    );
+}
+
+#[test]
+fn test_close_palette_clears_saved_focus() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    activate_action(&window, "toggle-command-palette");
+    assert!(window.imp().saved_focus.borrow().is_some());
+
+    activate_action(&window, "toggle-command-palette");
+    assert!(
+        window.imp().saved_focus.borrow().is_none(),
+        "saved_focus should be consumed (None) after closing palette"
+    );
+}
+
+#[test]
+fn test_escape_clears_saved_focus() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    activate_action(&window, "toggle-command-palette");
+    assert!(window.imp().saved_focus.borrow().is_some());
+
+    // Trigger stop-search (Escape)
+    window
+        .imp()
+        .command_palette
+        .imp()
+        .search_entry
+        .emit_stop_search();
+    flush_events();
+
+    assert!(
+        window.imp().saved_focus.borrow().is_none(),
+        "saved_focus should be consumed after Escape close"
+    );
+}
+
+#[test]
+fn test_activation_clears_saved_focus() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    activate_action(&window, "toggle-command-palette");
+    assert!(window.imp().saved_focus.borrow().is_some());
+
+    // Activate first result (closes palette)
+    window.imp().command_palette.imp().activate_selected();
+    flush_events();
+
+    assert!(
+        window.imp().saved_focus.borrow().is_none(),
+        "saved_focus should be consumed after item activation close"
+    );
 }
