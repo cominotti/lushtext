@@ -27,6 +27,7 @@ pub struct LushtextEditorPage {
     pub file_path: RefCell<Option<PathBuf>>,
     pub file_size: Cell<Option<u64>>,
     pub size_check: Cell<FileSizeCheck>,
+    pub evicted: Cell<bool>,
     pub cancel_token: Arc<AtomicBool>,
     pub settings: gio::Settings,
 }
@@ -41,6 +42,7 @@ impl Default for LushtextEditorPage {
             file_path: RefCell::default(),
             file_size: Cell::default(),
             size_check: Cell::new(FileSizeCheck::Normal),
+            evicted: Cell::new(false),
             cancel_token: Arc::new(AtomicBool::new(false)),
             settings: gio::Settings::new(crate::config::APP_ID),
         }

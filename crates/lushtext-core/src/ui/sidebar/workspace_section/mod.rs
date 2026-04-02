@@ -166,6 +166,8 @@ impl LushtextWorkspaceSection {
     // --- File tree operations (moved from sidebar) ---
 
     /// Create a new file or directory inside (or alongside) the right-clicked item.
+    /// The filesystem operation runs on a background thread to avoid blocking
+    /// the UI, especially when `create_unique` retries on name collisions.
     pub(crate) fn create_new_item(&self, is_dir: bool) {
         let imp = self.imp();
         let context_path = imp.context_path.borrow().clone();
@@ -183,48 +185,54 @@ impl LushtextWorkspaceSection {
         };
 
         let base = if is_dir { "New Folder" } else { "New File" };
-        let temp_path = match create_unique(&target_dir, base, is_dir) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(
-                    "Failed to create new item in {}: {}",
-                    target_dir.display(),
-                    e
-                );
-                return;
-            }
-        };
+        let context_is_dir = imp.context_is_dir.get();
+        let base_owned = base.to_string();
+        let target_dir_for_bg = target_dir.clone();
 
-        let mut was_collapsed = false;
-        if imp.context_is_dir.get() {
-            if let Some(row) = self.find_dir_row(&context_path) {
-                if !row.is_expanded() {
-                    was_collapsed = true;
-                    row.set_expanded(true);
-                }
-            }
-        }
+        services::async_task::spawn_blocking_then(
+            self.clone(),
+            move || create_unique(&target_dir_for_bg, &base_owned, is_dir),
+            move |section, result| {
+                let temp_path = match result {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to create new item in {}: {}",
+                            target_dir.display(),
+                            e
+                        );
+                        return;
+                    }
+                };
 
-        let new_item = FileTreeItem::new(temp_path, is_dir);
-        new_item.set_pending_rename(true);
-        imp.is_new_item.set(true);
-
-        if was_collapsed {
-            // The directory was just expanded — its children are loading asynchronously
-            // via spawn_blocking_then. Defer the append to the next idle pass so the
-            // child ListStore is available.
-            let section_weak = self.downgrade();
-            let target_dir = target_dir.clone();
-            glib::idle_add_local_once(move || {
-                if let Some(section) = section_weak.upgrade() {
-                    if let Some(store) = section.find_store_for_dir(&target_dir) {
-                        store.append(&new_item);
+                let mut was_collapsed = false;
+                if context_is_dir {
+                    if let Some(row) = section.find_dir_row(&context_path) {
+                        if !row.is_expanded() {
+                            was_collapsed = true;
+                            row.set_expanded(true);
+                        }
                     }
                 }
-            });
-        } else if let Some(store) = self.find_store_for_dir(&target_dir) {
-            store.append(&new_item);
-        }
+
+                let new_item = FileTreeItem::new(temp_path, is_dir);
+                new_item.set_pending_rename(true);
+                section.imp().is_new_item.set(true);
+
+                if was_collapsed {
+                    let section_weak = section.downgrade();
+                    glib::idle_add_local_once(move || {
+                        if let Some(section) = section_weak.upgrade() {
+                            if let Some(store) = section.find_store_for_dir(&target_dir) {
+                                store.append(&new_item);
+                            }
+                        }
+                    });
+                } else if let Some(store) = section.find_store_for_dir(&target_dir) {
+                    store.append(&new_item);
+                }
+            },
+        );
     }
 
     /// Start inline rename for the right-clicked item.
@@ -422,11 +430,17 @@ impl LushtextWorkspaceSection {
         cancel_rename(entry, label, content_box);
         self.imp().is_new_item.set(false);
 
-        if temp_path.is_dir() {
-            let _ = std::fs::remove_dir(temp_path);
-        } else {
-            let _ = std::fs::remove_file(temp_path);
-        }
+        // Fire-and-forget deletion of the temp item on a background thread.
+        // Uses context_is_dir instead of stat to avoid a synchronous syscall.
+        let path = temp_path.to_path_buf();
+        let is_dir = self.imp().context_is_dir.get();
+        std::thread::spawn(move || {
+            if is_dir {
+                let _ = std::fs::remove_dir(&path);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+        });
 
         self.remove_from_model(temp_path);
     }

@@ -11,7 +11,8 @@ use crate::model::palette::{
 use crate::services::file_tree;
 use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
-use std::collections::HashSet;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -32,7 +33,7 @@ impl FileIndex {
     /// Uses visited-path tracking and depth limiting to handle symlink cycles
     /// (e.g., Wine/Proton `dosdevices/` symlink loops).
     pub fn rebuild(roots: &[PathBuf]) -> Self {
-        let mut files = Vec::new();
+        let mut files = Vec::with_capacity(10_000);
         let mut visited = HashSet::new();
         for root in roots {
             let canonical_root = match root.canonicalize() {
@@ -337,20 +338,27 @@ where
     );
     let mut buf = Vec::new();
 
-    let mut results: Vec<ScoredResult<'a>> = items
-        .filter_map(|item| {
-            let text = get_text(item);
-            buf.clear();
-            let haystack = Utf32Str::new(text, &mut buf);
-            atom.score(haystack, &mut matcher)
-                .map(|score| ScoredResult {
-                    item: wrap(item),
-                    score: score as u32,
-                })
-        })
-        .collect();
+    // Bounded min-heap: keeps only the top `max` results by score.
+    // O(n log k) where k=max, vs O(n log n) for collect-sort-truncate.
+    let mut heap: BinaryHeap<Reverse<ScoredResult<'a>>> = BinaryHeap::with_capacity(max + 1);
+
+    for item in items {
+        let text = get_text(item);
+        buf.clear();
+        let haystack = Utf32Str::new(text, &mut buf);
+        if let Some(score) = atom.score(haystack, &mut matcher) {
+            heap.push(Reverse(ScoredResult {
+                item: wrap(item),
+                score: score as u32,
+            }));
+            if heap.len() > max {
+                heap.pop(); // remove lowest score
+            }
+        }
+    }
+
+    let mut results: Vec<ScoredResult<'a>> = heap.into_vec().into_iter().map(|r| r.0).collect();
     results.sort_by(|a, b| b.score.cmp(&a.score));
-    results.truncate(max);
     results
 }
 

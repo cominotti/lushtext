@@ -26,12 +26,23 @@ pub fn load<T: DeserializeOwned + Default>(data_dir: &Path, filename: &str) -> R
 }
 
 /// Save a value as pretty-printed JSON to `data_dir/filename`.
+/// Uses atomic write (write-to-temp + rename) to prevent corruption
+/// if the process exits mid-write.
 pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<()> {
     std::fs::create_dir_all(data_dir)
         .with_context(|| format!("failed to create {}", data_dir.display()))?;
     let path = data_dir.join(filename);
+    let tmp_path = data_dir.join(format!(".{filename}.tmp"));
     let content = serde_json::to_string_pretty(value)?;
-    std::fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))
+    std::fs::write(&tmp_path, &content)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &path).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            tmp_path.display(),
+            path.display()
+        )
+    })
 }
 
 #[cfg(test)]

@@ -415,13 +415,17 @@ impl LushtextSidebar {
         }
     }
 
-    /// Save the current workspace state to disk.
+    /// Save the current workspace state to disk on a background thread.
+    /// Fire-and-forget: workspace persistence is non-critical and the next
+    /// mutation will overwrite the file anyway.
     fn persist(&self) {
         let data_dir = json_store::data_dir();
-        let workspaces_file = self.imp().workspaces_file.borrow();
-        if let Err(e) = workspace_manager::save(&data_dir, &workspaces_file) {
-            tracing::error!("Failed to save workspaces: {}", e);
-        }
+        let workspaces_file = self.imp().workspaces_file.borrow().clone();
+        std::thread::spawn(move || {
+            if let Err(e) = workspace_manager::save(&data_dir, &workspaces_file) {
+                tracing::error!("Failed to save workspaces: {}", e);
+            }
+        });
     }
 }
 

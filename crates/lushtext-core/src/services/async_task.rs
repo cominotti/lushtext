@@ -4,6 +4,13 @@
 //! the result back to the GTK main thread.
 
 use gtk4::glib;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Maximum concurrent background threads. Prevents RAM spikes during
+/// session restore (many file loads) or rapid tree expansion.
+const MAX_CONCURRENT_SPAWNS: usize = 8;
+
+static ACTIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
 
 /// Run `work` on a background thread, then call `then` on the main thread
 /// with the result.
@@ -11,6 +18,9 @@ use gtk4::glib;
 /// `state` is a non-Send value (typically a GTK object) that will be passed
 /// to `then` on the main thread. Both `state` and `then` are wrapped in
 /// `ThreadGuard` to safely cross the thread boundary.
+///
+/// If the concurrency limit is reached, the work is deferred to the next
+/// GLib main-loop idle pass (back-pressure without blocking the UI).
 pub fn spawn_blocking_then<S, T, W, F>(state: S, work: W, then: F)
 where
     S: 'static,
@@ -18,10 +28,21 @@ where
     W: FnOnce() -> T + Send + 'static,
     F: FnOnce(S, T) + 'static,
 {
+    if ACTIVE_THREADS.load(Ordering::Relaxed) >= MAX_CONCURRENT_SPAWNS {
+        // Use a 50ms timeout instead of idle to avoid busy-wait spinning
+        // when all slots are saturated (e.g., slow NFS reads).
+        glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+            spawn_blocking_then(state, work, then);
+        });
+        return;
+    }
+
+    ACTIVE_THREADS.fetch_add(1, Ordering::Relaxed);
     let guarded_state = glib::thread_guard::ThreadGuard::new(state);
     let guarded_then = glib::thread_guard::ThreadGuard::new(then);
     std::thread::spawn(move || {
         let result = work();
+        ACTIVE_THREADS.fetch_sub(1, Ordering::Relaxed);
         glib::idle_add_once(move || {
             let state = guarded_state.into_inner();
             let then = guarded_then.into_inner();

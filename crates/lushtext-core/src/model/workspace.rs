@@ -49,7 +49,7 @@ pub struct WorkspaceConfig {
 
 /// Top-level persisted state: all workspaces + which one is active.
 /// Stored at `$XDG_DATA_HOME/lushtext/workspaces.json`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct WorkspacesFile {
     pub active_workspace: Option<WorkspaceId>,
     pub workspaces: Vec<WorkspaceConfig>,

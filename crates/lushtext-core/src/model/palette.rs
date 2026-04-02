@@ -90,10 +90,33 @@ impl SearchMode {
 }
 
 /// A single search result with its relevance score.
+///
+/// `Ord` is implemented by score only, for use in bounded min-heap selection
+/// of top-N results.
 #[derive(Debug)]
 pub struct ScoredResult<'a> {
     pub item: SearchResultItem<'a>,
     pub score: u32,
+}
+
+impl PartialEq for ScoredResult<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score
+    }
+}
+
+impl Eq for ScoredResult<'_> {}
+
+impl PartialOrd for ScoredResult<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ScoredResult<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score.cmp(&other.score)
+    }
 }
 
 /// The kind of item in a search result.

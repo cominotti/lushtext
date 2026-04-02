@@ -137,43 +137,54 @@ impl ObjectImpl for LushtextWindow {
         }
 
         // --- Sidebar file activation ---
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.sidebar.connect_file_activated(move |path| {
-            window.open_document(path);
+            if let Some(window) = window_weak.upgrade() {
+                window.open_document(path);
+            }
         });
 
         // --- Sidebar rename/delete notifications ---
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.sidebar
             .connect_file_renamed(move |old_path, new_path| {
-                window.update_tab_path(old_path, new_path);
-                let name = new_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
+                if let Some(window) = window_weak.upgrade() {
+                    window.update_tab_path(old_path, new_path);
+                    let name = new_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    window
+                        .imp()
+                        .status_bar
+                        .push_message(&format!("Renamed to {name}"), MessageKind::Info);
+                }
+            });
+
+        let window_weak = obj.downgrade();
+        self.sidebar.connect_file_deleted(move |path| {
+            if let Some(window) = window_weak.upgrade() {
+                window.close_tab_for_path(path);
                 window
                     .imp()
                     .status_bar
-                    .push_message(&format!("Renamed to {name}"), MessageKind::Info);
-            });
-
-        let window = obj.clone();
-        self.sidebar.connect_file_deleted(move |path| {
-            window.close_tab_for_path(path);
-            window
-                .imp()
-                .status_bar
-                .push_message("Deleted", MessageKind::Info);
+                    .push_message("Deleted", MessageKind::Info);
+            }
         });
 
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.sidebar.connect_file_created(move |path| {
-            window.open_document(path);
+            if let Some(window) = window_weak.upgrade() {
+                window.open_document(path);
+            }
         });
 
         // --- Command palette callbacks ---
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.command_palette.connect_item_activated(move |item| {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
             if item.is_file() {
                 if let Some(path) = item.file_path() {
                     window.open_document(&path);
@@ -191,28 +202,38 @@ impl ObjectImpl for LushtextWindow {
             window.close_command_palette();
         });
 
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.command_palette.connect_close_requested(move || {
-            window.close_command_palette();
+            if let Some(window) = window_weak.upgrade() {
+                window.close_command_palette();
+            }
         });
 
         // --- Sidebar workspace change → rebuild file index ---
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.sidebar.connect_workspace_changed(move || {
-            window.rebuild_file_index();
+            if let Some(window) = window_weak.upgrade() {
+                window.rebuild_file_index();
+            }
         });
 
         // --- Tab change signals ---
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.tab_view
             .connect_notify_local(Some("n-pages"), move |_, _| {
-                window.update_content_stack();
+                if let Some(window) = window_weak.upgrade() {
+                    window.update_content_stack();
+                }
             });
 
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.tab_view
             .connect_notify_local(Some("selected-page"), move |_, _| {
-                window.refresh_status_bar();
+                if let Some(window) = window_weak.upgrade() {
+                    window.refresh_status_bar();
+                    window.reload_if_evicted();
+                    window.maybe_evict_background_tabs();
+                }
             });
 
         // Start with empty state

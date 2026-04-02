@@ -75,6 +75,7 @@ impl LushtextEditorPage {
                 Ok((content, size, check)) => {
                     editor.imp().file_size.set(Some(size));
                     editor.imp().size_check.set(check);
+                    editor.imp().evicted.set(false);
                     editor.apply_loaded_content(&content, check);
                 }
                 Err(e) => {
@@ -119,10 +120,13 @@ impl LushtextEditorPage {
     }
 
     /// Set the file path (used by save-as). Updates syntax highlighting
-    /// based on the new filename's extension.
+    /// based on the new filename's extension, unless syntax was disabled
+    /// for large files.
     pub fn set_file_path(&self, path: &Path) {
         self.imp().file_path.replace(Some(path.to_path_buf()));
-        self.reapply_language();
+        if self.imp().size_check.get().syntax_enabled() {
+            self.reapply_language();
+        }
     }
 
     /// Detect and apply syntax language from the current file path.
@@ -202,6 +206,24 @@ impl LushtextEditorPage {
 
     pub fn is_modified(&self) -> bool {
         self.buffer().is_modified()
+    }
+
+    /// Evict buffer content to free memory. Clears the buffer text and marks
+    /// the tab as evicted. The tab will reload from disk when re-focused.
+    pub fn evict(&self) {
+        // Set evicted flag BEFORE clearing buffer so that the modified-changed
+        // signal handler (wire_modified_indicator) can skip title updates
+        // for evicted tabs, avoiding a cosmetic title flash.
+        self.imp().evicted.set(true);
+        let buffer = self.buffer();
+        buffer.begin_irreversible_action();
+        buffer.set_text("");
+        buffer.end_irreversible_action();
+        buffer.set_modified(false);
+    }
+
+    pub fn is_evicted(&self) -> bool {
+        self.imp().evicted.get()
     }
 
     pub fn toggle_search(&self) {

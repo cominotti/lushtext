@@ -139,8 +139,11 @@ impl LushtextCommandPalette {
     }
 
     fn setup_search(&self) {
-        let obj = self.obj().clone();
+        let obj_weak = self.obj().downgrade();
         self.search_entry.connect_search_changed(move |entry| {
+            let Some(obj) = obj_weak.upgrade() else {
+                return;
+            };
             let imp = obj.imp();
             let gen = imp.search_generation.get().wrapping_add(1);
             imp.search_generation.set(gen);
@@ -163,8 +166,11 @@ impl LushtextCommandPalette {
         let key_controller = gtk4::EventControllerKey::new();
         key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
 
-        let obj = self.obj().clone();
+        let obj_weak = self.obj().downgrade();
         key_controller.connect_key_pressed(move |_, keyval, _, _| {
+            let Some(obj) = obj_weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
             let imp = obj.imp();
             match keyval {
                 gdk4::Key::Tab | gdk4::Key::ISO_Left_Tab => {
@@ -190,24 +196,30 @@ impl LushtextCommandPalette {
         self.search_entry.add_controller(key_controller);
 
         // Enter key activates the selected item
-        let obj = self.obj().clone();
+        let obj_weak = self.obj().downgrade();
         self.search_entry.connect_activate(move |_| {
-            obj.imp().activate_selected();
+            if let Some(obj) = obj_weak.upgrade() {
+                obj.imp().activate_selected();
+            }
         });
 
         // Escape key (stop-search signal) closes the palette
-        let obj = self.obj().clone();
+        let obj_weak = self.obj().downgrade();
         self.search_entry.connect_stop_search(move |_| {
-            if let Some(ref cb) = *obj.imp().close_callback.borrow() {
-                cb();
+            if let Some(obj) = obj_weak.upgrade() {
+                if let Some(ref cb) = *obj.imp().close_callback.borrow() {
+                    cb();
+                }
             }
         });
     }
 
     fn setup_list_activation(&self) {
-        let obj = self.obj().clone();
+        let obj_weak = self.obj().downgrade();
         self.results_view.connect_activate(move |_, position| {
-            obj.imp().activate_at(position);
+            if let Some(obj) = obj_weak.upgrade() {
+                obj.imp().activate_at(position);
+            }
         });
     }
 

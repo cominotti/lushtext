@@ -155,7 +155,7 @@ fn bench_fuzzy_score(c: &mut Criterion) {
 fn bench_file_index_search(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_index_search");
 
-    for size in [100, 1_000, 10_000, 50_000] {
+    for size in [100, 1_000, 10_000, 50_000, 100_000] {
         let index = make_synthetic_index(size);
 
         group.bench_with_input(BenchmarkId::new("query_match", size), &index, |b, idx| {

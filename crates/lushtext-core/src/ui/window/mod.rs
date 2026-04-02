@@ -17,6 +17,10 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use std::path::Path;
 
+/// Maximum total estimated buffer memory across all tabs before evicting
+/// unmodified background tabs. ~256MB is comfortable on 8GB machines.
+const BUFFER_MEMORY_BUDGET: u64 = 256_000_000;
+
 glib::wrapper! {
     pub struct LushtextWindow(ObjectSubclass<imp::LushtextWindow>)
         @extends libadwaita::ApplicationWindow, gtk4::ApplicationWindow, gtk4::Window, gtk4::Widget,
@@ -306,6 +310,61 @@ impl LushtextWindow {
         let imp = self.imp();
         imp.command_palette.close();
         imp.palette_revealer.set_reveal_child(false);
+    }
+
+    /// If the active tab was evicted, reload its content from disk.
+    fn reload_if_evicted(&self) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        if !editor.is_evicted() {
+            return;
+        }
+        let Some(path) = editor.file_path() else {
+            return;
+        };
+        editor.load_file_async(&path);
+    }
+
+    /// Evict unmodified background tabs when total buffer memory exceeds the budget.
+    /// Computes a running total inline to avoid O(n²) rescanning after each eviction.
+    fn maybe_evict_background_tabs(&self) {
+        let tab_view = &self.imp().tab_view;
+        let selected = tab_view.selected_page();
+
+        let mut total = 0u64;
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                if !editor.is_evicted() {
+                    if let Some(size) = editor.file_size() {
+                        total = total.saturating_add(size);
+                    }
+                }
+            }
+        }
+
+        if total <= BUFFER_MEMORY_BUDGET {
+            return;
+        }
+
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            if selected.as_ref() == Some(&page) {
+                continue;
+            }
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                if !editor.is_modified() && !editor.is_evicted() && editor.file_path().is_some() {
+                    let evicted_size = editor.file_size().unwrap_or(0);
+                    tracing::info!("Evicting tab to free memory: {}", editor.title());
+                    editor.evict();
+                    total = total.saturating_sub(evicted_size);
+                    if total <= BUFFER_MEMORY_BUDGET {
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     /// Build the file index from all workspace roots on a background thread.
