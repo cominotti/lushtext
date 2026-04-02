@@ -5,6 +5,10 @@
 pub const APP_ID: &str = "dev.cominotti.lushtext";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Install-time data directory set by Meson via `cargo.sh`.
+/// `Some` for installed/Flatpak builds, `None` for dev builds.
+pub const PKGDATADIR: Option<&str> = option_env!("LUSHTEXT_PKGDATADIR");
+
 /// GSettings key names (must match `data/dev.cominotti.lushtext.gschema.xml`).
 pub mod keys {
     pub const WORD_WRAP: &str = "word-wrap";

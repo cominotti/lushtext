@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.cominotti.lushtext</id>
+
+  <name>LushText</name>
+  <summary>A minimalist text editor with workspace support</summary>
+
+  <developer id="dev.cominotti">
+    <name>Danilo Cominotti</name>
+  </developer>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      LushText is a fast, minimalist text editor for GNOME. It features a
+      left-side file tree, workspace support for organizing projects, and
+      syntax highlighting for common file types.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Always-visible file tree sidebar</li>
+      <li>Workspace support with multiple root directories</li>
+      <li>Syntax highlighting via GtkSourceView</li>
+      <li>Tab-based editing with session persistence</li>
+      <li>Automatic dark mode support</li>
+      <li>Find and replace</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">dev.cominotti.lushtext.desktop</launchable>
+
+  <url type="homepage">https://github.com/cominotti/lushtext</url>
+  <url type="bugtracker">https://github.com/cominotti/lushtext/issues</url>
+  <url type="vcs-browser">https://github.com/cominotti/lushtext</url>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#62a0ea</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+
+  <content_rating type="oars-1.1"/>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Editing a Rust file with the file tree sidebar</caption>
+      <image>https://raw.githubusercontent.com/cominotti/lushtext/main/data/screenshots/editor.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="0.1.0" date="2026-04-02">
+      <description>
+        <p>Initial release of LushText.</p>
+      </description>
+    </release>
+  </releases>
+
+  <translation type="gettext">lushtext</translation>
+
+  <custom>
+    <value key="GnomeSoftware::key-colors">[(98, 160, 234)]</value>
+  </custom>
+</component>

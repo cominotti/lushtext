@@ -13,7 +13,8 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run test test-unit test-int test-widget check clean help
+.PHONY: build build-debug run test test-unit test-int test-widget check clean help \
+       meson-build flatpak cargo-sources
 
 .DEFAULT_GOAL := help
 
@@ -85,6 +86,22 @@ clean:
 	@echo "Cleaning build artifacts..."
 	cargo clean
 
+# Meson build (installed layout)
+meson-build:
+	@echo "Building with Meson..."
+	meson setup _build -Dprofile=release
+	meson compile -C _build
+
+# Flatpak build (requires flatpak-builder + org.gnome.Sdk)
+flatpak:
+	@echo "Building Flatpak..."
+	flatpak-builder --force-clean build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
+
+# Regenerate cargo-sources.json (requires flatpak-cargo-generator)
+cargo-sources: Cargo.lock
+	@echo "Generating cargo-sources.json..."
+	flatpak-cargo-generator Cargo.lock -o build-aux/cargo-sources.json
+
 # Show available targets
 help:
 	@echo "LushText Build System"
@@ -101,6 +118,11 @@ help:
 	@echo "  test-unit    Unit tests only (fast)"
 	@echo "  test-int     Integration tests only"
 	@echo "  test-widget  Widget tests (needs display or xvfb-run)"
+	@echo ""
+	@echo "Packaging targets:"
+	@echo "  meson-build     Meson release build (installed layout)"
+	@echo "  flatpak         Build Flatpak (needs flatpak-builder)"
+	@echo "  cargo-sources   Regenerate cargo-sources.json"
 	@echo ""
 	@echo "Other targets:"
 	@echo "  check        Clippy + format check"

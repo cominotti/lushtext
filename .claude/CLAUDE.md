@@ -7,7 +7,7 @@ A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text
 - **Language:** Rust (MSRV: 1.83+)
 - **GUI:** GTK4 (0.11) + Libadwaita (0.9) + GtkSourceView 5 (0.11)
 - **Config:** GSettings (`data/dev.cominotti.lushtext.gschema.xml`)
-- **Build:** Cargo workspace + Makefile (dev), Meson (Flatpak — planned)
+- **Build:** Cargo workspace + Makefile (dev), Meson (Flatpak/installed)
 - **App ID:** `dev.cominotti.lushtext`
 - **License:** GPL-3.0-or-later
 
@@ -23,7 +23,7 @@ Two-crate workspace (plus workspace-hack for cargo-hakari):
 ```
 src/
 ├── app.rs              # LushtextApplication (AdwApplication subclass)
-├── config.rs           # Compile-time constants (APP_ID, VERSION)
+├── config.rs           # Compile-time constants (APP_ID, VERSION, PKGDATADIR)
 ├── lib.rs              # Entry point: GResource registration, CSS loading, GSettings schema dir, app.run()
 ├── model/              # Domain types (no GTK deps)
 │   ├── workspace.rs    # WorkspaceId, WorkspaceEntry, WorkspaceConfig, WorkspacesFile
@@ -79,6 +79,11 @@ make test        # All tests (unit + integration)
 make test-unit   # Unit tests only
 make test-int    # Integration tests only
 make check       # clippy + fmt check
+
+# Packaging
+make meson-build     # Meson release build (installed layout)
+make flatpak         # Build Flatpak (needs flatpak-builder)
+make cargo-sources   # Regenerate cargo-sources.json
 ```
 
 ## Build Optimizations
@@ -116,6 +121,15 @@ Child widget types must be registered via `ensure_type()` in `class_init()` befo
 All versions centralized in workspace root `Cargo.toml` under `[workspace.dependencies]`.
 
 **Critical version alignment:** All gtk-rs crates must be from the same release series. For the 0.11 cycle: `gtk4 = 0.11`, `libadwaita = 0.9`, `sourceview5 = 0.11`, `glib/gio/pango = 0.22`, `glib-build-tools = 0.22`.
+
+## Meson / Flatpak Build
+
+Meson wraps Cargo for installed/Flatpak builds. `build-aux/cargo.sh` bridges Meson → Cargo.
+
+- **GResource dual-path**: Meson compiles and installs `.gresource` to `$(pkgdatadir)/`. `cargo.sh` exports `LUSHTEXT_PKGDATADIR` env var. `config.rs` reads it via `option_env!()`. `lib.rs` loads from installed path first, falls back to `include_bytes!` (dev).
+- **GSettings**: `data/meson.build` installs schema to system path. `gnome.post_install()` compiles schemas. `build.rs` skips schema compilation when `LUSHTEXT_PKGDATADIR` is set.
+- **Flatpak manifest**: `build-aux/dev.cominotti.lushtext.Flatpak.json` for local builds. `cargo-sources.json` (same dir) vendors all Cargo dependencies for offline builds.
+- **CI**: `.github/workflows/ci.yml` (Cargo check/test) and `.github/workflows/flatpak.yml` (Flatpak build).
 
 ## GTK Initialization Order
 

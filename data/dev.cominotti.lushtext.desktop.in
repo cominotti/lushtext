@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=LushText
+Comment=A minimalist text editor
+Exec=lushtext %U
+Icon=dev.cominotti.lushtext
+Terminal=false
+Type=Application
+Categories=TextEditor;Utility;GTK;GNOME;
+Keywords=Text;Editor;Code;
+MimeType=text/plain;text/x-csrc;text/x-chdr;text/x-python;application/json;text/markdown;text/x-rust;
+StartupNotify=true
+X-Purism-FormFactor=workstation;
