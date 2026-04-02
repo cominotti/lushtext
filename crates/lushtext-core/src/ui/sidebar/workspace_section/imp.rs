@@ -106,7 +106,6 @@ impl LushtextWorkspaceSection {
             let label = gtk4::Label::new(None);
             label.set_xalign(0.0);
             label.set_ellipsize(pango::EllipsizeMode::End);
-            label.add_css_class("monospace");
 
             content_box.append(&icon);
             content_box.append(&label);
