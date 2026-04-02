@@ -213,7 +213,7 @@ fn bench_scan_directory(c: &mut Criterion) {
     let mut group = c.benchmark_group("scan_directory");
     group.sample_size(30);
 
-    for entry_count in [10, 100, 1_000] {
+    for entry_count in [10, 100, 1_000, 5_000] {
         group.bench_function(BenchmarkId::from_parameter(entry_count), |b| {
             b.iter_batched(
                 || make_flat_dir(entry_count),

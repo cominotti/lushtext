@@ -24,6 +24,9 @@ use std::sync::Arc;
 #[derive(Debug, Default, Clone)]
 pub struct FileIndex {
     files: Vec<IndexedFile>,
+    /// Deduplicated workspace roots for O(k) prefix lookups (k = number of roots,
+    /// typically <10). Avoids scanning all files just to find a matching root.
+    roots: Vec<Arc<PathBuf>>,
 }
 
 impl FileIndex {
@@ -42,6 +45,7 @@ impl FileIndex {
     pub fn rebuild_with_hint(roots: &[PathBuf], capacity_hint: usize) -> Self {
         let mut files = Vec::with_capacity(capacity_hint.max(64));
         let mut visited = HashSet::new();
+        let mut root_arcs = Vec::new();
         for root in roots {
             let canonical_root = match root.canonicalize() {
                 Ok(p) => p,
@@ -56,6 +60,7 @@ impl FileIndex {
                 &canonical_root,
                 0,
             );
+            root_arcs.push(root_arc);
         }
         if files.len() > MAX_INDEXED_FILES {
             tracing::warn!(
@@ -65,7 +70,10 @@ impl FileIndex {
             );
             files.truncate(MAX_INDEXED_FILES);
         }
-        Self { files }
+        Self {
+            files,
+            roots: root_arcs,
+        }
     }
 
     pub fn files(&self) -> &[IndexedFile] {
@@ -83,6 +91,7 @@ impl FileIndex {
     /// Add a single file to the index. Used for incremental updates when a
     /// file is created in the sidebar, avoiding a full rebuild.
     pub fn add_file(&mut self, file: IndexedFile) {
+        intern_root(&mut self.roots, &file.workspace_root);
         self.files.push(file);
     }
 
@@ -96,19 +105,25 @@ impl FileIndex {
         // workspace with 30k files from a 100k-file index).
         if self.files.len() < before * 3 / 4 {
             self.files.shrink_to_fit();
+            // Prune roots that no longer have any files in the index.
+            self.roots
+                .retain(|r| self.files.iter().any(|f| Arc::ptr_eq(&f.workspace_root, r)));
         }
     }
 
-    /// Rename a file or directory in the index. For directories, rewrites all
-    /// paths inside the old prefix to the new prefix.
+    /// Rename a file or directory in the index. For a file, updates the single
+    /// matching entry. For a directory, rewrites all child paths under the old
+    /// prefix to the new prefix.
     pub fn rename_path(&mut self, old_path: &Path, new_path: &Path) {
-        // Exact file match — replace with fresh IndexedFile to update name
+        // Exact file match — replace with fresh IndexedFile to update name.
+        // File paths are unique, so at most one entry matches.
         if let Some(f) = self.files.iter_mut().find(|f| f.path == old_path) {
             let root = Arc::clone(&f.workspace_root);
             *f = IndexedFile::new(new_path.to_path_buf(), root);
-            return;
         }
-        // Directory rename — update all files inside
+        // Directory rename — update all children under the old prefix.
+        // Runs unconditionally: a path can match both as an exact file AND be
+        // a prefix of other paths (e.g., index contains "/a" and "/a/b").
         for f in &mut self.files {
             if let Ok(suffix) = f.path.strip_prefix(old_path) {
                 f.path = new_path.join(suffix);
@@ -119,10 +134,10 @@ impl FileIndex {
     /// Find the workspace root that contains the given path.
     /// Returns `None` if the path is not under any known workspace root.
     pub fn workspace_root_for(&self, path: &Path) -> Option<Arc<PathBuf>> {
-        self.files
+        self.roots
             .iter()
-            .find(|f| path.starts_with(f.workspace_root.as_path()))
-            .map(|f| Arc::clone(&f.workspace_root))
+            .find(|r| path.starts_with(r.as_path()))
+            .map(Arc::clone)
     }
 
     /// Search the file index with a fuzzy query, returning up to `max` scored results.
@@ -139,7 +154,18 @@ impl FileIndex {
 
 impl From<Vec<IndexedFile>> for FileIndex {
     fn from(files: Vec<IndexedFile>) -> Self {
-        Self { files }
+        let mut roots = Vec::new();
+        for f in &files {
+            intern_root(&mut roots, &f.workspace_root);
+        }
+        Self { files, roots }
+    }
+}
+
+/// Add `root` to the roots list if not already present (identity comparison via `Arc::ptr_eq`).
+fn intern_root(roots: &mut Vec<Arc<PathBuf>>, root: &Arc<PathBuf>) {
+    if !roots.iter().any(|r| Arc::ptr_eq(r, root)) {
+        roots.push(Arc::clone(root));
     }
 }
 
