@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 /// Owned transport type for search results that can cross thread boundaries.
 /// Created on the background thread, converted to `PaletteItem` GObjects
-/// on the main thread.
+/// on the main thread. At max=50 results, total clone cost is ~15KB — negligible.
 struct SearchHit {
     display_name: String,
     subtitle: String,
@@ -269,6 +269,10 @@ impl LushtextCommandPalette {
     /// Runs the SIMD fuzzy search on a background thread to keep the main
     /// thread under the 16ms frame budget, even at 100k indexed files.
     /// Uses `splice` to emit a single `items-changed` signal for the batch.
+    ///
+    /// Increments `search_generation` to supersede any pending debounced
+    /// search from `setup_search`. Direct callers (e.g., `set_file_index`,
+    /// `open`, Tab mode-switch) should rely on this to cancel stale timers.
     pub fn rebuild_results(&self, query: &str) {
         let gen = self.search_generation.get().wrapping_add(1);
         self.search_generation.set(gen);

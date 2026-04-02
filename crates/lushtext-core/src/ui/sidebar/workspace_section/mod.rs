@@ -607,14 +607,12 @@ fn build_children_model(dir_path: &Path) -> gio::ListStore {
         store.clone(),
         move || services::file_tree::scan_directory(&path),
         |store, entries| {
-            let existing: std::collections::HashSet<PathBuf> = (0..store.n_items())
-                .filter_map(|i| {
-                    store
-                        .item(i)
-                        .and_downcast::<FileTreeItem>()
-                        .map(|fi| fi.path())
-                })
-                .collect();
+            let mut existing = std::collections::HashSet::with_capacity(store.n_items() as usize);
+            for i in 0..store.n_items() {
+                if let Some(fi) = store.item(i).and_downcast::<FileTreeItem>() {
+                    existing.insert(fi.path());
+                }
+            }
 
             let new_items: Vec<FileTreeItem> = entries
                 .into_iter()

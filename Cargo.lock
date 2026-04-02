@@ -855,6 +855,7 @@ dependencies = [
  "pango",
  "serde",
  "serde_json",
+ "simdutf8",
  "sourceview5",
  "tempfile",
  "thiserror",
@@ -1238,6 +1239,12 @@ checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
 ]
+
+[[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "slab"

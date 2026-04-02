@@ -66,8 +66,20 @@ impl LushtextEditorPage {
                     return Err("Load cancelled".to_string());
                 }
 
-                let content = std::fs::read_to_string(&file_path)
-                    .map_err(|e| format!("Failed to read {}: {}", file_path.display(), e))?;
+                // Large files read raw bytes and validate UTF-8 once via SIMD,
+                // avoiding the redundant scalar validation inside read_to_string.
+                let read_err = |e| format!("Failed to read {}: {}", file_path.display(), e);
+                let content = if !check.syntax_enabled() {
+                    let bytes = std::fs::read(&file_path).map_err(read_err)?;
+                    match simdutf8::basic::from_utf8(&bytes) {
+                        Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
+                        Err(_) => {
+                            return Err(format!("{} is not valid UTF-8", file_path.display()))
+                        }
+                    }
+                } else {
+                    std::fs::read_to_string(&file_path).map_err(read_err)?
+                };
 
                 Ok((content, size, check))
             },
@@ -142,6 +154,9 @@ impl LushtextEditorPage {
 
     /// Save the file asynchronously on a background thread.
     /// Calls `callback` on the main thread with the result.
+    ///
+    /// Sets `modified(false)` optimistically before the write so the tab
+    /// title loses its dot immediately. On write failure the flag is rolled back.
     pub fn save_file_async<F: FnOnce(Result<(), String>) + 'static>(&self, callback: F) {
         let path = match self.imp().file_path.borrow().clone() {
             Some(p) => p,
@@ -155,6 +170,9 @@ impl LushtextEditorPage {
             .text(&buffer.start_iter(), &buffer.end_iter(), true)
             .to_string();
 
+        // Optimistic: clear the modified dot before the async write completes.
+        buffer.set_modified(false);
+
         async_task::spawn_blocking_then(
             self.clone(),
             move || {
@@ -165,10 +183,13 @@ impl LushtextEditorPage {
             move |editor, result| match result {
                 Ok(size) => {
                     editor.imp().file_size.set(Some(size));
-                    editor.buffer().set_modified(false);
                     callback(Ok(()));
                 }
-                Err(e) => callback(Err(e)),
+                Err(e) => {
+                    // Rollback: restore the modified dot on write failure.
+                    editor.buffer().set_modified(true);
+                    callback(Err(e));
+                }
             },
         );
     }

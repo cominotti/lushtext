@@ -89,8 +89,14 @@ impl FileIndex {
     /// Remove a file (or all files under a directory) from the index.
     /// Uses `starts_with` prefix matching so directory deletes remove all children.
     pub fn remove_path(&mut self, path: &Path) {
+        let before = self.files.len();
         self.files
             .retain(|f| f.path != path && !f.path.starts_with(path));
+        // Reclaim backing allocation after large removals (e.g., unlisting a
+        // workspace with 30k files from a 100k-file index).
+        if self.files.len() < before * 3 / 4 {
+            self.files.shrink_to_fit();
+        }
     }
 
     /// Rename a file or directory in the index. For directories, rewrites all

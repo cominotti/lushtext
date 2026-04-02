@@ -18,24 +18,22 @@ pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
         }
     };
 
-    let mut entries: Vec<(PathBuf, bool)> = read_dir
-        .flatten()
-        .filter_map(|entry| {
-            if entry.file_name().as_encoded_bytes().first() == Some(&b'.') {
-                return None;
-            }
-            let path = entry.path();
-            // Use std::fs::metadata (follows symlinks via stat(2)) to skip
-            // broken symlinks. DirEntry::metadata() uses fstatat(AT_SYMLINK_NOFOLLOW)
-            // on Unix, which returns the symlink's own metadata even if the
-            // target is missing.
-            let meta = match std::fs::metadata(&path) {
-                Ok(m) => m,
-                Err(_) => return None, // broken symlink or permission denied
-            };
-            Some((path, meta.is_dir()))
-        })
-        .collect();
+    let mut entries: Vec<(PathBuf, bool)> = Vec::with_capacity(32);
+    for entry in read_dir.flatten() {
+        if entry.file_name().as_encoded_bytes().first() == Some(&b'.') {
+            continue;
+        }
+        let path = entry.path();
+        // Use std::fs::metadata (follows symlinks via stat(2)) to skip
+        // broken symlinks. DirEntry::metadata() uses fstatat(AT_SYMLINK_NOFOLLOW)
+        // on Unix, which returns the symlink's own metadata even if the
+        // target is missing.
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue, // broken symlink or permission denied
+        };
+        entries.push((path, meta.is_dir()));
+    }
 
     entries.sort_by_cached_key(|(path, is_dir)| {
         let name = path
