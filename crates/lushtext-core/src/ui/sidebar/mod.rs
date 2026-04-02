@@ -439,7 +439,7 @@ impl LushtextSidebar {
 /// Extract a display name from a path's last component.
 fn folder_display_name(path: &Path) -> String {
     path.file_name()
-        .map(|n| n.to_string_lossy().to_string())
+        .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "New Workspace".to_string())
 }
 

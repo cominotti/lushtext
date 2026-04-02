@@ -45,6 +45,7 @@ nucleo-matcher = "0.3"
 # SIMD-accelerated UTF-8 validation for large files
 simdutf8 = "0.1"
 
+
 # Dev / test
 tempfile   = "3.14"
 assert_cmd = "2.0"

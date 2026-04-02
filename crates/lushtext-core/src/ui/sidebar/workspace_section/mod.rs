@@ -261,7 +261,7 @@ impl LushtextWorkspaceSection {
 
         let name = path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
 
         let entry = gtk4::Entry::new();
@@ -345,7 +345,7 @@ impl LushtextWorkspaceSection {
         let new_name = new_name.trim();
         let old_name = old_path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
 
         if new_name.is_empty() || new_name == old_name {
@@ -457,7 +457,7 @@ impl LushtextWorkspaceSection {
 
         let name = path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
 
         let kind = if is_dir { "directory" } else { "file" };

@@ -213,7 +213,7 @@ fn bench_scan_directory(c: &mut Criterion) {
     let mut group = c.benchmark_group("scan_directory");
     group.sample_size(30);
 
-    for entry_count in [10, 100, 1_000, 5_000] {
+    for entry_count in [10, 100, 1_000, 5_000, 10_000] {
         group.bench_function(BenchmarkId::from_parameter(entry_count), |b| {
             b.iter_batched(
                 || make_flat_dir(entry_count),
@@ -319,6 +319,152 @@ fn bench_json_persistence(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_utf8_validation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("utf8_validation");
+    group.sample_size(20);
+
+    for size_mb in [1, 5, 10, 50] {
+        let size = size_mb * 1_000_000;
+        // Generate valid UTF-8 content (repeating ASCII is fast to create)
+        let content = "a".repeat(size);
+
+        group.bench_function(
+            BenchmarkId::new("read_to_string", format!("{size_mb}MB")),
+            |b| {
+                b.iter_batched(
+                    || {
+                        let dir = TempDir::new().unwrap();
+                        let path = dir.path().join("bench.txt");
+                        std::fs::write(&path, &content).unwrap();
+                        (dir, path)
+                    },
+                    |(dir, path)| {
+                        let _s = std::fs::read_to_string(black_box(&path)).unwrap();
+                        dir // keep alive
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new("read_simdutf8", format!("{size_mb}MB")),
+            |b| {
+                b.iter_batched(
+                    || {
+                        let dir = TempDir::new().unwrap();
+                        let path = dir.path().join("bench.txt");
+                        std::fs::write(&path, &content).unwrap();
+                        (dir, path)
+                    },
+                    |(dir, path)| {
+                        let bytes = std::fs::read(black_box(&path)).unwrap();
+                        simdutf8::basic::from_utf8(&bytes).unwrap();
+                        let _s = unsafe { String::from_utf8_unchecked(bytes) };
+                        dir // keep alive
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_file_index_incremental(c: &mut Criterion) {
+    let mut group = c.benchmark_group("file_index_incremental");
+
+    for size in [10_000, 100_000] {
+        // add_file
+        group.bench_function(BenchmarkId::new("add_file", size), |b| {
+            b.iter_batched(
+                || {
+                    let index = make_synthetic_index(size);
+                    let root = Arc::new(PathBuf::from("/synthetic/project"));
+                    let new_file = IndexedFile {
+                        path: PathBuf::from("/synthetic/project/src/new_file.rs"),
+                        name: "new_file.rs".to_string(),
+                        workspace_root: root,
+                    };
+                    (index, new_file)
+                },
+                |(mut index, file)| {
+                    index.add_file(black_box(file));
+                    index
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        // remove_path (file)
+        group.bench_function(BenchmarkId::new("remove_path_file", size), |b| {
+            b.iter_batched(
+                || {
+                    let index = make_synthetic_index(size);
+                    let target = index.files()[size / 2].path.clone();
+                    (index, target)
+                },
+                |(mut index, target)| {
+                    index.remove_path(black_box(&target));
+                    index
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        // remove_path (directory prefix)
+        group.bench_function(BenchmarkId::new("remove_path_dir", size), |b| {
+            b.iter_batched(
+                || {
+                    let index = make_synthetic_index(size);
+                    let prefix = PathBuf::from("/synthetic/project/src/model");
+                    (index, prefix)
+                },
+                |(mut index, prefix)| {
+                    index.remove_path(black_box(&prefix));
+                    index
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        // rename_path (file)
+        group.bench_function(BenchmarkId::new("rename_path_file", size), |b| {
+            b.iter_batched(
+                || {
+                    let index = make_synthetic_index(size);
+                    let old = index.files()[size / 2].path.clone();
+                    let new = old.with_file_name("renamed.rs");
+                    (index, old, new)
+                },
+                |(mut index, old, new)| {
+                    index.rename_path(black_box(&old), black_box(&new));
+                    index
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        // rename_path (directory)
+        group.bench_function(BenchmarkId::new("rename_path_dir", size), |b| {
+            b.iter_batched(
+                || {
+                    let index = make_synthetic_index(size);
+                    let old = PathBuf::from("/synthetic/project/src/model");
+                    let new = PathBuf::from("/synthetic/project/src/domain");
+                    (index, old, new)
+                },
+                |(mut index, old, new)| {
+                    index.rename_path(black_box(&old), black_box(&new));
+                    index
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
 fn bench_file_size_classify(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_size_classify");
 
@@ -347,9 +493,11 @@ criterion_group!(
     bench_fuzzy_score,
     bench_file_index_search,
     bench_file_index_rebuild,
+    bench_file_index_incremental,
     bench_search_all,
     bench_scan_directory,
     bench_json_persistence,
+    bench_utf8_validation,
     bench_file_size_classify,
 );
 criterion_main!(benches);

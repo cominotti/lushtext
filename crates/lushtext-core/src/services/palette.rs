@@ -113,19 +113,15 @@ impl FileIndex {
 
     /// Rename a file or directory in the index. For a file, updates the single
     /// matching entry. For a directory, rewrites all child paths under the old
-    /// prefix to the new prefix.
+    /// prefix to the new prefix. Single O(n) pass handles both cases.
     pub fn rename_path(&mut self, old_path: &Path, new_path: &Path) {
-        // Exact file match — replace with fresh IndexedFile to update name.
-        // File paths are unique, so at most one entry matches.
-        if let Some(f) = self.files.iter_mut().find(|f| f.path == old_path) {
-            let root = Arc::clone(&f.workspace_root);
-            *f = IndexedFile::new(new_path.to_path_buf(), root);
-        }
-        // Directory rename — update all children under the old prefix.
-        // Runs unconditionally: a path can match both as an exact file AND be
-        // a prefix of other paths (e.g., index contains "/a" and "/a/b").
         for f in &mut self.files {
-            if let Ok(suffix) = f.path.strip_prefix(old_path) {
+            if f.path == old_path {
+                // Exact match — replace with fresh IndexedFile to update name.
+                let root = Arc::clone(&f.workspace_root);
+                *f = IndexedFile::new(new_path.to_path_buf(), root);
+            } else if let Ok(suffix) = f.path.strip_prefix(old_path) {
+                // Child of a renamed directory — rewrite prefix.
                 f.path = new_path.join(suffix);
             }
         }
@@ -338,12 +334,11 @@ pub fn search_all<'a>(
         SearchMode::Files => index.search(query, max),
         SearchMode::Commands => search_commands(query, max),
         SearchMode::All => {
-            let half = max / 2;
-            let file_max = max - half;
-            let cmd_max = half.max(1);
-
-            let files = index.search(query, file_max);
-            let commands = search_commands(query, cmd_max);
+            // Give both searches the full budget; merge_sorted interleaves
+            // by score and caps at max. Since there are only ~11 commands,
+            // files effectively get max minus actual command matches.
+            let files = index.search(query, max);
+            let commands = search_commands(query, max);
             merge_sorted(files, commands, max)
         }
     }

@@ -16,7 +16,7 @@ mod imp {
     #[derive(Default)]
     pub struct FileTreeItem {
         pub path: RefCell<PathBuf>,
-        pub is_dir: RefCell<bool>,
+        pub is_dir: Cell<bool>,
         pub pending_rename: Cell<bool>,
     }
 
@@ -38,7 +38,7 @@ impl FileTreeItem {
     pub fn new(path: PathBuf, is_dir: bool) -> Self {
         let obj: Self = glib::Object::builder().build();
         obj.imp().path.replace(path);
-        obj.imp().is_dir.replace(is_dir);
+        obj.imp().is_dir.set(is_dir);
         obj
     }
 
@@ -51,7 +51,7 @@ impl FileTreeItem {
             .path
             .borrow()
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.imp().path.borrow().display().to_string())
     }
 
@@ -60,7 +60,7 @@ impl FileTreeItem {
     }
 
     pub fn is_dir(&self) -> bool {
-        *self.imp().is_dir.borrow()
+        self.imp().is_dir.get()
     }
 
     pub fn is_pending_rename(&self) -> bool {

@@ -38,6 +38,7 @@ pub struct LushtextWindow {
     pub settings: gio::Settings,
     pub index_rebuild_generation: Cell<u32>,
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
+    pub last_sidebar_pos: Cell<i32>,
 }
 
 impl Default for LushtextWindow {
@@ -56,6 +57,7 @@ impl Default for LushtextWindow {
             settings: gio::Settings::new(config::APP_ID),
             index_rebuild_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
+            last_sidebar_pos: Cell::new(-1),
         }
     }
 }
@@ -133,7 +135,12 @@ impl ObjectImpl for LushtextWindow {
             self.main_paned
                 .connect_notify_local(Some("position"), move |paned, _| {
                     if let Some(window) = window_weak.upgrade() {
-                        clamp_sidebar_position(paned, window.width(), &settings);
+                        clamp_sidebar_position(
+                            paned,
+                            window.width(),
+                            &settings,
+                            &window.imp().last_sidebar_pos,
+                        );
                     }
                 });
         }
@@ -158,7 +165,7 @@ impl ObjectImpl for LushtextWindow {
                         .update_index_file_renamed(old_path, new_path);
                     let name = new_path
                         .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
+                        .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     window
                         .imp()
@@ -258,7 +265,12 @@ impl WidgetImpl for LushtextWindow {
         self.parent_size_allocate(width, height, baseline);
         // Clamp sidebar on every allocation — this is the definitive width,
         // free from the stale-value timing issues of property notifications.
-        clamp_sidebar_position(&self.main_paned, width, &self.settings);
+        clamp_sidebar_position(
+            &self.main_paned,
+            width,
+            &self.settings,
+            &self.last_sidebar_pos,
+        );
         // Keep palette at 60% window width (guarded to avoid re-layout cycles)
         if width > 0 {
             let palette_width = width * 6 / 10;
@@ -275,7 +287,13 @@ impl AdwApplicationWindowImpl for LushtextWindow {}
 
 /// Clamp the sidebar pane position to at most 1/3 of the window width,
 /// and persist the (possibly clamped) value to GSettings.
-pub fn clamp_sidebar_position(paned: &gtk4::Paned, window_width: i32, settings: &gio::Settings) {
+/// Uses `last_written` cache to avoid D-Bus reads on every `size_allocate`.
+pub fn clamp_sidebar_position(
+    paned: &gtk4::Paned,
+    window_width: i32,
+    settings: &gio::Settings,
+    last_written: &Cell<i32>,
+) {
     if window_width <= 0 {
         return;
     }
@@ -286,7 +304,8 @@ pub fn clamp_sidebar_position(paned: &gtk4::Paned, window_width: i32, settings: 
         paned.set_position(clamped);
     }
     let final_pos = paned.position();
-    if settings.int(keys::SIDEBAR_POSITION) != final_pos {
+    if last_written.get() != final_pos {
+        last_written.set(final_pos);
         let _ = settings.set_int(keys::SIDEBAR_POSITION, final_pos);
     }
 }

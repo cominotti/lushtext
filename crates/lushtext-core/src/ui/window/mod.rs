@@ -356,19 +356,28 @@ impl LushtextWindow {
     }
 
     /// Evict unmodified background tabs when total buffer memory exceeds the budget.
-    /// Computes a running total inline to avoid O(n²) rescanning after each eviction.
+    /// Single pass collects total + eviction candidates; second pass only visits candidates.
     fn maybe_evict_background_tabs(&self) {
         let tab_view = &self.imp().tab_view;
         let selected = tab_view.selected_page();
 
         let mut total = 0u64;
+        let mut evict_candidates = Vec::new();
+
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                if !editor.is_evicted() {
-                    if let Some(size) = editor.file_size() {
-                        total = total.saturating_add(size);
-                    }
+                if editor.is_evicted() {
+                    continue;
+                }
+                if let Some(size) = editor.file_size() {
+                    total = total.saturating_add(size);
+                }
+                if selected.as_ref() != Some(&page)
+                    && !editor.is_modified()
+                    && editor.file_path().is_some()
+                {
+                    evict_candidates.push(i);
                 }
             }
         }
@@ -377,20 +386,15 @@ impl LushtextWindow {
             return;
         }
 
-        for i in 0..tab_view.n_pages() {
+        for i in evict_candidates {
             let page = tab_view.nth_page(i);
-            if selected.as_ref() == Some(&page) {
-                continue;
-            }
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                if !editor.is_modified() && !editor.is_evicted() && editor.file_path().is_some() {
-                    let evicted_size = editor.file_size().unwrap_or(0);
-                    tracing::info!("Evicting tab to free memory: {}", editor.title());
-                    editor.evict();
-                    total = total.saturating_sub(evicted_size);
-                    if total <= BUFFER_MEMORY_BUDGET {
-                        break;
-                    }
+                let evicted_size = editor.file_size().unwrap_or(0);
+                tracing::info!("Evicting tab to free memory: {}", editor.title());
+                editor.evict();
+                total = total.saturating_sub(evicted_size);
+                if total <= BUFFER_MEMORY_BUDGET {
+                    break;
                 }
             }
         }

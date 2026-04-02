@@ -55,7 +55,7 @@ mod tests {
     fn names(entries: &[(PathBuf, bool)]) -> Vec<String> {
         entries
             .iter()
-            .map(|(p, _)| p.file_name().unwrap().to_string_lossy().to_string())
+            .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect()
     }
 

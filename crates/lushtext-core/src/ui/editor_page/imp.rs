@@ -30,6 +30,7 @@ pub struct LushtextEditorPage {
     pub evicted: Cell<bool>,
     pub cancel_token: Arc<AtomicBool>,
     pub settings: gio::Settings,
+    pub dark_handler_id: RefCell<Option<glib::SignalHandlerId>>,
 }
 
 impl Default for LushtextEditorPage {
@@ -45,6 +46,7 @@ impl Default for LushtextEditorPage {
             evicted: Cell::new(false),
             cancel_token: Arc::new(AtomicBool::new(false)),
             settings: gio::Settings::new(crate::config::APP_ID),
+            dark_handler_id: RefCell::new(None),
         }
     }
 }
@@ -123,15 +125,15 @@ impl ObjectImpl for LushtextEditorPage {
             });
         }
         {
-            // Use a weak ref: StyleManager is a singleton that outlives every tab.
-            // Without this, closed tabs would leave zombie handlers.
             let buf = buffer.downgrade();
             let s = settings.clone();
-            libadwaita::StyleManager::default().connect_dark_notify(move |_| {
+            let style_manager = libadwaita::StyleManager::default();
+            let handler_id = style_manager.connect_dark_notify(move |_| {
                 if let Some(buf) = buf.upgrade() {
                     apply_color_scheme(&buf, &s);
                 }
             });
+            self.dark_handler_id.replace(Some(handler_id));
         }
 
         let revealer = self.search_revealer.clone();
@@ -145,6 +147,14 @@ impl ObjectImpl for LushtextEditorPage {
 
 impl WidgetImpl for LushtextEditorPage {}
 impl BoxImpl for LushtextEditorPage {}
+
+impl Drop for LushtextEditorPage {
+    fn drop(&mut self) {
+        if let Some(handler_id) = self.dark_handler_id.take() {
+            libadwaita::StyleManager::default().disconnect(handler_id);
+        }
+    }
+}
 
 fn apply_word_wrap(view: &sourceview5::View, settings: &gio::Settings) {
     let mode = if settings.boolean(keys::WORD_WRAP) {

@@ -23,7 +23,7 @@ impl IndexedFile {
     pub fn new(path: PathBuf, workspace_root: Arc<PathBuf>) -> Self {
         let name = path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         Self {
             path,

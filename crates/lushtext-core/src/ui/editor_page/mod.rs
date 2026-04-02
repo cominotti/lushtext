@@ -13,6 +13,15 @@ use sourceview5::prelude::*;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
+/// Errors from the background file-load closure.
+#[derive(Debug, thiserror::Error)]
+enum LoadError {
+    #[error("load cancelled")]
+    Cancelled,
+    #[error("{0}")]
+    Io(String),
+}
+
 glib::wrapper! {
     pub struct LushtextEditorPage(ObjectSubclass<imp::LushtextEditorPage>)
         @extends gtk4::Box, gtk4::Widget,
@@ -45,40 +54,42 @@ impl LushtextEditorPage {
             move || {
                 // Check cancellation before doing I/O
                 if cancel.load(Ordering::Acquire) {
-                    return Err("Load cancelled".to_string());
+                    return Err(LoadError::Cancelled);
                 }
 
                 let meta = std::fs::metadata(&file_path)
-                    .map_err(|e| format!("Cannot stat {}: {}", file_path.display(), e))?;
+                    .map_err(|e| format!("Cannot stat {}: {}", file_path.display(), e))
+                    .map_err(LoadError::Io)?;
                 let size = meta.len();
                 let check = FileSizeCheck::classify(size);
 
                 if check == FileSizeCheck::TooLarge {
-                    return Err(format!(
+                    return Err(LoadError::Io(format!(
                         "{} is too large to edit ({} MB). Consider a pager like `less`.",
                         file_path.display(),
                         size / 1_000_000
-                    ));
+                    )));
                 }
 
                 // Check cancellation after size check (user may have closed tab)
                 if cancel.load(Ordering::Acquire) {
-                    return Err("Load cancelled".to_string());
+                    return Err(LoadError::Cancelled);
                 }
 
-                // Large files read raw bytes and validate UTF-8 once via SIMD,
-                // avoiding the redundant scalar validation inside read_to_string.
-                let read_err = |e| format!("Failed to read {}: {}", file_path.display(), e);
-                let content = if !check.syntax_enabled() {
-                    let bytes = std::fs::read(&file_path).map_err(read_err)?;
-                    match simdutf8::basic::from_utf8(&bytes) {
-                        Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
-                        Err(_) => {
-                            return Err(format!("{} is not valid UTF-8", file_path.display()))
-                        }
+                // Read raw bytes and validate UTF-8 via SIMD (~8x faster than
+                // the scalar validation inside read_to_string at any file size).
+                let bytes = std::fs::read(&file_path).map_err(|e| {
+                    LoadError::Io(format!("Failed to read {}: {}", file_path.display(), e))
+                })?;
+                let content = match simdutf8::basic::from_utf8(&bytes) {
+                    // SAFETY: simdutf8 confirmed valid UTF-8
+                    Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
+                    Err(_) => {
+                        return Err(LoadError::Io(format!(
+                            "{} is not valid UTF-8",
+                            file_path.display()
+                        )))
                     }
-                } else {
-                    std::fs::read_to_string(&file_path).map_err(read_err)?
                 };
 
                 Ok((content, size, check))
@@ -90,10 +101,9 @@ impl LushtextEditorPage {
                     editor.imp().evicted.set(false);
                     editor.apply_loaded_content(&content, check);
                 }
+                Err(LoadError::Cancelled) => {}
                 Err(e) => {
-                    if e != "Load cancelled" {
-                        tracing::error!("{}", e);
-                    }
+                    tracing::error!("{}", e);
                 }
             },
         );
@@ -166,6 +176,8 @@ impl LushtextEditorPage {
             }
         };
         let buffer = self.buffer();
+        // GString → String copy is required: GString is not Send, so the
+        // background thread needs an owned String. Peak memory: 2× file size.
         let text = buffer
             .text(&buffer.start_iter(), &buffer.end_iter(), true)
             .to_string();
@@ -221,7 +233,7 @@ impl LushtextEditorPage {
             .borrow()
             .as_ref()
             .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Untitled".to_string())
     }
 
