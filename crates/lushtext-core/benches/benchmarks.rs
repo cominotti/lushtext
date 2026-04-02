@@ -177,7 +177,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_index_rebuild");
     group.sample_size(20);
 
-    for file_count in [50, 500, 5_000] {
+    for file_count in [50, 500, 5_000, 10_000] {
         group.bench_function(BenchmarkId::from_parameter(file_count), |b| {
             b.iter_batched(
                 || make_temp_dir_tree(file_count),

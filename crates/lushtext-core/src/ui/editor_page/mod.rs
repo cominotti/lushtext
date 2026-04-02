@@ -22,6 +22,15 @@ enum LoadError {
     Io(String),
 }
 
+/// Errors from file save operations.
+#[derive(Debug, thiserror::Error)]
+pub enum SaveError {
+    #[error("No file path set")]
+    NoPath,
+    #[error("{0}")]
+    Io(String),
+}
+
 glib::wrapper! {
     pub struct LushtextEditorPage(ObjectSubclass<imp::LushtextEditorPage>)
         @extends gtk4::Box, gtk4::Widget,
@@ -52,7 +61,6 @@ impl LushtextEditorPage {
         async_task::spawn_blocking_then(
             self.clone(),
             move || {
-                // Check cancellation before doing I/O
                 if cancel.load(Ordering::Acquire) {
                     return Err(LoadError::Cancelled);
                 }
@@ -71,7 +79,7 @@ impl LushtextEditorPage {
                     )));
                 }
 
-                // Check cancellation after size check (user may have closed tab)
+                // User may have closed the tab during the size check
                 if cancel.load(Ordering::Acquire) {
                     return Err(LoadError::Cancelled);
                 }
@@ -81,6 +89,11 @@ impl LushtextEditorPage {
                 let bytes = std::fs::read(&file_path).map_err(|e| {
                     LoadError::Io(format!("Failed to read {}: {}", file_path.display(), e))
                 })?;
+                // Large file reads can take seconds on NFS/USB — bail early
+                if cancel.load(Ordering::Acquire) {
+                    return Err(LoadError::Cancelled);
+                }
+
                 let content = match simdutf8::basic::from_utf8(&bytes) {
                     // SAFETY: simdutf8 confirmed valid UTF-8
                     Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
@@ -167,11 +180,11 @@ impl LushtextEditorPage {
     ///
     /// Sets `modified(false)` optimistically before the write so the tab
     /// title loses its dot immediately. On write failure the flag is rolled back.
-    pub fn save_file_async<F: FnOnce(Result<(), String>) + 'static>(&self, callback: F) {
+    pub fn save_file_async<F: FnOnce(Result<(), SaveError>) + 'static>(&self, callback: F) {
         let path = match self.imp().file_path.borrow().clone() {
             Some(p) => p,
             None => {
-                callback(Err("No file path set".to_string()));
+                callback(Err(SaveError::NoPath));
                 return;
             }
         };
@@ -190,7 +203,9 @@ impl LushtextEditorPage {
             move || {
                 std::fs::write(&path, &text)
                     .map(|_| text.len() as u64)
-                    .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+                    .map_err(|e| {
+                        SaveError::Io(format!("Failed to write {}: {}", path.display(), e))
+                    })
             },
             move |editor, result| match result {
                 Ok(size) => {

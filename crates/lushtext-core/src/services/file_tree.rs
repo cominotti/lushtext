@@ -18,7 +18,7 @@ pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
         }
     };
 
-    let mut entries: Vec<(PathBuf, bool)> = Vec::with_capacity(32);
+    let mut entries: Vec<(PathBuf, bool)> = Vec::with_capacity(256);
     for entry in read_dir.flatten() {
         if entry.file_name().as_encoded_bytes().first() == Some(&b'.') {
             continue;

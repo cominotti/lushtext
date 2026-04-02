@@ -614,14 +614,15 @@ fn build_children_model(dir_path: &Path) -> gio::ListStore {
                 }
             }
 
+            let remaining_budget = MAX_DIR_ENTRIES.saturating_sub(existing.len());
             let new_items: Vec<FileTreeItem> = entries
                 .into_iter()
                 .filter(|(path, _)| !existing.contains(path))
-                .take(MAX_DIR_ENTRIES)
+                .take(remaining_budget)
                 .map(|(path, is_dir)| FileTreeItem::new(path, is_dir))
                 .collect();
 
-            if new_items.len() >= MAX_DIR_ENTRIES {
+            if existing.len() + new_items.len() >= MAX_DIR_ENTRIES {
                 tracing::warn!("Directory truncated to {MAX_DIR_ENTRIES} entries");
             }
 

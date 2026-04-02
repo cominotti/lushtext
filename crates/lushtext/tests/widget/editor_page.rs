@@ -86,15 +86,18 @@ fn test_save_file_no_path_returns_error() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
     // save_file_async calls callback synchronously when no path is set
-    let result: std::rc::Rc<std::cell::RefCell<Option<Result<(), String>>>> =
-        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let result: std::rc::Rc<
+        std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::SaveError>>>,
+    > = std::rc::Rc::new(std::cell::RefCell::new(None));
     let result_clone = result.clone();
     page.save_file_async(move |r| {
         *result_clone.borrow_mut() = Some(r);
     });
-    let result = result.borrow().clone().unwrap();
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("No file path set"));
+    let result = result.borrow_mut().take().unwrap();
+    assert!(matches!(
+        result,
+        Err(lushtext_core::ui::editor_page::SaveError::NoPath)
+    ));
 }
 
 #[test]

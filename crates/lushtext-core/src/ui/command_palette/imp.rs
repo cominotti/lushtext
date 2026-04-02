@@ -272,7 +272,7 @@ impl LushtextCommandPalette {
     ///
     /// Increments `search_generation` to supersede any pending debounced
     /// search from `setup_search`. Direct callers (e.g., `set_file_index`,
-    /// `open`, Tab mode-switch) should rely on this to cancel stale timers.
+    /// `open`, Tab mode-switch) rely on this to cancel stale timers.
     pub fn rebuild_results(&self, query: &str) {
         let gen = self.search_generation.get().wrapping_add(1);
         self.search_generation.set(gen);

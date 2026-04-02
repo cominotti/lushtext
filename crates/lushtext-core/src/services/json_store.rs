@@ -17,8 +17,8 @@ pub fn data_dir() -> std::path::PathBuf {
 /// Load a JSON file from `data_dir/filename`. Returns `None` if the file doesn't exist.
 pub fn load<T: DeserializeOwned + Default>(data_dir: &Path, filename: &str) -> Result<T> {
     let path = data_dir.join(filename);
-    match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content)
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
             .with_context(|| format!("failed to parse {}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(anyhow::anyhow!("failed to read {}: {}", path.display(), e)),

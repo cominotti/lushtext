@@ -460,8 +460,9 @@ where
         }
     }
 
-    let mut results: Vec<ScoredResult<'a>> = heap.into_vec().into_iter().map(|r| r.0).collect();
-    results.sort_by(|a, b| b.score.cmp(&a.score));
+    // into_sorted_vec() on BinaryHeap<Reverse<ScoredResult>> produces
+    // ascending-by-Reverse order, which is descending-by-score after unwrap.
+    let results: Vec<ScoredResult<'a>> = heap.into_sorted_vec().into_iter().map(|r| r.0).collect();
     results
 }
 

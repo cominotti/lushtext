@@ -30,6 +30,10 @@ pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
 /// Filter session tabs to only those whose files still exist on disk.
 /// Performs I/O to check file existence, then delegates the mutation
 /// to the domain method `SessionData::retain_tabs_by_path`.
+///
+/// **Threading:** This function calls `Path::exists()` (stat syscall) per tab.
+/// On NFS/FUSE mounts this can block for 10-100ms per path. Always call from
+/// a background thread via `spawn_blocking_then`, never on the GTK main thread.
 pub fn filter_existing_tabs(session: &mut SessionData) {
     let existing: HashSet<_> = session
         .tabs
