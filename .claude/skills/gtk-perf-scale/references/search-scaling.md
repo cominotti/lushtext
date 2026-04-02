@@ -220,6 +220,8 @@ Wire these into the existing file operation callbacks:
 
 Full rebuilds are still needed for: initial load, adding/removing workspace roots. But incremental updates handle the common case (user creates/renames/deletes files while editing) without a full rescan.
 
+**RAM note**: `retain()` does not release excess capacity. After a bulk `remove_directory` that drops >25% of entries, call `files.shrink_to_fit()` to reclaim the unused Vec capacity. For a 100k-entry index where 30k files are removed, this reclaims ~6MB of unused Vec backing storage.
+
 ---
 
 ## 5. nucleo: SIMD-Accelerated Fuzzy Search {#5-nucleo}
@@ -237,6 +239,8 @@ Full rebuilds are still needed for: initial load, adding/removing workspace root
 | Async support | None (synchronous, blocks main thread) | Built-in `Nucleo<T>` with background worker thread |
 | Match positions | Not tracked | Returns exact match positions (enables highlight rendering) |
 | Dependencies | Zero | Small (~3 crates, no system deps) |
+
+**RAM note**: `Nucleo<T>` owns both the item data and internal scoring state. During active search, memory is approximately 2x the IndexedFile collection (items + scored copies with UTF-32 character buffers). For 100k files (~20MB of IndexedFile data), expect ~40MB during active search, dropping back to ~20MB when idle. The `Injector` is lock-free and does not duplicate items — it shares ownership with the matcher.
 
 The 2x raw scoring speedup is the floor — the real wins come from:
 - **Async scoring**: `Nucleo<T>` scores on a dedicated worker thread, never blocking the GTK main thread regardless of index size

@@ -39,5 +39,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Compile-check benchmarks
+        run: cargo bench -p lushtext-core --no-run
+
       - name: Run tests
         run: xvfb-run cargo test

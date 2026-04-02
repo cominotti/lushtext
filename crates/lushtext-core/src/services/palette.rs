@@ -76,6 +76,12 @@ impl FileIndex {
     }
 }
 
+impl From<Vec<IndexedFile>> for FileIndex {
+    fn from(files: Vec<IndexedFile>) -> Self {
+        Self { files }
+    }
+}
+
 /// Maximum recursion depth to prevent runaway scanning in deeply nested trees.
 const MAX_SCAN_DEPTH: u32 = 64;
 

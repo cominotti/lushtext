@@ -64,7 +64,20 @@ Meson wraps Cargo for installed and Flatpak builds:
 - Regenerate after dependency changes: `make cargo-sources` (requires `flatpak-cargo-generator`)
 - Dependency update chain: `cargo update` → `cargo hakari generate` → `make cargo-sources`
 
+## Benchmarks
+
+- Framework: Criterion.rs (`criterion = "0.5"` with `html_reports` feature)
+- Benchmark file: `crates/lushtext-core/benches/benchmarks.rs` (single file, all groups)
+- All benchmarked code is GTK-free — no display server needed for `cargo bench`
+- `[profile.bench]` in workspace `Cargo.toml`: `opt-level = 3`, `lto = "thin"`, `codegen-units = 1` (no strip — criterion needs symbols)
+- `FileIndex::from(Vec<IndexedFile>)` enables synthetic index construction for benchmarks
+- Report script: `scripts/bench-report.sh` — parses Criterion JSON from `target/criterion/`, generates markdown. Requires `jq`.
+- Report output: `docs/benchmarks/<timestamp>.md`
+- Makefile targets: `bench`, `bench-report`, `bench-report-full`, `bench-baseline`, `bench-compare`
+- Baseline workflow: `make bench-baseline` saves as "main", `make bench-compare` diffs against it
+
 ## CI
 
-- `.github/workflows/ci.yml` — Cargo check/clippy/test on `ubuntu-latest` with `xvfb-run` for widget tests
+- `.github/workflows/ci.yml` — Cargo check/clippy/test + benchmark compile-check on `ubuntu-latest`
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in GNOME 48 container
+- `.github/workflows/release-benchmark.yml` — full benchmark run + markdown report uploaded as release asset on `v*` tags

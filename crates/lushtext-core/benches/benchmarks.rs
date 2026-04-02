@@ -1,0 +1,355 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Criterion benchmarks for LushText performance-sensitive code paths.
+//!
+//! All benchmarked functions are GTK-free — no display server needed.
+//! Run with: `cargo bench -p lushtext-core` or `make bench`
+
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tempfile::TempDir;
+
+use lushtext_core::model::palette::IndexedFile;
+use lushtext_core::model::palette::SearchMode;
+use lushtext_core::model::session::{SessionData, SessionTab};
+use lushtext_core::model::workspace::{
+    WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
+};
+use lushtext_core::services::file_limits::FileSizeCheck;
+use lushtext_core::services::file_tree;
+use lushtext_core::services::json_store;
+use lushtext_core::services::palette::{self, FileIndex};
+use lushtext_core::services::workspace_manager;
+
+// ---------------------------------------------------------------------------
+// Fixture helpers
+// ---------------------------------------------------------------------------
+
+/// Build a synthetic in-memory file index with realistic file names.
+fn make_synthetic_index(n: usize) -> FileIndex {
+    let root = Arc::new(PathBuf::from("/synthetic/project"));
+    let dirs = [
+        "src",
+        "src/model",
+        "src/services",
+        "src/ui",
+        "src/ui/window",
+        "tests",
+        "docs",
+        "benches",
+    ];
+    let extensions = ["rs", "toml", "md", "json", "txt", "yaml"];
+
+    let files: Vec<IndexedFile> = (0..n)
+        .map(|i| {
+            let dir = dirs[i % dirs.len()];
+            let ext = extensions[i % extensions.len()];
+            let name = format!("file_{i}.{ext}");
+            let path = PathBuf::from(format!("/synthetic/project/{dir}/{name}"));
+            IndexedFile {
+                path,
+                name,
+                workspace_root: Arc::clone(&root),
+            }
+        })
+        .collect();
+
+    FileIndex::from(files)
+}
+
+/// Create a temp directory tree with the given number of files spread across subdirs.
+fn make_temp_dir_tree(file_count: usize) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let subdirs = ["src", "src/model", "src/services", "tests", "docs"];
+    for subdir in &subdirs {
+        std::fs::create_dir_all(dir.path().join(subdir)).unwrap();
+    }
+    for i in 0..file_count {
+        let subdir = subdirs[i % subdirs.len()];
+        std::fs::write(dir.path().join(format!("{subdir}/file_{i}.rs")), "").unwrap();
+    }
+    dir
+}
+
+/// Create a flat temp directory with mixed files and subdirs for `scan_directory` benchmarks.
+fn make_flat_dir(entry_count: usize) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let n_dirs = entry_count / 2;
+    for i in 0..n_dirs {
+        std::fs::create_dir(dir.path().join(format!("dir_{i}"))).unwrap();
+    }
+    for i in 0..(entry_count - n_dirs) {
+        std::fs::write(dir.path().join(format!("file_{i}.rs")), "").unwrap();
+    }
+    dir
+}
+
+/// Build a `WorkspacesFile` with the given number of workspaces and entries per workspace.
+fn make_workspaces_file(n_workspaces: usize, entries_per: usize) -> WorkspacesFile {
+    let workspaces = (0..n_workspaces)
+        .map(|w| WorkspaceConfig {
+            id: WorkspaceId::new(format!("ws-{w}")),
+            name: format!("Workspace {w}"),
+            entries: (0..entries_per)
+                .map(|e| WorkspaceEntry::Directory {
+                    path: PathBuf::from(format!("/home/user/project_{w}/dir_{e}")),
+                })
+                .collect(),
+        })
+        .collect();
+
+    WorkspacesFile {
+        active_workspace: Some(WorkspaceId::new("ws-0")),
+        workspaces,
+    }
+}
+
+/// Build a `SessionData` with the given number of tabs.
+fn make_session_data(n_tabs: usize) -> SessionData {
+    SessionData {
+        workspace_id: WorkspaceId::new("ws-bench"),
+        tabs: (0..n_tabs)
+            .map(|i| SessionTab {
+                path: PathBuf::from(format!("/home/user/project/src/file_{i}.rs")),
+                cursor_line: (i as u32) % 500,
+                cursor_col: 0,
+                scroll_line: 0,
+            })
+            .collect(),
+        active_tab: Some(PathBuf::from("/home/user/project/src/file_0.rs")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark groups
+// ---------------------------------------------------------------------------
+
+fn bench_fuzzy_score(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fuzzy_score");
+
+    let cases: &[(&str, &str, &str)] = &[
+        ("exact_short", "main", "main.rs"),
+        ("exact_long", "workspace_manager", "workspace_manager.rs"),
+        ("prefix", "ma", "main.rs"),
+        ("subsequence", "wm", "workspace_manager.rs"),
+        ("no_match", "xyz", "main.rs"),
+        ("empty_query", "", "workspace_manager.rs"),
+        (
+            "long_path",
+            "ctrl",
+            "src/ui/window/actions/keyboard_controller.rs",
+        ),
+    ];
+
+    for &(id, query, candidate) in cases {
+        group.bench_with_input(
+            BenchmarkId::new("case", id),
+            &(query, candidate),
+            |b, &(q, c)| b.iter(|| palette::fuzzy_score(black_box(q), black_box(c))),
+        );
+    }
+    group.finish();
+}
+
+fn bench_file_index_search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("file_index_search");
+
+    for size in [100, 1_000, 10_000, 50_000] {
+        let index = make_synthetic_index(size);
+
+        group.bench_with_input(BenchmarkId::new("query_match", size), &index, |b, idx| {
+            b.iter(|| idx.search(black_box("file_42"), 50))
+        });
+
+        group.bench_with_input(BenchmarkId::new("empty_query", size), &index, |b, idx| {
+            b.iter(|| idx.search(black_box(""), 50))
+        });
+
+        group.bench_with_input(BenchmarkId::new("no_match", size), &index, |b, idx| {
+            b.iter(|| idx.search(black_box("zzzzz"), 50))
+        });
+    }
+    group.finish();
+}
+
+fn bench_file_index_rebuild(c: &mut Criterion) {
+    let mut group = c.benchmark_group("file_index_rebuild");
+    group.sample_size(20);
+
+    for file_count in [50, 500, 5_000] {
+        group.bench_function(BenchmarkId::from_parameter(file_count), |b| {
+            b.iter_batched(
+                || make_temp_dir_tree(file_count),
+                |dir| {
+                    let result = FileIndex::rebuild(black_box(&[dir.path().to_path_buf()]));
+                    (result, dir) // keep TempDir alive past timing — drop runs after measurement
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+fn bench_search_all(c: &mut Criterion) {
+    let mut group = c.benchmark_group("search_all");
+    let index = make_synthetic_index(10_000);
+
+    for mode in [SearchMode::Files, SearchMode::Commands, SearchMode::All] {
+        let label = match mode {
+            SearchMode::Files => "files",
+            SearchMode::Commands => "commands",
+            SearchMode::All => "all",
+        };
+        group.bench_with_input(BenchmarkId::new("mode", label), &index, |b, idx| {
+            b.iter(|| palette::search_all(black_box(idx), black_box("file_42"), mode, 50))
+        });
+    }
+    group.finish();
+}
+
+fn bench_scan_directory(c: &mut Criterion) {
+    let mut group = c.benchmark_group("scan_directory");
+    group.sample_size(30);
+
+    for entry_count in [10, 100, 1_000] {
+        group.bench_function(BenchmarkId::from_parameter(entry_count), |b| {
+            b.iter_batched(
+                || make_flat_dir(entry_count),
+                |dir| {
+                    let result = file_tree::scan_directory(black_box(dir.path()));
+                    (result, dir) // keep TempDir alive past timing
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+fn bench_json_persistence(c: &mut Criterion) {
+    let mut group = c.benchmark_group("json_persistence");
+
+    let small = make_workspaces_file(1, 2);
+    let large = make_workspaces_file(10, 50);
+
+    // Save benchmarks
+    group.bench_function("save/small", |b| {
+        b.iter_batched(
+            || TempDir::new().unwrap(),
+            |dir| {
+                workspace_manager::save(dir.path(), black_box(&small)).unwrap();
+                dir // keep TempDir alive past timing
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("save/large", |b| {
+        b.iter_batched(
+            || TempDir::new().unwrap(),
+            |dir| {
+                workspace_manager::save(dir.path(), black_box(&large)).unwrap();
+                dir
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // Load benchmarks — pre-write the file, then benchmark reads
+    group.bench_function("load/small", |b| {
+        b.iter_batched(
+            || {
+                let dir = TempDir::new().unwrap();
+                workspace_manager::save(dir.path(), &small).unwrap();
+                dir
+            },
+            |dir| {
+                let _: WorkspacesFile =
+                    json_store::load(black_box(dir.path()), "workspaces.json").unwrap();
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("load/large", |b| {
+        b.iter_batched(
+            || {
+                let dir = TempDir::new().unwrap();
+                workspace_manager::save(dir.path(), &large).unwrap();
+                dir
+            },
+            |dir| {
+                let _: WorkspacesFile =
+                    json_store::load(black_box(dir.path()), "workspaces.json").unwrap();
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // Session save/load
+    let session = make_session_data(50);
+    group.bench_function("session_save/50_tabs", |b| {
+        b.iter_batched(
+            || TempDir::new().unwrap(),
+            |dir| {
+                json_store::save(dir.path(), "session-bench.json", black_box(&session)).unwrap();
+                dir // keep TempDir alive past timing
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("session_load/50_tabs", |b| {
+        b.iter_batched(
+            || {
+                let dir = TempDir::new().unwrap();
+                json_store::save(dir.path(), "session-bench.json", &session).unwrap();
+                dir
+            },
+            |dir| {
+                let _: SessionData =
+                    json_store::load(black_box(dir.path()), "session-bench.json").unwrap();
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+fn bench_file_size_classify(c: &mut Criterion) {
+    let mut group = c.benchmark_group("file_size_classify");
+
+    let sizes: &[(&str, u64)] = &[
+        ("normal", 500_000),
+        ("large_toast", 5_000_000),
+        ("disable_syntax", 25_000_000),
+        ("disable_undo", 100_000_000),
+        ("too_large", 1_000_000_000),
+    ];
+
+    for &(label, size) in sizes {
+        group.bench_with_input(BenchmarkId::new("size", label), &size, |b, &s| {
+            b.iter(|| FileSizeCheck::classify(black_box(s)))
+        });
+    }
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+criterion_group!(
+    benches,
+    bench_fuzzy_score,
+    bench_file_index_search,
+    bench_file_index_rebuild,
+    bench_search_all,
+    bench_scan_directory,
+    bench_json_persistence,
+    bench_file_size_classify,
+);
+criterion_main!(benches);

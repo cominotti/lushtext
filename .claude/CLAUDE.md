@@ -35,6 +35,8 @@ src/
 │   ├── file_tree.rs    # Directory scanning (pure I/O, returns Vec<(PathBuf, bool)>)
 │   ├── file_limits.rs  # File size thresholds for graceful degradation
 │   └── palette.rs      # Fuzzy matching (nucleo SIMD), file indexing, command registry
+├── benches/
+│   └── benchmarks.rs   # Criterion benchmarks for all performance-sensitive services
 └── ui/                 # GTK4/Libadwaita widgets (each has mod.rs + imp.rs)
     ├── window/          # Main window: HeaderBar, TabBar, Paned, Stack, StatusBar
     │   └── dialogs.rs   # File dialogs: open file, open folder, save as
@@ -79,6 +81,7 @@ src/
 - **Directory entry cap**: `build_children_model` caps entries at 10,000 per directory to prevent slow model diff updates in `GtkListView`.
 - **File index cap**: `FileIndex::rebuild` truncates at 100,000 files with a warning log.
 - **Arc workspace_root**: `IndexedFile.workspace_root` uses `Arc<PathBuf>` — files in the same workspace share one allocation instead of cloning per file.
+- **Benchmark framework**: Criterion.rs benchmarks in `crates/lushtext-core/benches/benchmarks.rs` cover all performance-sensitive service code (fuzzy search, file indexing, directory scanning, JSON persistence). All benchmarked functions are GTK-free. `FileIndex::from(Vec<IndexedFile>)` enables synthetic index construction without filesystem I/O. `scripts/bench-report.sh` parses Criterion JSON output into markdown for GitHub release assets. CI compile-checks benchmarks on every PR; full benchmark runs happen on release tags.
 
 ## Build Commands
 
@@ -90,6 +93,13 @@ make test        # All tests (unit + integration)
 make test-unit   # Unit tests only
 make test-int    # Integration tests only
 make check       # clippy + fmt check
+
+# Benchmarks
+make bench             # Run Criterion benchmarks
+make bench-report      # Run + generate markdown report (short)
+make bench-report-full # Run + generate markdown report (full sampling)
+make bench-baseline    # Save current results as baseline
+make bench-compare     # Compare against saved baseline
 
 # Packaging
 make meson-build     # Meson release build (installed layout)

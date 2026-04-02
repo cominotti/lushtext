@@ -26,4 +26,9 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 glib-build-tools = "0.22"
 
 [dev-dependencies]
-tempfile = { workspace = true }
+tempfile  = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "benchmarks"
+harness = false

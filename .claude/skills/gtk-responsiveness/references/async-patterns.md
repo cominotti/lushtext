@@ -60,6 +60,8 @@ async_task::spawn_blocking_then(
 
 **When to use**: File loads, directory scans, any I/O that feeds into UI state.
 
+**RAM note**: The content `String` lives on the background thread until `glib::idle_add_once` delivers it to the main thread. During the handoff, there are briefly two references to the same allocation (background closure + idle closure), but Rust's move semantics ensure only one owner at a time — no duplication. Peak memory = 1x file size (the String) + whatever GtkTextBuffer allocates during `set_text()`.
+
 ## 3. Cancellable Background Work {#3-cancellable}
 
 For operations the user might want to cancel (e.g., loading a large file, then switching tabs):
@@ -107,6 +109,8 @@ if let Some(token) = self.imp().cancel_token.borrow().as_ref() {
 ```
 
 **When to use**: Large file loads, operations that become stale when the user navigates away.
+
+**RAM note**: When cancelled, the `Ok(None)` return drops the read content immediately on the background thread — the String is never transferred to the main thread. This is important for large files: cancelling a 100MB load reclaims ~100MB on the background thread instead of keeping it alive through the idle_add_once handoff. The chunked reading variant is even better — if cancelled mid-read, only the partially-read content (~file_size * progress) is allocated, not the full file.
 
 ## 4. Periodic Background Check {#4-periodic}
 
@@ -242,6 +246,8 @@ for tab in session.tabs.iter() {
 ```
 
 **Key**: Each `spawn_blocking_then` spawns its own `std::thread`. For restoring 5-10 tabs, this is fine. For 100+ concurrent operations, consider a thread pool (but that's unlikely in a text editor).
+
+**RAM note**: N simultaneous file reads = N * avg_file_size peak memory across all background threads. For session restore with 50 tabs averaging 500KB each, that's ~25MB of concurrent String allocations. With 50 tabs averaging 5MB each, that's ~250MB — significant on 8GB machines. Consider batching into groups of 8 (matching the thread spawn guard) to cap peak memory at 8 * max_file_size. Each batch completes and frees its Strings before the next batch starts.
 
 ---
 

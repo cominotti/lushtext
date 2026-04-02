@@ -110,6 +110,8 @@ fn apply_loaded_content_with_size(&self, content: &str, size: u64) {
 
 The key insight: `fs::metadata` is a stat() call — fast even on network filesystems — while `read_to_string` allocates the full file into memory. Checking size first prevents the allocation entirely for files that exceed the threshold.
 
+**RAM impact**: Peak memory during `apply_loaded_content_with_size` is ~2.5-3x file size: the `content` String (~1x) coexists briefly with GtkTextBuffer's internal B-tree (~1.5-2x) during `set_text()`. After `set_text` returns and `content` is dropped, steady-state is ~1.5-2x file size (buffer only). With undo enabled, add another ~1-2x for undo history that accumulates during editing.
+
 ---
 
 ## 2. Background Save {#2-background-save}
@@ -160,6 +162,8 @@ pub fn save_file_async(&self) -> bool {
 ```
 
 Design choice: `buffer.set_modified(false)` is called *before* the async write, not after. This gives instant visual feedback (tab title loses the dot). If the write fails, the `then` callback re-marks the buffer as modified. This is the UX pattern used by VS Code and most modern editors — optimistic UI with rollback on failure.
+
+**RAM impact**: The `text.to_string()` call creates a copy of the buffer content for the background thread. For a 50MB file, this temporarily adds ~50MB to memory (the original buffer content + the String copy). The copy is freed when the background closure completes. This is unavoidable — GTK buffer content cannot be sent across threads directly.
 
 ---
 
@@ -303,6 +307,8 @@ fn ensure_loaded(&self) {
 ```
 
 This is a **CONSIDER** optimization — only implement if memory monitoring shows tabs collectively consuming >500MB. The tradeoff is a brief reload delay (~50–200ms) when switching to an evicted tab.
+
+**RAM impact**: Evicting a 50MB tab with undo history reclaims ~100-200MB (buffer B-tree + undo entries). Even for smaller files, evicting 20 inactive 500KB tabs reclaims ~20-40MB. The reload cost is a brief peak of ~2.5-3x file size during `set_text()`, identical to the initial load.
 
 When to trigger eviction:
 - LRU-based: evict the least-recently-viewed tab when total buffer memory exceeds a budget (e.g., 256MB)

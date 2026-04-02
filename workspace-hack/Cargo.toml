@@ -16,8 +16,12 @@ gio-sys = { version = "0.22", default-features = false, features = ["v2_66"] }
 glib = { version = "0.22", features = ["v2_66"] }
 glib-sys = { version = "0.22", default-features = false, features = ["v2_66"] }
 gobject-sys = { version = "0.22", default-features = false, features = ["v2_66"] }
+num-traits = { version = "0.2" }
+regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa-build", "dfa-onepass", "hybrid", "meta", "nfa-backtrack", "perf-inline", "perf-literal", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
+serde = { version = "1", features = ["alloc", "derive"] }
+serde_core = { version = "1", default-features = false, features = ["alloc", "result", "std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "union"] }
 tracing-core = { version = "0.1" }
 
