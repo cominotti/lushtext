@@ -69,20 +69,23 @@ impl LushtextWindow {
             self.show_save_as_dialog();
             return;
         }
-        match editor.save_file() {
+        let window = self.clone();
+        editor.save_file_async(move |result| match result {
             Ok(()) => {
-                self.imp()
+                window
+                    .imp()
                     .status_bar
                     .push_message("File saved", MessageKind::Info);
-                self.refresh_status_bar();
+                window.refresh_status_bar();
             }
             Err(e) => {
                 tracing::error!("Failed to save: {}", e);
-                self.imp()
+                window
+                    .imp()
                     .status_bar
-                    .push_message(&format!("Save failed: {}", e), MessageKind::Error);
+                    .push_message(&format!("Save failed: {e}"), MessageKind::Error);
             }
-        }
+        });
     }
 
     /// Create a new untitled tab.
@@ -230,6 +233,9 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| {
                     let tab_view = &window.imp().tab_view;
                     if let Some(page) = tab_view.selected_page() {
+                        if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                            editor.cancel_load();
+                        }
                         tab_view.close_page(&page);
                     }
                     window.update_content_stack();
@@ -277,6 +283,7 @@ impl LushtextWindow {
                     .as_ref()
                     .is_some_and(|p| p.as_path() == path || p.starts_with(path));
                 if matches {
+                    editor.cancel_load();
                     tab_view.close_page(&page);
                 }
             }
@@ -302,18 +309,32 @@ impl LushtextWindow {
     }
 
     /// Build the file index from all workspace roots on a background thread.
+    /// Debounced at 300ms to coalesce rapid workspace mutations (e.g., adding
+    /// multiple folders fires `connect_workspace_changed` for each).
     pub fn rebuild_file_index(&self) {
-        let roots = self.imp().sidebar.workspace_roots();
+        let gen = self.imp().index_rebuild_generation.get().wrapping_add(1);
+        self.imp().index_rebuild_generation.set(gen);
+
         let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
-            (),
-            move || FileIndex::rebuild(&roots),
-            move |(), index| {
-                if let Some(window) = window_weak.upgrade() {
-                    window.imp().command_palette.set_file_index(index);
-                }
-            },
-        );
+        glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            if window.imp().index_rebuild_generation.get() != gen {
+                return; // superseded by a newer rebuild request
+            }
+            let roots = window.imp().sidebar.workspace_roots();
+            let window_weak = window.downgrade();
+            async_task::spawn_blocking_then(
+                (),
+                move || FileIndex::rebuild(&roots),
+                move |(), index| {
+                    if let Some(window) = window_weak.upgrade() {
+                        window.imp().command_palette.set_file_index(index);
+                    }
+                },
+            );
+        });
     }
 
     fn setup_shortcuts(&self) {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::config::keys;
+use crate::services::file_limits::FileSizeCheck;
 use crate::ui::search_bar::LushtextSearchBar;
 use gtk4::gio;
 use gtk4::subclass::prelude::*;
@@ -8,6 +9,8 @@ use gtk4::{self, glib, CompositeTemplate};
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/editor-page.ui")]
@@ -23,6 +26,8 @@ pub struct LushtextEditorPage {
 
     pub file_path: RefCell<Option<PathBuf>>,
     pub file_size: Cell<Option<u64>>,
+    pub size_check: Cell<FileSizeCheck>,
+    pub cancel_token: Arc<AtomicBool>,
     pub settings: gio::Settings,
 }
 
@@ -35,6 +40,8 @@ impl Default for LushtextEditorPage {
             search_bar: TemplateChild::default(),
             file_path: RefCell::default(),
             file_size: Cell::default(),
+            size_check: Cell::new(FileSizeCheck::Normal),
+            cancel_token: Arc::new(AtomicBool::new(false)),
             settings: gio::Settings::new(crate::config::APP_ID),
         }
     }

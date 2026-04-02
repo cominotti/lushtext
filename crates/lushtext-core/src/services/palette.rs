@@ -9,8 +9,11 @@ use crate::model::palette::{
     CommandCategory, CommandDef, IndexedFile, ScoredResult, SearchMode, SearchResultItem,
 };
 use crate::services::file_tree;
+use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // File index
@@ -32,13 +35,27 @@ impl FileIndex {
         let mut files = Vec::new();
         let mut visited = HashSet::new();
         for root in roots {
-            // Resolve the workspace root to a canonical path so we can reject
-            // symlinks that escape (e.g., Wine dosdevices/z: → /).
             let canonical_root = match root.canonicalize() {
                 Ok(p) => p,
                 Err(_) => continue,
             };
-            collect_files_recursive(root, root, &mut files, &mut visited, &canonical_root, 0);
+            let root_arc = Arc::new(root.clone());
+            collect_files_recursive(
+                root,
+                &root_arc,
+                &mut files,
+                &mut visited,
+                &canonical_root,
+                0,
+            );
+        }
+        if files.len() > MAX_INDEXED_FILES {
+            tracing::warn!(
+                "File index truncated: {} files exceeds {} limit",
+                files.len(),
+                MAX_INDEXED_FILES
+            );
+            files.truncate(MAX_INDEXED_FILES);
         }
         Self { files }
     }
@@ -62,6 +79,10 @@ impl FileIndex {
 /// Maximum recursion depth to prevent runaway scanning in deeply nested trees.
 const MAX_SCAN_DEPTH: u32 = 64;
 
+/// Maximum number of files to index. Beyond this, linear scan per query
+/// takes >10ms on a single core.
+const MAX_INDEXED_FILES: usize = 100_000;
+
 /// Recursively scan a directory, collecting files (not directories) into `out`.
 ///
 /// Three layers of protection against problematic filesystem structures:
@@ -74,7 +95,7 @@ const MAX_SCAN_DEPTH: u32 = 64;
 ///    (catches pathological non-cyclic deep trees).
 fn collect_files_recursive(
     dir: &Path,
-    workspace_root: &Path,
+    workspace_root: &Arc<PathBuf>,
     out: &mut Vec<IndexedFile>,
     visited: &mut HashSet<PathBuf>,
     canonical_root: &Path,
@@ -119,7 +140,7 @@ fn collect_files_recursive(
             out.push(IndexedFile {
                 path,
                 name,
-                workspace_root: workspace_root.to_path_buf(),
+                workspace_root: Arc::clone(workspace_root),
             });
         }
     }
@@ -246,68 +267,37 @@ pub fn search_all<'a>(
 }
 
 // ---------------------------------------------------------------------------
-// Fuzzy matching
+// Fuzzy matching (nucleo SIMD-accelerated)
 // ---------------------------------------------------------------------------
 
-/// Score a fuzzy subsequence match of `query` against `candidate`.
+/// Score a fuzzy subsequence match of `query` against `candidate` using nucleo.
 ///
-/// Returns `Some(score)` if all characters in `query` appear in order within
-/// `candidate`, with higher scores for better matches. Returns `None` if there
-/// is no match.
-///
+/// Returns `Some(score)` if `query` fuzzy-matches `candidate`, with higher
+/// scores for better matches. Returns `None` if there is no match.
 /// Empty query matches everything with score 0.
+///
+/// Uses SIMD-accelerated matching via nucleo-matcher (AVX2 on x86-64-v3,
+/// NEON on aarch64).
 pub fn fuzzy_score(query: &str, candidate: &str) -> Option<u32> {
     if query.is_empty() {
         return Some(0);
     }
-    let query_chars: Vec<char> = query.to_lowercase().chars().collect();
-    fuzzy_score_chars(&query_chars, candidate)
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let atom = Atom::new(
+        query,
+        CaseMatching::Ignore,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+        false,
+    );
+    let mut buf = Vec::new();
+    let haystack = Utf32Str::new(candidate, &mut buf);
+    atom.score(haystack, &mut matcher).map(|s| s as u32)
 }
 
-/// Pre-lowercased query avoids re-allocating on every call within `search_items`.
-fn fuzzy_score_chars(query_chars: &[char], candidate: &str) -> Option<u32> {
-    if query_chars.is_empty() {
-        return Some(0);
-    }
-
-    let mut score: u32 = 0;
-    let mut query_idx = 0;
-    let mut prev_match_idx: Option<usize> = None;
-    let mut prev_cand_char = '\0';
-
-    for (cand_idx, cand_char) in candidate.chars().enumerate() {
-        let cand_lower = cand_char.to_lowercase().next().unwrap_or(cand_char);
-        if query_idx < query_chars.len() && cand_lower == query_chars[query_idx] {
-            score += 1;
-
-            if cand_idx == 0 {
-                score += 3;
-            }
-
-            if cand_idx > 0 && matches!(prev_cand_char, '/' | '.' | '_' | '-' | ' ') {
-                score += 2;
-            }
-
-            if let Some(prev_idx) = prev_match_idx {
-                if cand_idx == prev_idx + 1 {
-                    score += 2;
-                }
-            }
-
-            prev_match_idx = Some(cand_idx);
-            query_idx += 1;
-        }
-        prev_cand_char = cand_char;
-    }
-
-    if query_idx == query_chars.len() {
-        Some(score)
-    } else {
-        None
-    }
-}
-
-/// Generic search helper: filter + score items, sort by score descending, cap at max.
+/// Generic search helper: filter + score items using nucleo, sort by score
+/// descending, cap at max. Reuses a single `Matcher` and char buffer across
+/// all candidates for efficiency.
 fn search_items<'a, I, T, F, G>(
     items: I,
     get_text: F,
@@ -321,14 +311,36 @@ where
     F: Fn(&T) -> &str,
     G: Fn(&'a T) -> SearchResultItem<'a>,
 {
-    let query_chars: Vec<char> = query.to_lowercase().chars().collect();
+    if query.is_empty() {
+        return items
+            .map(|item| ScoredResult {
+                item: wrap(item),
+                score: 0,
+            })
+            .take(max)
+            .collect();
+    }
+
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let atom = Atom::new(
+        query,
+        CaseMatching::Ignore,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+        false,
+    );
+    let mut buf = Vec::new();
+
     let mut results: Vec<ScoredResult<'a>> = items
         .filter_map(|item| {
             let text = get_text(item);
-            fuzzy_score_chars(&query_chars, text).map(|score| ScoredResult {
-                item: wrap(item),
-                score,
-            })
+            buf.clear();
+            let haystack = Utf32Str::new(text, &mut buf);
+            atom.score(haystack, &mut matcher)
+                .map(|score| ScoredResult {
+                    item: wrap(item),
+                    score: score as u32,
+                })
         })
         .collect();
     results.sort_by(|a, b| b.score.cmp(&a.score));
@@ -539,7 +551,7 @@ mod tests {
 
         let root = dir.path().to_path_buf();
         let index = FileIndex::rebuild(&[root.clone()]);
-        assert_eq!(index.files()[0].workspace_root, root);
+        assert_eq!(*index.files()[0].workspace_root, root);
     }
 
     #[test]
@@ -902,5 +914,113 @@ mod tests {
 
         // Restore permissions for cleanup
         std::fs::set_permissions(&restricted, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // --- nucleo-based fuzzy scoring ---
+
+    #[test]
+    fn test_nucleo_exact_match_scores_high() {
+        let score = fuzzy_score("main.rs", "main.rs").unwrap();
+        let partial = fuzzy_score("mn", "main.rs").unwrap();
+        assert!(
+            score > partial,
+            "exact match ({score}) should score higher than partial ({partial})"
+        );
+    }
+
+    #[test]
+    fn test_nucleo_scores_are_nonzero_for_matches() {
+        assert!(fuzzy_score("m", "main.rs").unwrap() > 0);
+        assert!(fuzzy_score("main", "main.rs").unwrap() > 0);
+    }
+
+    #[test]
+    fn test_nucleo_no_match_returns_none() {
+        assert!(fuzzy_score("xyz", "main.rs").is_none());
+        assert!(fuzzy_score("zzz", "a.rs").is_none());
+    }
+
+    #[test]
+    fn test_nucleo_case_insensitive() {
+        let lower = fuzzy_score("main", "Main.rs");
+        let upper = fuzzy_score("MAIN", "main.rs");
+        assert!(lower.is_some(), "case-insensitive match should work");
+        assert!(upper.is_some(), "case-insensitive match should work");
+    }
+
+    // --- Arc<PathBuf> workspace_root ---
+
+    #[test]
+    fn test_workspace_root_shared_across_files() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "").unwrap();
+
+        let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+        assert_eq!(index.files().len(), 2);
+
+        // Both files should share the same Arc (same pointer address)
+        assert!(
+            Arc::ptr_eq(
+                &index.files()[0].workspace_root,
+                &index.files()[1].workspace_root
+            ),
+            "files in the same workspace should share the Arc<PathBuf>"
+        );
+    }
+
+    #[test]
+    fn test_workspace_root_different_across_workspaces() {
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+        std::fs::write(dir1.path().join("a.rs"), "").unwrap();
+        std::fs::write(dir2.path().join("b.rs"), "").unwrap();
+
+        let index = FileIndex::rebuild(&[dir1.path().to_path_buf(), dir2.path().to_path_buf()]);
+        assert_eq!(index.files().len(), 2);
+
+        // Files from different workspaces should have different Arcs
+        assert!(
+            !Arc::ptr_eq(
+                &index.files()[0].workspace_root,
+                &index.files()[1].workspace_root
+            ),
+            "files from different workspaces should not share Arc"
+        );
+    }
+
+    // --- MAX_INDEXED_FILES ---
+
+    #[test]
+    fn test_max_indexed_files_constant_is_100k() {
+        assert_eq!(MAX_INDEXED_FILES, 100_000);
+    }
+
+    // --- search_items with empty query returns all (capped) ---
+
+    #[test]
+    fn test_search_items_empty_query_returns_up_to_max() {
+        let dir = TempDir::new().unwrap();
+        for i in 0..100 {
+            std::fs::write(dir.path().join(format!("file{i}.rs")), "").unwrap();
+        }
+        let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+        let results = index.search("", 10);
+        assert_eq!(results.len(), 10, "empty query should cap at max");
+    }
+
+    #[test]
+    fn test_search_items_empty_query_returns_all_when_under_max() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "").unwrap();
+
+        let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+        let results = index.search("", 100);
+        assert_eq!(
+            results.len(),
+            2,
+            "empty query should return all when under max"
+        );
     }
 }

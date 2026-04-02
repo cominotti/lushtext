@@ -9,6 +9,7 @@ use glib::prelude::*;
 use gtk4::prelude::*;
 use gtk4::{self, gio, glib, CompositeTemplate};
 use libadwaita::subclass::prelude::*;
+use std::cell::Cell;
 
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
@@ -35,6 +36,7 @@ pub struct LushtextWindow {
     pub command_palette: TemplateChild<LushtextCommandPalette>,
 
     pub settings: gio::Settings,
+    pub index_rebuild_generation: Cell<u32>,
 }
 
 impl Default for LushtextWindow {
@@ -51,6 +53,7 @@ impl Default for LushtextWindow {
             palette_revealer: TemplateChild::default(),
             command_palette: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
+            index_rebuild_generation: Cell::new(0),
         }
     }
 }

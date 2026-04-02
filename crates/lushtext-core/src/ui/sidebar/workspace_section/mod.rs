@@ -574,7 +574,13 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
     }
 }
 
+/// Maximum directory entries before truncation. A single `gio::ListStore`
+/// with >10k items causes slow model diff updates in `GtkListView`.
+const MAX_DIR_ENTRIES: usize = 10_000;
+
 /// Build a child `ListStore` for a directory's contents.
+/// Uses `splice` to emit a single `items-changed` signal for the batch,
+/// and caps entries at `MAX_DIR_ENTRIES`.
 fn build_children_model(dir_path: &Path) -> gio::ListStore {
     let store = gio::ListStore::new::<FileTreeItem>();
     let path = dir_path.to_path_buf();
@@ -592,11 +598,19 @@ fn build_children_model(dir_path: &Path) -> gio::ListStore {
                 })
                 .collect();
 
-            for (entry_path, is_dir) in entries {
-                if !existing.contains(&entry_path) {
-                    store.append(&FileTreeItem::new(entry_path, is_dir));
-                }
+            let new_items: Vec<FileTreeItem> = entries
+                .into_iter()
+                .filter(|(path, _)| !existing.contains(path))
+                .take(MAX_DIR_ENTRIES)
+                .map(|(path, is_dir)| FileTreeItem::new(path, is_dir))
+                .collect();
+
+            if new_items.len() >= MAX_DIR_ENTRIES {
+                tracing::warn!("Directory truncated to {MAX_DIR_ENTRIES} entries");
             }
+
+            let pos = store.n_items();
+            store.splice(pos, 0, &new_items);
         },
     );
 

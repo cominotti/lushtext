@@ -633,7 +633,15 @@ fn test_save_clears_dot_in_tab() {
     flush_events();
     assert!(window.imp().tab_view.nth_page(0).title().starts_with('•'));
 
-    editor.save_file().unwrap();
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_clone = done.clone();
+    editor.save_file_async(move |r| {
+        r.unwrap();
+        done_clone.set(true);
+    });
+    while !done.get() {
+        glib::MainContext::default().iteration(true);
+    }
     flush_events();
     assert_eq!(
         window.imp().tab_view.nth_page(0).title().as_str(),
@@ -812,7 +820,15 @@ fn test_header_title_dot_cleared_after_save() {
     flush_events();
     assert!(window.imp().title_widget.title().starts_with('•'));
 
-    editor.save_file().unwrap();
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_clone = done.clone();
+    editor.save_file_async(move |r| {
+        r.unwrap();
+        done_clone.set(true);
+    });
+    while !done.get() {
+        glib::MainContext::default().iteration(true);
+    }
     flush_events();
     assert_eq!(window.imp().title_widget.title().as_str(), "saved.rs");
 }

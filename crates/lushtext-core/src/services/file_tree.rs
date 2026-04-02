@@ -26,8 +26,15 @@ pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
                 return None;
             }
             let path = entry.path();
-            let is_dir = path.is_dir();
-            Some((name, path, is_dir))
+            // Use std::fs::metadata (follows symlinks via stat(2)) to skip
+            // broken symlinks. DirEntry::metadata() uses fstatat(AT_SYMLINK_NOFOLLOW)
+            // on Unix, which returns the symlink's own metadata even if the
+            // target is missing.
+            let meta = match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => return None, // broken symlink or permission denied
+            };
+            Some((name, path, meta.is_dir()))
         })
         .collect();
 
@@ -168,5 +175,32 @@ mod tests {
 
         let entries = scan_directory(dir.path());
         assert!(entries[0].0.is_absolute());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_broken_symlinks_skipped() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("real.txt"), "").unwrap();
+        std::os::unix::fs::symlink("/nonexistent/target", dir.path().join("broken")).unwrap();
+
+        let entries = scan_directory(dir.path());
+        let result_names = names(&entries);
+        assert_eq!(result_names, vec!["real.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_valid_symlinks_included() {
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("real.txt");
+        std::fs::write(&real, "content").unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link.txt")).unwrap();
+
+        let entries = scan_directory(dir.path());
+        assert_eq!(entries.len(), 2);
+        let result_names = names(&entries);
+        assert!(result_names.contains(&"real.txt".to_string()));
+        assert!(result_names.contains(&"link.txt".to_string()));
     }
 }

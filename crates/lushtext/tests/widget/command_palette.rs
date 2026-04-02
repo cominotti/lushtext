@@ -28,7 +28,7 @@ fn test_palette_item_from_indexed_file() {
     let file = IndexedFile {
         path: "/home/user/project/src/main.rs".into(),
         name: "main.rs".to_string(),
-        workspace_root: "/home/user/project".into(),
+        workspace_root: std::sync::Arc::new("/home/user/project".into()),
     };
     let item = PaletteItem::from_indexed_file(&file);
     assert_eq!(item.display_name(), "main.rs");
@@ -79,7 +79,7 @@ fn test_palette_item_file_at_root() {
     let file = IndexedFile {
         path: "/home/user/project/Cargo.toml".into(),
         name: "Cargo.toml".to_string(),
-        workspace_root: "/home/user/project".into(),
+        workspace_root: std::sync::Arc::new("/home/user/project".into()),
     };
     let item = PaletteItem::from_indexed_file(&file);
     assert_eq!(item.subtitle(), "Cargo.toml");

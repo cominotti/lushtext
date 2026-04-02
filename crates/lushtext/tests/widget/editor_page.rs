@@ -85,9 +85,16 @@ fn test_buffer_modified_flag() {
 fn test_save_file_no_path_returns_error() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
-    let result = page.save_file();
+    // save_file_async calls callback synchronously when no path is set
+    let result: std::rc::Rc<std::cell::RefCell<Option<Result<(), String>>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let result_clone = result.clone();
+    page.save_file_async(move |r| {
+        *result_clone.borrow_mut() = Some(r);
+    });
+    let result = result.borrow().clone().unwrap();
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("No file path set"));
+    assert!(result.unwrap_err().contains("No file path set"));
 }
 
 #[test]
@@ -106,8 +113,16 @@ fn test_save_file_writes_content() {
     // Set buffer content
     buffer.set_text("saved content");
 
-    // Save and verify
-    page.save_file().unwrap();
+    // Save and verify — spin main loop to process the background thread callback
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_clone = done.clone();
+    page.save_file_async(move |r| {
+        r.unwrap();
+        done_clone.set(true);
+    });
+    while !done.get() {
+        glib::MainContext::default().iteration(true);
+    }
     let saved = std::fs::read_to_string(&path).unwrap();
     assert_eq!(saved, "saved content");
 

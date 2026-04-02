@@ -32,7 +32,9 @@ src/
 │   ├── json_store.rs   # Generic JSON load/save + data_dir()
 │   ├── workspace_manager.rs
 │   ├── session_service.rs
-│   └── file_tree.rs    # Directory scanning (pure I/O, returns Vec<(PathBuf, bool)>)
+│   ├── file_tree.rs    # Directory scanning (pure I/O, returns Vec<(PathBuf, bool)>)
+│   ├── file_limits.rs  # File size thresholds for graceful degradation
+│   └── palette.rs      # Fuzzy matching (nucleo SIMD), file indexing, command registry
 └── ui/                 # GTK4/Libadwaita widgets (each has mod.rs + imp.rs)
     ├── window/          # Main window: HeaderBar, TabBar, Paned, Stack, StatusBar
     │   └── dialogs.rs   # File dialogs: open file, open folder, save as
@@ -68,6 +70,15 @@ src/
 - **Sidebar 1/3 max width constraint**: The GtkPaned sidebar position is clamped to `window_width / 3` via two mechanisms: (1) `WidgetImpl::size_allocate()` override clamps on every allocation — this is the primary constraint, using the definitive allocated width parameter (not a potentially stale `window.width()` read); (2) `notify::position` handler clamps when the user drags the sidebar. This dual approach avoids timing bugs where property notifications (`notify::default-width`, `notify::maximized`) fire before the new allocation is applied. The `clamp_sidebar_position` free function guards with `window_width <= 0` for pre-realization safety.
 - **CLI file opening**: `ApplicationImpl::open()` is overridden in `app.rs` to handle `HANDLES_OPEN`. File arguments open as tabs via `open_document()`, with window reuse for single-instance behavior.
 - **Save As dialog**: `show_save_as_dialog()` in `window/dialogs.rs` uses `FileDialog::save()`. After saving, `set_file_path()` updates the path and re-detects syntax language via `reapply_language()`, then the tab title and status bar are refreshed.
+- **Large file handling**: `load_file_async` checks `fs::metadata` size before reading. Thresholds in `services/file_limits.rs`: >1MB toast, >10MB disable syntax, >50MB disable undo, >500MB refuse. `FileSizeCheck` enum classifies sizes and provides `syntax_enabled()` / `undo_enabled()` queries. Files >50MB keep `begin_irreversible_action()` permanently open (no `end_irreversible_action()`).
+- **Async save**: `save_file_async` moves `std::fs::write` to a background thread via `spawn_blocking_then`. Callers pass a callback for success/error handling. This prevents UI freezes on slow filesystems (NFS, USB).
+- **Load cancellation**: `EditorPage` stores an `Arc<AtomicBool>` cancel token. `cancel_load()` sets it; the background work closure checks it before and after `read_to_string`. Both `close-tab` and `close_tab_for_path` call `cancel_load()` before `close_page()`.
+- **Search debounce**: Command palette uses a 150ms generation-counter debounce in `setup_search`. Each keystroke increments a `Cell<u32>`, schedules a `timeout_add_local_once`, and the callback no-ops if the counter advanced. Same pattern at 300ms for `rebuild_file_index` to coalesce rapid workspace mutations.
+- **SIMD fuzzy matching**: `fuzzy_score` and `search_items` use `nucleo-matcher` (SIMD-accelerated via AVX2/NEON) instead of hand-rolled scalar scoring. `search_items` reuses a single `Matcher` and char buffer across all candidates.
+- **ListStore splice**: Both command palette results and file tree children use `gio::ListStore::splice()` for batch updates (single `items-changed` signal) instead of per-item `append()` loops.
+- **Directory entry cap**: `build_children_model` caps entries at 10,000 per directory to prevent slow model diff updates in `GtkListView`.
+- **File index cap**: `FileIndex::rebuild` truncates at 100,000 files with a warning log.
+- **Arc workspace_root**: `IndexedFile.workspace_root` uses `Arc<PathBuf>` — files in the same workspace share one allocation instead of cloning per file.
 
 ## Build Commands
 

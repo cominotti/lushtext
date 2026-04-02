@@ -46,26 +46,34 @@ impl super::LushtextWindow {
             if let Ok(file) = result {
                 if let Some(path) = file.path() {
                     editor.set_file_path(&path);
-                    match editor.save_file() {
+                    let path_display = path.display().to_string();
+                    let window_clone = window.clone();
+                    editor.save_file_async(move |save_result| match save_result {
                         Ok(()) => {
-                            // Update tab title to reflect new filename
-                            if let Some(page) = window.imp().tab_view.selected_page() {
-                                page.set_title(&editor.title());
+                            if let Some(page) = window_clone.imp().tab_view.selected_page() {
+                                page.set_title(
+                                    &page
+                                        .child()
+                                        .downcast_ref::<crate::ui::editor_page::LushtextEditorPage>(
+                                        )
+                                        .map(|e| e.title())
+                                        .unwrap_or_default(),
+                                );
                             }
-                            window.imp().status_bar.push_message(
-                                &format!("Saved as {}", path.display()),
+                            window_clone.imp().status_bar.push_message(
+                                &format!("Saved as {path_display}"),
                                 MessageKind::Info,
                             );
-                            window.refresh_status_bar();
+                            window_clone.refresh_status_bar();
                         }
                         Err(e) => {
                             tracing::error!("Save As failed: {}", e);
-                            window
+                            window_clone
                                 .imp()
                                 .status_bar
-                                .push_message(&format!("Save failed: {}", e), MessageKind::Error);
+                                .push_message(&format!("Save failed: {e}"), MessageKind::Error);
                         }
-                    }
+                    });
                 }
             }
         });

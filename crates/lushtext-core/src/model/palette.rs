@@ -3,6 +3,7 @@
 //! Command palette domain types — pure Rust, no GTK dependencies.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// A file entry in the palette's search index.
 #[derive(Debug, Clone)]
@@ -12,14 +13,16 @@ pub struct IndexedFile {
     /// File name component (pre-extracted for fast matching).
     pub name: String,
     /// The workspace root directory that contains this file.
-    pub workspace_root: PathBuf,
+    /// Shared via `Arc` to avoid cloning the full path per file —
+    /// a workspace with 50k files saves ~2.4MB (50k × 48 bytes/PathBuf).
+    pub workspace_root: Arc<PathBuf>,
 }
 
 impl IndexedFile {
     /// Path relative to the workspace root, for display purposes.
     pub fn relative_display(&self) -> String {
         self.path
-            .strip_prefix(&self.workspace_root)
+            .strip_prefix(self.workspace_root.as_path())
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| self.path.display().to_string())
     }
@@ -109,7 +112,7 @@ mod tests {
         let file = IndexedFile {
             path: "/home/user/project/src/main.rs".into(),
             name: "main.rs".to_string(),
-            workspace_root: "/home/user/project".into(),
+            workspace_root: Arc::new("/home/user/project".into()),
         };
         assert_eq!(file.relative_display(), "src/main.rs");
     }
@@ -119,7 +122,7 @@ mod tests {
         let file = IndexedFile {
             path: "/other/path/file.rs".into(),
             name: "file.rs".to_string(),
-            workspace_root: "/home/user/project".into(),
+            workspace_root: Arc::new("/home/user/project".into()),
         };
         assert_eq!(file.relative_display(), "/other/path/file.rs");
     }
@@ -156,7 +159,7 @@ mod tests {
         let file = IndexedFile {
             path: "/home/user/project/Cargo.toml".into(),
             name: "Cargo.toml".to_string(),
-            workspace_root: "/home/user/project".into(),
+            workspace_root: Arc::new("/home/user/project".into()),
         };
         assert_eq!(file.relative_display(), "Cargo.toml");
     }

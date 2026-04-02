@@ -29,6 +29,7 @@ pub struct LushtextCommandPalette {
     pub file_index: RefCell<FileIndex>,
     pub activate_callback: RefCell<Option<ActivateCallback>>,
     pub close_callback: RefCell<Option<CloseCallback>>,
+    pub search_generation: Cell<u32>,
 }
 
 impl Default for LushtextCommandPalette {
@@ -43,6 +44,7 @@ impl Default for LushtextCommandPalette {
             file_index: RefCell::new(FileIndex::default()),
             activate_callback: RefCell::default(),
             close_callback: RefCell::default(),
+            search_generation: Cell::new(0),
         }
     }
 }
@@ -139,8 +141,21 @@ impl LushtextCommandPalette {
     fn setup_search(&self) {
         let obj = self.obj().clone();
         self.search_entry.connect_search_changed(move |entry| {
-            let query = entry.text();
-            obj.imp().rebuild_results(&query);
+            let imp = obj.imp();
+            let gen = imp.search_generation.get().wrapping_add(1);
+            imp.search_generation.set(gen);
+
+            let query = entry.text().to_string();
+            let obj_weak = obj.downgrade();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                let Some(obj) = obj_weak.upgrade() else {
+                    return;
+                };
+                if obj.imp().search_generation.get() != gen {
+                    return; // superseded by newer keystroke
+                }
+                obj.imp().rebuild_results(&query);
+            });
         });
     }
 
@@ -197,21 +212,25 @@ impl LushtextCommandPalette {
     }
 
     /// Rebuild the results list from the current query and mode.
+    /// Uses `splice` to emit a single `items-changed` signal instead of
+    /// N individual `append` calls.
     pub fn rebuild_results(&self, query: &str) {
         let mode = self.mode.get();
         let index = self.file_index.borrow();
         let results = palette::search_all(&index, query, mode, 50);
 
-        self.results_store.remove_all();
-        for result in &results {
-            let item = match &result.item {
+        let items: Vec<PaletteItem> = results
+            .iter()
+            .map(|r| match &r.item {
                 SearchResultItem::File(f) => PaletteItem::from_indexed_file(f),
                 SearchResultItem::Command(c) => PaletteItem::from_command_def(c),
-            };
-            self.results_store.append(&item);
-        }
+            })
+            .collect();
 
-        let has_results = self.results_store.n_items() > 0;
+        let old_count = self.results_store.n_items();
+        self.results_store.splice(0, old_count, &items);
+
+        let has_results = !items.is_empty();
         self.no_results_label
             .set_visible(!has_results && !query.is_empty());
 
