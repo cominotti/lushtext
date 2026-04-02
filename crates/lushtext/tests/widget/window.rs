@@ -194,35 +194,28 @@ fn test_open_different_files_creates_separate_tabs() {
 // --- Sidebar ---
 
 #[test]
-fn test_load_directory_does_not_crash() {
+fn test_sidebar_accessible() {
     ensure_gtk_init();
     let window = test_window();
-
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("file.txt"), "").unwrap();
-    window.load_directory(dir.path());
+    let _sidebar = &window.imp().sidebar;
 }
 
 #[test]
-fn test_sidebar_workspace_name() {
+fn test_sidebar_footer_exists() {
     ensure_gtk_init();
     let window = test_window();
-    window.imp().sidebar.set_workspace_name("test workspace");
+    let sidebar_imp = window.imp().sidebar.imp();
+    assert_eq!(
+        sidebar_imp.new_workspace_label.label().as_str(),
+        "New Workspace"
+    );
 }
 
 #[test]
-fn test_sidebar_double_click_activate() {
+fn test_sidebar_sections_box_exists() {
     ensure_gtk_init();
     let window = test_window();
-    // single-click-activate must be false — user expects double-click to open files.
-    // The TreeExpander's internal gesture is disabled for file rows in connect_bind,
-    // allowing GtkListView's built-in double-click activation to work.
-    assert!(!window
-        .imp()
-        .sidebar
-        .imp()
-        .file_tree_view
-        .is_single_click_activate());
+    let _sections_box = &window.imp().sidebar.imp().sections_box;
 }
 
 // --- Action enabled/disabled state ---
@@ -575,4 +568,266 @@ fn test_clamp_persists_clamped_value_to_gsettings() {
     // Clamp to 400, should persist 400 not 600
     clamp_sidebar_position(paned, 1200, settings);
     assert_eq!(settings.int(keys::SIDEBAR_POSITION), 400);
+}
+
+// --- Tab modified dot (• prefix in tab title) ---
+
+#[test]
+fn test_new_tab_no_dot_initially() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let page = window.imp().tab_view.nth_page(0);
+    assert_eq!(page.title().as_str(), "Untitled");
+}
+
+#[test]
+fn test_open_document_no_dot_initially() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.rs");
+    std::fs::write(&file_path, "fn main() {}").unwrap();
+    window.open_document(&file_path);
+    flush_events();
+
+    let page = window.imp().tab_view.nth_page(0);
+    assert_eq!(page.title().as_str(), "test.rs");
+}
+
+#[test]
+fn test_modified_buffer_shows_dot_in_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.rs");
+    std::fs::write(&file_path, "fn main() {}").unwrap();
+    window.open_document(&file_path);
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("modified content");
+    flush_events();
+
+    let page = window.imp().tab_view.nth_page(0);
+    assert_eq!(page.title().as_str(), "• test.rs");
+}
+
+#[test]
+fn test_save_clears_dot_in_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("saveme.rs");
+    std::fs::write(&file_path, "original").unwrap();
+    window.open_document(&file_path);
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("changed");
+    flush_events();
+    assert!(window.imp().tab_view.nth_page(0).title().starts_with('•'));
+
+    editor.save_file().unwrap();
+    flush_events();
+    assert_eq!(
+        window.imp().tab_view.nth_page(0).title().as_str(),
+        "saveme.rs"
+    );
+}
+
+#[test]
+fn test_untitled_tab_modified_shows_dot() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("some text");
+    flush_events();
+
+    let page = window.imp().tab_view.nth_page(0);
+    assert_eq!(page.title().as_str(), "• Untitled");
+}
+
+// --- Header bar title/subtitle ---
+
+#[test]
+fn test_header_title_shows_lushtext_when_no_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert_eq!(window.imp().title_widget.title().as_str(), "LushText");
+    assert_eq!(window.imp().title_widget.subtitle().as_str(), "");
+}
+
+#[test]
+fn test_header_title_shows_filename_after_open() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("hello.rs");
+    std::fs::write(&file_path, "fn main() {}").unwrap();
+    window.open_document(&file_path);
+    flush_events();
+
+    assert_eq!(window.imp().title_widget.title().as_str(), "hello.rs");
+}
+
+#[test]
+fn test_header_subtitle_shows_filepath_after_open() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("hello.rs");
+    std::fs::write(&file_path, "fn main() {}").unwrap();
+    window.open_document(&file_path);
+    flush_events();
+
+    assert_eq!(
+        window.imp().title_widget.subtitle().as_str(),
+        file_path.display().to_string()
+    );
+}
+
+#[test]
+fn test_header_title_shows_untitled_for_new_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    assert_eq!(window.imp().title_widget.title().as_str(), "Untitled");
+}
+
+#[test]
+fn test_header_subtitle_empty_for_untitled() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    assert_eq!(window.imp().title_widget.subtitle().as_str(), "");
+}
+
+#[test]
+fn test_header_title_updates_on_tab_switch() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let dir = tempfile::tempdir().unwrap();
+    let file1 = dir.path().join("first.rs");
+    let file2 = dir.path().join("second.rs");
+    std::fs::write(&file1, "one").unwrap();
+    std::fs::write(&file2, "two").unwrap();
+
+    window.open_document(&file1);
+    window.open_document(&file2);
+    flush_events();
+
+    // Currently on second tab
+    assert_eq!(window.imp().title_widget.title().as_str(), "second.rs");
+
+    // Switch to first tab
+    let first_page = window.imp().tab_view.nth_page(0);
+    window.imp().tab_view.set_selected_page(&first_page);
+    flush_events();
+
+    assert_eq!(window.imp().title_widget.title().as_str(), "first.rs");
+}
+
+#[test]
+fn test_header_title_resets_after_closing_all_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+    assert_eq!(window.imp().title_widget.title().as_str(), "Untitled");
+
+    activate_action(&window, "close-tab");
+    assert_eq!(window.imp().title_widget.title().as_str(), "LushText");
+    assert_eq!(window.imp().title_widget.subtitle().as_str(), "");
+}
+
+// --- Header bar modified dot (• prefix in title) ---
+
+#[test]
+fn test_header_title_no_dot_when_no_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(!window.imp().title_widget.title().starts_with('•'));
+}
+
+#[test]
+fn test_header_title_no_dot_for_clean_file() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("clean.rs");
+    std::fs::write(&file_path, "fn main() {}").unwrap();
+    window.open_document(&file_path);
+    flush_events();
+
+    assert_eq!(window.imp().title_widget.title().as_str(), "clean.rs");
+}
+
+#[test]
+fn test_header_title_dot_when_buffer_modified() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("dirty.rs");
+    std::fs::write(&file_path, "fn main() {}").unwrap();
+    window.open_document(&file_path);
+    flush_events();
+
+    active_editor(&window).buffer().set_text("changed");
+    flush_events();
+
+    assert_eq!(window.imp().title_widget.title().as_str(), "• dirty.rs");
+}
+
+#[test]
+fn test_header_title_dot_cleared_after_save() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("saved.rs");
+    std::fs::write(&file_path, "original").unwrap();
+    window.open_document(&file_path);
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("changed");
+    flush_events();
+    assert!(window.imp().title_widget.title().starts_with('•'));
+
+    editor.save_file().unwrap();
+    flush_events();
+    assert_eq!(window.imp().title_widget.title().as_str(), "saved.rs");
+}
+
+#[test]
+fn test_header_title_dot_cleared_after_closing_all_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    active_editor(&window).buffer().set_text("dirty");
+    flush_events();
+    assert!(window.imp().title_widget.title().starts_with('•'));
+
+    activate_action(&window, "close-tab");
+    assert_eq!(window.imp().title_widget.title().as_str(), "LushText");
 }

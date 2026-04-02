@@ -2,34 +2,17 @@
 <interface>
   <requires lib="gtk" version="4.14"/>
 
-  <template class="LushtextSidebar" parent="GtkBox">
+  <template class="LushtextWorkspaceSection" parent="GtkBox">
     <property name="orientation">vertical</property>
-    <property name="width-request">200</property>
 
-    <style>
-      <class name="sidebar"/>
-    </style>
-
-    <!-- Scrollable area for all workspace sections -->
-    <child>
-      <object class="GtkScrolledWindow" id="outer_scrolled_window">
-        <property name="vexpand">true</property>
-        <property name="hscrollbar-policy">never</property>
-        <child>
-          <object class="GtkBox" id="sections_box">
-            <property name="orientation">vertical</property>
-            <!-- Workspace sections appended programmatically -->
-          </object>
-        </child>
-      </object>
-    </child>
-
-    <!-- Footer: always visible below scroll area -->
+    <!-- Top separator between workspace sections -->
     <child>
       <object class="GtkSeparator"/>
     </child>
+
+    <!-- Workspace header -->
     <child>
-      <object class="GtkBox" id="footer_box">
+      <object class="GtkBox" id="header_box">
         <property name="orientation">horizontal</property>
         <property name="spacing">6</property>
         <property name="margin-start">12</property>
@@ -38,22 +21,38 @@
         <property name="margin-bottom">6</property>
 
         <child>
-          <object class="GtkLabel" id="new_workspace_label">
+          <object class="GtkLabel" id="header_label">
             <property name="label">New Workspace</property>
             <property name="hexpand">true</property>
             <property name="xalign">0</property>
             <property name="ellipsize">end</property>
             <style>
-              <class name="dim-label"/>
+              <class name="heading"/>
             </style>
           </object>
         </child>
         <child>
-          <object class="GtkButton" id="new_workspace_button">
+          <object class="GtkButton" id="add_folder_button">
             <property name="icon-name">folder-new-symbolic</property>
-            <property name="tooltip-text" translatable="yes">New Workspace</property>
+            <property name="tooltip-text" translatable="yes">Add Folder to Workspace</property>
             <style>
               <class name="flat"/>
+            </style>
+          </object>
+        </child>
+      </object>
+    </child>
+
+    <!-- File tree in inner ScrolledWindow (provides vadjustment for ListView) -->
+    <child>
+      <object class="GtkScrolledWindow" id="inner_scrolled_window">
+        <property name="propagate-natural-height">true</property>
+        <property name="vscrollbar-policy">never</property>
+        <property name="hscrollbar-policy">never</property>
+        <child>
+          <object class="GtkListView" id="file_tree_view">
+            <style>
+              <class name="navigation-sidebar"/>
             </style>
           </object>
         </child>

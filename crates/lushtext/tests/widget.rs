@@ -25,6 +25,9 @@ mod editor_page;
 #[path = "widget/sidebar.rs"]
 mod sidebar;
 
+#[path = "widget/workspace_section.rs"]
+mod workspace_section;
+
 #[path = "widget/window.rs"]
 mod window;
 

@@ -51,20 +51,7 @@ impl LushtextWindow {
 
         let page = tab_view.append(&editor_page);
         page.set_title(&editor_page.title());
-
-        let page_weak = page.downgrade();
-        editor_page.buffer().connect_modified_changed(move |buf| {
-            if let Some(page) = page_weak.upgrade() {
-                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                    let base_title = editor.title();
-                    if buf.is_modified() {
-                        page.set_title(&format!("{}*", base_title));
-                    } else {
-                        page.set_title(&base_title);
-                    }
-                }
-            }
-        });
+        self.wire_modified_indicator(&page, &editor_page);
 
         tab_view.set_selected_page(&page);
         self.update_content_stack();
@@ -76,14 +63,36 @@ impl LushtextWindow {
         let editor_page = LushtextEditorPage::new();
         let page = self.imp().tab_view.append(&editor_page);
         page.set_title("Untitled");
+        self.wire_modified_indicator(&page, &editor_page);
         self.imp().tab_view.set_selected_page(&page);
         self.update_content_stack();
         self.refresh_status_bar();
     }
 
-    /// Load a directory tree into the sidebar.
-    pub fn load_directory(&self, path: &Path) {
-        self.imp().sidebar.load_roots(&[path.to_path_buf()]);
+    /// Connect a buffer's modified-changed signal to update the tab title
+    /// and header bar. Prepends "● " to the tab title when the buffer has
+    /// unsaved changes, placing the dot immediately before the filename.
+    fn wire_modified_indicator(&self, page: &libadwaita::TabPage, editor: &LushtextEditorPage) {
+        let page_weak = page.downgrade();
+        let window_weak = self.downgrade();
+        editor.buffer().connect_modified_changed(move |buf| {
+            if let Some(page) = page_weak.upgrade() {
+                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                    let name = editor.title();
+                    if buf.is_modified() {
+                        page.set_title(&format!("• {name}"));
+                    } else {
+                        page.set_title(&name);
+                    }
+                }
+            }
+            // Only refresh header bar if this is the active tab
+            if let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade()) {
+                if window.imp().tab_view.selected_page().as_ref() == Some(&page) {
+                    window.refresh_header_bar();
+                }
+            }
+        });
     }
 
     /// Switch the content stack between "tabs" and "empty" states,
@@ -106,16 +115,52 @@ impl LushtextWindow {
         }
     }
 
-    /// Refresh the status bar metadata (encoding, file size) for the active tab.
+    /// Refresh the status bar and header bar for the active tab.
+    /// Single `active_editor()` lookup shared by both updates.
     fn refresh_status_bar(&self) {
-        let status_bar = &self.imp().status_bar;
-        match self.active_editor() {
-            Some(editor) => {
-                status_bar.set_metadata_visible(true);
-                status_bar.set_file_size(editor.file_size());
+        let imp = self.imp();
+        let editor = self.active_editor();
+        // Status bar
+        match &editor {
+            Some(e) => {
+                imp.status_bar.set_metadata_visible(true);
+                imp.status_bar.set_file_size(e.file_size());
             }
             None => {
-                status_bar.set_metadata_visible(false);
+                imp.status_bar.set_metadata_visible(false);
+            }
+        }
+        // Header bar title/subtitle + modified dot
+        self.refresh_header_bar_with(editor.as_ref());
+    }
+
+    /// Update the header bar title/subtitle to reflect the given editor.
+    /// Prepends "● " to the title when the buffer has unsaved changes.
+    /// Reverts to "LushText" with no subtitle when no editor is active.
+    fn refresh_header_bar(&self) {
+        self.refresh_header_bar_with(self.active_editor().as_ref());
+    }
+
+    fn refresh_header_bar_with(&self, editor: Option<&LushtextEditorPage>) {
+        let title_widget = &self.imp().title_widget;
+        match editor {
+            Some(editor) => {
+                let name = editor.title();
+                let title = if editor.is_modified() {
+                    format!("• {name}")
+                } else {
+                    name
+                };
+                title_widget.set_title(&title);
+                let subtitle = editor
+                    .file_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                title_widget.set_subtitle(&subtitle);
+            }
+            None => {
+                title_widget.set_title("LushText");
+                title_widget.set_subtitle("");
             }
         }
     }
@@ -137,7 +182,9 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| window.show_open_file_dialog())
                 .build(),
             gio::ActionEntry::builder("open-folder")
-                .activate(|window: &Self, _, _| window.show_open_folder_dialog())
+                .activate(|window: &Self, _, _| {
+                    window.imp().sidebar.create_new_workspace();
+                })
                 .build(),
             gio::ActionEntry::builder("save")
                 .activate(|window: &Self, _, _| {
@@ -202,13 +249,13 @@ impl LushtextWindow {
                     editor.set_file_path(new_path);
                     page.set_title(&editor.title());
                 } else if let Ok(suffix) = ep.strip_prefix(old_path) {
-                    // Directory rename: rewrite child paths
                     let updated = new_path.join(suffix);
                     editor.set_file_path(&updated);
                     page.set_title(&editor.title());
                 }
             }
         }
+        self.refresh_header_bar();
     }
 
     /// Close any tab whose file path matches `path` or is inside it (for directories).

@@ -19,6 +19,15 @@ LushtextWindow (AdwApplicationWindow)
 ├── AdwTabBar → bound to AdwTabView
 ├── GtkPaned (horizontal)
 │   ├── [start] LushtextSidebar (always visible)
+│   │   ├── GtkScrolledWindow (outer, vexpand)
+│   │   │   └── GtkBox [sections_box]
+│   │   │       └── LushtextWorkspaceSection (per workspace)
+│   │   │           ├── GtkSeparator
+│   │   │           ├── GtkBox [header: label + add_folder_button]
+│   │   │           └── GtkScrolledWindow (inner, propagate-natural-height=true)
+│   │   │               └── GtkListView + TreeListModel
+│   │   ├── GtkSeparator
+│   │   └── GtkBox [footer: "New Workspace" label + button]
 │   └── [end] GtkStack
 │       ├── "tabs": AdwTabView → LushtextEditorPage per tab
 │       └── "empty": AdwStatusPage
@@ -44,16 +53,31 @@ LushtextWindow (AdwApplicationWindow)
 - Skip hidden files (starting with `.`).
 - **Disable TreeExpander's gesture for file rows**: `GtkTreeExpander` installs an internal `GtkGestureClick` (BUBBLE phase) that intercepts click events for ALL rows — even non-expandable files. This prevents `GtkListView`'s built-in double-click activation from firing. The fix: in `connect_bind`, use `expander.observe_controllers()` to find the `GtkGestureClick` and set `propagation_phase` to `None` for file rows (disabling it) and `Bubble` for directory rows (preserving expand/collapse). This runs on every bind (including ListItem recycling). Do NOT use `single-click-activate=true` (changes UX) or CAPTURE-phase gestures (fragile, fails for first file due to `SingleSelection::selected()` timing).
 
-## Sidebar Context Menu
+## Multi-Workspace Sidebar
+
+- `LushtextSidebar` is an orchestrator: manages workspace sections, the "New Workspace" footer, and persistence (`workspaces.json`).
+- `LushtextWorkspaceSection` encapsulates per-workspace state: file tree, file context menu, header context menu.
+- **Inner ScrolledWindow pattern**: Each section wraps its `GtkListView` in `GtkScrolledWindow(propagate-natural-height=true, vscrollbar-policy=never)`. This provides the vadjustment that ListView requires. The outer ScrolledWindow handles all scrolling.
+- **Footer always visible**: The "New Workspace" footer (GtkSeparator + label + button) sits below the outer ScrolledWindow, outside the scrollable area.
+- **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder, rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
+- **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation saves to disk via `workspace_manager::save()`.
+
+## File Context Menu (per WorkspaceSection)
 
 - Single `GtkPopoverMenu` (from `gio::Menu`) attached to the `GtkListView`, not per-row popovers.
-- Right-click detection: `GtkGestureClick(button=3)` on the ListView. Use `Widget::pick(x, y)` + `find_ancestor_expander()` to locate the `TreeExpander` → `list_row()` → `FileTreeItem` at click position. No `unsafe` data storage needed.
-- Sidebar labels use the `.monospace` CSS class (same font as the editor via the shared font provider).
-- Actions are in a `sidebar` action group (`insert_action_group`) with `rename` and `delete`.
+- Right-click detection: `GtkGestureClick(button=3)` on the ListView. Use `Widget::pick(x, y)` + `find_ancestor_expander()` to locate the `TreeExpander` → `list_row()` → `FileTreeItem` at click position.
+- Actions are in a `section` action group (`insert_action_group`) with `new-file`, `new-dir`, `rename`, and `delete`.
 - Inline rename: dynamically append a `GtkEntry` to the row's content box, hide the label. Guard against double-fire from focus-out after confirm/cancel using `entry.parent().is_none()`.
 - `connect_bind` cleanup: remove any lingering rename `GtkEntry` from row recycling and restore label visibility.
 - Window integration via callback pattern: `connect_file_renamed(Fn(&Path, &Path))` and `connect_file_deleted(Fn(&Path))`, consistent with `connect_file_activated`.
 - Directory operations must use `Path::starts_with` prefix matching for tab path updates and closures (not just exact equality).
+
+## Workspace Header Context Menu (per WorkspaceSection)
+
+- `GtkPopoverMenu` attached to `header_box` with "Rename Workspace" and "Unlist Workspace" actions.
+- Actions are in a `ws-header` action group on the section widget.
+- Rename shows `AdwAlertDialog` with `extra_child` text entry pre-filled with current name.
+- Unlist shows `AdwAlertDialog` confirmation. Files are NOT deleted from disk.
 
 ## UI Templates
 

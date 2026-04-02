@@ -175,6 +175,9 @@ impl ObjectImpl for LushtextWindow {
 
         // Start with empty state
         obj.update_content_stack();
+
+        // Load workspaces from disk
+        self.sidebar.load_workspaces();
     }
 }
 

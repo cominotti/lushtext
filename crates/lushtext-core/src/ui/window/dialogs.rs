@@ -24,28 +24,6 @@ impl super::LushtextWindow {
         });
     }
 
-    pub(super) fn show_open_folder_dialog(&self) {
-        let dialog = gtk4::FileDialog::builder()
-            .title("Open Folder")
-            .modal(true)
-            .build();
-
-        let window = self.clone();
-        dialog.select_folder(Some(self), gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
-                    window.load_directory(&path);
-                    window.imp().sidebar.set_workspace_name(
-                        path.file_name()
-                            .map(|n| n.to_string_lossy())
-                            .as_deref()
-                            .unwrap_or("workspace"),
-                    );
-                }
-            }
-        });
-    }
-
     pub(super) fn show_save_as_dialog(&self) {
         let Some(editor) = self.active_editor() else {
             return;

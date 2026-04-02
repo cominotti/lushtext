@@ -5,6 +5,7 @@
     <file compressed="true" preprocess="xml-stripblanks">ui/window.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/editor-page.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/sidebar.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ui/workspace-section.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/search-bar.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/status-bar.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/preferences.ui</file>

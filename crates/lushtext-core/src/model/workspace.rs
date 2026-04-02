@@ -47,7 +47,7 @@ impl WorkspacesFile {
         if self.workspaces.is_empty() {
             let default_ws = WorkspaceConfig {
                 id: WorkspaceId(generate_id()),
-                name: "workspace".to_string(),
+                name: "New Workspace".to_string(),
                 entries: Vec::new(),
             };
             self.workspaces.push(default_ws);
@@ -75,6 +75,33 @@ impl WorkspacesFile {
     pub fn remove_entry(&mut self, ws_id: &WorkspaceId, path: &Path) {
         if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id) {
             ws.entries.retain(|e| e.path() != path);
+        }
+    }
+
+    /// Add a new workspace with the given name. Returns the generated ID.
+    pub fn add_workspace(&mut self, name: &str) -> WorkspaceId {
+        let id = WorkspaceId(generate_id());
+        self.workspaces.push(WorkspaceConfig {
+            id: id.clone(),
+            name: name.to_string(),
+            entries: Vec::new(),
+        });
+        id
+    }
+
+    /// Remove a workspace by ID. If the removed workspace was active,
+    /// switches active to the first remaining workspace.
+    pub fn remove_workspace(&mut self, ws_id: &WorkspaceId) {
+        self.workspaces.retain(|w| &w.id != ws_id);
+        if self.active_workspace.as_ref() == Some(ws_id) {
+            self.active_workspace = self.workspaces.first().map(|w| w.id.clone());
+        }
+    }
+
+    /// Rename a workspace. No-op if the workspace ID is not found.
+    pub fn rename_workspace(&mut self, ws_id: &WorkspaceId, new_name: &str) {
+        if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id) {
+            ws.name = new_name.to_string();
         }
     }
 }
@@ -106,7 +133,7 @@ mod tests {
     fn test_active_workspace_creates_default() {
         let mut file = WorkspacesFile::default();
         let ws = file.active_workspace();
-        assert_eq!(ws.name, "workspace");
+        assert_eq!(ws.name, "New Workspace");
         assert!(file.active_workspace.is_some());
     }
 
@@ -302,5 +329,71 @@ mod tests {
     fn test_generated_ids_are_nonempty() {
         let (file, _) = file_with_default_workspace();
         assert!(!file.workspaces[0].id.0.is_empty());
+    }
+
+    #[test]
+    fn test_add_workspace_creates_with_id() {
+        let mut file = WorkspacesFile::default();
+        let id = file.add_workspace("my project");
+        assert_eq!(file.workspaces.len(), 1);
+        assert_eq!(file.workspaces[0].name, "my project");
+        assert_eq!(file.workspaces[0].id, id);
+        assert!(file.workspaces[0].entries.is_empty());
+    }
+
+    #[test]
+    fn test_add_workspace_appends_to_existing() {
+        let (mut file, _) = file_with_default_workspace();
+        let id = file.add_workspace("second");
+        assert_eq!(file.workspaces.len(), 2);
+        assert_eq!(file.workspaces[1].id, id);
+        assert_eq!(file.workspaces[1].name, "second");
+    }
+
+    #[test]
+    fn test_remove_workspace_basic() {
+        let mut file = WorkspacesFile::default();
+        let id1 = file.add_workspace("first");
+        let _id2 = file.add_workspace("second");
+        assert_eq!(file.workspaces.len(), 2);
+
+        file.remove_workspace(&id1);
+        assert_eq!(file.workspaces.len(), 1);
+        assert_eq!(file.workspaces[0].name, "second");
+    }
+
+    #[test]
+    fn test_remove_workspace_updates_active() {
+        let mut file = WorkspacesFile::default();
+        let id1 = file.add_workspace("first");
+        let id2 = file.add_workspace("second");
+        file.active_workspace = Some(id1.clone());
+
+        file.remove_workspace(&id1);
+        assert_eq!(file.active_workspace, Some(id2));
+    }
+
+    #[test]
+    fn test_remove_workspace_noop_for_unknown() {
+        let (mut file, _) = file_with_default_workspace();
+        let count_before = file.workspaces.len();
+        file.remove_workspace(&WorkspaceId("nonexistent".into()));
+        assert_eq!(file.workspaces.len(), count_before);
+    }
+
+    #[test]
+    fn test_rename_workspace_basic() {
+        let mut file = WorkspacesFile::default();
+        let id = file.add_workspace("old name");
+        file.rename_workspace(&id, "new name");
+        assert_eq!(file.workspaces[0].name, "new name");
+    }
+
+    #[test]
+    fn test_rename_workspace_noop_for_unknown() {
+        let (mut file, _) = file_with_default_workspace();
+        let original_name = file.workspaces[0].name.clone();
+        file.rename_workspace(&WorkspaceId("nonexistent".into()), "changed");
+        assert_eq!(file.workspaces[0].name, original_name);
     }
 }
