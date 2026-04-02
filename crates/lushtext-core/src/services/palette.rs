@@ -32,7 +32,13 @@ impl FileIndex {
         let mut files = Vec::new();
         let mut visited = HashSet::new();
         for root in roots {
-            collect_files_recursive(root, root, &mut files, &mut visited, 0);
+            // Resolve the workspace root to a canonical path so we can reject
+            // symlinks that escape (e.g., Wine dosdevices/z: → /).
+            let canonical_root = match root.canonicalize() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            collect_files_recursive(root, root, &mut files, &mut visited, &canonical_root, 0);
         }
         Self { files }
     }
@@ -58,15 +64,20 @@ const MAX_SCAN_DEPTH: u32 = 64;
 
 /// Recursively scan a directory, collecting files (not directories) into `out`.
 ///
-/// Tracks visited canonical paths to break symlink cycles, and enforces a depth
-/// limit. Both defenses are needed: canonical path tracking handles direct cycles
-/// (symlink → ancestor), while the depth limit catches indirect expansion from
-/// non-cyclic but deeply nested symlink trees.
+/// Three layers of protection against problematic filesystem structures:
+/// 1. **Workspace containment**: symlinks whose canonical target is outside
+///    `canonical_root` are skipped (prevents Wine `dosdevices/z:` → `/` from
+///    scanning the entire filesystem).
+/// 2. **Visited-path tracking**: canonical paths already seen are skipped
+///    (breaks direct symlink cycles like `dosdevices/c:` → parent).
+/// 3. **Depth limit**: recursion beyond `MAX_SCAN_DEPTH` is stopped
+///    (catches pathological non-cyclic deep trees).
 fn collect_files_recursive(
     dir: &Path,
     workspace_root: &Path,
     out: &mut Vec<IndexedFile>,
     visited: &mut HashSet<PathBuf>,
+    canonical_root: &Path,
     depth: u32,
 ) {
     if depth > MAX_SCAN_DEPTH {
@@ -77,18 +88,29 @@ fn collect_files_recursive(
         return;
     }
 
-    // Resolve to canonical path to detect symlink cycles
     let canonical = match dir.canonicalize() {
         Ok(p) => p,
-        Err(_) => return, // unresolvable path (broken symlink, permission denied)
+        Err(_) => return, // broken symlink or permission denied
     };
+
+    if !canonical.starts_with(canonical_root) {
+        return;
+    }
+
     if !visited.insert(canonical) {
-        return; // already visited — symlink cycle
+        return;
     }
 
     for (path, is_dir) in file_tree::scan_directory(dir) {
         if is_dir {
-            collect_files_recursive(&path, workspace_root, out, visited, depth + 1);
+            collect_files_recursive(
+                &path,
+                workspace_root,
+                out,
+                visited,
+                canonical_root,
+                depth + 1,
+            );
         } else {
             let name = path
                 .file_name()
@@ -242,8 +264,7 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<u32> {
     fuzzy_score_chars(&query_chars, candidate)
 }
 
-/// Inner scoring function that takes pre-lowercased query chars.
-/// Avoids re-allocating the query on every call within `search_items`.
+/// Pre-lowercased query avoids re-allocating on every call within `search_items`.
 fn fuzzy_score_chars(query_chars: &[char], candidate: &str) -> Option<u32> {
     if query_chars.is_empty() {
         return Some(0);
@@ -451,6 +472,11 @@ mod tests {
         assert!(results.len() <= 3);
     }
 
+    /// Extract file names from an index for assertion.
+    fn file_names(index: &FileIndex) -> Vec<&str> {
+        index.files().iter().map(|f| f.name.as_str()).collect()
+    }
+
     // --- FileIndex ---
 
     #[test]
@@ -477,7 +503,7 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
 
         let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
-        let names: Vec<&str> = index.files().iter().map(|f| f.name.as_str()).collect();
+        let names = file_names(&index);
         assert!(names.contains(&"main.rs"));
         assert!(names.contains(&"Cargo.toml"));
     }
@@ -638,7 +664,7 @@ mod tests {
 
         let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
         // Should find file.rs without infinite recursion
-        let names: Vec<&str> = index.files().iter().map(|f| f.name.as_str()).collect();
+        let names = file_names(&index);
         assert!(names.contains(&"file.rs"));
         // Should NOT have duplicates from following the cycle
         assert_eq!(
@@ -661,7 +687,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("a"), dir.path().join("b/link_to_a")).unwrap();
 
         let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
-        let names: Vec<&str> = index.files().iter().map(|f| f.name.as_str()).collect();
+        let names = file_names(&index);
         assert!(names.contains(&"file_a.rs"));
         assert!(names.contains(&"file_b.rs"));
         // No duplicates
@@ -679,7 +705,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
 
         let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
-        let names: Vec<&str> = index.files().iter().map(|f| f.name.as_str()).collect();
+        let names = file_names(&index);
         assert!(names.contains(&"target.rs"));
         // Canonical path dedup means it appears once even though accessible via two paths
         assert_eq!(names.iter().filter(|n| **n == "target.rs").count(), 1);
@@ -694,7 +720,7 @@ mod tests {
         std::os::unix::fs::symlink("/nonexistent/target", dir.path().join("broken")).unwrap();
 
         let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
-        let names: Vec<&str> = index.files().iter().map(|f| f.name.as_str()).collect();
+        let names = file_names(&index);
         assert!(names.contains(&"real.rs"));
         assert!(!names.contains(&"broken"));
     }
@@ -712,7 +738,7 @@ mod tests {
         std::fs::write(current.join("deep_file.rs"), "").unwrap();
 
         let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
-        let names: Vec<&str> = index.files().iter().map(|f| f.name.as_str()).collect();
+        let names = file_names(&index);
         assert!(names.contains(&"deep_file.rs"));
     }
 
@@ -734,10 +760,147 @@ mod tests {
 
         let index = FileIndex::rebuild(&[game_dir.clone()]);
         // Should complete without hanging
-        // game.exe should be found
-        let names: Vec<&str> = index.files().iter().map(|f| f.name.as_str()).collect();
+        let names = file_names(&index);
         assert!(names.contains(&"game.exe"));
-        // c: cycle should be detected and broken
+        // c: cycle detected, z: escape rejected — no duplicates or foreign files
         assert_eq!(names.iter().filter(|n| **n == "game.exe").count(), 1);
+    }
+
+    // --- Workspace containment (escape prevention) ---
+
+    #[cfg(unix)]
+    #[test]
+    fn test_file_index_symlink_escape_to_root_rejected() {
+        // A symlink to / should be completely skipped (the z: case)
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("local.rs"), "").unwrap();
+        std::fs::create_dir(dir.path().join("escape")).unwrap();
+        std::os::unix::fs::symlink("/", dir.path().join("escape/root")).unwrap();
+
+        let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+        let names = file_names(&index);
+        assert!(names.contains(&"local.rs"));
+        // /etc/passwd, /usr/bin/* etc. must NOT appear
+        assert!(
+            !names.iter().any(|n| *n == "passwd" || *n == "hosts"),
+            "system files must not leak into index: {:?}",
+            names
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_file_index_symlink_escape_to_tmp_rejected() {
+        // A symlink pointing to a sibling tempdir (outside workspace) is rejected
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(workspace.path().join("inside.rs"), "").unwrap();
+        std::fs::write(outside.path().join("outside.rs"), "").unwrap();
+
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("escape")).unwrap();
+
+        let index = FileIndex::rebuild(&[workspace.path().to_path_buf()]);
+        let names = file_names(&index);
+        assert!(names.contains(&"inside.rs"));
+        assert!(
+            !names.contains(&"outside.rs"),
+            "files outside workspace root must not be indexed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_file_index_symlink_within_workspace_allowed() {
+        // A symlink that stays within the workspace root IS followed
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::fs::write(dir.path().join("real/allowed.rs"), "").unwrap();
+        // link → real (both under workspace root)
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("shortcut")).unwrap();
+
+        let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+        let names = file_names(&index);
+        assert!(names.contains(&"allowed.rs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_file_index_symlink_escape_no_child_scanning() {
+        // When a symlink escapes, its children must not be scanned at all.
+        // We verify this indirectly: no files from the escape target appear.
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::create_dir(outside.path().join("deep")).unwrap();
+        std::fs::write(outside.path().join("deep/secret.rs"), "").unwrap();
+
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("escape")).unwrap();
+        std::fs::write(workspace.path().join("safe.rs"), "").unwrap();
+
+        let index = FileIndex::rebuild(&[workspace.path().to_path_buf()]);
+        let names = file_names(&index);
+        assert!(names.contains(&"safe.rs"));
+        assert!(
+            !names.contains(&"secret.rs"),
+            "child of escaped dir must not be scanned"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_file_index_wine_full_dosdevices_simulation() {
+        // Full Wine prefix simulation with multiple drive letters
+        let dir = TempDir::new().unwrap();
+        let prefix = dir.path().join("prefix");
+        let drive_c = prefix.join("drive_c");
+        std::fs::create_dir_all(&drive_c).unwrap();
+        std::fs::write(drive_c.join("Program Files"), "").unwrap();
+
+        let dosdevices = prefix.join("dosdevices");
+        std::fs::create_dir(&dosdevices).unwrap();
+        // c: → drive_c (within workspace)
+        std::os::unix::fs::symlink(&drive_c, dosdevices.join("c:")).unwrap();
+        // z: → / (escape to filesystem root)
+        std::os::unix::fs::symlink("/", dosdevices.join("z:")).unwrap();
+        // s: → parent (cycle)
+        std::os::unix::fs::symlink(&prefix, dosdevices.join("s:")).unwrap();
+
+        let index = FileIndex::rebuild(&[prefix.clone()]);
+        let names = file_names(&index);
+        // drive_c content should be found
+        assert!(names.contains(&"Program Files"));
+        // No duplicates from c: symlink (canonical dedup)
+        assert_eq!(names.iter().filter(|n| **n == "Program Files").count(), 1);
+        // No system files from z: escape
+        assert!(!names.iter().any(|n| *n == "passwd" || *n == "hosts"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_file_index_permission_denied_dir_skipped() {
+        // A directory with no read permission should be silently skipped
+        // (not cause errors or stop scanning siblings)
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("readable.rs"), "").unwrap();
+        let restricted = dir.path().join("restricted");
+        std::fs::create_dir(&restricted).unwrap();
+        std::fs::write(restricted.join("hidden.rs"), "").unwrap();
+
+        // Remove read permission on the restricted directory
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&restricted, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+        let names = file_names(&index);
+        assert!(
+            names.contains(&"readable.rs"),
+            "siblings of restricted dir should be indexed"
+        );
+        assert!(
+            !names.contains(&"hidden.rs"),
+            "files in restricted dir should not appear"
+        );
+
+        // Restore permissions for cleanup
+        std::fs::set_permissions(&restricted, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
