@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::config::{self, keys};
+use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::sidebar::LushtextSidebar;
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
@@ -28,6 +29,10 @@ pub struct LushtextWindow {
     pub sidebar: TemplateChild<LushtextSidebar>,
     #[template_child]
     pub status_bar: TemplateChild<LushtextStatusBar>,
+    #[template_child]
+    pub palette_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
+    pub command_palette: TemplateChild<LushtextCommandPalette>,
 
     pub settings: gio::Settings,
 }
@@ -43,6 +48,8 @@ impl Default for LushtextWindow {
             main_paned: TemplateChild::default(),
             sidebar: TemplateChild::default(),
             status_bar: TemplateChild::default(),
+            palette_revealer: TemplateChild::default(),
+            command_palette: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
         }
     }
@@ -58,6 +65,7 @@ impl ObjectSubclass for LushtextWindow {
         LushtextSidebar::ensure_type();
         LushtextEditorPage::ensure_type();
         LushtextStatusBar::ensure_type();
+        LushtextCommandPalette::ensure_type();
 
         klass.bind_template();
     }
@@ -160,6 +168,37 @@ impl ObjectImpl for LushtextWindow {
             window.open_document(path);
         });
 
+        // --- Command palette callbacks ---
+        let window = obj.clone();
+        self.command_palette.connect_item_activated(move |item| {
+            if item.is_file() {
+                if let Some(path) = item.file_path() {
+                    window.open_document(&path);
+                }
+            } else if item.is_command() {
+                let action_id = item.action_id();
+                if let Some(stripped) = action_id.strip_prefix("win.") {
+                    gtk4::prelude::ActionGroupExt::activate_action(&window, stripped, None);
+                } else if let Some(stripped) = action_id.strip_prefix("app.") {
+                    if let Some(app) = window.application() {
+                        gtk4::prelude::ActionGroupExt::activate_action(&app, stripped, None);
+                    }
+                }
+            }
+            window.close_command_palette();
+        });
+
+        let window = obj.clone();
+        self.command_palette.connect_close_requested(move || {
+            window.close_command_palette();
+        });
+
+        // --- Sidebar workspace change → rebuild file index ---
+        let window = obj.clone();
+        self.sidebar.connect_workspace_changed(move || {
+            window.rebuild_file_index();
+        });
+
         // --- Tab change signals ---
         let window = obj.clone();
         self.tab_view
@@ -176,8 +215,9 @@ impl ObjectImpl for LushtextWindow {
         // Start with empty state
         obj.update_content_stack();
 
-        // Load workspaces from disk
+        // Load workspaces from disk and build initial file index
         self.sidebar.load_workspaces();
+        obj.rebuild_file_index();
     }
 }
 
@@ -187,6 +227,13 @@ impl WidgetImpl for LushtextWindow {
         // Clamp sidebar on every allocation — this is the definitive width,
         // free from the stale-value timing issues of property notifications.
         clamp_sidebar_position(&self.main_paned, width, &self.settings);
+        // Keep palette at 60% window width (guarded to avoid re-layout cycles)
+        if width > 0 {
+            let palette_width = width * 6 / 10;
+            if self.command_palette.width_request() != palette_width {
+                self.command_palette.set_width_request(palette_width);
+            }
+        }
     }
 }
 

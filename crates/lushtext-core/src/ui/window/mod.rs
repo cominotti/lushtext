@@ -7,6 +7,8 @@ mod imp;
 
 pub use imp::clamp_sidebar_position;
 
+use crate::services::async_task;
+use crate::services::palette::FileIndex;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -234,6 +236,9 @@ impl LushtextWindow {
                     window.refresh_status_bar();
                 })
                 .build(),
+            gio::ActionEntry::builder("toggle-command-palette")
+                .activate(|window: &Self, _, _| window.toggle_command_palette())
+                .build(),
         ]);
     }
 
@@ -280,6 +285,37 @@ impl LushtextWindow {
         self.refresh_status_bar();
     }
 
+    fn toggle_command_palette(&self) {
+        let imp = self.imp();
+        if imp.palette_revealer.reveals_child() {
+            self.close_command_palette();
+        } else {
+            imp.palette_revealer.set_reveal_child(true);
+            imp.command_palette.open();
+        }
+    }
+
+    fn close_command_palette(&self) {
+        let imp = self.imp();
+        imp.command_palette.close();
+        imp.palette_revealer.set_reveal_child(false);
+    }
+
+    /// Build the file index from all workspace roots on a background thread.
+    pub fn rebuild_file_index(&self) {
+        let roots = self.imp().sidebar.workspace_roots();
+        let window_weak = self.downgrade();
+        async_task::spawn_blocking_then(
+            (),
+            move || FileIndex::rebuild(&roots),
+            move |(), index| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.imp().command_palette.set_file_index(index);
+                }
+            },
+        );
+    }
+
     fn setup_shortcuts(&self) {
         let controller = gtk4::ShortcutController::new();
         controller.set_scope(gtk4::ShortcutScope::Managed);
@@ -291,6 +327,7 @@ impl LushtextWindow {
             ("win.save-as", "<Control><Shift>s"),
             ("win.toggle-search", "<Control>f"),
             ("win.close-tab", "<Control>w"),
+            ("win.toggle-command-palette", "<Control>p"),
         ];
 
         for (action, accel) in shortcuts {

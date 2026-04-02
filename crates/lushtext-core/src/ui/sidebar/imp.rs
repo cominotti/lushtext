@@ -31,6 +31,7 @@ pub struct LushtextSidebar {
     pub rename_callback: RefCell<Option<RenameCallback>>,
     pub delete_callback: RefCell<Option<FileCallback>>,
     pub create_callback: RefCell<Option<FileCallback>>,
+    pub workspace_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 #[glib::object_subclass]

@@ -90,6 +90,27 @@ impl LushtextSidebar {
         *self.imp().create_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_workspace_changed<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().workspace_changed_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Collect all directory root paths from all workspaces.
+    /// Used by the window to build the command palette's file index.
+    pub fn workspace_roots(&self) -> Vec<PathBuf> {
+        use crate::model::workspace::WorkspaceEntry;
+        self.imp()
+            .workspaces_file
+            .borrow()
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.entries.iter())
+            .filter_map(|entry| match entry {
+                WorkspaceEntry::Directory { path } => Some(path.clone()),
+                WorkspaceEntry::File { .. } => None,
+            })
+            .collect()
+    }
+
     // --- Internal orchestration ---
 
     /// Build workspace sections from a loaded WorkspacesFile.
@@ -250,6 +271,7 @@ impl LushtextSidebar {
         let section = self.create_section(ws_id, &name, &[path]);
         imp.sections_box.append(&section);
         imp.sections.borrow_mut().push(section);
+        self.notify_workspace_changed();
     }
 
     /// Handle "Replace Workspace Root" for an existing workspace.
@@ -293,6 +315,7 @@ impl LushtextSidebar {
                             section.load_roots(&[path]);
                             section.set_workspace_name(&name);
                         });
+                        sidebar.notify_workspace_changed();
                     }
                 }
             }
@@ -377,10 +400,19 @@ impl LushtextSidebar {
                     let section = sections.remove(idx);
                     imp.sections_box.remove(&section);
                 }
+                drop(sections);
+                sidebar.notify_workspace_changed();
             }
         });
 
         dialog.present(Some(&root));
+    }
+
+    /// Notify the window that workspace structure changed (for file index rebuild).
+    fn notify_workspace_changed(&self) {
+        if let Some(ref cb) = *self.imp().workspace_changed_callback.borrow() {
+            cb();
+        }
     }
 
     /// Save the current workspace state to disk.

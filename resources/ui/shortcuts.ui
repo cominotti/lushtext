@@ -42,6 +42,12 @@
                 <property name="accelerator">&lt;Control&gt;w</property>
               </object>
             </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Command Palette</property>
+                <property name="accelerator">&lt;Control&gt;p</property>
+              </object>
+            </child>
           </object>
         </child>
 

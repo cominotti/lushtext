@@ -30,6 +30,21 @@
   color: @error_color;
 }
 
+/* Command palette: floating overlay at top-center */
+.command-palette-container {
+  background-color: @window_bg_color;
+  border-radius: 12px;
+  border: 1px solid @card_shade_color;
+  padding: 4px;
+  margin-top: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.command-palette-mode {
+  color: @accent_color;
+  font-weight: bold;
+}
+
 /* Sidebar separator */
 .sidebar > separator {
   min-height: 1px;

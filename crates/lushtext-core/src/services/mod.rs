@@ -5,5 +5,6 @@
 pub mod async_task;
 pub mod file_tree;
 pub mod json_store;
+pub mod palette;
 pub mod session_service;
 pub mod workspace_manager;
