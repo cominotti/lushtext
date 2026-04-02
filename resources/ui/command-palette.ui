@@ -20,9 +20,9 @@
 
         <child>
           <object class="GtkLabel" id="mode_label">
-            <property name="label">All</property>
+            <property name="label">All ⇥</property>
             <property name="halign">start</property>
-            <property name="width-chars">10</property>
+            <property name="width-chars">14</property>
             <style>
               <class name="caption"/>
               <class name="command-palette-mode"/>

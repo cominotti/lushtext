@@ -112,7 +112,7 @@ fn test_command_palette_starts_with_all_mode() {
 fn test_command_palette_mode_label_initial() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
-    assert_eq!(palette.imp().mode_label.label().as_str(), "All");
+    assert_eq!(palette.imp().mode_label.label().as_str(), "All ⇥");
 }
 
 #[test]

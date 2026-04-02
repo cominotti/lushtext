@@ -79,9 +79,9 @@ impl SearchMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::All => "All",
-            Self::Files => "Files",
-            Self::Commands => "Commands",
+            Self::All => "All ⇥",
+            Self::Files => "Files ⇥",
+            Self::Commands => "Commands ⇥",
         }
     }
 }
@@ -146,9 +146,9 @@ mod tests {
 
     #[test]
     fn test_search_mode_labels() {
-        assert_eq!(SearchMode::All.label(), "All");
-        assert_eq!(SearchMode::Files.label(), "Files");
-        assert_eq!(SearchMode::Commands.label(), "Commands");
+        assert_eq!(SearchMode::All.label(), "All ⇥");
+        assert_eq!(SearchMode::Files.label(), "Files ⇥");
+        assert_eq!(SearchMode::Commands.label(), "Commands ⇥");
     }
 
     #[test]
