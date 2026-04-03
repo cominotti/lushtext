@@ -1,16 +1,42 @@
 ---
 name: gtk-perf-review
-description: "Unified performance review entry point for GTK4/Libadwaita Rust code — dispatches parallel subagents for responsiveness (main-thread blocking, signal handlers, timers), Rust optimization (SIMD coverage, allocations, modern idioms, benchmarks), and scale (large files, search indexing, file trees, RAM budgets). Use this skill whenever reviewing or writing Rust code that touches UI, file I/O, async patterns, search, indexing, signal handlers, TreeListModel, or any performance-sensitive path. This is the single entry point that replaces invoking gtk-responsiveness, gtk-perf-rust-optimize, and gtk-perf-scale separately. Trigger on any .rs file change in ui/ or services/, any mention of performance, responsiveness, memory, RAM, threading, large files, slow search, SIMD, allocations, zero-copy, memchr, simdutf8, benchmarks, or 'app not responding'. Also trigger on pull request reviews involving Rust code."
+description: "Unified performance review entry point for GTK4/Libadwaita Rust code — dispatches parallel subagents for responsiveness (main-thread blocking, signal handlers, timers), Rust code quality (SIMD hot paths, modern idioms, benchmarks), and scale (large files, search indexing, file trees, RAM budgets). Use this skill whenever reviewing or writing Rust code that touches UI, file I/O, async patterns, search, indexing, signal handlers, TreeListModel, or any performance-sensitive path. This is the single entry point that replaces invoking gtk-responsiveness, gtk-perf-rust-optimize, and gtk-perf-scale separately. Trigger on any .rs file change in ui/ or services/, any mention of performance, responsiveness, memory, RAM, threading, large files, slow search, SIMD, benchmarks, or 'app not responding'. Also trigger on pull request reviews involving Rust code."
 ---
 
-Unified performance review for LushText. This skill is a lightweight orchestrator that dispatches three focused subagents — one for **responsiveness** (main-thread blocking), one for **scale** (data-path performance and RAM), and one for **Rust optimization** (SIMD coverage, allocations, modern idioms) — then merges their reports into a single unified audit.
+Unified performance review for LushText. This skill is a lightweight orchestrator that dispatches three focused subagents — one for **responsiveness** (main-thread blocking), one for **scale** (data-path performance and RAM), and one for **Rust code quality** (SIMD hot paths, modern idioms, benchmark coverage) — then merges their reports into a single unified audit.
+
+## Philosophy: Readability First
+
+Performance matters, but **code readability is the top priority**. Every recommendation from this review must pass the readability gate:
+
+> **Would a new contributor understand this code on first read?**
+
+If an optimization makes the code harder to understand — introduces unfamiliar abstractions, adds indirection, or trades clarity for marginal throughput — it is a net negative and should not be recommended. The best performance patterns are the ones that are also the clearest to read.
+
+This means:
+- **Only flag things a real user would notice.** A 50ms UI freeze is worth fixing. Saving 4KB on a heap extraction is not.
+- **Prefer simple, idiomatic Rust over clever micro-optimizations.** `format!()` is fine. `.to_string()` is fine. `.clone()` is fine when the alternative adds complexity.
+- **Sophisticated patterns need clear abstractions.** If SIMD code is recommended, the wrapper must be self-documenting. If an async pattern is complex, the helper function must have a clear name and purpose.
+
+### What We Do NOT Flag
+
+These are explicitly out of scope — do not report findings about:
+
+- **Trivial allocation differences**: `.to_string_lossy().to_string()` vs `.into_owned()`, `format!()` vs `push_str()`, intermediate collections under 1000 items
+- **Speculative `Cow<str>` opportunities**: Cow adds complexity; only worth it when profiling proves a hot path
+- **`Vec::with_capacity()` for small collections**: Under ~1000 items, the doubling strategy is fine
+- **`retain()` without `shrink_to_fit()`**: The OS reclaims pages; explicit shrinking is rarely worth the code noise
+- **Clone avoidance in non-hot paths**: A few extra clones in setup code, signal wiring, or error paths are perfectly fine
+- **Drop ordering micro-optimization**: Scoping intermediates to free memory 1ms earlier is not worth the nested blocks
+
+The threshold is simple: **if you need a benchmark to prove the difference exists, it's a microoptimization.**
 
 ## Why This Exists
 
 LushText has three complementary performance skills:
 - **gtk-responsiveness**: Ensures the GTK main thread stays free (<16ms per frame)
 - **gtk-perf-scale**: Ensures data paths scale to large inputs without OOM or multi-second delays
-- **gtk-perf-rust-optimize**: Ensures Rust code is maximally efficient (SIMD coverage, allocation waste, modern idioms, benchmark completeness)
+- **gtk-perf-rust-optimize**: Ensures Rust code is idiomatic, correct, and uses SIMD where the codebase already has established patterns
 
 They cover different concerns but often all apply to the same code change. This umbrella skill dispatches all three in parallel and produces one unified report, avoiding duplicate work and ensuring complete coverage.
 
@@ -41,22 +67,23 @@ This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent inte
    Return the aggregated report with all findings tagged [FLAG], [RECOMMEND], [CONSIDER], or [GOOD].
    ```
 
-   **Subagent B: Rust Optimization Review**
+   **Subagent B: Rust Code Quality Review**
    ```
-   You are performing a Rust-level optimization review for the LushText text editor.
+   You are performing a Rust code quality review for the LushText text editor, focusing on idiomatic patterns, correctness, and SIMD coverage on established hot paths.
 
    Read the skill file at: .claude/skills/gtk-perf-rust-optimize/SKILL.md
 
    Follow its Execution Model exactly:
    1. Match the changed files against subagent trigger patterns
-   2. Always include allocation-audit (cross-cutting)
-   3. Dispatch relevant subagents (simd-coverage-audit, allocation-audit, modern-rust-audit, benchmark-gap-audit) in parallel
-   4. Aggregate their findings into a single optimization report
+   2. Dispatch relevant subagents (simd-coverage-audit, modern-rust-audit) in parallel
+   3. Aggregate their findings into a single code quality report
+
+   IMPORTANT: Do NOT flag microoptimizations. Only flag issues where: (a) a user would notice the difference, (b) the fix improves both correctness AND readability, or (c) an established SIMD pattern is missing on a proven hot path.
 
    Changed files:
    {changed_files}
 
-   Return the aggregated report with all findings tagged [FLAG], [RECOMMEND], [CONSIDER], or [GOOD], including SIMD coverage and allocation impact summaries.
+   Return the aggregated report with all findings tagged [FLAG], [RECOMMEND], [CONSIDER], or [GOOD].
    ```
 
    **Subagent C: Scale & RAM Review**
@@ -71,6 +98,8 @@ This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent inte
    3. Dispatch relevant subagents (large-file-audit, search-index-audit, file-tree-audit, ram-budget-audit, benchmark-audit) in parallel
    4. Aggregate their findings into a single scale report
 
+   IMPORTANT: Focus on architectural memory concerns (buffer budgets, index caps, concurrent load limits), not micro allocation patterns.
+
    Changed files:
    {changed_files}
 
@@ -79,9 +108,10 @@ This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent inte
 
 3. **Merge reports** — when all three subagents return, produce the unified report:
    - Combine all findings from all three reports
-   - **Deduplicate**: if multiple subagents flag the same issue (e.g., responsiveness flags `fs::write` on main thread, scale flags missing file size check, rust-optimize flags missing simdutf8 on the same load path), keep all perspectives but group them under one heading
+   - **Deduplicate**: if multiple subagents flag the same issue (e.g., responsiveness flags `fs::write` on main thread, scale flags missing file size check), keep all perspectives but group them under one heading
+   - **Apply the readability gate**: before including any [RECOMMEND] or [CONSIDER] finding, ask: "does the suggested fix make the code harder to read?" If yes, either reframe the suggestion to preserve readability or drop it
    - Sort by severity: FLAG → RECOMMEND → CONSIDER → GOOD
-   - Add a **Cross-Cutting Summary** section noting where responsiveness, scale, and optimization concerns overlap
+   - Add a **Cross-Cutting Summary** section noting where responsiveness, scale, and code quality concerns overlap
 
 ## Unified Report Format
 
@@ -91,13 +121,11 @@ This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent inte
 ### Overview
 - **Files reviewed**: N
 - **Responsiveness findings**: X flag, Y recommend, Z consider
-- **Rust optimization findings**: X flag, Y recommend, Z consider
+- **Code quality findings**: X flag, Y recommend, Z consider
 - **Scale findings**: X flag, Y recommend, Z consider
-- **SIMD coverage**: Brief status
-- **RAM impact**: Brief summary
 
 ### Cross-Cutting Concerns
-Issues that span multiple skills (e.g., a blocking I/O call that also lacks a file size check and uses scalar UTF-8 validation). List them here with all perspectives.
+Issues that span multiple skills (e.g., a blocking I/O call that also lacks a file size check). List them here with all perspectives.
 
 ### Responsiveness
 #### [FLAG] Title — file:line
@@ -105,7 +133,7 @@ Issues that span multiple skills (e.g., a blocking I/O call that also lacks a fi
 #### [RECOMMEND] Title — file:line
 ...
 
-### Rust Optimization
+### Code Quality
 #### [FLAG] Title — file:line
 ...
 #### [RECOMMEND] Title — file:line
@@ -125,4 +153,4 @@ Patterns from all three reviews that are correct and should be preserved.
 
 For trivially small changes (e.g., fixing a typo in a comment, updating a string literal), skip the subagent dispatch entirely and note: "No performance-sensitive code changed — no review needed."
 
-The heuristic: if no changed file is in `ui/`, `services/`, `model/`, `benches/`, or contains I/O, signal handlers, search/index code, string conversions, or error handling, the change is not performance-relevant.
+The heuristic: if no changed file is in `ui/`, `services/`, `model/`, `benches/`, or contains I/O, signal handlers, search/index code, or error handling, the change is not performance-relevant.

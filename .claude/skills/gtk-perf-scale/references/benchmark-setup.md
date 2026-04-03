@@ -1,14 +1,15 @@
-# Benchmark Setup for LushText
+# Benchmark Setup & Coverage for LushText
 
-How to add `criterion` benchmarks, what to measure, and how to detect regressions in CI.
+How to add `criterion` benchmarks, what to measure, current coverage, and how to detect regressions in CI.
 
 ## Table of Contents
 
 1. [Adding criterion](#1-adding-criterion)
-2. [Benchmark Targets](#2-targets)
-3. [Example Benchmarks](#3-examples)
-4. [CI Regression Detection](#4-ci)
-5. [Expected Baselines](#5-baselines)
+2. [Current Coverage](#2-current-coverage)
+3. [Benchmark Targets](#3-targets)
+4. [Example Benchmarks](#4-examples)
+5. [CI Regression Detection](#5-ci)
+6. [Expected Baselines](#6-baselines)
 
 ---
 
@@ -46,7 +47,29 @@ crates/lushtext-core/benches/
 
 ---
 
-## 2. Benchmark Targets {#2-targets}
+## 2. Current Coverage {#2-current-coverage}
+
+The benchmark file at `crates/lushtext-core/benches/benchmarks.rs` (single file, all groups) covers:
+
+| Group | Functions | Max Input Size |
+|-------|-----------|----------------|
+| `fuzzy_score` | `fuzzy_score()` single-call | 7 named cases |
+| `file_index_search` | `FileIndex::search()` | 100k files |
+| `file_index_rebuild` | `FileIndex::rebuild()` | 5k files on tmpfs |
+| `file_index_incremental` | `add_file`, `remove_path`, `rename_path` | 100k files |
+| `search_all` | `palette::search_all()` | 10k files |
+| `scan_directory` | `file_tree::scan_directory()` | 10k entries |
+| `json_persistence` | `workspace_manager`, `json_store` | 10 workspaces, 50 tabs |
+| `file_size_classify` | `FileSizeCheck::classify()` | 5 size buckets |
+| `utf8_validation` | `read_to_string` vs `read` + `simdutf8` | 1/5/10/50 MB |
+
+### Known Gaps
+
+**File save path** — The save path's `buffer.text().to_string()` + `std::fs::write` is unbenchmarked. Since the GtkTextBuffer part requires GTK initialization, benchmark only the Rust portion (fs::write at 1/5/10/50 MB).
+
+---
+
+## 3. Benchmark Targets {#3-targets}
 
 Priority order based on how often each function is called and its impact on UX:
 
@@ -62,7 +85,7 @@ P0 targets affect every search interaction. P1 affects periodic operations. P2 r
 
 ---
 
-## 3. Example Benchmarks {#3-examples}
+## 4. Example Benchmarks {#4-examples}
 
 ### `benches/benchmarks.rs` (key patterns)
 
@@ -92,7 +115,7 @@ Current benchmark groups: `fuzzy_score`, `file_index_search`, `file_index_rebuil
 
 ---
 
-## 4. CI Regression Detection {#4-ci}
+## 5. CI Regression Detection {#5-ci}
 
 ### GitHub Actions workflow addition
 
@@ -140,7 +163,7 @@ criterion generates HTML reports in `target/criterion/` with comparison charts.
 
 ---
 
-## 5. Expected Baselines {#5-baselines}
+## 6. Expected Baselines {#6-baselines}
 
 These are approximate numbers on a 2023 laptop (Ryzen 7, NVMe SSD). Use them as sanity checks — if your numbers are 10x worse, something is wrong.
 

@@ -349,14 +349,11 @@ impl LushtextWindow {
         for i in (0..tab_view.n_pages()).rev() {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                let matches = editor
-                    .file_path()
-                    .as_deref()
-                    .is_some_and(|ep| ep == path || ep.starts_with(path));
-                if matches {
-                    if let Some(ref p) = editor.file_path() {
-                        self.imp().open_paths.borrow_mut().remove(p.as_path());
-                    }
+                let Some(ep) = editor.file_path() else {
+                    continue;
+                };
+                if ep.as_path() == path || ep.starts_with(path) {
+                    self.imp().open_paths.borrow_mut().remove(ep.as_path());
                     editor.cancel_load();
                     self.untrack_editor_memory(editor);
                     tab_view.close_page(&page);
@@ -450,10 +447,6 @@ impl LushtextWindow {
                     evict_candidates.push(page.downgrade());
                 }
             }
-        }
-
-        if total <= BUFFER_MEMORY_BUDGET {
-            return;
         }
 
         for page_weak in evict_candidates {

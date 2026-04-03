@@ -8,7 +8,7 @@ mod imp;
 pub mod item;
 
 use crate::model::palette::{IndexedFile, SearchMode};
-use crate::services::{async_task, palette::FileIndex};
+use crate::services::palette::FileIndex;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
@@ -138,10 +138,6 @@ impl LushtextCommandPalette {
 
     fn schedule_index_update_flush(&self) {
         let imp = self.imp();
-        if imp.index_update_inflight.get() {
-            return;
-        }
-
         let generation = imp.index_update_generation.get().wrapping_add(1);
         imp.index_update_generation.set(generation);
 
@@ -151,43 +147,29 @@ impl LushtextCommandPalette {
                 return;
             };
             let imp = palette.imp();
-            if imp.index_update_inflight.get()
-                || imp.index_update_generation.get() != generation
+            if imp.index_update_generation.get() != generation
                 || imp.pending_index_updates.borrow().is_empty()
             {
                 return;
             }
 
+            // Apply mutations in place on the main thread. The incremental
+            // operations (add/remove/rename) are O(n) linear scans with no I/O,
+            // so they're cheaper than the clone that would be needed to send the
+            // index to a background thread. Arc::make_mut avoids cloning when no
+            // concurrent search holds a reference (the common case).
             let updates = std::mem::take(&mut *imp.pending_index_updates.borrow_mut());
-            let base_index = (*imp.file_index.borrow()).as_ref().clone();
-            imp.index_update_inflight.set(true);
+            let mut file_index = imp.file_index.borrow_mut();
+            let index = Arc::make_mut(&mut file_index);
+            for update in updates {
+                update.apply(index);
+            }
+            drop(file_index);
 
-            async_task::spawn_blocking_then(
-                palette.clone(),
-                move || {
-                    let mut index = base_index;
-                    for update in updates {
-                        update.apply(&mut index);
-                    }
-                    index
-                },
-                |palette, index| {
-                    let imp = palette.imp();
-                    *imp.file_index.borrow_mut() = Arc::new(index);
-                    imp.index_update_inflight.set(false);
-
-                    // Only rebuild results if the palette is currently visible;
-                    // the next open() call rebuilds from scratch anyway.
-                    if palette.is_visible() {
-                        let query = imp.search_entry.text();
-                        imp.rebuild_results(&query);
-                    }
-
-                    if !imp.pending_index_updates.borrow().is_empty() {
-                        palette.schedule_index_update_flush();
-                    }
-                },
-            );
+            if palette.is_visible() {
+                let query = imp.search_entry.text();
+                imp.rebuild_results(&query);
+            }
         });
     }
 }

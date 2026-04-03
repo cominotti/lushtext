@@ -87,54 +87,28 @@ Design choice: `buffer.set_modified(false)` is called *before* the async write, 
 
 When a user closes a tab while a file is still loading, the background thread should stop doing work as soon as possible rather than finishing a 100MB read that nobody wants.
 
+**Current implementation**: The codebase uses whole-file `std::fs::read` + `simdutf8` (not chunked reading). Cancellation is checked before and after the read call:
+
 ```rust
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::io::Read;
 
-/// Read a file with periodic cancellation checks.
-/// For files < 1MB, uses read_to_string (one check).
-/// For files >= 1MB, reads in 256KB chunks with a check per chunk.
-fn read_file_cancellable(
-    path: &std::path::Path,
-    cancelled: &AtomicBool,
-) -> Result<Option<String>, std::io::Error> {
-    if cancelled.load(Ordering::Relaxed) {
-        return Ok(None);
-    }
-
-    let metadata = std::fs::metadata(path)?;
-    let size = metadata.len() as usize;
-
-    if size < 1_000_000 {
-        // Small file: read in one shot, check cancel after
-        let content = std::fs::read_to_string(path)?;
-        if cancelled.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
-        return Ok(Some(content));
-    }
-
-    // Large file: read in chunks with cancellation checks
-    let mut file = std::fs::File::open(path)?;
-    let mut content = String::with_capacity(size);
-    let mut buf = vec![0u8; 256 * 1024]; // 256KB chunks
-
-    loop {
-        if cancelled.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        let chunk = std::str::from_utf8(&buf[..n])
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        content.push_str(chunk);
-    }
-
-    Ok(Some(content))
+// In the spawn_blocking_then work closure:
+if cancel_token.load(Ordering::Relaxed) {
+    return Err(LoadError::Cancelled);
 }
+
+let bytes = std::fs::read(&file_path).map_err(read_err)?;
+
+if cancel_token.load(Ordering::Relaxed) {
+    return Err(LoadError::Cancelled);
+}
+
+let content = match simdutf8::basic::from_utf8(&bytes) {
+    // SAFETY: simdutf8 just confirmed these bytes are valid UTF-8
+    Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
+    Err(_) => return Err(LoadError::InvalidUtf8(file_path)),
+};
 ```
 
 The cancel token is stored directly on the editor page's imp struct as `Arc<AtomicBool>` (not wrapped in `RefCell<Option<...>>`). It is reset with `store(false, ...)` on each new load rather than being replaced. Both `close-tab` and `close_tab_for_path` call `cancel_load()` before `close_page()`.

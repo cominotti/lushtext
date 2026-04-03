@@ -11,8 +11,7 @@ use crate::model::palette::{
 use crate::services::file_tree;
 use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -441,28 +440,20 @@ where
     );
     let mut buf = Vec::new();
 
-    // Bounded min-heap: keeps only the top `max` results by score.
-    // O(n log k) where k=max, vs O(n log n) for collect-sort-truncate.
-    let mut heap: BinaryHeap<Reverse<ScoredResult<'a>>> = BinaryHeap::with_capacity(max + 1);
-
-    for item in items {
-        let text = get_text(item);
-        buf.clear();
-        let haystack = Utf32Str::new(text, &mut buf);
-        if let Some(score) = atom.score(haystack, &mut matcher) {
-            heap.push(Reverse(ScoredResult {
-                item: wrap(item),
-                score: score as u32,
-            }));
-            if heap.len() > max {
-                heap.pop(); // remove lowest score
-            }
-        }
-    }
-
-    // into_sorted_vec() on BinaryHeap<Reverse<ScoredResult>> produces
-    // ascending-by-Reverse order, which is descending-by-score after unwrap.
-    let results: Vec<ScoredResult<'a>> = heap.into_sorted_vec().into_iter().map(|r| r.0).collect();
+    let mut results: Vec<ScoredResult<'a>> = items
+        .filter_map(|item| {
+            let text = get_text(item);
+            buf.clear();
+            let haystack = Utf32Str::new(text, &mut buf);
+            atom.score(haystack, &mut matcher)
+                .map(|score| ScoredResult {
+                    item: wrap(item),
+                    score: score as u32,
+                })
+        })
+        .collect();
+    results.sort_unstable_by(|a, b| b.score.cmp(&a.score));
+    results.truncate(max);
     results
 }
 

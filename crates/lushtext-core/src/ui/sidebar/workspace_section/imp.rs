@@ -22,7 +22,6 @@ use std::sync::atomic::AtomicBool;
 type FileCallback = Box<dyn Fn(&Path)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
 type WorkspaceCallback = Box<dyn Fn(&WorkspaceId)>;
-type AddFolderCallback = Box<dyn Fn(&WorkspaceId)>;
 
 /// Cached position of a file tree item for O(1) model removal.
 /// Stores the parent directory (or `None` for root items) and the
@@ -87,7 +86,7 @@ pub struct LushtextWorkspaceSection {
     pub create_callback: RefCell<Option<FileCallback>>,
 
     // Workspace-level callbacks (handled by sidebar)
-    pub add_folder_callback: RefCell<Option<AddFolderCallback>>,
+    pub add_folder_callback: RefCell<Option<WorkspaceCallback>>,
     pub rename_workspace_callback: RefCell<Option<WorkspaceCallback>>,
     pub unlist_workspace_callback: RefCell<Option<WorkspaceCallback>>,
 }

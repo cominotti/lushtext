@@ -35,12 +35,17 @@ No `ThreadGuard` or `idle_add_once` needed — the result is logged, not display
 The standard `spawn_blocking_then` pattern. Use for any I/O that needs to update the UI afterward.
 
 ```rust
-// Loading a file into the editor
+// Loading a file into the editor (simplified — actual code also has size checks and cancellation)
 let path = path.to_path_buf();
 async_task::spawn_blocking_then(
     self.clone(),
-    move || -> anyhow::Result<String> {
-        Ok(std::fs::read_to_string(&path)?)
+    move || -> Result<String, LoadError> {
+        let bytes = std::fs::read(&path).map_err(|e| LoadError::Io(e.to_string()))?;
+        match simdutf8::basic::from_utf8(&bytes) {
+            // SAFETY: simdutf8 just confirmed valid UTF-8
+            Ok(_) => Ok(unsafe { String::from_utf8_unchecked(bytes) }),
+            Err(_) => Err(LoadError::InvalidUtf8(path)),
+        }
     },
     |editor, result| {
         match result {
@@ -51,7 +56,6 @@ async_task::spawn_blocking_then(
             }
             Err(e) => {
                 tracing::error!("Load failed: {e}");
-                // TODO: show error in UI (toast or status bar)
             }
         }
     },

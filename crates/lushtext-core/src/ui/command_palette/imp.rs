@@ -87,8 +87,6 @@ pub struct LushtextCommandPalette {
     pub(super) pending_index_updates: RefCell<Vec<super::FileIndexUpdate>>,
     /// Generation counter for debouncing index update flushes (75ms).
     pub(super) index_update_generation: Cell<u32>,
-    /// Guard preventing overlapping index update flushes.
-    pub(super) index_update_inflight: Cell<bool>,
 }
 
 impl Default for LushtextCommandPalette {
@@ -106,7 +104,6 @@ impl Default for LushtextCommandPalette {
             search_generation: Cell::new(0),
             pending_index_updates: RefCell::default(),
             index_update_generation: Cell::new(0),
-            index_update_inflight: Cell::new(false),
         }
     }
 }

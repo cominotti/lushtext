@@ -38,9 +38,9 @@ This skill uses **parallel subagents** for independent review concerns. Do NOT a
 4. **Dispatch relevant subagents in parallel** via the Agent tool
 5. **Aggregate results** — merge findings, deduplicate, produce the final report
 
-### RAM Preamble (inject into every subagent prompt)
+### Memory Preamble (inject into every subagent prompt)
 
-> While reviewing, also check for memory efficiency. Flag: unnecessary `.clone()` calls, large captures in signal handler closures, strong reference cycles that prevent widget cleanup, missing `@weak` references in long-lived closures. Signal handlers persist for the widget's entire lifetime — what they capture stays in memory.
+> While reviewing, also check for genuine memory leaks: strong reference cycles that prevent widget cleanup, missing `@weak` references in long-lived closures, signal handlers that accumulate without cleanup. Do NOT flag trivial clones, missing `Vec::with_capacity()`, or other micro allocation patterns — those are not responsiveness concerns.
 
 ## Severity Levels
 
@@ -53,7 +53,9 @@ This skill uses **parallel subagents** for independent review concerns. Do NOT a
 
 ### 1. blocking-io-audit
 
-**Triggers**: Any `.rs` file in `ui/` or `services/` containing `fs::read`, `fs::write`, `fs::read_to_string`, `fs::read_dir`, `fs::metadata`, `Command::new`, or `std::process`.
+**Triggers**:
+- paths: `ui/**/*.rs`, `services/**/*.rs`
+- content: `fs::read|fs::write|fs::read_to_string|fs::read_dir|fs::metadata|Command::new|std::process`
 
 **Subagent prompt**:
 ```
@@ -71,14 +73,13 @@ The project uses a custom async primitive: crate::services::async_task::spawn_bl
 - then: FnOnce(S, T), runs on main thread via glib::idle_add_once
 Do NOT recommend Tokio. This pattern is sufficient for file I/O.
 
-{ram_preamble}
+{memory_preamble}
 
 Review criteria:
 - Is any blocking I/O (fs::read_to_string, fs::write, fs::read_dir, fs::metadata, Command::new) called on the main thread outside spawn_blocking_then?
 - Is heavy work done in the `then` callback? (Large JSON parsing, file processing should be in the `work` closure, not `then`)
 - For file operations: is the path cloned/moved into the closure correctly? (Borrowed paths can't cross thread boundaries)
 - Cancel tokens: for large file loads, does EditorPage store an Arc<AtomicBool> checked before AND after the I/O call?
-- Background thread memory: does the work closure hold intermediate allocations longer than needed? Can they be scoped/dropped before the result is returned?
 - ThreadGuard vs SendWeakRef: is the correct cross-thread reference type used? ThreadGuard (used by spawn_blocking_then automatically) is for short-lived cross-thread references where the object is guaranteed to exist. SendWeakRef is for long-lived references (periodic timers, callbacks that may outlive the widget) — it returns None on upgrade if the widget was destroyed instead of panicking. Common mistake: using ThreadGuard in a periodic timer closure — if the widget is destroyed, into_inner() panics.
 
 Anti-patterns to flag:
@@ -95,7 +96,8 @@ Description. What blocks. Duration estimate. Fix pattern.
 
 ### 2. signal-handler-audit
 
-**Triggers**: Any file containing `connect_`, `connect_notify`, `connect_changed`, `connect_clicked`, `connect_activate`, or signal handler closures capturing GTK objects.
+**Triggers**:
+- content: `connect_notify|connect_changed|connect_clicked|connect_activate|connect_close`
 
 **Subagent prompt** (self-contained — no reference file needed):
 ```
@@ -104,7 +106,7 @@ You are reviewing Rust code in a GTK4/Libadwaita text editor for signal handler 
 Changed files to review:
 {changed_files}
 
-{ram_preamble}
+{memory_preamble}
 
 Review criteria:
 - connect_notify_local vs connect_notify: closures that capture non-Send GTK objects MUST use connect_notify_local (or connect_*_local variants). The non-local variants require Send, which GTK objects are not.
@@ -112,16 +114,13 @@ Review criteria:
 - Weak references: long-lived closures capturing widget references should use @weak to prevent circular references and memory leaks. Strong references keep widgets alive forever.
 - Handler cleanup: signals connected in loops or conditionally should store SignalHandlerId and disconnect on cleanup. Otherwise handlers accumulate and slow signal emission.
 - freeze_notify/thaw_notify: when updating multiple GObject properties at once, batch with freeze_notify/thaw_notify to prevent intermediate signal emissions.
-- Closure capture size: signal closures are long-lived (widget lifetime). Flag closures that capture large state:
-  - Vec<T>, HashMap<K,V>, or String collections — store on imp struct, access via &self instead
-  - Entire structs when only one field is needed — capture the field directly
-  - FileIndex or similar large indexes — use @weak ref and access through imp()
+- Large data captures: signal closures live for the widget's entire lifetime. Flag closures that capture large indexes (FileIndex, Vec<IndexedFile>) by value — these should use @weak ref and access through imp() instead.
 
 Anti-patterns to flag:
 - [FLAG] connect_notify (not _local) when closure captures non-Send GTK objects — compile error or undefined behavior
 - [FLAG] Strong reference to parent widget in child signal closure — memory leak (widget never freed)
 - [RECOMMEND] Signal connections in a loop without cleanup strategy — handlers accumulate
-- [RECOMMEND] Closure captures entire struct/Vec when only one field is needed — wasted memory for widget lifetime
+- [RECOMMEND] Closure captures large index/collection by value instead of using @weak ref + imp() access
 - [CONSIDER] Missing freeze_notify for multi-property updates
 
 Output format — return findings as:
@@ -131,7 +130,9 @@ Description. Memory impact if applicable. Fix.
 
 ### 3. tree-factory-audit
 
-**Triggers**: Changes to `file_tree.rs`, `workspace_section/`, or any file containing `TreeListModel`, `SignalListItemFactory`, `connect_bind`, `connect_setup`, `connect_unbind`.
+**Triggers**:
+- paths: `services/file_tree.rs`, `ui/sidebar/workspace_section/**/*.rs`
+- content: `TreeListModel|SignalListItemFactory|connect_bind|connect_setup|connect_unbind`
 
 **Subagent prompt** (self-contained — no reference file needed):
 ```
@@ -140,7 +141,7 @@ You are reviewing Rust code in a GTK4/Libadwaita text editor for TreeListModel a
 Changed files to review:
 {changed_files}
 
-{ram_preamble}
+{memory_preamble}
 
 Review criteria:
 - autoexpand = true: NEVER set autoexpand to true on TreeListModel. It recursively calls create_model_func for EVERY directory, spawning unbounded threads (with spawn_blocking_then) or freezing the UI (with sync I/O).
@@ -163,7 +164,8 @@ Description. Impact on scrolling/memory. Fix.
 
 ### 4. debounce-timer-audit
 
-**Triggers**: Changes to files containing `timeout_add`, `timeout_add_local`, `timeout_add_local_once`, `SourceId`, generation counters (`Cell<u32>` with wrapping_add), `search_changed`, or search/filter input handling.
+**Triggers**:
+- content: `timeout_add|timeout_add_local|timeout_add_local_once|SourceId|search_changed`
 
 **Subagent prompt**:
 ```
@@ -175,7 +177,7 @@ Focus on patterns 4-5 (Periodic Background Check, Debounced User Input).
 Changed files to review:
 {changed_files}
 
-{ram_preamble}
+{memory_preamble}
 
 Review criteria:
 - Debounce on rapid input: search entries, filter inputs, and similar rapid-fire text inputs should debounce (typically 150ms) to avoid redundant work. Empty queries should bypass debounce for instant clear.
