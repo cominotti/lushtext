@@ -82,10 +82,10 @@ impl WorkspacesFile {
 
     /// Add an entry to a workspace. Deduplicates by path.
     pub fn add_entry(&mut self, ws_id: &WorkspaceId, entry: WorkspaceEntry) {
-        if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id) {
-            if !ws.entries.iter().any(|e| e.path() == entry.path()) {
-                ws.entries.push(entry);
-            }
+        if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id)
+            && !ws.entries.iter().any(|e| e.path() == entry.path())
+        {
+            ws.entries.push(entry);
         }
     }
 

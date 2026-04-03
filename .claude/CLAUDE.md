@@ -4,7 +4,7 @@ A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text
 
 ## Tech Stack
 
-- **Language:** Rust (MSRV: 1.83+)
+- **Language:** Rust (MSRV: 1.94.1, Edition 2024)
 - **GUI:** GTK4 (0.11) + Libadwaita (0.9) + GtkSourceView 5 (0.11)
 - **Config:** GSettings (`data/dev.cominotti.lushtext.gschema.xml`)
 - **Build:** Cargo workspace + Makefile (dev), Meson (Flatpak/installed)

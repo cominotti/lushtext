@@ -55,13 +55,12 @@ impl super::LushtextWorkspaceSection {
                 };
 
                 let mut was_collapsed = false;
-                if context_is_dir {
-                    if let Some(row) = section.find_dir_row(&context_path) {
-                        if !row.is_expanded() {
-                            was_collapsed = true;
-                            row.set_expanded(true);
-                        }
-                    }
+                if context_is_dir
+                    && let Some(row) = section.find_dir_row(&context_path)
+                    && !row.is_expanded()
+                {
+                    was_collapsed = true;
+                    row.set_expanded(true);
                 }
 
                 let new_item = FileTreeItem::new(temp_path, is_dir);
@@ -71,14 +70,14 @@ impl super::LushtextWorkspaceSection {
                 if was_collapsed {
                     let section_weak = section.downgrade();
                     glib::idle_add_local_once(move || {
-                        if let Some(section) = section_weak.upgrade() {
-                            if let Some(store) = section.find_store_for_dir(&target_dir) {
-                                section.append_item_preserving_placeholder(
-                                    &store,
-                                    &target_dir,
-                                    &new_item,
-                                );
-                            }
+                        if let Some(section) = section_weak.upgrade()
+                            && let Some(store) = section.find_store_for_dir(&target_dir)
+                        {
+                            section.append_item_preserving_placeholder(
+                                &store,
+                                &target_dir,
+                                &new_item,
+                            );
                         }
                     });
                 } else if let Some(store) = section.find_store_for_dir(&target_dir) {
@@ -232,33 +231,29 @@ impl super::LushtextWorkspaceSection {
                 let imp = section.imp();
                 match result {
                     Ok(()) => {
-                        if let Some(ref expander) = *imp.context_expander.borrow() {
-                            if let Some(tree_row) = expander.list_row() {
-                                if let Some(file_item) =
-                                    tree_row.item().and_downcast::<FileTreeItem>()
-                                {
-                                    if is_dir {
-                                        section.clear_dir_state(&old_path);
-                                        imp.dir_rows
-                                            .borrow_mut()
-                                            .insert(new_path.clone(), tree_row.downgrade());
-                                    }
-                                    file_item.set_path(new_path.clone());
-                                    section.rename_cached_item(&old_path, &new_path);
-                                }
+                        if let Some(ref expander) = *imp.context_expander.borrow()
+                            && let Some(tree_row) = expander.list_row()
+                            && let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>()
+                        {
+                            if is_dir {
+                                section.clear_dir_state(&old_path);
+                                imp.dir_rows
+                                    .borrow_mut()
+                                    .insert(new_path.clone(), tree_row.downgrade());
                             }
+                            file_item.set_path(new_path.clone());
+                            section.rename_cached_item(&old_path, &new_path);
                         }
                         label.set_label(&new_name_owned);
                         imp.is_new_item.set(false);
 
-                        if is_new && !is_dir {
-                            if let Some(ref cb) = *imp.create_callback.borrow() {
-                                cb(&new_path);
-                            }
-                        } else if !is_new {
-                            if let Some(ref cb) = *imp.rename_callback.borrow() {
-                                cb(&old_path, &new_path);
-                            }
+                        if is_new
+                            && !is_dir
+                            && let Some(ref cb) = *imp.create_callback.borrow()
+                        {
+                            cb(&new_path);
+                        } else if !is_new && let Some(ref cb) = *imp.rename_callback.borrow() {
+                            cb(&old_path, &new_path);
                         }
                     }
                     Err(e) => {

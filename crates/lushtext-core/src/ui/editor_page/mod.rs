@@ -7,8 +7,8 @@ mod imp;
 
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::{async_task, editor_io};
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
 use std::cell::RefCell;

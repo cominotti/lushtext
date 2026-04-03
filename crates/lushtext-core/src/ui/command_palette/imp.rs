@@ -6,7 +6,7 @@ use crate::ui::command_palette::item::PaletteItem;
 use glib::prelude::*;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use gtk4::{self, gio, glib, CompositeTemplate};
+use gtk4::{self, CompositeTemplate, gio, glib};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -210,8 +210,8 @@ impl LushtextCommandPalette {
                 return;
             };
             let imp = obj.imp();
-            let gen = imp.search_generation.get().wrapping_add(1);
-            imp.search_generation.set(gen);
+            let generation = imp.search_generation.get().wrapping_add(1);
+            imp.search_generation.set(generation);
 
             let query = entry.text().to_string();
 
@@ -226,7 +226,7 @@ impl LushtextCommandPalette {
                 let Some(obj) = obj_weak.upgrade() else {
                     return;
                 };
-                if obj.imp().search_generation.get() != gen {
+                if obj.imp().search_generation.get() != generation {
                     return; // superseded by newer keystroke
                 }
                 obj.imp().rebuild_results_owned(query);
@@ -276,10 +276,10 @@ impl LushtextCommandPalette {
 
         let obj_weak = self.obj().downgrade();
         self.search_entry.connect_stop_search(move |_| {
-            if let Some(obj) = obj_weak.upgrade() {
-                if let Some(ref cb) = *obj.imp().close_callback.borrow() {
-                    cb();
-                }
+            if let Some(obj) = obj_weak.upgrade()
+                && let Some(ref cb) = *obj.imp().close_callback.borrow()
+            {
+                cb();
             }
         });
     }
@@ -306,8 +306,8 @@ impl LushtextCommandPalette {
     }
 
     pub fn rebuild_results_owned(&self, query: String) {
-        let gen = self.search_generation.get().wrapping_add(1);
-        self.search_generation.set(gen);
+        let generation = self.search_generation.get().wrapping_add(1);
+        self.search_generation.set(generation);
 
         let mode = self.mode.get();
         let index = Arc::clone(&self.file_index.borrow());
@@ -327,7 +327,7 @@ impl LushtextCommandPalette {
             },
             move |obj, (hits, query)| {
                 let imp = obj.imp();
-                if imp.search_generation.get() != gen {
+                if imp.search_generation.get() != generation {
                     return; // superseded by a newer search
                 }
 
@@ -356,10 +356,8 @@ impl LushtextCommandPalette {
                 imp.no_results_label
                     .set_visible(!has_results && !query.is_empty());
 
-                if has_results {
-                    if let Some(selection) = imp.selection_model() {
-                        selection.set_selected(0);
-                    }
+                if has_results && let Some(selection) = imp.selection_model() {
+                    selection.set_selected(0);
                 }
             },
         );

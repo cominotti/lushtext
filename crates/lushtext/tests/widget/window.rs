@@ -9,8 +9,8 @@ use gtk4::prelude::*;
 use lushtext_core::app::LushtextApplication;
 use lushtext_core::config::keys;
 use lushtext_core::ui::editor_page::LushtextEditorPage;
-use lushtext_core::ui::window::clamp_sidebar_position;
 use lushtext_core::ui::window::LushtextWindow;
+use lushtext_core::ui::window::clamp_sidebar_position;
 
 /// Create a window attached to a test application (not registered with D-Bus).
 fn test_window() -> LushtextWindow {

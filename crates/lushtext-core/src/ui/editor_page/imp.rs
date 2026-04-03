@@ -11,12 +11,12 @@ use crate::services::file_limits::FileSizeCheck;
 use crate::ui::search_bar::LushtextSearchBar;
 use gtk4::gio;
 use gtk4::subclass::prelude::*;
-use gtk4::{self, glib, CompositeTemplate};
+use gtk4::{self, CompositeTemplate, glib};
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// Callback for notifying the window when this editor's estimated buffer
 /// memory changes. The `u64` argument is the new estimated byte count.
@@ -101,8 +101,9 @@ impl ObjectSubclass for LushtextEditorPage {
     type ParentType = gtk4::Box;
 
     fn class_init(klass: &mut Self::Class) {
-        // Register LushtextSearchBar BEFORE parsing the template.
+        // Register child widget types BEFORE parsing the template.
         LushtextSearchBar::ensure_type();
+        sourceview5::View::ensure_type();
         klass.bind_template();
     }
 
@@ -112,6 +113,21 @@ impl ObjectSubclass for LushtextEditorPage {
 }
 
 impl ObjectImpl for LushtextEditorPage {
+    // Disconnect the buffer's modified-changed handler here rather than in
+    // Rust's Drop. GTK4's dispose() runs BEFORE Drop and clears all template
+    // children — accessing `self.source_view` in Drop panics because the
+    // TemplateChild's OnceCell is already empty.
+    fn dispose(&self) {
+        if let Some(handler_id) = self.modified_handler_id.take() {
+            let buffer = self
+                .source_view
+                .buffer()
+                .downcast::<sourceview5::Buffer>()
+                .expect("GtkSourceView buffer");
+            buffer.disconnect(handler_id);
+        }
+    }
+
     fn constructed(&self) {
         self.parent_constructed();
 
@@ -202,8 +218,8 @@ impl WidgetImpl for LushtextEditorPage {}
 impl BoxImpl for LushtextEditorPage {}
 
 // Disconnect signal handlers from application-global objects (Settings,
-// StyleManager) that outlive individual EditorPage instances. Without this,
-// closed tabs leave stale handlers that hold references to dead widgets.
+// StyleManager) that outlive individual EditorPage instances. These don't
+// access template children, so Rust's Drop is safe for them.
 impl Drop for LushtextEditorPage {
     fn drop(&mut self) {
         if let Some(handler_id) = self.dark_handler_id.take() {
@@ -214,14 +230,6 @@ impl Drop for LushtextEditorPage {
         }
         if let Some(handler_id) = self.style_scheme_handler_id.take() {
             self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.modified_handler_id.take() {
-            let buffer = self
-                .source_view
-                .buffer()
-                .downcast::<sourceview5::Buffer>()
-                .expect("GtkSourceView buffer");
-            buffer.disconnect(handler_id);
         }
     }
 }

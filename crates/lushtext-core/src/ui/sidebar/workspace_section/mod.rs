@@ -9,16 +9,16 @@ mod imp;
 use super::file_tree_item::FileTreeItem;
 use crate::model::workspace::WorkspaceId;
 use crate::services;
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use imp::ItemLocation;
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 // glib::wrapper! generates the public wrapper type for this widget.
@@ -304,10 +304,10 @@ impl LushtextWorkspaceSection {
                 }
             }
             Some(parent_dir) => {
-                if let Some(siblings) = self.imp().child_paths.borrow_mut().get_mut(parent_dir) {
-                    if let Some(cached) = siblings.get_mut(location.index) {
-                        *cached = new_path.to_path_buf();
-                    }
+                if let Some(siblings) = self.imp().child_paths.borrow_mut().get_mut(parent_dir)
+                    && let Some(cached) = siblings.get_mut(location.index)
+                {
+                    *cached = new_path.to_path_buf();
                 }
             }
         }
@@ -408,19 +408,19 @@ impl LushtextWorkspaceSection {
         if let Some(location) = self.remove_cached_item(target_path) {
             match location.parent_dir.as_deref() {
                 None => {
-                    if let Some(ref root_store) = *imp.root_store.borrow() {
-                        if (location.index as u32) < root_store.n_items() {
-                            root_store.remove(location.index as u32);
-                            return true;
-                        }
+                    if let Some(ref root_store) = *imp.root_store.borrow()
+                        && (location.index as u32) < root_store.n_items()
+                    {
+                        root_store.remove(location.index as u32);
+                        return true;
                     }
                 }
                 Some(parent_dir) => {
-                    if let Some(store) = self.find_store_for_dir(parent_dir) {
-                        if (location.index as u32) < store.n_items() {
-                            store.remove(location.index as u32);
-                            return true;
-                        }
+                    if let Some(store) = self.find_store_for_dir(parent_dir)
+                        && (location.index as u32) < store.n_items()
+                    {
+                        store.remove(location.index as u32);
+                        return true;
                     }
                 }
             }
@@ -428,11 +428,11 @@ impl LushtextWorkspaceSection {
 
         if let Some(ref root_store) = *imp.root_store.borrow() {
             for i in 0..root_store.n_items() {
-                if let Some(item) = root_store.item(i).and_downcast::<FileTreeItem>() {
-                    if item.path().as_deref() == Some(target_path) {
-                        root_store.remove(i);
-                        return true;
-                    }
+                if let Some(item) = root_store.item(i).and_downcast::<FileTreeItem>()
+                    && item.path().as_deref() == Some(target_path)
+                {
+                    root_store.remove(i);
+                    return true;
                 }
             }
         }
@@ -444,11 +444,11 @@ impl LushtextWorkspaceSection {
 
         if let Some(store) = self.find_store_for_dir(parent_dir) {
             for j in 0..store.n_items() {
-                if let Some(child) = store.item(j).and_downcast::<FileTreeItem>() {
-                    if child.path().as_deref() == Some(target_path) {
-                        store.remove(j);
-                        return true;
-                    }
+                if let Some(child) = store.item(j).and_downcast::<FileTreeItem>()
+                    && child.path().as_deref() == Some(target_path)
+                {
+                    store.remove(j);
+                    return true;
                 }
             }
         } else {
@@ -502,10 +502,10 @@ impl LushtextWorkspaceSection {
 
                 let mut existing = HashSet::with_capacity(store.n_items() as usize);
                 for i in 0..store.n_items() {
-                    if let Some(fi) = store.item(i).and_downcast::<FileTreeItem>() {
-                        if let Some(existing_path) = fi.path() {
-                            existing.insert(existing_path);
-                        }
+                    if let Some(fi) = store.item(i).and_downcast::<FileTreeItem>()
+                        && let Some(existing_path) = fi.path()
+                    {
+                        existing.insert(existing_path);
                     }
                 }
 
@@ -615,12 +615,12 @@ impl LushtextWorkspaceSection {
             }
         }
 
-        if let Some(row) = self.find_dir_row(dir_path) {
-            if !row.is_expanded() {
-                token.store(true, Ordering::Release);
-                self.finish_child_scan(dir_path, token);
-                return false;
-            }
+        if let Some(row) = self.find_dir_row(dir_path)
+            && !row.is_expanded()
+        {
+            token.store(true, Ordering::Release);
+            self.finish_child_scan(dir_path, token);
+            return false;
         }
 
         true
@@ -699,19 +699,15 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
     let Some(model) = list_view.model() else {
         return;
     };
-    if let Some(item) = model.item(position) {
-        if let Some(tree_row) = item.downcast_ref::<gtk4::TreeListRow>() {
-            if let Some(file_item) = tree_row
-                .item()
-                .and_then(|i| i.downcast::<FileTreeItem>().ok())
-            {
-                if !file_item.is_dir() {
-                    if let Some(ref path) = file_item.path() {
-                        callback(path);
-                    }
-                }
-            }
-        }
+    if let Some(item) = model.item(position)
+        && let Some(tree_row) = item.downcast_ref::<gtk4::TreeListRow>()
+        && let Some(file_item) = tree_row
+            .item()
+            .and_then(|i| i.downcast::<FileTreeItem>().ok())
+        && !file_item.is_dir()
+        && let Some(ref path) = file_item.path()
+    {
+        callback(path);
     }
 }
 

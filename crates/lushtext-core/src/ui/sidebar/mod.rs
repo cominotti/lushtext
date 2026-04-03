@@ -9,8 +9,8 @@ pub mod workspace_section;
 
 use crate::model::workspace::{WorkspaceEntry, WorkspaceId, WorkspacesFile};
 use crate::services::{async_task, json_store, workspace_manager};
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use std::path::{Path, PathBuf};
@@ -63,12 +63,11 @@ impl LushtextSidebar {
 
         let sidebar_weak = self.downgrade();
         dialog.select_folder(Some(window), gtk4::gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
-                    if let Some(sidebar) = sidebar_weak.upgrade() {
-                        sidebar.handle_new_workspace(path);
-                    }
-                }
+            if let Ok(file) = result
+                && let Some(path) = file.path()
+                && let Some(sidebar) = sidebar_weak.upgrade()
+            {
+                sidebar.handle_new_workspace(path);
             }
         });
     }
@@ -176,40 +175,40 @@ impl LushtextSidebar {
         // File activated → forward to window
         let sidebar_weak = self.downgrade();
         section.connect_file_activated(move |path| {
-            if let Some(sidebar) = sidebar_weak.upgrade() {
-                if let Some(ref cb) = *sidebar.imp().file_activated_callback.borrow() {
-                    cb(path);
-                }
+            if let Some(sidebar) = sidebar_weak.upgrade()
+                && let Some(ref cb) = *sidebar.imp().file_activated_callback.borrow()
+            {
+                cb(path);
             }
         });
 
         // File renamed → forward to window
         let sidebar_weak = self.downgrade();
         section.connect_file_renamed(move |old, new| {
-            if let Some(sidebar) = sidebar_weak.upgrade() {
-                if let Some(ref cb) = *sidebar.imp().rename_callback.borrow() {
-                    cb(old, new);
-                }
+            if let Some(sidebar) = sidebar_weak.upgrade()
+                && let Some(ref cb) = *sidebar.imp().rename_callback.borrow()
+            {
+                cb(old, new);
             }
         });
 
         // File deleted → forward to window
         let sidebar_weak = self.downgrade();
         section.connect_file_deleted(move |path| {
-            if let Some(sidebar) = sidebar_weak.upgrade() {
-                if let Some(ref cb) = *sidebar.imp().delete_callback.borrow() {
-                    cb(path);
-                }
+            if let Some(sidebar) = sidebar_weak.upgrade()
+                && let Some(ref cb) = *sidebar.imp().delete_callback.borrow()
+            {
+                cb(path);
             }
         });
 
         // File created → forward to window
         let sidebar_weak = self.downgrade();
         section.connect_file_created(move |path| {
-            if let Some(sidebar) = sidebar_weak.upgrade() {
-                if let Some(ref cb) = *sidebar.imp().create_callback.borrow() {
-                    cb(path);
-                }
+            if let Some(sidebar) = sidebar_weak.upgrade()
+                && let Some(ref cb) = *sidebar.imp().create_callback.borrow()
+            {
+                cb(path);
             }
         });
 
@@ -309,25 +308,24 @@ impl LushtextSidebar {
         let sidebar_weak = self.downgrade();
         let ws_id = ws_id.clone();
         dialog.select_folder(Some(&window), gtk4::gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
-                    if let Some(sidebar) = sidebar_weak.upgrade() {
-                        let name = folder_display_name(&path);
+            if let Ok(file) = result
+                && let Some(path) = file.path()
+                && let Some(sidebar) = sidebar_weak.upgrade()
+            {
+                let name = folder_display_name(&path);
 
-                        sidebar.imp().workspaces_file.borrow_mut().replace_root(
-                            &ws_id,
-                            WorkspaceEntry::Directory { path: path.clone() },
-                            &name,
-                        );
-                        sidebar.persist();
+                sidebar.imp().workspaces_file.borrow_mut().replace_root(
+                    &ws_id,
+                    WorkspaceEntry::Directory { path: path.clone() },
+                    &name,
+                );
+                sidebar.persist();
 
-                        sidebar.with_section(&ws_id, |section| {
-                            section.load_roots(&[(path, true)]);
-                            section.set_workspace_name(&name);
-                        });
-                        sidebar.notify_workspace_changed();
-                    }
-                }
+                sidebar.with_section(&ws_id, |section| {
+                    section.load_roots(&[(path, true)]);
+                    section.set_workspace_name(&name);
+                });
+                sidebar.notify_workspace_changed();
             }
         });
     }
@@ -435,8 +433,8 @@ impl LushtextSidebar {
             return;
         }
 
-        let gen = imp.persist_generation.get().wrapping_add(1);
-        imp.persist_generation.set(gen);
+        let generation = imp.persist_generation.get().wrapping_add(1);
+        imp.persist_generation.set(generation);
 
         let sidebar_weak = self.downgrade();
         glib::timeout_add_local_once(Duration::from_millis(PERSIST_DEBOUNCE_MS), move || {
@@ -445,7 +443,7 @@ impl LushtextSidebar {
             };
             let imp = sidebar.imp();
             if imp.persist_inflight.get()
-                || imp.persist_generation.get() != gen
+                || imp.persist_generation.get() != generation
                 || !imp.persist_dirty.get()
             {
                 return;

@@ -12,7 +12,7 @@ use crate::ui::sidebar::LushtextSidebar;
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
 use glib::prelude::*;
 use gtk4::prelude::*;
-use gtk4::{self, gio, glib, CompositeTemplate};
+use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -254,10 +254,10 @@ impl ObjectImpl for LushtextWindow {
                 let action_id = item.action_id();
                 if let Some(stripped) = action_id.strip_prefix("win.") {
                     gtk4::prelude::ActionGroupExt::activate_action(&window, stripped, None);
-                } else if let Some(stripped) = action_id.strip_prefix("app.") {
-                    if let Some(app) = window.application() {
-                        gtk4::prelude::ActionGroupExt::activate_action(&app, stripped, None);
-                    }
+                } else if let Some(stripped) = action_id.strip_prefix("app.")
+                    && let Some(app) = window.application()
+                {
+                    gtk4::prelude::ActionGroupExt::activate_action(&app, stripped, None);
                 }
             }
             window.close_command_palette();

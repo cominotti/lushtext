@@ -21,6 +21,7 @@ pub fn ensure_gtk_init() {
         unsafe { std::env::set_var("GSETTINGS_BACKEND", "memory") };
         lushtext_core::init_schema_dir();
         gtk4::init().expect("GTK4 init failed — is a display server available? Try xvfb-run.");
+        sourceview5::init();
         lushtext_core::register_resources();
     });
 }

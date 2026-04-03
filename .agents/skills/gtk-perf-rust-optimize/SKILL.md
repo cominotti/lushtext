@@ -1,17 +1,39 @@
 ---
 name: gtk-perf-rust-optimize
-description: "Review Rust code for language-level optimization opportunities — SIMD coverage gaps, allocation waste, zero-copy patterns, modern Rust idioms, and benchmark completeness. Uses parallel subagents for focused reviews. Auto-invoked when writing or modifying Rust code in services/, ui/editor_page/, model/, benches/, or Cargo.toml. Trigger whenever code touches file loading/saving, string conversions (to_string_lossy, to_string, format!), fuzzy search, file indexing, byte processing, error handling patterns, or benchmark configuration. Also trigger when the user mentions SIMD, memchr, simdutf8, allocations, zero-copy, Cow, thiserror, benchmarks, or 'could this be faster'. Use this skill proactively after writing any performance-sensitive Rust code — even if the user doesn't mention optimization."
+description: "Review Rust code for idiomatic patterns, correctness improvements, and SIMD coverage on established hot paths. Uses parallel subagents for focused reviews. Auto-invoked when writing or modifying Rust code in services/, ui/editor_page/, model/, or Cargo.toml. Trigger whenever code touches file loading/saving, fuzzy search, file indexing, byte processing, or error handling patterns. Also trigger when the user mentions SIMD, error handling, thiserror, or code quality. Use this skill proactively after writing any performance-sensitive Rust code."
 ---
 
-Review Rust code in LushText for language-level optimization opportunities that the GTK-specific performance skills (`gtk-responsiveness` and `gtk-perf-scale`) don't cover. While those skills answer "does this block the main thread?" and "does this scale to large inputs?", this skill answers: **"is this Rust code as efficient as the language allows?"**
+Review Rust code in LushText for idiomatic patterns, correctness improvements, and SIMD coverage on established hot paths. While `gtk-responsiveness` answers "does this block the main thread?" and `gtk-perf-scale` answers "does this scale to large inputs?", this skill answers: **"is this Rust code idiomatic, correct, and following established project patterns?"** Benchmark coverage is handled by `gtk-perf-scale`'s benchmark-audit subagent.
+
+## Philosophy: Readability First
+
+**Code readability is the top priority.** Every recommendation from this skill must make the code easier to understand, not harder. If an optimization requires an unfamiliar abstraction, obscure trait bounds, or indirection that a new contributor wouldn't immediately grasp — it is a net negative.
+
+The purpose of this skill is to catch:
+1. **Correctness issues** that look like optimizations but are really about robustness (thiserror vs string errors, proper SIMD validation)
+2. **Established pattern consistency** where the codebase already uses a pattern (nucleo for search, simdutf8 for validation) and new code should follow suit
+3. **Benchmark coverage** for genuinely hot paths
+
+### What We Do NOT Flag
+
+These are explicitly out of scope:
+
+- **Allocation micro-counting**: `.to_string_lossy().to_string()` vs `.into_owned()`, `format!()` vs `push_str()`, intermediate collections, `Cow<str>` opportunities
+- **Speculative SIMD adoption**: Don't recommend SIMD crates for code that hasn't been profiled. Only flag when an established project pattern (simdutf8, nucleo, memchr) is missing on a similar code path.
+- **Clone avoidance in non-hot paths**: `.clone()` is fine in setup code, signal handlers, error paths, and any code that runs fewer than ~1000 times
+- **`Vec::with_capacity()` suggestions**: The doubling strategy is fine for most collections
+- **Drop ordering**: Scoping intermediates to free memory earlier is not worth the nested blocks
+
+The threshold: **if the suggestion makes the code harder to read and you need a benchmark to prove the difference, don't suggest it.**
 
 ## Relationship to Other Performance Skills
 
 | Concern | gtk-responsiveness | gtk-perf-scale | gtk-perf-rust-optimize (this) |
 |---------|-------------------|----------------|-------------------------------|
-| Core question | "Does this block the main thread?" | "Does this scale to large inputs?" | "Is the Rust code maximally efficient?" |
-| Primary focus | Thread safety, frame budget | Throughput, RAM at 10x–100x | SIMD coverage, allocations, idioms |
-| Example finding | `fs::write` on main thread | Missing file size check | `to_string_lossy().to_string()` instead of `.into_owned()` |
+| Core question | "Does this block the main thread?" | "Does this scale to large inputs?" | "Is this idiomatic and following project patterns?" |
+| Primary focus | Thread safety, frame budget | Throughput at 10x-100x, RAM budgets | Correctness, SIMD consistency, benchmarks |
+| Benchmarks | Defer to gtk-perf-scale | Owns benchmark-audit | Defer to gtk-perf-scale |
+| Example finding | `fs::write` on main thread | Missing file size check | `Result<T, String>` instead of thiserror enum |
 
 If you find a GTK threading issue, flag it but reference `gtk-responsiveness`. If you find a scaling issue, reference `gtk-perf-scale`.
 
@@ -23,171 +45,90 @@ This skill uses **parallel subagents** for independent review concerns. Do NOT r
 
 1. **Identify changed files** — run `git diff --name-only` (or use the diff context if already available)
 2. **Match trigger patterns** — for each subagent, check if any changed files match its triggers
-3. **Always include allocation-audit** — allocation waste is cross-cutting
-4. **Dispatch threshold** — if fewer than 2 subagents are relevant, run inline using only the relevant criteria
-5. **Dispatch relevant subagents in parallel** via the Agent tool
-6. **Aggregate results** — merge findings, deduplicate, produce the final report
-
-### Optimization Preamble (inject into every subagent prompt)
-
-> While reviewing, also check for: unnecessary type conversions (OsStr → String when &str suffices), redundant allocations in loops, missing `Cow<str>` for conditionally-owned strings, `format!()` where a static `&str` would work, and `clone()` where a reference or `Arc` sharing would suffice.
+3. **Dispatch threshold** — if fewer than 2 subagents are relevant, run inline using only the relevant criteria
+4. **Dispatch relevant subagents in parallel** via the Agent tool
+5. **Aggregate results** — merge findings, deduplicate, produce the final report
 
 ## Severity Levels
 
-- **[FLAG]** — Measurable performance waste. SIMD crate available but not used on a hot path, or allocation scales with input size unnecessarily. Must fix.
-- **[RECOMMEND]** — Optimization opportunity. Works today but leaves performance on the table. Fix proactively.
-- **[CONSIDER]** — Minor improvement. Not measurable at current scale but good practice.
-- **[GOOD]** — Existing optimized pattern. Reinforce and protect from regression.
+- **[FLAG]** — Correctness or consistency issue. A proven hot path missing an established SIMD pattern, or an error handling approach that enables silent bugs. Must fix.
+- **[RECOMMEND]** — Idiomatic improvement that also improves readability or correctness. Fix proactively.
+- **[CONSIDER]** — Minor improvement. Only if the change is also a readability win.
+- **[GOOD]** — Existing correct pattern. Reinforce and protect from regression.
 
 ## Subagent Definitions
 
 ### 1. simd-coverage-audit
 
-**Triggers**: Changes to `editor_page/`, `services/`, `Cargo.toml`, or any file containing `read_to_string`, `fs::read`, `from_utf8`, `memchr`, `simdutf8`, byte processing loops.
+**Triggers**:
+- paths: `ui/editor_page/**/*.rs`, `services/palette.rs`
+- content: `read_to_string|fs::read|from_utf8|memchr|simdutf8`
 
 **Subagent prompt**:
 ```
-You are reviewing Rust code in a GTK4/Libadwaita text editor for SIMD acceleration opportunities.
+You are reviewing Rust code in a GTK4/Libadwaita text editor for consistency with established SIMD patterns.
 
 Read the reference file at: .claude/skills/gtk-perf-rust-optimize/references/simd-opportunities.md
 
 Changed files to review:
 {changed_files}
 
-{optimization_preamble}
+The project has established SIMD patterns that new code on similar paths should follow:
+- simdutf8 for ALL file loads (UTF-8 validation)
+- nucleo-matcher for ALL fuzzy search scoring
+- memchr for byte scanning on large buffers (if applicable)
 
-The project targets x86-64-v3 (AVX2 guaranteed) and Apple Silicon (NEON guaranteed). SIMD crates provide free performance gains on every target machine.
+IMPORTANT: Only flag SIMD issues where an ESTABLISHED project pattern is missing on a similar code path. Do NOT recommend SIMD adoption for new code paths that haven't been profiled. Do NOT flag micro allocation patterns.
 
 Review criteria:
-- simdutf8 coverage: is simdutf8 used for ALL file loads, or only gated behind a size threshold? The SIMD path is faster even for small files (0.08ms vs 0.7ms for 1MB). Gate syntax highlighting on size, not the UTF-8 validation method.
-- memchr usage: is memchr used for newline counting, byte scanning, and line-offset computation? Or does the code use scalar .chars().filter(), .find(), or manual loops? memchr provides 32x throughput on AVX2.
-- Byte-level operations: any code iterating bytes in a buffer (newline counting for status bar, line position lookup) should use memchr, not scalar iteration.
-- Cargo.toml: is memchr listed as a direct dependency? (It's a transitive dep through nucleo but should be explicit for direct use.)
-- SIMD crate versions: are simdutf8 and nucleo-matcher on their latest stable versions?
+- Does new file-loading code use the established simdutf8 pattern (std::fs::read + simdutf8::basic::from_utf8 + from_utf8_unchecked)?
+- Does new search/scoring code use nucleo-matcher (the established fuzzy search pattern)?
+- For new byte-scanning code on buffers that could be >1KB: is there an existing memchr pattern it should follow?
 
 Anti-patterns to flag:
-- [FLAG] std::fs::read_to_string used where std::fs::read + simdutf8 + from_utf8_unchecked would be faster (applies to ALL file sizes, not just >10MB)
-- [FLAG] Scalar newline counting (iter().filter(|&&b| b == b'\n').count() or similar) on buffers >1KB without memchr
-- [RECOMMEND] memchr not in Cargo.toml as direct dependency despite byte-scanning code existing
-- [RECOMMEND] simdutf8 gated on file size threshold when it should apply universally
+- [FLAG] New file-loading path uses std::fs::read_to_string instead of the established simdutf8 pattern
+- [FLAG] New fuzzy search code uses hand-rolled scoring instead of nucleo-matcher
 - [GOOD] nucleo-matcher used for fuzzy search with Matcher reuse across candidates
 - [GOOD] simdutf8 + from_utf8_unchecked with correct safety comment
 
 Output format — return findings as:
 **[SEVERITY] Title** — file:line
-Description. Throughput numbers (SIMD vs scalar). Fix.
+Description. Which established pattern is missing. Fix.
 ```
 
-### 2. allocation-audit
+### 2. modern-rust-audit
 
-**Triggers**: **Always runs** — allocation waste is cross-cutting.
-
-**Subagent prompt**:
-```
-You are reviewing Rust code in a GTK4/Libadwaita text editor for unnecessary allocations and zero-copy opportunities.
-
-Read the reference file at: .claude/skills/gtk-perf-rust-optimize/references/allocation-patterns.md
-
-Changed files to review:
-{changed_files}
-
-{optimization_preamble}
-
-Review criteria — check every changed file for:
-1. to_string_lossy().to_string(): this double-converts OsStr → Cow<str> → String. Replace with .into_owned() when the String is consumed, or keep the Cow<str> if only a &str is needed. Most impactful in loops (IndexedFile::new at up to 100k iterations).
-2. Save-path memory doubling: buffer.text().to_string() copies the entire file content from GString to String. Flag if this pattern appears without a comment acknowledging the unavoidable copy.
-3. Cow<str> / Cow<Path> opportunities: functions that accept String or PathBuf but only read the data should accept &str or &Path. Functions that sometimes borrow, sometimes own should use Cow.
-4. Error string allocation: Result<T, String> with format!() where a thiserror enum would be zero-allocation and enable pattern matching instead of string comparison.
-5. Collection intermediaries: heap.into_vec().into_iter().map().collect() creates two Vecs. Look for ways to eliminate intermediate collections.
-6. format!() for simple concatenation: format!("{}{}", a, b) allocates where push_str on a pre-allocated String would be cheaper in hot loops.
-
-Anti-patterns to flag:
-- [FLAG] to_string_lossy().to_string() in a loop running >100 iterations (e.g., file index rebuild)
-- [FLAG] Error strings compared via == instead of enum pattern matching (fragile + allocates)
-- [RECOMMEND] to_string_lossy().to_string() anywhere — use .into_owned()
-- [RECOMMEND] Result<T, String> in service functions — use thiserror enum
-- [RECOMMEND] Intermediate collection in result extraction (double Vec allocation)
-- [CONSIDER] Cow<str> opportunity where a function always clones its &str parameter
-- [GOOD] Arc<PathBuf> sharing for workspace roots instead of per-file PathBuf clone
-- [GOOD] Vec::with_capacity for known-size collections
-- [GOOD] BinaryHeap with bounded capacity for top-N selection
-
-Output format — return findings as:
-**[SEVERITY] Title** — file:line
-Description. Allocation count/size quantified. Fix.
-```
-
-### 3. modern-rust-audit
-
-**Triggers**: Any `.rs` file change. This is the lightest subagent — runs inline when it's the only applicable concern.
+**Triggers**: Any changed `.rs` file. This is the lightest subagent — always runs.
 
 **Subagent prompt** (self-contained — no reference file):
 ```
-You are reviewing Rust code in a GTK4/Libadwaita text editor for modern Rust idiom adoption.
+You are reviewing Rust code in a GTK4/Libadwaita text editor for modern Rust idioms and correctness improvements that also improve readability.
 
 Changed files to review:
 {changed_files}
 
-{optimization_preamble}
+The project uses Rust edition 2024 with MSRV 1.94.1. thiserror = "2.0" is in workspace dependencies.
 
-The project uses Rust edition 2021 with MSRV 1.83+. thiserror = "2.0" is in workspace dependencies but currently unused.
+IMPORTANT: Only flag improvements that make the code BOTH more correct AND more readable. Do NOT flag micro allocation patterns, Cow<str> opportunities, format!() vs push_str, or clone avoidance.
 
 Review criteria:
-1. thiserror adoption: flag Result<T, String> return types in service functions. thiserror enums eliminate allocation waste and enable pattern matching. The crate is already a workspace dependency — zero adoption cost.
-2. Error string comparison: flag any `if err == "some string"` or `if err != "some string"` patterns. These are fragile (typo = silent bug) and allocate unnecessarily.
-3. let-else usage: flag match arms that just extract or early-return where let-else (stable since 1.65) would be cleaner. This is readability, not performance — use [CONSIDER].
-4. Edition 2024 readiness: if you spot patterns that would need changes for edition 2024 (stable since Rust 1.85), note them as [CONSIDER].
-5. Unused workspace dependencies: flag crates in [workspace.dependencies] that have no use/import anywhere.
+1. thiserror adoption: flag Result<T, String> return types in service functions. thiserror enums improve BOTH correctness (exhaustive pattern matching, no fragile string comparison) AND readability (the error variants document what can go wrong). The crate is already a workspace dependency.
+2. Error string comparison: flag any `if err == "some string"` or `err.contains("...")` patterns. These are fragile (typo = silent bug) and hard to review. Enum pattern matching is clearer.
+3. let-else usage: only flag when let-else would significantly improve readability over a match arm that just extracts or early-returns. Do not flag cases where the match is already clear.
+4. Edition 2024 readiness: if the crate still uses edition = "2021", note that Edition 2024 is available. Key change: `unsafe_op_in_unsafe_fn` becomes deny-by-default — any existing `unsafe` blocks inside `unsafe fn` will need explicit `unsafe {}` wrappers. Relevant because the codebase uses `unsafe { String::from_utf8_unchecked(bytes) }`.
 
 Anti-patterns to flag:
-- [RECOMMEND] Result<T, String> with format!() in service functions — use #[derive(thiserror::Error)]
-- [RECOMMEND] Error string equality comparison — fragile, use enum pattern match
-- [CONSIDER] match { Some(x) => x, None => return } where let-else would be cleaner
-- [CONSIDER] Edition 2024 migration notes
+- [RECOMMEND] Result<T, String> with format!() in service functions — thiserror enum is both more correct and more readable
+- [RECOMMEND] Error string equality comparison — fragile and hard to review, use enum pattern match
+- [CONSIDER] match { Some(x) => x, None => return } where let-else would be noticeably cleaner
+- [CONSIDER] edition = "2021" when 2024 is available — note the unsafe_op_in_unsafe_fn impact
 - [GOOD] Correct use of let-else for early returns
 - [GOOD] anyhow::Result with .context() in service error propagation
+- [GOOD] thiserror-derived error enums with exhaustive matching
 
 Output format — return findings as:
 **[SEVERITY] Title** — file:line
-Description. Why the modern pattern is better. Fix.
-```
-
-### 4. benchmark-gap-audit
-
-**Triggers**: Changes to `benches/`, `services/`, `ui/editor_page/`, `Cargo.toml` benchmark config, or when another subagent finds a hot path lacking benchmarks.
-
-**Subagent prompt**:
-```
-You are reviewing benchmark coverage for a GTK4/Libadwaita text editor's performance-sensitive code.
-
-Read the reference file at: .claude/skills/gtk-perf-rust-optimize/references/benchmark-gaps.md
-
-Changed files to review:
-{changed_files}
-
-The existing benchmarks in crates/lushtext-core/benches/benchmarks.rs cover:
-- fuzzy_score (7 cases), file_index_search (3 queries × 5 sizes up to 100k), file_index_rebuild (3 sizes up to 5k), search_all (3 modes), scan_directory (4 sizes up to 5k), json_persistence (3 scenarios), file_size_classify (5 buckets)
-
-Review criteria:
-- Is any new performance-sensitive function missing a Criterion benchmark?
-- Do changed functions have benchmarks covering their input size range?
-- Are there hot paths identified by other subagents (simd-coverage, allocation) that lack benchmarks to validate optimization impact?
-
-Known gaps (flag if changed code touches these):
-- File load/save roundtrip: the actual I/O + UTF-8 validation path is unbenchmarked
-- scan_directory at 10k entries: current max is 5k but the cap is 10k
-- Sort key allocation: to_string_lossy().to_lowercase() in scan_directory sort
-- SearchHit collection: the heap extraction + Vec conversion path
-
-Anti-patterns to flag:
-- [RECOMMEND] New hot-path function without a Criterion benchmark
-- [RECOMMEND] Existing benchmark missing the boundary input size (e.g., max cap value)
-- [CONSIDER] Benchmark exists but doesn't cover the SIMD vs scalar comparison
-- [GOOD] Benchmark covers multiple input sizes with appropriate sample_size tuning
-
-Output format — return findings as:
-**[SEVERITY] Title** — file:line
-Description. What to benchmark. Expected baseline. Criterion setup hint.
+Description. Why the modern pattern improves both correctness and readability. Fix.
 ```
 
 ## Aggregation
@@ -195,26 +136,25 @@ Description. What to benchmark. Expected baseline. Criterion setup hint.
 After all subagents return, produce the unified report:
 
 1. **Merge findings** — combine all [FLAG], [RECOMMEND], [CONSIDER], [GOOD] items
-2. **Deduplicate** — if two subagents flag the same line (e.g., allocation-audit and simd-coverage both flag `to_string_lossy` in a SIMD path), keep the more specific finding
-3. **Sort by severity** — FLAG first, then RECOMMEND, CONSIDER, GOOD
-4. **Cross-references** — if a finding relates to `gtk-perf-scale` (e.g., an allocation that affects RAM budget) or `gtk-responsiveness` (e.g., a hot allocation on the main thread), note the cross-reference
+2. **Deduplicate** — if two subagents flag the same line, keep the more specific finding
+3. **Apply the readability gate** — before including any finding, ask: "does the suggested fix make the code harder to read?" If yes, drop or reframe it
+4. **Sort by severity** — FLAG first, then RECOMMEND, CONSIDER, GOOD
+5. **Cross-references** — if a finding relates to `gtk-perf-scale` or `gtk-responsiveness`, note the cross-reference
 
 ## Audit Report Format
 
 ```
-## Rust Optimization Audit
+## Rust Code Quality Audit
 
 ### Summary
 - **Files reviewed**: N
 - **Findings**: X flag, Y recommend, Z consider, W good
-- **SIMD coverage**: Brief status (e.g., "simdutf8 applied to all loads; memchr missing for line counting")
-- **Allocation impact**: Brief summary (e.g., "3 hot-path patterns save ~100k allocations per index rebuild")
+- **SIMD consistency**: Brief status (e.g., "all file loads use simdutf8; search uses nucleo")
 
 ### [FLAG] Title — file:line
 Description of the issue.
-**Throughput**: SIMD vs scalar numbers, or allocation count/size.
-**Impact**: Measurable effect (ns/op, MB saved, allocations eliminated).
-**Fix**: Concrete recommendation with code sketch or reference.
+**Why it matters**: Correctness or consistency impact (not micro-throughput).
+**Fix**: Concrete recommendation.
 
 ### [RECOMMEND] Title — file:line
 ...
@@ -223,22 +163,18 @@ Description of the issue.
 ...
 
 ### [GOOD] Title — file:line
-Why this pattern is correct and efficient.
+Why this pattern is correct and idiomatic.
 ```
-
-Always quantify impact ("saves 100k allocations", "32x throughput", "eliminates 50MB transient copy") rather than vague terms.
 
 ## Guidance Mode
 
 When implementing new features (not reviewing existing code), check:
 
-1. Does this code process bytes or strings from files? → Use SIMD crates (simdutf8, memchr)
-2. Does this convert OsStr to String? → Use `.into_owned()` not `.to_string()`
-3. Does this return `Result<T, String>`? → Use a `thiserror` enum
-4. Does this allocate in a loop? → Can the allocation be hoisted or eliminated with `Cow`?
-5. Is this a hot path? → Does it have a Criterion benchmark?
-6. Does this create intermediate collections? → Can they be eliminated with iterator chains?
+1. Does this code load files? → Follow the established simdutf8 pattern
+2. Does this code do fuzzy search? → Use nucleo-matcher (the established pattern)
+3. Does this return `Result<T, String>`? → Consider a `thiserror` enum (improves both correctness and readability)
+4. Is this a hot path? → Benchmark coverage is checked by `gtk-perf-scale`
 
 ## Tone
 
-Optimization advice must be grounded in numbers. Instead of "this allocates unnecessarily," say "this allocates a String per file during index rebuild — at 100k files, that's 100k allocations (~3MB) eliminated by switching to `.into_owned()`." Acknowledge existing good patterns before suggesting improvements.
+Focus on correctness and consistency over raw throughput. Instead of "this allocates unnecessarily," say "this error handling uses string comparison, which is fragile — a typo would silently break the match arm." Acknowledge existing good patterns before suggesting improvements. Never recommend changes that trade readability for marginal performance.

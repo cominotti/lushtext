@@ -3,8 +3,8 @@
 //! Generic JSON file persistence: load/save any serde type to a JSON file.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 

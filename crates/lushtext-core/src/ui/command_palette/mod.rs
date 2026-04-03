@@ -9,8 +9,8 @@ pub mod item;
 
 use crate::model::palette::{IndexedFile, SearchMode};
 use crate::services::{async_task, palette::FileIndex};
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 use item::PaletteItem;
@@ -142,8 +142,8 @@ impl LushtextCommandPalette {
             return;
         }
 
-        let gen = imp.index_update_generation.get().wrapping_add(1);
-        imp.index_update_generation.set(gen);
+        let generation = imp.index_update_generation.get().wrapping_add(1);
+        imp.index_update_generation.set(generation);
 
         let palette_weak = self.downgrade();
         glib::timeout_add_local_once(Duration::from_millis(INDEX_UPDATE_DEBOUNCE_MS), move || {
@@ -152,7 +152,7 @@ impl LushtextCommandPalette {
             };
             let imp = palette.imp();
             if imp.index_update_inflight.get()
-                || imp.index_update_generation.get() != gen
+                || imp.index_update_generation.get() != generation
                 || imp.pending_index_updates.borrow().is_empty()
             {
                 return;

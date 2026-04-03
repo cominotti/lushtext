@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use gtk4::subclass::prelude::*;
-use gtk4::{self, glib, CompositeTemplate};
+use gtk4::{self, CompositeTemplate, glib};
 use std::cell::Cell;
 
 #[derive(Default, CompositeTemplate)]

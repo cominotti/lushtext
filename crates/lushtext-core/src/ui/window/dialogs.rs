@@ -16,10 +16,10 @@ impl super::LushtextWindow {
 
         let window = self.clone();
         dialog.open(Some(self), gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
-                    window.open_document(&path);
-                }
+            if let Ok(file) = result
+                && let Some(path) = file.path()
+            {
+                window.open_document(&path);
             }
         });
     }
@@ -41,45 +41,44 @@ impl super::LushtextWindow {
 
         let window = self.clone();
         dialog.save(Some(self), gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
-                    {
-                        let mut open_paths = window.imp().open_paths.borrow_mut();
-                        if let Some(ref old) = editor.file_path() {
-                            open_paths.remove(old.as_path());
-                        }
-                        open_paths.insert(path.clone());
+            if let Ok(file) = result
+                && let Some(path) = file.path()
+            {
+                {
+                    let mut open_paths = window.imp().open_paths.borrow_mut();
+                    if let Some(ref old) = editor.file_path() {
+                        open_paths.remove(old.as_path());
                     }
-                    editor.set_file_path(&path);
-                    let path_display = path.display().to_string();
-                    let window_clone = window.clone();
-                    editor.save_file_async(move |save_result| match save_result {
-                        Ok(()) => {
-                            if let Some(page) = window_clone.imp().tab_view.selected_page() {
-                                page.set_title(
-                                    &page
-                                        .child()
-                                        .downcast_ref::<crate::ui::editor_page::LushtextEditorPage>(
-                                        )
-                                        .map(|e| e.title())
-                                        .unwrap_or_default(),
-                                );
-                            }
-                            window_clone.imp().status_bar.push_message(
-                                &format!("Saved as {path_display}"),
-                                MessageKind::Info,
-                            );
-                            window_clone.refresh_status_bar();
-                        }
-                        Err(e) => {
-                            tracing::error!("Save As failed: {}", e);
-                            window_clone
-                                .imp()
-                                .status_bar
-                                .push_message(&format!("Save failed: {e}"), MessageKind::Error);
-                        }
-                    });
+                    open_paths.insert(path.clone());
                 }
+                editor.set_file_path(&path);
+                let path_display = path.display().to_string();
+                let window_clone = window.clone();
+                editor.save_file_async(move |save_result| match save_result {
+                    Ok(()) => {
+                        if let Some(page) = window_clone.imp().tab_view.selected_page() {
+                            page.set_title(
+                                &page
+                                    .child()
+                                    .downcast_ref::<crate::ui::editor_page::LushtextEditorPage>()
+                                    .map(|e| e.title())
+                                    .unwrap_or_default(),
+                            );
+                        }
+                        window_clone
+                            .imp()
+                            .status_bar
+                            .push_message(&format!("Saved as {path_display}"), MessageKind::Info);
+                        window_clone.refresh_status_bar();
+                    }
+                    Err(e) => {
+                        tracing::error!("Save As failed: {}", e);
+                        window_clone
+                            .imp()
+                            .status_bar
+                            .push_message(&format!("Save failed: {e}"), MessageKind::Error);
+                    }
+                });
             }
         });
     }

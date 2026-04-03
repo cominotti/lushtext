@@ -8,7 +8,7 @@
 use crate::model::workspace::WorkspacesFile;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use gtk4::{self, glib, CompositeTemplate};
+use gtk4::{self, CompositeTemplate, glib};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 

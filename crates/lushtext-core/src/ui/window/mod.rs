@@ -14,8 +14,8 @@ use crate::services::async_task;
 use crate::services::palette::FileIndex;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use std::path::Path;
@@ -51,11 +51,11 @@ impl LushtextWindow {
         if self.imp().open_paths.borrow().contains(path) {
             for i in 0..tab_view.n_pages() {
                 let page = tab_view.nth_page(i);
-                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                    if editor.file_path().as_deref() == Some(path) {
-                        tab_view.set_selected_page(&page);
-                        return;
-                    }
+                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+                    && editor.file_path().as_deref() == Some(path)
+                {
+                    tab_view.set_selected_page(&page);
+                    return;
                 }
             }
         }
@@ -128,21 +128,21 @@ impl LushtextWindow {
         let page_weak = page.downgrade();
         let window_weak = self.downgrade();
         let handler_id = buffer.connect_modified_changed(move |buf| {
-            if let Some(page) = page_weak.upgrade() {
-                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                    let name = editor.title();
-                    if buf.is_modified() {
-                        page.set_title(&format!("• {name}"));
-                    } else {
-                        page.set_title(&name);
-                    }
+            if let Some(page) = page_weak.upgrade()
+                && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+            {
+                let name = editor.title();
+                if buf.is_modified() {
+                    page.set_title(&format!("• {name}"));
+                } else {
+                    page.set_title(&name);
                 }
             }
             // Only refresh header bar if this is the active tab
-            if let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade()) {
-                if window.imp().tab_view.selected_page().as_ref() == Some(&page) {
-                    window.refresh_header_bar();
-                }
+            if let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade())
+                && window.imp().tab_view.selected_page().as_ref() == Some(&page)
+            {
+                window.refresh_header_bar();
             }
         });
         editor.imp().modified_handler_id.replace(Some(handler_id));
@@ -160,10 +160,10 @@ impl LushtextWindow {
         }
 
         for name in ["toggle-search", "save", "save-as", "close-tab"] {
-            if let Some(action) = self.lookup_action(name) {
-                if let Some(simple) = action.downcast_ref::<gio::SimpleAction>() {
-                    simple.set_enabled(has_tabs);
-                }
+            if let Some(action) = self.lookup_action(name)
+                && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
+            {
+                simple.set_enabled(has_tabs);
             }
         }
     }
@@ -476,15 +476,15 @@ impl LushtextWindow {
     /// Debounced at 300ms to coalesce rapid workspace mutations (e.g., adding
     /// multiple folders fires `connect_workspace_changed` for each).
     pub fn rebuild_file_index(&self) {
-        let gen = self.imp().index_rebuild_generation.get().wrapping_add(1);
-        self.imp().index_rebuild_generation.set(gen);
+        let generation = self.imp().index_rebuild_generation.get().wrapping_add(1);
+        self.imp().index_rebuild_generation.set(generation);
 
         let window_weak = self.downgrade();
         glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
             let Some(window) = window_weak.upgrade() else {
                 return;
             };
-            if window.imp().index_rebuild_generation.get() != gen {
+            if window.imp().index_rebuild_generation.get() != generation {
                 return; // superseded by a newer rebuild request
             }
             let prev_count = window.imp().command_palette.file_index_len();

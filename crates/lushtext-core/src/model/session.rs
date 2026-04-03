@@ -31,10 +31,10 @@ impl SessionData {
     pub fn retain_tabs_by_path(&mut self, existing_paths: &HashSet<PathBuf>) {
         self.tabs.retain(|tab| existing_paths.contains(&tab.path));
 
-        if let Some(ref active) = self.active_tab {
-            if !existing_paths.contains(active) {
-                self.active_tab = None;
-            }
+        if let Some(ref active) = self.active_tab
+            && !existing_paths.contains(active)
+        {
+            self.active_tab = None;
         }
     }
 }

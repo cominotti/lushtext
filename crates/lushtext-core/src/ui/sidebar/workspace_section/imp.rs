@@ -12,12 +12,12 @@ use gtk4::gio;
 use gtk4::gio::prelude::ListModelExt;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use gtk4::{self, glib, CompositeTemplate};
+use gtk4::{self, CompositeTemplate, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 type FileCallback = Box<dyn Fn(&Path)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
@@ -203,24 +203,24 @@ impl LushtextWorkspaceSection {
                 icon.set_icon_name(Some(icon_name));
                 label.set_label(&file_item.name());
 
-                if file_item.is_dir() && !file_item.is_placeholder() {
-                    if let Some(section) = section_weak.upgrade() {
-                        if let Some(path) = file_item.path() {
-                            section
-                                .imp()
-                                .dir_rows
-                                .borrow_mut()
-                                .insert(path, tree_row.downgrade());
-                        }
-                    }
+                if file_item.is_dir()
+                    && !file_item.is_placeholder()
+                    && let Some(section) = section_weak.upgrade()
+                    && let Some(path) = file_item.path()
+                {
+                    section
+                        .imp()
+                        .dir_rows
+                        .borrow_mut()
+                        .insert(path, tree_row.downgrade());
                 }
 
                 // GTK recycles ListItem widgets: a row previously used for
                 // inline rename may still have a GtkEntry appended.
-                if let Some(sibling) = label.next_sibling() {
-                    if sibling.downcast_ref::<gtk4::Entry>().is_some() {
-                        content_box.remove(&sibling);
-                    }
+                if let Some(sibling) = label.next_sibling()
+                    && sibling.downcast_ref::<gtk4::Entry>().is_some()
+                {
+                    content_box.remove(&sibling);
                 }
                 label.set_visible(true);
 
@@ -255,10 +255,10 @@ impl LushtextWorkspaceSection {
                 };
                 let controllers = expander.observe_controllers();
                 for i in 0..controllers.n_items() {
-                    if let Some(obj) = controllers.item(i) {
-                        if let Ok(gesture) = obj.downcast::<gtk4::GestureClick>() {
-                            gesture.set_propagation_phase(phase);
-                        }
+                    if let Some(obj) = controllers.item(i)
+                        && let Ok(gesture) = obj.downcast::<gtk4::GestureClick>()
+                    {
+                        gesture.set_propagation_phase(phase);
                     }
                 }
             }
@@ -280,10 +280,10 @@ impl LushtextWorkspaceSection {
                 return;
             }
 
-            if let Some(section) = section_weak.upgrade() {
-                if let Some(ref path) = file_item.path() {
-                    section.imp().dir_rows.borrow_mut().remove(path.as_path());
-                }
+            if let Some(section) = section_weak.upgrade()
+                && let Some(ref path) = file_item.path()
+            {
+                section.imp().dir_rows.borrow_mut().remove(path.as_path());
             }
         });
 

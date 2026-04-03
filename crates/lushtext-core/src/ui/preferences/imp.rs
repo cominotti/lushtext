@@ -8,7 +8,7 @@
 //! GSettings string/bool keys.
 
 use crate::config::keys;
-use gtk4::{self, gio, glib, CompositeTemplate};
+use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
 

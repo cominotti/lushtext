@@ -75,11 +75,7 @@ impl FileSizeCheck {
     /// estimate while undo is enabled and a lower one once large-file mode
     /// disables it.
     pub fn estimated_buffer_multiplier(self) -> u64 {
-        if self.undo_enabled() {
-            3
-        } else {
-            2
-        }
+        if self.undo_enabled() { 3 } else { 2 }
     }
 }
 

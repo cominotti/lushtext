@@ -4,8 +4,8 @@
 
 mod imp;
 
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
 glib::wrapper! {
