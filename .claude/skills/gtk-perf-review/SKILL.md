@@ -82,6 +82,7 @@ This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent inte
    - **Deduplicate**: if multiple subagents flag the same issue (e.g., responsiveness flags `fs::write` on main thread, scale flags missing file size check, rust-optimize flags missing simdutf8 on the same load path), keep all perspectives but group them under one heading
    - Sort by severity: FLAG → RECOMMEND → CONSIDER → GOOD
    - Add a **Cross-Cutting Summary** section noting where responsiveness, scale, and optimization concerns overlap
+   - **Comment check**: Flag performance-sensitive code paths (SIMD usage, thread boundary crossings, file size thresholds, concurrency guards) that lack explanatory comments per the `rust-comments` skill — a future developer who doesn't understand the performance rationale may unknowingly regress it
 
 ## Unified Report Format
 
@@ -119,6 +120,9 @@ Issues that span multiple skills (e.g., a blocking I/O call that also lacks a fi
 
 ### Good Patterns
 Patterns from all three reviews that are correct and should be preserved.
+
+### Documentation
+Performance-sensitive code paths lacking explanatory comments (per `rust-comments` skill). Flag any SIMD usage, thread boundary crossings, file size thresholds, concurrency guards, or cache-conscious patterns without inline rationale.
 ```
 
 ## When NOT to Dispatch
