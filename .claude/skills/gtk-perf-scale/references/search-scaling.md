@@ -16,211 +16,25 @@ Code examples for making the command palette's fuzzy search and file indexing sc
 
 ## 1. Debounced Search Input {#1-debounced-search}
 
-The current `setup_search` in `command_palette/imp.rs` connects `search_changed` directly to `rebuild_results`. Every keystroke triggers a full index scan. Adding a 150ms debounce cuts work by 3–5x for typical typing speeds.
-
-```rust
-fn setup_search(&self) {
-    let obj = self.obj().clone();
-    let pending_id: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
-
-    self.search_entry.connect_search_changed(move |entry| {
-        // Cancel any pending search
-        if let Some(id) = pending_id.take() {
-            id.remove();
-        }
-
-        let query = entry.text().to_string();
-        let palette = obj.clone();
-        let pending = pending_id.clone();
-
-        // For empty queries, rebuild immediately (instant clear is expected UX)
-        if query.is_empty() {
-            palette.imp().rebuild_results(&query);
-            return;
-        }
-
-        // Schedule rebuild after 150ms of inactivity
-        let id = glib::timeout_add_local_once(
-            std::time::Duration::from_millis(150),
-            move || {
-                palette.imp().rebuild_results(&query);
-                pending.set(None);
-            },
-        );
-        pending_id.set(Some(id));
-    });
-}
-```
-
-The empty-query shortcut is important: when the user clears the search bar (Backspace to empty, or Ctrl+A Delete), results should refresh instantly. The debounce only applies to non-empty queries where scoring is the bottleneck.
+**Status: IMPLEMENTED** — `setup_search` in `command_palette/imp.rs` uses a 150ms generation-counter debounce. Empty queries rebuild immediately (instant clear UX); non-empty queries are debounced via `timeout_add_local_once(150ms)` with a `Cell<u32>` generation counter that stale-checks on timer fire.
 
 ---
 
 ## 2. Generation Counter for Stale Results {#2-generation-counter}
 
-When search is debounced, results arrive 150ms after the last keystroke. But what if the user types, pauses 150ms (triggering a search), then immediately types more? The first search's results arrive and briefly flash before being replaced by the second search's results. A generation counter prevents this.
-
-```rust
-// In imp.rs struct:
-pub search_generation: Cell<u32>,
-
-// In rebuild_results:
-pub fn rebuild_results(&self, query: &str) {
-    let generation = self.search_generation.get().wrapping_add(1);
-    self.search_generation.set(generation);
-
-    let mode = self.mode.get();
-    let index = self.file_index.borrow();
-    let results = palette::search_all(&index, query, mode, 50);
-
-    // Check if a newer query has been issued while we were scoring
-    if self.search_generation.get() != generation {
-        return; // Stale — a newer query superseded us
-    }
-
-    self.results_store.remove_all();
-    for result in &results {
-        let item = match &result.item {
-            SearchResultItem::File(f) => PaletteItem::from_indexed_file(f),
-            SearchResultItem::Command(c) => PaletteItem::from_command_def(c),
-        };
-        self.results_store.append(&item);
-    }
-
-    // ... rest of the method (no_results_label, auto-select)
-}
-```
-
-For synchronous scoring (current implementation), the generation counter catches the case where `rebuild_results` is re-entered during the `results_store.remove_all()` / `append` loop (unlikely with GTK's single-threaded model but defensive). For future async scoring, it becomes essential.
+**Status: IMPLEMENTED** — `search_generation: Cell<u32>` on the imp struct. `rebuild_results` increments and captures the generation; on completion, checks if it's still current before updating the `ListStore`. This prevents stale results from flashing when the user types faster than the debounce interval.
 
 ---
 
 ## 3. Bounded Heap for Top-N {#3-bounded-heap}
 
-The current `search_items` collects all matches into a `Vec`, sorts the entire vector, then truncates to `max`. For 100k files with 80k matches (common with short queries), this sorts 80k elements to keep 50.
-
-A `BinaryHeap` with a size cap is O(n log k) instead of O(n log n), where k=50 and n=match count:
-
-```rust
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-
-fn search_items_bounded<'a, I, T, F, G>(
-    items: I,
-    get_text: F,
-    wrap: G,
-    query: &str,
-    max: usize,
-) -> Vec<ScoredResult<'a>>
-where
-    I: Iterator<Item = &'a T>,
-    T: 'a,
-    F: Fn(&T) -> &str,
-    G: Fn(&'a T) -> SearchResultItem<'a>,
-{
-    let query_chars: Vec<char> = query.to_lowercase().chars().collect();
-
-    // Min-heap: keeps the top `max` items. The root is the *lowest* score
-    // in the heap, so we can efficiently check if a new item beats it.
-    let mut heap: BinaryHeap<Reverse<ScoredResult<'a>>> = BinaryHeap::with_capacity(max + 1);
-
-    for item in items {
-        let text = get_text(item);
-        if let Some(score) = fuzzy_score_chars(&query_chars, text) {
-            let result = ScoredResult {
-                item: wrap(item),
-                score,
-            };
-
-            if heap.len() < max {
-                heap.push(Reverse(result));
-            } else if let Some(min) = heap.peek() {
-                if score > min.0.score {
-                    heap.pop();
-                    heap.push(Reverse(result));
-                }
-            }
-        }
-    }
-
-    // Extract results sorted by score descending
-    let mut results: Vec<_> = heap.into_iter().map(|r| r.0).collect();
-    results.sort_by(|a, b| b.score.cmp(&a.score));
-    results
-}
-```
-
-This requires `ScoredResult` to implement `Ord`. Since we only compare by score:
-
-```rust
-impl Ord for ScoredResult<'_> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.score.cmp(&other.score)
-    }
-}
-
-impl PartialOrd for ScoredResult<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-```
-
-**When to adopt**: benchmark `search_items` with 100k entries. If the current sort-and-truncate takes <5ms, the heap won't provide meaningful improvement. At >10ms, the heap reduces it to ~2ms.
+**Status: IMPLEMENTED** — `search_items` uses `BinaryHeap<Reverse<ScoredResult>>` with capacity `max + 1`. O(n log k) where k=50 and n=match count. `ScoredResult` implements `Ord` (comparing by score). Results extracted via `into_sorted_vec()`. Benchmarked at 100k files in `bench_file_index_search`.
 
 ---
 
 ## 4. Incremental Index Updates {#4-incremental-index}
 
-The current `FileIndex::rebuild` re-scans all workspace roots on every change. For incremental updates (file created, deleted, or renamed), a delta-based approach avoids the full scan:
-
-```rust
-impl FileIndex {
-    /// Add a single file to the index.
-    pub fn add_file(&mut self, path: PathBuf, workspace_root: PathBuf) {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        self.files.push(IndexedFile {
-            path,
-            name,
-            workspace_root,
-        });
-    }
-
-    /// Remove a file from the index by path.
-    pub fn remove_file(&mut self, path: &Path) {
-        self.files.retain(|f| f.path != path);
-    }
-
-    /// Remove all files under a directory prefix.
-    pub fn remove_directory(&mut self, dir: &Path) {
-        self.files.retain(|f| !f.path.starts_with(dir));
-    }
-
-    /// Update a file's path (rename).
-    pub fn rename_file(&mut self, old_path: &Path, new_path: PathBuf) {
-        if let Some(entry) = self.files.iter_mut().find(|f| f.path == old_path) {
-            entry.name = new_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            entry.path = new_path;
-        }
-    }
-}
-```
-
-Wire these into the existing file operation callbacks:
-
-- `connect_file_created` → `file_index.add_file(path, workspace_root)`
-- `connect_file_deleted` → `file_index.remove_file(path)` or `remove_directory(path)`
-- `connect_file_renamed` → `file_index.rename_file(old, new)`
-
-Full rebuilds are still needed for: initial load, adding/removing workspace roots. But incremental updates handle the common case (user creates/renames/deletes files while editing) without a full rescan.
-
-**RAM note**: `retain()` does not release excess capacity. After a bulk `remove_directory` that drops >25% of entries, call `files.shrink_to_fit()` to reclaim the unused Vec capacity. For a 100k-entry index where 30k files are removed, this reclaims ~6MB of unused Vec backing storage.
+**Status: IMPLEMENTED** — `FileIndex` has `add_file`, `remove_path` (handles both files and directories via `Path::starts_with`), and `rename_path`. Wired to file operation callbacks in the command palette. Full rebuilds only on initial load or workspace root add/remove. `remove_path` calls `shrink_to_fit()` when >25% of entries removed to reclaim Vec capacity. Benchmarked in `bench_file_index_incremental`.
 
 ---
 
@@ -435,7 +249,7 @@ name_label.set_markup(&markup);
 
 ## 6. SIMD Crate Adoption Beyond Search {#6-simd-crates}
 
-> **Cross-reference**: For a comprehensive SIMD adoption guide covering the full file-load path (simdutf8 for all file sizes, not just >10MB), see `gtk-perf-rust-optimize/references/simd-opportunities.md`.
+> **Cross-reference**: For the SIMD adoption guide covering the file-load path (simdutf8 now universal for all file sizes), see `gtk-perf-rust-optimize/references/simd-opportunities.md`.
 
 With x86-64-v3 + Apple Silicon as the target baseline, several SIMD-accelerated crates provide free performance gains for operations LushText already performs.
 
@@ -501,45 +315,4 @@ Uses `memchr` internally for the initial candidate-byte scan, then a determinist
 
 ## 7. Index Rebuild Coalescing {#7-rebuild-coalescing}
 
----
-
-## 6. Index Rebuild Coalescing {#6-rebuild-coalescing}
-
-When the user adds multiple workspace folders rapidly (e.g., via drag-and-drop), each addition fires `connect_workspace_changed`, which calls `rebuild_file_index`. Coalescing prevents redundant full scans:
-
-```rust
-// In window/imp.rs:
-pub rebuild_pending: Cell<Option<glib::SourceId>>,
-
-// In rebuild_file_index:
-pub fn rebuild_file_index(&self) {
-    // Cancel any pending rebuild
-    if let Some(id) = self.imp().rebuild_pending.take() {
-        id.remove();
-    }
-
-    let window_weak = self.downgrade();
-    let id = glib::timeout_add_local_once(
-        std::time::Duration::from_millis(300),
-        move || {
-            let Some(window) = window_weak.upgrade() else { return };
-            window.imp().rebuild_pending.set(None);
-
-            let roots = window.imp().sidebar.workspace_roots();
-            let window_weak = window.downgrade();
-            async_task::spawn_blocking_then(
-                (),
-                move || FileIndex::rebuild(&roots),
-                move |(), index| {
-                    if let Some(window) = window_weak.upgrade() {
-                        window.imp().command_palette.set_file_index(index);
-                    }
-                },
-            );
-        },
-    );
-    self.imp().rebuild_pending.set(Some(id));
-}
-```
-
-The 300ms window coalesces rapid changes while staying responsive — the user won't notice a 300ms delay before the command palette's file list updates after adding a workspace folder.
+**Status: IMPLEMENTED** — `rebuild_file_index` in `window/mod.rs` uses a 300ms generation-counter debounce (`index_rebuild_generation: Cell<u32>`). Each call increments the counter and schedules a `timeout_add_local_once(300ms)`. The timer callback checks the generation — if it's still current, it spawns a background `FileIndex::rebuild` via `spawn_blocking_then`. This coalesces rapid workspace mutations (add/remove folders) into a single rebuild.

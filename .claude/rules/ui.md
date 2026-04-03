@@ -17,6 +17,7 @@ LushText should look and feel like GNOME Text Editor, with these differences:
 LushtextWindow (AdwApplicationWindow)
 ├── AdwHeaderBar
 ├── AdwTabBar → bound to AdwTabView
+├── GtkRevealer [palette_revealer] → LushtextCommandPalette (Ctrl+P)
 ├── GtkPaned (horizontal)
 │   ├── [start] LushtextSidebar (always visible)
 │   │   ├── GtkScrolledWindow (outer, vexpand)

@@ -285,7 +285,7 @@ When restoring a session with N tabs, each `spawn_blocking_then` runs on its own
 | 50 | 500 KB | ~25 MB |
 | 50 | 5 MB | ~250 MB |
 
-This is why the thread spawn guard (max 8 concurrent) matters for RAM, not just CPU scheduling. Batching session restore into groups of 8 caps peak thread memory at 8 * max_file_size.
+This is why the thread spawn guard (max 8 concurrent) matters for RAM, not just CPU scheduling. The guard in `spawn_blocking_then` automatically defers excess spawns via `timeout_add_local_once(50ms)` when 8 threads are active — no manual batching needed. This caps peak thread memory at 8 * max_file_size.
 
 ---
 
@@ -334,6 +334,6 @@ if index.files.len() < index.files.capacity() * 3 / 4 {
 }
 ```
 
-### [CONSIDER] Buffer eviction for apps with many large-file tabs
+### [IMPLEMENTED] Buffer eviction for tabs exceeding memory budget
 
-When total buffer memory exceeds ~256MB across all tabs, evicting the least-recently-viewed unmodified tab reclaims ~1.5-2x its file size. See `references/large-file-patterns.md` section 5.
+Buffer eviction triggers when total estimated buffer memory exceeds `BUFFER_MEMORY_BUDGET` (256MB). Unmodified background tabs are evicted on tab switch. See `references/large-file-patterns.md` section 5.

@@ -27,8 +27,10 @@ src/
 ├── lib.rs              # Entry point: GResource registration, CSS loading, GSettings schema dir, app.run()
 ├── model/              # Domain types (no GTK deps)
 │   ├── workspace.rs    # WorkspaceId, WorkspaceEntry, WorkspaceConfig, WorkspacesFile
-│   └── session.rs      # SessionTab, SessionData
+│   ├── session.rs      # SessionTab, SessionData
+│   └── palette.rs      # IndexedFile, CommandDef, CommandCategory, SearchMode, ScoredResult
 ├── services/           # Business logic
+│   ├── async_task.rs   # spawn_blocking_then, MAX_CONCURRENT_SPAWNS, concurrency guard
 │   ├── json_store.rs   # Generic JSON load/save + data_dir()
 │   ├── workspace_manager.rs
 │   ├── session_service.rs
@@ -44,6 +46,8 @@ src/
     ├── sidebar/         # Multi-workspace sidebar orchestrator
     │   ├── file_tree_item.rs       # GObject wrapper for tree entries
     │   └── workspace_section/      # Per-workspace section widget (header + file tree)
+    ├── command_palette/  # Ctrl+P fuzzy search: files + commands
+    │   └── item.rs      # PaletteItem GObject wrapper for ListStore
     ├── search_bar/      # Find/replace widget
     ├── status_bar/      # Bottom bar: feedback messages + file metadata
     └── preferences/     # AdwPreferencesDialog

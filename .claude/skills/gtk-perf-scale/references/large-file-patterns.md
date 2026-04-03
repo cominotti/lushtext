@@ -14,109 +14,25 @@ Code examples for handling files from 1MB to 500MB+ in a GtkSourceView-based edi
 
 ## 1. Size-Gated Loading {#1-size-gated-loading}
 
-Check file size in the background `work` closure before committing to `read_to_string`. This avoids allocating gigabytes for a file the editor can't meaningfully handle.
+Check file size in the background `work` closure before committing to read. This avoids allocating gigabytes for a file the editor can't meaningfully handle.
 
-```rust
-use crate::services::async_task;
-use std::path::PathBuf;
+Thresholds are in `services/file_limits.rs` as a `FileSizeCheck` enum:
+- `LARGE_FILE_TOAST = 1_000_000` (1 MB) — informational toast
+- `DISABLE_SYNTAX_HIGHLIGHTING = 10_000_000` (10 MB) — disable syntax
+- `DISABLE_UNDO_HISTORY = 50_000_000` (50 MB) — disable undo
+- `REFUSE_TO_OPEN = 500_000_000` (500 MB) — refuse
 
-/// File size thresholds (bytes)
-const SIZE_TOAST: u64 = 1_000_000;         // 1 MB — informational toast
-const SIZE_NO_HIGHLIGHT: u64 = 10_000_000;  // 10 MB — disable syntax highlighting
-const SIZE_NO_UNDO: u64 = 50_000_000;       // 50 MB — disable undo history
-const SIZE_REFUSE: u64 = 500_000_000;       // 500 MB — refuse to open
+**Current implementation** uses `std::fs::read` + `simdutf8` for SIMD UTF-8 validation on all file sizes (not `read_to_string`). Error handling uses `LoadError` thiserror enum with `Cancelled`, `InvalidUtf8`, and `Io` variants. Load cancellation via `Arc<AtomicBool>`.
 
-/// Result of a size-gated file read.
-enum LoadResult {
-    /// File loaded successfully with its content and metadata.
-    Ok { content: String, size: u64 },
-    /// File is too large to open.
-    TooLarge { size: u64, path: PathBuf },
-    /// I/O error during read.
-    Error(String),
-}
+The key insight: `fs::metadata` is a stat() call — fast even on network filesystems — while `read` allocates the full file into memory. Checking size first prevents the allocation entirely for files that exceed the threshold.
 
-pub fn load_file_async(&self, path: &Path) {
-    let file_path = path.to_path_buf();
-    self.imp().file_path.replace(Some(file_path.clone()));
-
-    async_task::spawn_blocking_then(
-        self.clone(),
-        move || {
-            // Check size BEFORE reading content
-            let metadata = match std::fs::metadata(&file_path) {
-                Ok(m) => m,
-                Err(e) => return LoadResult::Error(
-                    format!("Cannot read {}: {}", file_path.display(), e)
-                ),
-            };
-            let size = metadata.len();
-
-            if size > SIZE_REFUSE {
-                return LoadResult::TooLarge { size, path: file_path };
-            }
-
-            match std::fs::read_to_string(&file_path) {
-                Ok(content) => LoadResult::Ok { content, size },
-                Err(e) => LoadResult::Error(
-                    format!("Failed to read {}: {}", file_path.display(), e)
-                ),
-            }
-        },
-        |editor, result| {
-            match result {
-                LoadResult::Ok { content, size } => {
-                    editor.imp().file_size.set(Some(size));
-                    editor.apply_loaded_content_with_size(&content, size);
-                }
-                LoadResult::TooLarge { size, path } => {
-                    let mb = size / 1_000_000;
-                    tracing::warn!("Refused to open {}: {}MB exceeds limit", path.display(), mb);
-                    // Show dialog or toast to the user
-                }
-                LoadResult::Error(msg) => {
-                    tracing::error!("{}", msg);
-                }
-            }
-        },
-    );
-}
-
-/// Apply content with size-dependent feature gating.
-fn apply_loaded_content_with_size(&self, content: &str, size: u64) {
-    let buffer = self.buffer();
-
-    // For very large files, keep undo permanently disabled
-    buffer.begin_irreversible_action();
-    buffer.set_text(content);
-    if size < SIZE_NO_UNDO {
-        buffer.end_irreversible_action();
-    }
-    // else: leave irreversible action open — no undo for huge files
-
-    buffer.set_modified(false);
-    let start = buffer.start_iter();
-    buffer.place_cursor(&start);
-
-    // Gate syntax highlighting on size
-    if size < SIZE_NO_HIGHLIGHT {
-        self.reapply_language();
-    } else {
-        buffer.set_language(None::<&sourceview5::Language>);
-        buffer.set_highlight_syntax(false);
-    }
-}
-```
-
-The key insight: `fs::metadata` is a stat() call — fast even on network filesystems — while `read_to_string` allocates the full file into memory. Checking size first prevents the allocation entirely for files that exceed the threshold.
-
-**RAM impact**: Peak memory during `apply_loaded_content_with_size` is ~2.5-3x file size: the `content` String (~1x) coexists briefly with GtkTextBuffer's internal B-tree (~1.5-2x) during `set_text()`. After `set_text` returns and `content` is dropped, steady-state is ~1.5-2x file size (buffer only). With undo enabled, add another ~1-2x for undo history that accumulates during editing.
+**RAM impact**: Peak memory during `apply_loaded_content` is ~2.5-3x file size: the `content` String (~1x) coexists briefly with GtkTextBuffer's internal B-tree (~1.5-2x) during `set_text()`. After `set_text` returns and `content` is dropped, steady-state is ~1.5-2x file size (buffer only). With undo enabled, add another ~1-2x for undo history that accumulates during editing.
 
 ---
 
 ## 2. Background Save {#2-background-save}
 
-The current `save_file` in `editor_page/mod.rs` calls `std::fs::write` on the main thread. For files >1MB on anything slower than a local SSD, this freezes the UI.
+**Status: IMPLEMENTED** — `save_file_async` uses atomic write (temp file + `rename`) on a background thread via `spawn_blocking_then`.
 
 ```rust
 pub fn save_file_async(&self) -> bool {
@@ -221,26 +137,15 @@ fn read_file_cancellable(
 }
 ```
 
-Store the cancel token on the editor page's imp struct:
+The cancel token is stored directly on the editor page's imp struct as `Arc<AtomicBool>` (not wrapped in `RefCell<Option<...>>`). It is reset with `store(false, ...)` on each new load rather than being replaced. Both `close-tab` and `close_tab_for_path` call `cancel_load()` before `close_page()`.
 
 ```rust
 // In editor_page/imp.rs
-pub struct LushtextEditorPage {
-    // ... existing fields ...
-    pub cancel_token: RefCell<Option<Arc<AtomicBool>>>,
-}
-```
+pub cancel_token: Arc<AtomicBool>,  // direct Arc, no RefCell wrapper
 
-Create and store it when loading starts; set it when the tab is closed:
-
-```rust
-// In load_file_async:
-let cancelled = Arc::new(AtomicBool::new(false));
-self.imp().cancel_token.replace(Some(cancelled.clone()));
-
-// In close-tab action or page close handler:
-if let Some(token) = editor.imp().cancel_token.borrow().as_ref() {
-    token.store(true, Ordering::Relaxed);
+// cancel_load() sets the flag:
+pub fn cancel_load(&self) {
+    self.imp().cancel_token.store(true, Ordering::Relaxed);
 }
 ```
 
@@ -281,36 +186,10 @@ Note: GtkSourceView5 performs incremental re-highlighting as the user edits, so 
 
 ## 5. Buffer Eviction {#5-buffer-eviction}
 
-For editors that keep many tabs open, memory can grow unbounded. A simple eviction strategy unloads buffer content from inactive tabs:
+**Status: IMPLEMENTED** — When total estimated buffer memory exceeds `BUFFER_MEMORY_BUDGET` (256MB), unmodified background tabs are evicted on tab switch. Memory estimation uses `file_size * 2` to account for GtkTextBuffer overhead.
 
-```rust
-/// Evict buffer content from a background tab to save memory.
-/// The file path is preserved so the content can be reloaded when the tab
-/// is activated again.
-fn evict_buffer(&self) {
-    let buffer = self.buffer();
-    if !buffer.is_modified() {
-        buffer.set_text("");
-        self.imp().evicted.set(true);
-    }
-}
+- `EditorPage::evict()` sets `evicted=true` first (prevents `modified-changed` signal flash), then clears buffer text via irreversible action.
+- `reload_if_evicted()` transparently reloads evicted tabs when re-focused via `load_file_async`.
+- The eviction loop in `window/mod.rs` computes a running total inline (O(n)) and evicts the current tab if it brings total under budget.
 
-/// Reload content when an evicted tab becomes active.
-fn ensure_loaded(&self) {
-    if self.imp().evicted.get() {
-        self.imp().evicted.set(false);
-        if let Some(path) = self.file_path() {
-            self.load_file_async(&path);
-        }
-    }
-}
-```
-
-This is a **CONSIDER** optimization — only implement if memory monitoring shows tabs collectively consuming >500MB. The tradeoff is a brief reload delay (~50–200ms) when switching to an evicted tab.
-
-**RAM impact**: Evicting a 50MB tab with undo history reclaims ~100-200MB (buffer B-tree + undo entries). Even for smaller files, evicting 20 inactive 500KB tabs reclaims ~20-40MB. The reload cost is a brief peak of ~2.5-3x file size during `set_text()`, identical to the initial load.
-
-When to trigger eviction:
-- LRU-based: evict the least-recently-viewed tab when total buffer memory exceeds a budget (e.g., 256MB)
-- Count-based: evict when >20 unmodified tabs are open
-- Manual: provide a "Close Other Tabs" or "Free Memory" command
+**RAM impact**: Evicting a 50MB tab with undo history reclaims ~100-200MB (buffer B-tree + undo entries). The reload cost is a brief peak of ~2.5-3x file size during `set_text()`, identical to the initial load.

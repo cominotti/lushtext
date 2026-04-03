@@ -32,18 +32,9 @@ let name = path.file_name()
     .unwrap_or_default();
 ```
 
-### Known locations (as of last audit)
+### Status: ALL FIXED
 
-| File | Line | Frequency | Impact |
-|------|------|-----------|--------|
-| `model/palette.rs` | `IndexedFile::new()` | Up to 100k/rebuild | **High** — 100k unnecessary allocations |
-| `ui/editor_page/mod.rs` | `title()` | Per tab title update | Low — infrequent |
-| `ui/sidebar/file_tree_item.rs` | `display_name()` | Per list item bind | Medium — on scroll |
-| `ui/sidebar/workspace_section/mod.rs` | Multiple sites | Per rename/delete | Low — user-initiated |
-| `ui/window/imp.rs` | `connect_file_renamed` | Per rename | Low — user-initiated |
-| `services/file_tree.rs` | Sort key in `scan_directory` | Per directory entry | Medium — up to 10k/scan |
-
-The most impactful fix is `IndexedFile::new()` — at 100k files, this eliminates ~100k String allocations (~3MB of heap churn) per index rebuild.
+All sites now use `.into_owned()` instead of `.to_string()`. The `file_tree.rs` sort uses `UniCase` comparison with zero String allocations during sort. No `.to_string_lossy().to_string()` call chains remain in the codebase.
 
 ### When to keep `.to_string()`
 
@@ -125,26 +116,9 @@ fn display_name(&self) -> Cow<'_, str> {
 
 ## 4. Error Enum vs String {#4-error-enum}
 
-The project has `thiserror = "2.0"` in workspace dependencies but no `thiserror`-derived error types. Error paths currently use `Result<T, String>` with `format!()`:
+**Status: IMPLEMENTED** — `editor_page/mod.rs` uses a `thiserror`-derived `LoadError` enum with `Cancelled`, `InvalidUtf8`, and `Io` variants. Pattern matching replaces string comparison.
 
-### Anti-pattern
-
-```rust
-// In editor_page — allocates a String, compared via ==
-fn load_file_async(&self, path: &Path) {
-    // ...
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("Load cancelled".to_string());  // heap allocation
-    }
-    // ...
-    // Later:
-    if e != "Load cancelled" {  // fragile string comparison
-        // show error
-    }
-}
-```
-
-### Fix with thiserror
+### Current pattern (editor_page/mod.rs)
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -157,52 +131,35 @@ pub enum LoadError {
     Io(String),
 }
 
-// Usage — zero allocation for Cancelled:
+// Zero allocation for cancellation:
 if cancelled.load(Ordering::Relaxed) {
     return Err(LoadError::Cancelled);
 }
 
-// Pattern match instead of string comparison:
+// Exhaustive pattern match:
 match result {
     Err(LoadError::Cancelled) => { /* silently ignore */ }
-    Err(e) => { status_bar.push_message(&e.to_string(), Error); }
+    Err(e) => { /* show error in UI */ }
     Ok(content) => { /* load into buffer */ }
 }
 ```
 
-**Benefits**:
-- `LoadError::Cancelled` is zero-size — no heap allocation
-- Pattern matching is exhaustive — compiler catches missing variants
-- No risk of typo in error string comparison
-- Each variant's `Display` impl documents the user-visible message
+**Benefits**: `LoadError::Cancelled` is zero-size (no heap allocation), pattern matching is exhaustive, no fragile string comparisons.
 
 ---
 
 ## 5. Collection Intermediaries {#5-collections}
 
-### Heap extraction double-allocation
+### Heap extraction — current pattern
 
-In `palette.rs`, `search_items` extracts results from a `BinaryHeap`:
-
-```rust
-// Current: two Vec allocations
-let mut results: Vec<_> = heap.into_vec()       // Vec 1: unsorted
-    .into_iter()
-    .map(|r| r.0)
-    .collect();                                   // Vec 2: mapped
-results.sort_by(|a, b| b.score.cmp(&a.score));
-```
-
-The `into_vec()` consumes the heap into one Vec, then `collect()` creates a second. An alternative:
+**Status: OPTIMIZED** — `search_items` uses `into_sorted_vec()` for efficient single-allocation extraction:
 
 ```rust
-// Single allocation: sort in place
-let mut results: Vec<_> = heap.into_vec();
-results.sort_by(|a, b| b.0.score.cmp(&a.0.score));
-let results: Vec<_> = results.into_iter().map(|r| r.0).collect();
+// Current: single allocation via into_sorted_vec()
+heap.into_sorted_vec().into_iter().map(|r| r.0).collect()
 ```
 
-At max=50 results, the savings are negligible (~4KB). This is a [CONSIDER], not a [FLAG]. The pattern matters more for larger result sets.
+At max=50 results, heap overhead is negligible (~4KB).
 
 ### splice() vs per-item append()
 

@@ -245,9 +245,9 @@ for tab in session.tabs.iter() {
 }
 ```
 
-**Key**: Each `spawn_blocking_then` spawns its own `std::thread`. For restoring 5-10 tabs, this is fine. For 100+ concurrent operations, consider a thread pool (but that's unlikely in a text editor).
+**Key**: Each `spawn_blocking_then` spawns its own `std::thread`, but the global concurrency guard (`MAX_CONCURRENT_SPAWNS = 8`) automatically defers excess spawns via `timeout_add_local_once(50ms)`. No manual batching is needed — the guard caps peak thread memory at 8 * max_file_size.
 
-**RAM note**: N simultaneous file reads = N * avg_file_size peak memory across all background threads. For session restore with 50 tabs averaging 500KB each, that's ~25MB of concurrent String allocations. With 50 tabs averaging 5MB each, that's ~250MB — significant on 8GB machines. Consider batching into groups of 8 (matching the thread spawn guard) to cap peak memory at 8 * max_file_size. Each batch completes and frees its Strings before the next batch starts.
+**RAM note**: With the spawn guard, at most 8 file reads are concurrent. For session restore with 50 tabs averaging 500KB each, peak memory is ~4MB (8 * 500KB), not 25MB. Excess spawns queue up and execute as threads complete.
 
 ---
 
