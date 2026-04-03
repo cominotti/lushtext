@@ -189,6 +189,9 @@ impl super::LushtextWorkspaceSection {
         content_box: &gtk4::Box,
         is_new: bool,
     ) {
+        // Guard: if the entry was already removed from its parent box (by a
+        // prior confirm or cancel), this is a double-fire from the focus-out
+        // handler. Skip to avoid operating on a detached widget.
         if entry.parent().is_none() {
             return;
         }

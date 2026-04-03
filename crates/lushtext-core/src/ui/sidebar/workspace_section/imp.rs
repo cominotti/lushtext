@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! Private implementation for the workspace section widget.
+//!
+//! Each section manages one workspace's file tree (GtkListView + TreeListModel),
+//! context menus for files and the workspace header, and callback forwarding
+//! to the parent sidebar.
+
 use super::super::file_tree_item::FileTreeItem;
 use crate::model::workspace::WorkspaceId;
 use gtk4::gio;
@@ -18,12 +24,17 @@ type RenameCallback = Box<dyn Fn(&Path, &Path)>;
 type WorkspaceCallback = Box<dyn Fn(&WorkspaceId)>;
 type AddFolderCallback = Box<dyn Fn(&WorkspaceId)>;
 
+/// Cached position of a file tree item for O(1) model removal.
+/// Stores the parent directory (or `None` for root items) and the
+/// index within the parent's `ListStore`.
 #[derive(Debug, Clone)]
 pub struct ItemLocation {
     pub parent_dir: Option<PathBuf>,
     pub index: usize,
 }
 
+// CompositeTemplate loads the UI layout from a compiled XML file.
+// GObject methods always take &self; Cell/RefCell provide interior mutability.
 #[derive(Default, CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/workspace-section.ui")]
 pub struct LushtextWorkspaceSection {
@@ -36,24 +47,38 @@ pub struct LushtextWorkspaceSection {
     #[template_child]
     pub file_tree_view: TemplateChild<gtk4::ListView>,
 
-    // Identity
+    /// Unique ID for this workspace (matches `WorkspaceConfig.id`).
     pub workspace_id: RefCell<WorkspaceId>,
 
-    // File context menu state
+    /// Popover for the right-click context menu on file rows.
     pub context_menu: RefCell<Option<gtk4::PopoverMenu>>,
+    /// Path of the item under the right-click context menu. Set on gesture
+    /// press, read by action handlers (rename, delete, new file).
     pub context_path: RefCell<Option<PathBuf>>,
+    /// Whether the context-menu target is a directory.
     pub context_is_dir: Cell<bool>,
+    /// The TreeExpander widget for the context-menu target row. Needed to
+    /// swap the label for an inline rename entry.
     pub context_expander: RefCell<Option<gtk4::TreeExpander>>,
+    /// True while a New File/Folder flow is active. Distinguishes
+    /// rename-after-create from user-initiated rename.
     pub is_new_item: Cell<bool>,
 
-    // Model references for tree manipulation
+    /// The flattened tree model that GtkListView renders.
     pub tree_model: RefCell<Option<gtk4::TreeListModel>>,
+    /// Root-level ListStore backing the TreeListModel.
     pub root_store: RefCell<Option<gio::ListStore>>,
+    /// Weak refs to expanded directory rows for fast lookup by path.
     pub dir_rows: RefCell<HashMap<PathBuf, glib::WeakRef<gtk4::TreeListRow>>>,
+    /// Weak refs to child ListStores for direct model manipulation.
     pub dir_stores: RefCell<HashMap<PathBuf, glib::WeakRef<gio::ListStore>>>,
+    /// Cancellation tokens for background directory scans, keyed by path.
     pub child_scan_tokens: RefCell<HashMap<PathBuf, Arc<AtomicBool>>>,
+    /// Ordered root paths in the root ListStore.
     pub root_paths: RefCell<Vec<PathBuf>>,
+    /// Ordered child paths per parent directory.
     pub child_paths: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
+    /// O(1) path → (parent, index) lookup for fast model removal.
     pub item_locations: RefCell<HashMap<PathBuf, ItemLocation>>,
 
     // File operation callbacks (forwarded to sidebar → window)
@@ -104,6 +129,11 @@ impl BoxImpl for LushtextWorkspaceSection {}
 
 impl LushtextWorkspaceSection {
     /// Set up the list item factory for rendering file tree rows.
+    ///
+    /// `SignalListItemFactory` is GTK4's way of creating and recycling row widgets:
+    /// - `connect_setup`: creates the row's widget hierarchy (reused across items)
+    /// - `connect_bind`: updates row widgets to reflect the current data item
+    /// - `connect_unbind`: cleans up item-specific state for row recycling
     fn setup_factory(&self) {
         let factory = gtk4::SignalListItemFactory::new();
 
@@ -185,7 +215,8 @@ impl LushtextWorkspaceSection {
                     }
                 }
 
-                // Clean up any rename entry left from row recycling
+                // GTK recycles ListItem widgets: a row previously used for
+                // inline rename may still have a GtkEntry appended.
                 if let Some(sibling) = label.next_sibling() {
                     if sibling.downcast_ref::<gtk4::Entry>().is_some() {
                         content_box.remove(&sibling);
@@ -211,6 +242,12 @@ impl LushtextWorkspaceSection {
                 }
 
                 // Disable the TreeExpander's internal GestureClick for file rows.
+                // GtkTreeExpander installs a BUBBLE-phase gesture that intercepts
+                // clicks for ALL rows — even non-expandable files — preventing
+                // GtkListView's built-in double-click activation from firing.
+                // Setting phase=None disables it for files while preserving
+                // expand/collapse for directories. Must run on every bind
+                // (row recycling resets state).
                 let phase = if file_item.is_dir() && !file_item.is_placeholder() {
                     gtk4::PropagationPhase::Bubble
                 } else {
@@ -275,7 +312,9 @@ impl LushtextWorkspaceSection {
         popover.set_halign(gtk4::Align::Start);
         *self.context_menu.borrow_mut() = Some(popover);
 
-        // Actions
+        // Register actions under the "section" prefix. Context menu items
+        // reference them as "section.new-file", "section.rename", etc.
+        // GTK resolves these by walking up the widget tree for the prefix.
         let action_group = gio::SimpleActionGroup::new();
 
         let new_file_action = gio::SimpleAction::new("new-file", None);

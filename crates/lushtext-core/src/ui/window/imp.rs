@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! Private implementation for the main application window.
+//!
+//! Handles window geometry persistence via GSettings, sidebar clamping,
+//! tab lifecycle signals, and command palette integration.
+
 use crate::config::{self, keys};
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
@@ -13,6 +18,15 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+// CompositeTemplate loads the UI layout from a compiled XML file (bundled
+// as a GResource at build time). Each #[template_child] field is auto-bound
+// to the widget with the matching `id` attribute in the XML.
+//
+// GObject methods always take &self because multiple widgets can hold
+// references to the same window at once. To store mutable state, we use
+// Cell<T> for Copy types (generation counters, positions) and RefCell<T>
+// for complex types (HashSet, HashMap). Cell has no borrow overhead;
+// RefCell panics on overlapping borrows.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
 pub struct LushtextWindow {
@@ -37,14 +51,29 @@ pub struct LushtextWindow {
     #[template_child]
     pub command_palette: TemplateChild<LushtextCommandPalette>,
 
+    /// Application-wide GSettings for window geometry and sidebar position.
     pub settings: gio::Settings,
+    /// Generation counter for debouncing file index rebuilds (300ms).
+    /// Incremented on each workspace change; stale timer callbacks no-op.
     pub index_rebuild_generation: Cell<u32>,
+    /// Focus widget saved before the command palette steals focus.
+    /// `WeakRef` avoids preventing widget finalization if the tab closes
+    /// while the palette is open. Consumed by `restore_saved_focus()`.
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
+    /// Last sidebar position persisted to GSettings. Compared against pending
+    /// to skip redundant D-Bus writes during rapid resize events.
     pub last_sidebar_pos: Cell<i32>,
+    /// Sidebar position that will be persisted after the debounce settles.
     pub pending_sidebar_pos: Cell<i32>,
+    /// Generation counter for debouncing sidebar position GSettings writes (200ms).
     pub sidebar_persist_generation: Cell<u32>,
+    /// Set of file paths with open tabs, for O(1) duplicate detection in `open_document`.
     pub open_paths: RefCell<HashSet<PathBuf>>,
+    /// Running total of estimated buffer memory across all tabs (bytes).
+    /// Compared against `BUFFER_MEMORY_BUDGET` to trigger eviction.
     pub buffer_memory_total: Cell<u64>,
+    /// Per-editor estimated buffer memory, keyed by `editor.as_ptr() as usize`
+    /// for stable identity without preventing widget finalization.
     pub buffer_memory_by_editor: RefCell<HashMap<usize, u64>>,
 }
 
@@ -74,6 +103,9 @@ impl Default for LushtextWindow {
     }
 }
 
+// ObjectSubclass registers this struct with GLib's runtime type system.
+// NAME must match the `class` attribute in the UI template XML.
+// ParentType sets which Adwaita/GTK widget we extend.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextWindow {
     const NAME: &'static str = "LushtextWindow";
@@ -81,6 +113,9 @@ impl ObjectSubclass for LushtextWindow {
     type ParentType = libadwaita::ApplicationWindow;
 
     fn class_init(klass: &mut Self::Class) {
+        // Register custom widget types BEFORE the template is parsed.
+        // GTK needs to know about these types when it encounters them in
+        // the UI XML — without ensure_type(), template parsing fails.
         LushtextSidebar::ensure_type();
         LushtextEditorPage::ensure_type();
         LushtextStatusBar::ensure_type();
@@ -116,6 +151,9 @@ impl ObjectImpl for LushtextWindow {
         self.pending_sidebar_pos.set(saved_pos);
 
         // --- Persist window geometry incrementally via notify signals ---
+        // connect_notify_local (not connect_notify) because the closure captures
+        // GTK widgets that are not thread-safe. The _local variant guarantees
+        // main-thread execution only.
         // (Sidebar clamping is handled in size_allocate, not here.)
         {
             let settings = settings.clone();
@@ -289,7 +327,9 @@ impl WidgetImpl for LushtextWindow {
         // Clamp sidebar on every allocation — this is the definitive width,
         // free from the stale-value timing issues of property notifications.
         clamp_sidebar_position(&self.obj(), &self.main_paned, width);
-        // Keep palette at 60% window width (guarded to avoid re-layout cycles)
+        // Keep palette at 60% window width for readability.
+        // Guarded with width_request comparison to avoid triggering a
+        // re-layout on every allocation.
         if width > 0 {
             let palette_width = width * 6 / 10;
             if self.command_palette.width_request() != palette_width {
@@ -332,6 +372,9 @@ pub fn clamp_sidebar_position(
     imp.sidebar_persist_generation.set(generation);
 
     let window_weak = window.downgrade();
+    // 200ms debounce: coalesces resize events into one GSettings write.
+    // size_allocate fires every frame (~60Hz) during resize, and each
+    // set_int triggers a D-Bus round-trip.
     glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
         let Some(window) = window_weak.upgrade() else {
             return;

@@ -2,6 +2,8 @@
 
 //! Command palette widget — floating search overlay for files and commands.
 
+// Private implementation module (GObject pattern: imp.rs has data + trait
+// impls, this file has the public API).
 mod imp;
 pub mod item;
 
@@ -16,6 +18,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// A pending incremental mutation to the palette's file index.
+/// Queued by sidebar file operations and flushed to the background thread
+/// after a debounce interval to avoid rebuilding the full index.
 #[derive(Clone)]
 pub(super) enum FileIndexUpdate {
     Create(IndexedFile),
@@ -36,6 +41,8 @@ impl FileIndexUpdate {
     }
 }
 
+// glib::wrapper! generates the public wrapper type for this widget.
+// @extends declares the GTK class hierarchy; @implements lists interfaces.
 glib::wrapper! {
     pub struct LushtextCommandPalette(ObjectSubclass<imp::LushtextCommandPalette>)
         @extends gtk4::Box, gtk4::Widget,
@@ -191,4 +198,7 @@ impl Default for LushtextCommandPalette {
     }
 }
 
+/// Debounce interval for flushing incremental index updates (ms).
+/// 75ms coalesces rapid sidebar operations (e.g., deleting a directory
+/// with many files) into a single background index update.
 const INDEX_UPDATE_DEBOUNCE_MS: u64 = 75;

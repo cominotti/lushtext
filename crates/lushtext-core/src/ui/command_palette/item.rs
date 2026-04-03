@@ -11,19 +11,26 @@ use gtk4::glib;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
+// Private implementation module.
 mod imp {
     use super::*;
 
+    // GObject methods take &self; RefCell/Cell provide interior mutability.
     #[derive(Default)]
     pub struct PaletteItem {
+        /// Human-readable name shown in the results list.
         pub display_name: RefCell<String>,
+        /// Secondary text (relative path for files, category for commands).
         pub subtitle: RefCell<String>,
+        /// For commands: the action identifier (e.g., "win.save"). Empty for files.
         pub action_id: RefCell<String>,
+        /// For files: the absolute path to open. `None` for commands.
         pub file_path: RefCell<Option<PathBuf>>,
-        /// 0 = file, 1 = command
+        /// Discriminant: `KIND_FILE` (0) or `KIND_COMMAND` (1).
         pub kind: Cell<u8>,
     }
 
+    // ObjectSubclass registers this struct with GLib's runtime type system.
     #[glib::object_subclass]
     impl ObjectSubclass for PaletteItem {
         const NAME: &'static str = "LushtextPaletteItem";
@@ -34,11 +41,15 @@ mod imp {
     impl ObjectImpl for PaletteItem {}
 }
 
+// glib::wrapper! generates the public wrapper type. Since PaletteItem is a
+// pure data GObject (not a widget), the @extends chain is empty.
 glib::wrapper! {
     pub struct PaletteItem(ObjectSubclass<imp::PaletteItem>);
 }
 
+/// Discriminant value for file search results.
 const KIND_FILE: u8 = 0;
+/// Discriminant value for command search results.
 const KIND_COMMAND: u8 = 1;
 
 impl PaletteItem {

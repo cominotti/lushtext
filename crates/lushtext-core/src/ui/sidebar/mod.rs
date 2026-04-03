@@ -3,6 +3,7 @@
 //! Multi-workspace sidebar: orchestrates workspace sections, persistence, and footer.
 
 pub mod file_tree_item;
+// Private implementation module (GObject pattern).
 mod imp;
 pub mod workspace_section;
 
@@ -20,6 +21,7 @@ use workspace_section::LushtextWorkspaceSection;
 pub use file_tree_item::FileTreeItem;
 pub use workspace_section::LushtextWorkspaceSection as WorkspaceSection;
 
+// glib::wrapper! generates the public wrapper type for this widget.
 glib::wrapper! {
     pub struct LushtextSidebar(ObjectSubclass<imp::LushtextSidebar>)
         @extends gtk4::Box, gtk4::Widget,
@@ -485,4 +487,7 @@ impl Default for LushtextSidebar {
     }
 }
 
+/// Debounce interval for persisting workspace changes to disk (ms).
+/// 150ms coalesces rapid mutations (e.g., adding multiple folders)
+/// into a single write while keeping perceived save latency low.
 const PERSIST_DEBOUNCE_MS: u64 = 150;

@@ -3,6 +3,9 @@
 //! Main application window.
 
 mod dialogs;
+// Private implementation module. In GTK's GObject system, every widget has
+// two halves: a private struct (imp.rs) holding data and trait impls, and
+// a public wrapper type (this file) providing the API.
 mod imp;
 
 pub use imp::clamp_sidebar_position;
@@ -21,6 +24,8 @@ use std::path::Path;
 /// unmodified background tabs. ~256MB is comfortable on 8GB machines.
 const BUFFER_MEMORY_BUDGET: u64 = 256_000_000;
 
+// glib::wrapper! generates the public wrapper type for this widget.
+// @extends declares the GTK class hierarchy; @implements lists interfaces.
 glib::wrapper! {
     pub struct LushtextWindow(ObjectSubclass<imp::LushtextWindow>)
         @extends libadwaita::ApplicationWindow, gtk4::ApplicationWindow, gtk4::Window, gtk4::Widget,

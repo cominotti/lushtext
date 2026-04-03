@@ -66,7 +66,9 @@ pub fn init_schema_dir() {
     if std::env::var_os("GSETTINGS_SCHEMA_DIR").is_none() {
         let dev_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
         if dev_dir.join("gschemas.compiled").exists() {
-            // SAFETY: called once at startup before any other threads.
+            // SAFETY: set_var is unsafe because concurrent env access is UB.
+            // This runs during run(), before app.run() starts the GTK main
+            // loop and before any background threads are spawned.
             unsafe { std::env::set_var("GSETTINGS_SCHEMA_DIR", &dev_dir) };
         }
     }
@@ -87,7 +89,7 @@ pub(crate) fn load_css() {
     );
 
     // Font customization provider — targets .monospace widgets (all GtkSourceViews).
-    // Updated reactively via GSettings; overrides at USER priority.
+    // USER priority (higher than APPLICATION) so custom font overrides the base stylesheet.
     let font_provider = gtk4::CssProvider::new();
     gtk4::style_context_add_provider_for_display(
         &display,
@@ -110,6 +112,7 @@ fn apply_font_css(provider: &gtk4::CssProvider, settings: &gio::Settings) {
         let font_str = settings.string(config::keys::CUSTOM_FONT);
         let desc = pango::FontDescription::from_string(&font_str);
         let family = desc.family().unwrap_or_else(|| "Monospace".into());
+        // Pango stores font sizes in 1/1024 pt (PANGO_SCALE); divide to get CSS-compatible points.
         let size_pt = desc.size() as f64 / pango::SCALE as f64;
         let css = format!(".monospace {{ font-family: \"{family}\"; font-size: {size_pt}pt; }}");
         provider.load_from_string(&css);

@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! Private implementation for the preferences dialog.
+//!
+//! Binds GSettings keys to Adwaita preference rows (switches, combos, spin)
+//! using two-way `Settings::bind()`. The color scheme row and font button
+//! require manual wiring because their value types don't map directly to
+//! GSettings string/bool keys.
+
 use crate::config::keys;
 use gtk4::{self, gio, glib, CompositeTemplate};
 use libadwaita::prelude::*;
@@ -68,6 +75,9 @@ impl ObjectImpl for LushtextPreferences {
 
         let s = &self.settings;
 
+        // GSettings bind() creates a live two-way sync between settings keys
+        // and widget properties. DEFAULT flags (the default) means changes to
+        // either side automatically propagate to the other.
         s.bind(keys::WORD_WRAP, &*self.word_wrap_row, "active")
             .build();
         s.bind(
@@ -103,7 +113,8 @@ impl LushtextPreferences {
         let scheme_manager = sourceview5::StyleSchemeManager::default();
         let model = gtk4::StringList::new(&[]);
 
-        // Collect base scheme IDs (exclude "-dark" variants)
+        // Collect base scheme IDs only; dark variants (e.g., "Adwaita-dark")
+        // are selected automatically based on StyleManager::is_dark().
         let scheme_ids: Vec<String> = scheme_manager
             .scheme_ids()
             .iter()

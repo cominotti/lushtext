@@ -48,26 +48,46 @@ impl SearchHit {
 type ActivateCallback = Box<dyn Fn(&PaletteItem)>;
 type CloseCallback = Box<dyn Fn()>;
 
+// CompositeTemplate loads the UI layout from a compiled XML file (bundled
+// as a GResource). Each #[template_child] is auto-bound to the widget with
+// the matching `id` attribute in the XML.
+//
+// GObject methods always take &self because multiple widgets can hold
+// references at once. Cell<T> for Copy types (SearchMode, generation counters),
+// RefCell<T> for complex types (Arc<FileIndex>, callbacks).
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/command-palette.ui")]
 pub struct LushtextCommandPalette {
     #[template_child]
     pub search_entry: TemplateChild<gtk4::SearchEntry>,
+    /// Label showing the current search mode ("All", "Files", "Commands").
     #[template_child]
     pub mode_label: TemplateChild<gtk4::Label>,
     #[template_child]
     pub results_view: TemplateChild<gtk4::ListView>,
+    /// "No results" message shown when a non-empty query has zero matches.
     #[template_child]
     pub no_results_label: TemplateChild<gtk4::Label>,
 
+    /// Current search mode filter (All, Files, or Commands).
     pub mode: Cell<SearchMode>,
+    /// Backing store for the results ListView. Items are `PaletteItem` GObjects.
     pub results_store: gio::ListStore,
+    /// Shared file index for fuzzy search. `Arc` allows cloning to background
+    /// threads without copying the index.
     pub file_index: RefCell<Arc<FileIndex>>,
+    /// Callback invoked when the user activates a result (Enter or click).
     pub activate_callback: RefCell<Option<ActivateCallback>>,
+    /// Callback invoked when the palette should close (Escape key).
     pub close_callback: RefCell<Option<CloseCallback>>,
+    /// Generation counter for debouncing search queries (150ms). Incremented on
+    /// each keystroke; stale timer callbacks compare to detect superseded searches.
     pub search_generation: Cell<u32>,
+    /// Queue of incremental index mutations waiting to be flushed.
     pub(super) pending_index_updates: RefCell<Vec<super::FileIndexUpdate>>,
+    /// Generation counter for debouncing index update flushes (75ms).
     pub(super) index_update_generation: Cell<u32>,
+    /// Guard preventing overlapping index update flushes.
     pub(super) index_update_inflight: Cell<bool>,
 }
 
@@ -91,6 +111,8 @@ impl Default for LushtextCommandPalette {
     }
 }
 
+// ObjectSubclass registers this struct with GLib's runtime type system.
+// NAME must match the `class` attribute in the UI template XML.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextCommandPalette {
     const NAME: &'static str = "LushtextCommandPalette";
@@ -98,6 +120,7 @@ impl ObjectSubclass for LushtextCommandPalette {
     type ParentType = gtk4::Box;
 
     fn class_init(klass: &mut Self::Class) {
+        // Register PaletteItem BEFORE the template is parsed.
         PaletteItem::ensure_type();
         klass.bind_template();
     }
@@ -244,7 +267,6 @@ impl LushtextCommandPalette {
 
         self.search_entry.add_controller(key_controller);
 
-        // Enter key activates the selected item
         let obj_weak = self.obj().downgrade();
         self.search_entry.connect_activate(move |_| {
             if let Some(obj) = obj_weak.upgrade() {
@@ -252,7 +274,6 @@ impl LushtextCommandPalette {
             }
         });
 
-        // Escape key (stop-search signal) closes the palette
         let obj_weak = self.obj().downgrade();
         self.search_entry.connect_stop_search(move |_| {
             if let Some(obj) = obj_weak.upgrade() {
@@ -326,6 +347,8 @@ impl LushtextCommandPalette {
                     })
                     .collect();
 
+                // splice() replaces items in a single operation (one items-changed
+                // signal) instead of N append/remove calls (N relayout passes).
                 let old_count = imp.results_store.n_items();
                 imp.results_store.splice(0, old_count, &items);
 

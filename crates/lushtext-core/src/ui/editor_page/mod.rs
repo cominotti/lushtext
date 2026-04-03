@@ -2,6 +2,7 @@
 
 //! Editor page widget — one tab's content: GtkSourceView + search bar.
 
+// Private implementation module (GObject pattern).
 mod imp;
 
 use crate::services::file_limits::FileSizeCheck;
@@ -19,6 +20,7 @@ use std::time::Duration;
 pub use crate::services::editor_io::SaveError;
 use editor_io::LoadError;
 
+// glib::wrapper! generates the public wrapper type for this widget.
 glib::wrapper! {
     pub struct LushtextEditorPage(ObjectSubclass<imp::LushtextEditorPage>)
         @extends gtk4::Box, gtk4::Widget,
@@ -287,7 +289,11 @@ impl Default for LushtextEditorPage {
 type SaveCallback = Box<dyn FnOnce(Result<(), SaveError>)>;
 type ChunkedCallback = Rc<RefCell<Option<Box<dyn FnOnce(String)>>>>;
 
+/// Files at or above 10MB use chunked snapshotting to avoid a long
+/// single-frame pause when copying GtkTextBuffer content to a String.
 const LARGE_SAVE_SNAPSHOT_THRESHOLD: u64 = 10_000_000;
+/// Characters per slice when chunking large buffer snapshots. 64k chars
+/// completes in <1ms on the main thread, within a 16ms frame budget.
 const SAVE_SNAPSHOT_CHUNK_CHARS: i32 = 64 * 1024;
 
 fn snapshot_buffer_text_async<F: FnOnce(String) + 'static>(
@@ -320,6 +326,9 @@ fn snapshot_buffer_text_chunk(
         return;
     }
 
+    // 1ms timeout yields to the GTK main loop between chunks so the UI
+    // stays responsive. Using idle_add would starve rendering because idle
+    // callbacks run continuously when there are no higher-priority events.
     glib::timeout_add_local_once(Duration::from_millis(1), move || {
         snapshot_buffer_text_chunk(buffer, end, text, callback);
     });

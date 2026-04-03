@@ -3,6 +3,7 @@
 //! Per-workspace section widget: header + file tree + context menus.
 
 mod actions;
+// Private implementation module (GObject pattern).
 mod imp;
 
 use super::file_tree_item::FileTreeItem;
@@ -20,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+// glib::wrapper! generates the public wrapper type for this widget.
 glib::wrapper! {
     pub struct LushtextWorkspaceSection(ObjectSubclass<imp::LushtextWorkspaceSection>)
         @extends gtk4::Box, gtk4::Widget,
@@ -58,6 +60,14 @@ impl LushtextWorkspaceSection {
             self.cache_root_item(root.clone(), index);
         }
 
+        // GTK4 has no dedicated tree widget. Three pieces compose:
+        // - TreeListModel: flattens hierarchical data into a list,
+        //   tracking which nodes are expanded/collapsed
+        // - ListView: renders the flat list with efficient item recycling
+        // - TreeExpander: adds indentation and expand/collapse arrows
+        //
+        // autoexpand=false prevents unbounded recursive expansion.
+        // passthrough=false wraps items in TreeListRow.
         let section_weak = self.downgrade();
         let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, move |item| {
             let section = section_weak.upgrade()?;
@@ -707,7 +717,10 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
 
 /// Maximum directory entries before truncation. A single `gio::ListStore`
 /// with >10k items causes slow model diff updates in `GtkListView`.
+/// Truncated directories show a placeholder row with the count.
 const MAX_DIR_ENTRIES: usize = 10_000;
+/// Rows appended per main-loop tick when populating a directory tree.
+/// 256 items splice in <2ms, staying under the 16ms frame budget.
 const CHILD_APPEND_BATCH_SIZE: usize = 256;
 
 fn truncated_directory_label() -> String {

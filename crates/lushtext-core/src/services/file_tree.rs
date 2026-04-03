@@ -12,10 +12,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use unicase::UniCase;
 
+/// Result of a bounded directory scan.
 #[derive(Debug, Default)]
 pub struct DirectoryScan {
+    /// Sorted entries: directories first, then alphabetical (case-insensitive).
     pub entries: Vec<(PathBuf, bool)>,
+    /// True if the directory had more entries than `max_entries`.
     pub truncated: bool,
+    /// True if the cancellation token was set during scanning.
     pub cancelled: bool,
 }
 
@@ -94,6 +98,8 @@ pub fn scan_directory_bounded(
     }
 }
 
+/// Classify a DirEntry as file or directory, resolving symlinks.
+/// Returns `None` for broken symlinks.
 fn classify_entry(entry: DirEntry) -> Option<(PathBuf, bool)> {
     let path = entry.path();
 
@@ -115,6 +121,8 @@ fn drain_sorted_entries(heap: BinaryHeap<SortedEntry>) -> Vec<(PathBuf, bool)> {
         .collect()
 }
 
+/// Sort order: directories before files, then case-insensitive alphabetical.
+/// Uses `UniCase` for Unicode-aware comparison without allocation.
 fn compare_entries(
     (path_a, is_dir_a): (&Path, bool),
     (path_b, is_dir_b): (&Path, bool),

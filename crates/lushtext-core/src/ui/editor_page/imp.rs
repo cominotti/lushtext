@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! Private implementation for the editor page widget.
+//!
+//! Each tab in the editor is an `EditorPage` containing a GtkSourceView,
+//! a search bar, and per-tab state (file path, size, eviction status).
+//! GSettings bindings keep all editor pages in sync with user preferences.
+
 use crate::config::keys;
 use crate::services::file_limits::FileSizeCheck;
 use crate::ui::search_bar::LushtextSearchBar;
@@ -12,8 +18,18 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+/// Callback for notifying the window when this editor's estimated buffer
+/// memory changes. The `u64` argument is the new estimated byte count.
 type MemoryChangedCallback = Box<dyn Fn(u64)>;
 
+// CompositeTemplate loads the UI layout from a compiled XML file (bundled
+// as a GResource at build time). Each #[template_child] field is auto-bound
+// to the widget with the matching `id` attribute in the XML.
+//
+// GObject methods always take &self because multiple parts of the widget tree
+// hold references simultaneously. Cell<T> for Copy types (file_size, eviction
+// flag), RefCell<T> for complex types (file_path, handler IDs). Cell has no
+// runtime borrow overhead; RefCell panics on overlapping borrows.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/editor-page.ui")]
 pub struct LushtextEditorPage {
@@ -26,16 +42,31 @@ pub struct LushtextEditorPage {
     #[template_child]
     pub search_bar: TemplateChild<LushtextSearchBar>,
 
+    /// Absolute path of the file being edited. `None` for untitled tabs.
     pub file_path: RefCell<Option<PathBuf>>,
+    /// On-disk file size in bytes, populated after async load completes.
+    /// Used for memory estimation and status bar display.
     pub file_size: Cell<Option<u64>>,
+    /// Feature gate classification based on file size (syntax, undo thresholds).
     pub size_check: Cell<FileSizeCheck>,
+    /// Whether this tab's buffer was evicted to free memory. Evicted tabs
+    /// reload from disk when re-focused.
     pub evicted: Cell<bool>,
+    /// Cooperative cancellation token for background file loads. `Arc<AtomicBool>`
+    /// is Send+Sync, allowing the background thread to check it.
     pub cancel_token: Arc<AtomicBool>,
+    /// Application-wide GSettings instance for editor preference bindings.
     pub settings: gio::Settings,
+    /// Handler ID for `StyleManager::connect_dark_notify`. Disconnected in `Drop`
+    /// to prevent stale closures keeping the buffer alive after tab close.
     pub dark_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `word-wrap` change. Disconnected in `Drop`.
     pub word_wrap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `style-scheme` change. Disconnected in `Drop`.
     pub style_scheme_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for the buffer's `modified-changed` signal. Disconnected in `Drop`.
     pub modified_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Callback invoked when estimated buffer memory changes (load, save, evict).
     pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
 }
 
@@ -61,6 +92,8 @@ impl Default for LushtextEditorPage {
     }
 }
 
+// ObjectSubclass registers this struct with GLib's runtime type system.
+// NAME must match the `class` attribute in the UI template XML.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextEditorPage {
     const NAME: &'static str = "LushtextEditorPage";
@@ -68,6 +101,7 @@ impl ObjectSubclass for LushtextEditorPage {
     type ParentType = gtk4::Box;
 
     fn class_init(klass: &mut Self::Class) {
+        // Register LushtextSearchBar BEFORE parsing the template.
         LushtextSearchBar::ensure_type();
         klass.bind_template();
     }
@@ -81,6 +115,8 @@ impl ObjectImpl for LushtextEditorPage {
     fn constructed(&self) {
         self.parent_constructed();
 
+        // GtkSourceView's View.buffer() returns a generic GtkTextBuffer.
+        // Downcast to sourceview5::Buffer for syntax highlighting methods.
         let buffer = self
             .source_view
             .buffer()
@@ -90,6 +126,10 @@ impl ObjectImpl for LushtextEditorPage {
 
         let settings = &self.settings;
 
+        // GSettings bind() creates a live sync between the settings key and
+        // the widget property. GET flag = one-way: setting changes update the
+        // widget, but widget changes don't write back to settings.
+        // Two-way binding (DEFAULT flag) is used in the preferences dialog.
         settings
             .bind(
                 keys::SHOW_LINE_NUMBERS,
@@ -119,7 +159,8 @@ impl ObjectImpl for LushtextEditorPage {
             .flags(gio::SettingsBindFlags::GET)
             .build();
 
-        // bool → WrapMode: no direct settings binding
+        // Manual mapping: bool → WrapMode requires connect_changed instead of bind().
+        // Store the handler ID so we can disconnect in Drop.
         apply_word_wrap(&self.source_view, settings);
         let view = self.source_view.clone();
         let id = settings.connect_changed(Some(keys::WORD_WRAP), move |s, _| {
@@ -160,6 +201,9 @@ impl ObjectImpl for LushtextEditorPage {
 impl WidgetImpl for LushtextEditorPage {}
 impl BoxImpl for LushtextEditorPage {}
 
+// Disconnect signal handlers from application-global objects (Settings,
+// StyleManager) that outlive individual EditorPage instances. Without this,
+// closed tabs leave stale handlers that hold references to dead widgets.
 impl Drop for LushtextEditorPage {
     fn drop(&mut self) {
         if let Some(handler_id) = self.dark_handler_id.take() {

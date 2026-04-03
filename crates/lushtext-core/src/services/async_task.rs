@@ -10,8 +10,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// session restore (many file loads) or rapid tree expansion.
 const MAX_CONCURRENT_SPAWNS: usize = 8;
 
+/// Current number of active background threads. Compared against
+/// `MAX_CONCURRENT_SPAWNS` to apply back-pressure.
 static ACTIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
 
+/// Attempt to claim a concurrency slot via a lock-free CAS loop.
+/// Returns `true` if under the limit. `compare_exchange_weak` is sufficient
+/// (spurious failure just retries) and avoids a full memory fence on ARM.
 fn try_acquire_slot() -> bool {
     let mut active = ACTIVE_THREADS.load(Ordering::Relaxed);
     loop {
@@ -59,11 +64,18 @@ where
         return;
     }
 
+    // ThreadGuard makes non-Send values movable across threads for the type
+    // system, but enforces at runtime that they're only accessed from the
+    // original (main) thread. The background thread carries the guard without
+    // touching the widget inside.
     let guarded_state = glib::thread_guard::ThreadGuard::new(state);
     let guarded_then = glib::thread_guard::ThreadGuard::new(then);
     std::thread::spawn(move || {
         let result = work();
         release_slot();
+        // Deliver the result to the main thread via GLib's main loop.
+        // GTK widgets can only be accessed from the main thread, so
+        // idle_add_once schedules the callback on the next iteration.
         glib::idle_add_once(move || {
             let state = guarded_state.into_inner();
             let then = guarded_then.into_inner();

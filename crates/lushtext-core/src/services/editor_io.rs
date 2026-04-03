@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Blocking file I/O helpers for editor load/save flows.
+//! Blocking file I/O for editor load and save operations.
+//!
+//! All functions perform synchronous I/O and must be called from a background
+//! thread via `spawn_blocking_then`. The load path uses SIMD-accelerated UTF-8
+//! validation (simdutf8) to avoid the redundant scalar validation in
+//! `read_to_string`.
 
 use crate::services::file_limits::FileSizeCheck;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Errors that can occur when loading a file for editing.
+/// Each variant carries context (path, size) for user-facing error messages.
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
     #[error("load cancelled")]
@@ -28,6 +35,7 @@ pub enum LoadError {
     TooLarge { path: PathBuf, size_mb: u64 },
 }
 
+/// Errors that can occur when saving a file.
 #[derive(Debug, thiserror::Error)]
 pub enum SaveError {
     #[error("No file path set")]
@@ -47,6 +55,13 @@ pub enum SaveError {
     },
 }
 
+/// Read a file from disk, validate UTF-8, and classify its size for feature gating.
+///
+/// Uses SIMD-accelerated UTF-8 validation (simdutf8) instead of `read_to_string`
+/// to avoid redundant scalar validation. Checks cancellation before metadata read,
+/// before file read, and after file read for responsive tab close.
+///
+/// **Threading:** Performs blocking I/O — call from a background thread.
 pub fn load_text_file(
     path: &Path,
     cancel: &AtomicBool,
@@ -96,6 +111,13 @@ pub fn load_text_file(
     Ok((content, size, check))
 }
 
+/// Atomically write text to a file using temp-file-then-rename.
+///
+/// Creates a `.filename.tmp` sibling, writes content, then renames over the
+/// target. `rename(2)` is atomic on POSIX, so readers see either the old or
+/// new file, never partial. On rename failure, the temp file is cleaned up.
+///
+/// **Threading:** Performs blocking I/O — call from a background thread.
 pub fn write_snapshot_to_path(path: PathBuf, text: String) -> Result<u64, SaveError> {
     let tmp_name = format!(
         ".{}.tmp",
