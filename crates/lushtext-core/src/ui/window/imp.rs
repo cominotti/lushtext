@@ -10,6 +10,8 @@ use gtk4::prelude::*;
 use gtk4::{self, gio, glib, CompositeTemplate};
 use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
@@ -39,6 +41,7 @@ pub struct LushtextWindow {
     pub index_rebuild_generation: Cell<u32>,
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     pub last_sidebar_pos: Cell<i32>,
+    pub open_paths: RefCell<HashSet<PathBuf>>,
 }
 
 impl Default for LushtextWindow {
@@ -58,6 +61,7 @@ impl Default for LushtextWindow {
             index_rebuild_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
             last_sidebar_pos: Cell::new(-1),
+            open_paths: RefCell::new(HashSet::new()),
         }
     }
 }

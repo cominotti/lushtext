@@ -45,6 +45,13 @@ impl super::LushtextWindow {
         dialog.save(Some(self), gio::Cancellable::NONE, move |result| {
             if let Ok(file) = result {
                 if let Some(path) = file.path() {
+                    {
+                        let mut open_paths = window.imp().open_paths.borrow_mut();
+                        if let Some(old) = editor.file_path() {
+                            open_paths.remove(old.as_path());
+                        }
+                        open_paths.insert(path.clone());
+                    }
                     editor.set_file_path(&path);
                     let path_display = path.display().to_string();
                     let window_clone = window.clone();

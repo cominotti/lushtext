@@ -45,6 +45,8 @@ nucleo-matcher = "0.3"
 # SIMD-accelerated UTF-8 validation for large files
 simdutf8 = "0.1"
 
+# Zero-allocation case-insensitive string comparison
+unicase = "2"
 
 # Dev / test
 tempfile   = "3.14"

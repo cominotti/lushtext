@@ -42,16 +42,23 @@ impl LushtextWindow {
     /// The tab appears immediately; file content loads asynchronously.
     pub fn open_document(&self, path: &Path) {
         let tab_view = &self.imp().tab_view;
-        for i in 0..tab_view.n_pages() {
-            let page = tab_view.nth_page(i);
-            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                if editor.file_path().as_deref() == Some(path) {
-                    tab_view.set_selected_page(&page);
-                    return;
+        // O(1) duplicate check; only iterates tabs when a duplicate is found
+        if self.imp().open_paths.borrow().contains(path) {
+            for i in 0..tab_view.n_pages() {
+                let page = tab_view.nth_page(i);
+                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                    if editor.file_path().as_deref() == Some(path) {
+                        tab_view.set_selected_page(&page);
+                        return;
+                    }
                 }
             }
         }
 
+        self.imp()
+            .open_paths
+            .borrow_mut()
+            .insert(path.to_path_buf());
         let editor_page = LushtextEditorPage::new();
         editor_page.load_file_async(path);
 
@@ -238,6 +245,9 @@ impl LushtextWindow {
                     let tab_view = &window.imp().tab_view;
                     if let Some(page) = tab_view.selected_page() {
                         if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                            if let Some(ref p) = editor.file_path() {
+                                window.imp().open_paths.borrow_mut().remove(p.as_path());
+                            }
                             editor.cancel_load();
                         }
                         tab_view.close_page(&page);
@@ -263,10 +273,18 @@ impl LushtextWindow {
                     continue;
                 };
                 if ep.as_path() == old_path {
+                    let mut paths = self.imp().open_paths.borrow_mut();
+                    paths.remove(old_path);
+                    paths.insert(new_path.to_path_buf());
+                    drop(paths);
                     editor.set_file_path(new_path);
                     page.set_title(&editor.title());
                 } else if let Ok(suffix) = ep.strip_prefix(old_path) {
                     let updated = new_path.join(suffix);
+                    let mut paths = self.imp().open_paths.borrow_mut();
+                    paths.remove(ep.as_path());
+                    paths.insert(updated.clone());
+                    drop(paths);
                     editor.set_file_path(&updated);
                     page.set_title(&editor.title());
                 }
@@ -282,11 +300,14 @@ impl LushtextWindow {
         for i in (0..tab_view.n_pages()).rev() {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                let matches = editor
-                    .file_path()
+                let ep = editor.file_path();
+                let matches = ep
                     .as_ref()
                     .is_some_and(|p| p.as_path() == path || p.starts_with(path));
                 if matches {
+                    if let Some(ref p) = ep {
+                        self.imp().open_paths.borrow_mut().remove(p.as_path());
+                    }
                     editor.cancel_load();
                     tab_view.close_page(&page);
                 }
@@ -371,7 +392,8 @@ impl LushtextWindow {
                     continue;
                 }
                 if let Some(size) = editor.file_size() {
-                    total = total.saturating_add(size);
+                    // GtkTextBuffer uses ~2x file size (B-tree + line index + undo stack)
+                    total = total.saturating_add(size.saturating_mul(2));
                 }
                 if selected.as_ref() != Some(&page)
                     && !editor.is_modified()

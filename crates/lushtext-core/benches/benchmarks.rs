@@ -194,17 +194,19 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
 
 fn bench_search_all(c: &mut Criterion) {
     let mut group = c.benchmark_group("search_all");
-    let index = make_synthetic_index(10_000);
 
-    for mode in [SearchMode::Files, SearchMode::Commands, SearchMode::All] {
-        let label = match mode {
-            SearchMode::Files => "files",
-            SearchMode::Commands => "commands",
-            SearchMode::All => "all",
-        };
-        group.bench_with_input(BenchmarkId::new("mode", label), &index, |b, idx| {
-            b.iter(|| palette::search_all(black_box(idx), black_box("file_42"), mode, 50))
-        });
+    for size in [10_000, 100_000] {
+        let index = make_synthetic_index(size);
+        for mode in [SearchMode::Files, SearchMode::Commands, SearchMode::All] {
+            let label = match mode {
+                SearchMode::Files => "files",
+                SearchMode::Commands => "commands",
+                SearchMode::All => "all",
+            };
+            group.bench_with_input(BenchmarkId::new(label, size), &index, |b, idx| {
+                b.iter(|| palette::search_all(black_box(idx), black_box("file_42"), mode, 50))
+            });
+        }
     }
     group.finish();
 }

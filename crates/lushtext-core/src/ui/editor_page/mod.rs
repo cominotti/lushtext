@@ -201,11 +201,22 @@ impl LushtextEditorPage {
         async_task::spawn_blocking_then(
             self.clone(),
             move || {
-                std::fs::write(&path, &text)
-                    .map(|_| text.len() as u64)
-                    .map_err(|e| {
-                        SaveError::Io(format!("Failed to write {}: {}", path.display(), e))
-                    })
+                // Atomic write: temp file + rename prevents partial writes on crash
+                let tmp_name = format!(
+                    ".{}.tmp",
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "untitled".to_string())
+                );
+                let tmp_path = path.with_file_name(&tmp_name);
+                std::fs::write(&tmp_path, &text).map_err(|e| {
+                    SaveError::Io(format!("Failed to write {}: {}", tmp_path.display(), e))
+                })?;
+                std::fs::rename(&tmp_path, &path).map_err(|e| {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    SaveError::Io(format!("Failed to finalize {}: {}", path.display(), e))
+                })?;
+                Ok(text.len() as u64)
             },
             move |editor, result| match result {
                 Ok(size) => {

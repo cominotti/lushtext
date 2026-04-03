@@ -6,6 +6,7 @@
 //! that the UI layer converts into GObject models.
 
 use std::path::{Path, PathBuf};
+use unicase::UniCase;
 
 /// Scan a directory and return sorted entries (directories first, then alphabetical).
 /// Skips hidden files (starting with `.`).
@@ -35,12 +36,20 @@ pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
         entries.push((path, meta.is_dir()));
     }
 
-    entries.sort_by_cached_key(|(path, is_dir)| {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        (std::cmp::Reverse(*is_dir), name)
+    // sort_by (not sort_by_cached_key): avoids per-entry String allocation from
+    // to_lowercase(); UniCase compares borrowed Cow<str> with zero allocations.
+    entries.sort_by(|(path_a, is_dir_a), (path_b, is_dir_b)| {
+        is_dir_b.cmp(is_dir_a).then_with(|| {
+            let a = path_a
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default();
+            let b = path_b
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default();
+            UniCase::new(a).cmp(&UniCase::new(b))
+        })
     });
 
     entries

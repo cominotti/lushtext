@@ -31,6 +31,8 @@ pub struct LushtextEditorPage {
     pub cancel_token: Arc<AtomicBool>,
     pub settings: gio::Settings,
     pub dark_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    pub word_wrap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    pub style_scheme_handler_id: RefCell<Option<glib::SignalHandlerId>>,
 }
 
 impl Default for LushtextEditorPage {
@@ -47,6 +49,8 @@ impl Default for LushtextEditorPage {
             cancel_token: Arc::new(AtomicBool::new(false)),
             settings: gio::Settings::new(crate::config::APP_ID),
             dark_handler_id: RefCell::new(None),
+            word_wrap_handler_id: RefCell::new(None),
+            style_scheme_handler_id: RefCell::new(None),
         }
     }
 }
@@ -112,17 +116,19 @@ impl ObjectImpl for LushtextEditorPage {
         // bool → WrapMode: no direct settings binding
         apply_word_wrap(&self.source_view, settings);
         let view = self.source_view.clone();
-        settings.connect_changed(Some(keys::WORD_WRAP), move |s, _| {
+        let id = settings.connect_changed(Some(keys::WORD_WRAP), move |s, _| {
             apply_word_wrap(&view, s);
         });
+        self.word_wrap_handler_id.replace(Some(id));
 
         apply_color_scheme(&buffer, settings);
         {
             let buf = buffer.clone();
             let s = settings.clone();
-            settings.connect_changed(Some(keys::STYLE_SCHEME), move |_, _| {
+            let id = settings.connect_changed(Some(keys::STYLE_SCHEME), move |_, _| {
                 apply_color_scheme(&buf, &s);
             });
+            self.style_scheme_handler_id.replace(Some(id));
         }
         {
             let buf = buffer.downgrade();
@@ -152,6 +158,12 @@ impl Drop for LushtextEditorPage {
     fn drop(&mut self) {
         if let Some(handler_id) = self.dark_handler_id.take() {
             libadwaita::StyleManager::default().disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.word_wrap_handler_id.take() {
+            self.settings.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.style_scheme_handler_id.take() {
+            self.settings.disconnect(handler_id);
         }
     }
 }
