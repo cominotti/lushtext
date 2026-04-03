@@ -2,6 +2,7 @@
 
 //! Per-workspace section widget: header + file tree + context menus.
 
+mod actions;
 mod imp;
 
 use super::file_tree_item::FileTreeItem;
@@ -11,8 +12,13 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
 use gtk4::gio;
 use gtk4::prelude::*;
-use libadwaita::prelude::*;
+use imp::ItemLocation;
+use std::cell::RefCell;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 glib::wrapper! {
     pub struct LushtextWorkspaceSection(ObjectSubclass<imp::LushtextWorkspaceSection>)
@@ -42,16 +48,23 @@ impl LushtextWorkspaceSection {
     /// Load root paths into the file tree. Builds the `TreeListModel`
     /// and child models asynchronously for responsive UI.
     pub fn load_roots(&self, roots: &[(PathBuf, bool)]) {
+        self.clear_all_dir_state();
+        self.reset_item_cache();
         let root_store = gio::ListStore::new::<FileTreeItem>();
         for (root, is_dir) in roots {
-            root_store.append(&FileTreeItem::new(root.clone(), *is_dir));
+            let item = FileTreeItem::new(root.clone(), *is_dir);
+            let index = root_store.n_items() as usize;
+            root_store.append(&item);
+            self.cache_root_item(root.clone(), index);
         }
 
-        let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, |item| {
+        let section_weak = self.downgrade();
+        let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, move |item| {
+            let section = section_weak.upgrade()?;
             item.downcast_ref::<FileTreeItem>()
                 .filter(|fi| fi.is_dir())
-                .map(|fi| build_children_model(&fi.path()))
-                .map(|m| m.upcast::<gio::ListModel>())
+                .and_then(|fi| fi.path())
+                .map(|p| section.build_children_model(&p).upcast::<gio::ListModel>())
         });
 
         let selection = gtk4::SingleSelection::new(Some(tree_model.clone()));
@@ -67,16 +80,14 @@ impl LushtextWorkspaceSection {
     pub fn add_root(&self, path: &Path, is_dir: bool) {
         let has_store = self.imp().root_store.borrow().is_some();
         if has_store {
-            let store_ref = self.imp().root_store.borrow();
-            let root_store = store_ref.as_ref().unwrap();
-            let already_exists = (0..root_store.n_items()).any(|i| {
-                root_store
-                    .item(i)
-                    .and_downcast::<FileTreeItem>()
-                    .is_some_and(|fi| fi.path() == path)
-            });
+            let already_exists = self.imp().root_paths.borrow().iter().any(|p| p == path);
             if !already_exists {
-                root_store.append(&FileTreeItem::new(path.to_path_buf(), is_dir));
+                let store_ref = self.imp().root_store.borrow();
+                let root_store = store_ref.as_ref().unwrap();
+                let item = FileTreeItem::new(path.to_path_buf(), is_dir);
+                let index = root_store.n_items() as usize;
+                root_store.append(&item);
+                self.cache_root_item(path.to_path_buf(), index);
             }
         } else {
             self.load_roots(&[(path.to_path_buf(), is_dir)]);
@@ -164,361 +175,193 @@ impl LushtextWorkspaceSection {
         }
     }
 
-    // --- File tree operations (moved from sidebar) ---
+    fn reset_item_cache(&self) {
+        self.imp().root_paths.borrow_mut().clear();
+        self.imp().child_paths.borrow_mut().clear();
+        self.imp().item_locations.borrow_mut().clear();
+    }
 
-    /// Create a new file or directory inside (or alongside) the right-clicked item.
-    /// The filesystem operation runs on a background thread to avoid blocking
-    /// the UI, especially when `create_unique` retries on name collisions.
-    pub(crate) fn create_new_item(&self, is_dir: bool) {
+    fn cache_root_item(&self, path: PathBuf, index: usize) {
         let imp = self.imp();
-        let context_path = imp.context_path.borrow().clone();
-        let Some(context_path) = context_path else {
-            return;
-        };
-
-        let target_dir = if imp.context_is_dir.get() {
-            context_path.clone()
-        } else {
-            match context_path.parent() {
-                Some(p) => p.to_path_buf(),
-                None => return,
-            }
-        };
-
-        let base = if is_dir { "New Folder" } else { "New File" };
-        let context_is_dir = imp.context_is_dir.get();
-        let base_owned = base.to_string();
-        let target_dir_for_bg = target_dir.clone();
-
-        services::async_task::spawn_blocking_then(
-            self.clone(),
-            move || create_unique(&target_dir_for_bg, &base_owned, is_dir),
-            move |section, result| {
-                let temp_path = match result {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to create new item in {}: {}",
-                            target_dir.display(),
-                            e
-                        );
-                        return;
-                    }
-                };
-
-                let mut was_collapsed = false;
-                if context_is_dir {
-                    if let Some(row) = section.find_dir_row(&context_path) {
-                        if !row.is_expanded() {
-                            was_collapsed = true;
-                            row.set_expanded(true);
-                        }
-                    }
-                }
-
-                let new_item = FileTreeItem::new(temp_path, is_dir);
-                new_item.set_pending_rename(true);
-                section.imp().is_new_item.set(true);
-
-                if was_collapsed {
-                    let section_weak = section.downgrade();
-                    glib::idle_add_local_once(move || {
-                        if let Some(section) = section_weak.upgrade() {
-                            if let Some(store) = section.find_store_for_dir(&target_dir) {
-                                store.append(&new_item);
-                            }
-                        }
-                    });
-                } else if let Some(store) = section.find_store_for_dir(&target_dir) {
-                    store.append(&new_item);
-                }
+        let mut root_paths = imp.root_paths.borrow_mut();
+        let insert_at = index.min(root_paths.len());
+        root_paths.insert(insert_at, path.clone());
+        drop(root_paths);
+        self.shift_cached_indices(None, insert_at, 1);
+        imp.item_locations.borrow_mut().insert(
+            path,
+            ItemLocation {
+                parent_dir: None,
+                index: insert_at,
             },
         );
     }
 
-    /// Start inline rename for the right-clicked item.
-    pub(crate) fn begin_rename(&self) {
+    fn cache_child_item(&self, parent_dir: &Path, path: PathBuf, index: usize) {
         let imp = self.imp();
-        let path = imp.context_path.borrow().clone();
-        let Some(path) = path else { return };
-        let expander = imp.context_expander.borrow().clone();
-        let Some(expander) = expander else { return };
+        let parent_key = parent_dir.to_path_buf();
+        let mut child_paths = imp.child_paths.borrow_mut();
+        let siblings = child_paths.entry(parent_key.clone()).or_default();
+        let insert_at = index.min(siblings.len());
+        siblings.insert(insert_at, path.clone());
+        drop(child_paths);
+        self.shift_cached_indices(Some(parent_dir), insert_at, 1);
+        imp.item_locations.borrow_mut().insert(
+            path,
+            ItemLocation {
+                parent_dir: Some(parent_key),
+                index: insert_at,
+            },
+        );
+    }
 
-        let content_box = expander
-            .child()
-            .and_downcast::<gtk4::Box>()
-            .expect("expander child is Box");
-
-        let icon = content_box
-            .first_child()
-            .and_downcast::<gtk4::Image>()
-            .expect("first child is Image");
-
-        let label = icon
-            .next_sibling()
-            .and_downcast::<gtk4::Label>()
-            .expect("second child is Label");
-
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-
-        let entry = gtk4::Entry::new();
-        entry.set_text(&name);
-        entry.set_hexpand(true);
-
-        label.set_visible(false);
-        content_box.append(&entry);
-        entry.grab_focus();
-        entry.select_region(0, -1);
-
-        let is_new = self.imp().is_new_item.get();
-
-        // Enter → confirm rename
-        let section_weak = self.downgrade();
-        let path_c = path.clone();
-        let entry_c = entry.clone();
-        let label_c = label.clone();
-        let box_c = content_box.clone();
-        entry.connect_activate(move |_| {
-            if let Some(section) = section_weak.upgrade() {
-                section.confirm_rename(&path_c, &entry_c, &label_c, &box_c, is_new);
+    fn shift_cached_indices(&self, parent_dir: Option<&Path>, start: usize, delta: isize) {
+        let parent_key = parent_dir.map(Path::to_path_buf);
+        for location in self.imp().item_locations.borrow_mut().values_mut() {
+            if location.parent_dir == parent_key && location.index >= start {
+                location.index = location.index.saturating_add_signed(delta);
             }
-        });
+        }
+    }
 
-        // Escape → cancel
-        let key_ctl = gtk4::EventControllerKey::new();
-        let section_weak = self.downgrade();
-        let path_c = path.clone();
-        let entry_c = entry.clone();
-        let label_c = label.clone();
-        let box_c = content_box.clone();
-        key_ctl.connect_key_pressed(move |_, key, _, _| {
-            if key == gdk4::Key::Escape {
-                if is_new {
-                    if let Some(section) = section_weak.upgrade() {
-                        section.cancel_new_item(&path_c, &entry_c, &label_c, &box_c);
-                    }
+    fn remove_cached_item(&self, target_path: &Path) -> Option<ItemLocation> {
+        let removed = self.imp().item_locations.borrow_mut().remove(target_path)?;
+        match removed.parent_dir.as_deref() {
+            None => {
+                let mut root_paths = self.imp().root_paths.borrow_mut();
+                let removed_index = if root_paths
+                    .get(removed.index)
+                    .is_some_and(|path| path == target_path)
+                {
+                    root_paths.remove(removed.index);
+                    removed.index
+                } else if let Some(position) =
+                    root_paths.iter().position(|path| path == target_path)
+                {
+                    root_paths.remove(position);
+                    position
                 } else {
-                    cancel_rename(&entry_c, &label_c, &box_c);
-                }
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
+                    removed.index
+                };
+                drop(root_paths);
+                self.shift_cached_indices(None, removed_index.saturating_add(1), -1);
             }
-        });
-        entry.add_controller(key_ctl);
-
-        // Focus-out → cancel
-        let focus_ctl = gtk4::EventControllerFocus::new();
-        let section_weak = self.downgrade();
-        let path_c = path.clone();
-        let entry_c = entry.clone();
-        let label_c = label.clone();
-        let box_c = content_box.clone();
-        focus_ctl.connect_leave(move |_| {
-            if is_new {
-                if let Some(section) = section_weak.upgrade() {
-                    section.cancel_new_item(&path_c, &entry_c, &label_c, &box_c);
-                }
-            } else {
-                cancel_rename(&entry_c, &label_c, &box_c);
-            }
-        });
-        entry.add_controller(focus_ctl);
-    }
-
-    fn confirm_rename(
-        &self,
-        old_path: &Path,
-        entry: &gtk4::Entry,
-        label: &gtk4::Label,
-        content_box: &gtk4::Box,
-        is_new: bool,
-    ) {
-        if entry.parent().is_none() {
-            return;
-        }
-
-        let new_name = entry.text();
-        let new_name = new_name.trim();
-        let old_name = old_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-
-        if new_name.is_empty() || new_name == old_name {
-            if is_new {
-                self.cancel_new_item(old_path, entry, label, content_box);
-            } else {
-                cancel_rename(entry, label, content_box);
-            }
-            return;
-        }
-
-        let new_path = old_path.with_file_name(new_name);
-        let new_name_owned = new_name.to_string();
-        let is_dir = self.imp().context_is_dir.get();
-
-        // Remove the inline entry immediately — label shows old name until rename completes
-        let label = label.clone();
-        cancel_rename(entry, &label, content_box);
-
-        let old_path = old_path.to_path_buf();
-        let new_path_c = new_path.clone();
-        services::async_task::spawn_blocking_then(
-            self.clone(),
-            move || {
-                let result = std::fs::rename(&old_path, &new_path_c);
-                (old_path, new_path_c, result)
-            },
-            move |section, (old_path, new_path, result)| {
-                let imp = section.imp();
-                match result {
-                    Ok(()) => {
-                        if let Some(ref expander) = *imp.context_expander.borrow() {
-                            if let Some(tree_row) = expander.list_row() {
-                                if let Some(file_item) =
-                                    tree_row.item().and_downcast::<FileTreeItem>()
-                                {
-                                    file_item.set_path(new_path.clone());
-                                }
-                            }
-                        }
-                        label.set_label(&new_name_owned);
-                        imp.is_new_item.set(false);
-
-                        if is_new && !is_dir {
-                            if let Some(ref cb) = *imp.create_callback.borrow() {
-                                cb(&new_path);
-                            }
-                        } else if !is_new {
-                            if let Some(ref cb) = *imp.rename_callback.borrow() {
-                                cb(&old_path, &new_path);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to rename {}: {}", old_path.display(), e);
-                        if is_new {
-                            imp.is_new_item.set(false);
-                            // Fire-and-forget cleanup on a background thread to avoid
-                            // blocking the main thread on slow filesystems (NFS, FUSE).
-                            let old_path_bg = old_path.clone();
-                            std::thread::spawn(move || {
-                                if is_dir {
-                                    let _ = std::fs::remove_dir(&old_path_bg);
-                                } else {
-                                    let _ = std::fs::remove_file(&old_path_bg);
-                                }
-                            });
-                            section.remove_from_model(&old_path);
-                        }
-                    }
-                }
-            },
-        );
-    }
-
-    fn cancel_new_item(
-        &self,
-        temp_path: &Path,
-        entry: &gtk4::Entry,
-        label: &gtk4::Label,
-        content_box: &gtk4::Box,
-    ) {
-        if entry.parent().is_none() {
-            return;
-        }
-        cancel_rename(entry, label, content_box);
-        self.imp().is_new_item.set(false);
-
-        // Fire-and-forget deletion of the temp item on a background thread.
-        // Uses context_is_dir instead of stat to avoid a synchronous syscall.
-        let path = temp_path.to_path_buf();
-        let is_dir = self.imp().context_is_dir.get();
-        std::thread::spawn(move || {
-            if is_dir {
-                let _ = std::fs::remove_dir(&path);
-            } else {
-                let _ = std::fs::remove_file(&path);
-            }
-        });
-
-        self.remove_from_model(temp_path);
-    }
-
-    pub(crate) fn show_delete_confirmation(&self) {
-        let imp = self.imp();
-        let path = imp.context_path.borrow().clone();
-        let Some(path) = path else { return };
-        let is_dir = imp.context_is_dir.get();
-
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string());
-
-        let kind = if is_dir { "directory" } else { "file" };
-
-        let dialog = libadwaita::AlertDialog::builder()
-            .heading(format!("Delete '{name}'?"))
-            .body(format!("This will permanently delete the {kind}."))
-            .build();
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("delete", "Delete");
-        dialog.set_response_appearance("delete", libadwaita::ResponseAppearance::Destructive);
-        dialog.set_default_response(Some("cancel"));
-        dialog.set_close_response("cancel");
-
-        let section_weak = self.downgrade();
-        let path_c = path.clone();
-        dialog.connect_response(None::<&str>, move |_, response| {
-            if response != "delete" {
-                return;
-            }
-            let Some(section) = section_weak.upgrade() else {
-                return;
-            };
-
-            let path_for_io = path_c.clone();
-            services::async_task::spawn_blocking_then(
-                section,
-                move || {
-                    let result = if is_dir {
-                        std::fs::remove_dir_all(&path_for_io)
+            Some(parent_dir) => {
+                let mut child_paths = self.imp().child_paths.borrow_mut();
+                let mut remove_parent = false;
+                if let Some(siblings) = child_paths.get_mut(parent_dir) {
+                    let removed_index = if siblings
+                        .get(removed.index)
+                        .is_some_and(|path| path == target_path)
+                    {
+                        siblings.remove(removed.index);
+                        removed.index
+                    } else if let Some(position) =
+                        siblings.iter().position(|path| path == target_path)
+                    {
+                        siblings.remove(position);
+                        position
                     } else {
-                        std::fs::remove_file(&path_for_io)
+                        removed.index
                     };
-                    (path_for_io, result)
-                },
-                |section, (path, result)| match result {
-                    Ok(()) => {
-                        section.remove_from_model(&path);
-                        if let Some(ref cb) = *section.imp().delete_callback.borrow() {
-                            cb(&path);
-                        }
+                    self.shift_cached_indices(
+                        Some(parent_dir),
+                        removed_index.saturating_add(1),
+                        -1,
+                    );
+                    if siblings.is_empty() {
+                        remove_parent = true;
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to delete {}: {}", path.display(), e);
-                    }
-                },
-            );
-        });
+                }
+                if remove_parent {
+                    child_paths.remove(parent_dir);
+                }
+                drop(child_paths);
+            }
+        }
+        Some(removed)
+    }
 
-        if let Some(root) = self.root() {
-            dialog.present(Some(&root));
+    fn rename_cached_item(&self, old_path: &Path, new_path: &Path) {
+        let Some(location) = self.imp().item_locations.borrow_mut().remove(old_path) else {
+            return;
+        };
+
+        match location.parent_dir.as_deref() {
+            None => {
+                if let Some(cached) = self.imp().root_paths.borrow_mut().get_mut(location.index) {
+                    *cached = new_path.to_path_buf();
+                }
+            }
+            Some(parent_dir) => {
+                if let Some(siblings) = self.imp().child_paths.borrow_mut().get_mut(parent_dir) {
+                    if let Some(cached) = siblings.get_mut(location.index) {
+                        *cached = new_path.to_path_buf();
+                    }
+                }
+            }
+        }
+
+        self.imp()
+            .item_locations
+            .borrow_mut()
+            .insert(new_path.to_path_buf(), location);
+    }
+
+    fn append_item_preserving_placeholder(
+        &self,
+        store: &gio::ListStore,
+        parent_dir: &Path,
+        item: &FileTreeItem,
+    ) {
+        let insert_pos = store
+            .n_items()
+            .checked_sub(1)
+            .and_then(|idx| store.item(idx))
+            .and_then(|obj| obj.downcast::<FileTreeItem>().ok())
+            .filter(|existing| existing.is_placeholder())
+            .map_or(store.n_items(), |_| store.n_items() - 1);
+
+        if insert_pos == store.n_items() {
+            store.append(item);
+        } else {
+            store.insert(insert_pos, item);
+        }
+
+        if let Some(path) = item.path() {
+            self.cache_child_item(parent_dir, path, insert_pos as usize);
         }
     }
 
     fn find_dir_row(&self, dir_path: &Path) -> Option<gtk4::TreeListRow> {
+        if let Some(row) = self
+            .imp()
+            .dir_rows
+            .borrow()
+            .get(dir_path)
+            .cloned()
+            .and_then(|weak| weak.upgrade())
+        {
+            let matches = row
+                .item()
+                .and_downcast::<FileTreeItem>()
+                .is_some_and(|item| item.is_dir() && item.path().as_deref() == Some(dir_path));
+            if matches {
+                return Some(row);
+            }
+            self.imp().dir_rows.borrow_mut().remove(dir_path);
+        }
+
         let tree_model = self.imp().tree_model.borrow();
         let tree_model = tree_model.as_ref()?;
         for i in 0..tree_model.n_items() {
             let row = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()?;
             let item = row.item().and_downcast::<FileTreeItem>()?;
-            if item.path() == dir_path && item.is_dir() {
+            if item.is_dir() && item.path().as_deref() == Some(dir_path) {
+                self.imp()
+                    .dir_rows
+                    .borrow_mut()
+                    .insert(dir_path.to_path_buf(), row.downgrade());
                 return Some(row);
             }
         }
@@ -526,19 +369,57 @@ impl LushtextWorkspaceSection {
     }
 
     fn find_store_for_dir(&self, dir_path: &Path) -> Option<gio::ListStore> {
-        self.find_dir_row(dir_path)?
+        if let Some(store) = self
+            .imp()
+            .dir_stores
+            .borrow()
+            .get(dir_path)
+            .and_then(glib::WeakRef::upgrade)
+        {
+            return Some(store);
+        }
+
+        let store = self
+            .find_dir_row(dir_path)?
             .children()
-            .and_then(|m| m.downcast::<gio::ListStore>().ok())
+            .and_then(|m| m.downcast::<gio::ListStore>().ok())?;
+        self.imp()
+            .dir_stores
+            .borrow_mut()
+            .insert(dir_path.to_path_buf(), store.downgrade());
+        Some(store)
     }
 
     /// Remove an item from the tree model by path. Returns true if found and removed.
     pub fn remove_from_model(&self, target_path: &Path) -> bool {
         let imp = self.imp();
+        self.clear_dir_state(target_path);
+
+        if let Some(location) = self.remove_cached_item(target_path) {
+            match location.parent_dir.as_deref() {
+                None => {
+                    if let Some(ref root_store) = *imp.root_store.borrow() {
+                        if (location.index as u32) < root_store.n_items() {
+                            root_store.remove(location.index as u32);
+                            return true;
+                        }
+                    }
+                }
+                Some(parent_dir) => {
+                    if let Some(store) = self.find_store_for_dir(parent_dir) {
+                        if (location.index as u32) < store.n_items() {
+                            store.remove(location.index as u32);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
 
         if let Some(ref root_store) = *imp.root_store.borrow() {
             for i in 0..root_store.n_items() {
                 if let Some(item) = root_store.item(i).and_downcast::<FileTreeItem>() {
-                    if item.path() == target_path {
+                    if item.path().as_deref() == Some(target_path) {
                         root_store.remove(i);
                         return true;
                     }
@@ -551,25 +432,255 @@ impl LushtextWorkspaceSection {
             None => return false,
         };
 
-        if let Some(row) = self.find_dir_row(parent_dir) {
-            if let Some(children) = row.children() {
-                if let Ok(store) = children.downcast::<gio::ListStore>() {
-                    for j in 0..store.n_items() {
-                        if let Some(child) = store.item(j).and_downcast::<FileTreeItem>() {
-                            if child.path() == target_path {
-                                store.remove(j);
-                                return true;
-                            }
+        if let Some(store) = self.find_store_for_dir(parent_dir) {
+            for j in 0..store.n_items() {
+                if let Some(child) = store.item(j).and_downcast::<FileTreeItem>() {
+                    if child.path().as_deref() == Some(target_path) {
+                        store.remove(j);
+                        return true;
+                    }
+                }
+            }
+        } else {
+            tracing::warn!(
+                "remove_from_model: missing store for {}",
+                parent_dir.display()
+            );
+        }
+        false
+    }
+
+    fn build_children_model(&self, dir_path: &Path) -> gio::ListStore {
+        let store = gio::ListStore::new::<FileTreeItem>();
+        let path = dir_path.to_path_buf();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .dir_stores
+            .borrow_mut()
+            .insert(path.clone(), store.downgrade());
+
+        if let Some(previous) = self
+            .imp()
+            .child_scan_tokens
+            .borrow_mut()
+            .insert(path.clone(), Arc::clone(&cancel))
+        {
+            previous.store(true, Ordering::Release);
+        }
+
+        let section_weak = self.downgrade();
+        services::async_task::spawn_blocking_then(
+            (store.clone(), path.clone(), Arc::clone(&cancel)),
+            move || {
+                services::file_tree::scan_directory_bounded(&path, MAX_DIR_ENTRIES, Some(&cancel))
+            },
+            move |(store, path, cancel), scan| {
+                if scan.cancelled {
+                    if let Some(section) = section_weak.upgrade() {
+                        section.finish_child_scan(&path, &cancel);
+                    }
+                    return;
+                }
+
+                let Some(section) = section_weak.upgrade() else {
+                    return;
+                };
+
+                if !section.child_scan_is_active(&path, &cancel) {
+                    return;
+                }
+
+                let mut existing = HashSet::with_capacity(store.n_items() as usize);
+                for i in 0..store.n_items() {
+                    if let Some(fi) = store.item(i).and_downcast::<FileTreeItem>() {
+                        if let Some(existing_path) = fi.path() {
+                            existing.insert(existing_path);
                         }
                     }
                 }
-            } else {
-                tracing::warn!(
-                    "remove_from_model: parent dir collapsed, item not removed from model"
-                );
+
+                let remaining_budget = MAX_DIR_ENTRIES.saturating_sub(existing.len());
+                let mut new_entries = Vec::with_capacity(scan.entries.len().min(remaining_budget));
+                let mut truncated = scan.truncated;
+                for (entry_path, is_dir) in scan.entries {
+                    if existing.contains(&entry_path) {
+                        continue;
+                    }
+                    if new_entries.len() >= remaining_budget {
+                        truncated = true;
+                        break;
+                    }
+                    new_entries.push((entry_path, is_dir));
+                }
+
+                if truncated {
+                    tracing::warn!("Directory truncated to {MAX_DIR_ENTRIES} entries");
+                }
+
+                section.append_child_batches(store, path, cancel, new_entries, truncated);
+            },
+        );
+
+        store
+    }
+
+    fn finish_child_scan(&self, dir_path: &Path, token: &Arc<AtomicBool>) {
+        let mut tokens = self.imp().child_scan_tokens.borrow_mut();
+        let should_remove = tokens
+            .get(dir_path)
+            .is_some_and(|active| Arc::ptr_eq(active, token));
+        if should_remove {
+            tokens.remove(dir_path);
+        }
+    }
+
+    fn clear_dir_state(&self, dir_path: &Path) {
+        self.imp()
+            .dir_rows
+            .borrow_mut()
+            .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
+        self.imp()
+            .dir_stores
+            .borrow_mut()
+            .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
+        self.imp()
+            .child_paths
+            .borrow_mut()
+            .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
+        self.imp()
+            .item_locations
+            .borrow_mut()
+            .retain(|path, _| path.as_path() == dir_path || !path.starts_with(dir_path));
+
+        let cancelled: Vec<_> = {
+            let mut tokens = self.imp().child_scan_tokens.borrow_mut();
+            let paths: Vec<_> = tokens
+                .keys()
+                .filter(|path| path.as_path() == dir_path || path.starts_with(dir_path))
+                .cloned()
+                .collect();
+            paths
+                .into_iter()
+                .filter_map(|path| tokens.remove(&path))
+                .collect()
+        };
+
+        for token in cancelled {
+            token.store(true, Ordering::Release);
+        }
+    }
+
+    fn clear_all_dir_state(&self) {
+        self.imp().dir_rows.borrow_mut().clear();
+        self.imp().dir_stores.borrow_mut().clear();
+        self.imp().child_paths.borrow_mut().clear();
+        self.imp().item_locations.borrow_mut().clear();
+        self.imp().root_paths.borrow_mut().clear();
+
+        let cancelled: Vec<_> = self
+            .imp()
+            .child_scan_tokens
+            .borrow_mut()
+            .drain()
+            .map(|(_, token)| token)
+            .collect();
+        for token in cancelled {
+            token.store(true, Ordering::Release);
+        }
+    }
+
+    fn child_scan_is_active(&self, dir_path: &Path, token: &Arc<AtomicBool>) -> bool {
+        if token.load(Ordering::Acquire) {
+            self.finish_child_scan(dir_path, token);
+            return false;
+        }
+
+        {
+            let tokens = self.imp().child_scan_tokens.borrow();
+            let Some(active) = tokens.get(dir_path) else {
+                return false;
+            };
+            if !Arc::ptr_eq(active, token) {
+                return false;
             }
         }
-        false
+
+        if let Some(row) = self.find_dir_row(dir_path) {
+            if !row.is_expanded() {
+                token.store(true, Ordering::Release);
+                self.finish_child_scan(dir_path, token);
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn append_child_batches(
+        &self,
+        store: gio::ListStore,
+        dir_path: PathBuf,
+        token: Arc<AtomicBool>,
+        entries: Vec<(PathBuf, bool)>,
+        truncated: bool,
+    ) {
+        let pending = std::rc::Rc::new(RefCell::new(VecDeque::from(entries)));
+        self.append_next_child_batch(store, dir_path, token, pending, truncated);
+    }
+
+    fn append_next_child_batch(
+        &self,
+        store: gio::ListStore,
+        dir_path: PathBuf,
+        token: Arc<AtomicBool>,
+        pending: std::rc::Rc<RefCell<VecDeque<(PathBuf, bool)>>>,
+        truncated: bool,
+    ) {
+        if !self.child_scan_is_active(&dir_path, &token) {
+            return;
+        }
+
+        let mut batch = Vec::with_capacity(CHILD_APPEND_BATCH_SIZE);
+        {
+            let mut pending_entries = pending.borrow_mut();
+            for _ in 0..CHILD_APPEND_BATCH_SIZE {
+                let Some((entry_path, is_dir)) = pending_entries.pop_front() else {
+                    break;
+                };
+                batch.push(FileTreeItem::new(entry_path, is_dir));
+            }
+        }
+
+        if !batch.is_empty() {
+            let start_index = self
+                .imp()
+                .child_paths
+                .borrow()
+                .get(&dir_path)
+                .map_or(0, Vec::len);
+            store.splice(store.n_items(), 0, &batch);
+            for (offset, item) in batch.iter().enumerate() {
+                if let Some(path) = item.path() {
+                    self.cache_child_item(&dir_path, path, start_index + offset);
+                }
+            }
+        }
+
+        if pending.borrow().is_empty() {
+            if truncated {
+                let placeholder = [FileTreeItem::new_placeholder(truncated_directory_label())];
+                store.splice(store.n_items(), 0, &placeholder);
+            }
+            self.finish_child_scan(&dir_path, &token);
+            return;
+        }
+
+        let section_weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(1), move || {
+            if let Some(section) = section_weak.upgrade() {
+                section.append_next_child_batch(store, dir_path, token, pending, truncated);
+            }
+        });
     }
 }
 
@@ -585,7 +696,9 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
                 .and_then(|i| i.downcast::<FileTreeItem>().ok())
             {
                 if !file_item.is_dir() {
-                    callback(&file_item.path());
+                    if let Some(ref path) = file_item.path() {
+                        callback(path);
+                    }
                 }
             }
         }
@@ -595,77 +708,10 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
 /// Maximum directory entries before truncation. A single `gio::ListStore`
 /// with >10k items causes slow model diff updates in `GtkListView`.
 const MAX_DIR_ENTRIES: usize = 10_000;
+const CHILD_APPEND_BATCH_SIZE: usize = 256;
 
-/// Build a child `ListStore` for a directory's contents.
-/// Uses `splice` to emit a single `items-changed` signal for the batch,
-/// and caps entries at `MAX_DIR_ENTRIES`.
-fn build_children_model(dir_path: &Path) -> gio::ListStore {
-    let store = gio::ListStore::new::<FileTreeItem>();
-    let path = dir_path.to_path_buf();
-
-    services::async_task::spawn_blocking_then(
-        store.clone(),
-        move || services::file_tree::scan_directory(&path),
-        |store, entries| {
-            let mut existing = std::collections::HashSet::with_capacity(store.n_items() as usize);
-            for i in 0..store.n_items() {
-                if let Some(fi) = store.item(i).and_downcast::<FileTreeItem>() {
-                    existing.insert(fi.path());
-                }
-            }
-
-            let remaining_budget = MAX_DIR_ENTRIES.saturating_sub(existing.len());
-            let new_items: Vec<FileTreeItem> = entries
-                .into_iter()
-                .filter(|(path, _)| !existing.contains(path))
-                .take(remaining_budget)
-                .map(|(path, is_dir)| FileTreeItem::new(path, is_dir))
-                .collect();
-
-            if existing.len() + new_items.len() >= MAX_DIR_ENTRIES {
-                tracing::warn!("Directory truncated to {MAX_DIR_ENTRIES} entries");
-            }
-
-            let pos = store.n_items();
-            store.splice(pos, 0, &new_items);
-        },
-    );
-
-    store
-}
-
-/// Atomically create a file or directory with a unique name.
-fn create_unique(dir: &Path, base: &str, is_dir: bool) -> std::io::Result<PathBuf> {
-    let candidates =
-        std::iter::once(base.to_string()).chain((2..1000).map(|i| format!("{base} {i}")));
-
-    for name in candidates {
-        let path = dir.join(&name);
-        let result = if is_dir {
-            std::fs::create_dir(&path)
-        } else {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map(|_| ())
-        };
-        match result {
-            Ok(()) => return Ok(path),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(std::io::Error::other("could not find unique name"))
-}
-
-/// Remove the rename entry and restore the label.
-fn cancel_rename(entry: &gtk4::Entry, label: &gtk4::Label, content_box: &gtk4::Box) {
-    if entry.parent().is_none() {
-        return;
-    }
-    content_box.remove(entry);
-    label.set_visible(true);
+fn truncated_directory_label() -> String {
+    format!("{MAX_DIR_ENTRIES}+ items - showing first {MAX_DIR_ENTRIES}")
 }
 
 impl Default for LushtextWorkspaceSection {

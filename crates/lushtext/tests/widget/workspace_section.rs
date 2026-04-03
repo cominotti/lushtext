@@ -78,7 +78,7 @@ fn test_remove_from_model_root_item() {
     assert_eq!(root_store.n_items(), 1);
 
     let remaining = root_store.item(0).and_downcast::<FileTreeItem>().unwrap();
-    assert_eq!(remaining.path(), PathBuf::from("/tmp/test/b.txt"));
+    assert_eq!(remaining.path(), Some(PathBuf::from("/tmp/test/b.txt")));
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn test_remove_from_model_child_item() {
     let child_store_c = child_store.clone();
     let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, move |item| {
         let fi = item.downcast_ref::<FileTreeItem>()?;
-        if fi.is_dir() && fi.path() == std::path::Path::new("/tmp/test/src") {
+        if fi.is_dir() && fi.path().as_deref() == Some(std::path::Path::new("/tmp/test/src")) {
             Some(child_store_c.clone().upcast::<gio::ListModel>())
         } else {
             None
@@ -134,7 +134,10 @@ fn test_remove_from_model_child_item() {
     assert_eq!(child_store.n_items(), 1);
 
     let remaining = child_store.item(0).and_downcast::<FileTreeItem>().unwrap();
-    assert_eq!(remaining.path(), PathBuf::from("/tmp/test/src/lib.rs"));
+    assert_eq!(
+        remaining.path(),
+        Some(PathBuf::from("/tmp/test/src/lib.rs"))
+    );
 }
 
 // --- Callback wiring ---

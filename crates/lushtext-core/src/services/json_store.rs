@@ -5,6 +5,7 @@
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 /// Returns the application data directory (`$XDG_DATA_HOME/lushtext`).
@@ -33,9 +34,14 @@ pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<
         .with_context(|| format!("failed to create {}", data_dir.display()))?;
     let path = data_dir.join(filename);
     let tmp_path = data_dir.join(format!(".{filename}.tmp"));
-    let content = serde_json::to_string_pretty(value)?;
-    std::fs::write(&tmp_path, &content)
-        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    let file = std::fs::File::create(&tmp_path)
+        .with_context(|| format!("failed to create {}", tmp_path.display()))?;
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(&mut writer, value)
+        .with_context(|| format!("failed to serialize {}", tmp_path.display()))?;
+    writer
+        .flush()
+        .with_context(|| format!("failed to flush {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, &path).with_context(|| {
         format!(
             "failed to rename {} to {}",

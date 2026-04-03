@@ -6,7 +6,11 @@
 //! Run with: `cargo bench -p lushtext-core` or `make bench`
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use gtk4::gio;
+use gtk4::prelude::ListModelExt;
+use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -16,11 +20,13 @@ use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
 };
+use lushtext_core::services::editor_io;
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::file_tree;
 use lushtext_core::services::json_store;
 use lushtext_core::services::palette::{self, FileIndex};
 use lushtext_core::services::workspace_manager;
+use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -83,6 +89,34 @@ fn make_flat_dir(entry_count: usize) -> TempDir {
         std::fs::write(dir.path().join(format!("file_{i}.rs")), "").unwrap();
     }
     dir
+}
+
+fn populate_tree_store(entries: Vec<(PathBuf, bool)>, truncated: bool) -> gio::ListStore {
+    const MAX_DIR_ENTRIES: usize = 10_000;
+    const CHILD_APPEND_BATCH_SIZE: usize = 256;
+
+    let store = gio::ListStore::new::<FileTreeItem>();
+    let mut pending = VecDeque::from(entries);
+
+    while !pending.is_empty() {
+        let mut batch = Vec::with_capacity(CHILD_APPEND_BATCH_SIZE);
+        for _ in 0..CHILD_APPEND_BATCH_SIZE {
+            let Some((entry_path, is_dir)) = pending.pop_front() else {
+                break;
+            };
+            batch.push(FileTreeItem::new(entry_path, is_dir));
+        }
+        store.splice(store.n_items(), 0, &batch);
+    }
+
+    if truncated {
+        let placeholder = [FileTreeItem::new_placeholder(format!(
+            "{MAX_DIR_ENTRIES}+ items - showing first {MAX_DIR_ENTRIES}"
+        ))];
+        store.splice(store.n_items(), 0, &placeholder);
+    }
+
+    store
 }
 
 /// Build a `WorkspacesFile` with the given number of workspaces and entries per workspace.
@@ -177,7 +211,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_index_rebuild");
     group.sample_size(20);
 
-    for file_count in [50, 500, 5_000, 10_000] {
+    for file_count in [50, 500, 5_000, 10_000, 100_000] {
         group.bench_function(BenchmarkId::from_parameter(file_count), |b| {
             b.iter_batched(
                 || make_temp_dir_tree(file_count),
@@ -373,6 +407,90 @@ fn bench_utf8_validation(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_editor_file_io(c: &mut Criterion) {
+    let mut group = c.benchmark_group("editor_file_io");
+    group.sample_size(20);
+
+    for size_mb in [1, 10, 50] {
+        let size = size_mb * 1_000_000;
+        let content = "a".repeat(size);
+
+        group.bench_function(
+            BenchmarkId::new("load_text_file", format!("{size_mb}MB")),
+            |b| {
+                b.iter_batched(
+                    || {
+                        let dir = TempDir::new().unwrap();
+                        let path = dir.path().join("bench.txt");
+                        std::fs::write(&path, &content).unwrap();
+                        (dir, path, AtomicBool::new(false))
+                    },
+                    |(dir, path, cancel)| {
+                        let _loaded = editor_io::load_text_file(
+                            black_box(path.as_path()),
+                            black_box(&cancel),
+                        )
+                        .unwrap();
+                        dir
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new("write_snapshot_to_path", format!("{size_mb}MB")),
+            |b| {
+                b.iter_batched(
+                    || {
+                        let dir = TempDir::new().unwrap();
+                        let path = dir.path().join("bench.txt");
+                        (dir, path, content.clone())
+                    },
+                    |(dir, path, text)| {
+                        let _written =
+                            editor_io::write_snapshot_to_path(black_box(path), black_box(text))
+                                .unwrap();
+                        dir
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_tree_population(c: &mut Criterion) {
+    let mut group = c.benchmark_group("tree_population");
+    group.sample_size(20);
+
+    for &(label, entry_count, max_entries) in &[
+        ("full", 10_000usize, 10_000usize),
+        ("truncated", 12_000usize, 10_000usize),
+    ] {
+        group.bench_function(BenchmarkId::new("scan_and_splice", label), |b| {
+            b.iter_batched(
+                || {
+                    let dir = make_flat_dir(entry_count);
+                    let cancel = AtomicBool::new(false);
+                    let scan =
+                        file_tree::scan_directory_bounded(dir.path(), max_entries, Some(&cancel));
+                    (dir, scan)
+                },
+                |(dir, scan)| {
+                    let store = populate_tree_store(scan.entries, scan.truncated);
+                    (store, dir)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_file_index_incremental(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_index_incremental");
 
@@ -500,6 +618,8 @@ criterion_group!(
     bench_scan_directory,
     bench_json_persistence,
     bench_utf8_validation,
+    bench_editor_file_io,
+    bench_tree_population,
     bench_file_size_classify,
 );
 criterion_main!(benches);

@@ -4,7 +4,7 @@ use crate::model::workspace::WorkspacesFile;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, glib, CompositeTemplate};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 
 use super::workspace_section::LushtextWorkspaceSection;
@@ -32,6 +32,9 @@ pub struct LushtextSidebar {
     pub delete_callback: RefCell<Option<FileCallback>>,
     pub create_callback: RefCell<Option<FileCallback>>,
     pub workspace_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
+    pub persist_generation: Cell<u32>,
+    pub persist_inflight: Cell<bool>,
+    pub persist_dirty: Cell<bool>,
 }
 
 #[glib::object_subclass]

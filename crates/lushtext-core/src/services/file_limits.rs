@@ -68,6 +68,19 @@ impl FileSizeCheck {
             Self::Normal | Self::LargeFileToast | Self::DisableSyntax
         )
     }
+
+    /// Approximate GtkTextBuffer memory multiplier for eviction decisions.
+    ///
+    /// Undo history is the dominant extra overhead, so we use a higher
+    /// estimate while undo is enabled and a lower one once large-file mode
+    /// disables it.
+    pub fn estimated_buffer_multiplier(self) -> u64 {
+        if self.undo_enabled() {
+            3
+        } else {
+            2
+        }
+    }
 }
 
 #[cfg(test)]
@@ -147,5 +160,22 @@ mod tests {
         assert!(LARGE_FILE_TOAST < DISABLE_SYNTAX_HIGHLIGHTING);
         assert!(DISABLE_SYNTAX_HIGHLIGHTING < DISABLE_UNDO_HISTORY);
         assert!(DISABLE_UNDO_HISTORY < REFUSE_TO_OPEN);
+    }
+
+    #[test]
+    fn test_estimated_buffer_multiplier() {
+        assert_eq!(FileSizeCheck::Normal.estimated_buffer_multiplier(), 3);
+        assert_eq!(
+            FileSizeCheck::LargeFileToast.estimated_buffer_multiplier(),
+            3
+        );
+        assert_eq!(
+            FileSizeCheck::DisableSyntax.estimated_buffer_multiplier(),
+            3
+        );
+        assert_eq!(
+            FileSizeCheck::DisableUndoAndSyntax.estimated_buffer_multiplier(),
+            2
+        );
     }
 }

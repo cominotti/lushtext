@@ -8,12 +8,21 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, glib, CompositeTemplate};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 type FileCallback = Box<dyn Fn(&Path)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
 type WorkspaceCallback = Box<dyn Fn(&WorkspaceId)>;
 type AddFolderCallback = Box<dyn Fn(&WorkspaceId)>;
+
+#[derive(Debug, Clone)]
+pub struct ItemLocation {
+    pub parent_dir: Option<PathBuf>,
+    pub index: usize,
+}
 
 #[derive(Default, CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/workspace-section.ui")]
@@ -40,6 +49,12 @@ pub struct LushtextWorkspaceSection {
     // Model references for tree manipulation
     pub tree_model: RefCell<Option<gtk4::TreeListModel>>,
     pub root_store: RefCell<Option<gio::ListStore>>,
+    pub dir_rows: RefCell<HashMap<PathBuf, glib::WeakRef<gtk4::TreeListRow>>>,
+    pub dir_stores: RefCell<HashMap<PathBuf, glib::WeakRef<gio::ListStore>>>,
+    pub child_scan_tokens: RefCell<HashMap<PathBuf, Arc<AtomicBool>>>,
+    pub root_paths: RefCell<Vec<PathBuf>>,
+    pub child_paths: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
+    pub item_locations: RefCell<HashMap<PathBuf, ItemLocation>>,
 
     // File operation callbacks (forwarded to sidebar → window)
     pub rename_callback: RefCell<Option<RenameCallback>>,
@@ -148,13 +163,27 @@ impl LushtextWorkspaceSection {
                     .and_downcast::<gtk4::Label>()
                     .expect("second child is Label");
 
-                let icon_name = if file_item.is_dir() {
+                let icon_name = if file_item.is_placeholder() {
+                    "dialog-information-symbolic"
+                } else if file_item.is_dir() {
                     "folder-symbolic"
                 } else {
                     "text-x-generic-symbolic"
                 };
                 icon.set_icon_name(Some(icon_name));
                 label.set_label(&file_item.name());
+
+                if file_item.is_dir() && !file_item.is_placeholder() {
+                    if let Some(section) = section_weak.upgrade() {
+                        if let Some(path) = file_item.path() {
+                            section
+                                .imp()
+                                .dir_rows
+                                .borrow_mut()
+                                .insert(path, tree_row.downgrade());
+                        }
+                    }
+                }
 
                 // Clean up any rename entry left from row recycling
                 if let Some(sibling) = label.next_sibling() {
@@ -169,7 +198,7 @@ impl LushtextWorkspaceSection {
                     file_item.set_pending_rename(false);
                     if let Some(section) = section_weak.upgrade() {
                         let imp = section.imp();
-                        *imp.context_path.borrow_mut() = Some(file_item.path());
+                        *imp.context_path.borrow_mut() = file_item.path();
                         imp.context_is_dir.set(file_item.is_dir());
                         *imp.context_expander.borrow_mut() = Some(expander.clone());
                         let sw = section.downgrade();
@@ -182,7 +211,7 @@ impl LushtextWorkspaceSection {
                 }
 
                 // Disable the TreeExpander's internal GestureClick for file rows.
-                let phase = if file_item.is_dir() {
+                let phase = if file_item.is_dir() && !file_item.is_placeholder() {
                     gtk4::PropagationPhase::Bubble
                 } else {
                     gtk4::PropagationPhase::None
@@ -194,6 +223,29 @@ impl LushtextWorkspaceSection {
                             gesture.set_propagation_phase(phase);
                         }
                     }
+                }
+            }
+        });
+
+        let section_weak = self.obj().downgrade();
+        factory.connect_unbind(move |_factory, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk4::ListItem>()
+                .expect("item is ListItem");
+
+            let Some(tree_row) = list_item.item().and_downcast::<gtk4::TreeListRow>() else {
+                return;
+            };
+            let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() else {
+                return;
+            };
+            if !file_item.is_dir() {
+                return;
+            }
+
+            if let Some(section) = section_weak.upgrade() {
+                if let Some(ref path) = file_item.path() {
+                    section.imp().dir_rows.borrow_mut().remove(path.as_path());
                 }
             }
         });
@@ -289,9 +341,12 @@ impl LushtextWorkspaceSection {
             let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() else {
                 return;
             };
+            let Some(path) = file_item.path() else {
+                return;
+            };
 
             let imp = section.imp();
-            *imp.context_path.borrow_mut() = Some(file_item.path());
+            *imp.context_path.borrow_mut() = Some(path);
             imp.context_is_dir.set(file_item.is_dir());
             *imp.context_expander.borrow_mut() = Some(expander);
 

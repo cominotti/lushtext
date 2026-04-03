@@ -42,45 +42,44 @@ const KIND_FILE: u8 = 0;
 const KIND_COMMAND: u8 = 1;
 
 impl PaletteItem {
-    /// Create a palette item from pre-computed display data.
-    /// Used by the background search thread which cannot create GObjects.
-    pub fn new_raw(
-        display_name: String,
-        subtitle: String,
-        file_path: Option<PathBuf>,
-        action_id: String,
-        is_file: bool,
-    ) -> Self {
+    /// Create a palette item for a file search result.
+    pub fn new_file_raw(display_name: String, subtitle: String, file_path: PathBuf) -> Self {
         let obj: Self = glib::Object::builder().build();
         let imp = obj.imp();
         imp.display_name.replace(display_name);
         imp.subtitle.replace(subtitle);
-        imp.file_path.replace(file_path);
-        imp.action_id.replace(action_id);
-        imp.kind.set(if is_file { KIND_FILE } else { KIND_COMMAND });
+        imp.file_path.replace(Some(file_path));
+        imp.kind.set(KIND_FILE);
+        obj
+    }
+
+    /// Create a palette item for a command search result.
+    pub fn new_command_raw(
+        display_name: impl Into<String>,
+        subtitle: impl Into<String>,
+        action_id: impl Into<String>,
+    ) -> Self {
+        let obj: Self = glib::Object::builder().build();
+        let imp = obj.imp();
+        imp.display_name.replace(display_name.into());
+        imp.subtitle.replace(subtitle.into());
+        imp.action_id.replace(action_id.into());
+        imp.kind.set(KIND_COMMAND);
         obj
     }
 
     /// Create a palette item from an indexed file.
     pub fn from_indexed_file(file: &IndexedFile) -> Self {
-        let obj: Self = glib::Object::builder().build();
-        let imp = obj.imp();
-        imp.display_name.replace(file.name.clone());
-        imp.subtitle.replace(file.relative_display());
-        imp.file_path.replace(Some(file.path.clone()));
-        imp.kind.set(KIND_FILE);
-        obj
+        Self::new_file_raw(
+            file.name.clone(),
+            file.relative_display(),
+            file.path.clone(),
+        )
     }
 
     /// Create a palette item from a command definition.
     pub fn from_command_def(cmd: &CommandDef) -> Self {
-        let obj: Self = glib::Object::builder().build();
-        let imp = obj.imp();
-        imp.display_name.replace(cmd.label.to_string());
-        imp.subtitle.replace(cmd.display_subtitle());
-        imp.action_id.replace(cmd.id.to_string());
-        imp.kind.set(KIND_COMMAND);
-        obj
+        Self::new_command_raw(cmd.label, cmd.display_subtitle(), cmd.id)
     }
 
     pub fn display_name(&self) -> String {

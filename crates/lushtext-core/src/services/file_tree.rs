@@ -5,54 +5,131 @@
 //! Pure I/O service with no GTK dependencies. Returns standard Rust types
 //! that the UI layer converts into GObject models.
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use unicase::UniCase;
+
+#[derive(Debug, Default)]
+pub struct DirectoryScan {
+    pub entries: Vec<(PathBuf, bool)>,
+    pub truncated: bool,
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SortedEntry {
+    path: PathBuf,
+    is_dir: bool,
+}
+
+impl Ord for SortedEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_entries(
+            (self.path.as_path(), self.is_dir),
+            (other.path.as_path(), other.is_dir),
+        )
+    }
+}
+
+impl PartialOrd for SortedEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// Scan a directory and return sorted entries (directories first, then alphabetical).
 /// Skips hidden files (starting with `.`).
 pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
+    scan_directory_bounded(dir_path, usize::MAX, None).entries
+}
+
+/// Scan a directory while bounding memory and allowing cooperative cancellation.
+///
+/// The result is still sorted directories-first and alphabetically, but for
+/// very large folders only the best `max_entries` rows are retained in memory.
+pub fn scan_directory_bounded(
+    dir_path: &Path,
+    max_entries: usize,
+    cancel: Option<&AtomicBool>,
+) -> DirectoryScan {
     let read_dir = match std::fs::read_dir(dir_path) {
         Ok(rd) => rd,
         Err(e) => {
             tracing::warn!("Cannot read {}: {}", dir_path.display(), e);
-            return Vec::new();
+            return DirectoryScan::default();
         }
     };
 
-    let mut entries: Vec<(PathBuf, bool)> = Vec::with_capacity(256);
+    let mut heap = BinaryHeap::with_capacity(max_entries.saturating_add(1).min(256));
+    let mut truncated = false;
     for entry in read_dir.flatten() {
+        if cancel.is_some_and(|flag| flag.load(AtomicOrdering::Acquire)) {
+            return DirectoryScan {
+                entries: drain_sorted_entries(heap),
+                truncated,
+                cancelled: true,
+            };
+        }
         if entry.file_name().as_encoded_bytes().first() == Some(&b'.') {
             continue;
         }
-        let path = entry.path();
-        // Use std::fs::metadata (follows symlinks via stat(2)) to skip
-        // broken symlinks. DirEntry::metadata() uses fstatat(AT_SYMLINK_NOFOLLOW)
-        // on Unix, which returns the symlink's own metadata even if the
-        // target is missing.
-        let meta = match std::fs::metadata(&path) {
-            Ok(m) => m,
-            Err(_) => continue, // broken symlink or permission denied
+        let Some((path, is_dir)) = classify_entry(entry) else {
+            continue;
         };
-        entries.push((path, meta.is_dir()));
+
+        heap.push(SortedEntry { path, is_dir });
+        if heap.len() > max_entries {
+            heap.pop();
+            truncated = true;
+        }
     }
 
-    // sort_by (not sort_by_cached_key): avoids per-entry String allocation from
-    // to_lowercase(); UniCase compares borrowed Cow<str> with zero allocations.
-    entries.sort_by(|(path_a, is_dir_a), (path_b, is_dir_b)| {
-        is_dir_b.cmp(is_dir_a).then_with(|| {
-            let a = path_a
-                .file_name()
-                .map(|n| n.to_string_lossy())
-                .unwrap_or_default();
-            let b = path_b
-                .file_name()
-                .map(|n| n.to_string_lossy())
-                .unwrap_or_default();
-            UniCase::new(a).cmp(&UniCase::new(b))
-        })
-    });
+    DirectoryScan {
+        entries: drain_sorted_entries(heap),
+        truncated,
+        cancelled: false,
+    }
+}
 
-    entries
+fn classify_entry(entry: DirEntry) -> Option<(PathBuf, bool)> {
+    let path = entry.path();
+
+    match entry.file_type() {
+        Ok(file_type) if !file_type.is_symlink() => Some((path, file_type.is_dir())),
+        Ok(_) | Err(_) => {
+            // Follow symlinks so valid symlinked directories/files are included,
+            // while broken targets are skipped.
+            let meta = std::fs::metadata(&path).ok()?;
+            Some((path, meta.is_dir()))
+        }
+    }
+}
+
+fn drain_sorted_entries(heap: BinaryHeap<SortedEntry>) -> Vec<(PathBuf, bool)> {
+    heap.into_sorted_vec()
+        .into_iter()
+        .map(|entry| (entry.path, entry.is_dir))
+        .collect()
+}
+
+fn compare_entries(
+    (path_a, is_dir_a): (&Path, bool),
+    (path_b, is_dir_b): (&Path, bool),
+) -> Ordering {
+    is_dir_b.cmp(&is_dir_a).then_with(|| {
+        let a = path_a
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
+        let b = path_b
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
+        UniCase::new(a).cmp(&UniCase::new(b))
+    })
 }
 
 #[cfg(test)]
@@ -211,5 +288,34 @@ mod tests {
         let result_names = names(&entries);
         assert!(result_names.contains(&"real.txt".to_string()));
         assert!(result_names.contains(&"link.txt".to_string()));
+    }
+
+    #[test]
+    fn test_bounded_scan_keeps_sorted_top_entries_and_marks_truncated() {
+        let dir = TempDir::new().unwrap();
+        for name in ["zeta.txt", "alpha.txt", "docs", "src", "notes.md"] {
+            let path = dir.path().join(name);
+            if name.contains('.') {
+                std::fs::write(path, "").unwrap();
+            } else {
+                std::fs::create_dir(path).unwrap();
+            }
+        }
+
+        let scan = scan_directory_bounded(dir.path(), 3, None);
+        assert!(scan.truncated);
+        assert!(!scan.cancelled);
+        assert_eq!(names(&scan.entries), vec!["docs", "src", "alpha.txt"]);
+    }
+
+    #[test]
+    fn test_bounded_scan_honors_cancel_token() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("visible.txt"), "").unwrap();
+        let cancel = AtomicBool::new(true);
+
+        let scan = scan_directory_bounded(dir.path(), 10, Some(&cancel));
+        assert!(scan.cancelled);
+        assert!(scan.entries.is_empty());
     }
 }

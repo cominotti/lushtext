@@ -10,7 +10,7 @@ use gtk4::prelude::*;
 use gtk4::{self, gio, glib, CompositeTemplate};
 use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 #[derive(CompositeTemplate)]
@@ -41,7 +41,11 @@ pub struct LushtextWindow {
     pub index_rebuild_generation: Cell<u32>,
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     pub last_sidebar_pos: Cell<i32>,
+    pub pending_sidebar_pos: Cell<i32>,
+    pub sidebar_persist_generation: Cell<u32>,
     pub open_paths: RefCell<HashSet<PathBuf>>,
+    pub buffer_memory_total: Cell<u64>,
+    pub buffer_memory_by_editor: RefCell<HashMap<usize, u64>>,
 }
 
 impl Default for LushtextWindow {
@@ -61,7 +65,11 @@ impl Default for LushtextWindow {
             index_rebuild_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
             last_sidebar_pos: Cell::new(-1),
+            pending_sidebar_pos: Cell::new(-1),
+            sidebar_persist_generation: Cell::new(0),
             open_paths: RefCell::new(HashSet::new()),
+            buffer_memory_total: Cell::new(0),
+            buffer_memory_by_editor: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -104,6 +112,8 @@ impl ObjectImpl for LushtextWindow {
         // --- Restore sidebar position ---
         let saved_pos = settings.int(keys::SIDEBAR_POSITION);
         self.main_paned.set_position(saved_pos);
+        self.last_sidebar_pos.set(saved_pos);
+        self.pending_sidebar_pos.set(saved_pos);
 
         // --- Persist window geometry incrementally via notify signals ---
         // (Sidebar clamping is handled in size_allocate, not here.)
@@ -134,17 +144,11 @@ impl ObjectImpl for LushtextWindow {
 
         // --- Sidebar position persist on user drag ---
         {
-            let settings = settings.clone();
             let window_weak = obj.downgrade();
             self.main_paned
                 .connect_notify_local(Some("position"), move |paned, _| {
                     if let Some(window) = window_weak.upgrade() {
-                        clamp_sidebar_position(
-                            paned,
-                            window.width(),
-                            &settings,
-                            &window.imp().last_sidebar_pos,
-                        );
+                        clamp_sidebar_position(&window, paned, window.width());
                     }
                 });
         }
@@ -255,6 +259,21 @@ impl ObjectImpl for LushtextWindow {
                 }
             });
 
+        let window_weak = obj.downgrade();
+        self.tab_view.connect_page_detached(move |_, page, _| {
+            if let Some(window) = window_weak.upgrade() {
+                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                    if let Some(ref path) = editor.file_path() {
+                        window.imp().open_paths.borrow_mut().remove(path.as_path());
+                    }
+                    window.untrack_editor_memory(editor);
+                    editor.cancel_load();
+                }
+                window.update_content_stack();
+                window.refresh_status_bar();
+            }
+        });
+
         // Start with empty state
         obj.update_content_stack();
 
@@ -269,12 +288,7 @@ impl WidgetImpl for LushtextWindow {
         self.parent_size_allocate(width, height, baseline);
         // Clamp sidebar on every allocation — this is the definitive width,
         // free from the stale-value timing issues of property notifications.
-        clamp_sidebar_position(
-            &self.main_paned,
-            width,
-            &self.settings,
-            &self.last_sidebar_pos,
-        );
+        clamp_sidebar_position(&self.obj(), &self.main_paned, width);
         // Keep palette at 60% window width (guarded to avoid re-layout cycles)
         if width > 0 {
             let palette_width = width * 6 / 10;
@@ -291,16 +305,17 @@ impl AdwApplicationWindowImpl for LushtextWindow {}
 
 /// Clamp the sidebar pane position to at most 1/3 of the window width,
 /// and persist the (possibly clamped) value to GSettings.
-/// Uses `last_written` cache to avoid D-Bus reads on every `size_allocate`.
+/// Uses a generation-counter debounce so resize-time clamping stays immediate
+/// while D-Bus-backed persistence only happens once resizing settles.
 pub fn clamp_sidebar_position(
+    window: &super::LushtextWindow,
     paned: &gtk4::Paned,
     window_width: i32,
-    settings: &gio::Settings,
-    last_written: &Cell<i32>,
 ) {
     if window_width <= 0 {
         return;
     }
+    let imp = window.imp();
     let max = window_width / 3;
     let current = paned.position();
     let clamped = current.min(max);
@@ -308,8 +323,34 @@ pub fn clamp_sidebar_position(
         paned.set_position(clamped);
     }
     let final_pos = paned.position();
-    if last_written.get() != final_pos {
-        last_written.set(final_pos);
-        let _ = settings.set_int(keys::SIDEBAR_POSITION, final_pos);
+    imp.pending_sidebar_pos.set(final_pos);
+    if imp.last_sidebar_pos.get() == final_pos {
+        return;
     }
+
+    let generation = imp.sidebar_persist_generation.get().wrapping_add(1);
+    imp.sidebar_persist_generation.set(generation);
+
+    let window_weak = window.downgrade();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+        let Some(window) = window_weak.upgrade() else {
+            return;
+        };
+        let imp = window.imp();
+        if imp.sidebar_persist_generation.get() != generation {
+            return;
+        }
+
+        let final_pos = imp.pending_sidebar_pos.get();
+        if imp.last_sidebar_pos.get() == final_pos {
+            return;
+        }
+        if imp
+            .settings
+            .set_int(keys::SIDEBAR_POSITION, final_pos)
+            .is_ok()
+        {
+            imp.last_sidebar_pos.set(final_pos);
+        }
+    });
 }

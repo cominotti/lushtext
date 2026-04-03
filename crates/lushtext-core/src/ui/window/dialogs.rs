@@ -35,10 +35,8 @@ impl super::LushtextWindow {
             .build();
 
         // Pre-populate with current filename if available
-        if let Some(path) = editor.file_path() {
-            if let Some(name) = path.file_name() {
-                dialog.set_initial_name(Some(&name.to_string_lossy()));
-            }
+        if let Some(name) = editor.file_path().as_deref().and_then(|p| p.file_name()) {
+            dialog.set_initial_name(Some(&name.to_string_lossy()));
         }
 
         let window = self.clone();
@@ -47,7 +45,7 @@ impl super::LushtextWindow {
                 if let Some(path) = file.path() {
                     {
                         let mut open_paths = window.imp().open_paths.borrow_mut();
-                        if let Some(old) = editor.file_path() {
+                        if let Some(ref old) = editor.file_path() {
                             open_paths.remove(old.as_path());
                         }
                         open_paths.insert(path.clone());

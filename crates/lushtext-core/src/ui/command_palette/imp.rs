@@ -14,32 +14,33 @@ use std::sync::Arc;
 /// Owned transport type for search results that can cross thread boundaries.
 /// Created on the background thread, converted to `PaletteItem` GObjects
 /// on the main thread. At max=50 results, total clone cost is ~15KB — negligible.
-struct SearchHit {
-    display_name: String,
-    subtitle: String,
-    file_path: Option<PathBuf>,
-    action_id: String,
-    is_file: bool,
+enum SearchHit {
+    File {
+        display_name: String,
+        subtitle: String,
+        file_path: PathBuf,
+    },
+    Command {
+        display_name: String,
+        subtitle: String,
+        action_id: String,
+    },
 }
 
 impl SearchHit {
     fn from_file(f: &crate::model::palette::IndexedFile) -> Self {
-        Self {
+        Self::File {
             display_name: f.name.clone(),
             subtitle: f.relative_display(),
-            file_path: Some(f.path.clone()),
-            action_id: String::new(),
-            is_file: true,
+            file_path: f.path.clone(),
         }
     }
 
     fn from_command(c: &crate::model::palette::CommandDef) -> Self {
-        Self {
+        Self::Command {
             display_name: c.label.to_string(),
             subtitle: c.display_subtitle(),
-            file_path: None,
             action_id: c.id.to_string(),
-            is_file: false,
         }
     }
 }
@@ -65,6 +66,9 @@ pub struct LushtextCommandPalette {
     pub activate_callback: RefCell<Option<ActivateCallback>>,
     pub close_callback: RefCell<Option<CloseCallback>>,
     pub search_generation: Cell<u32>,
+    pub(super) pending_index_updates: RefCell<Vec<super::FileIndexUpdate>>,
+    pub(super) index_update_generation: Cell<u32>,
+    pub(super) index_update_inflight: Cell<bool>,
 }
 
 impl Default for LushtextCommandPalette {
@@ -80,6 +84,9 @@ impl Default for LushtextCommandPalette {
             activate_callback: RefCell::default(),
             close_callback: RefCell::default(),
             search_generation: Cell::new(0),
+            pending_index_updates: RefCell::default(),
+            index_update_generation: Cell::new(0),
+            index_update_inflight: Cell::new(false),
         }
     }
 }
@@ -187,7 +194,7 @@ impl LushtextCommandPalette {
 
             // Empty queries bypass debounce for instant clear (expected UX).
             if query.is_empty() {
-                imp.rebuild_results(&query);
+                imp.rebuild_results_owned(query);
                 return;
             }
 
@@ -199,7 +206,7 @@ impl LushtextCommandPalette {
                 if obj.imp().search_generation.get() != gen {
                     return; // superseded by newer keystroke
                 }
-                obj.imp().rebuild_results(&query);
+                obj.imp().rebuild_results_owned(query);
             });
         });
     }
@@ -274,17 +281,20 @@ impl LushtextCommandPalette {
     /// search from `setup_search`. Direct callers (e.g., `set_file_index`,
     /// `open`, Tab mode-switch) rely on this to cancel stale timers.
     pub fn rebuild_results(&self, query: &str) {
+        self.rebuild_results_owned(query.to_string());
+    }
+
+    pub fn rebuild_results_owned(&self, query: String) {
         let gen = self.search_generation.get().wrapping_add(1);
         self.search_generation.set(gen);
 
         let mode = self.mode.get();
         let index = Arc::clone(&self.file_index.borrow());
-        let query_owned = query.to_string();
 
         crate::services::async_task::spawn_blocking_then(
             self.obj().clone(),
             move || {
-                let results = palette::search_all(&index, &query_owned, mode, 50);
+                let results = palette::search_all(&index, &query, mode, 50);
                 let hits: Vec<SearchHit> = results
                     .iter()
                     .map(|r| match &r.item {
@@ -292,7 +302,7 @@ impl LushtextCommandPalette {
                         SearchResultItem::Command(c) => SearchHit::from_command(c),
                     })
                     .collect();
-                (hits, query_owned)
+                (hits, query)
             },
             move |obj, (hits, query)| {
                 let imp = obj.imp();
@@ -302,14 +312,17 @@ impl LushtextCommandPalette {
 
                 let items: Vec<PaletteItem> = hits
                     .into_iter()
-                    .map(|h| {
-                        PaletteItem::new_raw(
-                            h.display_name,
-                            h.subtitle,
-                            h.file_path,
-                            h.action_id,
-                            h.is_file,
-                        )
+                    .map(|hit| match hit {
+                        SearchHit::File {
+                            display_name,
+                            subtitle,
+                            file_path,
+                        } => PaletteItem::new_file_raw(display_name, subtitle, file_path),
+                        SearchHit::Command {
+                            display_name,
+                            subtitle,
+                            action_id,
+                        } => PaletteItem::new_command_raw(display_name, subtitle, action_id),
                     })
                     .collect();
 

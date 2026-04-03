@@ -4,32 +4,20 @@
 
 mod imp;
 
-use crate::services::async_task;
 use crate::services::file_limits::FileSizeCheck;
+use crate::services::{async_task, editor_io};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
-use std::path::Path;
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
-/// Errors from the background file-load closure.
-#[derive(Debug, thiserror::Error)]
-enum LoadError {
-    #[error("load cancelled")]
-    Cancelled,
-    #[error("{0}")]
-    Io(String),
-}
-
-/// Errors from file save operations.
-#[derive(Debug, thiserror::Error)]
-pub enum SaveError {
-    #[error("No file path set")]
-    NoPath,
-    #[error("{0}")]
-    Io(String),
-}
+pub use crate::services::editor_io::SaveError;
+use editor_io::LoadError;
 
 glib::wrapper! {
     pub struct LushtextEditorPage(ObjectSubclass<imp::LushtextEditorPage>)
@@ -60,59 +48,14 @@ impl LushtextEditorPage {
 
         async_task::spawn_blocking_then(
             self.clone(),
-            move || {
-                if cancel.load(Ordering::Acquire) {
-                    return Err(LoadError::Cancelled);
-                }
-
-                let meta = std::fs::metadata(&file_path)
-                    .map_err(|e| format!("Cannot stat {}: {}", file_path.display(), e))
-                    .map_err(LoadError::Io)?;
-                let size = meta.len();
-                let check = FileSizeCheck::classify(size);
-
-                if check == FileSizeCheck::TooLarge {
-                    return Err(LoadError::Io(format!(
-                        "{} is too large to edit ({} MB). Consider a pager like `less`.",
-                        file_path.display(),
-                        size / 1_000_000
-                    )));
-                }
-
-                // User may have closed the tab during the size check
-                if cancel.load(Ordering::Acquire) {
-                    return Err(LoadError::Cancelled);
-                }
-
-                // Read raw bytes and validate UTF-8 via SIMD (~8x faster than
-                // the scalar validation inside read_to_string at any file size).
-                let bytes = std::fs::read(&file_path).map_err(|e| {
-                    LoadError::Io(format!("Failed to read {}: {}", file_path.display(), e))
-                })?;
-                // Large file reads can take seconds on NFS/USB — bail early
-                if cancel.load(Ordering::Acquire) {
-                    return Err(LoadError::Cancelled);
-                }
-
-                let content = match simdutf8::basic::from_utf8(&bytes) {
-                    // SAFETY: simdutf8 confirmed valid UTF-8
-                    Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
-                    Err(_) => {
-                        return Err(LoadError::Io(format!(
-                            "{} is not valid UTF-8",
-                            file_path.display()
-                        )))
-                    }
-                };
-
-                Ok((content, size, check))
-            },
+            move || editor_io::load_text_file(&file_path, &cancel),
             |editor, result| match result {
                 Ok((content, size, check)) => {
                     editor.imp().file_size.set(Some(size));
                     editor.imp().size_check.set(check);
                     editor.imp().evicted.set(false);
                     editor.apply_loaded_content(&content, check);
+                    editor.notify_estimated_memory_changed();
                 }
                 Err(LoadError::Cancelled) => {}
                 Err(e) => {
@@ -188,48 +131,29 @@ impl LushtextEditorPage {
                 return;
             }
         };
+        let callback: SaveCallback = Box::new(callback);
+
+        if self.file_size().unwrap_or_default() >= LARGE_SAVE_SNAPSHOT_THRESHOLD {
+            let view = self.source_view().clone();
+            let restore_state = (view.is_editable(), view.is_cursor_visible());
+            view.set_editable(false);
+            view.set_cursor_visible(false);
+
+            let editor = self.clone();
+            snapshot_buffer_text_async(self.buffer(), move |text| {
+                editor.write_snapshot_async(path, text, Some(restore_state), callback);
+            });
+            return;
+        }
+
         let buffer = self.buffer();
         // GString → String copy is required: GString is not Send, so the
-        // background thread needs an owned String. Peak memory: 2× file size.
+        // background thread needs an owned String. With the live buffer still
+        // resident, save can briefly peak around 3x the file size in memory.
         let text = buffer
             .text(&buffer.start_iter(), &buffer.end_iter(), true)
             .to_string();
-
-        // Optimistic: clear the modified dot before the async write completes.
-        buffer.set_modified(false);
-
-        async_task::spawn_blocking_then(
-            self.clone(),
-            move || {
-                // Atomic write: temp file + rename prevents partial writes on crash
-                let tmp_name = format!(
-                    ".{}.tmp",
-                    path.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "untitled".to_string())
-                );
-                let tmp_path = path.with_file_name(&tmp_name);
-                std::fs::write(&tmp_path, &text).map_err(|e| {
-                    SaveError::Io(format!("Failed to write {}: {}", tmp_path.display(), e))
-                })?;
-                std::fs::rename(&tmp_path, &path).map_err(|e| {
-                    let _ = std::fs::remove_file(&tmp_path);
-                    SaveError::Io(format!("Failed to finalize {}: {}", path.display(), e))
-                })?;
-                Ok(text.len() as u64)
-            },
-            move |editor, result| match result {
-                Ok(size) => {
-                    editor.imp().file_size.set(Some(size));
-                    callback(Ok(()));
-                }
-                Err(e) => {
-                    // Rollback: restore the modified dot on write failure.
-                    editor.buffer().set_modified(true);
-                    callback(Err(e));
-                }
-            },
-        );
+        self.write_snapshot_async(path, text, None, callback);
     }
 
     pub fn buffer(&self) -> sourceview5::Buffer {
@@ -279,10 +203,31 @@ impl LushtextEditorPage {
         buffer.set_text("");
         buffer.end_irreversible_action();
         buffer.set_modified(false);
+        self.notify_estimated_memory_changed();
     }
 
     pub fn is_evicted(&self) -> bool {
         self.imp().evicted.get()
+    }
+
+    pub fn estimated_buffer_bytes(&self) -> u64 {
+        if self.is_evicted() {
+            return 0;
+        }
+
+        self.file_size()
+            .map(|size| size.saturating_mul(self.size_check().estimated_buffer_multiplier()))
+            .unwrap_or(0)
+    }
+
+    pub fn connect_estimated_memory_changed<F: Fn(u64) + 'static>(&self, f: F) {
+        *self.imp().memory_changed_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    fn notify_estimated_memory_changed(&self) {
+        if let Some(ref callback) = *self.imp().memory_changed_callback.borrow() {
+            callback(self.estimated_buffer_bytes());
+        }
     }
 
     pub fn toggle_search(&self) {
@@ -295,10 +240,87 @@ impl LushtextEditorPage {
             self.imp().source_view.grab_focus();
         }
     }
+
+    fn write_snapshot_async(
+        &self,
+        path: PathBuf,
+        text: String,
+        restore_view_state: Option<(bool, bool)>,
+        callback: SaveCallback,
+    ) {
+        // Optimistic: clear the modified dot before the async write completes.
+        self.buffer().set_modified(false);
+
+        async_task::spawn_blocking_then(
+            self.clone(),
+            move || editor_io::write_snapshot_to_path(path, text),
+            move |editor, result| {
+                if let Some((editable, cursor_visible)) = restore_view_state {
+                    editor.source_view().set_editable(editable);
+                    editor.source_view().set_cursor_visible(cursor_visible);
+                }
+
+                match result {
+                    Ok(size) => {
+                        editor.imp().file_size.set(Some(size));
+                        editor.imp().size_check.set(FileSizeCheck::classify(size));
+                        editor.notify_estimated_memory_changed();
+                        callback(Ok(()));
+                    }
+                    Err(e) => {
+                        // Rollback: restore the modified dot on write failure.
+                        editor.buffer().set_modified(true);
+                        callback(Err(e));
+                    }
+                }
+            },
+        );
+    }
 }
 
 impl Default for LushtextEditorPage {
     fn default() -> Self {
         Self::new()
     }
+}
+
+type SaveCallback = Box<dyn FnOnce(Result<(), SaveError>)>;
+type ChunkedCallback = Rc<RefCell<Option<Box<dyn FnOnce(String)>>>>;
+
+const LARGE_SAVE_SNAPSHOT_THRESHOLD: u64 = 10_000_000;
+const SAVE_SNAPSHOT_CHUNK_CHARS: i32 = 64 * 1024;
+
+fn snapshot_buffer_text_async<F: FnOnce(String) + 'static>(
+    buffer: sourceview5::Buffer,
+    callback: F,
+) {
+    let text = Rc::new(RefCell::new(String::new()));
+    let callback: ChunkedCallback = Rc::new(RefCell::new(Some(Box::new(callback))));
+    snapshot_buffer_text_chunk(buffer.clone(), buffer.start_iter(), text, callback);
+}
+
+fn snapshot_buffer_text_chunk(
+    buffer: sourceview5::Buffer,
+    start: gtk4::TextIter,
+    text: Rc<RefCell<String>>,
+    callback: ChunkedCallback,
+) {
+    let mut end = start;
+    if !end.forward_chars(SAVE_SNAPSHOT_CHUNK_CHARS) {
+        end = buffer.end_iter();
+    }
+
+    let chunk = buffer.text(&start, &end, true);
+    text.borrow_mut().push_str(chunk.as_str());
+
+    if end == buffer.end_iter() {
+        if let Some(callback) = callback.borrow_mut().take() {
+            callback(std::mem::take(&mut *text.borrow_mut()));
+        }
+        return;
+    }
+
+    glib::timeout_add_local_once(Duration::from_millis(1), move || {
+        snapshot_buffer_text_chunk(buffer, end, text, callback);
+    });
 }

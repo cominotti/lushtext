@@ -12,6 +12,28 @@ const MAX_CONCURRENT_SPAWNS: usize = 8;
 
 static ACTIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
 
+fn try_acquire_slot() -> bool {
+    let mut active = ACTIVE_THREADS.load(Ordering::Relaxed);
+    loop {
+        if active >= MAX_CONCURRENT_SPAWNS {
+            return false;
+        }
+        match ACTIVE_THREADS.compare_exchange_weak(
+            active,
+            active + 1,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(observed) => active = observed,
+        }
+    }
+}
+
+fn release_slot() {
+    ACTIVE_THREADS.fetch_sub(1, Ordering::Release);
+}
+
 /// Run `work` on a background thread, then call `then` on the main thread
 /// with the result.
 ///
@@ -28,7 +50,7 @@ where
     W: FnOnce() -> T + Send + 'static,
     F: FnOnce(S, T) + 'static,
 {
-    if ACTIVE_THREADS.load(Ordering::Relaxed) >= MAX_CONCURRENT_SPAWNS {
+    if !try_acquire_slot() {
         // Use a 50ms timeout instead of idle to avoid busy-wait spinning
         // when all slots are saturated (e.g., slow NFS reads).
         glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
@@ -37,12 +59,11 @@ where
         return;
     }
 
-    ACTIVE_THREADS.fetch_add(1, Ordering::Relaxed);
     let guarded_state = glib::thread_guard::ThreadGuard::new(state);
     let guarded_then = glib::thread_guard::ThreadGuard::new(then);
     std::thread::spawn(move || {
         let result = work();
-        ACTIVE_THREADS.fetch_sub(1, Ordering::Relaxed);
+        release_slot();
         glib::idle_add_once(move || {
             let state = guarded_state.into_inner();
             let then = guarded_then.into_inner();

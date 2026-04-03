@@ -6,13 +6,35 @@ mod imp;
 pub mod item;
 
 use crate::model::palette::{IndexedFile, SearchMode};
-use crate::services::palette::FileIndex;
+use crate::services::{async_task, palette::FileIndex};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
+use gtk4::glib;
 use gtk4::prelude::*;
 use item::PaletteItem;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
+
+#[derive(Clone)]
+pub(super) enum FileIndexUpdate {
+    Create(IndexedFile),
+    Delete(PathBuf),
+    Rename {
+        old_path: PathBuf,
+        new_path: PathBuf,
+    },
+}
+
+impl FileIndexUpdate {
+    fn apply(self, index: &mut FileIndex) {
+        match self {
+            Self::Create(file) => index.add_file(file),
+            Self::Delete(path) => index.remove_path(&path),
+            Self::Rename { old_path, new_path } => index.rename_path(&old_path, &new_path),
+        }
+    }
+}
 
 glib::wrapper! {
     pub struct LushtextCommandPalette(ObjectSubclass<imp::LushtextCommandPalette>)
@@ -74,26 +96,92 @@ impl LushtextCommandPalette {
     // --- Incremental index updates ---
 
     /// Add a newly created file to the search index.
-    /// Uses `Arc::make_mut` for copy-on-write if a background search holds a ref.
     pub fn update_index_file_created(&self, path: &Path) {
-        let mut arc_ref = self.imp().file_index.borrow_mut();
-        let root = arc_ref.workspace_root_for(path).map(|r| Arc::clone(&r));
+        let root = self
+            .imp()
+            .file_index
+            .borrow()
+            .workspace_root_for(path)
+            .map(|r| Arc::clone(&r));
         if let Some(workspace_root) = root {
-            Arc::make_mut(&mut arc_ref)
-                .add_file(IndexedFile::new(path.to_path_buf(), workspace_root));
+            self.enqueue_index_update(FileIndexUpdate::Create(IndexedFile::new(
+                path.to_path_buf(),
+                workspace_root,
+            )));
         }
     }
 
     /// Remove a deleted file (or all files under a directory) from the index.
     pub fn update_index_file_deleted(&self, path: &Path) {
-        let mut arc_ref = self.imp().file_index.borrow_mut();
-        Arc::make_mut(&mut arc_ref).remove_path(path);
+        self.enqueue_index_update(FileIndexUpdate::Delete(path.to_path_buf()));
     }
 
     /// Update a renamed file (or directory prefix) in the index.
     pub fn update_index_file_renamed(&self, old_path: &Path, new_path: &Path) {
-        let mut arc_ref = self.imp().file_index.borrow_mut();
-        Arc::make_mut(&mut arc_ref).rename_path(old_path, new_path);
+        self.enqueue_index_update(FileIndexUpdate::Rename {
+            old_path: old_path.to_path_buf(),
+            new_path: new_path.to_path_buf(),
+        });
+    }
+
+    fn enqueue_index_update(&self, update: FileIndexUpdate) {
+        self.imp().pending_index_updates.borrow_mut().push(update);
+        self.schedule_index_update_flush();
+    }
+
+    fn schedule_index_update_flush(&self) {
+        let imp = self.imp();
+        if imp.index_update_inflight.get() {
+            return;
+        }
+
+        let gen = imp.index_update_generation.get().wrapping_add(1);
+        imp.index_update_generation.set(gen);
+
+        let palette_weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(INDEX_UPDATE_DEBOUNCE_MS), move || {
+            let Some(palette) = palette_weak.upgrade() else {
+                return;
+            };
+            let imp = palette.imp();
+            if imp.index_update_inflight.get()
+                || imp.index_update_generation.get() != gen
+                || imp.pending_index_updates.borrow().is_empty()
+            {
+                return;
+            }
+
+            let updates = std::mem::take(&mut *imp.pending_index_updates.borrow_mut());
+            let base_index = (*imp.file_index.borrow()).as_ref().clone();
+            imp.index_update_inflight.set(true);
+
+            async_task::spawn_blocking_then(
+                palette.clone(),
+                move || {
+                    let mut index = base_index;
+                    for update in updates {
+                        update.apply(&mut index);
+                    }
+                    index
+                },
+                |palette, index| {
+                    let imp = palette.imp();
+                    *imp.file_index.borrow_mut() = Arc::new(index);
+                    imp.index_update_inflight.set(false);
+
+                    // Only rebuild results if the palette is currently visible;
+                    // the next open() call rebuilds from scratch anyway.
+                    if palette.is_visible() {
+                        let query = imp.search_entry.text();
+                        imp.rebuild_results(&query);
+                    }
+
+                    if !imp.pending_index_updates.borrow().is_empty() {
+                        palette.schedule_index_update_flush();
+                    }
+                },
+            );
+        });
     }
 }
 
@@ -102,3 +190,5 @@ impl Default for LushtextCommandPalette {
         Self::new()
     }
 }
+
+const INDEX_UPDATE_DEBOUNCE_MS: u64 = 75;

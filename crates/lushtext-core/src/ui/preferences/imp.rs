@@ -107,8 +107,8 @@ impl LushtextPreferences {
         let scheme_ids: Vec<String> = scheme_manager
             .scheme_ids()
             .iter()
-            .map(|id| id.to_string())
             .filter(|id| !id.ends_with("-dark"))
+            .map(|id| id.to_string())
             .collect();
 
         for id in &scheme_ids {

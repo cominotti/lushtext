@@ -65,6 +65,7 @@ impl LushtextWindow {
         let page = tab_view.append(&editor_page);
         page.set_title(&editor_page.title());
         self.wire_modified_indicator(&page, &editor_page);
+        self.track_editor_memory(&editor_page);
 
         tab_view.set_selected_page(&page);
         self.update_content_stack();
@@ -105,6 +106,7 @@ impl LushtextWindow {
         let page = self.imp().tab_view.append(&editor_page);
         page.set_title("Untitled");
         self.wire_modified_indicator(&page, &editor_page);
+        self.track_editor_memory(&editor_page);
         self.imp().tab_view.set_selected_page(&page);
         self.update_content_stack();
         self.refresh_status_bar();
@@ -114,9 +116,13 @@ impl LushtextWindow {
     /// and header bar. Prepends "● " to the tab title when the buffer has
     /// unsaved changes, placing the dot immediately before the filename.
     fn wire_modified_indicator(&self, page: &libadwaita::TabPage, editor: &LushtextEditorPage) {
+        let buffer = editor.buffer();
+        if let Some(previous) = editor.imp().modified_handler_id.borrow_mut().take() {
+            buffer.disconnect(previous);
+        }
         let page_weak = page.downgrade();
         let window_weak = self.downgrade();
-        editor.buffer().connect_modified_changed(move |buf| {
+        let handler_id = buffer.connect_modified_changed(move |buf| {
             if let Some(page) = page_weak.upgrade() {
                 if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
                     let name = editor.title();
@@ -134,6 +140,7 @@ impl LushtextWindow {
                 }
             }
         });
+        editor.imp().modified_handler_id.replace(Some(handler_id));
     }
 
     /// Switch the content stack between "tabs" and "empty" states,
@@ -214,6 +221,44 @@ impl LushtextWindow {
             .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok())
     }
 
+    fn track_editor_memory(&self, editor: &LushtextEditorPage) {
+        let key = editor.as_ptr() as usize;
+        let window_weak = self.downgrade();
+        editor.connect_estimated_memory_changed(move |bytes| {
+            if let Some(window) = window_weak.upgrade() {
+                window.update_editor_memory_estimate(key, bytes);
+            }
+        });
+        self.update_editor_memory_estimate(key, editor.estimated_buffer_bytes());
+    }
+
+    fn update_editor_memory_estimate(&self, key: usize, bytes: u64) {
+        let imp = self.imp();
+        let previous = imp
+            .buffer_memory_by_editor
+            .borrow_mut()
+            .insert(key, bytes)
+            .unwrap_or(0);
+        let total = imp
+            .buffer_memory_total
+            .get()
+            .saturating_sub(previous)
+            .saturating_add(bytes);
+        imp.buffer_memory_total.set(total);
+    }
+
+    fn untrack_editor_memory(&self, editor: &LushtextEditorPage) {
+        let key = editor.as_ptr() as usize;
+        if let Some(previous) = self.imp().buffer_memory_by_editor.borrow_mut().remove(&key) {
+            self.imp().buffer_memory_total.set(
+                self.imp()
+                    .buffer_memory_total
+                    .get()
+                    .saturating_sub(previous),
+            );
+        }
+    }
+
     fn setup_actions(&self) {
         self.add_action_entries([
             gio::ActionEntry::builder("new-tab")
@@ -245,10 +290,11 @@ impl LushtextWindow {
                     let tab_view = &window.imp().tab_view;
                     if let Some(page) = tab_view.selected_page() {
                         if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                            if let Some(ref p) = editor.file_path() {
-                                window.imp().open_paths.borrow_mut().remove(p.as_path());
+                            if let Some(ref path) = editor.file_path() {
+                                window.imp().open_paths.borrow_mut().remove(path.as_path());
                             }
                             editor.cancel_load();
+                            window.untrack_editor_memory(editor);
                         }
                         tab_view.close_page(&page);
                     }
@@ -269,25 +315,23 @@ impl LushtextWindow {
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                let Some(ref ep) = editor.file_path() else {
+                let Some(ep) = editor.file_path() else {
                     continue;
                 };
-                if ep.as_path() == old_path {
-                    let mut paths = self.imp().open_paths.borrow_mut();
-                    paths.remove(old_path);
-                    paths.insert(new_path.to_path_buf());
-                    drop(paths);
-                    editor.set_file_path(new_path);
-                    page.set_title(&editor.title());
+                let updated = if ep.as_path() == old_path {
+                    new_path.to_path_buf()
                 } else if let Ok(suffix) = ep.strip_prefix(old_path) {
-                    let updated = new_path.join(suffix);
-                    let mut paths = self.imp().open_paths.borrow_mut();
-                    paths.remove(ep.as_path());
-                    paths.insert(updated.clone());
-                    drop(paths);
-                    editor.set_file_path(&updated);
-                    page.set_title(&editor.title());
-                }
+                    new_path.join(suffix)
+                } else {
+                    continue;
+                };
+
+                let mut paths = self.imp().open_paths.borrow_mut();
+                paths.remove(ep.as_path());
+                paths.insert(updated.clone());
+                drop(paths);
+                editor.set_file_path(&updated);
+                page.set_title(&editor.title());
             }
         }
         self.refresh_header_bar();
@@ -300,15 +344,16 @@ impl LushtextWindow {
         for i in (0..tab_view.n_pages()).rev() {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                let ep = editor.file_path();
-                let matches = ep
-                    .as_ref()
-                    .is_some_and(|p| p.as_path() == path || p.starts_with(path));
+                let matches = editor
+                    .file_path()
+                    .as_deref()
+                    .is_some_and(|ep| ep == path || ep.starts_with(path));
                 if matches {
-                    if let Some(ref p) = ep {
+                    if let Some(ref p) = editor.file_path() {
                         self.imp().open_paths.borrow_mut().remove(p.as_path());
                     }
                     editor.cancel_load();
+                    self.untrack_editor_memory(editor);
                     tab_view.close_page(&page);
                 }
             }
@@ -370,19 +415,21 @@ impl LushtextWindow {
         if !editor.is_evicted() {
             return;
         }
-        let Some(path) = editor.file_path() else {
-            return;
-        };
-        editor.load_file_async(&path);
+        if let Some(ref path) = editor.file_path() {
+            editor.load_file_async(path);
+        }
     }
 
     /// Evict unmodified background tabs when total buffer memory exceeds the budget.
     /// Single pass collects total + eviction candidates; second pass only visits candidates.
     fn maybe_evict_background_tabs(&self) {
+        if self.imp().buffer_memory_total.get() <= BUFFER_MEMORY_BUDGET {
+            return;
+        }
+
         let tab_view = &self.imp().tab_view;
         let selected = tab_view.selected_page();
-
-        let mut total = 0u64;
+        let mut total = self.imp().buffer_memory_total.get();
         let mut evict_candidates = Vec::new();
 
         for i in 0..tab_view.n_pages() {
@@ -391,15 +438,11 @@ impl LushtextWindow {
                 if editor.is_evicted() {
                     continue;
                 }
-                if let Some(size) = editor.file_size() {
-                    // GtkTextBuffer uses ~2x file size (B-tree + line index + undo stack)
-                    total = total.saturating_add(size.saturating_mul(2));
-                }
                 if selected.as_ref() != Some(&page)
                     && !editor.is_modified()
                     && editor.file_path().is_some()
                 {
-                    evict_candidates.push(i);
+                    evict_candidates.push(page.downgrade());
                 }
             }
         }
@@ -408,10 +451,12 @@ impl LushtextWindow {
             return;
         }
 
-        for i in evict_candidates {
-            let page = tab_view.nth_page(i);
+        for page_weak in evict_candidates {
+            let Some(page) = page_weak.upgrade() else {
+                continue;
+            };
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                let evicted_size = editor.file_size().unwrap_or(0);
+                let evicted_size = editor.estimated_buffer_bytes();
                 tracing::info!("Evicting tab to free memory: {}", editor.title());
                 editor.evict();
                 total = total.saturating_sub(evicted_size);
@@ -442,7 +487,13 @@ impl LushtextWindow {
             let window_weak = window.downgrade();
             async_task::spawn_blocking_then(
                 (),
-                move || FileIndex::rebuild_with_hint(&roots, prev_count),
+                move || {
+                    if prev_count == 0 {
+                        FileIndex::rebuild(&roots)
+                    } else {
+                        FileIndex::rebuild_with_hint(&roots, prev_count)
+                    }
+                },
                 move |(), index| {
                     if let Some(window) = window_weak.upgrade() {
                         window.imp().command_palette.set_file_index(index);

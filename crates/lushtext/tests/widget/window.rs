@@ -23,6 +23,11 @@ fn flush_events() {
     while glib::MainContext::default().iteration(false) {}
 }
 
+fn flush_after_delay(delay: std::time::Duration) {
+    std::thread::sleep(delay);
+    flush_events();
+}
+
 /// Look up a window action's enabled state.
 fn action_enabled(window: &LushtextWindow, name: &str) -> bool {
     let action = window
@@ -491,12 +496,7 @@ fn test_clamp_noop_when_within_limit() {
     paned.set_position(300);
 
     // Window width 1200 → max 400. Position 300 is fine.
-    clamp_sidebar_position(
-        paned,
-        1200,
-        &window.imp().settings,
-        &window.imp().last_sidebar_pos,
-    );
+    clamp_sidebar_position(&window, paned, 1200);
     assert_eq!(paned.position(), 300);
 }
 
@@ -508,12 +508,7 @@ fn test_clamp_reduces_when_over_limit() {
     paned.set_position(500);
 
     // Window width 1200 → max 400. Position 500 exceeds.
-    clamp_sidebar_position(
-        paned,
-        1200,
-        &window.imp().settings,
-        &window.imp().last_sidebar_pos,
-    );
+    clamp_sidebar_position(&window, paned, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -525,12 +520,7 @@ fn test_clamp_at_exact_limit() {
     paned.set_position(400);
 
     // Window width 1200 → max 400. Position 400 is exactly at limit.
-    clamp_sidebar_position(
-        paned,
-        1200,
-        &window.imp().settings,
-        &window.imp().last_sidebar_pos,
-    );
+    clamp_sidebar_position(&window, paned, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -542,12 +532,7 @@ fn test_clamp_noop_when_window_width_zero() {
     paned.set_position(500);
 
     // Width 0 = unrealized window. Should not clamp.
-    clamp_sidebar_position(
-        paned,
-        0,
-        &window.imp().settings,
-        &window.imp().last_sidebar_pos,
-    );
+    clamp_sidebar_position(&window, paned, 0);
     assert_eq!(paned.position(), 500);
 }
 
@@ -561,12 +546,7 @@ fn test_clamp_simulates_unmaximize_scenario() {
     paned.set_position(640);
 
     // Window un-maximizes to 1200px — sidebar must be clamped to 400
-    clamp_sidebar_position(
-        paned,
-        1200,
-        &window.imp().settings,
-        &window.imp().last_sidebar_pos,
-    );
+    clamp_sidebar_position(&window, paned, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -578,7 +558,8 @@ fn test_clamp_persists_to_gsettings() {
     let settings = &window.imp().settings;
     paned.set_position(350);
 
-    clamp_sidebar_position(paned, 1200, settings, &window.imp().last_sidebar_pos);
+    clamp_sidebar_position(&window, paned, 1200);
+    flush_after_delay(std::time::Duration::from_millis(250));
     assert_eq!(settings.int(keys::SIDEBAR_POSITION), 350);
 }
 
@@ -591,7 +572,8 @@ fn test_clamp_persists_clamped_value_to_gsettings() {
     paned.set_position(600);
 
     // Clamp to 400, should persist 400 not 600
-    clamp_sidebar_position(paned, 1200, settings, &window.imp().last_sidebar_pos);
+    clamp_sidebar_position(&window, paned, 1200);
+    flush_after_delay(std::time::Duration::from_millis(250));
     assert_eq!(settings.int(keys::SIDEBAR_POSITION), 400);
 }
 

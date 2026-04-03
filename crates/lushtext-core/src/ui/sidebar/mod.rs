@@ -7,12 +7,13 @@ mod imp;
 pub mod workspace_section;
 
 use crate::model::workspace::{WorkspaceEntry, WorkspaceId, WorkspacesFile};
-use crate::services::{json_store, workspace_manager};
+use crate::services::{async_task, json_store, workspace_manager};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use workspace_section::LushtextWorkspaceSection;
 
 // Re-export for window integration
@@ -426,12 +427,47 @@ impl LushtextSidebar {
     /// Fire-and-forget: workspace persistence is non-critical and the next
     /// mutation will overwrite the file anyway.
     fn persist(&self) {
-        let data_dir = json_store::data_dir();
-        let workspaces_file = self.imp().workspaces_file.borrow().clone();
-        std::thread::spawn(move || {
-            if let Err(e) = workspace_manager::save(&data_dir, &workspaces_file) {
-                tracing::error!("Failed to save workspaces: {}", e);
+        let imp = self.imp();
+        imp.persist_dirty.set(true);
+        if imp.persist_inflight.get() {
+            return;
+        }
+
+        let gen = imp.persist_generation.get().wrapping_add(1);
+        imp.persist_generation.set(gen);
+
+        let sidebar_weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(PERSIST_DEBOUNCE_MS), move || {
+            let Some(sidebar) = sidebar_weak.upgrade() else {
+                return;
+            };
+            let imp = sidebar.imp();
+            if imp.persist_inflight.get()
+                || imp.persist_generation.get() != gen
+                || !imp.persist_dirty.get()
+            {
+                return;
             }
+
+            let data_dir = json_store::data_dir();
+            let workspaces_file = imp.workspaces_file.borrow().clone();
+            imp.persist_inflight.set(true);
+            imp.persist_dirty.set(false);
+
+            async_task::spawn_blocking_then(
+                sidebar.clone(),
+                move || workspace_manager::save(&data_dir, &workspaces_file),
+                |sidebar, result| {
+                    let imp = sidebar.imp();
+                    imp.persist_inflight.set(false);
+                    if let Err(e) = result {
+                        tracing::error!("Failed to save workspaces: {}", e);
+                    }
+                    if imp.persist_dirty.get() {
+                        sidebar.persist();
+                    }
+                },
+            );
         });
     }
 }
@@ -448,3 +484,5 @@ impl Default for LushtextSidebar {
         Self::new()
     }
 }
+
+const PERSIST_DEBOUNCE_MS: u64 = 150;

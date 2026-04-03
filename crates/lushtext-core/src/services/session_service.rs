@@ -6,7 +6,6 @@ use crate::model::session::SessionData;
 use crate::model::workspace::WorkspaceId;
 use crate::services::json_store;
 use anyhow::Result;
-use std::collections::HashSet;
 use std::path::Path;
 
 fn session_filename(ws_id: &WorkspaceId) -> String {
@@ -28,20 +27,21 @@ pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
 }
 
 /// Filter session tabs to only those whose files still exist on disk.
-/// Performs I/O to check file existence, then delegates the mutation
-/// to the domain method `SessionData::retain_tabs_by_path`.
+/// Performs I/O to check file existence and prunes the in-memory session
+/// without cloning every surviving path into a temporary collection.
 ///
 /// **Threading:** This function calls `Path::exists()` (stat syscall) per tab.
 /// On NFS/FUSE mounts this can block for 10-100ms per path. Always call from
 /// a background thread via `spawn_blocking_then`, never on the GTK main thread.
 pub fn filter_existing_tabs(session: &mut SessionData) {
-    let existing: HashSet<_> = session
-        .tabs
-        .iter()
-        .filter(|tab| tab.path.exists())
-        .map(|tab| tab.path.clone())
-        .collect();
-    session.retain_tabs_by_path(&existing);
+    session.tabs.retain(|tab| tab.path.exists());
+    if session
+        .active_tab
+        .as_ref()
+        .is_some_and(|path| !path.exists())
+    {
+        session.active_tab = None;
+    }
 }
 
 #[cfg(test)]

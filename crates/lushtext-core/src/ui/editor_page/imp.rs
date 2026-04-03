@@ -12,6 +12,8 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+type MemoryChangedCallback = Box<dyn Fn(u64)>;
+
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/editor-page.ui")]
 pub struct LushtextEditorPage {
@@ -33,6 +35,8 @@ pub struct LushtextEditorPage {
     pub dark_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     pub word_wrap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     pub style_scheme_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    pub modified_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
 }
 
 impl Default for LushtextEditorPage {
@@ -51,6 +55,8 @@ impl Default for LushtextEditorPage {
             dark_handler_id: RefCell::new(None),
             word_wrap_handler_id: RefCell::new(None),
             style_scheme_handler_id: RefCell::new(None),
+            modified_handler_id: RefCell::new(None),
+            memory_changed_callback: RefCell::default(),
         }
     }
 }
@@ -164,6 +170,14 @@ impl Drop for LushtextEditorPage {
         }
         if let Some(handler_id) = self.style_scheme_handler_id.take() {
             self.settings.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.modified_handler_id.take() {
+            let buffer = self
+                .source_view
+                .buffer()
+                .downcast::<sourceview5::Buffer>()
+                .expect("GtkSourceView buffer");
+            buffer.disconnect(handler_id);
         }
     }
 }
