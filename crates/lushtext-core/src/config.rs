@@ -17,6 +17,7 @@ pub mod keys {
     pub const TAB_WIDTH: &str = "tab-width";
     pub const INSERT_SPACES: &str = "insert-spaces-instead-of-tabs";
     pub const USE_EDITORCONFIG: &str = "use-editorconfig";
+    pub const COLOR_SCHEME: &str = "color-scheme";
     pub const STYLE_SCHEME: &str = "style-scheme";
     pub const USE_SYSTEM_FONT: &str = "use-system-font";
     pub const CUSTOM_FONT: &str = "custom-font";

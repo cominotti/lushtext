@@ -1409,3 +1409,219 @@ fn test_hide_animation_targets_1px_not_zero() {
     // set_visible(false) in connect_done handles the final 1→0 snap.
     assert_eq!(paned.position(), 1);
 }
+
+// --- Fullscreen actions ---
+
+#[test]
+fn test_fullscreen_action_exists() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(window.lookup_action("fullscreen").is_some());
+    assert!(window.lookup_action("unfullscreen").is_some());
+    assert!(window.lookup_action("toggle-fullscreen").is_some());
+}
+
+#[test]
+fn test_fullscreen_action_initial_enabled_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    // Initially not fullscreen: fullscreen enabled, unfullscreen disabled.
+    assert!(action_enabled(&window, "fullscreen"));
+    assert!(!action_enabled(&window, "unfullscreen"));
+}
+
+#[test]
+fn test_toggle_fullscreen_action_always_enabled() {
+    ensure_gtk_init();
+    let window = test_window();
+    // toggle-fullscreen is always enabled regardless of fullscreen state.
+    assert!(action_enabled(&window, "toggle-fullscreen"));
+}
+
+// --- Theme selector / color scheme ---
+
+#[test]
+fn test_color_scheme_gsettings_key_exists() {
+    ensure_gtk_init();
+    let settings = gtk4::gio::Settings::new(lushtext_core::config::APP_ID);
+    // Default value should be "default" (follow system).
+    let scheme = settings.string(keys::COLOR_SCHEME);
+    assert_eq!(scheme.as_str(), "default");
+}
+
+#[test]
+fn test_color_scheme_gsettings_roundtrip() {
+    ensure_gtk_init();
+    let settings = gtk4::gio::Settings::new(lushtext_core::config::APP_ID);
+    assert!(
+        settings
+            .set_string(keys::COLOR_SCHEME, "force-dark")
+            .is_ok()
+    );
+    assert_eq!(settings.string(keys::COLOR_SCHEME).as_str(), "force-dark");
+    assert!(
+        settings
+            .set_string(keys::COLOR_SCHEME, "force-light")
+            .is_ok()
+    );
+    assert_eq!(settings.string(keys::COLOR_SCHEME).as_str(), "force-light");
+    // Reset to default for other tests.
+    let _ = settings.set_string(keys::COLOR_SCHEME, "default");
+}
+
+#[test]
+fn test_primary_menu_button_exists() {
+    ensure_gtk_init();
+    let window = test_window();
+    // The hamburger menu button should be accessible as a template child.
+    let menu_button = &window.imp().primary_menu_button;
+    assert!(menu_button.popover().is_some());
+}
+
+// --- Menu structure ---
+
+#[test]
+fn test_menu_does_not_contain_open_file() {
+    ensure_gtk_init();
+    let window = test_window();
+    // The hamburger menu model should NOT contain "Open File" or "Open Folder"
+    // items. These were removed to match GNOME Text Editor's menu layout.
+    let menu_button = &window.imp().primary_menu_button;
+    let model = menu_button
+        .menu_model()
+        .expect("primary_menu_button should have a menu model");
+    // Walk all sections and items to verify no Open File/Folder action.
+    let mut has_open_file = false;
+    let mut has_open_folder = false;
+    for i in 0..model.n_items() {
+        if let Some(section) = model.item_link(i, "section") {
+            for j in 0..section.n_items() {
+                if let Some(action) = section
+                    .item_attribute_value(j, "action", Some(glib::VariantTy::STRING))
+                    .and_then(|v| v.get::<String>())
+                {
+                    if action == "win.open-file" {
+                        has_open_file = true;
+                    }
+                    if action == "win.open-folder" {
+                        has_open_folder = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(!has_open_file, "Menu should not contain 'Open File'");
+    assert!(!has_open_folder, "Menu should not contain 'Open Folder'");
+}
+
+#[test]
+fn test_menu_contains_fullscreen_items() {
+    ensure_gtk_init();
+    let window = test_window();
+    let menu_button = &window.imp().primary_menu_button;
+    let model = menu_button
+        .menu_model()
+        .expect("primary_menu_button should have a menu model");
+    let mut has_fullscreen = false;
+    let mut has_unfullscreen = false;
+    for i in 0..model.n_items() {
+        if let Some(section) = model.item_link(i, "section") {
+            for j in 0..section.n_items() {
+                if let Some(action) = section
+                    .item_attribute_value(j, "action", Some(glib::VariantTy::STRING))
+                    .and_then(|v| v.get::<String>())
+                {
+                    if action == "win.fullscreen" {
+                        has_fullscreen = true;
+                    }
+                    if action == "win.unfullscreen" {
+                        has_unfullscreen = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(has_fullscreen, "Menu should contain 'Fullscreen' item");
+    assert!(
+        has_unfullscreen,
+        "Menu should contain 'Leave Fullscreen' item"
+    );
+}
+
+#[test]
+fn test_menu_contains_new_file() {
+    ensure_gtk_init();
+    let window = test_window();
+    let menu_button = &window.imp().primary_menu_button;
+    let model = menu_button
+        .menu_model()
+        .expect("primary_menu_button should have a menu model");
+    let mut has_new_tab = false;
+    for i in 0..model.n_items() {
+        if let Some(section) = model.item_link(i, "section") {
+            for j in 0..section.n_items() {
+                if let Some(action) = section
+                    .item_attribute_value(j, "action", Some(glib::VariantTy::STRING))
+                    .and_then(|v| v.get::<String>())
+                    && action == "win.new-tab"
+                {
+                    has_new_tab = true;
+                }
+            }
+        }
+    }
+    assert!(has_new_tab, "Menu should still contain 'New File' item");
+}
+
+#[test]
+fn test_menu_contains_theme_custom_slot() {
+    ensure_gtk_init();
+    let window = test_window();
+    let menu_button = &window.imp().primary_menu_button;
+    let model = menu_button
+        .menu_model()
+        .expect("primary_menu_button should have a menu model");
+    // The first section should contain a custom="theme" attribute.
+    let mut has_theme_slot = false;
+    for i in 0..model.n_items() {
+        if let Some(section) = model.item_link(i, "section") {
+            for j in 0..section.n_items() {
+                if let Some(custom) = section
+                    .item_attribute_value(j, "custom", Some(glib::VariantTy::STRING))
+                    .and_then(|v| v.get::<String>())
+                    && custom == "theme"
+                {
+                    has_theme_slot = true;
+                }
+            }
+        }
+    }
+    assert!(
+        has_theme_slot,
+        "Menu should contain a 'theme' custom widget slot"
+    );
+}
+
+#[test]
+fn test_parse_color_scheme() {
+    ensure_gtk_init();
+    use lushtext_core::ui::window::parse_color_scheme;
+    assert_eq!(
+        parse_color_scheme("force-light"),
+        libadwaita::ColorScheme::ForceLight
+    );
+    assert_eq!(
+        parse_color_scheme("force-dark"),
+        libadwaita::ColorScheme::ForceDark
+    );
+    assert_eq!(
+        parse_color_scheme("default"),
+        libadwaita::ColorScheme::Default
+    );
+    // Unknown values fall back to Default.
+    assert_eq!(
+        parse_color_scheme("garbage"),
+        libadwaita::ColorScheme::Default
+    );
+    assert_eq!(parse_color_scheme(""), libadwaita::ColorScheme::Default);
+}

@@ -285,6 +285,12 @@ pub fn all_commands() -> &'static [CommandDef] {
             shortcut: Some("F9"),
         },
         CommandDef {
+            id: "win.toggle-fullscreen",
+            label: "Fullscreen",
+            category: CommandCategory::View,
+            shortcut: Some("F11"),
+        },
+        CommandDef {
             id: "win.show-help-overlay",
             label: "Keyboard Shortcuts",
             category: CommandCategory::View,

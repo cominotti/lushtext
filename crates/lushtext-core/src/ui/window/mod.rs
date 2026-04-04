@@ -7,15 +7,16 @@ mod dialogs;
 // two halves: a private struct (imp.rs) holding data and trait impls, and
 // a public wrapper type (this file) providing the API.
 mod imp;
+// Session persistence and draft management (extracted to stay under 1000 lines).
+mod session;
 
 pub use imp::clamp_sidebar_position;
 
 use crate::config::keys;
 use crate::model::draft::DraftEntry;
-use crate::model::session::{SessionData, SessionTab};
 use crate::services::async_task;
+use crate::services::editorconfig;
 use crate::services::palette::FileIndex;
-use crate::services::{draft_service, editor_io, editorconfig, json_store, session_service};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::Object;
@@ -24,11 +25,20 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::AnimationExt;
 use std::path::Path;
-use std::time::Duration;
 
 /// Maximum total estimated buffer memory across all tabs before evicting
 /// unmodified background tabs. ~256MB is comfortable on 8GB machines.
 const BUFFER_MEMORY_BUDGET: u64 = 256_000_000;
+
+/// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
+/// Unknown values fall back to `Default` (follow system).
+pub fn parse_color_scheme(value: &str) -> libadwaita::ColorScheme {
+    match value {
+        "force-light" => libadwaita::ColorScheme::ForceLight,
+        "force-dark" => libadwaita::ColorScheme::ForceDark,
+        _ => libadwaita::ColorScheme::Default,
+    }
+}
 
 // glib::wrapper! generates the public wrapper type for this widget.
 // @extends declares the GTK class hierarchy; @implements lists interfaces.
@@ -43,6 +53,8 @@ impl LushtextWindow {
     pub fn new(app: &libadwaita::Application) -> Self {
         let window: Self = Object::builder().property("application", app).build();
         window.setup_actions();
+        window.setup_fullscreen();
+        window.setup_theme_selector();
         window.setup_shortcuts();
         window.update_content_stack();
         window.refresh_status_bar();
@@ -740,413 +752,6 @@ impl LushtextWindow {
         });
     }
 
-    // --- Session persistence ---
-
-    /// Snapshot current tab state into a `SessionData`.
-    pub fn collect_session(&self) -> SessionData {
-        let tab_view = &self.imp().tab_view;
-        let mut tabs = Vec::with_capacity(tab_view.n_pages() as usize);
-
-        let selected = tab_view.selected_page();
-        let mut active_tab_index = None;
-
-        for i in 0..tab_view.n_pages() {
-            let page = tab_view.nth_page(i);
-            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                let (cursor_line, cursor_col) = editor.cursor_position();
-                let path = editor.file_path();
-                let draft_id = if path.is_none() {
-                    editor.draft_id()
-                } else {
-                    None
-                };
-                tabs.push(SessionTab {
-                    path,
-                    draft_id,
-                    cursor_line,
-                    cursor_col,
-                    scroll_line: editor.visible_top_line(),
-                });
-                if selected.as_ref() == Some(&page) {
-                    active_tab_index = Some(i as usize);
-                }
-            }
-        }
-
-        SessionData {
-            tabs,
-            active_tab_index,
-        }
-    }
-
-    /// Save session with a 500ms debounce. No-op during session restore.
-    pub fn save_session_debounced(&self) {
-        if self.imp().restoring_session.get() {
-            return;
-        }
-        let generation = self.imp().session_save_generation.get().wrapping_add(1);
-        self.imp().session_save_generation.set(generation);
-
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(500), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            if window.imp().session_save_generation.get() != generation {
-                return;
-            }
-            let session = window.collect_session();
-            let data_dir = json_store::data_dir();
-            async_task::spawn_blocking_then(
-                (),
-                move || {
-                    if let Err(e) = session_service::save(&data_dir, &session) {
-                        tracing::error!("Failed to save session: {e}");
-                    }
-                },
-                |(), ()| {},
-            );
-        });
-    }
-
-    /// Synchronous session save for the close_request path.
-    /// Session JSON is tiny so this completes in <1ms.
-    pub fn save_session_sync(&self) {
-        let session = self.collect_session();
-        let data_dir = json_store::data_dir();
-        if let Err(e) = session_service::save(&data_dir, &session) {
-            tracing::error!("Failed to save session on close: {e}");
-        }
-    }
-
-    /// Write all dirty drafts synchronously. Called on window close so that
-    /// unsaved buffer content survives even if the autosave timer hadn't
-    /// fired yet (its 30-second interval can miss short editing sessions).
-    fn flush_dirty_drafts(&self) {
-        let tab_view = &self.imp().tab_view;
-        let data_dir = json_store::data_dir();
-        let mut manifest = self.imp().draft_manifest.borrow().clone();
-        let now = editor_io::now_epoch_secs();
-
-        for i in 0..tab_view.n_pages() {
-            let page = tab_view.nth_page(i);
-            let child = page.child();
-            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
-                continue;
-            };
-            if !editor.is_modified() || editor.is_evicted() {
-                continue;
-            }
-            let Some(draft_id) = editor.draft_id() else {
-                continue;
-            };
-            let buffer = editor.buffer();
-            let text = buffer
-                .text(&buffer.start_iter(), &buffer.end_iter(), true)
-                .to_string();
-            if text.is_empty() {
-                continue;
-            }
-            if let Err(e) = draft_service::write_draft(&data_dir, &draft_id, &text) {
-                tracing::warn!("Failed to write draft on close: {e}");
-                continue;
-            }
-            let original_path = editor.file_path();
-            let mtime = original_path
-                .as_ref()
-                .and_then(|p| editor_io::mtime_secs(p));
-            manifest.upsert(DraftEntry {
-                draft_id,
-                original_path,
-                original_mtime_secs: mtime,
-                saved_at_secs: now,
-            });
-        }
-        let _ = draft_service::save_manifest(&data_dir, &manifest);
-    }
-
-    // --- Session restore + draft persistence ---
-
-    /// Load draft manifest and session in one background task, then restore
-    /// tabs. Combined so that the manifest is ready before `open_document`
-    /// calls `check_draft_on_open` for each restored tab.
-    fn load_session_and_drafts(&self) {
-        let data_dir = json_store::data_dir();
-        async_task::spawn_blocking_then(
-            self.clone(),
-            move || {
-                let mut manifest = draft_service::load_manifest(&data_dir).unwrap_or_default();
-                let _ = draft_service::cleanup_orphans(&data_dir, &mut manifest);
-                let _ = draft_service::save_manifest(&data_dir, &manifest);
-
-                let mut session = session_service::load(&data_dir).unwrap_or_default();
-                session_service::filter_existing_tabs(&mut session);
-
-                (manifest, session)
-            },
-            |window, (manifest, session)| {
-                *window.imp().draft_manifest.borrow_mut() = manifest;
-                window.restore_tabs(session);
-            },
-        );
-    }
-
-    /// Restore tabs from a loaded session. Opens file-backed tabs via
-    /// `open_document` and creates untitled tabs with draft recovery.
-    fn restore_tabs(&self, session: SessionData) {
-        if session.tabs.is_empty() {
-            return;
-        }
-        let had_tabs_before = self.imp().tab_view.n_pages() > 0;
-        self.imp().restoring_session.set(true);
-
-        for tab in &session.tabs {
-            match &tab.path {
-                Some(path) => {
-                    self.open_document(path);
-                    // Find the just-opened editor and set restore position.
-                    if let Some(editor) = self.active_editor() {
-                        editor.set_restore_position(
-                            tab.cursor_line,
-                            tab.cursor_col,
-                            tab.scroll_line,
-                        );
-                    }
-                }
-                None => {
-                    self.new_tab();
-                    // For untitled tabs, override the draft ID and trigger
-                    // draft content recovery.
-                    if let Some(editor) = self.active_editor()
-                        && let Some(ref draft_id) = tab.draft_id
-                    {
-                        editor.set_draft_id(draft_id.clone());
-                        self.check_draft_by_id(&editor, draft_id);
-                    }
-                }
-            }
-        }
-
-        // Restore the active tab selection — but only if no CLI files
-        // were opened before this restore (they take priority).
-        if !had_tabs_before && let Some(idx) = session.active_tab_index {
-            let tab_view = &self.imp().tab_view;
-            let idx = idx.min(tab_view.n_pages().saturating_sub(1) as usize);
-            let page = tab_view.nth_page(idx as i32);
-            tab_view.set_selected_page(&page);
-        }
-
-        self.imp().restoring_session.set(false);
-        self.update_content_stack();
-        self.refresh_status_bar();
-    }
-
-    /// Load draft content for an untitled tab by draft ID.
-    fn check_draft_by_id(&self, editor: &LushtextEditorPage, draft_id: &str) {
-        let entry = self
-            .imp()
-            .draft_manifest
-            .borrow()
-            .find_by_id(draft_id)
-            .cloned();
-
-        let Some(_entry) = entry else {
-            return;
-        };
-
-        let data_dir = json_store::data_dir();
-        let draft_id = draft_id.to_string();
-        let editor_weak = editor.downgrade();
-
-        async_task::spawn_blocking_then(
-            (),
-            move || draft_service::read_draft(&data_dir, &draft_id),
-            move |(), result| {
-                let Some(editor) = editor_weak.upgrade() else {
-                    return;
-                };
-                if let Ok(Some(draft_content)) = result {
-                    let buffer = editor.buffer();
-                    buffer.begin_irreversible_action();
-                    buffer.set_text(&draft_content);
-                    buffer.end_irreversible_action();
-                    buffer.set_modified(true);
-                    editor.set_draft_restored(true);
-                    editor.info_bar().show_draft_restored(false);
-                }
-            },
-        );
-    }
-
-    /// Start the global 30-second autosave timer. Iterates all tabs on each
-    /// tick and writes drafts for modified buffers that changed since the
-    /// last draft write.
-    fn start_autosave_timer(&self) {
-        let window_weak = self.downgrade();
-        let source_id = glib::timeout_add_local(Duration::from_secs(30), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            window.autosave_tick();
-            glib::ControlFlow::Continue
-        });
-        *self.imp().autosave_source_id.borrow_mut() = Some(source_id);
-    }
-
-    /// Single autosave tick: collect dirty tabs and write drafts.
-    fn autosave_tick(&self) {
-        let tab_view = &self.imp().tab_view;
-        // Collect draft_id, text, and optional path (for mtime read on background thread).
-        let mut dirty_tabs: Vec<(String, String, Option<std::path::PathBuf>)> = Vec::new();
-
-        for i in 0..tab_view.n_pages() {
-            let page = tab_view.nth_page(i);
-            let child = page.child();
-            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
-                continue;
-            };
-            if !editor.is_modified() || !editor.draft_dirty() || editor.is_evicted() {
-                continue;
-            }
-            let Some(draft_id) = editor.draft_id() else {
-                continue;
-            };
-            let buffer = editor.buffer();
-            let text = buffer
-                .text(&buffer.start_iter(), &buffer.end_iter(), true)
-                .to_string();
-            if text.is_empty() {
-                continue;
-            }
-            dirty_tabs.push((draft_id, text, editor.file_path()));
-            editor.set_draft_dirty(false);
-        }
-
-        if dirty_tabs.is_empty() {
-            return;
-        }
-
-        let manifest = self.imp().draft_manifest.borrow().clone();
-        let data_dir = json_store::data_dir();
-        let window_weak = self.downgrade();
-
-        async_task::spawn_blocking_then(
-            (),
-            move || {
-                let mut manifest = manifest;
-                let now = editor_io::now_epoch_secs();
-
-                for (draft_id, text, path) in &dirty_tabs {
-                    if let Err(e) = draft_service::write_draft(&data_dir, draft_id, text) {
-                        tracing::warn!("Failed to write draft {draft_id}: {e}");
-                        continue;
-                    }
-                    // Read mtime on background thread to avoid blocking GTK main thread
-                    // (stat syscall can be slow on NFS/FUSE mounts).
-                    let mtime = path.as_deref().and_then(editor_io::mtime_secs);
-                    let original_path = manifest
-                        .find_by_id(draft_id)
-                        .and_then(|e| e.original_path.clone());
-                    manifest.upsert(DraftEntry {
-                        draft_id: draft_id.clone(),
-                        original_path,
-                        original_mtime_secs: mtime,
-                        saved_at_secs: now,
-                    });
-                }
-                let _ = draft_service::save_manifest(&data_dir, &manifest);
-                manifest
-            },
-            move |(), manifest| {
-                if let Some(window) = window_weak.upgrade() {
-                    *window.imp().draft_manifest.borrow_mut() = manifest;
-                }
-            },
-        );
-    }
-
-    /// Check if a draft exists for the given path. If found, load it on a
-    /// background thread and apply to the editor buffer.
-    fn check_draft_on_open(&self, editor: &LushtextEditorPage, path: &Path) {
-        let draft_entry = self
-            .imp()
-            .draft_manifest
-            .borrow()
-            .find_by_path(path)
-            .cloned();
-
-        let Some(entry) = draft_entry else {
-            return;
-        };
-
-        let data_dir = json_store::data_dir();
-        let draft_id = entry.draft_id.clone();
-        let editor_weak = editor.downgrade();
-
-        async_task::spawn_blocking_then(
-            (),
-            move || draft_service::read_draft(&data_dir, &draft_id),
-            move |(), result| {
-                let Some(editor) = editor_weak.upgrade() else {
-                    return;
-                };
-                if let Ok(Some(draft_content)) = result {
-                    let buffer = editor.buffer();
-                    buffer.begin_irreversible_action();
-                    buffer.set_text(&draft_content);
-                    buffer.end_irreversible_action();
-                    buffer.set_modified(true);
-                    let has_backing_file = editor.file_path().is_some();
-                    editor.set_draft_restored(true);
-                    editor.info_bar().show_draft_restored(has_backing_file);
-                }
-            },
-        );
-    }
-
-    /// Delete the draft for a given file path. Removes the in-memory manifest
-    /// entry immediately; background file deletion is batched by `flush_draft_deletions`.
-    fn delete_draft_for_path(&self, path: &Path) {
-        let draft_id = {
-            let manifest = self.imp().draft_manifest.borrow();
-            manifest.find_by_path(path).map(|e| e.draft_id.clone())
-        };
-        if let Some(draft_id) = draft_id {
-            self.delete_draft_by_id(&draft_id);
-        }
-    }
-
-    /// Delete a draft by its ID. Removes the in-memory manifest entry
-    /// immediately and schedules background file deletion.
-    fn delete_draft_by_id(&self, draft_id: &str) {
-        self.imp()
-            .draft_manifest
-            .borrow_mut()
-            .remove_by_id(draft_id);
-
-        let data_dir = json_store::data_dir();
-        let draft_id = draft_id.to_string();
-        let manifest = self.imp().draft_manifest.borrow().clone();
-
-        std::thread::spawn(move || {
-            let _ = draft_service::delete_draft_file(&data_dir, &draft_id);
-            let _ = draft_service::save_manifest(&data_dir, &manifest);
-        });
-    }
-
-    /// Allocate a draft ID for a new editor page. For path-backed files,
-    /// uses a deterministic hash. For untitled tabs, uses a monotonic counter.
-    fn assign_draft_id(&self, editor: &LushtextEditorPage) {
-        let id = if let Some(ref path) = editor.file_path() {
-            draft_service::draft_id_for_path(path)
-        } else {
-            let counter = self.imp().next_tab_id.get();
-            self.imp().next_tab_id.set(counter.wrapping_add(1));
-            draft_service::draft_id_for_untitled(counter)
-        };
-        editor.set_draft_id(id);
-    }
-
     fn setup_shortcuts(&self) {
         let controller = gtk4::ShortcutController::new();
         controller.set_scope(gtk4::ShortcutScope::Managed);
@@ -1160,6 +765,7 @@ impl LushtextWindow {
             ("win.close-tab", "<Control>w"),
             ("win.toggle-command-palette", "<Control>p"),
             ("win.toggle-sidebar", "F9"),
+            ("win.toggle-fullscreen", "F11"),
         ];
 
         for (action, accel) in shortcuts {
@@ -1170,5 +776,160 @@ impl LushtextWindow {
         }
 
         self.add_controller(controller);
+    }
+
+    /// Register fullscreen/unfullscreen/toggle-fullscreen actions and wire
+    /// the `fullscreened` property to toggle which menu item is visible.
+    fn setup_fullscreen(&self) {
+        // Menu items use hidden-when: action-disabled, so only the correct
+        // one is visible at any time.
+        let fullscreen_action = gio::SimpleAction::new("fullscreen", None);
+        let unfullscreen_action = gio::SimpleAction::new("unfullscreen", None);
+        unfullscreen_action.set_enabled(false);
+
+        {
+            let window_weak = self.downgrade();
+            fullscreen_action.connect_activate(move |_, _| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.fullscreen();
+                }
+            });
+        }
+        {
+            let window_weak = self.downgrade();
+            unfullscreen_action.connect_activate(move |_, _| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.unfullscreen();
+                }
+            });
+        }
+
+        self.add_action(&fullscreen_action);
+        self.add_action(&unfullscreen_action);
+
+        // F11 toggle — always enabled, decides direction based on current state.
+        self.add_action_entries([gio::ActionEntry::builder("toggle-fullscreen")
+            .activate(|window: &Self, _, _| {
+                if window.is_fullscreen() {
+                    window.unfullscreen();
+                } else {
+                    window.fullscreen();
+                }
+            })
+            .build()]);
+
+        // Sync action enabled states when fullscreen state changes.
+        let fs_action = fullscreen_action;
+        let unfs_action = unfullscreen_action;
+        self.connect_notify_local(Some("fullscreened"), move |window, _| {
+            let is_fs = window.is_fullscreen();
+            fs_action.set_enabled(!is_fs);
+            unfs_action.set_enabled(is_fs);
+        });
+    }
+
+    /// Create the theme selector widget (follow-system/light/dark circles)
+    /// matching GNOME Text Editor's visual pattern, and insert it into
+    /// the hamburger menu's popover as a custom child.
+    fn setup_theme_selector(&self) {
+        let settings = &self.imp().settings;
+        let style_manager = libadwaita::StyleManager::default();
+
+        // Container with the CSS class that targets the custom styling.
+        let container = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+        container.add_css_class("theme-selector");
+        container.set_hexpand(true);
+        container.set_halign(gtk4::Align::Center);
+
+        // GtkCheckButton radio group — CSS hides the radio indicator
+        // and styles each button as a 44px colored circle.
+        // Order matches GNOME Text Editor: follow (system), light, dark.
+        let follow_btn = gtk4::CheckButton::builder()
+            .tooltip_text("Follow System Style")
+            .halign(gtk4::Align::Center)
+            .hexpand(true)
+            .focus_on_click(false)
+            .build();
+        follow_btn.add_css_class("follow");
+
+        let light_btn = gtk4::CheckButton::builder()
+            .tooltip_text("Light Style")
+            .halign(gtk4::Align::Center)
+            .hexpand(true)
+            .focus_on_click(false)
+            .group(&follow_btn)
+            .build();
+        light_btn.add_css_class("light");
+
+        let dark_btn = gtk4::CheckButton::builder()
+            .tooltip_text("Dark Style")
+            .halign(gtk4::Align::Center)
+            .hexpand(true)
+            .focus_on_click(false)
+            .group(&follow_btn)
+            .build();
+        dark_btn.add_css_class("dark");
+
+        container.append(&follow_btn);
+        container.append(&light_btn);
+        container.append(&dark_btn);
+
+        // Restore persisted state.
+        let scheme = settings.string(keys::COLOR_SCHEME);
+        match parse_color_scheme(scheme.as_str()) {
+            libadwaita::ColorScheme::ForceLight => light_btn.set_active(true),
+            libadwaita::ColorScheme::ForceDark => dark_btn.set_active(true),
+            _ => follow_btn.set_active(true),
+        }
+
+        // Wire each button to set the color scheme and persist.
+        {
+            let sm = style_manager.clone();
+            let s = settings.clone();
+            light_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    sm.set_color_scheme(libadwaita::ColorScheme::ForceLight);
+                    let _ = s.set_string(keys::COLOR_SCHEME, "force-light");
+                }
+            });
+        }
+        {
+            let sm = style_manager.clone();
+            let s = settings.clone();
+            follow_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    sm.set_color_scheme(libadwaita::ColorScheme::Default);
+                    let _ = s.set_string(keys::COLOR_SCHEME, "default");
+                }
+            });
+        }
+        {
+            let sm = style_manager;
+            let s = settings.clone();
+            dark_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    sm.set_color_scheme(libadwaita::ColorScheme::ForceDark);
+                    let _ = s.set_string(keys::COLOR_SCHEME, "force-dark");
+                }
+            });
+        }
+
+        // Insert the widget into the hamburger menu's popover at the
+        // <attribute name="custom">theme</attribute> slot.
+        let menu_button = &self.imp().primary_menu_button;
+        let Some(popover) = menu_button.popover() else {
+            tracing::error!("setup_theme_selector: primary_menu_button has no popover");
+            return;
+        };
+        let Ok(popover_menu) = popover.downcast::<gtk4::PopoverMenu>() else {
+            tracing::error!("setup_theme_selector: popover is not a PopoverMenu");
+            return;
+        };
+        if !popover_menu.add_child(&container, "theme") {
+            tracing::error!(
+                "setup_theme_selector: failed to add theme widget \
+                 (missing 'theme' custom slot in menu XML?)"
+            );
+        }
     }
 }
