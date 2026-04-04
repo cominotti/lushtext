@@ -44,8 +44,14 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
-                <property name="title" translatable="yes">Command Palette</property>
+                <property name="title" translatable="yes">Print</property>
                 <property name="accelerator">&lt;Control&gt;p</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Command Palette</property>
+                <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;p</property>
               </object>
             </child>
             <child>

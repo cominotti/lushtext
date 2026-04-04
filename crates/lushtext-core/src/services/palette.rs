@@ -264,6 +264,12 @@ pub fn all_commands() -> &'static [CommandDef] {
             category: CommandCategory::File,
             shortcut: Some("Ctrl+Shift+S"),
         },
+        CommandDef {
+            id: "win.print",
+            label: "Print",
+            category: CommandCategory::File,
+            shortcut: Some("Ctrl+P"),
+        },
         // Edit
         CommandDef {
             id: "win.toggle-search",
@@ -621,6 +627,51 @@ mod tests {
     fn test_search_commands_max_results() {
         let results = search_commands("", 3);
         assert!(results.len() <= 3);
+    }
+
+    #[test]
+    fn test_search_commands_zoom_returns_all_three() {
+        let results = search_commands("zoom", 10);
+        let labels: Vec<&str> = results
+            .iter()
+            .filter_map(|r| match &r.item {
+                SearchResultItem::Command(c) => Some(c.label),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.contains(&"Zoom In"), "should find Zoom In");
+        assert!(labels.contains(&"Zoom Out"), "should find Zoom Out");
+        assert!(labels.contains(&"Reset Zoom"), "should find Reset Zoom");
+    }
+
+    #[test]
+    fn test_all_commands_contains_zoom_in() {
+        let cmd = all_commands().iter().find(|c| c.id == "win.zoom-in");
+        assert!(cmd.is_some(), "all_commands() should include Zoom In");
+        let cmd = cmd.unwrap();
+        assert_eq!(cmd.label, "Zoom In");
+        assert_eq!(cmd.shortcut, Some("Ctrl+="));
+        assert_eq!(cmd.category, CommandCategory::View);
+    }
+
+    #[test]
+    fn test_all_commands_contains_zoom_out() {
+        let cmd = all_commands().iter().find(|c| c.id == "win.zoom-out");
+        assert!(cmd.is_some(), "all_commands() should include Zoom Out");
+        let cmd = cmd.unwrap();
+        assert_eq!(cmd.label, "Zoom Out");
+        assert_eq!(cmd.shortcut, Some("Ctrl+-"));
+        assert_eq!(cmd.category, CommandCategory::View);
+    }
+
+    #[test]
+    fn test_all_commands_contains_zoom_reset() {
+        let cmd = all_commands().iter().find(|c| c.id == "win.zoom-reset");
+        assert!(cmd.is_some(), "all_commands() should include Reset Zoom");
+        let cmd = cmd.unwrap();
+        assert_eq!(cmd.label, "Reset Zoom");
+        assert_eq!(cmd.shortcut, Some("Ctrl+0"));
+        assert_eq!(cmd.category, CommandCategory::View);
     }
 
     /// Extract file names from an index for assertion.

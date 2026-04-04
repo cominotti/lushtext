@@ -838,7 +838,8 @@ impl LushtextWindow {
             ("win.save-as", "<Control><Shift>s"),
             ("win.toggle-search", "<Control>f"),
             ("win.close-tab", "<Control>w"),
-            ("win.toggle-command-palette", "<Control>p"),
+            ("win.print", "<Control>p"),
+            ("win.toggle-command-palette", "<Control><Shift>p"),
             ("win.toggle-sidebar", "F9"),
             ("win.toggle-fullscreen", "F11"),
             (
