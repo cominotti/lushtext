@@ -5,6 +5,7 @@
 // Private implementation module (GObject pattern).
 mod imp;
 
+use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::{async_task, editor_io};
 use crate::ui::info_bar::LushtextInfoBar;
@@ -286,6 +287,26 @@ impl LushtextEditorPage {
 
     pub fn set_draft_restored(&self, restored: bool) {
         self.imp().draft_restored.set(restored);
+    }
+
+    // --- EditorConfig overrides ---
+
+    /// Apply EditorConfig formatting overrides and update the view.
+    /// Called after background EditorConfig resolution completes.
+    pub fn apply_editorconfig_overrides(&self, overrides: FormattingOverrides) {
+        self.imp().formatting_overrides.set(overrides);
+        imp::apply_formatting_settings(&self.imp().source_view, &self.imp().settings, overrides);
+    }
+
+    /// Clear all EditorConfig overrides and fall back to GSettings values.
+    /// Called when the `use-editorconfig` toggle is disabled.
+    pub fn clear_editorconfig_overrides(&self) {
+        self.apply_editorconfig_overrides(FormattingOverrides::default());
+    }
+
+    /// Current formatting overrides (for status bar indicator).
+    pub fn formatting_overrides(&self) -> FormattingOverrides {
+        self.imp().formatting_overrides.get()
     }
 
     // --- Session restore: cursor/scroll position ---

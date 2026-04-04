@@ -24,6 +24,8 @@ pub struct LushtextPreferences {
     #[template_child]
     pub font_button: TemplateChild<gtk4::FontDialogButton>,
     #[template_child]
+    pub editorconfig_row: TemplateChild<libadwaita::SwitchRow>,
+    #[template_child]
     pub word_wrap_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
     pub tab_width_row: TemplateChild<libadwaita::SpinRow>,
@@ -41,6 +43,7 @@ impl Default for LushtextPreferences {
     fn default() -> Self {
         Self {
             style_scheme_row: TemplateChild::default(),
+            editorconfig_row: TemplateChild::default(),
             use_system_font_row: TemplateChild::default(),
             custom_font_row: TemplateChild::default(),
             font_button: TemplateChild::default(),
@@ -78,6 +81,8 @@ impl ObjectImpl for LushtextPreferences {
         // GSettings bind() creates a live two-way sync between settings keys
         // and widget properties. DEFAULT flags (the default) means changes to
         // either side automatically propagate to the other.
+        s.bind(keys::USE_EDITORCONFIG, &*self.editorconfig_row, "active")
+            .build();
         s.bind(keys::WORD_WRAP, &*self.word_wrap_row, "active")
             .build();
         s.bind(

@@ -14,6 +14,8 @@ pub struct LushtextStatusBar {
     #[template_child]
     pub metadata_box: TemplateChild<gtk4::Box>,
     #[template_child]
+    pub editorconfig_label: TemplateChild<gtk4::Label>,
+    #[template_child]
     pub encoding_label: TemplateChild<gtk4::Label>,
     #[template_child]
     pub file_size_label: TemplateChild<gtk4::Label>,

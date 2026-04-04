@@ -10,6 +10,7 @@
 pub mod async_task;
 pub mod draft_service;
 pub mod editor_io;
+pub mod editorconfig;
 pub mod file_limits;
 pub mod file_tree;
 pub mod json_store;

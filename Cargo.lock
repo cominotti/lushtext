@@ -265,6 +265,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "editorconfig-parser"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e6e29ee299de275dfcc1f52a23cff9fc668cb29edd148960254c14972f7a2bc"
+dependencies = [
+ "globset",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -540,6 +549,19 @@ checksum = "1eb23a616a3dbc7fc15bbd26f58756ff0b04c8a894df3f0680cd21011db6a642"
 dependencies = [
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "globset"
+version = "0.4.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52dfc19153a48bde0cbd630453615c8151bce3a5adfac7a0aebfbf0a1e1f57e3"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "log",
+ "regex-automata",
+ "regex-syntax",
 ]
 
 [[package]]
@@ -845,6 +867,7 @@ dependencies = [
  "anyhow",
  "criterion",
  "dirs",
+ "editorconfig-parser",
  "gdk4",
  "gio",
  "glib",
@@ -1802,12 +1825,15 @@ dependencies = [
 name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "bitflags",
+ "bstr",
  "gio",
  "gio-sys",
  "glib",
  "glib-sys",
  "gobject-sys",
+ "log",
  "num-traits",
  "regex",
  "regex-automata",

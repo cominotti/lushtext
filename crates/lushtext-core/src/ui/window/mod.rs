@@ -15,7 +15,7 @@ use crate::model::draft::DraftEntry;
 use crate::model::session::{SessionData, SessionTab};
 use crate::services::async_task;
 use crate::services::palette::FileIndex;
-use crate::services::{draft_service, editor_io, json_store, session_service};
+use crate::services::{draft_service, editor_io, editorconfig, json_store, session_service};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::Object;
@@ -72,6 +72,7 @@ impl LushtextWindow {
         let editor_page = LushtextEditorPage::new();
         editor_page.load_file_async(path);
         editor_page.start_file_monitor();
+        self.resolve_editorconfig_for_editor(&editor_page, path);
         self.assign_draft_id(&editor_page);
         // Register this file path in the draft manifest so autosave knows
         // the original_path for new entries.
@@ -274,6 +275,9 @@ impl LushtextWindow {
             Some(e) => {
                 imp.status_bar.set_metadata_visible(true);
                 imp.status_bar.set_file_size(e.file_size());
+                let ec_active = !e.formatting_overrides().is_empty()
+                    && imp.settings.boolean(keys::USE_EDITORCONFIG);
+                imp.status_bar.set_editorconfig_active(ec_active);
             }
             None => {
                 imp.status_bar.set_metadata_visible(false);
@@ -312,6 +316,43 @@ impl LushtextWindow {
                 title_widget.set_subtitle("");
             }
         }
+    }
+
+    // --- EditorConfig resolution ---
+
+    /// Resolve EditorConfig overrides for a file on a background thread
+    /// and apply them to the editor page when done.
+    fn resolve_editorconfig_for_editor(&self, editor: &LushtextEditorPage, path: &Path) {
+        if !self.imp().settings.boolean(keys::USE_EDITORCONFIG) {
+            return;
+        }
+        let path = path.to_path_buf();
+        async_task::spawn_blocking_then(
+            editor.clone(),
+            move || editorconfig::resolve_for_path(&path),
+            |editor, overrides| {
+                editor.apply_editorconfig_overrides(overrides);
+            },
+        );
+    }
+
+    /// Handle the `use-editorconfig` GSettings toggle changing. Re-resolves
+    /// or clears EditorConfig overrides on all open tabs.
+    fn on_use_editorconfig_changed(&self, enabled: bool) {
+        let tab_view = &self.imp().tab_view;
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                if enabled {
+                    if let Some(path) = editor.file_path() {
+                        self.resolve_editorconfig_for_editor(editor, &path);
+                    }
+                } else {
+                    editor.clear_editorconfig_overrides();
+                }
+            }
+        }
+        self.refresh_status_bar();
     }
 
     /// Get the currently active editor page, if any.

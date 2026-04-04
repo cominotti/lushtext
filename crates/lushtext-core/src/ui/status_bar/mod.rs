@@ -78,6 +78,11 @@ impl LushtextStatusBar {
         }
     }
 
+    /// Show or hide the "EditorConfig" indicator in the status bar.
+    pub fn set_editorconfig_active(&self, active: bool) {
+        self.imp().editorconfig_label.set_visible(active);
+    }
+
     /// Show or hide the right-side metadata section (encoding + file size).
     /// Hidden when no tabs are open.
     pub fn set_metadata_visible(&self, visible: bool) {

@@ -16,6 +16,11 @@
       <default>true</default>
       <summary>Insert Spaces Instead of Tabs</summary>
     </key>
+    <key name="use-editorconfig" type="b">
+      <default>true</default>
+      <summary>EditorConfig Support</summary>
+      <description>Apply .editorconfig files for per-file formatting settings</description>
+    </key>
     <key name="show-line-numbers" type="b">
       <default>true</default>
       <summary>Show Line Numbers</summary>

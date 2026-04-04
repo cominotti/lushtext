@@ -16,9 +16,9 @@ default-members = ["crates/lushtext"]
 lushtext-core = { path = "crates/lushtext-core" }
 
 # GTK / GNOME stack
-gtk4        = { version = "0.11", features = ["v4_16"] }
-libadwaita  = { version = "0.9",  features = ["v1_6"] }
-sourceview5 = "0.11"
+gtk4        = { version = "0.11", features = ["v4_20"] }
+libadwaita  = { version = "0.9",  features = ["v1_8"] }
+sourceview5 = { version = "0.11", features = ["v5_16"] }
 gio         = "0.22"
 glib        = "0.22"
 gdk4        = "0.11"
@@ -47,6 +47,9 @@ simdutf8 = "0.1"
 
 # Zero-allocation case-insensitive string comparison
 unicase = "2"
+
+# EditorConfig parsing (pure Rust, zero deps)
+editorconfig-parser = "0.0.3"
 
 # Dev / test
 tempfile   = "3.14"

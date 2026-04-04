@@ -7,6 +7,7 @@
 //! GSettings bindings keep all editor pages in sync with user preferences.
 
 use crate::config::keys;
+use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::file_limits::FileSizeCheck;
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
@@ -67,6 +68,13 @@ pub struct LushtextEditorPage {
     pub word_wrap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `style-scheme` change. Disconnected in `Drop`.
     pub style_scheme_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `tab-width` change. Disconnected in `Drop`.
+    pub tab_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `insert-spaces` change. Disconnected in `Drop`.
+    pub insert_spaces_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Per-file formatting overrides from EditorConfig. Empty for untitled tabs
+    /// or files without a matching `.editorconfig`.
+    pub formatting_overrides: Cell<FormattingOverrides>,
     /// Handler ID for the buffer's `modified-changed` signal. Disconnected in `Drop`.
     pub modified_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Callback invoked when estimated buffer memory changes (load, save, evict).
@@ -118,6 +126,9 @@ impl Default for LushtextEditorPage {
             dark_handler_id: RefCell::new(None),
             word_wrap_handler_id: RefCell::new(None),
             style_scheme_handler_id: RefCell::new(None),
+            tab_width_handler_id: RefCell::new(None),
+            insert_spaces_handler_id: RefCell::new(None),
+            formatting_overrides: Cell::new(FormattingOverrides::default()),
             modified_handler_id: RefCell::new(None),
             memory_changed_callback: RefCell::default(),
             file_monitor: RefCell::new(None),
@@ -209,18 +220,28 @@ impl ObjectImpl for LushtextEditorPage {
             )
             .flags(gio::SettingsBindFlags::GET)
             .build();
-        settings
-            .bind(keys::TAB_WIDTH, &*self.source_view, "tab-width")
-            .flags(gio::SettingsBindFlags::GET)
-            .build();
-        settings
-            .bind(
-                keys::INSERT_SPACES,
-                &*self.source_view,
-                "insert-spaces-instead-of-tabs",
-            )
-            .flags(gio::SettingsBindFlags::GET)
-            .build();
+        // Formatting settings (tab-width, insert-spaces, indent-width) use
+        // manual handlers instead of Settings::bind(GET) so that EditorConfig
+        // overrides can take priority. The handler reads the current overrides
+        // and only falls back to GSettings when no override is active.
+        apply_formatting_settings(&self.source_view, settings, FormattingOverrides::default());
+        for (key, handler_field) in [
+            (keys::TAB_WIDTH, &self.tab_width_handler_id),
+            (keys::INSERT_SPACES, &self.insert_spaces_handler_id),
+        ] {
+            let editor_weak = self.obj().downgrade();
+            let id = settings.connect_changed(Some(key), move |_, _| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    let overrides = editor.imp().formatting_overrides.get();
+                    apply_formatting_settings(
+                        &editor.imp().source_view,
+                        &editor.imp().settings,
+                        overrides,
+                    );
+                }
+            });
+            handler_field.replace(Some(id));
+        }
 
         // Manual mapping: bool → WrapMode requires connect_changed instead of bind().
         // Store the handler ID so we can disconnect in Drop.
@@ -278,7 +299,37 @@ impl Drop for LushtextEditorPage {
         if let Some(handler_id) = self.style_scheme_handler_id.take() {
             self.settings.disconnect(handler_id);
         }
+        if let Some(handler_id) = self.tab_width_handler_id.take() {
+            self.settings.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.insert_spaces_handler_id.take() {
+            self.settings.disconnect(handler_id);
+        }
     }
+}
+
+/// Apply formatting settings to the source view, resolving EditorConfig
+/// overrides against GSettings fallbacks. Called on initial construction,
+/// GSettings change, and EditorConfig resolution.
+pub(super) fn apply_formatting_settings(
+    view: &sourceview5::View,
+    settings: &gio::Settings,
+    overrides: FormattingOverrides,
+) {
+    let tab_width = overrides
+        .tab_width
+        .unwrap_or_else(|| settings.uint(keys::TAB_WIDTH));
+    view.set_tab_width(tab_width);
+
+    let insert_spaces = overrides
+        .insert_spaces
+        .unwrap_or_else(|| settings.boolean(keys::INSERT_SPACES));
+    view.set_insert_spaces_instead_of_tabs(insert_spaces);
+
+    // indent-width has no GSettings key — only settable via EditorConfig.
+    // GtkSourceView default: -1 means "inherit from tab-width".
+    let indent_width = overrides.indent_width.unwrap_or(-1);
+    view.set_indent_width(indent_width);
 }
 
 fn apply_word_wrap(view: &sourceview5::View, settings: &gio::Settings) {

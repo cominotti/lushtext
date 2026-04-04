@@ -61,6 +61,7 @@ impl super::LushtextWindow {
                     open_paths.insert(path.clone());
                 }
                 editor.set_file_path(&path);
+                window.resolve_editorconfig_for_editor(&editor, &path);
                 let path_display = path.display().to_string();
                 let window_clone = window.clone();
                 editor.save_file_async(move |save_result| match save_result {

@@ -29,7 +29,8 @@ src/
 │   ├── workspace.rs    # WorkspaceId, WorkspaceEntry, WorkspaceConfig, WorkspacesFile
 │   ├── session.rs      # SessionTab, SessionData — global session for tab restore
 │   ├── palette.rs      # IndexedFile, CommandDef, CommandCategory, SearchMode, ScoredResult
-│   └── draft.rs        # DraftEntry, DraftManifest — draft persistence metadata
+│   ├── draft.rs        # DraftEntry, DraftManifest — draft persistence metadata
+│   └── formatting_overrides.rs  # FormattingOverrides — per-file EditorConfig overrides
 ├── services/           # Business logic
 │   ├── async_task.rs   # spawn_blocking_then, MAX_CONCURRENT_SPAWNS, concurrency guard
 │   ├── json_store.rs   # Generic JSON load/save + data_dir()
@@ -38,7 +39,8 @@ src/
 │   ├── file_tree.rs    # Directory scanning (pure I/O, bounded/cancellable helpers for sidebar)
 │   ├── file_limits.rs  # File size thresholds for graceful degradation
 │   ├── palette.rs      # Fuzzy matching (nucleo SIMD), file indexing, command registry
-│   └── draft_service.rs # Draft persistence: save/load/delete draft files and manifest
+│   ├── draft_service.rs # Draft persistence: save/load/delete draft files and manifest
+│   └── editorconfig.rs  # .editorconfig file discovery and parsing (pure I/O, no GTK)
 ├── benches/
 │   └── benchmarks.rs   # Criterion benchmarks for all performance-sensitive services
 └── ui/                 # GTK4/Libadwaita widgets (each has mod.rs + imp.rs)
@@ -97,6 +99,7 @@ src/
 - **Directory entry cap**: `build_children_model` caps entries at 10,000 per directory, appends rows in 256-item batches, and shows a placeholder row when truncation occurs so very large folders do not stall the GTK thread or silently clip results.
 - **File index cap**: `FileIndex::rebuild` truncates at 100,000 files with a warning log.
 - **Arc workspace_root**: `IndexedFile.workspace_root` uses `Arc<PathBuf>` — files in the same workspace share one allocation instead of cloning per file.
+- **EditorConfig support**: Per-file formatting overrides via `.editorconfig` files. The service (`services/editorconfig.rs`) walks the directory tree from the file's parent upward, parses each `.editorconfig` with the `editorconfig-parser` crate (pure Rust, zero deps), and returns a `FormattingOverrides` struct (model layer). Resolution runs on a background thread via `spawn_blocking_then`. The `EditorPage` stores overrides in `Cell<FormattingOverrides>` and uses `apply_formatting_settings()` to resolve EditorConfig vs GSettings: override wins when `Some`, GSettings fallback when `None`. This replaces the previous `Settings::bind(GET)` for `tab-width` and `insert-spaces-instead-of-tabs` with manual `connect_changed` handlers. A `use-editorconfig` GSettings toggle (default: `true`) enables/disables the feature. The status bar shows an "EditorConfig" label when overrides are active. Supported properties: `indent_style`, `tab_width`, `indent_size`. Deferred properties documented in `docs/next/editorconfig-future.md`.
 - **Benchmark framework**: Criterion.rs benchmarks in `crates/lushtext-core/benches/benchmarks.rs` cover all performance-sensitive service code (fuzzy search, file indexing, directory scanning, JSON persistence). All benchmarked functions are GTK-free. `FileIndex::from(Vec<IndexedFile>)` enables synthetic index construction without filesystem I/O. `scripts/bench-report.sh` parses Criterion JSON output into markdown for GitHub release assets. CI compile-checks benchmarks on every PR; full benchmark runs happen on release tags.
 
 ## Build Commands

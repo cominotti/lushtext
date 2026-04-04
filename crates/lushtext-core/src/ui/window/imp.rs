@@ -208,6 +208,16 @@ impl ObjectImpl for LushtextWindow {
             self.sidebar.set_visible(false);
         }
 
+        // --- EditorConfig toggle ---
+        {
+            let window_weak = obj.downgrade();
+            settings.connect_changed(Some(keys::USE_EDITORCONFIG), move |s, _| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.on_use_editorconfig_changed(s.boolean(keys::USE_EDITORCONFIG));
+                }
+            });
+        }
+
         // --- Sidebar position persist on user drag ---
         {
             let window_weak = obj.downgrade();
