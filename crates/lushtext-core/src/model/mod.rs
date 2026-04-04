@@ -6,6 +6,7 @@
 //! All types in this layer are pure Rust with no GTK dependencies, making
 //! them fully unit-testable and usable from background threads.
 
+pub mod draft;
 pub mod palette;
 pub mod session;
 pub mod workspace;

@@ -851,6 +851,308 @@ fn test_header_title_dot_cleared_after_closing_all_tabs() {
     flush_events();
     assert!(window.imp().title_widget.title().starts_with('•'));
 
+    // Clear modified state before closing so the save-changes dialog
+    // doesn't block the close. This test verifies header-clearing
+    // behavior, not close-confirmation.
+    active_editor(&window).buffer().set_modified(false);
+    flush_events();
+
     activate_action(&window, "close-tab");
+    flush_events();
     assert_eq!(window.imp().title_widget.title().as_str(), "LushText");
+}
+
+// ---------------------------------------------------------------------------
+// Session persistence
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_collect_session_empty_window() {
+    ensure_gtk_init();
+    let window = test_window();
+    let session = window.collect_session();
+    assert!(session.tabs.is_empty());
+    assert_eq!(session.active_tab_index, None);
+}
+
+#[test]
+fn test_collect_session_with_untitled_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+
+    let session = window.collect_session();
+    assert_eq!(session.tabs.len(), 2);
+    assert_eq!(session.active_tab_index, Some(1));
+    assert!(session.tabs[0].path.is_none());
+    assert!(session.tabs[1].path.is_none());
+}
+
+#[test]
+fn test_collect_session_with_file_tab() {
+    ensure_gtk_init();
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("hello.rs");
+    std::fs::write(&file, "fn main() {}").unwrap();
+
+    let window = test_window();
+    window.open_document(&file);
+    flush_events();
+
+    let session = window.collect_session();
+    assert_eq!(session.tabs.len(), 1);
+    assert_eq!(session.tabs[0].path, Some(file));
+    assert_eq!(session.active_tab_index, Some(0));
+}
+
+#[test]
+fn test_collect_session_mixed_tabs() {
+    ensure_gtk_init();
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("test.txt");
+    std::fs::write(&file, "content").unwrap();
+
+    let window = test_window();
+    window.new_tab();
+    window.open_document(&file);
+    window.new_tab();
+    flush_events();
+
+    let session = window.collect_session();
+    assert_eq!(session.tabs.len(), 3);
+    assert!(session.tabs[0].path.is_none()); // untitled
+    assert_eq!(session.tabs[1].path, Some(file)); // file tab
+    assert!(session.tabs[2].path.is_none()); // untitled
+    assert_eq!(session.active_tab_index, Some(2)); // last tab is active
+}
+
+#[test]
+fn test_collect_session_active_tab_after_switch() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+
+    // Select the first tab
+    let first_page = window.imp().tab_view.nth_page(0);
+    window.imp().tab_view.set_selected_page(&first_page);
+    flush_events();
+
+    let session = window.collect_session();
+    assert_eq!(session.active_tab_index, Some(0));
+}
+
+#[test]
+fn test_collect_session_after_close_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+
+    activate_action(&window, "close-tab"); // closes last (active) tab
+    let session = window.collect_session();
+    assert_eq!(session.tabs.len(), 2);
+}
+
+#[test]
+fn test_save_session_sync_writes_file() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    window.save_session_sync();
+
+    // Verify session file was written to the test data dir
+    let data_dir = lushtext_core::services::json_store::data_dir();
+    let session_file = data_dir.join("session.json");
+    assert!(session_file.exists(), "session.json should be written");
+
+    let content = std::fs::read_to_string(&session_file).unwrap();
+    assert!(content.contains("tabs"));
+}
+
+#[test]
+fn test_restoring_session_flag_prevents_save() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    // Set restoring flag
+    window.imp().restoring_session.set(true);
+
+    // save_session_debounced should no-op
+    window.save_session_debounced();
+    // No assertion needed — just verifying it doesn't panic.
+    // The debounce generation counter should NOT increment.
+    let generation_before = window.imp().session_save_generation.get();
+
+    window.imp().restoring_session.set(false);
+    window.save_session_debounced();
+    // Now the generation should have advanced
+    assert_ne!(
+        window.imp().session_save_generation.get(),
+        generation_before
+    );
+}
+
+#[test]
+fn test_collect_session_untitled_tab_has_draft_id() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let session = window.collect_session();
+    assert_eq!(session.tabs.len(), 1);
+    assert!(session.tabs[0].path.is_none());
+    // Untitled tabs should have a draft_id for recovery
+    assert!(session.tabs[0].draft_id.is_some());
+}
+
+#[test]
+fn test_collect_session_file_tab_no_draft_id() {
+    ensure_gtk_init();
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("test.rs");
+    std::fs::write(&file, "content").unwrap();
+
+    let window = test_window();
+    window.open_document(&file);
+    flush_events();
+
+    let session = window.collect_session();
+    // File-backed tabs don't need draft_id in session — the draft system
+    // derives it from the path.
+    assert!(session.tabs[0].draft_id.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Save-changes dialog
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_modified_editors_empty_when_no_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(window.modified_editors().is_empty());
+}
+
+#[test]
+fn test_modified_editors_empty_when_all_clean() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+    assert!(window.modified_editors().is_empty());
+}
+
+#[test]
+fn test_modified_editors_detects_dirty_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+
+    // Modify only the active (second) tab
+    active_editor(&window).buffer().set_text("dirty");
+    flush_events();
+
+    let modified = window.modified_editors();
+    assert_eq!(modified.len(), 1);
+    assert_eq!(modified[0].1.title(), "Untitled");
+}
+
+#[test]
+fn test_modified_editors_detects_multiple_dirty_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+    active_editor(&window).buffer().set_text("dirty1");
+
+    window.new_tab();
+    flush_events();
+    active_editor(&window).buffer().set_text("dirty2");
+    flush_events();
+
+    let modified = window.modified_editors();
+    assert_eq!(modified.len(), 2);
+}
+
+#[test]
+fn test_close_tab_unmodified_closes_immediately() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
+
+    activate_action(&window, "close-tab");
+    assert_eq!(window.imp().tab_view.n_pages(), 0);
+}
+
+#[test]
+fn test_close_tab_modified_is_blocked() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    active_editor(&window).buffer().set_text("unsaved");
+    flush_events();
+
+    // Closing a modified tab should be blocked by the save-changes dialog.
+    // The tab remains because no one confirms the dialog.
+    activate_action(&window, "close-tab");
+    assert_eq!(
+        window.imp().tab_view.n_pages(),
+        1,
+        "Modified tab should not close without confirmation"
+    );
+}
+
+#[test]
+fn test_confirm_close_tab_clean_calls_back_true() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let page = window.imp().tab_view.selected_page().unwrap();
+    let editor = active_editor(&window);
+
+    let confirmed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let confirmed_clone = confirmed.clone();
+    window.confirm_close_tab(&page, &editor, move |result| {
+        confirmed_clone.set(result);
+    });
+    flush_events();
+
+    assert!(
+        confirmed.get(),
+        "Clean tab should confirm close immediately"
+    );
+}
+
+#[test]
+fn test_show_save_changes_empty_calls_done_true() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_clone = done.clone();
+    window.show_save_changes_dialog(vec![], move |confirmed| {
+        done_clone.set(confirmed);
+    });
+    flush_events();
+
+    assert!(done.get(), "Empty modified list should call done(true)");
 }

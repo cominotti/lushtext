@@ -6,6 +6,7 @@
 //! tab lifecycle signals, and command palette integration.
 
 use crate::config::{self, keys};
+use crate::model::draft::DraftManifest;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::sidebar::LushtextSidebar;
@@ -75,6 +76,17 @@ pub struct LushtextWindow {
     /// Per-editor estimated buffer memory, keyed by `editor.as_ptr() as usize`
     /// for stable identity without preventing widget finalization.
     pub buffer_memory_by_editor: RefCell<HashMap<usize, u64>>,
+    /// Source ID for the global 30-second autosave timer. Removed on dispose.
+    pub autosave_source_id: RefCell<Option<glib::SourceId>>,
+    /// In-memory copy of the draft manifest, kept in sync with disk.
+    pub draft_manifest: RefCell<DraftManifest>,
+    /// Monotonic counter for generating unique IDs for untitled tab drafts.
+    pub next_tab_id: Cell<u64>,
+    /// Generation counter for debouncing session saves (500ms).
+    pub session_save_generation: Cell<u32>,
+    /// Guard flag: true while restoring a session from disk.
+    /// Prevents `save_session_debounced` from firing during restore.
+    pub restoring_session: Cell<bool>,
 }
 
 impl Default for LushtextWindow {
@@ -99,6 +111,11 @@ impl Default for LushtextWindow {
             open_paths: RefCell::new(HashSet::new()),
             buffer_memory_total: Cell::new(0),
             buffer_memory_by_editor: RefCell::new(HashMap::new()),
+            autosave_source_id: RefCell::new(None),
+            draft_manifest: RefCell::new(DraftManifest::default()),
+            next_tab_id: Cell::new(0),
+            session_save_generation: Cell::new(0),
+            restoring_session: Cell::new(false),
         }
     }
 }
@@ -294,8 +311,39 @@ impl ObjectImpl for LushtextWindow {
                     window.refresh_status_bar();
                     window.reload_if_evicted();
                     window.maybe_evict_background_tabs();
+                    window.save_session_debounced();
                 }
             });
+
+        // --- Tab close confirmation ---
+        // Intercept tab close to show "Save Changes?" dialog for modified tabs.
+        // Returning true inhibits the close; close_page_finish() is called
+        // after the user confirms or cancels.
+        let window_weak = obj.downgrade();
+        self.tab_view.connect_close_page(move |tab_view, page| {
+            let child = page.child();
+            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
+                tab_view.close_page_finish(page, true);
+                return glib::Propagation::Stop;
+            };
+            if !editor.is_modified() {
+                tab_view.close_page_finish(page, true);
+                return glib::Propagation::Stop;
+            }
+            // Show save-changes dialog; close_page_finish is called in the callback.
+            if let Some(window) = window_weak.upgrade() {
+                let tab_view_weak = tab_view.downgrade();
+                let page_weak = page.downgrade();
+                window.confirm_close_tab(page, editor, move |confirmed| {
+                    if let Some(tab_view) = tab_view_weak.upgrade()
+                        && let Some(page) = page_weak.upgrade()
+                    {
+                        tab_view.close_page_finish(&page, confirmed);
+                    }
+                });
+            }
+            glib::Propagation::Stop // Always inhibit — close_page_finish decides
+        });
 
         let window_weak = obj.downgrade();
         self.tab_view.connect_page_detached(move |_, page, _| {
@@ -306,9 +354,11 @@ impl ObjectImpl for LushtextWindow {
                     }
                     window.untrack_editor_memory(editor);
                     editor.cancel_load();
+                    editor.stop_file_monitor();
                 }
                 window.update_content_stack();
                 window.refresh_status_bar();
+                window.save_session_debounced();
             }
         });
 
@@ -318,6 +368,18 @@ impl ObjectImpl for LushtextWindow {
         // Load workspaces from disk asynchronously; the completion callback
         // triggers notify_workspace_changed which rebuilds the file index.
         self.sidebar.load_workspaces();
+
+        // Load draft manifest + session, then restore tabs. Combined so the
+        // manifest is ready before restored tabs call check_draft_on_open.
+        obj.load_session_and_drafts();
+        obj.start_autosave_timer();
+    }
+
+    fn dispose(&self) {
+        // Cancel the autosave timer to stop ticking after window close.
+        if let Some(source_id) = self.autosave_source_id.take() {
+            source_id.remove();
+        }
     }
 }
 
@@ -339,7 +401,31 @@ impl WidgetImpl for LushtextWindow {
     }
 }
 
-impl WindowImpl for LushtextWindow {}
+impl WindowImpl for LushtextWindow {
+    fn close_request(&self) -> glib::Propagation {
+        let window = self.obj().clone();
+        let modified = window.modified_editors();
+
+        if modified.is_empty() {
+            // No unsaved changes — flush drafts, save session, close.
+            window.flush_dirty_drafts();
+            window.save_session_sync();
+            return self.parent_close_request();
+        }
+
+        // Show save-changes dialog and inhibit close until the user responds.
+        let window_for_close = window.clone();
+        window.show_save_changes_dialog(modified, move |confirmed| {
+            if confirmed {
+                window_for_close.flush_dirty_drafts();
+                window_for_close.save_session_sync();
+                window_for_close.destroy();
+            }
+            // If !confirmed (cancel), the window stays open.
+        });
+        glib::Propagation::Stop
+    }
+}
 impl ApplicationWindowImpl for LushtextWindow {}
 impl AdwApplicationWindowImpl for LushtextWindow {}
 

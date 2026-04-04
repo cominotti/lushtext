@@ -9,7 +9,14 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 /// Returns the application data directory (`$XDG_DATA_HOME/lushtext`).
+///
+/// Respects `LUSHTEXT_DATA_DIR` env var for test isolation — widget tests
+/// set this to a temp directory so session/draft I/O doesn't touch the
+/// user's real data.
 pub fn data_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("LUSHTEXT_DATA_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("lushtext")

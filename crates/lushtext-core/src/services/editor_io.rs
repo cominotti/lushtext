@@ -141,6 +141,26 @@ pub fn write_snapshot_to_path(path: PathBuf, text: String) -> Result<u64, SaveEr
     Ok(text.len() as u64)
 }
 
+/// Read a file's mtime as seconds since the UNIX epoch.
+/// Returns `None` if the file doesn't exist or metadata can't be read.
+///
+/// **Threading:** Performs a blocking stat syscall.
+pub fn mtime_secs(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+}
+
+/// Current wall-clock time as seconds since the UNIX epoch.
+pub fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

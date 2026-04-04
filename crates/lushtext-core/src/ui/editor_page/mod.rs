@@ -7,8 +7,10 @@ mod imp;
 
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::{async_task, editor_io};
+use crate::ui::info_bar::LushtextInfoBar;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::gio;
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
 use std::cell::RefCell;
@@ -57,11 +59,26 @@ impl LushtextEditorPage {
                     editor.imp().size_check.set(check);
                     editor.imp().evicted.set(false);
                     editor.apply_loaded_content(&content, check);
+                    editor.apply_restore_position();
                     editor.notify_estimated_memory_changed();
+                    // Update mtime baseline after load and dismiss any
+                    // "externally changed" bar that triggered this reload.
+                    if let Some(ref path) = *editor.imp().file_path.borrow() {
+                        editor.update_last_known_mtime(path);
+                    }
+                    editor.info_bar().dismiss_all();
+                    // Fire the one-shot load-completed callback. Used by the
+                    // window to defer draft recovery until after file content
+                    // is loaded, preventing the race where load overwrites
+                    // draft content.
+                    if let Some(cb) = editor.imp().load_completed_callback.take() {
+                        cb();
+                    }
                 }
                 Err(LoadError::Cancelled) => {}
                 Err(e) => {
                     tracing::error!("{}", e);
+                    editor.info_bar().show_load_error(&e.to_string());
                 }
             },
         );
@@ -169,6 +186,10 @@ impl LushtextEditorPage {
         self.imp().source_view.as_ref()
     }
 
+    pub fn info_bar(&self) -> &LushtextInfoBar {
+        self.imp().info_bar.as_ref()
+    }
+
     pub fn file_path(&self) -> Option<std::path::PathBuf> {
         self.imp().file_path.borrow().clone()
     }
@@ -243,6 +264,162 @@ impl LushtextEditorPage {
         }
     }
 
+    // --- Draft state ---
+
+    pub fn draft_dirty(&self) -> bool {
+        self.imp().draft_dirty.get()
+    }
+
+    pub fn set_draft_dirty(&self, dirty: bool) {
+        self.imp().draft_dirty.set(dirty);
+    }
+
+    pub fn draft_id(&self) -> Option<String> {
+        self.imp().draft_id.borrow().clone()
+    }
+
+    pub fn set_draft_id(&self, id: String) {
+        *self.imp().draft_id.borrow_mut() = Some(id);
+    }
+
+    pub fn is_draft_restored(&self) -> bool {
+        self.imp().draft_restored.get()
+    }
+
+    pub fn set_draft_restored(&self, restored: bool) {
+        self.imp().draft_restored.set(restored);
+    }
+
+    // --- Session restore: cursor/scroll position ---
+
+    /// Store a cursor and scroll position to apply after the next async
+    /// file load completes. Values are consumed by `apply_restore_position`.
+    pub fn set_restore_position(&self, cursor_line: u32, cursor_col: u32, scroll_line: u32) {
+        self.imp().restore_cursor_line.set(Some(cursor_line));
+        self.imp().restore_cursor_col.set(Some(cursor_col));
+        self.imp().restore_scroll_line.set(Some(scroll_line));
+    }
+
+    /// Read the current cursor position as (line, column).
+    pub fn cursor_position(&self) -> (u32, u32) {
+        let buffer = self.buffer();
+        let iter = buffer.iter_at_mark(&buffer.get_insert());
+        (iter.line() as u32, iter.line_offset() as u32)
+    }
+
+    /// Read the line number at the top of the visible scroll area.
+    pub fn visible_top_line(&self) -> u32 {
+        let view = self.source_view();
+        let Some(vadj) = view.vadjustment() else {
+            return 0;
+        };
+        let (iter, _line_top) = view.line_at_y(vadj.value() as i32);
+        iter.line() as u32
+    }
+
+    /// Apply stored cursor/scroll position after a file load, then clear
+    /// the stored values. No-op if no position was stored.
+    fn apply_restore_position(&self) {
+        let line = self.imp().restore_cursor_line.take();
+        let col = self.imp().restore_cursor_col.take();
+        let scroll_line = self.imp().restore_scroll_line.take();
+
+        let buffer = self.buffer();
+
+        if let Some(line) = line
+            && let Some(mut iter) = buffer.iter_at_line(line as i32)
+        {
+            if let Some(col) = col {
+                iter.forward_chars(col as i32);
+            }
+            buffer.place_cursor(&iter);
+        }
+
+        if let Some(scroll_line) = scroll_line
+            && let Some(iter) = buffer.iter_at_line(scroll_line as i32)
+        {
+            // scroll_to_mark queues the scroll for the next layout pass,
+            // so it works even before the view is mapped.
+            let mark = buffer.create_mark(None, &iter, true);
+            self.source_view()
+                .scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
+            buffer.delete_mark(&mark);
+        }
+    }
+
+    // --- File monitoring ---
+
+    /// Start watching the file for external modifications. Creates a
+    /// `gio::FileMonitor` and connects its `changed` signal with a 500ms
+    /// generation-counter debounce. Only shows the info bar when the file's
+    /// mtime actually differs from the last known value (filters noise from
+    /// build tools and atomic-write patterns).
+    pub fn start_file_monitor(&self) {
+        self.stop_file_monitor();
+        let Some(ref path) = *self.imp().file_path.borrow() else {
+            return;
+        };
+        self.update_last_known_mtime(path);
+
+        let file = gio::File::for_path(path);
+        let monitor = match file.monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("Failed to start file monitor: {e}");
+                return;
+            }
+        };
+
+        let editor_weak = self.downgrade();
+        monitor.connect_changed(move |_, _, _, event| {
+            // Only react to real content changes, not attribute-only updates.
+            if !matches!(
+                event,
+                gio::FileMonitorEvent::Changed | gio::FileMonitorEvent::Created
+            ) {
+                return;
+            }
+            let Some(editor) = editor_weak.upgrade() else {
+                return;
+            };
+
+            let generation = editor.imp().monitor_generation.get().wrapping_add(1);
+            editor.imp().monitor_generation.set(generation);
+
+            let editor_weak = editor.downgrade();
+            glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                let Some(editor) = editor_weak.upgrade() else {
+                    return;
+                };
+                if editor.imp().monitor_generation.get() != generation {
+                    return;
+                }
+                // Compare mtime to confirm a real change occurred.
+                let Some(ref path) = *editor.imp().file_path.borrow() else {
+                    return;
+                };
+                let current_mtime = editor_io::mtime_secs(path);
+                if current_mtime != editor.imp().last_known_mtime.get() {
+                    editor.info_bar().show_externally_changed();
+                }
+            });
+        });
+
+        *self.imp().file_monitor.borrow_mut() = Some(monitor);
+    }
+
+    /// Stop watching the file. Cancels the monitor and clears state.
+    pub fn stop_file_monitor(&self) {
+        if let Some(monitor) = self.imp().file_monitor.take() {
+            monitor.cancel();
+        }
+    }
+
+    /// Record the file's current mtime as the baseline for change detection.
+    fn update_last_known_mtime(&self, path: &Path) {
+        self.imp().last_known_mtime.set(editor_io::mtime_secs(path));
+    }
+
     fn write_snapshot_async(
         &self,
         path: PathBuf,
@@ -267,6 +444,11 @@ impl LushtextEditorPage {
                         editor.imp().file_size.set(Some(size));
                         editor.imp().size_check.set(FileSizeCheck::classify(size));
                         editor.notify_estimated_memory_changed();
+                        // Update mtime baseline after save so the file monitor
+                        // doesn't misinterpret our own write as an external change.
+                        if let Some(ref path) = *editor.imp().file_path.borrow() {
+                            editor.update_last_known_mtime(path);
+                        }
                         callback(Ok(()));
                     }
                     Err(e) => {
@@ -287,6 +469,7 @@ impl Default for LushtextEditorPage {
 }
 
 type SaveCallback = Box<dyn FnOnce(Result<(), SaveError>)>;
+
 type ChunkedCallback = Rc<RefCell<Option<Box<dyn FnOnce(String)>>>>;
 
 /// Files at or above 10MB use chunked snapshotting to avoid a long

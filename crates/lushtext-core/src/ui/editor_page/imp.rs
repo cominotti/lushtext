@@ -8,6 +8,7 @@
 
 use crate::config::keys;
 use crate::services::file_limits::FileSizeCheck;
+use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
 use gtk4::gio;
 use gtk4::subclass::prelude::*;
@@ -33,6 +34,8 @@ type MemoryChangedCallback = Box<dyn Fn(u64)>;
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/editor-page.ui")]
 pub struct LushtextEditorPage {
+    #[template_child]
+    pub info_bar: TemplateChild<LushtextInfoBar>,
     #[template_child]
     pub source_view: TemplateChild<sourceview5::View>,
     #[template_child]
@@ -68,11 +71,40 @@ pub struct LushtextEditorPage {
     pub modified_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Callback invoked when estimated buffer memory changes (load, save, evict).
     pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
+    /// File monitor for detecting external modifications. Created on file load,
+    /// cancelled on tab close.
+    pub file_monitor: RefCell<Option<gio::FileMonitor>>,
+    /// Generation counter for debouncing file monitor events (500ms).
+    /// Incremented on each monitor event; stale timer callbacks no-op.
+    pub monitor_generation: Cell<u32>,
+    /// File mtime (seconds since epoch) at last load or save. Compared with
+    /// current mtime to distinguish real changes from noise.
+    pub last_known_mtime: Cell<Option<u64>>,
+    /// Whether the buffer has been modified since the last draft save.
+    /// Checked by the global autosave timer to decide which tabs need drafting.
+    pub draft_dirty: Cell<bool>,
+    /// Draft ID for this tab. For path-backed files this is a hash of the path;
+    /// for untitled tabs it's a generated unique ID. Stable across the tab's lifetime.
+    pub draft_id: RefCell<Option<String>>,
+    /// Whether this tab is currently showing draft-restored content.
+    pub draft_restored: Cell<bool>,
+    /// One-shot callback fired after the first successful file load.
+    /// Used by the window to defer draft recovery until file content is
+    /// ready, avoiding the race where `load_file_async` overwrites draft
+    /// content. Consumed on first call (FnOnce).
+    pub load_completed_callback: RefCell<Option<Box<dyn FnOnce()>>>,
+    /// Deferred cursor line to apply after async file load completes.
+    pub restore_cursor_line: Cell<Option<u32>>,
+    /// Deferred cursor column to apply after async file load completes.
+    pub restore_cursor_col: Cell<Option<u32>>,
+    /// Deferred scroll-to line to apply after async file load completes.
+    pub restore_scroll_line: Cell<Option<u32>>,
 }
 
 impl Default for LushtextEditorPage {
     fn default() -> Self {
         Self {
+            info_bar: TemplateChild::default(),
             source_view: TemplateChild::default(),
             scrolled_window: TemplateChild::default(),
             search_revealer: TemplateChild::default(),
@@ -88,6 +120,16 @@ impl Default for LushtextEditorPage {
             style_scheme_handler_id: RefCell::new(None),
             modified_handler_id: RefCell::new(None),
             memory_changed_callback: RefCell::default(),
+            file_monitor: RefCell::new(None),
+            monitor_generation: Cell::new(0),
+            last_known_mtime: Cell::new(None),
+            draft_dirty: Cell::new(false),
+            draft_id: RefCell::new(None),
+            draft_restored: Cell::new(false),
+            load_completed_callback: RefCell::default(),
+            restore_cursor_line: Cell::new(None),
+            restore_cursor_col: Cell::new(None),
+            restore_scroll_line: Cell::new(None),
         }
     }
 }
@@ -102,6 +144,7 @@ impl ObjectSubclass for LushtextEditorPage {
 
     fn class_init(klass: &mut Self::Class) {
         // Register child widget types BEFORE parsing the template.
+        LushtextInfoBar::ensure_type();
         LushtextSearchBar::ensure_type();
         sourceview5::View::ensure_type();
         klass.bind_template();
@@ -125,6 +168,10 @@ impl ObjectImpl for LushtextEditorPage {
                 .downcast::<sourceview5::Buffer>()
                 .expect("GtkSourceView buffer");
             buffer.disconnect(handler_id);
+        }
+        // Cancel file monitor to stop receiving events for this tab.
+        if let Some(monitor) = self.file_monitor.take() {
+            monitor.cancel();
         }
     }
 
