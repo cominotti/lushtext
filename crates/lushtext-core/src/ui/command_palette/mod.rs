@@ -65,8 +65,7 @@ impl LushtextCommandPalette {
     /// Open the palette: focus the search entry and show initial results.
     pub fn open(&self) {
         let imp = self.imp();
-        imp.mode.set(SearchMode::All);
-        imp.mode_label.set_label(SearchMode::All.label());
+        imp.set_mode(SearchMode::All);
         imp.search_entry.set_text("");
         imp.rebuild_results("");
         imp.search_entry.grab_focus();

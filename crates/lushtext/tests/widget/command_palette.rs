@@ -129,6 +129,57 @@ fn test_command_palette_mode_label_initial() {
 }
 
 #[test]
+fn test_command_palette_open_sets_placeholder() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    palette.open();
+    flush_events();
+    assert_eq!(
+        palette
+            .imp()
+            .search_entry
+            .placeholder_text()
+            .unwrap()
+            .as_str(),
+        SearchMode::All.placeholder(),
+    );
+}
+
+#[test]
+fn test_command_palette_placeholder_changes_with_mode() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    palette.open();
+    flush_events();
+
+    let imp = palette.imp();
+
+    // Cycle All → Files
+    imp.set_mode(imp.mode.get().next());
+    assert_eq!(palette.mode(), SearchMode::Files);
+    assert_eq!(
+        imp.search_entry.placeholder_text().unwrap().as_str(),
+        SearchMode::Files.placeholder(),
+    );
+
+    // Cycle Files → Commands
+    imp.set_mode(imp.mode.get().next());
+    assert_eq!(palette.mode(), SearchMode::Commands);
+    assert_eq!(
+        imp.search_entry.placeholder_text().unwrap().as_str(),
+        SearchMode::Commands.placeholder(),
+    );
+
+    // Cycle Commands → All
+    imp.set_mode(imp.mode.get().next());
+    assert_eq!(palette.mode(), SearchMode::All);
+    assert_eq!(
+        imp.search_entry.placeholder_text().unwrap().as_str(),
+        SearchMode::All.placeholder(),
+    );
+}
+
+#[test]
 fn test_command_palette_open_populates_results() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();

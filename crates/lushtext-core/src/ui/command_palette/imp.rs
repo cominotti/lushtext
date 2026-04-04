@@ -243,9 +243,7 @@ impl LushtextCommandPalette {
             let imp = obj.imp();
             match keyval {
                 gdk4::Key::Tab | gdk4::Key::ISO_Left_Tab => {
-                    let next = imp.mode.get().next();
-                    imp.mode.set(next);
-                    imp.mode_label.set_label(next.label());
+                    imp.set_mode(imp.mode.get().next());
                     let query = imp.search_entry.text();
                     imp.rebuild_results(&query);
                     glib::Propagation::Stop
@@ -396,6 +394,14 @@ impl LushtextCommandPalette {
         if let Some(ref cb) = *self.activate_callback.borrow() {
             cb(palette_item);
         }
+    }
+
+    /// Update the active search mode and sync all dependent widgets (label, placeholder).
+    pub fn set_mode(&self, mode: SearchMode) {
+        self.mode.set(mode);
+        self.mode_label.set_label(mode.label());
+        self.search_entry
+            .set_placeholder_text(Some(mode.placeholder()));
     }
 
     fn selection_model(&self) -> Option<gtk4::SingleSelection> {

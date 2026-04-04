@@ -109,6 +109,15 @@ impl SearchMode {
             Self::Commands => "Commands ⇥",
         }
     }
+
+    /// Placeholder text for the search entry when this mode is active.
+    pub fn placeholder(self) -> &'static str {
+        match self {
+            Self::All => "Search files and commands (Tab to switch mode)",
+            Self::Files => "Search files (Tab to switch mode)",
+            Self::Commands => "Type a command (Tab to switch mode)",
+        }
+    }
 }
 
 /// A single search result with its relevance score.
@@ -174,6 +183,22 @@ mod tests {
         assert_eq!(SearchMode::All.label(), "All ⇥");
         assert_eq!(SearchMode::Files.label(), "Files ⇥");
         assert_eq!(SearchMode::Commands.label(), "Commands ⇥");
+    }
+
+    #[test]
+    fn test_search_mode_placeholders() {
+        assert_eq!(
+            SearchMode::All.placeholder(),
+            "Search files and commands (Tab to switch mode)"
+        );
+        assert_eq!(
+            SearchMode::Files.placeholder(),
+            "Search files (Tab to switch mode)"
+        );
+        assert_eq!(
+            SearchMode::Commands.placeholder(),
+            "Type a command (Tab to switch mode)"
+        );
     }
 
     #[test]
