@@ -273,11 +273,14 @@ impl ObjectImpl for LushtextEditorPage {
             self.dark_handler_id.replace(Some(handler_id));
         }
 
-        let revealer = self.search_revealer.clone();
-        let source_view = self.source_view.clone();
+        // Search bar close: hide_search restores cursor and detaches the
+        // SearchContext. The close handler fires on both the close button
+        // and Escape key press in the search entry.
+        let editor_weak = self.obj().downgrade();
         self.search_bar.connect_close(move || {
-            revealer.set_reveal_child(false);
-            source_view.grab_focus();
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.hide_search();
+            }
         });
     }
 }

@@ -17,6 +17,7 @@ A specification is "Ready for Development" when:
 - **Logical**: Tasks ordered by dependency.
 - **Testable**: All ACs use Given/When/Then.
 - **Complete**: No placeholders or TBDs.
+- **Tested**: Test tasks cover all affected levels (unit, integration, widget/UI) — additions, changes, and removals.
 
 
 ## SCOPE STANDARD

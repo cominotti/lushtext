@@ -10,6 +10,10 @@
 
 ## INSTRUCTIONS
 
+### Verify
+
+Run the commands in `## Verification` of `{spec_file}`. If any command fails, fix before proceeding.
+
 ### Generate Suggested Review Order
 
 Read `{baseline_commit}` from `{spec_file}` frontmatter and construct the diff of all changes since that commit.

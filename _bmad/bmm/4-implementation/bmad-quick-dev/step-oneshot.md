@@ -15,6 +15,10 @@ deferred_work_file: '{implementation_artifacts}/deferred-work.md'
 
 Implement the clarified intent directly.
 
+### Tests
+
+Determine which tests must be added, changed, or removed across all levels (unit, integration, widget/UI). Implement them. If no test impact exists, state why briefly in the present output.
+
 ### Review
 
 Invoke the `bmad-review-adversarial-general` skill in a subagent with the changed files. The subagent gets NO conversation context — to avoid anchoring bias. If no sub-agents are available, write the changed files to a review prompt file in `{implementation_artifacts}` and HALT. Ask the human to run the review in a separate session and paste back the findings.
@@ -26,6 +30,8 @@ Deduplicate all review findings. Three categories only:
 - **patch** — trivially fixable. Auto-fix immediately.
 - **defer** — pre-existing issue not caused by this change. Append to `{deferred_work_file}`.
 - **reject** — noise. Drop silently.
+
+Display the classified findings to the user — one line per finding showing its category and a brief description. HALT and present: **`[A]`**ccept classification and proceed · **`[E]`**dit classification. On `[E]`: apply the user's reclassification instructions, re-display, and loop back to this HALT. On `[A]`: continue below.
 
 If a finding is caused by this change but too significant for a trivial patch, HALT and present it to the human for decision before proceeding.
 

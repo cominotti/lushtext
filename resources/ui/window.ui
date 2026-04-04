@@ -172,7 +172,7 @@
     <section>
       <item>
         <attribute name="label" translatable="yes">_Find and Replace…</attribute>
-        <attribute name="action">win.toggle-search</attribute>
+        <attribute name="action">win.begin-search</attribute>
       </item>
     </section>
     <section>

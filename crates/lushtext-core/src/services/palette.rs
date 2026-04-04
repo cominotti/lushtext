@@ -272,7 +272,7 @@ pub fn all_commands() -> &'static [CommandDef] {
         },
         // Edit
         CommandDef {
-            id: "win.toggle-search",
+            id: "win.begin-search",
             label: "Find and Replace",
             category: CommandCategory::Edit,
             shortcut: Some("Ctrl+F"),

@@ -432,7 +432,7 @@ fn test_toggle_command_palette_enabled_after_closing_all_tabs() {
     let window = test_window();
     window.new_tab();
     activate_action(&window, "close-tab");
-    // Must remain enabled unlike toggle-search
+    // Must remain enabled unlike begin-search
     assert!(action_enabled(&window, "toggle-command-palette"));
 }
 
@@ -610,5 +610,41 @@ fn test_all_commands_contains_fullscreen() {
     let cmd = fullscreen.unwrap();
     assert_eq!(cmd.label, "Fullscreen");
     assert_eq!(cmd.shortcut, Some("F11"));
+    assert_eq!(cmd.category, CommandCategory::View);
+}
+
+#[test]
+fn test_all_commands_contains_zoom_in() {
+    ensure_gtk_init();
+    let commands = lushtext_core::services::palette::all_commands();
+    let cmd = commands.iter().find(|c| c.id == "win.zoom-in");
+    assert!(cmd.is_some(), "all_commands() should include Zoom In");
+    let cmd = cmd.unwrap();
+    assert_eq!(cmd.label, "Zoom In");
+    assert_eq!(cmd.shortcut, Some("Ctrl+="));
+    assert_eq!(cmd.category, CommandCategory::View);
+}
+
+#[test]
+fn test_all_commands_contains_zoom_out() {
+    ensure_gtk_init();
+    let commands = lushtext_core::services::palette::all_commands();
+    let cmd = commands.iter().find(|c| c.id == "win.zoom-out");
+    assert!(cmd.is_some(), "all_commands() should include Zoom Out");
+    let cmd = cmd.unwrap();
+    assert_eq!(cmd.label, "Zoom Out");
+    assert_eq!(cmd.shortcut, Some("Ctrl+-"));
+    assert_eq!(cmd.category, CommandCategory::View);
+}
+
+#[test]
+fn test_all_commands_contains_zoom_reset() {
+    ensure_gtk_init();
+    let commands = lushtext_core::services::palette::all_commands();
+    let cmd = commands.iter().find(|c| c.id == "win.zoom-reset");
+    assert!(cmd.is_some(), "all_commands() should include Reset Zoom");
+    let cmd = cmd.unwrap();
+    assert_eq!(cmd.label, "Reset Zoom");
+    assert_eq!(cmd.shortcut, Some("Ctrl+0"));
     assert_eq!(cmd.category, CommandCategory::View);
 }

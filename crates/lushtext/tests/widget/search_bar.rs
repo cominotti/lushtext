@@ -23,10 +23,19 @@ fn test_default_equals_new() {
 // --- Match count display ---
 
 #[test]
-fn test_set_match_count_zero_shows_no_results() {
+fn test_set_match_count_zero_shows_blank() {
     ensure_gtk_init();
     let bar = LushtextSearchBar::new();
     bar.set_match_count(0, 0);
+    // Zero matches: label is blank (matches GNOME Text Editor behavior).
+}
+
+#[test]
+fn test_set_match_count_negative_shows_blank() {
+    ensure_gtk_init();
+    let bar = LushtextSearchBar::new();
+    // SearchContext returns -1 while scanning is in progress.
+    bar.set_match_count(0, -1);
 }
 
 #[test]
@@ -47,7 +56,6 @@ fn test_set_match_count_single_result() {
 fn test_set_match_count_transitions() {
     ensure_gtk_init();
     let bar = LushtextSearchBar::new();
-    // Start with results, then clear, then add again
     bar.set_match_count(5, 20);
     bar.set_match_count(0, 0);
     bar.set_match_count(1, 3);
@@ -109,16 +117,29 @@ fn test_connect_close_fires_on_button_click() {
     assert!(closed.get());
 }
 
+// --- Replace mode toggle ---
+
 #[test]
-fn test_connect_close_fires_on_escape() {
+fn test_replace_mode_toggle_shows_replace_row() {
     ensure_gtk_init();
     let bar = LushtextSearchBar::new();
+    // Replace row is hidden by default.
+    assert!(!bar.replace_mode_button().is_active());
 
-    let closed = Rc::new(Cell::new(false));
-    let closed_clone = closed.clone();
-    bar.connect_close(move || closed_clone.set(true));
+    // Activate the toggle.
+    bar.set_replace_mode(true);
+    assert!(bar.replace_mode_button().is_active());
 
-    // Emit the stop-search signal (triggered by Escape key)
-    bar.search_entry().emit_stop_search();
-    assert!(closed.get());
+    // Deactivate.
+    bar.set_replace_mode(false);
+    assert!(!bar.replace_mode_button().is_active());
+}
+
+// --- Navigation state ---
+
+#[test]
+fn test_navigated_initially_false() {
+    ensure_gtk_init();
+    let bar = LushtextSearchBar::new();
+    assert!(!bar.has_navigated());
 }

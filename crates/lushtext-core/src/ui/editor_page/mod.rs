@@ -252,14 +252,104 @@ impl LushtextEditorPage {
         }
     }
 
-    pub fn toggle_search(&self) {
-        let revealer = &self.imp().search_revealer;
-        let visible = revealer.reveals_child();
-        revealer.set_reveal_child(!visible);
-        if !visible {
-            self.imp().search_bar.search_entry().grab_focus();
-        } else {
-            self.imp().source_view.grab_focus();
+    /// Open the search bar in find-only mode.
+    /// If already open, refocuses the search entry.
+    pub fn show_search(&self) {
+        self.open_search_bar(false);
+    }
+
+    /// Open the search bar in find-and-replace mode.
+    /// If already open, switches to replace mode and refocuses.
+    pub fn show_replace(&self) {
+        self.open_search_bar(true);
+    }
+
+    /// Close the search bar, restore the cursor if the user didn't navigate,
+    /// detach the SearchContext, and return focus to the editor.
+    ///
+    /// Order matters: detach + collapse the bar BEFORE restoring the cursor,
+    /// so `place_cursor` runs against the full viewport height. Restoring
+    /// while the bar is still visible would scroll against a shorter viewport,
+    /// and the subsequent bar collapse would make the view appear to jump.
+    pub fn hide_search(&self) {
+        let imp = self.imp();
+        let navigated = imp.search_bar.has_navigated();
+
+        imp.search_bar.detach();
+        imp.search_revealer.set_reveal_child(false);
+
+        if !navigated {
+            self.restore_pre_search_cursor();
+        }
+
+        imp.source_view.grab_focus();
+    }
+
+    /// Access the search bar widget (for window-level next/prev delegation).
+    pub fn search_bar(&self) -> &crate::ui::search_bar::LushtextSearchBar {
+        &self.imp().search_bar
+    }
+
+    /// Whether the search bar is currently visible.
+    pub fn is_search_visible(&self) -> bool {
+        self.imp().search_revealer.reveals_child()
+    }
+
+    /// Common logic for opening the search bar.
+    fn open_search_bar(&self, replace_mode: bool) {
+        let imp = self.imp();
+        let search_bar = &imp.search_bar;
+        let revealer = &imp.search_revealer;
+
+        let was_visible = revealer.reveals_child();
+        if !was_visible {
+            // Save the cursor position before search so Escape can restore it.
+            self.save_pre_search_cursor();
+
+            // Attach SearchContext to the editor's buffer and view.
+            search_bar.attach(&self.buffer(), self.source_view());
+            revealer.set_reveal_child(true);
+
+            // Pre-fill from selection if any.
+            let buffer = self.buffer();
+            if let Some((start, end)) = buffer.selection_bounds() {
+                let text = buffer.text(&start, &end, true);
+                if !text.is_empty() {
+                    search_bar.search_entry().set_text(text.as_str());
+                }
+            }
+        }
+
+        search_bar.set_replace_mode(replace_mode);
+
+        // Focus the search entry and select all text so typing replaces it.
+        let entry = search_bar.search_entry();
+        entry.grab_focus();
+        entry.select_region(0, -1);
+    }
+
+    /// Save the current cursor position as a TextMark for later restoration.
+    fn save_pre_search_cursor(&self) {
+        let buffer = self.buffer();
+        let iter = buffer.iter_at_mark(&buffer.get_insert());
+        // Use a left-gravity mark so it stays at the original position
+        // even if text is inserted at that point during search.
+        let mark = buffer.create_mark(Some("pre-search-cursor"), &iter, true);
+        // Keep the mark alive — it's owned by the buffer. We'll delete it in restore.
+        let _ = mark;
+    }
+
+    /// Restore the cursor to the pre-search position.
+    ///
+    /// Does NOT call `scroll_mark_onscreen` — the caller is responsible
+    /// for ensuring the viewport is at its final size before scrolling.
+    /// In `hide_search`, `grab_focus()` handles this naturally.
+    fn restore_pre_search_cursor(&self) {
+        let buffer = self.buffer();
+        if let Some(mark) = buffer.mark("pre-search-cursor") {
+            let iter = buffer.iter_at_mark(&mark);
+            buffer.place_cursor(&iter);
+            buffer.delete_mark(&mark);
         }
     }
 

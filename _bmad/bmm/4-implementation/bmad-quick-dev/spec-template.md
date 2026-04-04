@@ -53,7 +53,7 @@ context: [] # optional: max 3 project-wide standards/docs. NO source code files.
 ## Tasks & Acceptance
 
 <!-- Tasks: backtick-quoted file path -- action -- rationale. Prefer one task per file; group tightly-coupled changes when splitting would be artificial. -->
-<!-- If an I/O Matrix is present, include a task to unit-test its edge cases. -->
+<!-- MANDATORY: Include test tasks. For each level (unit, integration, widget/UI), state which tests must be added, changed, or removed. If a level has no test impact, omit it — but the analysis must be performed. Never defer tests to follow-up work. -->
 <!-- AC covers system-level behaviors not captured by the I/O Matrix. Do not duplicate I/O scenarios here. -->
 
 **Execution:**

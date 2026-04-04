@@ -230,7 +230,7 @@ fn test_tab_actions_disabled_when_no_tabs() {
     ensure_gtk_init();
     let window = test_window();
 
-    assert!(!action_enabled(&window, "toggle-search"));
+    assert!(!action_enabled(&window, "begin-search"));
     assert!(!action_enabled(&window, "save"));
     assert!(!action_enabled(&window, "close-tab"));
     assert!(!action_enabled(&window, "print"));
@@ -242,7 +242,7 @@ fn test_tab_actions_enabled_when_tab_exists() {
     let window = test_window();
     window.new_tab();
 
-    assert!(action_enabled(&window, "toggle-search"));
+    assert!(action_enabled(&window, "begin-search"));
     assert!(action_enabled(&window, "save"));
     assert!(action_enabled(&window, "close-tab"));
     assert!(action_enabled(&window, "print"));
@@ -258,50 +258,51 @@ fn test_tab_independent_actions_always_enabled() {
     assert!(action_enabled(&window, "open-folder"));
 }
 
-// --- Toggle-search via action system ---
+// --- Begin-search via action system ---
 
 #[test]
-fn test_toggle_search_action_opens_search() {
+fn test_begin_search_action_opens_search() {
     ensure_gtk_init();
     let window = test_window();
     window.new_tab();
 
-    activate_action(&window, "toggle-search");
+    activate_action(&window, "begin-search");
 
     let editor = active_editor(&window);
     assert!(editor.imp().search_revealer.reveals_child());
 }
 
 #[test]
-fn test_toggle_search_action_closes_search() {
+fn test_begin_search_action_idempotent() {
     ensure_gtk_init();
     let window = test_window();
     window.new_tab();
 
-    activate_action(&window, "toggle-search");
-    activate_action(&window, "toggle-search");
+    // begin-search always opens (never toggles closed).
+    activate_action(&window, "begin-search");
+    activate_action(&window, "begin-search");
 
     let editor = active_editor(&window);
-    assert!(!editor.imp().search_revealer.reveals_child());
+    assert!(editor.imp().search_revealer.reveals_child());
 }
 
 #[test]
-fn test_toggle_search_noop_when_disabled() {
+fn test_begin_search_noop_when_disabled() {
     ensure_gtk_init();
     let window = test_window();
 
-    assert!(!action_enabled(&window, "toggle-search"));
-    activate_action(&window, "toggle-search");
+    assert!(!action_enabled(&window, "begin-search"));
+    activate_action(&window, "begin-search");
 
     assert_eq!(window.imp().tab_view.n_pages(), 0);
 }
 
 #[test]
-fn test_toggle_search_survives_event_loop() {
+fn test_show_search_survives_event_loop() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    page.toggle_search();
+    page.show_search();
     assert!(page.imp().search_revealer.reveals_child());
 
     flush_events();
@@ -327,11 +328,11 @@ fn test_close_tab_disables_tab_actions() {
     ensure_gtk_init();
     let window = test_window();
     window.new_tab();
-    assert!(action_enabled(&window, "toggle-search"));
+    assert!(action_enabled(&window, "begin-search"));
 
     activate_action(&window, "close-tab");
 
-    assert!(!action_enabled(&window, "toggle-search"));
+    assert!(!action_enabled(&window, "begin-search"));
     assert!(!action_enabled(&window, "save"));
     assert!(!action_enabled(&window, "close-tab"));
     assert!(!action_enabled(&window, "print"));

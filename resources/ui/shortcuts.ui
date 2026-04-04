@@ -74,8 +74,14 @@
             <property name="title" translatable="yes">Search</property>
             <child>
               <object class="GtkShortcutsShortcut">
-                <property name="title" translatable="yes">Find and Replace</property>
+                <property name="title" translatable="yes">Find</property>
                 <property name="accelerator">&lt;Control&gt;f</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Find and Replace</property>
+                <property name="accelerator">&lt;Control&gt;h</property>
               </object>
             </child>
             <child>

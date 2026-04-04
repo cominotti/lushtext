@@ -146,7 +146,7 @@ fn test_title_with_file_path() {
 }
 
 #[test]
-fn test_toggle_search_changes_revealer_state() {
+fn test_show_search_reveals_search_bar() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
@@ -155,13 +155,13 @@ fn test_toggle_search_changes_revealer_state() {
     // Initially hidden
     assert!(!revealer.reveals_child());
 
-    // Toggle on
-    page.toggle_search();
+    // Show search
+    page.show_search();
     assert!(revealer.reveals_child());
 
-    // Toggle off
-    page.toggle_search();
-    assert!(!revealer.reveals_child());
+    // show_search is NOT a toggle — calling it again keeps the bar open
+    page.show_search();
+    assert!(revealer.reveals_child());
 }
 
 #[test]
@@ -189,7 +189,7 @@ fn test_stop_search_does_not_fire_during_grab_focus() {
         });
 
     // Show the search bar (which calls grab_focus on the entry)
-    page.toggle_search();
+    page.show_search();
     while glib::MainContext::default().iteration(false) {}
 
     assert!(
@@ -216,11 +216,11 @@ fn test_close_button_hides_search() {
     let page = LushtextEditorPage::new();
 
     // Show the search bar
-    page.toggle_search();
+    page.show_search();
 
     assert!(page.imp().search_revealer.reveals_child());
 
-    // Click the close button
+    // Click the close button (calls hide_search internally)
     page.imp().search_bar.close_button().emit_clicked();
 
     // Search bar should be hidden
@@ -233,11 +233,11 @@ fn test_escape_hides_search() {
     let page = LushtextEditorPage::new();
 
     // Show the search bar
-    page.toggle_search();
+    page.show_search();
 
     assert!(page.imp().search_revealer.reveals_child());
 
-    // Emit stop-search (Escape key)
+    // Emit stop-search (Escape key fires close callback)
     page.imp().search_bar.search_entry().emit_stop_search();
 
     // Search bar should be hidden
@@ -249,23 +249,23 @@ fn test_search_show_hide_cycle() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    // Cycle: show → close → show → escape → show → toggle
-    page.toggle_search();
+    // Cycle: show → close → show → escape → show → hide
+    page.show_search();
     assert!(page.imp().search_revealer.reveals_child());
 
     page.imp().search_bar.close_button().emit_clicked();
     assert!(!page.imp().search_revealer.reveals_child());
 
-    page.toggle_search();
+    page.show_search();
     assert!(page.imp().search_revealer.reveals_child());
 
     page.imp().search_bar.search_entry().emit_stop_search();
     assert!(!page.imp().search_revealer.reveals_child());
 
-    page.toggle_search();
+    page.show_search();
     assert!(page.imp().search_revealer.reveals_child());
 
-    page.toggle_search();
+    page.hide_search();
     assert!(!page.imp().search_revealer.reveals_child());
 }
 
@@ -356,4 +356,101 @@ fn test_set_file_path_overwrites_previous() {
 
     page.set_file_path(std::path::Path::new("/b/second.rs"));
     assert_eq!(page.title(), "second.rs");
+}
+
+// --- Search bar cursor restore regression tests ---
+
+#[test]
+fn test_hide_search_restores_cursor_position() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+
+    // Set up content and place cursor in the middle.
+    buffer.set_text("line1\nline2\nline3\nline4\nline5");
+    if let Some(mut iter) = buffer.iter_at_line(2) {
+        iter.forward_chars(3);
+        buffer.place_cursor(&iter);
+    }
+    let (pre_line, pre_col) = page.cursor_position();
+    assert_eq!(pre_line, 2);
+    assert_eq!(pre_col, 3);
+
+    // Show then hide — cursor should return to (2, 3).
+    page.show_search();
+    page.hide_search();
+
+    let (post_line, post_col) = page.cursor_position();
+    assert_eq!(post_line, pre_line, "cursor line changed after close");
+    assert_eq!(post_col, pre_col, "cursor column changed after close");
+}
+
+#[test]
+fn test_hide_search_cleans_up_pre_search_mark() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+
+    assert!(
+        buffer.mark("pre-search-cursor").is_none(),
+        "mark should not exist before search"
+    );
+
+    page.show_search();
+    assert!(
+        buffer.mark("pre-search-cursor").is_some(),
+        "mark should exist while search is open"
+    );
+
+    page.hide_search();
+    assert!(
+        buffer.mark("pre-search-cursor").is_none(),
+        "mark should be deleted after search closes"
+    );
+}
+
+#[test]
+fn test_close_button_restores_cursor_position() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+
+    buffer.set_text("aaa\nbbb\nccc\nddd");
+    if let Some(iter) = buffer.iter_at_line(1) {
+        buffer.place_cursor(&iter);
+    }
+    let (pre_line, _) = page.cursor_position();
+
+    page.show_search();
+    // Close via the close button (the path that was scrolling to the end).
+    page.imp().search_bar.close_button().emit_clicked();
+
+    let (post_line, _) = page.cursor_position();
+    assert_eq!(
+        post_line, pre_line,
+        "close button should restore cursor to pre-search line"
+    );
+}
+
+#[test]
+fn test_escape_restores_cursor_position() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+
+    buffer.set_text("first\nsecond\nthird");
+    if let Some(iter) = buffer.iter_at_line(2) {
+        buffer.place_cursor(&iter);
+    }
+    let (pre_line, _) = page.cursor_position();
+
+    page.show_search();
+    // Close via Escape (stop-search signal).
+    page.imp().search_bar.search_entry().emit_stop_search();
+
+    let (post_line, _) = page.cursor_position();
+    assert_eq!(
+        post_line, pre_line,
+        "Escape should restore cursor to pre-search line"
+    );
 }

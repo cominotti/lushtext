@@ -5,10 +5,6 @@
   <template class="LushtextSearchBar" parent="GtkBox">
     <property name="orientation">vertical</property>
     <property name="spacing">6</property>
-    <property name="margin-start">6</property>
-    <property name="margin-end">6</property>
-    <property name="margin-top">6</property>
-    <property name="margin-bottom">6</property>
 
     <style>
       <class name="search-bar-container"/>
@@ -28,54 +24,103 @@
         </child>
         <child>
           <object class="GtkLabel" id="match_label">
-            <property name="label">0/0</property>
             <property name="width-chars">8</property>
+            <property name="xalign">1</property>
             <style>
               <class name="dim-label"/>
+            </style>
+            <attributes>
+              <attribute name="font-features" value="tnum=1"/>
+            </attributes>
+          </object>
+        </child>
+        <child>
+          <object class="GtkBox">
+            <property name="orientation">horizontal</property>
+            <property name="homogeneous">true</property>
+            <style>
+              <class name="linked"/>
+            </style>
+            <child>
+              <object class="GtkButton" id="prev_button">
+                <property name="icon-name">go-up-symbolic</property>
+                <property name="tooltip-text" translatable="yes">Previous Match</property>
+                <property name="focus-on-click">false</property>
+                <style>
+                  <class name="flat"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="next_button">
+                <property name="icon-name">go-down-symbolic</property>
+                <property name="tooltip-text" translatable="yes">Next Match</property>
+                <property name="focus-on-click">false</property>
+                <style>
+                  <class name="flat"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkToggleButton" id="replace_mode_button">
+            <property name="icon-name">edit-find-replace-symbolic</property>
+            <property name="tooltip-text" translatable="yes">Toggle Replace</property>
+            <property name="focus-on-click">false</property>
+            <style>
+              <class name="flat"/>
             </style>
           </object>
         </child>
         <child>
-          <object class="GtkButton" id="prev_button">
-            <property name="icon-name">go-up-symbolic</property>
-            <property name="tooltip-text" translatable="yes">Previous Match</property>
-          </object>
-        </child>
-        <child>
-          <object class="GtkButton" id="next_button">
-            <property name="icon-name">go-down-symbolic</property>
-            <property name="tooltip-text" translatable="yes">Next Match</property>
+          <object class="GtkMenuButton" id="options_button">
+            <property name="icon-name">emblem-system-symbolic</property>
+            <property name="tooltip-text" translatable="yes">Search Options</property>
+            <property name="focus-on-click">false</property>
+            <style>
+              <class name="flat"/>
+            </style>
           </object>
         </child>
         <child>
           <object class="GtkButton" id="close_button">
             <property name="icon-name">window-close-symbolic</property>
             <property name="tooltip-text" translatable="yes">Close Search</property>
+            <property name="focus-on-click">false</property>
+            <style>
+              <class name="flat"/>
+              <class name="circular"/>
+            </style>
           </object>
         </child>
       </object>
     </child>
 
-    <!-- Replace row -->
+    <!-- Replace row (hidden by default, toggled by replace_mode_button) -->
     <child>
-      <object class="GtkBox">
+      <object class="GtkBox" id="replace_row">
         <property name="orientation">horizontal</property>
         <property name="spacing">6</property>
+        <property name="visible">false</property>
 
         <child>
           <object class="GtkEntry" id="replace_entry">
             <property name="hexpand">true</property>
             <property name="placeholder-text" translatable="yes">Replace…</property>
+            <property name="primary-icon-name">edit-find-replace-symbolic</property>
           </object>
         </child>
         <child>
           <object class="GtkButton" id="replace_button">
-            <property name="label" translatable="yes">Replace</property>
+            <property name="label" translatable="yes">_Replace</property>
+            <property name="use-underline">true</property>
           </object>
         </child>
         <child>
           <object class="GtkButton" id="replace_all_button">
-            <property name="label" translatable="yes">All</property>
+            <property name="label" translatable="yes">Replace _All</property>
+            <property name="use-underline">true</property>
           </object>
         </child>
       </object>

@@ -321,7 +321,10 @@ impl LushtextWindow {
         }
 
         for name in [
-            "toggle-search",
+            "begin-search",
+            "begin-replace",
+            "next-match",
+            "prev-match",
             "save",
             "save-as",
             "close-tab",
@@ -493,10 +496,35 @@ impl LushtextWindow {
             gio::ActionEntry::builder("save-as")
                 .activate(|window: &Self, _, _| window.show_save_as_dialog())
                 .build(),
-            gio::ActionEntry::builder("toggle-search")
+            gio::ActionEntry::builder("begin-search")
                 .activate(|window: &Self, _, _| {
                     if let Some(editor) = window.active_editor() {
-                        editor.toggle_search();
+                        editor.show_search();
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("begin-replace")
+                .activate(|window: &Self, _, _| {
+                    if let Some(editor) = window.active_editor() {
+                        editor.show_replace();
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("next-match")
+                .activate(|window: &Self, _, _| {
+                    if let Some(editor) = window.active_editor()
+                        && editor.is_search_visible()
+                    {
+                        editor.search_bar().move_next();
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("prev-match")
+                .activate(|window: &Self, _, _| {
+                    if let Some(editor) = window.active_editor()
+                        && editor.is_search_visible()
+                    {
+                        editor.search_bar().move_prev();
                     }
                 })
                 .build(),
@@ -836,7 +864,10 @@ impl LushtextWindow {
             ("win.open-file", "<Control>o"),
             ("win.save", "<Control>s"),
             ("win.save-as", "<Control><Shift>s"),
-            ("win.toggle-search", "<Control>f"),
+            ("win.begin-search", "<Control>f"),
+            ("win.begin-replace", "<Control>h"),
+            ("win.next-match", "<Control>g"),
+            ("win.prev-match", "<Control><Shift>g"),
             ("win.close-tab", "<Control>w"),
             ("win.print", "<Control>p"),
             ("win.toggle-command-palette", "<Control><Shift>p"),
