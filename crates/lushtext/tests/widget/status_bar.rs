@@ -193,3 +193,55 @@ fn test_encoding_label_shows_utf8() {
     let bar = LushtextStatusBar::new();
     assert_eq!(bar.imp().encoding_label.label().as_str(), "UTF-8");
 }
+
+// --- Sidebar toggle button ---
+
+#[test]
+fn test_sidebar_toggle_button_exists() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    let _button = &bar.imp().sidebar_toggle_button;
+}
+
+#[test]
+fn test_sidebar_toggle_button_icon() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    assert_eq!(
+        bar.imp()
+            .sidebar_toggle_button
+            .icon_name()
+            .unwrap()
+            .as_str(),
+        "sidebar-show-symbolic"
+    );
+}
+
+#[test]
+fn test_sidebar_toggle_button_is_flat() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    assert!(bar.imp().sidebar_toggle_button.has_css_class("flat"));
+}
+
+#[test]
+fn test_sidebar_toggle_button_has_tooltip() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    let tooltip = bar.imp().sidebar_toggle_button.tooltip_text().unwrap();
+    assert!(tooltip.contains("Sidebar"));
+}
+
+#[test]
+fn test_sidebar_toggle_button_action_name() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    assert_eq!(
+        bar.imp()
+            .sidebar_toggle_button
+            .action_name()
+            .unwrap()
+            .as_str(),
+        "win.toggle-sidebar"
+    );
+}

@@ -31,6 +31,9 @@ mod workspace_section;
 #[path = "widget/window.rs"]
 mod window;
 
+#[path = "widget/command_palette.rs"]
+mod command_palette;
+
 #[path = "widget/app.rs"]
 mod app;
 

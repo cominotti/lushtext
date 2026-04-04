@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <requires lib="gtk" version="4.14"/>
+
+  <template class="LushtextInfoBar" parent="GtkBox">
+    <property name="orientation">vertical</property>
+
+    <!-- Error bar: "Could Not Open File" with Retry button -->
+    <child>
+      <object class="GtkInfoBar" id="access_infobar">
+        <property name="message-type">error</property>
+        <property name="revealed">false</property>
+        <property name="show-close-button">true</property>
+        <child>
+          <object class="GtkBox">
+            <property name="orientation">vertical</property>
+            <property name="spacing">2</property>
+            <child>
+              <object class="GtkLabel" id="access_title">
+                <property name="label" translatable="yes">Could Not Open File</property>
+                <property name="xalign">0</property>
+                <style>
+                  <class name="heading"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="access_subtitle">
+                <property name="label"></property>
+                <property name="xalign">0</property>
+                <property name="wrap">true</property>
+                <style>
+                  <class name="body"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child type="action">
+          <object class="GtkButton" id="retry_button">
+            <property name="label" translatable="yes">_Retry</property>
+            <property name="use-underline">true</property>
+          </object>
+        </child>
+      </object>
+    </child>
+
+    <!-- Discard bar: "Draft Changes Restored" / "File Has Changed on Disk" -->
+    <child>
+      <object class="GtkInfoBar" id="discard_infobar">
+        <property name="message-type">warning</property>
+        <property name="revealed">false</property>
+        <property name="show-close-button">true</property>
+        <child>
+          <object class="GtkBox">
+            <property name="orientation">vertical</property>
+            <property name="spacing">2</property>
+            <child>
+              <object class="GtkLabel" id="discard_title">
+                <property name="label"></property>
+                <property name="xalign">0</property>
+                <style>
+                  <class name="heading"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="discard_subtitle">
+                <property name="label"></property>
+                <property name="xalign">0</property>
+                <property name="wrap">true</property>
+                <style>
+                  <class name="body"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child type="action">
+          <object class="GtkButton" id="discard_button">
+            <property name="label" translatable="yes">_Discard...</property>
+            <property name="use-underline">true</property>
+          </object>
+        </child>
+        <child type="action">
+          <object class="GtkButton" id="save_button">
+            <property name="label" translatable="yes">_Save...</property>
+            <property name="use-underline">true</property>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>

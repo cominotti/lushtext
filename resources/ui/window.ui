@@ -51,56 +51,76 @@
           </object>
         </child>
 
-        <!-- Main content: sidebar + editor area -->
+        <!-- Main content: overlay wraps sidebar + editor, palette floats on top -->
         <child>
-          <object class="GtkPaned" id="main_paned">
+          <object class="GtkOverlay" id="window_overlay">
             <property name="vexpand">true</property>
-            <property name="position">250</property>
-            <property name="shrink-start-child">false</property>
-            <property name="shrink-end-child">false</property>
-            <property name="resize-start-child">false</property>
 
-            <!-- Left: File tree sidebar -->
-            <property name="start-child">
-              <object class="LushtextSidebar" id="sidebar"/>
-            </property>
-
-            <!-- Right: Tab view or empty state -->
-            <property name="end-child">
-              <object class="GtkStack" id="content_stack">
+            <!-- Base layer: sidebar + editor paned -->
+            <property name="child">
+              <object class="GtkPaned" id="main_paned">
                 <property name="vexpand">true</property>
-                <property name="hexpand">true</property>
+                <property name="position">250</property>
+                <property name="shrink-start-child">false</property>
+                <property name="shrink-end-child">false</property>
+                <property name="resize-start-child">false</property>
 
-                <child>
-                  <object class="GtkStackPage">
-                    <property name="name">tabs</property>
-                    <property name="child">
-                      <object class="GtkBox">
-                        <property name="orientation">vertical</property>
-                        <child>
-                          <object class="AdwTabView" id="tab_view">
-                            <property name="vexpand">true</property>
+                <!-- Left: File tree sidebar -->
+                <property name="start-child">
+                  <object class="LushtextSidebar" id="sidebar"/>
+                </property>
+
+                <!-- Right: Tab view or empty state -->
+                <property name="end-child">
+                  <object class="GtkStack" id="content_stack">
+                    <property name="vexpand">true</property>
+                    <property name="hexpand">true</property>
+
+                    <child>
+                      <object class="GtkStackPage">
+                        <property name="name">tabs</property>
+                        <property name="child">
+                          <object class="GtkBox">
+                            <property name="orientation">vertical</property>
+                            <child>
+                              <object class="AdwTabView" id="tab_view">
+                                <property name="vexpand">true</property>
+                              </object>
+                            </child>
                           </object>
-                        </child>
+                        </property>
                       </object>
-                    </property>
-                  </object>
-                </child>
+                    </child>
 
-                <child>
-                  <object class="GtkStackPage">
-                    <property name="name">empty</property>
-                    <property name="child">
-                      <object class="AdwStatusPage" id="empty_page">
-                        <property name="icon-name">document-edit-symbolic</property>
-                        <property name="title" translatable="yes">Open a File</property>
-                        <property name="description" translatable="yes">Open a file from the sidebar or create a new document</property>
+                    <child>
+                      <object class="GtkStackPage">
+                        <property name="name">empty</property>
+                        <property name="child">
+                          <object class="AdwStatusPage" id="empty_page">
+                            <property name="icon-name">document-edit-symbolic</property>
+                            <property name="title" translatable="yes">Open a File</property>
+                            <property name="description" translatable="yes">Open a file from the sidebar or create a new document</property>
+                          </object>
+                        </property>
                       </object>
-                    </property>
+                    </child>
                   </object>
-                </child>
+                </property>
               </object>
             </property>
+
+            <!-- Overlay: command palette revealer -->
+            <child type="overlay">
+              <object class="GtkRevealer" id="palette_revealer">
+                <property name="halign">center</property>
+                <property name="valign">start</property>
+                <property name="reveal-child">false</property>
+                <property name="transition-type">slide-down</property>
+                <property name="child">
+                  <object class="LushtextCommandPalette" id="command_palette"/>
+                </property>
+              </object>
+            </child>
           </object>
         </child>
 

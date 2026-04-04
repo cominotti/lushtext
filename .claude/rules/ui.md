@@ -17,6 +17,7 @@ LushText should look and feel like GNOME Text Editor, with these differences:
 LushtextWindow (AdwApplicationWindow)
 ├── AdwHeaderBar
 ├── AdwTabBar → bound to AdwTabView
+├── GtkRevealer [palette_revealer] → LushtextCommandPalette (Ctrl+P)
 ├── GtkPaned (horizontal)
 │   ├── [start] LushtextSidebar (always visible)
 │   │   ├── GtkScrolledWindow (outer, vexpand)
@@ -32,6 +33,7 @@ LushtextWindow (AdwApplicationWindow)
 │       ├── "tabs": AdwTabView → LushtextEditorPage per tab
 │       └── "empty": AdwStatusPage
 └── LushtextStatusBar (always visible, full width)
+    ├── GtkToggleButton [sidebar_toggle_button] — toggle sidebar (action: win.toggle-sidebar)
     ├── GtkLabel [message_label] — feedback messages (left, hexpand)
     └── GtkBox [metadata_box] — encoding + file size (right, hidden when no tabs)
 ```

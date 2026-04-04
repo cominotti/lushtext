@@ -1,0 +1,80 @@
+name: Release Benchmark Report
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g., v0.1.0)"
+        required: true
+        type: string
+
+concurrency:
+  group: bench-report-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark-report:
+    name: Generate Benchmark Report
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Determine tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          echo "name=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.name }}
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libgtksourceview-5-dev \
+            jq
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run benchmarks and generate report
+        env:
+          BENCH_REPORT_OUT_DIR: bench-output
+        run: |
+          mkdir -p "$BENCH_REPORT_OUT_DIR"
+          ./scripts/bench-report.sh --mode full --out-dir "$BENCH_REPORT_OUT_DIR"
+
+      - name: Upload report as release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          REPORT=$(find bench-output -name '*.md' | head -1)
+          if [[ -z "$REPORT" ]]; then
+            echo "Error: no report found" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          ASSET_NAME="lushtext_${VERSION}_bench-report.md"
+          cp "$REPORT" "$ASSET_NAME"
+          gh release upload "$TAG" "$ASSET_NAME" --clobber
+
+      - name: Upload report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report
+          path: bench-output/*.md

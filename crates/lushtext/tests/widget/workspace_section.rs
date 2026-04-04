@@ -78,7 +78,7 @@ fn test_remove_from_model_root_item() {
     assert_eq!(root_store.n_items(), 1);
 
     let remaining = root_store.item(0).and_downcast::<FileTreeItem>().unwrap();
-    assert_eq!(remaining.path(), PathBuf::from("/tmp/test/b.txt"));
+    assert_eq!(remaining.path(), Some(PathBuf::from("/tmp/test/b.txt")));
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn test_remove_from_model_child_item() {
     let child_store_c = child_store.clone();
     let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, move |item| {
         let fi = item.downcast_ref::<FileTreeItem>()?;
-        if fi.is_dir() && fi.path() == std::path::Path::new("/tmp/test/src") {
+        if fi.is_dir() && fi.path().as_deref() == Some(std::path::Path::new("/tmp/test/src")) {
             Some(child_store_c.clone().upcast::<gio::ListModel>())
         } else {
             None
@@ -134,7 +134,10 @@ fn test_remove_from_model_child_item() {
     assert_eq!(child_store.n_items(), 1);
 
     let remaining = child_store.item(0).and_downcast::<FileTreeItem>().unwrap();
-    assert_eq!(remaining.path(), PathBuf::from("/tmp/test/src/lib.rs"));
+    assert_eq!(
+        remaining.path(),
+        Some(PathBuf::from("/tmp/test/src/lib.rs"))
+    );
 }
 
 // --- Callback wiring ---
@@ -318,7 +321,7 @@ fn test_add_root_initializes_tree() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().unwrap();
-    section.add_root(dir.path());
+    section.add_root(dir.path(), true);
 
     assert!(section.imp().root_store.borrow().is_some());
     let root_store = section.imp().root_store.borrow();
@@ -332,8 +335,8 @@ fn test_add_root_deduplicates() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().unwrap();
-    section.add_root(dir.path());
-    section.add_root(dir.path()); // duplicate
+    section.add_root(dir.path(), true);
+    section.add_root(dir.path(), true); // duplicate
 
     let root_store = section.imp().root_store.borrow();
     let root_store = root_store.as_ref().unwrap();
@@ -347,8 +350,8 @@ fn test_add_root_appends_multiple() {
 
     let dir1 = tempfile::tempdir().unwrap();
     let dir2 = tempfile::tempdir().unwrap();
-    section.add_root(dir1.path());
-    section.add_root(dir2.path());
+    section.add_root(dir1.path(), true);
+    section.add_root(dir2.path(), true);
 
     let root_store = section.imp().root_store.borrow();
     let root_store = root_store.as_ref().unwrap();
@@ -387,7 +390,7 @@ fn test_button_switches_to_replace_icon_after_load_roots() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().unwrap();
-    section.load_roots(&[dir.path().to_path_buf()]);
+    section.load_roots(&[(dir.path().to_path_buf(), true)]);
 
     assert_eq!(
         section
@@ -415,7 +418,7 @@ fn test_button_switches_to_replace_icon_after_add_root() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().unwrap();
-    section.add_root(dir.path());
+    section.add_root(dir.path(), true);
 
     assert_eq!(
         section
@@ -441,6 +444,6 @@ fn test_has_roots_true_after_load() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().unwrap();
-    section.load_roots(&[dir.path().to_path_buf()]);
+    section.load_roots(&[(dir.path().to_path_buf(), true)]);
     assert!(section.has_roots());
 }

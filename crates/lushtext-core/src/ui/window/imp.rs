@@ -1,14 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! Private implementation for the main application window.
+//!
+//! Handles window geometry persistence via GSettings, sidebar clamping,
+//! tab lifecycle signals, and command palette integration.
+
 use crate::config::{self, keys};
+use crate::model::draft::DraftManifest;
+use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::sidebar::LushtextSidebar;
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
 use glib::prelude::*;
 use gtk4::prelude::*;
-use gtk4::{self, gio, glib, CompositeTemplate};
+use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
+// CompositeTemplate loads the UI layout from a compiled XML file (bundled
+// as a GResource at build time). Each #[template_child] field is auto-bound
+// to the widget with the matching `id` attribute in the XML.
+//
+// GObject methods always take &self because multiple widgets can hold
+// references to the same window at once. To store mutable state, we use
+// Cell<T> for Copy types (generation counters, positions) and RefCell<T>
+// for complex types (HashSet, HashMap). Cell has no borrow overhead;
+// RefCell panics on overlapping borrows.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
 pub struct LushtextWindow {
@@ -28,8 +47,54 @@ pub struct LushtextWindow {
     pub sidebar: TemplateChild<LushtextSidebar>,
     #[template_child]
     pub status_bar: TemplateChild<LushtextStatusBar>,
+    #[template_child]
+    pub palette_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
+    pub command_palette: TemplateChild<LushtextCommandPalette>,
 
+    /// Application-wide GSettings for window geometry and sidebar position.
     pub settings: gio::Settings,
+    /// Cached sidebar visibility for the `clamp_sidebar_position` hot path.
+    /// Avoids a GObject property lookup (~60Hz during resize).
+    pub sidebar_visible: Cell<bool>,
+    /// Sidebar position saved before hide animation, restored on show.
+    pub saved_sidebar_pos: Cell<i32>,
+    /// Currently running sidebar show/hide animation, if any.
+    /// Paused on rapid toggle so the new animation can start from the current position.
+    pub sidebar_animation: RefCell<Option<libadwaita::TimedAnimation>>,
+    /// Generation counter for debouncing file index rebuilds (300ms).
+    /// Incremented on each workspace change; stale timer callbacks no-op.
+    pub index_rebuild_generation: Cell<u32>,
+    /// Focus widget saved before the command palette steals focus.
+    /// `WeakRef` avoids preventing widget finalization if the tab closes
+    /// while the palette is open. Consumed by `restore_saved_focus()`.
+    pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
+    /// Last sidebar position persisted to GSettings. Compared against pending
+    /// to skip redundant D-Bus writes during rapid resize events.
+    pub last_sidebar_pos: Cell<i32>,
+    /// Sidebar position that will be persisted after the debounce settles.
+    pub pending_sidebar_pos: Cell<i32>,
+    /// Generation counter for debouncing sidebar position GSettings writes (200ms).
+    pub sidebar_persist_generation: Cell<u32>,
+    /// Set of file paths with open tabs, for O(1) duplicate detection in `open_document`.
+    pub open_paths: RefCell<HashSet<PathBuf>>,
+    /// Running total of estimated buffer memory across all tabs (bytes).
+    /// Compared against `BUFFER_MEMORY_BUDGET` to trigger eviction.
+    pub buffer_memory_total: Cell<u64>,
+    /// Per-editor estimated buffer memory, keyed by `editor.as_ptr() as usize`
+    /// for stable identity without preventing widget finalization.
+    pub buffer_memory_by_editor: RefCell<HashMap<usize, u64>>,
+    /// Source ID for the global 30-second autosave timer. Removed on dispose.
+    pub autosave_source_id: RefCell<Option<glib::SourceId>>,
+    /// In-memory copy of the draft manifest, kept in sync with disk.
+    pub draft_manifest: RefCell<DraftManifest>,
+    /// Monotonic counter for generating unique IDs for untitled tab drafts.
+    pub next_tab_id: Cell<u64>,
+    /// Generation counter for debouncing session saves (500ms).
+    pub session_save_generation: Cell<u32>,
+    /// Guard flag: true while restoring a session from disk.
+    /// Prevents `save_session_debounced` from firing during restore.
+    pub restoring_session: Cell<bool>,
 }
 
 impl Default for LushtextWindow {
@@ -43,11 +108,32 @@ impl Default for LushtextWindow {
             main_paned: TemplateChild::default(),
             sidebar: TemplateChild::default(),
             status_bar: TemplateChild::default(),
+            palette_revealer: TemplateChild::default(),
+            command_palette: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
+            sidebar_visible: Cell::new(true),
+            saved_sidebar_pos: Cell::new(0),
+            sidebar_animation: RefCell::new(None),
+            index_rebuild_generation: Cell::new(0),
+            saved_focus: RefCell::new(None),
+            last_sidebar_pos: Cell::new(-1),
+            pending_sidebar_pos: Cell::new(-1),
+            sidebar_persist_generation: Cell::new(0),
+            open_paths: RefCell::new(HashSet::new()),
+            buffer_memory_total: Cell::new(0),
+            buffer_memory_by_editor: RefCell::new(HashMap::new()),
+            autosave_source_id: RefCell::new(None),
+            draft_manifest: RefCell::new(DraftManifest::default()),
+            next_tab_id: Cell::new(0),
+            session_save_generation: Cell::new(0),
+            restoring_session: Cell::new(false),
         }
     }
 }
 
+// ObjectSubclass registers this struct with GLib's runtime type system.
+// NAME must match the `class` attribute in the UI template XML.
+// ParentType sets which Adwaita/GTK widget we extend.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextWindow {
     const NAME: &'static str = "LushtextWindow";
@@ -55,9 +141,13 @@ impl ObjectSubclass for LushtextWindow {
     type ParentType = libadwaita::ApplicationWindow;
 
     fn class_init(klass: &mut Self::Class) {
+        // Register custom widget types BEFORE the template is parsed.
+        // GTK needs to know about these types when it encounters them in
+        // the UI XML — without ensure_type(), template parsing fails.
         LushtextSidebar::ensure_type();
         LushtextEditorPage::ensure_type();
         LushtextStatusBar::ensure_type();
+        LushtextCommandPalette::ensure_type();
 
         klass.bind_template();
     }
@@ -85,8 +175,13 @@ impl ObjectImpl for LushtextWindow {
         // --- Restore sidebar position ---
         let saved_pos = settings.int(keys::SIDEBAR_POSITION);
         self.main_paned.set_position(saved_pos);
+        self.last_sidebar_pos.set(saved_pos);
+        self.pending_sidebar_pos.set(saved_pos);
 
         // --- Persist window geometry incrementally via notify signals ---
+        // connect_notify_local (not connect_notify) because the closure captures
+        // GTK widgets that are not thread-safe. The _local variant guarantees
+        // main-thread execution only.
         // (Sidebar clamping is handled in size_allocate, not here.)
         {
             let settings = settings.clone();
@@ -113,71 +208,211 @@ impl ObjectImpl for LushtextWindow {
             });
         }
 
+        // --- Restore sidebar visibility ---
+        let sidebar_vis = settings.boolean(keys::SIDEBAR_VISIBLE);
+        self.sidebar_visible.set(sidebar_vis);
+        if !sidebar_vis {
+            // Save the restored position so the first show animation can slide to it.
+            // set_visible(false) makes the paned ignore the start child entirely,
+            // giving all space to the editor. Position value stays as-is but has
+            // no visual effect while the sidebar is invisible.
+            self.saved_sidebar_pos.set(self.main_paned.position());
+            self.sidebar.set_visible(false);
+        }
+
+        // --- EditorConfig toggle ---
+        {
+            let window_weak = obj.downgrade();
+            settings.connect_changed(Some(keys::USE_EDITORCONFIG), move |s, _| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.on_use_editorconfig_changed(s.boolean(keys::USE_EDITORCONFIG));
+                }
+            });
+        }
+
         // --- Sidebar position persist on user drag ---
         {
-            let settings = settings.clone();
             let window_weak = obj.downgrade();
             self.main_paned
                 .connect_notify_local(Some("position"), move |paned, _| {
                     if let Some(window) = window_weak.upgrade() {
-                        clamp_sidebar_position(paned, window.width(), &settings);
+                        clamp_sidebar_position(&window, paned, window.width());
                     }
                 });
         }
 
         // --- Sidebar file activation ---
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.sidebar.connect_file_activated(move |path| {
-            window.open_document(path);
+            if let Some(window) = window_weak.upgrade() {
+                window.open_document(path);
+            }
         });
 
         // --- Sidebar rename/delete notifications ---
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.sidebar
             .connect_file_renamed(move |old_path, new_path| {
-                window.update_tab_path(old_path, new_path);
-                let name = new_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
+                if let Some(window) = window_weak.upgrade() {
+                    window.update_tab_path(old_path, new_path);
+                    window
+                        .imp()
+                        .command_palette
+                        .update_index_file_renamed(old_path, new_path);
+                    let name = new_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    window
+                        .imp()
+                        .status_bar
+                        .push_message(&format!("Renamed to {name}"), MessageKind::Info);
+                }
+            });
+
+        let window_weak = obj.downgrade();
+        self.sidebar.connect_file_deleted(move |path| {
+            if let Some(window) = window_weak.upgrade() {
+                window.close_tab_for_path(path);
+                window.imp().command_palette.update_index_file_deleted(path);
                 window
                     .imp()
                     .status_bar
-                    .push_message(&format!("Renamed to {name}"), MessageKind::Info);
-            });
-
-        let window = obj.clone();
-        self.sidebar.connect_file_deleted(move |path| {
-            window.close_tab_for_path(path);
-            window
-                .imp()
-                .status_bar
-                .push_message("Deleted", MessageKind::Info);
+                    .push_message("Deleted", MessageKind::Info);
+            }
         });
 
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.sidebar.connect_file_created(move |path| {
-            window.open_document(path);
+            if let Some(window) = window_weak.upgrade() {
+                window.open_document(path);
+                window.imp().command_palette.update_index_file_created(path);
+            }
+        });
+
+        // --- Command palette callbacks ---
+        let window_weak = obj.downgrade();
+        self.command_palette.connect_item_activated(move |item| {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            if item.is_file() {
+                if let Some(path) = item.file_path() {
+                    window.open_document(&path);
+                }
+            } else if item.is_command() {
+                let action_id = item.action_id();
+                if let Some(stripped) = action_id.strip_prefix("win.") {
+                    gtk4::prelude::ActionGroupExt::activate_action(&window, stripped, None);
+                } else if let Some(stripped) = action_id.strip_prefix("app.")
+                    && let Some(app) = window.application()
+                {
+                    gtk4::prelude::ActionGroupExt::activate_action(&app, stripped, None);
+                }
+            }
+            window.close_command_palette();
+        });
+
+        let window_weak = obj.downgrade();
+        self.command_palette.connect_close_requested(move || {
+            if let Some(window) = window_weak.upgrade() {
+                window.close_command_palette();
+            }
+        });
+
+        // --- Sidebar workspace change → rebuild file index ---
+        let window_weak = obj.downgrade();
+        self.sidebar.connect_workspace_changed(move || {
+            if let Some(window) = window_weak.upgrade() {
+                window.rebuild_file_index();
+            }
         });
 
         // --- Tab change signals ---
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.tab_view
             .connect_notify_local(Some("n-pages"), move |_, _| {
-                window.update_content_stack();
+                if let Some(window) = window_weak.upgrade() {
+                    window.update_content_stack();
+                }
             });
 
-        let window = obj.clone();
+        let window_weak = obj.downgrade();
         self.tab_view
             .connect_notify_local(Some("selected-page"), move |_, _| {
-                window.refresh_status_bar();
+                if let Some(window) = window_weak.upgrade() {
+                    window.refresh_status_bar();
+                    window.reload_if_evicted();
+                    window.maybe_evict_background_tabs();
+                    window.save_session_debounced();
+                }
             });
+
+        // --- Tab close confirmation ---
+        // Intercept tab close to show "Save Changes?" dialog for modified tabs.
+        // Returning true inhibits the close; close_page_finish() is called
+        // after the user confirms or cancels.
+        let window_weak = obj.downgrade();
+        self.tab_view.connect_close_page(move |tab_view, page| {
+            let child = page.child();
+            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
+                tab_view.close_page_finish(page, true);
+                return glib::Propagation::Stop;
+            };
+            if !editor.is_modified() {
+                tab_view.close_page_finish(page, true);
+                return glib::Propagation::Stop;
+            }
+            // Show save-changes dialog; close_page_finish is called in the callback.
+            if let Some(window) = window_weak.upgrade() {
+                let tab_view_weak = tab_view.downgrade();
+                let page_weak = page.downgrade();
+                window.confirm_close_tab(page, editor, move |confirmed| {
+                    if let Some(tab_view) = tab_view_weak.upgrade()
+                        && let Some(page) = page_weak.upgrade()
+                    {
+                        tab_view.close_page_finish(&page, confirmed);
+                    }
+                });
+            }
+            glib::Propagation::Stop // Always inhibit — close_page_finish decides
+        });
+
+        let window_weak = obj.downgrade();
+        self.tab_view.connect_page_detached(move |_, page, _| {
+            if let Some(window) = window_weak.upgrade() {
+                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                    if let Some(ref path) = editor.file_path() {
+                        window.imp().open_paths.borrow_mut().remove(path.as_path());
+                    }
+                    window.untrack_editor_memory(editor);
+                    editor.cancel_load();
+                    editor.stop_file_monitor();
+                }
+                window.update_content_stack();
+                window.refresh_status_bar();
+                window.save_session_debounced();
+            }
+        });
 
         // Start with empty state
         obj.update_content_stack();
 
-        // Load workspaces from disk
+        // Load workspaces from disk asynchronously; the completion callback
+        // triggers notify_workspace_changed which rebuilds the file index.
         self.sidebar.load_workspaces();
+
+        // Load draft manifest + session, then restore tabs. Combined so the
+        // manifest is ready before restored tabs call check_draft_on_open.
+        obj.load_session_and_drafts();
+        obj.start_autosave_timer();
+    }
+
+    fn dispose(&self) {
+        // Cancel the autosave timer to stop ticking after window close.
+        if let Some(source_id) = self.autosave_source_id.take() {
+            source_id.remove();
+        }
     }
 }
 
@@ -186,20 +421,63 @@ impl WidgetImpl for LushtextWindow {
         self.parent_size_allocate(width, height, baseline);
         // Clamp sidebar on every allocation — this is the definitive width,
         // free from the stale-value timing issues of property notifications.
-        clamp_sidebar_position(&self.main_paned, width, &self.settings);
+        clamp_sidebar_position(&self.obj(), &self.main_paned, width);
+        // Keep palette at 60% window width for readability.
+        // Guarded with width_request comparison to avoid triggering a
+        // re-layout on every allocation.
+        if width > 0 {
+            let palette_width = width * 6 / 10;
+            if self.command_palette.width_request() != palette_width {
+                self.command_palette.set_width_request(palette_width);
+            }
+        }
     }
 }
 
-impl WindowImpl for LushtextWindow {}
+impl WindowImpl for LushtextWindow {
+    fn close_request(&self) -> glib::Propagation {
+        let window = self.obj().clone();
+        let modified = window.modified_editors();
+
+        if modified.is_empty() {
+            // No unsaved changes — flush drafts, save session, close.
+            window.flush_dirty_drafts();
+            window.save_session_sync();
+            return self.parent_close_request();
+        }
+
+        // Show save-changes dialog and inhibit close until the user responds.
+        let window_for_close = window.clone();
+        window.show_save_changes_dialog(modified, move |confirmed| {
+            if confirmed {
+                window_for_close.flush_dirty_drafts();
+                window_for_close.save_session_sync();
+                window_for_close.destroy();
+            }
+            // If !confirmed (cancel), the window stays open.
+        });
+        glib::Propagation::Stop
+    }
+}
 impl ApplicationWindowImpl for LushtextWindow {}
 impl AdwApplicationWindowImpl for LushtextWindow {}
 
 /// Clamp the sidebar pane position to at most 1/3 of the window width,
 /// and persist the (possibly clamped) value to GSettings.
-pub fn clamp_sidebar_position(paned: &gtk4::Paned, window_width: i32, settings: &gio::Settings) {
+/// Uses a generation-counter debounce so resize-time clamping stays immediate
+/// while D-Bus-backed persistence only happens once resizing settles.
+pub fn clamp_sidebar_position(
+    window: &super::LushtextWindow,
+    paned: &gtk4::Paned,
+    window_width: i32,
+) {
     if window_width <= 0 {
         return;
     }
+    if !window.imp().sidebar_visible.get() {
+        return;
+    }
+    let imp = window.imp();
     let max = window_width / 3;
     let current = paned.position();
     let clamped = current.min(max);
@@ -207,7 +485,37 @@ pub fn clamp_sidebar_position(paned: &gtk4::Paned, window_width: i32, settings: 
         paned.set_position(clamped);
     }
     let final_pos = paned.position();
-    if settings.int(keys::SIDEBAR_POSITION) != final_pos {
-        let _ = settings.set_int(keys::SIDEBAR_POSITION, final_pos);
+    imp.pending_sidebar_pos.set(final_pos);
+    if imp.last_sidebar_pos.get() == final_pos {
+        return;
     }
+
+    let generation = imp.sidebar_persist_generation.get().wrapping_add(1);
+    imp.sidebar_persist_generation.set(generation);
+
+    let window_weak = window.downgrade();
+    // 200ms debounce: coalesces resize events into one GSettings write.
+    // size_allocate fires every frame (~60Hz) during resize, and each
+    // set_int triggers a D-Bus round-trip.
+    glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+        let Some(window) = window_weak.upgrade() else {
+            return;
+        };
+        let imp = window.imp();
+        if imp.sidebar_persist_generation.get() != generation {
+            return;
+        }
+
+        let final_pos = imp.pending_sidebar_pos.get();
+        if imp.last_sidebar_pos.get() == final_pos {
+            return;
+        }
+        if imp
+            .settings
+            .set_int(keys::SIDEBAR_POSITION, final_pos)
+            .is_ok()
+        {
+            imp.last_sidebar_pos.set(final_pos);
+        }
+    });
 }

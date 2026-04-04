@@ -37,6 +37,10 @@ impl WorkspaceEntry {
             WorkspaceEntry::Directory { path } | WorkspaceEntry::File { path } => path,
         }
     }
+
+    pub fn is_dir(&self) -> bool {
+        matches!(self, WorkspaceEntry::Directory { .. })
+    }
 }
 
 /// A named workspace persisted to disk.
@@ -49,7 +53,7 @@ pub struct WorkspaceConfig {
 
 /// Top-level persisted state: all workspaces + which one is active.
 /// Stored at `$XDG_DATA_HOME/lushtext/workspaces.json`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct WorkspacesFile {
     pub active_workspace: Option<WorkspaceId>,
     pub workspaces: Vec<WorkspaceConfig>,
@@ -78,10 +82,10 @@ impl WorkspacesFile {
 
     /// Add an entry to a workspace. Deduplicates by path.
     pub fn add_entry(&mut self, ws_id: &WorkspaceId, entry: WorkspaceEntry) {
-        if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id) {
-            if !ws.entries.iter().any(|e| e.path() == entry.path()) {
-                ws.entries.push(entry);
-            }
+        if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id)
+            && !ws.entries.iter().any(|e| e.path() == entry.path())
+        {
+            ws.entries.push(entry);
         }
     }
 

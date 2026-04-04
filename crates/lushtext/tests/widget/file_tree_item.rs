@@ -10,7 +10,7 @@ use std::path::PathBuf;
 fn test_new_file() {
     ensure_gtk_init();
     let item = FileTreeItem::new(PathBuf::from("/tmp/hello.rs"), false);
-    assert_eq!(item.path(), PathBuf::from("/tmp/hello.rs"));
+    assert_eq!(item.path(), Some(PathBuf::from("/tmp/hello.rs")));
     assert!(!item.is_dir());
 }
 
@@ -18,7 +18,7 @@ fn test_new_file() {
 fn test_new_directory() {
     ensure_gtk_init();
     let item = FileTreeItem::new(PathBuf::from("/tmp/src"), true);
-    assert_eq!(item.path(), PathBuf::from("/tmp/src"));
+    assert_eq!(item.path(), Some(PathBuf::from("/tmp/src")));
     assert!(item.is_dir());
 }
 
@@ -56,7 +56,7 @@ fn test_path_preserves_full_path() {
     ensure_gtk_init();
     let long_path = PathBuf::from("/very/deeply/nested/directory/structure/file.txt");
     let item = FileTreeItem::new(long_path.clone(), false);
-    assert_eq!(item.path(), long_path);
+    assert_eq!(item.path(), Some(long_path));
 }
 
 #[test]
@@ -66,6 +66,6 @@ fn test_set_path_updates_path_and_name() {
     assert_eq!(item.name(), "old.txt");
 
     item.set_path(PathBuf::from("/tmp/new.txt"));
-    assert_eq!(item.path(), PathBuf::from("/tmp/new.txt"));
+    assert_eq!(item.path(), Some(PathBuf::from("/tmp/new.txt")));
     assert_eq!(item.name(), "new.txt");
 }

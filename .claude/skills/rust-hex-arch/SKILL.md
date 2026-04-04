@@ -323,6 +323,18 @@ richer and the service thinner.
 | **Recommendation** | **Fine for now** | **Better as domain grows** |
 ```
 
+## Comment Quality Cross-Check
+
+After completing the architectural review, verify that new and modified code follows the `rust-comments` skill for:
+
+- Module-level `//!` docs explaining architectural role and layer placement
+- `///` docs on all public types and functions, including threading model and side effects
+- GTK/GLib concepts explained at first use in each file (consult `rust-comments/references/gtk-concepts.md`)
+- Inline comments on non-obvious decisions, especially layer boundary crossings and architectural trade-offs
+- `imp` struct fields documented with purpose and lifecycle
+
+This is especially important for domain types in `model/` (invariants must be documented) and service functions (threading model and CQS classification should be clear from the doc comments).
+
 ## What NOT to Flag
 
 - `RefCell<T>` or `Cell<T>` in `imp.rs` — standard GObject interior mutability

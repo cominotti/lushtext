@@ -68,13 +68,12 @@ Never set `autoexpand = true` on `GtkTreeListModel`.
 
 ## File Size Limit
 
-**Hard limit: 1000 lines per `.rs` file.** This is a non-negotiable constraint.
+**Hard limit: 1000 lines of production code per `.rs` file.** `#[cfg(test)]` modules are excluded from this count — co-located tests are encouraged and should not trigger file splits.
 
-When a file approaches 1000 lines:
+When production code approaches 1000 lines:
 1. **Split by responsibility.** Extract cohesive groups of functions into new modules. For UI widgets, the `mod.rs` / `imp.rs` split already helps — if `mod.rs` grows, extract helpers (e.g., `actions.rs`, `dialogs.rs`). For services, split by sub-domain.
-2. **Extract `#[cfg(test)]` modules.** If the test module is large, move tests to `tests/` integration or widget tests instead of inline `#[cfg(test)]`.
-3. **Never split mid-impl block.** Keep all trait impls for a type in one file. Split by extracting private helper functions into sibling modules, then calling them from the main impl.
-4. **Prefer vertical, not horizontal splitting.** A 900-line file with one clear responsibility is better than 3 files that constantly cross-reference each other.
+2. **Never split mid-impl block.** Keep all trait impls for a type in one file. Split by extracting private helper functions into sibling modules, then calling them from the main impl.
+3. **Prefer vertical, not horizontal splitting.** A 900-line file with one clear responsibility is better than 3 files that constantly cross-reference each other.
 
 ## Testing
 

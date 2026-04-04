@@ -1,7 +1,7 @@
 [package]
 name = "lushtext-core"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
 
@@ -18,11 +18,20 @@ serde_json  = { workspace = true }
 anyhow      = { workspace = true }
 thiserror   = { workspace = true }
 dirs        = { workspace = true }
-tracing     = { workspace = true }
+tracing        = { workspace = true }
+nucleo-matcher = { workspace = true }
+simdutf8       = { workspace = true }
+unicase            = { workspace = true }
+editorconfig-parser = { workspace = true }
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [build-dependencies]
 glib-build-tools = "0.22"
 
 [dev-dependencies]
-tempfile = { workspace = true }
+tempfile  = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "benchmarks"
+harness = false

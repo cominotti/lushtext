@@ -13,7 +13,9 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run test test-unit test-int test-widget check clean help
+.PHONY: build build-debug run test test-unit test-int test-widget check clean help \
+       meson-build flatpak cargo-sources \
+       bench bench-report bench-report-full bench-baseline bench-compare
 
 .DEFAULT_GOAL := help
 
@@ -73,6 +75,33 @@ test-widget:
 	@echo "Running widget tests..."
 	$(CARGO_TEST_WIDGET)
 
+BENCH_REPORT_OUT_DIR ?= docs/benchmarks
+
+# Run benchmarks (quick, default Criterion sample size)
+bench:
+	@echo "Running benchmarks..."
+	cargo bench -p lushtext-core
+
+# Run benchmarks and generate markdown report (short sampling)
+bench-report:
+	@echo "Running benchmarks and generating report..."
+	./scripts/bench-report.sh --mode short --out-dir $(BENCH_REPORT_OUT_DIR)
+
+# Run benchmarks with full sampling and generate report
+bench-report-full:
+	@echo "Running full benchmarks and generating report..."
+	./scripts/bench-report.sh --mode full --out-dir $(BENCH_REPORT_OUT_DIR)
+
+# Save current benchmarks as baseline for comparison
+bench-baseline:
+	@echo "Saving benchmark baseline..."
+	cargo bench -p lushtext-core --bench benchmarks -- --save-baseline main
+
+# Compare current performance against saved baseline
+bench-compare:
+	@echo "Comparing against baseline..."
+	cargo bench -p lushtext-core --bench benchmarks -- --baseline main
+
 # Lint + format check
 check:
 	@echo "Running clippy..."
@@ -84,6 +113,22 @@ check:
 clean:
 	@echo "Cleaning build artifacts..."
 	cargo clean
+
+# Meson build (installed layout)
+meson-build:
+	@echo "Building with Meson..."
+	meson setup _build -Dprofile=release
+	meson compile -C _build
+
+# Flatpak build (requires flatpak-builder + org.gnome.Sdk)
+flatpak:
+	@echo "Building Flatpak..."
+	flatpak-builder --force-clean build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
+
+# Regenerate cargo-sources.json (requires flatpak-cargo-generator)
+cargo-sources: Cargo.lock
+	@echo "Generating cargo-sources.json..."
+	flatpak-cargo-generator Cargo.lock -o build-aux/cargo-sources.json
 
 # Show available targets
 help:
@@ -101,6 +146,18 @@ help:
 	@echo "  test-unit    Unit tests only (fast)"
 	@echo "  test-int     Integration tests only"
 	@echo "  test-widget  Widget tests (needs display or xvfb-run)"
+	@echo ""
+	@echo "Benchmark targets:"
+	@echo "  bench            Run Criterion benchmarks"
+	@echo "  bench-report     Run + generate markdown report (short)"
+	@echo "  bench-report-full Run + generate markdown report (full)"
+	@echo "  bench-baseline   Save current results as baseline"
+	@echo "  bench-compare    Compare against saved baseline"
+	@echo ""
+	@echo "Packaging targets:"
+	@echo "  meson-build     Meson release build (installed layout)"
+	@echo "  flatpak         Build Flatpak (needs flatpak-builder)"
+	@echo "  cargo-sources   Regenerate cargo-sources.json"
 	@echo ""
 	@echo "Other targets:"
 	@echo "  check        Clippy + format check"

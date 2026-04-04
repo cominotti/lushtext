@@ -49,6 +49,14 @@
             <property name="title" translatable="yes">Behavior</property>
 
             <child>
+              <object class="AdwSwitchRow" id="editorconfig_row">
+                <property name="title" translatable="yes">Use EditorConfig</property>
+                <property name="subtitle" translatable="yes">Apply .editorconfig files for per-file formatting</property>
+                <property name="active">true</property>
+              </object>
+            </child>
+
+            <child>
               <object class="AdwSwitchRow" id="word_wrap_row">
                 <property name="title" translatable="yes">Word Wrap</property>
                 <property name="active">true</property>

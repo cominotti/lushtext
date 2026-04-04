@@ -10,6 +10,23 @@
       <class name="status-bar"/>
     </style>
 
+    <!-- Sidebar toggle button -->
+    <child>
+      <object class="GtkToggleButton" id="sidebar_toggle_button">
+        <property name="icon-name">sidebar-show-symbolic</property>
+        <property name="tooltip-text" translatable="yes">Toggle Sidebar (F9)</property>
+        <property name="action-name">win.toggle-sidebar</property>
+        <property name="margin-start">4</property>
+        <property name="margin-top">2</property>
+        <property name="margin-bottom">2</property>
+        <property name="valign">center</property>
+        <style>
+          <class name="flat"/>
+          <class name="sidebar-toggle"/>
+        </style>
+      </object>
+    </child>
+
     <!-- Left: feedback message area -->
     <child>
       <object class="GtkLabel" id="message_label">
@@ -30,6 +47,22 @@
       <object class="GtkBox" id="metadata_box">
         <property name="orientation">horizontal</property>
         <property name="spacing">0</property>
+
+        <!-- EditorConfig indicator (hidden by default) -->
+        <child>
+          <object class="GtkLabel" id="editorconfig_label">
+            <property name="label">EditorConfig</property>
+            <property name="visible">false</property>
+            <property name="margin-start">10</property>
+            <property name="margin-end">4</property>
+            <property name="margin-top">4</property>
+            <property name="margin-bottom">4</property>
+            <style>
+              <class name="caption"/>
+              <class name="dim-label"/>
+            </style>
+          </object>
+        </child>
 
         <child>
           <object class="GtkSeparator">

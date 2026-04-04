@@ -3,22 +3,25 @@
 //! Multi-workspace sidebar: orchestrates workspace sections, persistence, and footer.
 
 pub mod file_tree_item;
+// Private implementation module (GObject pattern).
 mod imp;
 pub mod workspace_section;
 
 use crate::model::workspace::{WorkspaceEntry, WorkspaceId, WorkspacesFile};
-use crate::services::{json_store, workspace_manager};
-use glib::subclass::prelude::ObjectSubclassIsExt;
+use crate::services::{async_task, json_store, workspace_manager};
 use glib::Object;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use workspace_section::LushtextWorkspaceSection;
 
 // Re-export for window integration
 pub use file_tree_item::FileTreeItem;
 pub use workspace_section::LushtextWorkspaceSection as WorkspaceSection;
 
+// glib::wrapper! generates the public wrapper type for this widget.
 glib::wrapper! {
     pub struct LushtextSidebar(ObjectSubclass<imp::LushtextSidebar>)
         @extends gtk4::Box, gtk4::Widget,
@@ -31,11 +34,18 @@ impl LushtextSidebar {
     }
 
     /// Load workspaces from disk and build sections.
-    /// Called once from window `constructed()`.
+    /// Called once from window `constructed()`. Runs I/O on a background thread
+    /// to avoid blocking the UI on slow filesystems (NFS, USB).
     pub fn load_workspaces(&self) {
         let data_dir = json_store::data_dir();
-        let workspaces_file = workspace_manager::load(&data_dir).unwrap_or_default();
-        self.build_sections_from_file(workspaces_file);
+        crate::services::async_task::spawn_blocking_then(
+            self.clone(),
+            move || workspace_manager::load(&data_dir).unwrap_or_default(),
+            |sidebar, workspaces_file| {
+                sidebar.build_sections_from_file(workspaces_file);
+                sidebar.notify_workspace_changed();
+            },
+        );
     }
 
     /// Create a new workspace by opening a folder dialog.
@@ -53,12 +63,11 @@ impl LushtextSidebar {
 
         let sidebar_weak = self.downgrade();
         dialog.select_folder(Some(window), gtk4::gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
-                    if let Some(sidebar) = sidebar_weak.upgrade() {
-                        sidebar.handle_new_workspace(path);
-                    }
-                }
+            if let Ok(file) = result
+                && let Some(path) = file.path()
+                && let Some(sidebar) = sidebar_weak.upgrade()
+            {
+                sidebar.handle_new_workspace(path);
             }
         });
     }
@@ -90,6 +99,27 @@ impl LushtextSidebar {
         *self.imp().create_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_workspace_changed<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().workspace_changed_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Collect all directory root paths from all workspaces.
+    /// Used by the window to build the command palette's file index.
+    pub fn workspace_roots(&self) -> Vec<PathBuf> {
+        use crate::model::workspace::WorkspaceEntry;
+        self.imp()
+            .workspaces_file
+            .borrow()
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.entries.iter())
+            .filter_map(|entry| match entry {
+                WorkspaceEntry::Directory { path } => Some(path.clone()),
+                WorkspaceEntry::File { .. } => None,
+            })
+            .collect()
+    }
+
     // --- Internal orchestration ---
 
     /// Build workspace sections from a loaded WorkspacesFile.
@@ -111,7 +141,7 @@ impl LushtextSidebar {
                 &ws_config
                     .entries
                     .iter()
-                    .map(|e| e.path().to_path_buf())
+                    .map(|e| (e.path().to_path_buf(), e.is_dir()))
                     .collect::<Vec<_>>(),
             );
             imp.sections_box.append(&section);
@@ -126,7 +156,7 @@ impl LushtextSidebar {
         &self,
         ws_id: WorkspaceId,
         name: &str,
-        roots: &[PathBuf],
+        roots: &[(PathBuf, bool)],
     ) -> LushtextWorkspaceSection {
         let section = LushtextWorkspaceSection::new(ws_id);
         section.set_workspace_name(name);
@@ -145,40 +175,40 @@ impl LushtextSidebar {
         // File activated → forward to window
         let sidebar_weak = self.downgrade();
         section.connect_file_activated(move |path| {
-            if let Some(sidebar) = sidebar_weak.upgrade() {
-                if let Some(ref cb) = *sidebar.imp().file_activated_callback.borrow() {
-                    cb(path);
-                }
+            if let Some(sidebar) = sidebar_weak.upgrade()
+                && let Some(ref cb) = *sidebar.imp().file_activated_callback.borrow()
+            {
+                cb(path);
             }
         });
 
         // File renamed → forward to window
         let sidebar_weak = self.downgrade();
         section.connect_file_renamed(move |old, new| {
-            if let Some(sidebar) = sidebar_weak.upgrade() {
-                if let Some(ref cb) = *sidebar.imp().rename_callback.borrow() {
-                    cb(old, new);
-                }
+            if let Some(sidebar) = sidebar_weak.upgrade()
+                && let Some(ref cb) = *sidebar.imp().rename_callback.borrow()
+            {
+                cb(old, new);
             }
         });
 
         // File deleted → forward to window
         let sidebar_weak = self.downgrade();
         section.connect_file_deleted(move |path| {
-            if let Some(sidebar) = sidebar_weak.upgrade() {
-                if let Some(ref cb) = *sidebar.imp().delete_callback.borrow() {
-                    cb(path);
-                }
+            if let Some(sidebar) = sidebar_weak.upgrade()
+                && let Some(ref cb) = *sidebar.imp().delete_callback.borrow()
+            {
+                cb(path);
             }
         });
 
         // File created → forward to window
         let sidebar_weak = self.downgrade();
         section.connect_file_created(move |path| {
-            if let Some(sidebar) = sidebar_weak.upgrade() {
-                if let Some(ref cb) = *sidebar.imp().create_callback.borrow() {
-                    cb(path);
-                }
+            if let Some(sidebar) = sidebar_weak.upgrade()
+                && let Some(ref cb) = *sidebar.imp().create_callback.borrow()
+            {
+                cb(path);
             }
         });
 
@@ -247,9 +277,10 @@ impl LushtextSidebar {
         };
         self.persist();
 
-        let section = self.create_section(ws_id, &name, &[path]);
+        let section = self.create_section(ws_id, &name, &[(path, true)]);
         imp.sections_box.append(&section);
         imp.sections.borrow_mut().push(section);
+        self.notify_workspace_changed();
     }
 
     /// Handle "Replace Workspace Root" for an existing workspace.
@@ -277,24 +308,24 @@ impl LushtextSidebar {
         let sidebar_weak = self.downgrade();
         let ws_id = ws_id.clone();
         dialog.select_folder(Some(&window), gtk4::gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
-                    if let Some(sidebar) = sidebar_weak.upgrade() {
-                        let name = folder_display_name(&path);
+            if let Ok(file) = result
+                && let Some(path) = file.path()
+                && let Some(sidebar) = sidebar_weak.upgrade()
+            {
+                let name = folder_display_name(&path);
 
-                        sidebar.imp().workspaces_file.borrow_mut().replace_root(
-                            &ws_id,
-                            WorkspaceEntry::Directory { path: path.clone() },
-                            &name,
-                        );
-                        sidebar.persist();
+                sidebar.imp().workspaces_file.borrow_mut().replace_root(
+                    &ws_id,
+                    WorkspaceEntry::Directory { path: path.clone() },
+                    &name,
+                );
+                sidebar.persist();
 
-                        sidebar.with_section(&ws_id, |section| {
-                            section.load_roots(&[path]);
-                            section.set_workspace_name(&name);
-                        });
-                    }
-                }
+                sidebar.with_section(&ws_id, |section| {
+                    section.load_roots(&[(path, true)]);
+                    section.set_workspace_name(&name);
+                });
+                sidebar.notify_workspace_changed();
             }
         });
     }
@@ -377,26 +408,74 @@ impl LushtextSidebar {
                     let section = sections.remove(idx);
                     imp.sections_box.remove(&section);
                 }
+                drop(sections);
+                sidebar.notify_workspace_changed();
             }
         });
 
         dialog.present(Some(&root));
     }
 
-    /// Save the current workspace state to disk.
-    fn persist(&self) {
-        let data_dir = json_store::data_dir();
-        let workspaces_file = self.imp().workspaces_file.borrow();
-        if let Err(e) = workspace_manager::save(&data_dir, &workspaces_file) {
-            tracing::error!("Failed to save workspaces: {}", e);
+    /// Notify the window that workspace structure changed (for file index rebuild).
+    fn notify_workspace_changed(&self) {
+        if let Some(ref cb) = *self.imp().workspace_changed_callback.borrow() {
+            cb();
         }
+    }
+
+    /// Save the current workspace state to disk on a background thread.
+    /// Fire-and-forget: workspace persistence is non-critical and the next
+    /// mutation will overwrite the file anyway.
+    fn persist(&self) {
+        let imp = self.imp();
+        imp.persist_dirty.set(true);
+        if imp.persist_inflight.get() {
+            return;
+        }
+
+        let generation = imp.persist_generation.get().wrapping_add(1);
+        imp.persist_generation.set(generation);
+
+        let sidebar_weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(PERSIST_DEBOUNCE_MS), move || {
+            let Some(sidebar) = sidebar_weak.upgrade() else {
+                return;
+            };
+            let imp = sidebar.imp();
+            if imp.persist_inflight.get()
+                || imp.persist_generation.get() != generation
+                || !imp.persist_dirty.get()
+            {
+                return;
+            }
+
+            let data_dir = json_store::data_dir();
+            let workspaces_file = imp.workspaces_file.borrow().clone();
+            imp.persist_inflight.set(true);
+            imp.persist_dirty.set(false);
+
+            async_task::spawn_blocking_then(
+                sidebar.clone(),
+                move || workspace_manager::save(&data_dir, &workspaces_file),
+                |sidebar, result| {
+                    let imp = sidebar.imp();
+                    imp.persist_inflight.set(false);
+                    if let Err(e) = result {
+                        tracing::error!("Failed to save workspaces: {}", e);
+                    }
+                    if imp.persist_dirty.get() {
+                        sidebar.persist();
+                    }
+                },
+            );
+        });
     }
 }
 
 /// Extract a display name from a path's last component.
 fn folder_display_name(path: &Path) -> String {
     path.file_name()
-        .map(|n| n.to_string_lossy().to_string())
+        .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "New Workspace".to_string())
 }
 
@@ -405,3 +484,8 @@ impl Default for LushtextSidebar {
         Self::new()
     }
 }
+
+/// Debounce interval for persisting workspace changes to disk (ms).
+/// 150ms coalesces rapid mutations (e.g., adding multiple folders)
+/// into a single write while keeping perceived save latency low.
+const PERSIST_DEBOUNCE_MS: u64 = 150;

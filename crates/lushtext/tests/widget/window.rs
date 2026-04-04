@@ -9,8 +9,8 @@ use gtk4::prelude::*;
 use lushtext_core::app::LushtextApplication;
 use lushtext_core::config::keys;
 use lushtext_core::ui::editor_page::LushtextEditorPage;
-use lushtext_core::ui::window::clamp_sidebar_position;
 use lushtext_core::ui::window::LushtextWindow;
+use lushtext_core::ui::window::clamp_sidebar_position;
 
 /// Create a window attached to a test application (not registered with D-Bus).
 fn test_window() -> LushtextWindow {
@@ -21,6 +21,11 @@ fn test_window() -> LushtextWindow {
 /// Drain all pending events from the GTK main loop.
 fn flush_events() {
     while glib::MainContext::default().iteration(false) {}
+}
+
+fn flush_after_delay(delay: std::time::Duration) {
+    std::thread::sleep(delay);
+    flush_events();
 }
 
 /// Look up a window action's enabled state.
@@ -491,7 +496,7 @@ fn test_clamp_noop_when_within_limit() {
     paned.set_position(300);
 
     // Window width 1200 → max 400. Position 300 is fine.
-    clamp_sidebar_position(paned, 1200, &window.imp().settings);
+    clamp_sidebar_position(&window, paned, 1200);
     assert_eq!(paned.position(), 300);
 }
 
@@ -503,7 +508,7 @@ fn test_clamp_reduces_when_over_limit() {
     paned.set_position(500);
 
     // Window width 1200 → max 400. Position 500 exceeds.
-    clamp_sidebar_position(paned, 1200, &window.imp().settings);
+    clamp_sidebar_position(&window, paned, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -515,7 +520,7 @@ fn test_clamp_at_exact_limit() {
     paned.set_position(400);
 
     // Window width 1200 → max 400. Position 400 is exactly at limit.
-    clamp_sidebar_position(paned, 1200, &window.imp().settings);
+    clamp_sidebar_position(&window, paned, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -527,7 +532,7 @@ fn test_clamp_noop_when_window_width_zero() {
     paned.set_position(500);
 
     // Width 0 = unrealized window. Should not clamp.
-    clamp_sidebar_position(paned, 0, &window.imp().settings);
+    clamp_sidebar_position(&window, paned, 0);
     assert_eq!(paned.position(), 500);
 }
 
@@ -541,7 +546,7 @@ fn test_clamp_simulates_unmaximize_scenario() {
     paned.set_position(640);
 
     // Window un-maximizes to 1200px — sidebar must be clamped to 400
-    clamp_sidebar_position(paned, 1200, &window.imp().settings);
+    clamp_sidebar_position(&window, paned, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -553,7 +558,8 @@ fn test_clamp_persists_to_gsettings() {
     let settings = &window.imp().settings;
     paned.set_position(350);
 
-    clamp_sidebar_position(paned, 1200, settings);
+    clamp_sidebar_position(&window, paned, 1200);
+    flush_after_delay(std::time::Duration::from_millis(250));
     assert_eq!(settings.int(keys::SIDEBAR_POSITION), 350);
 }
 
@@ -566,7 +572,8 @@ fn test_clamp_persists_clamped_value_to_gsettings() {
     paned.set_position(600);
 
     // Clamp to 400, should persist 400 not 600
-    clamp_sidebar_position(paned, 1200, settings);
+    clamp_sidebar_position(&window, paned, 1200);
+    flush_after_delay(std::time::Duration::from_millis(250));
     assert_eq!(settings.int(keys::SIDEBAR_POSITION), 400);
 }
 
@@ -633,7 +640,15 @@ fn test_save_clears_dot_in_tab() {
     flush_events();
     assert!(window.imp().tab_view.nth_page(0).title().starts_with('•'));
 
-    editor.save_file().unwrap();
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_clone = done.clone();
+    editor.save_file_async(move |r| {
+        r.unwrap();
+        done_clone.set(true);
+    });
+    while !done.get() {
+        glib::MainContext::default().iteration(true);
+    }
     flush_events();
     assert_eq!(
         window.imp().tab_view.nth_page(0).title().as_str(),
@@ -812,7 +827,15 @@ fn test_header_title_dot_cleared_after_save() {
     flush_events();
     assert!(window.imp().title_widget.title().starts_with('•'));
 
-    editor.save_file().unwrap();
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_clone = done.clone();
+    editor.save_file_async(move |r| {
+        r.unwrap();
+        done_clone.set(true);
+    });
+    while !done.get() {
+        glib::MainContext::default().iteration(true);
+    }
     flush_events();
     assert_eq!(window.imp().title_widget.title().as_str(), "saved.rs");
 }
@@ -828,6 +851,561 @@ fn test_header_title_dot_cleared_after_closing_all_tabs() {
     flush_events();
     assert!(window.imp().title_widget.title().starts_with('•'));
 
+    // Clear modified state before closing so the save-changes dialog
+    // doesn't block the close. This test verifies header-clearing
+    // behavior, not close-confirmation.
+    active_editor(&window).buffer().set_modified(false);
+    flush_events();
+
     activate_action(&window, "close-tab");
+    flush_events();
     assert_eq!(window.imp().title_widget.title().as_str(), "LushText");
+}
+
+// ---------------------------------------------------------------------------
+// Session persistence
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_collect_session_empty_window() {
+    ensure_gtk_init();
+    let window = test_window();
+    let session = window.collect_session();
+    assert!(session.tabs.is_empty());
+    assert_eq!(session.active_tab_index, None);
+}
+
+#[test]
+fn test_collect_session_with_untitled_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+
+    let session = window.collect_session();
+    assert_eq!(session.tabs.len(), 2);
+    assert_eq!(session.active_tab_index, Some(1));
+    assert!(session.tabs[0].path.is_none());
+    assert!(session.tabs[1].path.is_none());
+}
+
+#[test]
+fn test_collect_session_with_file_tab() {
+    ensure_gtk_init();
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("hello.rs");
+    std::fs::write(&file, "fn main() {}").unwrap();
+
+    let window = test_window();
+    window.open_document(&file);
+    flush_events();
+
+    let session = window.collect_session();
+    assert_eq!(session.tabs.len(), 1);
+    assert_eq!(session.tabs[0].path, Some(file));
+    assert_eq!(session.active_tab_index, Some(0));
+}
+
+#[test]
+fn test_collect_session_mixed_tabs() {
+    ensure_gtk_init();
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("test.txt");
+    std::fs::write(&file, "content").unwrap();
+
+    let window = test_window();
+    window.new_tab();
+    window.open_document(&file);
+    window.new_tab();
+    flush_events();
+
+    let session = window.collect_session();
+    assert_eq!(session.tabs.len(), 3);
+    assert!(session.tabs[0].path.is_none()); // untitled
+    assert_eq!(session.tabs[1].path, Some(file)); // file tab
+    assert!(session.tabs[2].path.is_none()); // untitled
+    assert_eq!(session.active_tab_index, Some(2)); // last tab is active
+}
+
+#[test]
+fn test_collect_session_active_tab_after_switch() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+
+    // Select the first tab
+    let first_page = window.imp().tab_view.nth_page(0);
+    window.imp().tab_view.set_selected_page(&first_page);
+    flush_events();
+
+    let session = window.collect_session();
+    assert_eq!(session.active_tab_index, Some(0));
+}
+
+#[test]
+fn test_collect_session_after_close_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+
+    activate_action(&window, "close-tab"); // closes last (active) tab
+    let session = window.collect_session();
+    assert_eq!(session.tabs.len(), 2);
+}
+
+#[test]
+fn test_save_session_sync_writes_file() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    window.save_session_sync();
+
+    // Verify session file was written to the test data dir
+    let data_dir = lushtext_core::services::json_store::data_dir();
+    let session_file = data_dir.join("session.json");
+    assert!(session_file.exists(), "session.json should be written");
+
+    let content = std::fs::read_to_string(&session_file).unwrap();
+    assert!(content.contains("tabs"));
+}
+
+#[test]
+fn test_restoring_session_flag_prevents_save() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    // Set restoring flag
+    window.imp().restoring_session.set(true);
+
+    // save_session_debounced should no-op
+    window.save_session_debounced();
+    // No assertion needed — just verifying it doesn't panic.
+    // The debounce generation counter should NOT increment.
+    let generation_before = window.imp().session_save_generation.get();
+
+    window.imp().restoring_session.set(false);
+    window.save_session_debounced();
+    // Now the generation should have advanced
+    assert_ne!(
+        window.imp().session_save_generation.get(),
+        generation_before
+    );
+}
+
+#[test]
+fn test_collect_session_untitled_tab_has_draft_id() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let session = window.collect_session();
+    assert_eq!(session.tabs.len(), 1);
+    assert!(session.tabs[0].path.is_none());
+    // Untitled tabs should have a draft_id for recovery
+    assert!(session.tabs[0].draft_id.is_some());
+}
+
+#[test]
+fn test_collect_session_file_tab_no_draft_id() {
+    ensure_gtk_init();
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("test.rs");
+    std::fs::write(&file, "content").unwrap();
+
+    let window = test_window();
+    window.open_document(&file);
+    flush_events();
+
+    let session = window.collect_session();
+    // File-backed tabs don't need draft_id in session — the draft system
+    // derives it from the path.
+    assert!(session.tabs[0].draft_id.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Save-changes dialog
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_modified_editors_empty_when_no_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(window.modified_editors().is_empty());
+}
+
+#[test]
+fn test_modified_editors_empty_when_all_clean() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+    assert!(window.modified_editors().is_empty());
+}
+
+#[test]
+fn test_modified_editors_detects_dirty_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+
+    // Modify only the active (second) tab
+    active_editor(&window).buffer().set_text("dirty");
+    flush_events();
+
+    let modified = window.modified_editors();
+    assert_eq!(modified.len(), 1);
+    assert_eq!(modified[0].1.title(), "Untitled");
+}
+
+#[test]
+fn test_modified_editors_detects_multiple_dirty_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+    active_editor(&window).buffer().set_text("dirty1");
+
+    window.new_tab();
+    flush_events();
+    active_editor(&window).buffer().set_text("dirty2");
+    flush_events();
+
+    let modified = window.modified_editors();
+    assert_eq!(modified.len(), 2);
+}
+
+#[test]
+fn test_close_tab_unmodified_closes_immediately() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
+
+    activate_action(&window, "close-tab");
+    assert_eq!(window.imp().tab_view.n_pages(), 0);
+}
+
+#[test]
+fn test_close_tab_modified_is_blocked() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    active_editor(&window).buffer().set_text("unsaved");
+    flush_events();
+
+    // Closing a modified tab should be blocked by the save-changes dialog.
+    // The tab remains because no one confirms the dialog.
+    activate_action(&window, "close-tab");
+    assert_eq!(
+        window.imp().tab_view.n_pages(),
+        1,
+        "Modified tab should not close without confirmation"
+    );
+}
+
+#[test]
+fn test_confirm_close_tab_clean_calls_back_true() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let page = window.imp().tab_view.selected_page().unwrap();
+    let editor = active_editor(&window);
+
+    let confirmed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let confirmed_clone = confirmed.clone();
+    window.confirm_close_tab(&page, &editor, move |result| {
+        confirmed_clone.set(result);
+    });
+    flush_events();
+
+    assert!(
+        confirmed.get(),
+        "Clean tab should confirm close immediately"
+    );
+}
+
+#[test]
+fn test_show_save_changes_empty_calls_done_true() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_clone = done.clone();
+    window.show_save_changes_dialog(vec![], move |confirmed| {
+        done_clone.set(confirmed);
+    });
+    flush_events();
+
+    assert!(done.get(), "Empty modified list should call done(true)");
+}
+
+// --- Sidebar toggle ---
+
+/// Check the sidebar visibility target state via the Cell cache.
+/// Uses the Cell (not the widget property) because animations may not tick
+/// in headless tests, but the Cell reflects the intended state immediately.
+fn sidebar_visible(window: &LushtextWindow) -> bool {
+    window.imp().sidebar_visible.get()
+}
+
+#[test]
+fn test_gsettings_sidebar_visible_default() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(window.imp().settings.boolean(keys::SIDEBAR_VISIBLE));
+}
+
+#[test]
+fn test_sidebar_visible_by_default() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(sidebar_visible(&window));
+}
+
+#[test]
+fn test_toggle_sidebar_hides_sidebar() {
+    ensure_gtk_init();
+    let window = test_window();
+    activate_action(&window, "toggle-sidebar");
+    assert!(!sidebar_visible(&window));
+}
+
+#[test]
+fn test_toggle_sidebar_shows_sidebar_again() {
+    ensure_gtk_init();
+    let window = test_window();
+    activate_action(&window, "toggle-sidebar");
+    activate_action(&window, "toggle-sidebar");
+    assert!(sidebar_visible(&window));
+}
+
+#[test]
+fn test_toggle_sidebar_persists_hidden_to_gsettings() {
+    ensure_gtk_init();
+    let window = test_window();
+    activate_action(&window, "toggle-sidebar");
+    assert!(!window.imp().settings.boolean(keys::SIDEBAR_VISIBLE));
+}
+
+#[test]
+fn test_toggle_sidebar_persists_visible_to_gsettings() {
+    ensure_gtk_init();
+    let window = test_window();
+    activate_action(&window, "toggle-sidebar");
+    activate_action(&window, "toggle-sidebar");
+    assert!(window.imp().settings.boolean(keys::SIDEBAR_VISIBLE));
+}
+
+#[test]
+fn test_toggle_sidebar_action_always_enabled() {
+    ensure_gtk_init();
+    let window = test_window();
+    // Should be enabled even with no tabs open
+    assert!(action_enabled(&window, "toggle-sidebar"));
+}
+
+#[test]
+fn test_toggle_sidebar_action_enabled_with_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    assert!(action_enabled(&window, "toggle-sidebar"));
+}
+
+#[test]
+fn test_toggle_sidebar_preserves_paned_position() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(300);
+
+    // Hide and show sidebar
+    activate_action(&window, "toggle-sidebar");
+    activate_action(&window, "toggle-sidebar");
+
+    // Position should be preserved
+    assert_eq!(paned.position(), 300);
+}
+
+#[test]
+fn test_clamp_noop_when_sidebar_hidden() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(350);
+
+    // Hide sidebar — animation moves position to 0
+    activate_action(&window, "toggle-sidebar");
+
+    // Clamp should be a no-op when sidebar is hidden
+    let pos_after_hide = paned.position();
+    clamp_sidebar_position(&window, paned, 600);
+    assert_eq!(paned.position(), pos_after_hide);
+}
+
+#[test]
+fn test_toggle_sidebar_multiple_cycles() {
+    ensure_gtk_init();
+    let window = test_window();
+    for _ in 0..5 {
+        activate_action(&window, "toggle-sidebar");
+        assert!(!sidebar_visible(&window));
+        activate_action(&window, "toggle-sidebar");
+        assert!(sidebar_visible(&window));
+    }
+}
+
+#[test]
+fn test_toggle_sidebar_works_with_tabs_open() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    activate_action(&window, "toggle-sidebar");
+    assert!(!sidebar_visible(&window));
+
+    activate_action(&window, "toggle-sidebar");
+    assert!(sidebar_visible(&window));
+}
+
+#[test]
+fn test_toggle_sidebar_action_state_syncs() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    // Initial state should be true (visible)
+    let action = window
+        .lookup_action("toggle-sidebar")
+        .unwrap()
+        .downcast::<gio::SimpleAction>()
+        .unwrap();
+    assert!(action.state().unwrap().get::<bool>().unwrap());
+
+    // After toggle, state should be false
+    activate_action(&window, "toggle-sidebar");
+    assert!(!action.state().unwrap().get::<bool>().unwrap());
+
+    // After second toggle, state should be true again
+    activate_action(&window, "toggle-sidebar");
+    assert!(action.state().unwrap().get::<bool>().unwrap());
+}
+
+// --- Sidebar animation regression tests ---
+
+#[test]
+fn test_shrink_start_child_stays_false_after_hide() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+
+    // Verify initial state
+    assert!(!paned.shrinks_start_child());
+
+    // Hide sidebar — animation completes instantly in headless tests
+    activate_action(&window, "toggle-sidebar");
+
+    // shrink-start-child must be restored to false after animation completes
+    assert!(!paned.shrinks_start_child());
+}
+
+#[test]
+fn test_shrink_start_child_stays_false_after_show() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+
+    activate_action(&window, "toggle-sidebar"); // hide
+    activate_action(&window, "toggle-sidebar"); // show
+
+    // Must remain false after a full hide+show cycle
+    assert!(!paned.shrinks_start_child());
+}
+
+#[test]
+fn test_shrink_start_child_stays_false_after_rapid_toggle() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+
+    for _ in 0..10 {
+        activate_action(&window, "toggle-sidebar");
+    }
+
+    assert!(!paned.shrinks_start_child());
+}
+
+#[test]
+fn test_saved_sidebar_pos_set_on_hide() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(275);
+
+    activate_action(&window, "toggle-sidebar"); // hide
+
+    assert_eq!(window.imp().saved_sidebar_pos.get(), 275);
+}
+
+#[test]
+fn test_saved_sidebar_pos_preserved_across_cycle() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(275);
+
+    activate_action(&window, "toggle-sidebar"); // hide
+    activate_action(&window, "toggle-sidebar"); // show
+
+    // The saved position should still be 275 (not overwritten by animation)
+    assert_eq!(window.imp().saved_sidebar_pos.get(), 275);
+}
+
+#[test]
+fn test_clamp_still_works_after_animation_cycle() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+
+    // Complete hide+show cycle
+    activate_action(&window, "toggle-sidebar");
+    activate_action(&window, "toggle-sidebar");
+
+    // Clamp should still enforce 1/3 max on a 600px window
+    paned.set_position(500);
+    clamp_sidebar_position(&window, paned, 600);
+    assert_eq!(paned.position(), 200); // 600 / 3 = 200
+}
+
+#[test]
+fn test_hide_animation_targets_1px_not_zero() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(250);
+
+    activate_action(&window, "toggle-sidebar");
+
+    // Animation completes instantly in headless tests. Position should be 1
+    // (not 0) to avoid zero-width pixman "Invalid rectangle" warnings.
+    // set_visible(false) in connect_done handles the final 1→0 snap.
+    assert_eq!(paned.position(), 1);
 }

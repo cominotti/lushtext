@@ -6,6 +6,11 @@
     <property name="orientation">vertical</property>
     <property name="vexpand">true</property>
 
+    <!-- Info bar: contextual warnings/errors above the editor -->
+    <child>
+      <object class="LushtextInfoBar" id="info_bar"/>
+    </child>
+
     <child>
       <object class="GtkOverlay" id="overlay">
         <property name="vexpand">true</property>

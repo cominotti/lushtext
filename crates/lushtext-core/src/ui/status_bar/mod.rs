@@ -4,8 +4,8 @@
 
 mod imp;
 
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::Object;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 use std::time::Duration;
@@ -49,15 +49,15 @@ impl LushtextStatusBar {
 
         // Bump generation and schedule auto-dismiss. Stale timers (from
         // previous messages) will see a mismatched generation and no-op.
-        let gen = imp.message_generation.get().wrapping_add(1);
-        imp.message_generation.set(gen);
+        let generation = imp.message_generation.get().wrapping_add(1);
+        imp.message_generation.set(generation);
 
         let weak = self.downgrade();
         glib::timeout_add_local_once(Duration::from_secs(MESSAGE_DISMISS_SECS), move || {
-            if let Some(bar) = weak.upgrade() {
-                if bar.imp().message_generation.get() == gen {
-                    bar.clear_message();
-                }
+            if let Some(bar) = weak.upgrade()
+                && bar.imp().message_generation.get() == generation
+            {
+                bar.clear_message();
             }
         });
     }
@@ -76,6 +76,11 @@ impl LushtextStatusBar {
             Some(b) => self.imp().file_size_label.set_label(&format_file_size(b)),
             None => self.imp().file_size_label.set_label(""),
         }
+    }
+
+    /// Show or hide the "EditorConfig" indicator in the status bar.
+    pub fn set_editorconfig_active(&self, active: bool) {
+        self.imp().editorconfig_label.set_visible(active);
     }
 
     /// Show or hide the right-side metadata section (encoding + file size).

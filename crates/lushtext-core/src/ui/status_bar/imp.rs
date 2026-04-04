@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use gtk4::subclass::prelude::*;
-use gtk4::{self, glib, CompositeTemplate};
+use gtk4::{self, CompositeTemplate, glib};
 use std::cell::Cell;
 
 #[derive(Default, CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/status-bar.ui")]
 pub struct LushtextStatusBar {
     #[template_child]
+    pub sidebar_toggle_button: TemplateChild<gtk4::ToggleButton>,
+    #[template_child]
     pub message_label: TemplateChild<gtk4::Label>,
     #[template_child]
     pub metadata_box: TemplateChild<gtk4::Box>,
+    #[template_child]
+    pub editorconfig_label: TemplateChild<gtk4::Label>,
     #[template_child]
     pub encoding_label: TemplateChild<gtk4::Label>,
     #[template_child]

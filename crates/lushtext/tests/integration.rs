@@ -18,3 +18,9 @@ mod session;
 
 #[path = "integration/file_tree.rs"]
 mod file_tree;
+
+#[path = "integration/draft.rs"]
+mod draft;
+
+#[path = "integration/editorconfig.rs"]
+mod editorconfig;

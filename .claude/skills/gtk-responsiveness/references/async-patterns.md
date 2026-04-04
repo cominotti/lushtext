@@ -35,12 +35,17 @@ No `ThreadGuard` or `idle_add_once` needed — the result is logged, not display
 The standard `spawn_blocking_then` pattern. Use for any I/O that needs to update the UI afterward.
 
 ```rust
-// Loading a file into the editor
+// Loading a file into the editor (simplified — actual code also has size checks and cancellation)
 let path = path.to_path_buf();
 async_task::spawn_blocking_then(
     self.clone(),
-    move || -> anyhow::Result<String> {
-        Ok(std::fs::read_to_string(&path)?)
+    move || -> Result<String, LoadError> {
+        let bytes = std::fs::read(&path).map_err(|e| LoadError::Io(e.to_string()))?;
+        match simdutf8::basic::from_utf8(&bytes) {
+            // SAFETY: simdutf8 just confirmed valid UTF-8
+            Ok(_) => Ok(unsafe { String::from_utf8_unchecked(bytes) }),
+            Err(_) => Err(LoadError::InvalidUtf8(path)),
+        }
     },
     |editor, result| {
         match result {
@@ -51,7 +56,6 @@ async_task::spawn_blocking_then(
             }
             Err(e) => {
                 tracing::error!("Load failed: {e}");
-                // TODO: show error in UI (toast or status bar)
             }
         }
     },
@@ -59,6 +63,8 @@ async_task::spawn_blocking_then(
 ```
 
 **When to use**: File loads, directory scans, any I/O that feeds into UI state.
+
+**RAM note**: The content `String` lives on the background thread until `glib::idle_add_once` delivers it to the main thread. During the handoff, there are briefly two references to the same allocation (background closure + idle closure), but Rust's move semantics ensure only one owner at a time — no duplication. Peak memory = 1x file size (the String) + whatever GtkTextBuffer allocates during `set_text()`.
 
 ## 3. Cancellable Background Work {#3-cancellable}
 
@@ -107,6 +113,8 @@ if let Some(token) = self.imp().cancel_token.borrow().as_ref() {
 ```
 
 **When to use**: Large file loads, operations that become stale when the user navigates away.
+
+**RAM note**: When cancelled, the `Ok(None)` return drops the read content immediately on the background thread — the String is never transferred to the main thread. This is important for large files: cancelling a 100MB load reclaims ~100MB on the background thread instead of keeping it alive through the idle_add_once handoff. The chunked reading variant is even better — if cancelled mid-read, only the partially-read content (~file_size * progress) is allocated, not the full file.
 
 ## 4. Periodic Background Check {#4-periodic}
 
@@ -241,7 +249,9 @@ for tab in session.tabs.iter() {
 }
 ```
 
-**Key**: Each `spawn_blocking_then` spawns its own `std::thread`. For restoring 5-10 tabs, this is fine. For 100+ concurrent operations, consider a thread pool (but that's unlikely in a text editor).
+**Key**: Each `spawn_blocking_then` spawns its own `std::thread`, but the global concurrency guard (`MAX_CONCURRENT_SPAWNS = 8`) automatically defers excess spawns via `timeout_add_local_once(50ms)`. No manual batching is needed — the guard caps peak thread memory at 8 * max_file_size.
+
+**RAM note**: With the spawn guard, at most 8 file reads are concurrent. For session restore with 50 tabs averaging 500KB each, peak memory is ~4MB (8 * 500KB), not 25MB. Excess spawns queue up and execute as threads complete.
 
 ---
 

@@ -17,7 +17,25 @@ use gtk4::gio;
 
 /// Register the compiled GResource bundle. Must be called before constructing
 /// any widgets that use composite templates.
+///
+/// Installed/Flatpak builds: loads from the Meson-installed `.gresource` file.
+/// Dev builds: falls back to the `build.rs`-compiled bundle via `include_bytes!`.
 pub fn register_resources() {
+    // Installed build: load from Meson-installed path (panic on failure — a
+    // missing .gresource means a broken installation, not a reason to fall back)
+    if let Some(pkgdatadir) = config::PKGDATADIR {
+        let path = std::path::Path::new(pkgdatadir).join("lushtext.gresource");
+        let resource = gio::Resource::load(&path).unwrap_or_else(|e| {
+            panic!(
+                "failed to load installed GResource at {}: {e}",
+                path.display()
+            )
+        });
+        gio::resources_register(&resource);
+        return;
+    }
+
+    // Dev build: embedded resources from build.rs
     let resource_bytes = glib::Bytes::from_static(include_bytes!(concat!(
         env!("OUT_DIR"),
         "/lushtext.gresource"
@@ -39,10 +57,18 @@ pub fn run() -> ExitCode {
 /// For dev/uninstalled builds, point GLib to the compiled GSettings schemas
 /// in the source tree. Installed builds use the system schema directory.
 pub fn init_schema_dir() {
+    // Installed builds: schema is in the system directory via Meson install
+    if config::PKGDATADIR.is_some() {
+        return;
+    }
+
+    // Dev builds: point to source tree's compiled schemas
     if std::env::var_os("GSETTINGS_SCHEMA_DIR").is_none() {
         let dev_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
         if dev_dir.join("gschemas.compiled").exists() {
-            // SAFETY: called once at startup before any other threads.
+            // SAFETY: set_var is unsafe because concurrent env access is UB.
+            // This runs during run(), before app.run() starts the GTK main
+            // loop and before any background threads are spawned.
             unsafe { std::env::set_var("GSETTINGS_SCHEMA_DIR", &dev_dir) };
         }
     }
@@ -63,7 +89,7 @@ pub(crate) fn load_css() {
     );
 
     // Font customization provider — targets .monospace widgets (all GtkSourceViews).
-    // Updated reactively via GSettings; overrides at USER priority.
+    // USER priority (higher than APPLICATION) so custom font overrides the base stylesheet.
     let font_provider = gtk4::CssProvider::new();
     gtk4::style_context_add_provider_for_display(
         &display,
@@ -86,6 +112,7 @@ fn apply_font_css(provider: &gtk4::CssProvider, settings: &gio::Settings) {
         let font_str = settings.string(config::keys::CUSTOM_FONT);
         let desc = pango::FontDescription::from_string(&font_str);
         let family = desc.family().unwrap_or_else(|| "Monospace".into());
+        // Pango stores font sizes in 1/1024 pt (PANGO_SCALE); divide to get CSS-compatible points.
         let size_pt = desc.size() as f64 / pango::SCALE as f64;
         let css = format!(".monospace {{ font-family: \"{family}\"; font-size: {size_pt}pt; }}");
         provider.load_from_string(&css);
