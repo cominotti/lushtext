@@ -142,16 +142,16 @@ fn make_workspaces_file(n_workspaces: usize, entries_per: usize) -> WorkspacesFi
 /// Build a `SessionData` with the given number of tabs.
 fn make_session_data(n_tabs: usize) -> SessionData {
     SessionData {
-        workspace_id: WorkspaceId::new("ws-bench"),
         tabs: (0..n_tabs)
             .map(|i| SessionTab {
-                path: PathBuf::from(format!("/home/user/project/src/file_{i}.rs")),
+                path: Some(PathBuf::from(format!("/home/user/project/src/file_{i}.rs"))),
+                draft_id: None,
                 cursor_line: (i as u32) % 500,
                 cursor_col: 0,
                 scroll_line: 0,
             })
             .collect(),
-        active_tab: Some(PathBuf::from("/home/user/project/src/file_0.rs")),
+        active_tab_index: Some(0),
     }
 }
 

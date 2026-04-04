@@ -80,7 +80,10 @@ impl LushtextWindow {
                 manifest.upsert(DraftEntry {
                     draft_id,
                     original_path: Some(path.to_path_buf()),
-                    original_mtime_secs: editor_io::mtime_secs(path),
+                    // Mtime populated later by autosave (background thread) or
+                    // load_file_async — avoids blocking the main thread with
+                    // stat() during session restore.
+                    original_mtime_secs: None,
                     saved_at_secs: 0,
                 });
             }

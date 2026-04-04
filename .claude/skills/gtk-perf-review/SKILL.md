@@ -48,7 +48,7 @@ This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent inte
 
 1. **Identify changed files** — run `git diff --name-only` to get the list of changed `.rs` files. If reviewing a PR, use the PR's file list instead.
 
-2. **Dispatch three subagents in parallel** via the Agent tool:
+2. **Dispatch three subagents in parallel** via the Agent tool. In each prompt below, replace `{changed_files}` with the actual file list from step 1 — paste the `git diff --name-only` output verbatim. Do not leave `{changed_files}` as a literal string.
 
    **Subagent A: Responsiveness Review**
    ```
@@ -107,11 +107,11 @@ This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent inte
    ```
 
 3. **Merge reports** — when all three subagents return, produce the unified report:
-   - Combine all findings from all three reports
+   - Combine all findings from all three reports verbatim — do not add new findings beyond what the subagents reported
    - **Deduplicate**: if multiple subagents flag the same issue (e.g., responsiveness flags `fs::write` on main thread, scale flags missing file size check), keep all perspectives but group them under one heading
-   - **Apply the readability gate**: before including any [RECOMMEND] or [CONSIDER] finding, ask: "does the suggested fix make the code harder to read?" If yes, either reframe the suggestion to preserve readability or drop it
+   - **Drop excluded items**: remove any finding that falls under the "What We Do NOT Flag" list above
    - Sort by severity: FLAG → RECOMMEND → CONSIDER → GOOD
-   - Add a **Cross-Cutting Summary** section noting where responsiveness, scale, and code quality concerns overlap
+   - If findings from different subagents affect the same file and line, group them under a **Cross-Cutting Concerns** heading
 
 ## Unified Report Format
 
@@ -151,6 +151,6 @@ Patterns from all three reviews that are correct and should be preserved.
 
 ## When NOT to Dispatch
 
-For trivially small changes (e.g., fixing a typo in a comment, updating a string literal), skip the subagent dispatch entirely and note: "No performance-sensitive code changed — no review needed."
+For trivially small changes, skip the subagent dispatch entirely and note: "No performance-sensitive code changed — no review needed."
 
-The heuristic: if no changed file is in `ui/`, `services/`, `model/`, `benches/`, or contains I/O, signal handlers, search/index code, or error handling, the change is not performance-relevant.
+The rule: skip if no changed `.rs` file has a path under `src/ui/`, `src/services/`, `src/model/`, or `benches/`. Do not inspect file content to decide whether to skip — use paths only. Non-Rust file changes (docs, config, XML, CSS) are never performance-relevant.

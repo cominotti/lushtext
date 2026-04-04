@@ -54,18 +54,16 @@ impl LushtextEditorPage {
             self.clone(),
             move || editor_io::load_text_file(&file_path, &cancel),
             |editor, result| match result {
-                Ok((content, size, check)) => {
-                    editor.imp().file_size.set(Some(size));
-                    editor.imp().size_check.set(check);
+                Ok(loaded) => {
+                    editor.imp().file_size.set(Some(loaded.size));
+                    editor.imp().size_check.set(loaded.size_check);
                     editor.imp().evicted.set(false);
-                    editor.apply_loaded_content(&content, check);
+                    editor.apply_loaded_content(&loaded.content, loaded.size_check);
                     editor.apply_restore_position();
                     editor.notify_estimated_memory_changed();
-                    // Update mtime baseline after load and dismiss any
-                    // "externally changed" bar that triggered this reload.
-                    if let Some(ref path) = *editor.imp().file_path.borrow() {
-                        editor.update_last_known_mtime(path);
-                    }
+                    // Mtime baseline from the metadata already read on the
+                    // background thread — no extra stat() on the main thread.
+                    editor.imp().last_known_mtime.set(loaded.mtime);
                     editor.info_bar().dismiss_all();
                     // Fire the one-shot load-completed callback. Used by the
                     // window to defer draft recovery until after file content
@@ -359,7 +357,8 @@ impl LushtextEditorPage {
         let Some(ref path) = *self.imp().file_path.borrow() else {
             return;
         };
-        self.update_last_known_mtime(path);
+        // Mtime baseline is set by load_file_async's then-callback (from the
+        // metadata already read on the background thread). No extra stat() here.
 
         let file = gio::File::for_path(path);
         let monitor = match file.monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
@@ -394,14 +393,26 @@ impl LushtextEditorPage {
                 if editor.imp().monitor_generation.get() != generation {
                     return;
                 }
-                // Compare mtime to confirm a real change occurred.
                 let Some(ref path) = *editor.imp().file_path.borrow() else {
                     return;
                 };
-                let current_mtime = editor_io::mtime_secs(path);
-                if current_mtime != editor.imp().last_known_mtime.get() {
-                    editor.info_bar().show_externally_changed();
+                let last_known = editor.imp().last_known_mtime.get();
+                // Skip if no baseline yet (load still in progress).
+                if last_known.is_none() {
+                    return;
                 }
+                // Compare mtime on a background thread to avoid blocking the
+                // GTK main thread with a stat() syscall (slow on NFS/FUSE).
+                let path = path.clone();
+                async_task::spawn_blocking_then(
+                    editor.clone(),
+                    move || editor_io::mtime_secs(&path),
+                    move |editor, current_mtime| {
+                        if current_mtime != last_known {
+                            editor.info_bar().show_externally_changed();
+                        }
+                    },
+                );
             });
         });
 
@@ -416,10 +427,6 @@ impl LushtextEditorPage {
     }
 
     /// Record the file's current mtime as the baseline for change detection.
-    fn update_last_known_mtime(&self, path: &Path) {
-        self.imp().last_known_mtime.set(editor_io::mtime_secs(path));
-    }
-
     fn write_snapshot_async(
         &self,
         path: PathBuf,
@@ -440,15 +447,14 @@ impl LushtextEditorPage {
                 }
 
                 match result {
-                    Ok(size) => {
+                    Ok((size, mtime)) => {
                         editor.imp().file_size.set(Some(size));
                         editor.imp().size_check.set(FileSizeCheck::classify(size));
                         editor.notify_estimated_memory_changed();
-                        // Update mtime baseline after save so the file monitor
-                        // doesn't misinterpret our own write as an external change.
-                        if let Some(ref path) = *editor.imp().file_path.borrow() {
-                            editor.update_last_known_mtime(path);
-                        }
+                        // Mtime baseline from the background write — prevents
+                        // the file monitor from misinterpreting our own write
+                        // as an external change.
+                        editor.imp().last_known_mtime.set(mtime);
                         callback(Ok(()));
                     }
                     Err(e) => {

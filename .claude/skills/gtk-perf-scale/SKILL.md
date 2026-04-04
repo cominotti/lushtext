@@ -44,21 +44,14 @@ This skill uses **parallel subagents** for independent review concerns. Do NOT a
 ### Workflow
 
 1. **Identify changed files** — run `git diff --name-only` (or use the diff context if already available)
-2. **Match trigger patterns** — for each subagent, check if any changed files match its triggers
-3. **Always include ram-budget-audit** — architectural memory concerns are cross-cutting
-4. **Dispatch threshold** — if fewer than 2 subagents are relevant, run the review inline using only the relevant subagent's criteria (subagent overhead not justified for a single focused concern)
-5. **Dispatch relevant subagents in parallel** via the Agent tool
-6. **Aggregate results** — merge findings, deduplicate, produce the final report
+2. **Match trigger patterns** — for each subagent below, check its path globs and content patterns against the file list. A subagent triggers if any changed file matches a listed path glob OR contains a listed content pattern.
+3. **Always include ram-budget-audit** — architectural memory concerns are cross-cutting; it always triggers regardless of which files changed.
+4. **Dispatch all relevant subagents in parallel** via the Agent tool — even if only one triggers (beyond ram-budget-audit), always dispatch as a subagent for consistent output format. In each prompt, replace `{changed_files}` with the actual file list from step 1.
+5. **Aggregate results** — merge findings, deduplicate, produce the final report
 
-### Subagent Prompt Template
+### Subagent Prompts
 
-Every subagent prompt MUST include:
-
-1. The list of changed files relevant to its concern
-2. Instruction to read its assigned reference file (if any)
-3. The Scale Thresholds table (below)
-4. Its specific review criteria and anti-patterns
-5. The output format (severity-tagged findings)
+Each subagent prompt below is self-contained — all necessary context (scale thresholds, review criteria, anti-patterns) is included inline. No template expansion is needed except replacing `{changed_files}` with the actual file list from step 1.
 
 ## Scale Thresholds
 
@@ -100,7 +93,19 @@ Read the reference file at: .claude/skills/gtk-perf-scale/references/large-file-
 Changed files to review:
 {changed_files}
 
-{scale_thresholds_table}
+Scale Thresholds (calibrated for GTK4/GtkSourceView5 on 4-core, 8-16GB RAM, SSD):
+
+| Threshold | Value | Behavior |
+|-----------|-------|----------|
+| Large file toast | 1 MB | Show informational toast |
+| Disable syntax highlighting | 10 MB | `buffer.set_language(None)` |
+| Disable undo history | 50 MB | `begin_irreversible_action()` permanent |
+| Refuse to open | 500 MB | Show dialog |
+| Search debounce | 150 ms | Delay `rebuild_results` |
+| Index rebuild debounce | 300 ms | Coalesce `rebuild_file_index` calls |
+| Max indexed files | 100,000 | Log warning, truncate |
+| Max directory entries | 10,000 | Truncate ListStore with sentinel |
+| Thread spawn guard | 8 concurrent | Queue additional calls |
 
 Review criteria:
 - Size-gated loading: does the code check fs::metadata size BEFORE read_to_string? Are thresholds applied (1MB toast, 10MB no syntax, 50MB no undo, 500MB refuse)?
@@ -136,7 +141,19 @@ Read the reference file at: .claude/skills/gtk-perf-scale/references/search-scal
 Changed files to review:
 {changed_files}
 
-{scale_thresholds_table}
+Scale Thresholds (calibrated for GTK4/GtkSourceView5 on 4-core, 8-16GB RAM, SSD):
+
+| Threshold | Value | Behavior |
+|-----------|-------|----------|
+| Large file toast | 1 MB | Show informational toast |
+| Disable syntax highlighting | 10 MB | `buffer.set_language(None)` |
+| Disable undo history | 50 MB | `begin_irreversible_action()` permanent |
+| Refuse to open | 500 MB | Show dialog |
+| Search debounce | 150 ms | Delay `rebuild_results` |
+| Index rebuild debounce | 300 ms | Coalesce `rebuild_file_index` calls |
+| Max indexed files | 100,000 | Log warning, truncate |
+| Max directory entries | 10,000 | Truncate ListStore with sentinel |
+| Thread spawn guard | 8 concurrent | Queue additional calls |
 
 Review criteria:
 - SIMD usage: is nucleo-matcher used for fuzzy scoring? This is an established pattern in the codebase — new search code should follow it.
@@ -174,7 +191,19 @@ You are reviewing Rust code in a GTK4/Libadwaita text editor for file tree scala
 Changed files to review:
 {changed_files}
 
-{scale_thresholds_table}
+Scale Thresholds (calibrated for GTK4/GtkSourceView5 on 4-core, 8-16GB RAM, SSD):
+
+| Threshold | Value | Behavior |
+|-----------|-------|----------|
+| Large file toast | 1 MB | Show informational toast |
+| Disable syntax highlighting | 10 MB | `buffer.set_language(None)` |
+| Disable undo history | 50 MB | `begin_irreversible_action()` permanent |
+| Refuse to open | 500 MB | Show dialog |
+| Search debounce | 150 ms | Delay `rebuild_results` |
+| Index rebuild debounce | 300 ms | Coalesce `rebuild_file_index` calls |
+| Max indexed files | 100,000 | Log warning, truncate |
+| Max directory entries | 10,000 | Truncate ListStore with sentinel |
+| Thread spawn guard | 8 concurrent | Queue additional calls |
 
 Review criteria:
 - Batch updates: does the code use gio::ListStore::splice() for batch appends (single items-changed signal) instead of per-item append() loops?
@@ -238,7 +267,7 @@ Description. Memory impact (quantified where possible). Fix.
 
 **Triggers**:
 - paths: `benches/**/*.rs`, `Cargo.toml`
-- also: when another subagent's findings suggest a new hot path lacks benchmarks
+- content: `criterion|bench|benchmark|Bencher`
 
 **Subagent prompt**:
 ```
@@ -271,11 +300,10 @@ Description. What to benchmark. Expected baseline.
 
 After all subagents return, produce the unified report:
 
-1. **Merge findings** — combine all [FLAG], [RECOMMEND], [CONSIDER], [GOOD] items from all subagents
+1. **Merge findings** — combine all [FLAG], [RECOMMEND], [CONSIDER], [GOOD] items from all subagents verbatim. Do not add new findings beyond what was reported.
 2. **Deduplicate** — if two subagents flag the same line (e.g., large-file-audit and ram-budget-audit both flag a `read_to_string`), keep the more specific finding
-3. **Apply the readability gate** — before including any [RECOMMEND] or [CONSIDER], ask: "does the suggested fix make the code harder to read?" If yes, either reframe for readability or drop it
+3. **Drop excluded items** — remove any finding that falls under the "What We Do NOT Flag" list above
 4. **Sort by severity** — FLAG first, then RECOMMEND, CONSIDER, GOOD
-5. **Cross-references** — if a finding relates to `gtk-responsiveness` (e.g., blocking I/O), add the cross-reference
 
 ## Audit Report Format
 

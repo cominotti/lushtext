@@ -33,14 +33,13 @@ This skill uses **parallel subagents** for independent review concerns. Do NOT a
 ### Workflow
 
 1. **Identify changed files** — run `git diff --name-only` (or use the diff context if already available)
-2. **Match trigger patterns** — for each subagent, check if any changed files match its triggers
-3. **Dispatch threshold** — if fewer than 2 subagents are relevant, run the review inline using only the relevant subagent's criteria
-4. **Dispatch relevant subagents in parallel** via the Agent tool
-5. **Aggregate results** — merge findings, deduplicate, produce the final report
+2. **Match trigger patterns** — for each subagent below, check its path globs and content patterns against the file list. A subagent triggers if any changed file matches a listed path glob OR contains a listed content pattern.
+3. **Dispatch all relevant subagents in parallel** via the Agent tool — even if only one triggers, always dispatch as a subagent for consistent output format. In each prompt, replace `{changed_files}` with the actual file list from step 1.
+4. **Aggregate results** — merge findings, deduplicate, produce the final report
 
-### Memory Preamble (inject into every subagent prompt)
+### Memory Awareness
 
-> While reviewing, also check for genuine memory leaks: strong reference cycles that prevent widget cleanup, missing `@weak` references in long-lived closures, signal handlers that accumulate without cleanup. Do NOT flag trivial clones, missing `Vec::with_capacity()`, or other micro allocation patterns — those are not responsiveness concerns.
+Each subagent prompt below includes inline memory-leak review criteria. This covers genuine leaks (strong reference cycles, missing `@weak`, signal handler accumulation) but explicitly excludes trivial allocation patterns.
 
 ## Severity Levels
 
@@ -73,7 +72,7 @@ The project uses a custom async primitive: crate::services::async_task::spawn_bl
 - then: FnOnce(S, T), runs on main thread via glib::idle_add_once
 Do NOT recommend Tokio. This pattern is sufficient for file I/O.
 
-{memory_preamble}
+While reviewing, also check for genuine memory leaks: strong reference cycles that prevent widget cleanup, missing `@weak` references in long-lived closures, signal handlers that accumulate without cleanup. Do NOT flag trivial clones, missing `Vec::with_capacity()`, or other micro allocation patterns — those are not responsiveness concerns.
 
 Review criteria:
 - Is any blocking I/O (fs::read_to_string, fs::write, fs::read_dir, fs::metadata, Command::new) called on the main thread outside spawn_blocking_then?
@@ -106,7 +105,7 @@ You are reviewing Rust code in a GTK4/Libadwaita text editor for signal handler 
 Changed files to review:
 {changed_files}
 
-{memory_preamble}
+While reviewing, also check for genuine memory leaks: strong reference cycles that prevent widget cleanup, missing `@weak` references in long-lived closures, signal handlers that accumulate without cleanup. Do NOT flag trivial clones, missing `Vec::with_capacity()`, or other micro allocation patterns — those are not responsiveness concerns.
 
 Review criteria:
 - connect_notify_local vs connect_notify: closures that capture non-Send GTK objects MUST use connect_notify_local (or connect_*_local variants). The non-local variants require Send, which GTK objects are not.
@@ -141,7 +140,7 @@ You are reviewing Rust code in a GTK4/Libadwaita text editor for TreeListModel a
 Changed files to review:
 {changed_files}
 
-{memory_preamble}
+While reviewing, also check for genuine memory leaks: strong reference cycles that prevent widget cleanup, missing `@weak` references in long-lived closures, signal handlers that accumulate without cleanup. Do NOT flag trivial clones, missing `Vec::with_capacity()`, or other micro allocation patterns — those are not responsiveness concerns.
 
 Review criteria:
 - autoexpand = true: NEVER set autoexpand to true on TreeListModel. It recursively calls create_model_func for EVERY directory, spawning unbounded threads (with spawn_blocking_then) or freezing the UI (with sync I/O).
@@ -177,7 +176,7 @@ Focus on patterns 4-5 (Periodic Background Check, Debounced User Input).
 Changed files to review:
 {changed_files}
 
-{memory_preamble}
+While reviewing, also check for genuine memory leaks: strong reference cycles that prevent widget cleanup, missing `@weak` references in long-lived closures, signal handlers that accumulate without cleanup. Do NOT flag trivial clones, missing `Vec::with_capacity()`, or other micro allocation patterns — those are not responsiveness concerns.
 
 Review criteria:
 - Debounce on rapid input: search entries, filter inputs, and similar rapid-fire text inputs should debounce (typically 150ms) to avoid redundant work. Empty queries should bypass debounce for instant clear.
@@ -204,11 +203,11 @@ Description. Timer lifecycle issue. Fix.
 
 After all subagents return, produce the unified report:
 
-1. **Merge findings** — combine all [FLAG], [RECOMMEND], [CONSIDER], [GOOD] items from all subagents
+1. **Merge findings** — combine all [FLAG], [RECOMMEND], [CONSIDER], [GOOD] items from all subagents verbatim. Do not add new findings beyond what was reported.
 2. **Deduplicate** — if two subagents flag the same line (e.g., blocking-io-audit and signal-handler-audit both flag a handler doing I/O), keep the more specific finding
 3. **Memory summary** — add a "Memory Impact" subsection if any subagent found closure capture issues, signal handler leaks, or timer lifecycle problems
 4. **Sort by severity** — FLAG first, then RECOMMEND, CONSIDER, GOOD
-5. **Cross-references** — if a finding relates to `gtk-perf-scale` (e.g., a search handler that doesn't debounce, large file streaming/buffer size concerns), add the cross-reference. Large file data-path concerns (streaming reads, buffer size limits, syntax gate thresholds) are reviewed by `gtk-perf-scale`'s `large-file-audit` — this skill only verifies that the I/O is off the main thread.
+5. **Constrain** — only include findings that match an anti-pattern listed in the subagent definitions above. Do not flag patterns outside those checklists. Large file data-path concerns (streaming reads, buffer size limits, syntax gate thresholds) are outside this skill's scope — reviewed by `gtk-perf-scale`.
 
 ## Report Format
 

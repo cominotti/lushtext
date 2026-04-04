@@ -11,6 +11,16 @@ use crate::services::file_limits::FileSizeCheck;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Successful result from `load_text_file`.
+pub struct LoadResult {
+    pub content: String,
+    pub size: u64,
+    pub size_check: FileSizeCheck,
+    /// File mtime (epoch seconds), extracted from the metadata already
+    /// read for size classification — no extra stat() needed by callers.
+    pub mtime: Option<u64>,
+}
+
 /// Errors that can occur when loading a file for editing.
 /// Each variant carries context (path, size) for user-facing error messages.
 #[derive(Debug, thiserror::Error)]
@@ -62,10 +72,7 @@ pub enum SaveError {
 /// before file read, and after file read for responsive tab close.
 ///
 /// **Threading:** Performs blocking I/O — call from a background thread.
-pub fn load_text_file(
-    path: &Path,
-    cancel: &AtomicBool,
-) -> Result<(String, u64, FileSizeCheck), LoadError> {
+pub fn load_text_file(path: &Path, cancel: &AtomicBool) -> Result<LoadResult, LoadError> {
     if cancel.load(Ordering::Acquire) {
         return Err(LoadError::Cancelled);
     }
@@ -76,6 +83,7 @@ pub fn load_text_file(
     })?;
     let size = meta.len();
     let check = FileSizeCheck::classify(size);
+    let mtime = mtime_from_metadata(&meta);
 
     if check == FileSizeCheck::TooLarge {
         return Err(LoadError::TooLarge {
@@ -108,7 +116,12 @@ pub fn load_text_file(
         }
     };
 
-    Ok((content, size, check))
+    Ok(LoadResult {
+        content,
+        size,
+        size_check: check,
+        mtime,
+    })
 }
 
 /// Atomically write text to a file using temp-file-then-rename.
@@ -118,7 +131,12 @@ pub fn load_text_file(
 /// new file, never partial. On rename failure, the temp file is cleaned up.
 ///
 /// **Threading:** Performs blocking I/O — call from a background thread.
-pub fn write_snapshot_to_path(path: PathBuf, text: String) -> Result<u64, SaveError> {
+/// Returns `(bytes_written, mtime)`. The mtime is read from the freshly
+/// written file so callers can update their baseline without a main-thread stat().
+pub fn write_snapshot_to_path(
+    path: PathBuf,
+    text: String,
+) -> Result<(u64, Option<u64>), SaveError> {
     let tmp_name = format!(
         ".{}.tmp",
         path.file_name()
@@ -138,7 +156,18 @@ pub fn write_snapshot_to_path(path: PathBuf, text: String) -> Result<u64, SaveEr
             source,
         }
     })?;
-    Ok(text.len() as u64)
+    let mtime = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| mtime_from_metadata(&m));
+    Ok((text.len() as u64, mtime))
+}
+
+/// Extract mtime as epoch seconds from already-fetched metadata.
+fn mtime_from_metadata(meta: &std::fs::Metadata) -> Option<u64> {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
 }
 
 /// Read a file's mtime as seconds since the UNIX epoch.
@@ -148,9 +177,7 @@ pub fn write_snapshot_to_path(path: PathBuf, text: String) -> Result<u64, SaveEr
 pub fn mtime_secs(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
         .ok()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .and_then(|m| mtime_from_metadata(&m))
 }
 
 /// Current wall-clock time as seconds since the UNIX epoch.
@@ -173,11 +200,15 @@ mod tests {
         std::fs::write(file.path(), "hello").unwrap();
 
         let cancel = AtomicBool::new(false);
-        let (content, size, check) = load_text_file(file.path(), &cancel).unwrap();
+        let result = load_text_file(file.path(), &cancel).unwrap();
 
-        assert_eq!(content, "hello");
-        assert_eq!(size, 5);
-        assert_eq!(check, FileSizeCheck::Normal);
+        assert_eq!(result.content, "hello");
+        assert_eq!(result.size, 5);
+        assert_eq!(result.size_check, FileSizeCheck::Normal);
+        assert!(
+            result.mtime.is_some(),
+            "mtime should be populated from metadata"
+        );
     }
 
     #[test]
@@ -196,9 +227,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("file.txt");
 
-        let size = write_snapshot_to_path(path.clone(), "saved".to_string()).unwrap();
+        let (size, mtime) = write_snapshot_to_path(path.clone(), "saved".to_string()).unwrap();
 
         assert_eq!(size, 5);
+        assert!(mtime.is_some(), "mtime should be populated after write");
         assert_eq!(std::fs::read_to_string(path).unwrap(), "saved");
     }
 }

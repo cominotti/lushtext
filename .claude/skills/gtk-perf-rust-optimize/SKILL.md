@@ -44,10 +44,9 @@ This skill uses **parallel subagents** for independent review concerns. Do NOT r
 ### Workflow
 
 1. **Identify changed files** — run `git diff --name-only` (or use the diff context if already available)
-2. **Match trigger patterns** — for each subagent, check if any changed files match its triggers
-3. **Dispatch threshold** — if fewer than 2 subagents are relevant, run inline using only the relevant criteria
-4. **Dispatch relevant subagents in parallel** via the Agent tool
-5. **Aggregate results** — merge findings, deduplicate, produce the final report
+2. **Match trigger patterns** — for each subagent below, check its path globs and content patterns against the file list. A subagent triggers if any changed file matches a listed path glob OR contains a listed content pattern.
+3. **Dispatch all relevant subagents in parallel** via the Agent tool — even if only one triggers, always dispatch as a subagent for consistent output format. In each prompt, replace `{changed_files}` with the actual file list from step 1.
+4. **Aggregate results** — merge findings, deduplicate, produce the final report
 
 ## Severity Levels
 
@@ -135,11 +134,10 @@ Description. Why the modern pattern improves both correctness and readability. F
 
 After all subagents return, produce the unified report:
 
-1. **Merge findings** — combine all [FLAG], [RECOMMEND], [CONSIDER], [GOOD] items
+1. **Merge findings** — combine all [FLAG], [RECOMMEND], [CONSIDER], [GOOD] items verbatim from subagents. Do not add new findings beyond what was reported.
 2. **Deduplicate** — if two subagents flag the same line, keep the more specific finding
-3. **Apply the readability gate** — before including any finding, ask: "does the suggested fix make the code harder to read?" If yes, drop or reframe it
+3. **Drop excluded items** — remove any finding that falls under the "What We Do NOT Flag" list above
 4. **Sort by severity** — FLAG first, then RECOMMEND, CONSIDER, GOOD
-5. **Cross-references** — if a finding relates to `gtk-perf-scale` or `gtk-responsiveness`, note the cross-reference
 
 ## Audit Report Format
 
