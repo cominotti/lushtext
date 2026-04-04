@@ -233,6 +233,7 @@ fn test_tab_actions_disabled_when_no_tabs() {
     assert!(!action_enabled(&window, "toggle-search"));
     assert!(!action_enabled(&window, "save"));
     assert!(!action_enabled(&window, "close-tab"));
+    assert!(!action_enabled(&window, "print"));
 }
 
 #[test]
@@ -244,6 +245,7 @@ fn test_tab_actions_enabled_when_tab_exists() {
     assert!(action_enabled(&window, "toggle-search"));
     assert!(action_enabled(&window, "save"));
     assert!(action_enabled(&window, "close-tab"));
+    assert!(action_enabled(&window, "print"));
 }
 
 #[test]
@@ -332,6 +334,35 @@ fn test_close_tab_disables_tab_actions() {
     assert!(!action_enabled(&window, "toggle-search"));
     assert!(!action_enabled(&window, "save"));
     assert!(!action_enabled(&window, "close-tab"));
+    assert!(!action_enabled(&window, "print"));
+}
+
+// --- Print action enabled/disabled ---
+
+#[test]
+fn test_print_action_disabled_when_no_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(!action_enabled(&window, "print"));
+}
+
+#[test]
+fn test_print_action_enabled_when_tab_exists() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    assert!(action_enabled(&window, "print"));
+}
+
+#[test]
+fn test_print_action_disabled_after_closing_all_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    assert!(action_enabled(&window, "print"));
+
+    activate_action(&window, "close-tab");
+    assert!(!action_enabled(&window, "print"));
 }
 
 // --- Status bar integration ---
@@ -1699,4 +1730,190 @@ fn test_discard_changes_action_disabled_on_modified_untitled_tab() {
 
     // Modified but no file path — should stay disabled
     assert!(!action_enabled(&window, "discard-changes"));
+}
+
+// --- Zoom action existence and enabled state ---
+
+#[test]
+fn test_zoom_in_action_exists_and_enabled() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(action_enabled(&window, "zoom-in"));
+}
+
+#[test]
+fn test_zoom_out_action_exists_and_enabled() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(action_enabled(&window, "zoom-out"));
+}
+
+#[test]
+fn test_zoom_reset_action_exists_and_enabled() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(action_enabled(&window, "zoom-reset"));
+}
+
+// --- GSettings zoom-level key ---
+
+#[test]
+fn test_gsettings_zoom_level_default() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 100);
+}
+
+#[test]
+fn test_gsettings_zoom_level_roundtrip() {
+    ensure_gtk_init();
+    let window = test_window();
+    let settings = &window.imp().settings;
+    assert!(settings.set_uint(keys::ZOOM_LEVEL, 150).is_ok());
+    assert_eq!(settings.uint(keys::ZOOM_LEVEL), 150);
+}
+
+// --- Zoom actions modify GSettings ---
+
+#[test]
+fn test_zoom_in_increments_zoom_level() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 100);
+    activate_action(&window, "zoom-in");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 110);
+}
+
+#[test]
+fn test_zoom_out_decrements_zoom_level() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 100);
+    activate_action(&window, "zoom-out");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 90);
+}
+
+#[test]
+fn test_zoom_reset_sets_to_100() {
+    ensure_gtk_init();
+    let window = test_window();
+    let _ = window.imp().settings.set_uint(keys::ZOOM_LEVEL, 150);
+    flush_events();
+    activate_action(&window, "zoom-reset");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 100);
+}
+
+#[test]
+fn test_zoom_reset_noop_when_already_100() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 100);
+    activate_action(&window, "zoom-reset");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 100);
+}
+
+// --- Zoom boundary behavior ---
+
+#[test]
+fn test_zoom_in_capped_at_400() {
+    ensure_gtk_init();
+    let window = test_window();
+    let _ = window.imp().settings.set_uint(keys::ZOOM_LEVEL, 400);
+    flush_events();
+    activate_action(&window, "zoom-in");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 400);
+}
+
+#[test]
+fn test_zoom_out_capped_at_50() {
+    ensure_gtk_init();
+    let window = test_window();
+    let _ = window.imp().settings.set_uint(keys::ZOOM_LEVEL, 50);
+    flush_events();
+    activate_action(&window, "zoom-out");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 50);
+}
+
+#[test]
+fn test_zoom_in_from_390_caps_at_400() {
+    ensure_gtk_init();
+    let window = test_window();
+    let _ = window.imp().settings.set_uint(keys::ZOOM_LEVEL, 390);
+    flush_events();
+    activate_action(&window, "zoom-in");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 400);
+}
+
+#[test]
+fn test_zoom_out_from_60_caps_at_50() {
+    ensure_gtk_init();
+    let window = test_window();
+    let _ = window.imp().settings.set_uint(keys::ZOOM_LEVEL, 60);
+    flush_events();
+    activate_action(&window, "zoom-out");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 50);
+}
+
+// --- Zoom multiple steps ---
+
+#[test]
+fn test_zoom_in_multiple_steps() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 100);
+    activate_action(&window, "zoom-in");
+    activate_action(&window, "zoom-in");
+    activate_action(&window, "zoom-in");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 130);
+}
+
+#[test]
+fn test_zoom_out_multiple_steps() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 100);
+    activate_action(&window, "zoom-out");
+    activate_action(&window, "zoom-out");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 80);
+}
+
+#[test]
+fn test_zoom_in_then_reset() {
+    ensure_gtk_init();
+    let window = test_window();
+    activate_action(&window, "zoom-in");
+    activate_action(&window, "zoom-in");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 120);
+    activate_action(&window, "zoom-reset");
+    assert_eq!(window.imp().settings.uint(keys::ZOOM_LEVEL), 100);
+}
+
+// --- Menu structure: zoom custom slot ---
+
+#[test]
+fn test_menu_contains_zoom_custom_slot() {
+    ensure_gtk_init();
+    let window = test_window();
+    let menu_button = &window.imp().primary_menu_button;
+    let model = menu_button
+        .menu_model()
+        .expect("primary_menu_button should have a menu model");
+    let mut has_zoom_slot = false;
+    for i in 0..model.n_items() {
+        if let Some(section) = model.item_link(i, "section") {
+            for j in 0..section.n_items() {
+                if let Some(custom) = section
+                    .item_attribute_value(j, "custom", Some(glib::VariantTy::STRING))
+                    .and_then(|v| v.get::<String>())
+                    && custom == "zoom"
+                {
+                    has_zoom_slot = true;
+                }
+            }
+        }
+    }
+    assert!(
+        has_zoom_slot,
+        "Menu should contain a 'zoom' custom widget slot"
+    );
 }

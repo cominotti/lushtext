@@ -165,6 +165,12 @@
     </section>
     <section>
       <item>
+        <attribute name="label" translatable="yes">_Print…</attribute>
+        <attribute name="action">win.print</attribute>
+      </item>
+    </section>
+    <section>
+      <item>
         <attribute name="label" translatable="yes">_Find and Replace…</attribute>
         <attribute name="action">win.toggle-search</attribute>
       </item>

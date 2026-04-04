@@ -10,6 +10,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **EditorConfig support** -- per-file formatting overrides from `.editorconfig` files (`indent_style`, `tab_width`, `indent_size`); toggle in Preferences
 - **Session persistence** -- tabs, cursor positions, and scroll offsets restored on restart
 - **Draft recovery** -- unsaved changes auto-saved to disk and recovered after crash
+- **Print** -- native GTK print dialog with syntax highlighting and editor settings preserved
 - **Find and replace** -- per-tab search bar with match highlighting
 - **Command palette** -- Ctrl+P fuzzy search for files and commands (SIMD-accelerated via nucleo)
 - **Large file handling** -- graceful degradation: >1MB toast, >10MB disable syntax, >50MB disable undo, >500MB refuse

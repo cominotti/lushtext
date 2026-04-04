@@ -7,6 +7,8 @@ mod dialogs;
 // two halves: a private struct (imp.rs) holding data and trait impls, and
 // a public wrapper type (this file) providing the API.
 mod imp;
+// Print action: GtkSourceView PrintCompositor + native print dialog.
+mod print;
 // Session persistence and draft management (extracted to stay under 1000 lines).
 mod session;
 // Zoom controls: hamburger menu widget and window actions.
@@ -57,6 +59,7 @@ impl LushtextWindow {
         window.setup_actions();
         window.setup_fullscreen();
         window.setup_theme_selector();
+        print::setup_print_action(&window);
         zoom::setup_zoom_actions(&window);
         zoom::setup_zoom_controls(&window);
         window.setup_shortcuts();
@@ -323,6 +326,7 @@ impl LushtextWindow {
             "save-as",
             "close-tab",
             "discard-changes",
+            "print",
         ] {
             if let Some(action) = self.lookup_action(name)
                 && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
