@@ -828,9 +828,7 @@ impl LushtextWindow {
         });
     }
 
-    /// Create the theme selector widget (light/system/dark toggle buttons)
-    /// and insert it into the hamburger menu's popover as a custom child.
-    /// Create the theme selector widget (light/follow-system/dark circles)
+    /// Create the theme selector widget (follow-system/light/dark circles)
     /// matching GNOME Text Editor's visual pattern, and insert it into
     /// the hamburger menu's popover as a custom child.
     fn setup_theme_selector(&self) {
@@ -845,34 +843,35 @@ impl LushtextWindow {
 
         // GtkCheckButton radio group — CSS hides the radio indicator
         // and styles each button as a 44px colored circle.
-        let light_btn = gtk4::CheckButton::builder()
-            .tooltip_text("Light Style")
-            .halign(gtk4::Align::Center)
-            .hexpand(true)
-            .focus_on_click(false)
-            .build();
-        light_btn.add_css_class("light");
-
+        // Order matches GNOME Text Editor: follow (system), light, dark.
         let follow_btn = gtk4::CheckButton::builder()
             .tooltip_text("Follow System Style")
             .halign(gtk4::Align::Center)
             .hexpand(true)
             .focus_on_click(false)
-            .group(&light_btn)
             .build();
         follow_btn.add_css_class("follow");
+
+        let light_btn = gtk4::CheckButton::builder()
+            .tooltip_text("Light Style")
+            .halign(gtk4::Align::Center)
+            .hexpand(true)
+            .focus_on_click(false)
+            .group(&follow_btn)
+            .build();
+        light_btn.add_css_class("light");
 
         let dark_btn = gtk4::CheckButton::builder()
             .tooltip_text("Dark Style")
             .halign(gtk4::Align::Center)
             .hexpand(true)
             .focus_on_click(false)
-            .group(&light_btn)
+            .group(&follow_btn)
             .build();
         dark_btn.add_css_class("dark");
 
-        container.append(&light_btn);
         container.append(&follow_btn);
+        container.append(&light_btn);
         container.append(&dark_btn);
 
         // Restore persisted state.
