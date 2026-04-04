@@ -31,6 +31,11 @@
     </key>
 
     <!-- Appearance -->
+    <key name="color-scheme" type="s">
+      <default>'default'</default>
+      <summary>Color Scheme Preference</summary>
+      <description>Adwaita color scheme: 'default' (follow system), 'force-light', or 'force-dark'</description>
+    </key>
     <key name="style-scheme" type="s">
       <default>'Adwaita'</default>
       <summary>Color Scheme</summary>

@@ -595,3 +595,20 @@ fn test_activation_clears_saved_focus() {
         "saved_focus should be consumed after item activation close"
     );
 }
+
+// --- Command registry completeness ---
+
+#[test]
+fn test_all_commands_contains_fullscreen() {
+    ensure_gtk_init();
+    let commands = lushtext_core::services::palette::all_commands();
+    let fullscreen = commands.iter().find(|c| c.id == "win.toggle-fullscreen");
+    assert!(
+        fullscreen.is_some(),
+        "all_commands() should include Fullscreen"
+    );
+    let cmd = fullscreen.unwrap();
+    assert_eq!(cmd.label, "Fullscreen");
+    assert_eq!(cmd.shortcut, Some("F11"));
+    assert_eq!(cmd.category, CommandCategory::View);
+}

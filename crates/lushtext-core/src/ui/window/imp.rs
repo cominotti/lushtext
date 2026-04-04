@@ -51,6 +51,8 @@ pub struct LushtextWindow {
     pub palette_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
     pub command_palette: TemplateChild<LushtextCommandPalette>,
+    #[template_child]
+    pub primary_menu_button: TemplateChild<gtk4::MenuButton>,
 
     /// Application-wide GSettings for window geometry and sidebar position.
     pub settings: gio::Settings,
@@ -110,6 +112,7 @@ impl Default for LushtextWindow {
             status_bar: TemplateChild::default(),
             palette_revealer: TemplateChild::default(),
             command_palette: TemplateChild::default(),
+            primary_menu_button: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
             sidebar_visible: Cell::new(true),
             saved_sidebar_pos: Cell::new(0),

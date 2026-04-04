@@ -30,6 +30,13 @@ mod imp {
         fn startup(&self) {
             self.parent_startup();
             crate::load_css();
+
+            // Apply persisted color scheme before any window is created so
+            // the first paint uses the correct theme.
+            let settings = gtk4::gio::Settings::new(crate::config::APP_ID);
+            let scheme = settings.string(crate::config::keys::COLOR_SCHEME);
+            let color_scheme = crate::ui::window::parse_color_scheme(scheme.as_str());
+            libadwaita::StyleManager::default().set_color_scheme(color_scheme);
         }
 
         fn activate(&self) {
