@@ -165,6 +165,49 @@ impl LushtextWindow {
         });
     }
 
+    /// Discard unsaved changes and reload the file from disk.
+    /// Shows a confirmation dialog before proceeding.
+    fn discard_changes(&self) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        let Some(path) = editor.file_path() else {
+            return;
+        };
+        if !editor.is_modified() {
+            return;
+        }
+        let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
+        self.show_discard_changes_dialog(&editor.title(), move |confirmed| {
+            if !confirmed {
+                return;
+            }
+            let Some(editor) = editor_weak.upgrade() else {
+                return;
+            };
+            if let Some(window) = window_weak.upgrade() {
+                window.delete_draft_for_path(&path);
+            }
+            editor.set_draft_restored(false);
+            editor.info_bar().dismiss_all();
+            editor.load_file_async(&path);
+        });
+    }
+
+    /// Update the enabled state of the discard-changes action based on the
+    /// active tab's modified state and whether it has a backing file.
+    fn update_discard_action(&self) {
+        if let Some(action) = self.lookup_action("discard-changes")
+            && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
+        {
+            let enabled = self
+                .active_editor()
+                .is_some_and(|e| e.is_modified() && e.file_path().is_some());
+            simple.set_enabled(enabled);
+        }
+    }
+
     /// Create a new untitled tab.
     pub fn new_tab(&self) {
         let editor_page = LushtextEditorPage::new();
@@ -203,11 +246,12 @@ impl LushtextWindow {
                     page.set_title(&name);
                 }
             }
-            // Only refresh header bar if this is the active tab
+            // Only refresh header bar and discard action if this is the active tab
             if let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade())
                 && window.imp().tab_view.selected_page().as_ref() == Some(&page)
             {
                 window.refresh_header_bar();
+                window.update_discard_action();
             }
         });
         editor.imp().modified_handler_id.replace(Some(handler_id));
@@ -269,7 +313,13 @@ impl LushtextWindow {
             stack.set_visible_child_name("empty");
         }
 
-        for name in ["toggle-search", "save", "save-as", "close-tab"] {
+        for name in [
+            "toggle-search",
+            "save",
+            "save-as",
+            "close-tab",
+            "discard-changes",
+        ] {
             if let Some(action) = self.lookup_action(name)
                 && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
             {
@@ -298,6 +348,8 @@ impl LushtextWindow {
         }
         // Header bar title/subtitle + modified dot
         self.refresh_header_bar_with(editor.as_ref());
+        // Discard-changes action depends on per-tab modified + file-backed state
+        self.update_discard_action();
     }
 
     /// Update the header bar title/subtitle to reflect the given editor.
@@ -455,6 +507,21 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| window.toggle_command_palette())
                 .build(),
         ]);
+
+        // Discard Changes: reload file from disk after user confirmation.
+        // Uses SimpleAction (not ActionEntry) for fine-grained enabled state —
+        // must be disabled when the buffer is unmodified or untitled.
+        let discard_action = gio::SimpleAction::new("discard-changes", None);
+        discard_action.set_enabled(false);
+        {
+            let window_weak = self.downgrade();
+            discard_action.connect_activate(move |_, _| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.discard_changes();
+                }
+            });
+        }
+        self.add_action(&discard_action);
 
         // Stateful toggle for sidebar visibility. GtkToggleButton auto-syncs
         // its pressed state with this action's boolean value.

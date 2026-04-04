@@ -93,6 +93,34 @@ impl super::LushtextWindow {
         });
     }
 
+    // --- Discard changes confirmation ---
+
+    /// Show the "Discard Changes?" confirmation dialog matching GNOME Text
+    /// Editor's UX. Calls `on_done(true)` if the user confirms, `on_done(false)`
+    /// if cancelled.
+    pub fn show_discard_changes_dialog<F: Fn(bool) + 'static>(&self, title: &str, on_done: F) {
+        let dialog = libadwaita::AlertDialog::builder()
+            .heading(format!("Discard Changes to \u{201C}{title}\u{201D}?"))
+            .body("Unsaved changes will be permanently lost.")
+            .build();
+
+        dialog.add_response(RESPONSE_CANCEL, "_Cancel");
+        dialog.add_response(RESPONSE_DISCARD, "_Discard");
+
+        dialog.set_response_appearance(
+            RESPONSE_DISCARD,
+            libadwaita::ResponseAppearance::Destructive,
+        );
+        dialog.set_default_response(Some(RESPONSE_CANCEL));
+        dialog.set_close_response(RESPONSE_CANCEL);
+
+        dialog.connect_response(None::<&str>, move |_, response| {
+            on_done(response == RESPONSE_DISCARD);
+        });
+
+        dialog.present(Some(self));
+    }
+
     // --- Save changes confirmation ---
 
     /// Collect all modified editor pages in the tab view.

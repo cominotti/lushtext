@@ -1625,3 +1625,78 @@ fn test_parse_color_scheme() {
     );
     assert_eq!(parse_color_scheme(""), libadwaita::ColorScheme::Default);
 }
+
+// --- Discard-changes action enabled/disabled lifecycle ---
+
+#[test]
+fn test_discard_changes_action_disabled_when_no_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(!action_enabled(&window, "discard-changes"));
+}
+
+#[test]
+fn test_discard_changes_action_disabled_on_untitled_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+    assert!(!action_enabled(&window, "discard-changes"));
+}
+
+#[test]
+fn test_discard_changes_action_disabled_on_unmodified_file_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("clean.rs");
+    std::fs::write(&file_path, "fn main() {}").unwrap();
+    window.open_document(&file_path);
+    flush_events();
+    assert!(!action_enabled(&window, "discard-changes"));
+}
+
+#[test]
+fn test_discard_changes_action_enabled_on_modified_file_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("dirty.rs");
+    std::fs::write(&file_path, "fn main() {}").unwrap();
+    window.open_document(&file_path);
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("modified");
+    flush_events();
+
+    assert!(action_enabled(&window, "discard-changes"));
+}
+
+#[test]
+fn test_discard_changes_action_disabled_after_closing_all_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    // Use an unmodified tab so close-tab doesn't trigger the save dialog.
+    window.new_tab();
+    flush_events();
+    // Even though discard is already disabled for untitled tabs, verify the
+    // lifecycle: with tabs → close all → still disabled.
+    activate_action(&window, "close-tab");
+    assert!(!action_enabled(&window, "discard-changes"));
+}
+
+#[test]
+fn test_discard_changes_action_disabled_on_modified_untitled_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("some text");
+    flush_events();
+
+    // Modified but no file path — should stay disabled
+    assert!(!action_enabled(&window, "discard-changes"));
+}

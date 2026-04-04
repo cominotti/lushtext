@@ -153,6 +153,10 @@
         <attribute name="label" translatable="yes">Save _As…</attribute>
         <attribute name="action">win.save-as</attribute>
       </item>
+      <item>
+        <attribute name="label" translatable="yes">_Discard Changes…</attribute>
+        <attribute name="action">win.discard-changes</attribute>
+      </item>
     </section>
     <section>
       <item>
