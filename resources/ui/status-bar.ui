@@ -13,7 +13,7 @@
     <!-- Sidebar toggle button -->
     <child>
       <object class="GtkToggleButton" id="sidebar_toggle_button">
-        <property name="icon-name">panel-left-symbolic</property>
+        <property name="icon-name">sidebar-show-symbolic</property>
         <property name="tooltip-text" translatable="yes">Toggle Sidebar (F9)</property>
         <property name="action-name">win.toggle-sidebar</property>
         <property name="margin-start">4</property>

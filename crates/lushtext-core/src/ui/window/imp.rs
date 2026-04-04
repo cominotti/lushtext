@@ -57,6 +57,11 @@ pub struct LushtextWindow {
     /// Cached sidebar visibility for the `clamp_sidebar_position` hot path.
     /// Avoids a GObject property lookup (~60Hz during resize).
     pub sidebar_visible: Cell<bool>,
+    /// Sidebar position saved before hide animation, restored on show.
+    pub saved_sidebar_pos: Cell<i32>,
+    /// Currently running sidebar show/hide animation, if any.
+    /// Paused on rapid toggle so the new animation can start from the current position.
+    pub sidebar_animation: RefCell<Option<libadwaita::TimedAnimation>>,
     /// Generation counter for debouncing file index rebuilds (300ms).
     /// Incremented on each workspace change; stale timer callbacks no-op.
     pub index_rebuild_generation: Cell<u32>,
@@ -107,6 +112,8 @@ impl Default for LushtextWindow {
             command_palette: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
             sidebar_visible: Cell::new(true),
+            saved_sidebar_pos: Cell::new(0),
+            sidebar_animation: RefCell::new(None),
             index_rebuild_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
             last_sidebar_pos: Cell::new(-1),
@@ -205,6 +212,11 @@ impl ObjectImpl for LushtextWindow {
         let sidebar_vis = settings.boolean(keys::SIDEBAR_VISIBLE);
         self.sidebar_visible.set(sidebar_vis);
         if !sidebar_vis {
+            // Save the restored position so the first show animation can slide to it.
+            // set_visible(false) makes the paned ignore the start child entirely,
+            // giving all space to the editor. Position value stays as-is but has
+            // no visual effect while the sidebar is invisible.
+            self.saved_sidebar_pos.set(self.main_paned.position());
             self.sidebar.set_visible(false);
         }
 

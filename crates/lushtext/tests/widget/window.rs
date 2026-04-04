@@ -1159,10 +1159,11 @@ fn test_show_save_changes_empty_calls_done_true() {
 
 // --- Sidebar toggle ---
 
-/// Read the sidebar's own "visible" property, bypassing is_visible()
-/// which checks the parent chain (and returns false for unrealized windows).
+/// Check the sidebar visibility target state via the Cell cache.
+/// Uses the Cell (not the widget property) because animations may not tick
+/// in headless tests, but the Cell reflects the intended state immediately.
 fn sidebar_visible(window: &LushtextWindow) -> bool {
-    window.imp().sidebar.property::<bool>("visible")
+    window.imp().sidebar_visible.get()
 }
 
 #[test]
@@ -1251,12 +1252,13 @@ fn test_clamp_noop_when_sidebar_hidden() {
     let paned = &window.imp().main_paned;
     paned.set_position(350);
 
-    // Hide sidebar
+    // Hide sidebar — animation moves position to 0
     activate_action(&window, "toggle-sidebar");
 
     // Clamp should be a no-op when sidebar is hidden
+    let pos_after_hide = paned.position();
     clamp_sidebar_position(&window, paned, 600);
-    assert_eq!(paned.position(), 350);
+    assert_eq!(paned.position(), pos_after_hide);
 }
 
 #[test]
@@ -1305,4 +1307,105 @@ fn test_toggle_sidebar_action_state_syncs() {
     // After second toggle, state should be true again
     activate_action(&window, "toggle-sidebar");
     assert!(action.state().unwrap().get::<bool>().unwrap());
+}
+
+// --- Sidebar animation regression tests ---
+
+#[test]
+fn test_shrink_start_child_stays_false_after_hide() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+
+    // Verify initial state
+    assert!(!paned.shrinks_start_child());
+
+    // Hide sidebar — animation completes instantly in headless tests
+    activate_action(&window, "toggle-sidebar");
+
+    // shrink-start-child must be restored to false after animation completes
+    assert!(!paned.shrinks_start_child());
+}
+
+#[test]
+fn test_shrink_start_child_stays_false_after_show() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+
+    activate_action(&window, "toggle-sidebar"); // hide
+    activate_action(&window, "toggle-sidebar"); // show
+
+    // Must remain false after a full hide+show cycle
+    assert!(!paned.shrinks_start_child());
+}
+
+#[test]
+fn test_shrink_start_child_stays_false_after_rapid_toggle() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+
+    for _ in 0..10 {
+        activate_action(&window, "toggle-sidebar");
+    }
+
+    assert!(!paned.shrinks_start_child());
+}
+
+#[test]
+fn test_saved_sidebar_pos_set_on_hide() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(275);
+
+    activate_action(&window, "toggle-sidebar"); // hide
+
+    assert_eq!(window.imp().saved_sidebar_pos.get(), 275);
+}
+
+#[test]
+fn test_saved_sidebar_pos_preserved_across_cycle() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(275);
+
+    activate_action(&window, "toggle-sidebar"); // hide
+    activate_action(&window, "toggle-sidebar"); // show
+
+    // The saved position should still be 275 (not overwritten by animation)
+    assert_eq!(window.imp().saved_sidebar_pos.get(), 275);
+}
+
+#[test]
+fn test_clamp_still_works_after_animation_cycle() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+
+    // Complete hide+show cycle
+    activate_action(&window, "toggle-sidebar");
+    activate_action(&window, "toggle-sidebar");
+
+    // Clamp should still enforce 1/3 max on a 600px window
+    paned.set_position(500);
+    clamp_sidebar_position(&window, paned, 600);
+    assert_eq!(paned.position(), 200); // 600 / 3 = 200
+}
+
+#[test]
+fn test_hide_animation_targets_1px_not_zero() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(250);
+
+    activate_action(&window, "toggle-sidebar");
+
+    // Animation completes instantly in headless tests. Position should be 1
+    // (not 0) to avoid zero-width pixman "Invalid rectangle" warnings.
+    // set_visible(false) in connect_done handles the final 1→0 snap.
+    assert_eq!(paned.position(), 1);
 }

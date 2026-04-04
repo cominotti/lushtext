@@ -59,7 +59,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 ## Flatpak
 
 - Manifest: `build-aux/dev.cominotti.lushtext.Flatpak.json` (local builds, `type: "dir"`)
-- Runtime: `org.gnome.Platform` 48, SDK extension: `org.freedesktop.Sdk.Extension.rust-stable`
+- Runtime: `org.gnome.Platform` 49, SDK extension: `org.freedesktop.Sdk.Extension.rust-stable`
 - `build-aux/cargo-sources.json` vendors all Cargo dependencies for offline builds
 - Regenerate after dependency changes: `make cargo-sources` (requires `flatpak-cargo-generator`)
 - Dependency update chain: `cargo update` → `cargo hakari generate` → `make cargo-sources`
@@ -76,8 +76,18 @@ Meson wraps Cargo for installed and Flatpak builds:
 - Makefile targets: `bench`, `bench-report`, `bench-report-full`, `bench-baseline`, `bench-compare`
 - Baseline workflow: `make bench-baseline` saves as "main", `make bench-compare` diffs against it
 
+## Runtime Warnings
+
+**CRITICAL: GTK/pixman warnings are bugs, not noise.** When running the app via `make run`, the stderr output must be free of these warnings:
+
+- `*** BUG *** In pixman_region32_init_rect: Invalid rectangle passed` — a widget is being allocated with zero or negative dimensions. Typically caused by toggling `shrink-start-child` on GtkPaned or animating widget sizes to 0.
+- `Gtk-CRITICAL` or `Gtk-WARNING` messages — usually indicate incorrect widget lifecycle, invalid property access, or constraint violations.
+- `GLib-GObject-WARNING` — usually indicate signal or property misuse.
+
+**Development is not finished if any of these warnings appear during normal usage.** Before considering a UI change complete, run the app and exercise the affected feature (toggle sidebar, resize window, open/close tabs, etc.) while watching stderr. Fix the root cause — do not suppress or ignore the warnings.
+
 ## CI
 
 - `.github/workflows/ci.yml` — Cargo check/clippy/test + benchmark compile-check on `ubuntu-latest`
-- `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in GNOME 48 container
+- `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in GNOME 49 container
 - `.github/workflows/release-benchmark.yml` — full benchmark run + markdown report uploaded as release asset on `v*` tags

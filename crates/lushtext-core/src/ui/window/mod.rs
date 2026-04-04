@@ -22,6 +22,7 @@ use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
+use libadwaita::prelude::AnimationExt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -459,7 +460,7 @@ impl LushtextWindow {
                 action.set_state(state);
                 if let Some(window) = window_weak.upgrade() {
                     window.imp().sidebar_visible.set(new_visible);
-                    window.imp().sidebar.set_visible(new_visible);
+                    window.animate_sidebar(new_visible);
                     let _ = window
                         .imp()
                         .settings
@@ -468,6 +469,86 @@ impl LushtextWindow {
             });
         }
         self.add_action(&sidebar_action);
+    }
+
+    /// Animate the sidebar show/hide by sliding the paned divider.
+    ///
+    /// `shrink-start-child` is temporarily set to `true` during the animation
+    /// so the divider can slide past the sidebar's natural minimum width.
+    /// The target is 1px (not 0) to avoid zero-width allocations that trigger
+    /// pixman "Invalid rectangle" warnings. `connect_done` calls
+    /// `set_visible(false)` for the final 1→0 snap and restores
+    /// `shrink-start-child=false` so the user can't drag below minimum.
+    fn animate_sidebar(&self, show: bool) {
+        let imp = self.imp();
+
+        // Cancel any running animation so we can start fresh from the
+        // current position (handles rapid toggle gracefully).
+        // Track whether it was actively playing (vs already finished) —
+        // a finished animation still sits in the RefCell but shouldn't
+        // prevent saving the resting position on the next hide.
+        let was_animating = if let Some(anim) = imp.sidebar_animation.take() {
+            let playing = anim.state() == libadwaita::AnimationState::Playing;
+            anim.pause();
+            playing
+        } else {
+            false
+        };
+
+        let paned = &imp.main_paned;
+        paned.set_shrink_start_child(true);
+
+        let (from, to) = if show {
+            let target = imp.saved_sidebar_pos.get();
+            imp.sidebar.set_visible(true);
+            (paned.position() as f64, target as f64)
+        } else {
+            let current = paned.position();
+            // Only save the resting position when not interrupting an active
+            // animation — otherwise keep the previously saved value.
+            if !was_animating {
+                imp.saved_sidebar_pos.set(current);
+            }
+            // Animate to 1px (not 0) — zero-width allocations cause pixman
+            // "Invalid rectangle" warnings that corrupt paned state.
+            (current as f64, 1.0)
+        };
+
+        let paned_weak = paned.downgrade();
+        let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
+            if let Some(p) = paned_weak.upgrade() {
+                p.set_position(value as i32);
+            }
+        });
+
+        let animation = libadwaita::TimedAnimation::new(
+            paned.upcast_ref::<gtk4::Widget>(),
+            from,
+            to,
+            250,
+            anim_target,
+        );
+        animation.set_easing(libadwaita::Easing::EaseOutCubic);
+
+        // After animation completes: hide sidebar (if closing) and restore
+        // shrink constraint so the user can't drag below minimum.
+        let sidebar_weak = if show {
+            None
+        } else {
+            Some(imp.sidebar.downgrade())
+        };
+        let paned_weak = paned.downgrade();
+        animation.connect_done(move |_| {
+            if let Some(sidebar) = sidebar_weak.as_ref().and_then(|w| w.upgrade()) {
+                sidebar.set_visible(false);
+            }
+            if let Some(p) = paned_weak.upgrade() {
+                p.set_shrink_start_child(false);
+            }
+        });
+
+        animation.play();
+        imp.sidebar_animation.replace(Some(animation));
     }
 
     /// Update the file path and title for any tab matching `old_path`.

@@ -213,7 +213,7 @@ fn test_sidebar_toggle_button_icon() {
             .icon_name()
             .unwrap()
             .as_str(),
-        "panel-left-symbolic"
+        "sidebar-show-symbolic"
     );
 }
 
