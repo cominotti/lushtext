@@ -1156,3 +1156,153 @@ fn test_show_save_changes_empty_calls_done_true() {
 
     assert!(done.get(), "Empty modified list should call done(true)");
 }
+
+// --- Sidebar toggle ---
+
+/// Read the sidebar's own "visible" property, bypassing is_visible()
+/// which checks the parent chain (and returns false for unrealized windows).
+fn sidebar_visible(window: &LushtextWindow) -> bool {
+    window.imp().sidebar.property::<bool>("visible")
+}
+
+#[test]
+fn test_gsettings_sidebar_visible_default() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(window.imp().settings.boolean(keys::SIDEBAR_VISIBLE));
+}
+
+#[test]
+fn test_sidebar_visible_by_default() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(sidebar_visible(&window));
+}
+
+#[test]
+fn test_toggle_sidebar_hides_sidebar() {
+    ensure_gtk_init();
+    let window = test_window();
+    activate_action(&window, "toggle-sidebar");
+    assert!(!sidebar_visible(&window));
+}
+
+#[test]
+fn test_toggle_sidebar_shows_sidebar_again() {
+    ensure_gtk_init();
+    let window = test_window();
+    activate_action(&window, "toggle-sidebar");
+    activate_action(&window, "toggle-sidebar");
+    assert!(sidebar_visible(&window));
+}
+
+#[test]
+fn test_toggle_sidebar_persists_hidden_to_gsettings() {
+    ensure_gtk_init();
+    let window = test_window();
+    activate_action(&window, "toggle-sidebar");
+    assert!(!window.imp().settings.boolean(keys::SIDEBAR_VISIBLE));
+}
+
+#[test]
+fn test_toggle_sidebar_persists_visible_to_gsettings() {
+    ensure_gtk_init();
+    let window = test_window();
+    activate_action(&window, "toggle-sidebar");
+    activate_action(&window, "toggle-sidebar");
+    assert!(window.imp().settings.boolean(keys::SIDEBAR_VISIBLE));
+}
+
+#[test]
+fn test_toggle_sidebar_action_always_enabled() {
+    ensure_gtk_init();
+    let window = test_window();
+    // Should be enabled even with no tabs open
+    assert!(action_enabled(&window, "toggle-sidebar"));
+}
+
+#[test]
+fn test_toggle_sidebar_action_enabled_with_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    assert!(action_enabled(&window, "toggle-sidebar"));
+}
+
+#[test]
+fn test_toggle_sidebar_preserves_paned_position() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(300);
+
+    // Hide and show sidebar
+    activate_action(&window, "toggle-sidebar");
+    activate_action(&window, "toggle-sidebar");
+
+    // Position should be preserved
+    assert_eq!(paned.position(), 300);
+}
+
+#[test]
+fn test_clamp_noop_when_sidebar_hidden() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    paned.set_position(350);
+
+    // Hide sidebar
+    activate_action(&window, "toggle-sidebar");
+
+    // Clamp should be a no-op when sidebar is hidden
+    clamp_sidebar_position(&window, paned, 600);
+    assert_eq!(paned.position(), 350);
+}
+
+#[test]
+fn test_toggle_sidebar_multiple_cycles() {
+    ensure_gtk_init();
+    let window = test_window();
+    for _ in 0..5 {
+        activate_action(&window, "toggle-sidebar");
+        assert!(!sidebar_visible(&window));
+        activate_action(&window, "toggle-sidebar");
+        assert!(sidebar_visible(&window));
+    }
+}
+
+#[test]
+fn test_toggle_sidebar_works_with_tabs_open() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    activate_action(&window, "toggle-sidebar");
+    assert!(!sidebar_visible(&window));
+
+    activate_action(&window, "toggle-sidebar");
+    assert!(sidebar_visible(&window));
+}
+
+#[test]
+fn test_toggle_sidebar_action_state_syncs() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    // Initial state should be true (visible)
+    let action = window
+        .lookup_action("toggle-sidebar")
+        .unwrap()
+        .downcast::<gio::SimpleAction>()
+        .unwrap();
+    assert!(action.state().unwrap().get::<bool>().unwrap());
+
+    // After toggle, state should be false
+    activate_action(&window, "toggle-sidebar");
+    assert!(!action.state().unwrap().get::<bool>().unwrap());
+
+    // After second toggle, state should be true again
+    activate_action(&window, "toggle-sidebar");
+    assert!(action.state().unwrap().get::<bool>().unwrap());
+}

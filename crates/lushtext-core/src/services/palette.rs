@@ -279,6 +279,12 @@ pub fn all_commands() -> &'static [CommandDef] {
         },
         // View
         CommandDef {
+            id: "win.toggle-sidebar",
+            label: "Toggle Sidebar",
+            category: CommandCategory::View,
+            shortcut: Some("F9"),
+        },
+        CommandDef {
             id: "win.show-help-overlay",
             label: "Keyboard Shortcuts",
             category: CommandCategory::View,

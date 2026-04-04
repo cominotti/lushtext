@@ -58,5 +58,10 @@
       <summary>Sidebar Position</summary>
       <description>GtkPaned divider position in pixels</description>
     </key>
+    <key name="sidebar-visible" type="b">
+      <default>true</default>
+      <summary>Sidebar Visible</summary>
+      <description>Whether the file tree sidebar is visible</description>
+    </key>
   </schema>
 </schemalist>

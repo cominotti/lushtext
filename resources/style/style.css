@@ -17,6 +17,14 @@
   min-height: 26px;
 }
 
+/* Sidebar toggle: subdued flat button matching the status bar aesthetic */
+.status-bar .sidebar-toggle {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  color: @dim_label_color;
+}
+
 /* Message severity — uses Adwaita semantic colors, adapts to light/dark */
 .status-bar .status-info {
   color: @accent_color;

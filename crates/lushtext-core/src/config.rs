@@ -25,4 +25,5 @@ pub mod keys {
     pub const WINDOW_HEIGHT: &str = "window-height";
     pub const WINDOW_MAXIMIZED: &str = "window-maximized";
     pub const SIDEBAR_POSITION: &str = "sidebar-position";
+    pub const SIDEBAR_VISIBLE: &str = "sidebar-visible";
 }

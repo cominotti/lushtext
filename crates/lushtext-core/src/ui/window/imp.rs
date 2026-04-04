@@ -54,6 +54,9 @@ pub struct LushtextWindow {
 
     /// Application-wide GSettings for window geometry and sidebar position.
     pub settings: gio::Settings,
+    /// Cached sidebar visibility for the `clamp_sidebar_position` hot path.
+    /// Avoids a GObject property lookup (~60Hz during resize).
+    pub sidebar_visible: Cell<bool>,
     /// Generation counter for debouncing file index rebuilds (300ms).
     /// Incremented on each workspace change; stale timer callbacks no-op.
     pub index_rebuild_generation: Cell<u32>,
@@ -103,6 +106,7 @@ impl Default for LushtextWindow {
             palette_revealer: TemplateChild::default(),
             command_palette: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
+            sidebar_visible: Cell::new(true),
             index_rebuild_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
             last_sidebar_pos: Cell::new(-1),
@@ -195,6 +199,13 @@ impl ObjectImpl for LushtextWindow {
             obj.connect_notify_local(Some("maximized"), move |window, _| {
                 let _ = settings.set_boolean(keys::WINDOW_MAXIMIZED, window.is_maximized());
             });
+        }
+
+        // --- Restore sidebar visibility ---
+        let sidebar_vis = settings.boolean(keys::SIDEBAR_VISIBLE);
+        self.sidebar_visible.set(sidebar_vis);
+        if !sidebar_vis {
+            self.sidebar.set_visible(false);
         }
 
         // --- Sidebar position persist on user drag ---
@@ -439,6 +450,9 @@ pub fn clamp_sidebar_position(
     window_width: i32,
 ) {
     if window_width <= 0 {
+        return;
+    }
+    if !window.imp().sidebar_visible.get() {
         return;
     }
     let imp = window.imp();

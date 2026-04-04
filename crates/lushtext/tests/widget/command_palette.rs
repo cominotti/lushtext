@@ -492,6 +492,10 @@ fn test_palette_activation_closes_palette() {
     activate_action(&window, "toggle-command-palette");
     assert!(window.imp().palette_revealer.reveals_child());
 
+    // Wait for background search results (same race as activate_selected tests)
+    let palette = window.imp().command_palette.clone();
+    spin_until(move || palette.imp().results_store.n_items() > 0);
+
     // Activate first result (should close palette)
     window.imp().command_palette.imp().activate_selected();
     flush_events();
@@ -574,6 +578,13 @@ fn test_activation_clears_saved_focus() {
 
     activate_action(&window, "toggle-command-palette");
     assert!(window.imp().saved_focus.borrow().is_some());
+
+    // Wait for background search results to populate the results store.
+    // rebuild_results uses spawn_blocking_then, so results arrive via
+    // idle_add_once — flush_events alone may miss them if the background
+    // thread hasn't finished yet.
+    let palette = window.imp().command_palette.clone();
+    spin_until(move || palette.imp().results_store.n_items() > 0);
 
     // Activate first result (closes palette)
     window.imp().command_palette.imp().activate_selected();

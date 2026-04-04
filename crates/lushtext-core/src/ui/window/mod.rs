@@ -10,6 +10,7 @@ mod imp;
 
 pub use imp::clamp_sidebar_position;
 
+use crate::config::keys;
 use crate::model::draft::DraftEntry;
 use crate::model::session::{SessionData, SessionTab};
 use crate::services::async_task;
@@ -400,6 +401,32 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| window.toggle_command_palette())
                 .build(),
         ]);
+
+        // Stateful toggle for sidebar visibility. GtkToggleButton auto-syncs
+        // its pressed state with this action's boolean value.
+        let sidebar_visible = self.imp().settings.boolean(keys::SIDEBAR_VISIBLE);
+        let sidebar_action =
+            gio::SimpleAction::new_stateful("toggle-sidebar", None, &sidebar_visible.to_variant());
+        {
+            let window_weak = self.downgrade();
+            sidebar_action.connect_change_state(move |action, state| {
+                let Some(state) = state else { return };
+                let Some(new_visible) = state.get::<bool>() else {
+                    tracing::error!("toggle-sidebar: expected bool state");
+                    return;
+                };
+                action.set_state(state);
+                if let Some(window) = window_weak.upgrade() {
+                    window.imp().sidebar_visible.set(new_visible);
+                    window.imp().sidebar.set_visible(new_visible);
+                    let _ = window
+                        .imp()
+                        .settings
+                        .set_boolean(keys::SIDEBAR_VISIBLE, new_visible);
+                }
+            });
+        }
+        self.add_action(&sidebar_action);
     }
 
     /// Update the file path and title for any tab matching `old_path`.
@@ -1010,6 +1037,7 @@ impl LushtextWindow {
             ("win.toggle-search", "<Control>f"),
             ("win.close-tab", "<Control>w"),
             ("win.toggle-command-palette", "<Control>p"),
+            ("win.toggle-sidebar", "F9"),
         ];
 
         for (action, accel) in shortcuts {
