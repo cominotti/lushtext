@@ -90,6 +90,10 @@ pub struct LushtextWindow {
     pub autosave_source_id: RefCell<Option<glib::SourceId>>,
     /// In-memory copy of the draft manifest, kept in sync with disk.
     pub draft_manifest: RefCell<DraftManifest>,
+    /// Draft content pre-loaded during session restore (draft_id → text).
+    /// Populated in `load_session_and_drafts`, consumed by `check_draft_on_open`
+    /// and `check_draft_by_id` to avoid a per-tab background thread hop.
+    pub preloaded_drafts: RefCell<HashMap<String, String>>,
     /// Monotonic counter for generating unique IDs for untitled tab drafts.
     pub next_tab_id: Cell<u64>,
     /// Generation counter for debouncing session saves (500ms).
@@ -127,6 +131,7 @@ impl Default for LushtextWindow {
             buffer_memory_by_editor: RefCell::new(HashMap::new()),
             autosave_source_id: RefCell::new(None),
             draft_manifest: RefCell::new(DraftManifest::default()),
+            preloaded_drafts: RefCell::new(HashMap::new()),
             next_tab_id: Cell::new(0),
             session_save_generation: Cell::new(0),
             restoring_session: Cell::new(false),

@@ -1065,6 +1065,102 @@ fn test_collect_session_file_tab_no_draft_id() {
 }
 
 // ---------------------------------------------------------------------------
+// Preloaded drafts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_preloaded_drafts_consumed_by_check_draft_by_id() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    // Wait for load_session_and_drafts (triggered in constructed) to complete.
+    // It overwrites preloaded_drafts and draft_manifest, so we must set up
+    // test data AFTER it finishes.
+    flush_after_delay(std::time::Duration::from_millis(200));
+
+    // Simulate preloaded draft content (as load_session_and_drafts would do).
+    let draft_id = "test-preload-1";
+    window
+        .imp()
+        .preloaded_drafts
+        .borrow_mut()
+        .insert(draft_id.to_string(), "preloaded content".to_string());
+    // Also add a manifest entry so check_draft_by_id finds it.
+    window
+        .imp()
+        .draft_manifest
+        .borrow_mut()
+        .upsert(lushtext_core::model::draft::DraftEntry {
+            draft_id: draft_id.to_string(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 1000,
+        });
+
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    // check_draft_by_id should consume from preloaded map (no background task).
+    window.check_draft_by_id(&editor, draft_id);
+    flush_events();
+
+    // The preloaded entry should have been consumed (removed from map).
+    assert!(
+        window
+            .imp()
+            .preloaded_drafts
+            .borrow()
+            .get(draft_id)
+            .is_none(),
+        "preloaded draft should be consumed after check_draft_by_id"
+    );
+
+    // The editor buffer should contain the preloaded content.
+    let buffer = editor.buffer();
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+    assert_eq!(text.as_str(), "preloaded content");
+}
+
+#[test]
+fn test_preloaded_drafts_empty_is_noop() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    // Wait for load_session_and_drafts to complete before setting up test state.
+    flush_after_delay(std::time::Duration::from_millis(200));
+
+    // Add a manifest entry but NO preloaded content.
+    window
+        .imp()
+        .draft_manifest
+        .borrow_mut()
+        .upsert(lushtext_core::model::draft::DraftEntry {
+            draft_id: "no-preload".to_string(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 1000,
+        });
+
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    // check_draft_by_id should fall through to background read (which will
+    // fail silently since no draft file exists in the test data dir).
+    window.check_draft_by_id(&editor, "no-preload");
+    flush_events();
+
+    // Buffer should still be empty (no preloaded content, background read finds nothing).
+    let buffer = editor.buffer();
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+    assert!(
+        text.is_empty(),
+        "buffer should be empty when no preloaded or disk draft exists"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Save-changes dialog
 // ---------------------------------------------------------------------------
 
