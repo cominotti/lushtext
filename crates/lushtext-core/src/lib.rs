@@ -98,7 +98,11 @@ pub(crate) fn load_css() {
     );
     let settings = gio::Settings::new(config::APP_ID);
     apply_font_css(&font_provider, &settings);
-    for key in [config::keys::USE_SYSTEM_FONT, config::keys::CUSTOM_FONT] {
+    for key in [
+        config::keys::USE_SYSTEM_FONT,
+        config::keys::CUSTOM_FONT,
+        config::keys::ZOOM_LEVEL,
+    ] {
         let p = font_provider.clone();
         let s = settings.clone();
         settings.connect_changed(Some(key), move |_, _| apply_font_css(&p, &s));
@@ -106,15 +110,39 @@ pub(crate) fn load_css() {
 }
 
 fn apply_font_css(provider: &gtk4::CssProvider, settings: &gio::Settings) {
-    if settings.boolean(config::keys::USE_SYSTEM_FONT) {
+    let zoom = settings.uint(config::keys::ZOOM_LEVEL).clamp(50, 400);
+    let use_system = settings.boolean(config::keys::USE_SYSTEM_FONT);
+
+    // System font at 100% — no CSS override needed, let GTK defaults apply.
+    if use_system && zoom == 100 {
         provider.load_from_string("");
-    } else {
-        let font_str = settings.string(config::keys::CUSTOM_FONT);
-        let desc = pango::FontDescription::from_string(&font_str);
-        let family = desc.family().unwrap_or_else(|| "Monospace".into());
-        // Pango stores font sizes in 1/1024 pt (PANGO_SCALE); divide to get CSS-compatible points.
-        let size_pt = desc.size() as f64 / pango::SCALE as f64;
-        let css = format!(".monospace {{ font-family: \"{family}\"; font-size: {size_pt}pt; }}");
-        provider.load_from_string(&css);
+        return;
     }
+
+    // Resolve the base font: system monospace from GNOME desktop settings,
+    // or the user's custom font from our own GSettings.
+    // Guard against non-GNOME desktops where the schema may not exist
+    // (gio::Settings::new aborts if the schema is missing).
+    let desc = if use_system {
+        let source = gio::SettingsSchemaSource::default().expect("schema source");
+        if source.lookup("org.gnome.desktop.interface", true).is_some() {
+            let iface = gio::Settings::new("org.gnome.desktop.interface");
+            pango::FontDescription::from_string(&iface.string("monospace-font-name"))
+        } else {
+            pango::FontDescription::from_string("Monospace 11")
+        }
+    } else {
+        pango::FontDescription::from_string(&settings.string(config::keys::CUSTOM_FONT))
+    };
+
+    let family = desc.family().unwrap_or_else(|| "Monospace".into());
+    // Pango stores font sizes in 1/1024 pt (PANGO_SCALE); divide to get CSS-compatible points.
+    let base_pt = {
+        let raw = desc.size() as f64 / pango::SCALE as f64;
+        if raw > 0.0 { raw } else { 11.0 }
+    };
+    let zoomed_pt = base_pt * zoom as f64 / 100.0;
+
+    let css = format!(".monospace {{ font-family: \"{family}\"; font-size: {zoomed_pt:.1}pt; }}");
+    provider.load_from_string(&css);
 }

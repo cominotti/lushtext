@@ -110,6 +110,11 @@
   box-shadow: inset 0 0 0 2px @accent_bg_color;
 }
 
+/* Zoom controls: horizontal row matching GNOME Text Editor style */
+.zoom-controls {
+  margin: 6px 9px;
+}
+
 /* Sidebar separator */
 .sidebar > separator {
   min-height: 1px;

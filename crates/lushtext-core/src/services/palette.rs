@@ -291,6 +291,24 @@ pub fn all_commands() -> &'static [CommandDef] {
             shortcut: Some("F11"),
         },
         CommandDef {
+            id: "win.zoom-in",
+            label: "Zoom In",
+            category: CommandCategory::View,
+            shortcut: Some("Ctrl+="),
+        },
+        CommandDef {
+            id: "win.zoom-out",
+            label: "Zoom Out",
+            category: CommandCategory::View,
+            shortcut: Some("Ctrl+-"),
+        },
+        CommandDef {
+            id: "win.zoom-reset",
+            label: "Reset Zoom",
+            category: CommandCategory::View,
+            shortcut: Some("Ctrl+0"),
+        },
+        CommandDef {
             id: "win.show-help-overlay",
             label: "Keyboard Shortcuts",
             category: CommandCategory::View,

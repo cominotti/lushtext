@@ -9,6 +9,8 @@ mod dialogs;
 mod imp;
 // Session persistence and draft management (extracted to stay under 1000 lines).
 mod session;
+// Zoom controls: hamburger menu widget and window actions.
+mod zoom;
 
 pub use imp::clamp_sidebar_position;
 
@@ -55,6 +57,8 @@ impl LushtextWindow {
         window.setup_actions();
         window.setup_fullscreen();
         window.setup_theme_selector();
+        zoom::setup_zoom_actions(&window);
+        zoom::setup_zoom_controls(&window);
         window.setup_shortcuts();
         window.update_content_stack();
         window.refresh_status_bar();
@@ -833,6 +837,12 @@ impl LushtextWindow {
             ("win.toggle-command-palette", "<Control>p"),
             ("win.toggle-sidebar", "F9"),
             ("win.toggle-fullscreen", "F11"),
+            (
+                "win.zoom-in",
+                "<Control>equal|<Control>plus|<Control>KP_Add",
+            ),
+            ("win.zoom-out", "<Control>minus|<Control>KP_Subtract"),
+            ("win.zoom-reset", "<Control>0|<Control>KP_0"),
         ];
 
         for (action, accel) in shortcuts {
