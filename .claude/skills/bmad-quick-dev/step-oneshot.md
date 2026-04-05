@@ -27,7 +27,7 @@ Invoke the `bmad-review-adversarial-general` skill in a subagent with the change
 
 Deduplicate all review findings. Three categories only:
 
-- **patch** — trivially fixable. Auto-fix immediately.
+- **patch** — trivially fixable. Auto-fix and add regression tests (unit/integration/widget as appropriate) that prevent recurrence — independent of any tests already implemented.
 - **defer** — pre-existing issue not caused by this change. Append to `{deferred_work_file}`.
 - **reject** — noise. Drop silently.
 
