@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tempfile::TempDir;
 
+use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::palette::IndexedFile;
 use lushtext_core::model::palette::SearchMode;
 use lushtext_core::model::session::{SessionData, SessionTab};
@@ -26,6 +27,7 @@ use lushtext_core::services::file_tree;
 use lushtext_core::services::json_store;
 use lushtext_core::services::palette::{self, FileIndex};
 use lushtext_core::services::workspace_manager;
+use lushtext_core::services::{draft_service, session_service};
 use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
 
 // ---------------------------------------------------------------------------
@@ -137,6 +139,63 @@ fn make_workspaces_file(n_workspaces: usize, entries_per: usize) -> WorkspacesFi
         active_workspace: Some(WorkspaceId::new("ws-0")),
         workspaces,
     }
+}
+
+/// Create a data directory with a manifest and draft files for benchmarking
+/// the startup preload pipeline.
+fn make_draft_fixtures(
+    n_tabs: usize,
+    n_drafts: usize,
+    draft_size: usize,
+) -> (TempDir, SessionData) {
+    let dir = TempDir::new().unwrap();
+
+    // Create real files for session tabs (filter_existing_tabs will stat them).
+    let tab_dir = dir.path().join("project");
+    std::fs::create_dir_all(&tab_dir).unwrap();
+    let mut tabs = Vec::with_capacity(n_tabs);
+    for i in 0..n_tabs {
+        let file_path = tab_dir.join(format!("file_{i}.rs"));
+        std::fs::write(&file_path, "fn main() {}").unwrap();
+        tabs.push(SessionTab {
+            path: Some(file_path),
+            draft_id: None,
+            cursor_line: 0,
+            cursor_col: 0,
+            scroll_line: 0,
+        });
+    }
+
+    // Create draft files + manifest for the first n_drafts tabs.
+    let draft_content = "x".repeat(draft_size);
+    let mut manifest = DraftManifest::default();
+    for tab in tabs.iter().take(n_drafts) {
+        if let Some(ref path) = tab.path {
+            let draft_id = draft_service::draft_id_for_path(path);
+            draft_service::write_draft(dir.path(), &draft_id, &draft_content).unwrap();
+            manifest.upsert(DraftEntry {
+                draft_id,
+                original_path: Some(path.clone()),
+                original_mtime_secs: Some(1000),
+                saved_at_secs: 2000,
+            });
+        }
+    }
+    draft_service::save_manifest(dir.path(), &manifest).unwrap();
+    session_service::save(
+        dir.path(),
+        &SessionData {
+            tabs: tabs.clone(),
+            active_tab_index: Some(0),
+        },
+    )
+    .unwrap();
+
+    let session = SessionData {
+        tabs,
+        active_tab_index: Some(0),
+    };
+    (dir, session)
 }
 
 /// Build a `SessionData` with the given number of tabs.
@@ -604,6 +663,110 @@ fn bench_file_size_classify(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_draft_restore(c: &mut Criterion) {
+    let mut group = c.benchmark_group("draft_restore");
+    group.sample_size(30);
+
+    // Benchmark the full startup preload pipeline:
+    // load manifest + load session + filter_existing_tabs + batch-read drafts.
+    // This mirrors the background work in load_session_and_drafts.
+    for &(label, n_tabs, n_drafts, draft_kb) in &[
+        ("5_tabs_1_draft_1kb", 5, 1, 1),
+        ("10_tabs_5_drafts_1kb", 10, 5, 1),
+        ("20_tabs_10_drafts_10kb", 20, 10, 10),
+        ("50_tabs_20_drafts_10kb", 50, 20, 10),
+    ] {
+        group.bench_function(BenchmarkId::new("startup_preload", label), |b| {
+            b.iter_batched(
+                || make_draft_fixtures(n_tabs, n_drafts, draft_kb * 1024),
+                |(dir, _session)| {
+                    // Simulate the background thread work from load_session_and_drafts.
+                    let manifest =
+                        draft_service::load_manifest(black_box(dir.path())).unwrap_or_default();
+                    let mut session =
+                        session_service::load(black_box(dir.path())).unwrap_or_default();
+                    session_service::filter_existing_tabs(&mut session);
+
+                    let mut preloaded = std::collections::HashMap::new();
+                    for tab in &session.tabs {
+                        if let Some(ref path) = tab.path {
+                            let draft_id = draft_service::draft_id_for_path(path);
+                            if manifest.find_by_id(&draft_id).is_some() {
+                                if let Ok(Some(content)) =
+                                    draft_service::read_draft(dir.path(), &draft_id)
+                                {
+                                    preloaded.insert(draft_id, content);
+                                }
+                            }
+                        }
+                    }
+
+                    (manifest, session, preloaded, dir)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    // Benchmark orphan cleanup in isolation.
+    for &(label, n_valid, n_orphan_entries, n_orphan_files) in &[
+        ("clean_5", 5, 0, 0),
+        ("5_orphan_entries", 5, 5, 0),
+        ("5_orphan_files", 5, 0, 5),
+        ("mixed_20", 10, 5, 5),
+    ] {
+        group.bench_function(BenchmarkId::new("cleanup_orphans", label), |b| {
+            b.iter_batched(
+                || {
+                    let dir = TempDir::new().unwrap();
+                    let mut manifest = DraftManifest::default();
+
+                    // Valid entries (with draft files).
+                    for i in 0..n_valid {
+                        let id = format!("valid-{i}");
+                        draft_service::write_draft(dir.path(), &id, "content").unwrap();
+                        manifest.upsert(DraftEntry {
+                            draft_id: id,
+                            original_path: None,
+                            original_mtime_secs: None,
+                            saved_at_secs: 1000,
+                        });
+                    }
+                    // Orphan manifest entries (no draft files).
+                    for i in 0..n_orphan_entries {
+                        manifest.upsert(DraftEntry {
+                            draft_id: format!("orphan-entry-{i}"),
+                            original_path: None,
+                            original_mtime_secs: None,
+                            saved_at_secs: 1000,
+                        });
+                    }
+                    // Create the drafts directory for orphan files.
+                    std::fs::create_dir_all(draft_service::drafts_dir(dir.path())).unwrap();
+                    // Orphan draft files (no manifest entries).
+                    for i in 0..n_orphan_files {
+                        draft_service::write_draft(
+                            dir.path(),
+                            &format!("orphan-file-{i}"),
+                            "stale",
+                        )
+                        .unwrap();
+                    }
+
+                    (dir, manifest)
+                },
+                |(dir, mut manifest)| {
+                    let _ = draft_service::cleanup_orphans(black_box(dir.path()), &mut manifest);
+                    (dir, manifest)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -621,5 +784,6 @@ criterion_group!(
     bench_editor_file_io,
     bench_tree_population,
     bench_file_size_classify,
+    bench_draft_restore,
 );
 criterion_main!(benches);
