@@ -88,6 +88,10 @@ Meson wraps Cargo for installed and Flatpak builds:
 
 ## CI
 
-- `.github/workflows/ci.yml` — Cargo check/clippy/test + benchmark compile-check on `ubuntu-latest`
-- `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in GNOME 49 container
-- `.github/workflows/release-benchmark.yml` — full benchmark run + markdown report uploaded as release asset on `v*` tags
+All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but `gtk4-rs 0.11` requires GTK >= 4.20 (GNOME 49).
+
+- `.github/workflows/ci.yml` — Cargo check/clippy/test + benchmark compile-check in `fedora:43` container (GNOME 49, GTK 4.20)
+- `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-49` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io)
+- `.github/workflows/release-benchmark.yml` — full benchmark run + markdown report uploaded as release asset on `v*` tags, same `fedora:43` container
+
+**When bumping gtk-rs version:** update the Fedora version in ci.yml and release-benchmark.yml, and the GNOME tag in flatpak.yml and the Flatpak manifest, to match the new minimum GTK requirement.

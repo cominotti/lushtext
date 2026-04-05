@@ -12,19 +12,26 @@ jobs:
   check:
     name: Check & Test
     runs-on: ubuntu-latest
+    # gtk4-rs 0.11 requires GTK >= 4.20 (GNOME 49). Ubuntu LTS only ships 4.14.
+    # Fedora 43 ships GNOME 49 (GTK 4.20, Libadwaita 1.8, GtkSourceView 5).
+    # Bump this when gtk4-rs minimum GTK version increases.
+    container:
+      image: registry.fedoraproject.org/fedora:43
 
     steps:
-      - uses: actions/checkout@v4
-
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libgtk-4-dev \
-            libadwaita-1-dev \
-            libgtksourceview-5-dev \
+          dnf install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
             gettext \
-            xvfb
+            git \
+            curl \
+            xorg-x11-server-Xvfb
+
+      - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.94.1
@@ -32,6 +39,9 @@ jobs:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -43,4 +53,4 @@ jobs:
         run: cargo bench -p lushtext-core --no-run
 
       - name: Run tests
-        run: xvfb-run cargo test
+        run: xvfb-run cargo nextest run

@@ -18,6 +18,9 @@ jobs:
   benchmark-report:
     name: Generate Benchmark Report
     runs-on: ubuntu-latest
+    # Same container as ci.yml — see comment there for rationale.
+    container:
+      image: registry.fedoraproject.org/fedora:43
     timeout-minutes: 30
     permissions:
       contents: write
@@ -32,19 +35,22 @@ jobs:
           TAG="${INPUT_TAG:-$REF_NAME}"
           echo "name=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git \
+            jq \
+            gh
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.tag.outputs.name }}
           fetch-depth: 0
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libgtk-4-dev \
-            libadwaita-1-dev \
-            libgtksourceview-5-dev \
-            jq
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.94.1
