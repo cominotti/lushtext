@@ -399,7 +399,7 @@ fn test_button_switches_to_replace_icon_after_load_roots() {
             .icon_name()
             .unwrap()
             .as_str(),
-        "view-refresh-symbolic"
+        "folder-open-symbolic"
     );
     assert_eq!(
         section
@@ -427,7 +427,7 @@ fn test_button_switches_to_replace_icon_after_add_root() {
             .icon_name()
             .unwrap()
             .as_str(),
-        "view-refresh-symbolic"
+        "folder-open-symbolic"
     );
 }
 

@@ -116,11 +116,11 @@ impl LushtextWorkspaceSection {
 
     /// Update the add-folder button icon and tooltip based on whether roots exist.
     /// Empty workspace: "Add Folder to Workspace" (folder-new-symbolic)
-    /// Workspace with roots: "Replace Workspace Root" (view-refresh-symbolic)
+    /// Workspace with roots: "Replace Workspace Root" (folder-open-symbolic)
     fn update_button_state(&self) {
         let button = &self.imp().add_folder_button;
         if self.has_roots() {
-            button.set_icon_name("view-refresh-symbolic");
+            button.set_icon_name("folder-open-symbolic");
             button.set_tooltip_text(Some("Replace Workspace Root"));
         } else {
             button.set_icon_name("folder-new-symbolic");
