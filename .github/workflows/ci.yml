@@ -28,6 +28,7 @@ jobs:
             gcc \
             gettext \
             git \
+            curl \
             xorg-x11-server-Xvfb
 
       - uses: actions/checkout@v4
@@ -39,6 +40,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -49,4 +53,4 @@ jobs:
         run: cargo bench -p lushtext-core --no-run
 
       - name: Run tests
-        run: xvfb-run cargo test
+        run: xvfb-run cargo nextest run
