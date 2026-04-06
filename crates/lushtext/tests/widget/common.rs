@@ -16,7 +16,7 @@ static GTK_INIT: Once = Once::new();
 /// Uses the in-memory GSettings backend so tests don't pollute user's dconf.
 /// Sets `LUSHTEXT_DATA_DIR` to a temp directory so session/draft I/O doesn't
 /// touch the user's real data.
-/// Requires a display server — run under `xvfb-run` for headless environments.
+/// Requires a display server — CI uses `mutter --headless`; `xvfb-run` also works locally.
 pub fn ensure_gtk_init() {
     GTK_INIT.call_once(|| {
         // Use in-memory GSettings backend: starts with schema defaults, no persistence

@@ -2,42 +2,46 @@
 
 Detailed patterns for testing GTK4 widgets without a display server running on the developer's machine.
 
-## Headless Testing with xvfb-run
+## Headless Testing
 
-`xvfb-run` creates a virtual X11 framebuffer. GTK4 can render into it via the X11 backend:
+### CI: Mutter Headless (Wayland)
+
+CI uses `mutter --headless` — a headless Wayland compositor. This is the same pattern
+GNOME's own GTK CI uses, and avoids Xvfb's X11 resource exhaustion with many test processes:
 
 ```bash
-# Run all widget tests headlessly
+export XDG_RUNTIME_DIR="$(mktemp -d)"
+export GDK_BACKEND=wayland
+dbus-run-session -- \
+  mutter --headless --wayland --no-x11 --virtual-monitor 1024x768 -- \
+    cargo nextest run --test widget
+```
+
+- `--headless`: runs without KMS/DRM hardware (required for containers)
+- `--no-x11`: disables Xwayland (not needed for GTK4 Wayland tests)
+- `--virtual-monitor 1024x768`: creates a fake monitor
+- `dbus-run-session`: provides the D-Bus session bus mutter requires
+- Mutter sets `WAYLAND_DISPLAY` automatically before spawning the child command
+
+### Local: xvfb-run (also works)
+
+For local headless testing, `xvfb-run` is a simpler alternative:
+
+```bash
 xvfb-run -a cargo nextest run --test widget
-
-# -a: automatically pick an unused display number
-# Avoids conflicts when multiple xvfb-run instances run in parallel
 ```
 
-### GDK Backend Override
-
-Alternatively, force a specific backend:
+### Installing dependencies
 
 ```bash
-# Use X11 backend (works with xvfb)
-GDK_BACKEND=x11 xvfb-run -a cargo test --test widget
+# Fedora — CI approach (mutter)
+sudo dnf install mutter dbus-daemon
 
-# Use broadway backend (HTML5 — useful for visual debugging)
-GDK_BACKEND=broadway cargo test --test widget
-# Then open http://localhost:8080 in a browser
-```
-
-### Installing xvfb
-
-```bash
-# Fedora
+# Fedora — local approach (xvfb)
 sudo dnf install xorg-x11-server-Xvfb
 
-# Ubuntu/Debian
+# Ubuntu/Debian (xvfb)
 sudo apt-get install xvfb
-
-# Arch
-sudo pacman -S xorg-server-xvfb
 ```
 
 ## GTK Initialization for Tests
@@ -52,9 +56,8 @@ static GTK_INIT: Once = Once::new();
 pub fn ensure_gtk_init() {
     GTK_INIT.call_once(|| {
         gtk4::init().expect(
-            "Failed to initialize GTK4. \
-             Widget tests require a display server. \
-             Run with: xvfb-run -a cargo test --test widget"
+            "GTK4 init failed — is a display server available? \
+             CI uses mutter --headless; locally try xvfb-run."
         );
     });
 }
@@ -224,4 +227,4 @@ Things that are hard/impossible to test without a full compositor:
 - CSS rendering and theming
 - Accessibility tree queries
 
-For these, E2E tests with `xvfb-run` are the minimum. For accessibility testing, AT-SPI (Assistive Technology Service Provider Interface) provides programmatic access to the widget tree — but this requires additional setup and the `atspi` crate.
+For these, E2E tests with a compositor (`mutter --headless` or `xvfb-run`) are the minimum. For accessibility testing, AT-SPI (Assistive Technology Service Provider Interface) provides programmatic access to the widget tree — but this requires additional setup and the `atspi` crate.

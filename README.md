@@ -144,7 +144,7 @@ make test-int    # Integration tests only
 make test-widget # Widget tests (requires display server)
 ```
 
-Widget tests can run headless with `xvfb-run make test-widget`.
+Widget tests require a display server. CI uses `mutter --headless` (Wayland); locally, `xvfb-run make test-widget` also works.
 
 ## Benchmarks
 
