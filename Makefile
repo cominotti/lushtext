@@ -62,7 +62,7 @@ test-int:
 	@echo "Running integration tests..."
 	$(CARGO_TEST_INT)
 
-# Widget tests (require display server; CI uses mutter --headless, locally xvfb-run also works)
+# Widget tests (require display server; use mutter --headless for headless environments)
 test-widget:
 	@echo "Running widget tests..."
 	$(CARGO_TEST_WIDGET)
@@ -137,7 +137,7 @@ help:
 	@echo "  test         All tests (unit + integration)"
 	@echo "  test-unit    Unit tests only (fast)"
 	@echo "  test-int     Integration tests only"
-	@echo "  test-widget  Widget tests (needs display; CI uses mutter --headless)"
+	@echo "  test-widget  Widget tests (needs display; mutter --headless for headless)"
 	@echo ""
 	@echo "Benchmark targets:"
 	@echo "  bench            Run Criterion benchmarks"

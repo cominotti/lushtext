@@ -16,7 +16,7 @@ static GTK_INIT: Once = Once::new();
 /// Uses the in-memory GSettings backend so tests don't pollute user's dconf.
 /// Sets `LUSHTEXT_DATA_DIR` to a temp directory so session/draft I/O doesn't
 /// touch the user's real data.
-/// Requires a display server — CI uses `mutter --headless`; `xvfb-run` also works locally.
+/// Requires a display server — use `mutter --headless` for headless environments.
 pub fn ensure_gtk_init() {
     GTK_INIT.call_once(|| {
         // Use in-memory GSettings backend: starts with schema defaults, no persistence
@@ -30,7 +30,8 @@ pub fn ensure_gtk_init() {
         let _ = std::fs::create_dir_all(&test_data_dir);
         unsafe { std::env::set_var("LUSHTEXT_DATA_DIR", &test_data_dir) };
         lushtext_core::init_schema_dir();
-        gtk4::init().expect("GTK4 init failed — is a display server available? Try xvfb-run.");
+        gtk4::init()
+            .expect("GTK4 init failed — is a display server available? Try mutter --headless.");
         sourceview5::init();
         lushtext_core::register_resources();
     });

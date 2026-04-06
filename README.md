@@ -138,13 +138,13 @@ lushtext-core/src/
 ## Testing
 
 ```sh
-make test        # All tests (301 total)
+make test        # All tests (391 total)
 make test-unit   # Unit tests only
 make test-int    # Integration tests only
 make test-widget # Widget tests (requires display server)
 ```
 
-Widget tests require a display server. CI uses `mutter --headless` (Wayland); locally, `xvfb-run make test-widget` also works.
+Widget tests require a display server. Use `mutter --headless` for headless environments — see `.github/workflows/ci.yml` for the full invocation.
 
 ## Benchmarks
 

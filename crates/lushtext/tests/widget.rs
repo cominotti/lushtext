@@ -2,8 +2,8 @@
 
 //! Widget tests for LushText GTK4 UI components.
 //!
-//! These tests require a display server. CI uses `mutter --headless` (Wayland);
-//! locally, a native display or `xvfb-run make test-widget` also works.
+//! These tests require a display server. For headless environments, use
+//! `mutter --headless` — see `.github/workflows/ci.yml` for the full invocation.
 //! They verify widget construction, property behavior, and signal wiring.
 
 #[path = "widget/common.rs"]

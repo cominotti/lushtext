@@ -1,19 +1,19 @@
 ---
 name: gtk-testing
-description: "Guide integration and E2E testing strategy for GTK4/Libadwaita applications written in Rust. Trigger whenever writing tests, discussing test strategy, adding new features (to prompt test coverage), modifying test infrastructure, or working on files in tests/. Also trigger when the user asks about testing GTK widgets, headless testing, xvfb-run, TestContext, property-based testing, or CI test configuration. Use proactively after any feature implementation to suggest what tests should accompany the change — even if the user doesn't ask."
+description: "Guide integration and E2E testing strategy for GTK4/Libadwaita applications written in Rust. Trigger whenever writing tests, discussing test strategy, adding new features (to prompt test coverage), modifying test infrastructure, or working on files in tests/. Also trigger when the user asks about testing GTK widgets, headless testing, mutter headless, xvfb-run, TestContext, property-based testing, or CI test configuration. Use proactively after any feature implementation to suggest what tests should accompany the change — even if the user doesn't ask."
 ---
 
 Guide comprehensive testing for LushText — from unit tests for domain types through E2E tests for full user workflows. GTK4 apps are notoriously hard to test because widgets need a display server, GObject lifecycle is managed by the framework, and async I/O uses GLib's main loop rather than standard Rust async. This skill provides concrete patterns for every testing level.
 
-The testing approach is pragmatic: test as much as possible without a display server (services, models), use `xvfb-run` for widget tests when needed, and treat the existing `TestContext` pattern as the foundation to build on.
+The testing approach is pragmatic: test as much as possible without a display server (services, models), use `mutter --headless` for widget tests when needed, and treat the existing `TestContext` pattern as the foundation to build on.
 
 ## Testing Pyramid for GTK4 Desktop Apps
 
 ```
          ┌─────────┐
-         │  E2E    │  Few — full user workflows via xvfb-run
+         │  E2E    │  Few — full user workflows via compositor
          ├─────────┤
-         │ Widget  │  Some — individual widget behavior via xvfb-run
+         │ Widget  │  Some — individual widget behavior via compositor
          ├─────────┤
          │  Integ  │  Many — cross-service workflows (no display needed)
          ├─────────┤
@@ -28,8 +28,8 @@ The testing approach is pragmatic: test as much as possible without a display se
 | **Unit** | Domain type invariants, pure functions | `model/*.rs` `#[cfg(test)]` | No | `make test-unit` |
 | **Service** | Business logic, JSON roundtrips, file operations | `services/*.rs` `#[cfg(test)]` | No | `make test-unit` |
 | **Integration** | Cross-service workflows, lifecycle sequences | `tests/integration/` | No | `make test-int` |
-| **Widget** | Individual widget creation, property setting, signal emission | `tests/widget/` (new) | Yes | `xvfb-run make test-widget` |
-| **E2E** | Full user workflows: open file, edit, save, switch tabs | `tests/e2e/` (new) | Yes | `xvfb-run make test-e2e` |
+| **Widget** | Individual widget creation, property setting, signal emission | `tests/widget/` (new) | Yes | `make test-widget` (CI: mutter headless) |
+| **E2E** | Full user workflows: open file, edit, save, switch tabs | `tests/e2e/` (new) | Yes | `make test-e2e` (CI: mutter headless) |
 
 ## Decision Matrix: What Test Level for Each Feature
 
@@ -214,7 +214,7 @@ fn test_full_workspace_lifecycle() {
 
 ## Level 4: Widget Tests (Requires Display)
 
-Widget tests create individual GTK widgets and verify their behavior. They need a display server — use `xvfb-run` in CI.
+Widget tests create individual GTK widgets and verify their behavior. They need a display server — use `mutter --headless` for headless environments.
 
 ### Setup: GTK Initialization in Tests
 
@@ -397,7 +397,8 @@ test-ui: test-widget test-e2e
 
 # Full test suite with display
 test-all-headless:
-	xvfb-run -a $(MAKE) test test-ui
+	dbus-run-session -- mutter --headless --wayland --no-x11 --virtual-monitor 1024x768 -- \
+		$(MAKE) test test-ui
 ```
 
 ### GitHub Actions
@@ -405,8 +406,10 @@ test-all-headless:
 ```yaml
 - name: Run headless tests
   run: |
-    sudo apt-get install -y xvfb libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev
-    xvfb-run -a make test test-widget test-e2e
+    sudo apt-get install -y mutter dbus-x11 libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev
+    export XDG_RUNTIME_DIR="$(mktemp -d)"
+    dbus-run-session -- mutter --headless --wayland --no-x11 --virtual-monitor 1024x768 -- \
+      make test test-widget test-e2e
 ```
 
 ### Test File Structure

@@ -91,7 +91,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 
 All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but `gtk4-rs 0.11` requires GTK >= 4.20 (GNOME 49).
 
-- `.github/workflows/ci.yml` — Cargo check/clippy/test + benchmark compile-check in `fedora:43` container (GNOME 49, GTK 4.20)
+- `.github/workflows/ci.yml` — Cargo check/clippy/test + benchmark compile-check in `fedora:43` container (GNOME 49, GTK 4.20). Widget tests run under `mutter --headless` (Wayland) — the same pattern GNOME GTK CI uses. Wayland's client-side rendering avoids the X11 resource exhaustion that occurs with many nextest process connect/disconnect cycles.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-49` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io)
 - `.github/workflows/release-benchmark.yml` — full benchmark run + markdown report uploaded as release asset on `v*` tags, same `fedora:43` container
 

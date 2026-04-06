@@ -4,10 +4,10 @@ Detailed patterns for testing GTK4 widgets without a display server running on t
 
 ## Headless Testing
 
-### CI: Mutter Headless (Wayland)
+### Mutter Headless (Wayland)
 
-CI uses `mutter --headless` — a headless Wayland compositor. This is the same pattern
-GNOME's own GTK CI uses, and avoids Xvfb's X11 resource exhaustion with many test processes:
+Use `mutter --headless` — a headless Wayland compositor. This is the same pattern
+GNOME's own GTK CI uses:
 
 ```bash
 export XDG_RUNTIME_DIR="$(mktemp -d)"
@@ -23,25 +23,14 @@ dbus-run-session -- \
 - `dbus-run-session`: provides the D-Bus session bus mutter requires
 - Mutter sets `WAYLAND_DISPLAY` automatically before spawning the child command
 
-### Local: xvfb-run (also works)
-
-For local headless testing, `xvfb-run` is a simpler alternative:
-
-```bash
-xvfb-run -a cargo nextest run --test widget
-```
-
 ### Installing dependencies
 
 ```bash
-# Fedora — CI approach (mutter)
+# Fedora
 sudo dnf install mutter dbus-daemon
 
-# Fedora — local approach (xvfb)
-sudo dnf install xorg-x11-server-Xvfb
-
-# Ubuntu/Debian (xvfb)
-sudo apt-get install xvfb
+# Ubuntu/Debian
+sudo apt-get install mutter dbus-x11
 ```
 
 ## GTK Initialization for Tests
@@ -57,13 +46,13 @@ pub fn ensure_gtk_init() {
     GTK_INIT.call_once(|| {
         gtk4::init().expect(
             "GTK4 init failed — is a display server available? \
-             CI uses mutter --headless; locally try xvfb-run."
+             Try mutter --headless."
         );
     });
 }
 ```
 
-**Important**: `gtk4::init()` connects to the display server. If no display is available (and no xvfb), it panics. The error message should guide the developer.
+**Important**: `gtk4::init()` connects to the display server. If no display is available, it panics. The error message should guide the developer.
 
 ## GLib Main Loop in Tests
 
@@ -227,4 +216,4 @@ Things that are hard/impossible to test without a full compositor:
 - CSS rendering and theming
 - Accessibility tree queries
 
-For these, E2E tests with a compositor (`mutter --headless` or `xvfb-run`) are the minimum. For accessibility testing, AT-SPI (Assistive Technology Service Provider Interface) provides programmatic access to the widget tree — but this requires additional setup and the `atspi` crate.
+For these, E2E tests with `mutter --headless` are the minimum. For accessibility testing, AT-SPI (Assistive Technology Service Provider Interface) provides programmatic access to the widget tree — but this requires additional setup and the `atspi` crate.
