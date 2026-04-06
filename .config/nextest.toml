@@ -3,3 +3,13 @@
 
 [profile.default]
 slow-timeout = { period = "30s", terminate-after = 4 }
+
+# Widget tests require a display server (xvfb in CI). Each test process opens
+# its own X11 connection via gtk4::init(). Unbounded parallelism can overwhelm
+# the single Xvfb server, causing intermittent "Failed to initialize GTK" panics.
+[test-groups.widget-tests]
+max-threads = 2
+
+[[profile.default.overrides]]
+filter = 'binary_id(lushtext::widget)'
+test-group = 'widget-tests'
