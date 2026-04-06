@@ -1,7 +1,4 @@
 # Compilation speed optimizations for local development.
 #
-# Linker overrides are set via Makefile (RUSTFLAGS) rather than here,
-# so builds don't hard-fail when mold is not installed.
-#
-# To manually enable mold for all cargo invocations (not just make):
-#   export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+# Rust 1.90+ uses rust-lld as the default linker on x86_64-linux-gnu,
+# providing ~10x faster linking than BFD with zero configuration.

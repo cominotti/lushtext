@@ -19,14 +19,6 @@
 
 .DEFAULT_GOAL := help
 
-# Fast linker: use mold on Linux if available.
-# Set via RUSTFLAGS rather than .cargo/config.toml so builds
-# don't hard-fail when mold is not installed.
-HAS_MOLD := $(shell command -v mold 2>/dev/null && echo 1)
-ifdef HAS_MOLD
-export RUSTFLAGS += -C link-arg=-fuse-ld=mold
-endif
-
 # Test runner: prefer cargo-nextest for per-test process isolation and parallelism.
 # Falls back to cargo test when nextest is not installed.
 HAS_NEXTEST := $(shell command -v cargo-nextest 2>/dev/null && echo 1)
@@ -165,6 +157,5 @@ help:
 	@echo "  help         Show this help message"
 	@echo ""
 	@echo "Optional build accelerators (auto-detected):"
-	@echo "  mold linker      : faster linking on Linux"
 	@echo "  cargo-nextest    : parallel test execution"
 	@echo "  cargo-hakari     : unified dependency features"

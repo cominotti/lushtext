@@ -26,7 +26,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - **Logging:** tracing 0.1
 - **Benchmarks:** Criterion 0.5
 - **Build:** Cargo workspace (2 crates + workspace-hack) + Makefile (dev) + Meson (Flatpak/installed)
-- **Linker:** mold (auto-detected via Makefile RUSTFLAGS)
+- **Linker:** rust-lld (Rust 1.90+ default on x86_64-linux)
 - **Test runner:** cargo-nextest (auto-detected)
 - **Dep unification:** cargo-hakari (workspace-hack crate)
 

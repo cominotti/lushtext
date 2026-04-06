@@ -62,7 +62,7 @@ make test        # All tests (unit + integration + widget)
 make check       # clippy + fmt check
 ```
 
-The Makefile auto-detects [mold](https://github.com/rui314/mold) for faster linking and [cargo-nextest](https://nexte.st/) for parallel test execution. Both are optional.
+The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel test execution (optional). Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 
 ### Flatpak
 

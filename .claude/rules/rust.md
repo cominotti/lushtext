@@ -60,6 +60,31 @@ Never set `autoexpand = true` on `GtkTreeListModel`.
 - Use `RefCell<T>` for non-`Copy` types (e.g., `RefCell<Option<PathBuf>>`, `RefCell<Option<String>>`).
 - Both default correctly via `#[derive(Default)]` on the imp struct (`Cell<Option<T>>` defaults to `Cell::new(None)`).
 
+## Lint Suppression
+
+- Prefer `#[expect(lint)]` over `#[allow(lint)]` when suppressing a lint for a known reason (e.g., using a deprecated API that has no replacement yet). `#[expect]` is self-policing: it causes a compile error if the lint no longer fires, so stale suppressions are caught automatically.
+- Reserve `#[allow(lint)]` only for cases where the lint may or may not fire depending on configuration or feature flags.
+
+## If-Let Chains
+
+Use `if let` chains with `&&` / `&& let` (Edition 2024) as the preferred pattern for multi-condition guards that combine option unwrapping with boolean checks:
+
+```rust
+// Preferred: if-let chain
+if let Some(obj) = obj_weak.upgrade()
+    && let Some(ref cb) = *obj.imp().callback.borrow()
+{
+    cb();
+}
+
+// Avoid: nested if-let
+if let Some(obj) = obj_weak.upgrade() {
+    if let Some(ref cb) = *obj.imp().callback.borrow() {
+        cb();
+    }
+}
+```
+
 ## Error Handling
 
 - Services return `anyhow::Result`.

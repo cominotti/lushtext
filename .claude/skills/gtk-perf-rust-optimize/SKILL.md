@@ -115,15 +115,18 @@ Review criteria:
 2. Error string comparison: flag any `if err == "some string"` or `err.contains("...")` patterns. These are fragile (typo = silent bug) and hard to review. Enum pattern matching is clearer.
 3. let-else usage: only flag when let-else would significantly improve readability over a match arm that just extracts or early-returns. Do not flag cases where the match is already clear.
 4. Edition 2024 readiness: if the crate still uses edition = "2021", note that Edition 2024 is available. Key change: `unsafe_op_in_unsafe_fn` becomes deny-by-default — any existing `unsafe` blocks inside `unsafe fn` will need explicit `unsafe {}` wrappers. Relevant because the codebase uses `unsafe { String::from_utf8_unchecked(bytes) }`.
+5. #[expect] vs #[allow]: flag `#[allow(lint)]` when `#[expect(lint)]` would be more appropriate. `#[expect]` is self-policing — it causes a compile error if the lint no longer fires, catching stale suppressions automatically. Available since Rust 1.81, well within MSRV 1.94.1. Reserve `#[allow]` only for cases where the lint may or may not fire depending on configuration.
 
 Anti-patterns to flag:
 - [RECOMMEND] Result<T, String> with format!() in service functions — thiserror enum is both more correct and more readable
 - [RECOMMEND] Error string equality comparison — fragile and hard to review, use enum pattern match
+- [CONSIDER] #[allow(lint)] where #[expect(lint)] would be self-policing — stale suppressions are bugs waiting to happen
 - [CONSIDER] match { Some(x) => x, None => return } where let-else would be noticeably cleaner
 - [CONSIDER] edition = "2021" when 2024 is available — note the unsafe_op_in_unsafe_fn impact
 - [GOOD] Correct use of let-else for early returns
 - [GOOD] anyhow::Result with .context() in service error propagation
 - [GOOD] thiserror-derived error enums with exhaustive matching
+- [GOOD] #[expect(deprecated)] for APIs with no current replacement
 
 Output format — return findings as:
 **[SEVERITY] Title** — file:line

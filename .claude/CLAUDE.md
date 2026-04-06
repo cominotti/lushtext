@@ -136,7 +136,7 @@ Replicated from invowk-rust:
 - `[profile.dev.package."*"] opt-level = 2` — deps compiled at O2, cached
 - `[profile.dev.build-override] opt-level = 3` — build scripts at full optimization
 - `[profile.release] lto = "thin", strip = true, codegen-units = 1`
-- **mold linker** via Makefile RUSTFLAGS (not .cargo/config.toml, so builds don't fail without mold)
+- **rust-lld linker** — default on x86_64-linux since Rust 1.90, ~10x faster than BFD, zero configuration
 - **cargo-hakari** workspace-hack for unified dependency features
 - **cargo-nextest** auto-detected for parallel test execution
 

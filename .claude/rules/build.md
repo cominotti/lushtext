@@ -7,7 +7,7 @@ globs: "{Cargo.toml,Makefile,.cargo/**,.config/**,build.rs,meson.build,meson_opt
 
 ## Dev Builds
 
-Use `make` targets for development. The Makefile auto-detects mold and nextest.
+Use `make` targets for development. The Makefile auto-detects nextest.
 
 ```
 make run        # build + launch the app
@@ -15,16 +15,17 @@ make test       # all tests
 make check      # clippy + fmt
 ```
 
-Direct `cargo` works too, but won't have mold linker unless you export RUSTFLAGS manually.
+Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-linux for fast linking.
 
 ## Compilation Speed
 
 These patterns are replicated from invowk-rust and must be maintained:
 
 1. **Profiles** in workspace `Cargo.toml` — do not change without benchmarking.
-2. **Mold linker** set via Makefile `RUSTFLAGS`, NOT in `.cargo/config.toml` (so builds work without mold).
+2. **rust-lld** — default linker on x86_64-linux since Rust 1.90 (~10x faster than BFD, zero config). No manual linker override needed.
 3. **cargo-hakari** — run `cargo hakari generate` after any dependency change.
 4. **.config/nextest.toml** — configure test parallelism here.
+5. **`rust-version`** — consider adding `rust-version = "1.94.1"` to `[workspace.package]` in root `Cargo.toml` so `cargo check` surfaces MSRV violations early. Currently enforced only via `rust-toolchain.toml`.
 
 ## Adding Dependencies
 
