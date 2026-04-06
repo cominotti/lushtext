@@ -528,7 +528,7 @@ fn test_clamp_noop_when_within_limit() {
     paned.set_position(300);
 
     // Window width 1200 → max 400. Position 300 is fine.
-    clamp_sidebar_position(&window, paned, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
     assert_eq!(paned.position(), 300);
 }
 
@@ -540,7 +540,7 @@ fn test_clamp_reduces_when_over_limit() {
     paned.set_position(500);
 
     // Window width 1200 → max 400. Position 500 exceeds.
-    clamp_sidebar_position(&window, paned, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -552,7 +552,7 @@ fn test_clamp_at_exact_limit() {
     paned.set_position(400);
 
     // Window width 1200 → max 400. Position 400 is exactly at limit.
-    clamp_sidebar_position(&window, paned, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -564,7 +564,7 @@ fn test_clamp_noop_when_window_width_zero() {
     paned.set_position(500);
 
     // Width 0 = unrealized window. Should not clamp.
-    clamp_sidebar_position(&window, paned, 0);
+    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 0);
     assert_eq!(paned.position(), 500);
 }
 
@@ -578,7 +578,7 @@ fn test_clamp_simulates_unmaximize_scenario() {
     paned.set_position(640);
 
     // Window un-maximizes to 1200px — sidebar must be clamped to 400
-    clamp_sidebar_position(&window, paned, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -590,7 +590,7 @@ fn test_clamp_persists_to_gsettings() {
     let settings = &window.imp().settings;
     paned.set_position(350);
 
-    clamp_sidebar_position(&window, paned, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
     flush_after_delay(std::time::Duration::from_millis(250));
     assert_eq!(settings.int(keys::SIDEBAR_POSITION), 350);
 }
@@ -604,7 +604,7 @@ fn test_clamp_persists_clamped_value_to_gsettings() {
     paned.set_position(600);
 
     // Clamp to 400, should persist 400 not 600
-    clamp_sidebar_position(&window, paned, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
     flush_after_delay(std::time::Duration::from_millis(250));
     assert_eq!(settings.int(keys::SIDEBAR_POSITION), 400);
 }
@@ -1385,7 +1385,7 @@ fn test_clamp_noop_when_sidebar_hidden() {
 
     // Clamp should be a no-op when sidebar is hidden
     let pos_after_hide = paned.position();
-    clamp_sidebar_position(&window, paned, 600);
+    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 600);
     assert_eq!(paned.position(), pos_after_hide);
 }
 
@@ -1519,7 +1519,7 @@ fn test_clamp_still_works_after_animation_cycle() {
 
     // Clamp should still enforce 1/3 max on a 600px window
     paned.set_position(500);
-    clamp_sidebar_position(&window, paned, 600);
+    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 600);
     assert_eq!(paned.position(), 200); // 600 / 3 = 200
 }
 

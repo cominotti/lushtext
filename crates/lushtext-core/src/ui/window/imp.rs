@@ -244,7 +244,12 @@ impl ObjectImpl for LushtextWindow {
             self.main_paned
                 .connect_notify_local(Some("position"), move |paned, _| {
                     if let Some(window) = window_weak.upgrade() {
-                        clamp_sidebar_position(&window, paned, window.width());
+                        clamp_sidebar_position(
+                            &window,
+                            paned,
+                            &window.imp().content_stack,
+                            window.width(),
+                        );
                     }
                 });
         }
@@ -426,10 +431,13 @@ impl ObjectImpl for LushtextWindow {
 
 impl WidgetImpl for LushtextWindow {
     fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+        // Clamp sidebar BEFORE the parent allocates — this is the definitive
+        // width, free from stale-value timing issues. Running before
+        // parent_size_allocate ensures the paned position is already correct
+        // when GTK measures the content stack, preventing "needs at least N"
+        // measurement warnings.
+        clamp_sidebar_position(&self.obj(), &self.main_paned, &self.content_stack, width);
         self.parent_size_allocate(width, height, baseline);
-        // Clamp sidebar on every allocation — this is the definitive width,
-        // free from the stale-value timing issues of property notifications.
-        clamp_sidebar_position(&self.obj(), &self.main_paned, width);
         // Keep palette at 60% window width for readability.
         // Guarded with width_request comparison to avoid triggering a
         // re-layout on every allocation.
@@ -470,13 +478,14 @@ impl WindowImpl for LushtextWindow {
 impl ApplicationWindowImpl for LushtextWindow {}
 impl AdwApplicationWindowImpl for LushtextWindow {}
 
-/// Clamp the sidebar pane position to at most 1/3 of the window width,
-/// and persist the (possibly clamped) value to GSettings.
+/// Clamp the sidebar pane position to at most 1/3 of the window width
+/// and ensure the end child (content stack) keeps at least its minimum width.
 /// Uses a generation-counter debounce so resize-time clamping stays immediate
 /// while D-Bus-backed persistence only happens once resizing settles.
 pub fn clamp_sidebar_position(
     window: &super::LushtextWindow,
     paned: &gtk4::Paned,
+    content_stack: &gtk4::Stack,
     window_width: i32,
 ) {
     if window_width <= 0 {
@@ -486,9 +495,14 @@ pub fn clamp_sidebar_position(
         return;
     }
     let imp = window.imp();
-    let max = window_width / 3;
+    // Query the stack's minimum width so the sidebar never squeezes it
+    // below that floor. 16px buffer covers the GtkPaned handle/separator
+    // (Adwaita CSS sets it to 1px, but we leave margin for theme variance).
+    let (stack_min, _, _, _) = content_stack.measure(gtk4::Orientation::Horizontal, -1);
+    let stack_floor = window_width - stack_min - 16;
+    let max = (window_width / 3).min(stack_floor);
     let current = paned.position();
-    let clamped = current.min(max);
+    let clamped = current.min(max).max(0);
     if clamped != current {
         paned.set_position(clamped);
     }
