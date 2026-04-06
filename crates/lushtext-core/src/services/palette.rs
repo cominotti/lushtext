@@ -171,15 +171,36 @@ const MAX_SCAN_DEPTH: u32 = 64;
 /// takes >10ms on a single core.
 const MAX_INDEXED_FILES: usize = 100_000;
 
+/// Directory names to skip during file index scanning. These are well-known
+/// build output and dependency directories that routinely contain hundreds
+/// of thousands of files irrelevant to command palette search.
+/// Hidden directories (starting with `.`) are already filtered by `scan_directory`.
+const IGNORED_INDEX_DIRS: &[&str] = &[
+    "node_modules", // JavaScript/TypeScript dependencies
+    "target",       // Rust/Cargo, Maven, Gradle build output
+    "__pycache__",  // Python bytecode cache
+    "venv",         // Python virtual environments
+    "vendor",       // Go, PHP, Ruby vendored dependencies
+];
+
+/// Check whether a directory name matches one of the ignored index patterns.
+fn is_ignored_index_dir(dir: &Path) -> bool {
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| IGNORED_INDEX_DIRS.contains(&name))
+}
+
 /// Recursively scan a directory, collecting files (not directories) into `out`.
 ///
-/// Three layers of protection against problematic filesystem structures:
-/// 1. **Workspace containment**: symlinks whose canonical target is outside
+/// Four layers of protection against problematic filesystem structures:
+/// 1. **Ignored directories**: well-known build/dependency directories
+///    (`node_modules`, `target`, etc.) are skipped entirely.
+/// 2. **Workspace containment**: symlinks whose canonical target is outside
 ///    `canonical_root` are skipped (prevents Wine `dosdevices/z:` → `/` from
 ///    scanning the entire filesystem).
-/// 2. **Visited-path tracking**: canonical paths already seen are skipped
+/// 3. **Visited-path tracking**: canonical paths already seen are skipped
 ///    (breaks direct symlink cycles like `dosdevices/c:` → parent).
-/// 3. **Depth limit**: recursion beyond `MAX_SCAN_DEPTH` is stopped
+/// 4. **Depth limit**: recursion beyond `MAX_SCAN_DEPTH` is stopped
 ///    (catches pathological non-cyclic deep trees).
 fn collect_files_recursive(
     dir: &Path,
@@ -212,14 +233,16 @@ fn collect_files_recursive(
 
     for (path, is_dir) in file_tree::scan_directory(dir) {
         if is_dir {
-            collect_files_recursive(
-                &path,
-                workspace_root,
-                out,
-                visited,
-                canonical_root,
-                depth + 1,
-            );
+            if !is_ignored_index_dir(&path) {
+                collect_files_recursive(
+                    &path,
+                    workspace_root,
+                    out,
+                    visited,
+                    canonical_root,
+                    depth + 1,
+                );
+            }
         } else {
             out.push(IndexedFile::new(path, Arc::clone(workspace_root)));
         }
@@ -1176,6 +1199,111 @@ mod tests {
                 &index.files()[1].workspace_root
             ),
             "files from different workspaces should not share Arc"
+        );
+    }
+
+    // --- IGNORED_INDEX_DIRS ---
+
+    #[test]
+    fn test_file_index_skips_ignored_dirs() {
+        let dir = TempDir::new().unwrap();
+        // Create a source directory with files (should be indexed)
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
+        // Create ignored directories with files (should NOT be indexed)
+        for ignored in IGNORED_INDEX_DIRS {
+            let ignored_dir = dir.path().join(ignored);
+            std::fs::create_dir(&ignored_dir).unwrap();
+            std::fs::write(ignored_dir.join("should_not_appear.txt"), "").unwrap();
+        }
+
+        let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+        let names = file_names(&index);
+        assert!(names.contains(&"main.rs"), "source files should be indexed");
+        assert!(
+            !names.contains(&"should_not_appear.txt"),
+            "files inside ignored dirs should not be indexed: {:?}",
+            names
+        );
+        assert_eq!(index.len(), 1, "only main.rs should be indexed");
+    }
+
+    #[test]
+    fn test_file_index_skips_nested_ignored_dirs() {
+        let dir = TempDir::new().unwrap();
+        // Create a nested ignored directory: project/subdir/node_modules/
+        std::fs::create_dir_all(dir.path().join("project/subdir/node_modules")).unwrap();
+        std::fs::write(dir.path().join("project/subdir/node_modules/dep.js"), "").unwrap();
+        std::fs::write(dir.path().join("project/subdir/app.js"), "").unwrap();
+
+        let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+        let names = file_names(&index);
+        assert!(names.contains(&"app.js"), "sibling files should be indexed");
+        assert!(
+            !names.contains(&"dep.js"),
+            "files in nested ignored dir should not be indexed"
+        );
+    }
+
+    #[test]
+    fn test_file_index_includes_non_ignored_dirs() {
+        let dir = TempDir::new().unwrap();
+        // Directories that look similar but are NOT in the ignore list
+        for name in ["src", "lib", "docs", "tests", "build", "dist", "out"] {
+            let sub = dir.path().join(name);
+            std::fs::create_dir(&sub).unwrap();
+            std::fs::write(sub.join("file.txt"), "").unwrap();
+        }
+
+        let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+        assert_eq!(
+            index.len(),
+            7,
+            "all files in non-ignored dirs should be indexed"
+        );
+    }
+
+    #[test]
+    fn test_file_index_ignored_dirs_reduce_count() {
+        // Regression test: a workspace with many files in ignored dirs
+        // should not approach the MAX_INDEXED_FILES cap.
+        let dir = TempDir::new().unwrap();
+
+        // 5 real source files
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.path().join(format!("src/file{i}.rs")), "").unwrap();
+        }
+
+        // 200 files inside node_modules (simulating a large dependency tree)
+        let nm = dir.path().join("node_modules");
+        std::fs::create_dir(&nm).unwrap();
+        for i in 0..200 {
+            std::fs::write(nm.join(format!("dep{i}.js")), "").unwrap();
+        }
+
+        let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+        assert_eq!(
+            index.len(),
+            5,
+            "only source files should be indexed, not node_modules contents"
+        );
+    }
+
+    #[test]
+    fn test_file_index_root_named_as_ignored_dir_still_scanned() {
+        // Regression: when the workspace root itself is named "node_modules",
+        // its direct children should still be indexed (skip applies to children only).
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("node_modules");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("index.js"), "").unwrap();
+
+        let index = FileIndex::rebuild(&[root]);
+        let names = file_names(&index);
+        assert!(
+            names.contains(&"index.js"),
+            "files directly inside a root named 'node_modules' should be indexed"
         );
     }
 
