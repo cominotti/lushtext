@@ -17,6 +17,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Buffer eviction** -- background tabs evicted when total memory exceeds 256MB, transparently reloaded on focus
 - **Dark mode** -- automatic GtkSourceView scheme switching via Libadwaita StyleManager
 - **Customizable font** -- system monospace or custom font, applied via CSS provider
+- **Markdown preview** -- side-by-side or full-width preview pane with native TextTag rendering (headings, bold, italic, code, links, lists, blockquotes); Alt+P toggles full-width preview
 - **File monitoring** -- detects external changes and offers reload
 
 ## Tech Stack

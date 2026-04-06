@@ -81,13 +81,30 @@
                       <object class="GtkStackPage">
                         <property name="name">tabs</property>
                         <property name="child">
-                          <object class="GtkBox">
-                            <property name="orientation">vertical</property>
-                            <child>
-                              <object class="AdwTabView" id="tab_view">
-                                <property name="vexpand">true</property>
+                          <object class="GtkPaned" id="preview_paned">
+                            <property name="vexpand">true</property>
+                            <property name="shrink-start-child">false</property>
+                            <property name="shrink-end-child">false</property>
+                            <property name="resize-end-child">false</property>
+
+                            <!-- Left: editor tab view -->
+                            <property name="start-child">
+                              <object class="GtkBox" id="editor_box">
+                                <property name="orientation">vertical</property>
+                                <child>
+                                  <object class="AdwTabView" id="tab_view">
+                                    <property name="vexpand">true</property>
+                                  </object>
+                                </child>
                               </object>
-                            </child>
+                            </property>
+
+                            <!-- Right: markdown preview (starts hidden) -->
+                            <property name="end-child">
+                              <object class="LushtextMarkdownPreview" id="markdown_preview">
+                                <property name="visible">false</property>
+                              </object>
+                            </property>
                           </object>
                         </property>
                       </object>

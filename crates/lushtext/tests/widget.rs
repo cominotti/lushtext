@@ -34,6 +34,9 @@ mod window;
 #[path = "widget/command_palette.rs"]
 mod command_palette;
 
+#[path = "widget/markdown_preview.rs"]
+mod markdown_preview;
+
 #[path = "widget/app.rs"]
 mod app;
 

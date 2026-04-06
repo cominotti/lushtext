@@ -75,8 +75,10 @@ pub struct LushtextEditorPage {
     /// Per-file formatting overrides from EditorConfig. Empty for untitled tabs
     /// or files without a matching `.editorconfig`.
     pub formatting_overrides: Cell<FormattingOverrides>,
-    /// Handler ID for the buffer's `modified-changed` signal. Disconnected in `Drop`.
+    /// Handler ID for the buffer's `modified-changed` signal. Disconnected in dispose.
     pub modified_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for the buffer's `changed` signal (preview refresh). Disconnected in dispose.
+    pub buffer_changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Callback invoked when estimated buffer memory changes (load, save, evict).
     pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
     /// File monitor for detecting external modifications. Created on file load,
@@ -130,6 +132,7 @@ impl Default for LushtextEditorPage {
             insert_spaces_handler_id: RefCell::new(None),
             formatting_overrides: Cell::new(FormattingOverrides::default()),
             modified_handler_id: RefCell::new(None),
+            buffer_changed_handler_id: RefCell::new(None),
             memory_changed_callback: RefCell::default(),
             file_monitor: RefCell::new(None),
             monitor_generation: Cell::new(0),
@@ -172,12 +175,15 @@ impl ObjectImpl for LushtextEditorPage {
     // children — accessing `self.source_view` in Drop panics because the
     // TemplateChild's OnceCell is already empty.
     fn dispose(&self) {
+        let buffer = self
+            .source_view
+            .buffer()
+            .downcast::<sourceview5::Buffer>()
+            .expect("GtkSourceView buffer");
         if let Some(handler_id) = self.modified_handler_id.take() {
-            let buffer = self
-                .source_view
-                .buffer()
-                .downcast::<sourceview5::Buffer>()
-                .expect("GtkSourceView buffer");
+            buffer.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.buffer_changed_handler_id.take() {
             buffer.disconnect(handler_id);
         }
         // Cancel file monitor to stop receiving events for this tab.

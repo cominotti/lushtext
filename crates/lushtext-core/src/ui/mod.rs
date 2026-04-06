@@ -8,6 +8,7 @@
 pub mod command_palette;
 pub mod editor_page;
 pub mod info_bar;
+pub mod markdown_preview;
 pub mod preferences;
 pub mod search_bar;
 pub mod sidebar;

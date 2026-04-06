@@ -30,7 +30,9 @@ LushtextWindow (AdwApplicationWindow)
 │   │   ├── GtkSeparator
 │   │   └── GtkBox [footer: "New Workspace" label + button]
 │   └── [end] GtkStack
-│       ├── "tabs": AdwTabView → LushtextEditorPage per tab
+│       ├── "tabs": GtkPaned [preview_paned]
+│       │   ├── [start] GtkBox [editor_box] → AdwTabView → LushtextEditorPage per tab
+│       │   └── [end] LushtextMarkdownPreview (starts hidden)
 │       └── "empty": AdwStatusPage
 └── LushtextStatusBar (always visible, full width)
     ├── GtkToggleButton [sidebar_toggle_button] — toggle sidebar (action: win.toggle-sidebar)

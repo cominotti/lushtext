@@ -2096,3 +2096,71 @@ fn test_menu_contains_zoom_custom_slot() {
         "Menu should contain a 'zoom' custom widget slot"
     );
 }
+
+// --- Markdown preview action tests ---
+
+#[test]
+fn test_preview_actions_disabled_with_no_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    flush_events();
+    assert!(
+        !action_enabled(&window, "toggle-preview-pane"),
+        "toggle-preview-pane should be disabled with no tabs"
+    );
+    assert!(
+        !action_enabled(&window, "toggle-preview-mode"),
+        "toggle-preview-mode should be disabled with no tabs"
+    );
+}
+
+#[test]
+fn test_preview_actions_enabled_after_tab_open() {
+    ensure_gtk_init();
+    let window = test_window();
+    flush_events();
+    activate_action(&window, "new-tab");
+    assert!(
+        action_enabled(&window, "toggle-preview-pane"),
+        "toggle-preview-pane should be enabled with a tab open"
+    );
+    assert!(
+        action_enabled(&window, "toggle-preview-mode"),
+        "toggle-preview-mode should be enabled with a tab open"
+    );
+}
+
+#[test]
+fn test_preview_actions_disabled_after_closing_all_tabs() {
+    ensure_gtk_init();
+    let window = test_window();
+    flush_events();
+    activate_action(&window, "new-tab");
+    assert!(action_enabled(&window, "toggle-preview-pane"));
+    activate_action(&window, "close-tab");
+    flush_after_delay(std::time::Duration::from_millis(100));
+    assert!(
+        !action_enabled(&window, "toggle-preview-pane"),
+        "toggle-preview-pane should be disabled after closing all tabs"
+    );
+}
+
+#[test]
+fn test_preview_mode_noop_when_preview_pane_visible() {
+    ensure_gtk_init();
+    let window = test_window();
+    flush_events();
+    activate_action(&window, "new-tab");
+    // Show the side-by-side preview pane.
+    activate_action(&window, "toggle-preview-pane");
+    flush_events();
+    // preview_visible is now true. Alt+P should be a no-op.
+    let was_mode = window.imp().preview_mode.get();
+    activate_action(&window, "toggle-preview-mode");
+    flush_events();
+    assert_eq!(
+        window.imp().preview_mode.get(),
+        was_mode,
+        "toggle-preview-mode should be a no-op when side pane is visible"
+    );
+}

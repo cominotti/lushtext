@@ -9,6 +9,7 @@ use crate::config::{self, keys};
 use crate::model::draft::DraftManifest;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::markdown_preview::LushtextMarkdownPreview;
 use crate::ui::sidebar::LushtextSidebar;
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
 use glib::prelude::*;
@@ -53,6 +54,12 @@ pub struct LushtextWindow {
     pub command_palette: TemplateChild<LushtextCommandPalette>,
     #[template_child]
     pub primary_menu_button: TemplateChild<gtk4::MenuButton>,
+    #[template_child]
+    pub preview_paned: TemplateChild<gtk4::Paned>,
+    #[template_child]
+    pub editor_box: TemplateChild<gtk4::Box>,
+    #[template_child]
+    pub markdown_preview: TemplateChild<LushtextMarkdownPreview>,
 
     /// Application-wide GSettings for window geometry and sidebar position.
     pub settings: gio::Settings,
@@ -64,6 +71,22 @@ pub struct LushtextWindow {
     /// Currently running sidebar show/hide animation, if any.
     /// Paused on rapid toggle so the new animation can start from the current position.
     pub sidebar_animation: RefCell<Option<libadwaita::TimedAnimation>>,
+    /// Whether the side-by-side preview pane is currently visible.
+    pub preview_visible: Cell<bool>,
+    /// Whether the preview-only mode (Alt+P) is active (editor hidden, preview full-width).
+    pub preview_mode: Cell<bool>,
+    /// Preview pane position saved before hide animation, restored on show.
+    pub saved_preview_pos: Cell<i32>,
+    /// Currently running preview show/hide animation, if any.
+    pub preview_animation: RefCell<Option<libadwaita::TimedAnimation>>,
+    /// Generation counter for debouncing preview renders (300ms).
+    pub preview_render_generation: Cell<u32>,
+    /// Last preview pane position persisted to GSettings.
+    pub last_preview_pos: Cell<i32>,
+    /// Preview pane position pending GSettings persistence.
+    pub pending_preview_pos: Cell<i32>,
+    /// Generation counter for debouncing preview position GSettings writes (200ms).
+    pub preview_persist_generation: Cell<u32>,
     /// Generation counter for debouncing file index rebuilds (300ms).
     /// Incremented on each workspace change; stale timer callbacks no-op.
     pub index_rebuild_generation: Cell<u32>,
@@ -117,10 +140,21 @@ impl Default for LushtextWindow {
             palette_revealer: TemplateChild::default(),
             command_palette: TemplateChild::default(),
             primary_menu_button: TemplateChild::default(),
+            preview_paned: TemplateChild::default(),
+            editor_box: TemplateChild::default(),
+            markdown_preview: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
             sidebar_visible: Cell::new(true),
             saved_sidebar_pos: Cell::new(0),
             sidebar_animation: RefCell::new(None),
+            preview_visible: Cell::new(false),
+            preview_mode: Cell::new(false),
+            saved_preview_pos: Cell::new(0),
+            preview_animation: RefCell::new(None),
+            preview_render_generation: Cell::new(0),
+            last_preview_pos: Cell::new(-1),
+            pending_preview_pos: Cell::new(-1),
+            preview_persist_generation: Cell::new(0),
             index_rebuild_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
             last_sidebar_pos: Cell::new(-1),
@@ -156,6 +190,7 @@ impl ObjectSubclass for LushtextWindow {
         LushtextEditorPage::ensure_type();
         LushtextStatusBar::ensure_type();
         LushtextCommandPalette::ensure_type();
+        LushtextMarkdownPreview::ensure_type();
 
         klass.bind_template();
     }
@@ -226,6 +261,25 @@ impl ObjectImpl for LushtextWindow {
             // no visual effect while the sidebar is invisible.
             self.saved_sidebar_pos.set(self.main_paned.position());
             self.sidebar.set_visible(false);
+        }
+
+        // --- Restore preview pane position ---
+        // Preview starts hidden (default), but we restore the saved position
+        // so the first show animation can slide to it.
+        let saved_preview_pos = settings.int(keys::PREVIEW_PANE_POSITION);
+        self.saved_preview_pos.set(saved_preview_pos);
+        self.last_preview_pos.set(saved_preview_pos);
+        self.pending_preview_pos.set(saved_preview_pos);
+
+        // --- Preview pane position clamp on user drag ---
+        {
+            let window_weak = obj.downgrade();
+            self.preview_paned
+                .connect_notify_local(Some("position"), move |_paned, _| {
+                    if let Some(window) = window_weak.upgrade() {
+                        window.clamp_preview_position(window.width());
+                    }
+                });
         }
 
         // --- EditorConfig toggle ---
@@ -358,6 +412,7 @@ impl ObjectImpl for LushtextWindow {
                     window.reload_if_evicted();
                     window.maybe_evict_background_tabs();
                     window.save_session_debounced();
+                    window.refresh_preview();
                 }
             });
 
@@ -437,6 +492,8 @@ impl WidgetImpl for LushtextWindow {
         // when GTK measures the content stack, preventing "needs at least N"
         // measurement warnings.
         clamp_sidebar_position(&self.obj(), &self.main_paned, &self.content_stack, width);
+        // Clamp preview pane symmetrically (max 1/3 of window from right).
+        self.obj().clamp_preview_position(width);
         self.parent_size_allocate(width, height, baseline);
         // Keep palette at 60% window width for readability.
         // Guarded with width_request comparison to avoid triggering a

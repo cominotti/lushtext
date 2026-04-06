@@ -29,4 +29,6 @@ pub mod keys {
     pub const WINDOW_MAXIMIZED: &str = "window-maximized";
     pub const SIDEBAR_POSITION: &str = "sidebar-position";
     pub const SIDEBAR_VISIBLE: &str = "sidebar-visible";
+    pub const PREVIEW_PANE_POSITION: &str = "preview-pane-position";
+    pub const PREVIEW_PANE_VISIBLE: &str = "preview-pane-visible";
 }

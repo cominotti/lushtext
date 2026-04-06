@@ -7,6 +7,8 @@ mod dialogs;
 // two halves: a private struct (imp.rs) holding data and trait impls, and
 // a public wrapper type (this file) providing the API.
 mod imp;
+// Markdown preview pane: side-by-side and preview-only toggle modes.
+mod preview;
 // Print action: GtkSourceView PrintCompositor + native print dialog.
 mod print;
 // Session persistence and draft management (extracted to stay under 1000 lines).
@@ -59,6 +61,7 @@ impl LushtextWindow {
         window.setup_actions();
         window.setup_fullscreen();
         window.setup_theme_selector();
+        preview::setup_preview_actions(&window);
         print::setup_print_action(&window);
         zoom::setup_zoom_actions(&window);
         zoom::setup_zoom_controls(&window);
@@ -262,6 +265,24 @@ impl LushtextWindow {
             }
         });
         editor.imp().modified_handler_id.replace(Some(handler_id));
+
+        // Wire buffer text changes to refresh the preview pane (debounced).
+        // Only fires refresh if this editor is the currently selected tab.
+        // Handler ID is stored and disconnected in EditorPage::dispose() to
+        // prevent accumulation across tab open/close cycles.
+        let window_weak = self.downgrade();
+        let page_weak = page.downgrade();
+        let changed_handler_id = buffer.connect_changed(move |_| {
+            if let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade())
+                && window.imp().tab_view.selected_page().as_ref() == Some(&page)
+            {
+                window.refresh_preview_debounced();
+            }
+        });
+        editor
+            .imp()
+            .buffer_changed_handler_id
+            .replace(Some(changed_handler_id));
     }
 
     /// Wire info bar button callbacks for a newly created editor page.
@@ -312,12 +333,24 @@ impl LushtextWindow {
     /// Switch the content stack between "tabs" and "empty" states,
     /// and enable/disable actions that require an active tab.
     fn update_content_stack(&self) {
-        let has_tabs = self.imp().tab_view.n_pages() > 0;
-        let stack = &self.imp().content_stack;
+        let imp = self.imp();
+        let has_tabs = imp.tab_view.n_pages() > 0;
+        let stack = &imp.content_stack;
         if has_tabs {
             stack.set_visible_child_name("tabs");
         } else {
             stack.set_visible_child_name("empty");
+            // Reset preview state when all tabs are closed so the "tabs" page
+            // is in a clean state when the next tab opens.
+            if imp.preview_mode.get() {
+                imp.preview_mode.set(false);
+                imp.editor_box.set_visible(true);
+                imp.markdown_preview.set_visible(false);
+                if let Some(anim) = imp.preview_animation.take() {
+                    anim.pause();
+                }
+                imp.preview_paned.set_shrink_start_child(false);
+            }
         }
 
         for name in [
@@ -330,6 +363,8 @@ impl LushtextWindow {
             "close-tab",
             "discard-changes",
             "print",
+            "toggle-preview-pane",
+            "toggle-preview-mode",
         ] {
             if let Some(action) = self.lookup_action(name)
                 && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
@@ -872,6 +907,7 @@ impl LushtextWindow {
             ("win.print", "<Control>p"),
             ("win.toggle-command-palette", "<Control><Shift>p"),
             ("win.toggle-sidebar", "F9"),
+            ("win.toggle-preview-mode", "<Alt>p"),
             ("win.toggle-fullscreen", "F11"),
             (
                 "win.zoom-in",

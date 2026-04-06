@@ -79,5 +79,15 @@
       <summary>Sidebar Visible</summary>
       <description>Whether the file tree sidebar is visible</description>
     </key>
+    <key name="preview-pane-position" type="i">
+      <default>300</default>
+      <summary>Preview Pane Position</summary>
+      <description>Markdown preview pane divider position in pixels from the right</description>
+    </key>
+    <key name="preview-pane-visible" type="b">
+      <default>false</default>
+      <summary>Preview Pane Visible</summary>
+      <description>Whether the Markdown preview pane is visible</description>
+    </key>
   </schema>
 </schemalist>
