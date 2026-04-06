@@ -680,6 +680,101 @@ fn test_clamp_never_goes_negative() {
     );
 }
 
+// --- Sidebar clamp: lifecycle regression tests ---
+//
+// clamp_sidebar_position only reduces, never grows. Calling it with a width
+// smaller than the actual window permanently destroys the position. This is
+// why it must ONLY be called from size_allocate (definitive width) and
+// notify::position (user drag) — never from measure(), which GTK calls
+// speculatively with various for_size values including the minimum width.
+
+#[test]
+fn test_clamp_with_wrong_width_permanently_destroys_position() {
+    // REGRESSION: A previous measure() override called clamp with the
+    // minimum window width (640px), ratcheting the sidebar to ~209px.
+    // The size_allocate call at the real width could not restore it.
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    let stack = &window.imp().content_stack;
+
+    // Start with a position valid for 1200px (max = 400).
+    paned.set_position(350);
+    clamp_sidebar_position(&window, paned, stack, 1200);
+    assert_eq!(paned.position(), 350, "350 is valid for 1200px");
+
+    // Simulate what a measure() override would do: clamp at minimum width.
+    clamp_sidebar_position(&window, paned, stack, 640);
+    let destroyed = paned.position();
+    assert!(
+        destroyed < 350,
+        "min-width clamp should reduce position from 350, got {destroyed}"
+    );
+
+    // Now clamp at the actual width — position is stuck.
+    clamp_sidebar_position(&window, paned, stack, 1200);
+    assert_eq!(
+        paned.position(),
+        destroyed,
+        "position permanently stuck at {destroyed} — clamp never grows"
+    );
+}
+
+#[test]
+fn test_clamp_stable_across_repeated_calls_at_same_width() {
+    // Verify no drift: calling clamp repeatedly at the same width must not
+    // change the position. A measure() override that triggered per-frame
+    // would cause cumulative position drift.
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    let stack = &window.imp().content_stack;
+
+    paned.set_position(300);
+    clamp_sidebar_position(&window, paned, stack, 1200);
+    let first = paned.position();
+
+    for _ in 0..10 {
+        clamp_sidebar_position(&window, paned, stack, 1200);
+    }
+    assert_eq!(
+        paned.position(),
+        first,
+        "position must not drift across repeated clamp calls"
+    );
+}
+
+#[test]
+fn test_clamp_at_actual_width_preserves_valid_position() {
+    // The positive case: size_allocate calls clamp with the definitive
+    // width. A valid position must survive unchanged.
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    let stack = &window.imp().content_stack;
+
+    // 200 is well under max(400) for 1200px.
+    paned.set_position(200);
+    clamp_sidebar_position(&window, paned, stack, 1200);
+    assert_eq!(
+        paned.position(),
+        200,
+        "valid position should survive size_allocate"
+    );
+
+    // Shrink to 900px (max = 300). 200 still valid.
+    clamp_sidebar_position(&window, paned, stack, 900);
+    assert_eq!(paned.position(), 200, "200 still valid at 900px");
+
+    // Shrink to 700px (max = 233). 200 is now too large.
+    clamp_sidebar_position(&window, paned, stack, 700);
+    assert!(
+        paned.position() <= 233,
+        "position should be clamped at 700px, got {}",
+        paned.position()
+    );
+}
+
 #[test]
 fn test_window_has_minimum_width_request() {
     ensure_gtk_init();

@@ -485,6 +485,15 @@ impl ObjectImpl for LushtextWindow {
 }
 
 impl WidgetImpl for LushtextWindow {
+    // NOTE: No measure() override here — intentional.
+    //
+    // clamp_sidebar_position mutates paned.set_position(), which is a
+    // side effect. GTK calls measure() speculatively with various for_size
+    // values, including the *minimum* window width (640px). Calling clamp
+    // from measure permanently ratchets the sidebar position down to the
+    // minimum-width constraint (~209px), and size_allocate at the real width
+    // (1200px) cannot restore it because the clamp only reduces, never grows.
+
     fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
         // Clamp sidebar BEFORE the parent allocates — this is the definitive
         // width, free from stale-value timing issues. Running before
