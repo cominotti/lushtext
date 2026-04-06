@@ -609,6 +609,88 @@ fn test_clamp_persists_clamped_value_to_gsettings() {
     assert_eq!(settings.int(keys::SIDEBAR_POSITION), 400);
 }
 
+// --- Sidebar clamp: stack-minimum-aware floor (regression for GtkStack measurement warning) ---
+
+#[test]
+fn test_clamp_respects_stack_minimum_at_narrow_width() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    let stack = &window.imp().content_stack;
+
+    // Query the actual stack minimum (driven by AdwStatusPage internals).
+    let (stack_min, _, _, _) = stack.measure(gtk4::Orientation::Horizontal, -1);
+    assert!(stack_min > 0, "stack should have a non-zero minimum width");
+
+    // Pick a window width where 1/3 would leave less than stack_min + 16
+    // for the content. E.g., if stack_min=415, width=640 → 1/3=213,
+    // but stack_floor=640-415-16=209, so stack_floor wins.
+    let narrow_width = stack_min + 200 + 16; // sidebar(200) + stack + buffer
+    let one_third = narrow_width / 3;
+    let stack_floor = narrow_width - stack_min - 16;
+
+    // Only meaningful if the stack floor is tighter than 1/3.
+    if stack_floor < one_third {
+        paned.set_position(one_third + 50); // way over both limits
+        clamp_sidebar_position(&window, paned, stack, narrow_width);
+        assert!(
+            paned.position() <= stack_floor,
+            "position {} should be clamped to stack floor {}",
+            paned.position(),
+            stack_floor,
+        );
+    }
+}
+
+#[test]
+fn test_clamp_uses_one_third_when_it_is_tighter_than_stack_floor() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    let stack = &window.imp().content_stack;
+
+    // At 1200px, 1/3 = 400, stack_floor = 1200 - stack_min - 16 ≈ 769.
+    // The 1/3 rule should dominate.
+    let (stack_min, _, _, _) = stack.measure(gtk4::Orientation::Horizontal, -1);
+    let stack_floor = 1200 - stack_min - 16;
+    assert!(
+        400 < stack_floor,
+        "precondition: at 1200px, 1/3 (400) should be tighter than stack floor ({stack_floor})"
+    );
+
+    paned.set_position(500);
+    clamp_sidebar_position(&window, paned, stack, 1200);
+    assert_eq!(paned.position(), 400); // 1/3 rule wins
+}
+
+#[test]
+fn test_clamp_never_goes_negative() {
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    let stack = &window.imp().content_stack;
+
+    // Extremely narrow width where stack_floor would be negative.
+    paned.set_position(100);
+    clamp_sidebar_position(&window, paned, stack, 50);
+    assert!(
+        paned.position() >= 0,
+        "position should never be negative, got {}",
+        paned.position(),
+    );
+}
+
+#[test]
+fn test_window_has_minimum_width_request() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert_eq!(
+        window.width_request(),
+        640,
+        "window should have width-request=640 to prevent impossible geometry"
+    );
+}
+
 // --- Tab modified dot (• prefix in tab title) ---
 
 #[test]
