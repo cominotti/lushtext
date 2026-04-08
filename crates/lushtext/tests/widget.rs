@@ -15,6 +15,9 @@ mod file_tree_item;
 #[path = "widget/search_bar.rs"]
 mod search_bar;
 
+#[path = "widget/search_panel.rs"]
+mod search_panel;
+
 #[path = "widget/status_bar.rs"]
 mod status_bar;
 

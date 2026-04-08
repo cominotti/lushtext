@@ -31,4 +31,10 @@ pub mod keys {
     pub const SIDEBAR_VISIBLE: &str = "sidebar-visible";
     pub const PREVIEW_PANE_POSITION: &str = "preview-pane-position";
     pub const PREVIEW_PANE_VISIBLE: &str = "preview-pane-visible";
+    pub const SEARCH_PANEL_VISIBLE: &str = "search-panel-visible";
+    pub const SEARCH_CASE_SENSITIVE: &str = "search-case-sensitive";
+    pub const SEARCH_REGEX: &str = "search-regex";
+    pub const SEARCH_WHOLE_WORD: &str = "search-whole-word";
+    pub const SEARCH_PANEL_OPTIONS_EXPANDED: &str = "search-panel-options-expanded";
+    pub const SEARCH_GITIGNORE: &str = "search-gitignore";
 }

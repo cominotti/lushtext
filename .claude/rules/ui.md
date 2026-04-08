@@ -29,11 +29,14 @@ LushtextWindow (AdwApplicationWindow)
 │   │   │               └── GtkListView + TreeListModel
 │   │   ├── GtkSeparator
 │   │   └── GtkBox [footer: "New Workspace" label + button]
-│   └── [end] GtkStack
-│       ├── "tabs": GtkPaned [preview_paned]
-│       │   ├── [start] GtkBox [editor_box] → AdwTabView → LushtextEditorPage per tab
-│       │   └── [end] LushtextMarkdownPreview (starts hidden)
-│       └── "empty": AdwStatusPage
+│   └── [end] GtkBox [content_box] (vertical)
+│       ├── GtkStack [content_stack] (vexpand)
+│       │   ├── "tabs": GtkPaned [preview_paned]
+│       │   │   ├── [start] GtkBox [editor_box] → AdwTabView → LushtextEditorPage per tab
+│       │   │   └── [end] LushtextMarkdownPreview (starts hidden)
+│       │   └── "empty": AdwStatusPage
+│       └── GtkRevealer [search_panel_revealer] (slide-up, 250ms)
+│           └── LushtextSearchPanel (Ctrl+Shift+F workspace search)
 └── LushtextStatusBar (always visible, full width)
     ├── GtkToggleButton [sidebar_toggle_button] — toggle sidebar (action: win.toggle-sidebar)
     ├── GtkLabel [message_label] — feedback messages (left, hexpand)

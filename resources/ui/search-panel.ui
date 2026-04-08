@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <requires lib="gtk" version="4.14"/>
+
+  <template class="LushtextSearchPanel" parent="GtkBox">
+    <property name="orientation">vertical</property>
+
+    <!-- Header: search input -->
+    <child>
+      <object class="GtkBox" id="header_box">
+        <property name="orientation">horizontal</property>
+        <property name="spacing">6</property>
+        <property name="margin-start">6</property>
+        <property name="margin-end">6</property>
+        <property name="margin-top">6</property>
+        <property name="margin-bottom">6</property>
+        <child>
+          <object class="GtkSearchEntry" id="search_entry">
+            <property name="hexpand">true</property>
+            <property name="placeholder-text" translatable="yes">Search in files…</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkBox" id="toggles_box">
+            <property name="orientation">horizontal</property>
+            <style><class name="linked"/></style>
+            <child>
+              <object class="GtkToggleButton" id="case_toggle">
+                <property name="label">Aa</property>
+                <property name="tooltip-text" translatable="yes">Case Sensitive</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkToggleButton" id="regex_toggle">
+                <property name="label">.*</property>
+                <property name="tooltip-text" translatable="yes">Regular Expression</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkToggleButton" id="word_toggle">
+                <property name="label">W</property>
+                <property name="tooltip-text" translatable="yes">Whole Word</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkToggleButton" id="more_toggle">
+            <property name="icon-name">emblem-system-symbolic</property>
+            <property name="tooltip-text" translatable="yes">More Options</property>
+
+          </object>
+        </child>
+      </object>
+    </child>
+
+    <!-- Inline error: shown below the search input for invalid regex etc. -->
+    <child>
+      <object class="GtkLabel" id="error_label">
+        <property name="visible">false</property>
+        <property name="xalign">0.0</property>
+        <property name="wrap">true</property>
+        <property name="margin-start">6</property>
+        <property name="margin-end">6</property>
+        <property name="margin-bottom">4</property>
+        <style>
+          <class name="caption"/>
+        </style>
+      </object>
+    </child>
+
+    <!-- Options area: gitignore toggle + glob filter (Story 1.4) -->
+    <child>
+      <object class="GtkRevealer" id="options_revealer">
+        <property name="transition-type">slide-down</property>
+        <property name="transition-duration">150</property>
+        <property name="reveal-child">false</property>
+        <child>
+          <object class="GtkBox" id="options_box">
+            <property name="orientation">horizontal</property>
+            <property name="spacing">6</property>
+            <property name="margin-start">6</property>
+            <property name="margin-end">6</property>
+            <property name="margin-top">4</property>
+            <property name="margin-bottom">4</property>
+            <child>
+              <object class="GtkToggleButton" id="gitignore_toggle">
+                <property name="label">.gitignore</property>
+                <property name="tooltip-text">Respect .gitignore patterns</property>
+                <property name="active">true</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkEntry" id="glob_entry">
+                <property name="hexpand">true</property>
+                <property name="placeholder-text">File filter (e.g., *.rs, *.toml)</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+
+    <child>
+      <object class="GtkSeparator">
+        <property name="orientation">horizontal</property>
+      </object>
+    </child>
+
+    <!-- Results area -->
+    <child>
+      <object class="GtkScrolledWindow" id="results_scroll">
+        <property name="vexpand">true</property>
+        <property name="min-content-height">100</property>
+        <child>
+          <object class="GtkListView" id="results_list"/>
+        </child>
+      </object>
+    </child>
+
+    <child>
+      <object class="GtkSeparator">
+        <property name="orientation">horizontal</property>
+      </object>
+    </child>
+
+    <!-- Footer: result count -->
+    <child>
+      <object class="GtkBox" id="footer_box">
+        <property name="orientation">horizontal</property>
+        <property name="spacing">6</property>
+        <property name="margin-start">6</property>
+        <property name="margin-end">6</property>
+        <property name="margin-top">4</property>
+        <property name="margin-bottom">4</property>
+        <child>
+          <object class="GtkLabel" id="count_label">
+            <property name="hexpand">true</property>
+            <property name="xalign">0.0</property>
+            <style>
+              <class name="caption"/>
+            </style>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>

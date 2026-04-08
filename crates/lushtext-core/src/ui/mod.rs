@@ -11,6 +11,7 @@ pub mod info_bar;
 pub mod markdown_preview;
 pub mod preferences;
 pub mod search_bar;
+pub mod search_panel;
 pub mod sidebar;
 pub mod status_bar;
 pub mod window;

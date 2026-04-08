@@ -24,6 +24,13 @@ glib        = "0.22"
 gdk4        = "0.11"
 pango       = "0.22"
 
+# Content search (ripgrep engine)
+grep-regex    = "0.1"
+grep-searcher = "0.1"
+grep-matcher  = "0.1"
+ignore        = "0.4"
+crossbeam-channel = "0.5"
+
 # Serialization (workspace config, session persistence)
 serde      = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

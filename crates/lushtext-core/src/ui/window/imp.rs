@@ -10,6 +10,7 @@ use crate::model::draft::DraftManifest;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
+use crate::ui::search_panel::LushtextSearchPanel;
 use crate::ui::sidebar::LushtextSidebar;
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
 use glib::prelude::*;
@@ -60,6 +61,12 @@ pub struct LushtextWindow {
     pub editor_box: TemplateChild<gtk4::Box>,
     #[template_child]
     pub markdown_preview: TemplateChild<LushtextMarkdownPreview>,
+    #[template_child]
+    pub content_box: TemplateChild<gtk4::Box>,
+    #[template_child]
+    pub search_panel_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
+    pub search_panel: TemplateChild<LushtextSearchPanel>,
 
     /// Application-wide GSettings for window geometry and sidebar position.
     pub settings: gio::Settings,
@@ -124,6 +131,10 @@ pub struct LushtextWindow {
     /// Guard flag: true while restoring a session from disk.
     /// Prevents `save_session_debounced` from firing during restore.
     pub restoring_session: Cell<bool>,
+    /// Focus widget saved before the search panel steals focus.
+    /// Separate from `saved_focus` (command palette) so both overlays
+    /// can independently save/restore focus.
+    pub search_saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
 }
 
 impl Default for LushtextWindow {
@@ -143,6 +154,9 @@ impl Default for LushtextWindow {
             preview_paned: TemplateChild::default(),
             editor_box: TemplateChild::default(),
             markdown_preview: TemplateChild::default(),
+            content_box: TemplateChild::default(),
+            search_panel_revealer: TemplateChild::default(),
+            search_panel: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
             sidebar_visible: Cell::new(true),
             saved_sidebar_pos: Cell::new(0),
@@ -169,6 +183,7 @@ impl Default for LushtextWindow {
             next_tab_id: Cell::new(0),
             session_save_generation: Cell::new(0),
             restoring_session: Cell::new(false),
+            search_saved_focus: RefCell::new(None),
         }
     }
 }
@@ -191,6 +206,7 @@ impl ObjectSubclass for LushtextWindow {
         LushtextStatusBar::ensure_type();
         LushtextCommandPalette::ensure_type();
         LushtextMarkdownPreview::ensure_type();
+        LushtextSearchPanel::ensure_type();
 
         klass.bind_template();
     }
@@ -388,12 +404,10 @@ impl ObjectImpl for LushtextWindow {
         });
 
         // --- Sidebar workspace change → rebuild file index ---
-        let window_weak = obj.downgrade();
-        self.sidebar.connect_workspace_changed(move || {
-            if let Some(window) = window_weak.upgrade() {
-                window.rebuild_file_index();
-            }
-        });
+        // NOTE: The callback is registered in search::setup_search_panel() which
+        // also needs to forward workspace roots to the search panel. Since the
+        // sidebar uses a single-slot callback, both operations are combined there.
+        // Do NOT register a separate callback here — it would be overwritten.
 
         // --- Tab change signals ---
         let window_weak = obj.downgrade();
@@ -503,6 +517,10 @@ impl WidgetImpl for LushtextWindow {
         clamp_sidebar_position(&self.obj(), &self.main_paned, &self.content_stack, width);
         // Clamp preview pane symmetrically (max 1/3 of window from right).
         self.obj().clamp_preview_position(width);
+        // Clamp search panel results height (max 1/3 of window height).
+        if height > 0 {
+            self.search_panel.clamp_results_height(height / 3);
+        }
         self.parent_size_allocate(width, height, baseline);
         // Keep palette at 60% window width for readability.
         // Guarded with width_request comparison to avoid triggering a

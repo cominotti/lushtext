@@ -11,6 +11,8 @@ mod imp;
 mod preview;
 // Print action: GtkSourceView PrintCompositor + native print dialog.
 mod print;
+// Workspace-wide search panel: toggle, pre-fill, result activation, focus.
+mod search;
 // Session persistence and draft management (extracted to stay under 1000 lines).
 mod session;
 // Zoom controls: hamburger menu widget and window actions.
@@ -65,6 +67,7 @@ impl LushtextWindow {
         print::setup_print_action(&window);
         zoom::setup_zoom_actions(&window);
         zoom::setup_zoom_controls(&window);
+        search::setup_search_panel(&window);
         window.setup_shortcuts();
         window.update_content_stack();
         window.refresh_status_bar();
@@ -577,6 +580,9 @@ impl LushtextWindow {
             gio::ActionEntry::builder("toggle-command-palette")
                 .activate(|window: &Self, _, _| window.toggle_command_palette())
                 .build(),
+            gio::ActionEntry::builder("toggle-search-panel")
+                .activate(|window: &Self, _, _| window.toggle_search_panel())
+                .build(),
         ]);
 
         // Discard Changes: reload file from disk after user confirmation.
@@ -906,6 +912,7 @@ impl LushtextWindow {
             ("win.close-tab", "<Control>w"),
             ("win.print", "<Control>p"),
             ("win.toggle-command-palette", "<Control><Shift>p"),
+            ("win.toggle-search-panel", "<Control><Shift>f"),
             ("win.toggle-sidebar", "F9"),
             ("win.toggle-preview-mode", "<Alt>p"),
             ("win.toggle-fullscreen", "F11"),

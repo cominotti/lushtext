@@ -89,5 +89,35 @@
       <summary>Preview Pane Visible</summary>
       <description>Whether the Markdown preview pane is visible</description>
     </key>
+    <key name="search-panel-visible" type="b">
+      <default>false</default>
+      <summary>Search panel visibility</summary>
+      <description>Whether the workspace search panel is visible.</description>
+    </key>
+    <key name="search-case-sensitive" type="b">
+      <default>false</default>
+      <summary>Search Case Sensitive</summary>
+      <description>Whether workspace content search matches case</description>
+    </key>
+    <key name="search-regex" type="b">
+      <default>false</default>
+      <summary>Search Regex</summary>
+      <description>Whether workspace content search uses regex patterns</description>
+    </key>
+    <key name="search-whole-word" type="b">
+      <default>false</default>
+      <summary>Search Whole Word</summary>
+      <description>Whether workspace content search matches whole words only</description>
+    </key>
+    <key name="search-panel-options-expanded" type="b">
+      <default>false</default>
+      <summary>Search Panel Options Expanded</summary>
+      <description>Whether the advanced options area in the search panel is expanded</description>
+    </key>
+    <key name="search-gitignore" type="b">
+      <default>true</default>
+      <summary>Search Gitignore</summary>
+      <description>Whether workspace content search respects .gitignore patterns</description>
+    </key>
   </schema>
 </schemalist>

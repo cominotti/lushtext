@@ -30,6 +30,7 @@ src/
 │   ├── session.rs      # SessionTab, SessionData — global session for tab restore
 │   ├── palette.rs      # IndexedFile, CommandDef, CommandCategory, SearchMode, ScoredResult
 │   ├── draft.rs        # DraftEntry, DraftManifest — draft persistence metadata
+│   ├── content_search.rs # SearchMatch, ContentSearchOptions, SearchEvent — content search types
 │   └── formatting_overrides.rs  # FormattingOverrides — per-file EditorConfig overrides
 ├── services/           # Business logic
 │   ├── async_task.rs   # spawn_blocking_then, MAX_CONCURRENT_SPAWNS, concurrency guard
@@ -40,13 +41,15 @@ src/
 │   ├── file_limits.rs  # File size thresholds for graceful degradation
 │   ├── palette.rs      # Fuzzy matching (nucleo SIMD), file indexing, command registry
 │   ├── draft_service.rs # Draft persistence: save/load/delete draft files and manifest
+│   ├── content_search.rs # Workspace-wide grep: parallel walker, regex/literal/whole-word, streaming results
 │   └── editorconfig.rs  # .editorconfig file discovery and parsing (pure I/O, no GTK)
 ├── benches/
 │   └── benchmarks.rs   # Criterion benchmarks for all performance-sensitive services
 └── ui/                 # GTK4/Libadwaita widgets (each has mod.rs + imp.rs)
     ├── window/          # Main window: HeaderBar, TabBar, Paned, Stack, StatusBar
     │   ├── dialogs.rs   # File dialogs: open file, open folder, save as
-    │   └── preview.rs   # Markdown preview pane: side-by-side + Alt+P toggle modes
+    │   ├── preview.rs   # Markdown preview pane: side-by-side + Alt+P toggle modes
+    │   └── search.rs    # Search panel integration: Ctrl+Shift+F, workspace root forwarding
     ├── editor_page/     # GtkSourceView + search bar revealer
     ├── sidebar/         # Multi-workspace sidebar orchestrator
     │   ├── file_tree_item.rs       # GObject wrapper for tree entries
@@ -55,6 +58,8 @@ src/
     ├── info_bar/        # Contextual warning/error bars (GtkInfoBar) above editor
     ├── command_palette/  # Ctrl+P fuzzy search: files + commands
     │   └── item.rs      # PaletteItem GObject wrapper for ListStore
+    ├── search_panel/    # Ctrl+Shift+F workspace-wide content search panel
+    │   └── item.rs      # SearchResultItem GObject wrapper for result ListStore
     ├── search_bar/      # Find/replace widget
     ├── status_bar/      # Bottom bar: feedback messages + file metadata
     └── preferences/     # AdwPreferencesDialog
@@ -103,6 +108,7 @@ src/
 - **Arc workspace_root**: `IndexedFile.workspace_root` uses `Arc<PathBuf>` — files in the same workspace share one allocation instead of cloning per file.
 - **EditorConfig support**: Per-file formatting overrides via `.editorconfig` files. The service (`services/editorconfig.rs`) walks the directory tree from the file's parent upward, parses each `.editorconfig` with the `editorconfig-parser` crate (pure Rust, zero deps), and returns a `FormattingOverrides` struct (model layer). Resolution runs on a background thread via `spawn_blocking_then`. The `EditorPage` stores overrides in `Cell<FormattingOverrides>` and uses `apply_formatting_settings()` to resolve EditorConfig vs GSettings: override wins when `Some`, GSettings fallback when `None`. This replaces the previous `Settings::bind(GET)` for `tab-width` and `insert-spaces-instead-of-tabs` with manual `connect_changed` handlers. A `use-editorconfig` GSettings toggle (default: `true`) enables/disables the feature. The status bar shows an "EditorConfig" label when overrides are active. Supported properties: `indent_style`, `tab_width`, `indent_size`. Deferred properties documented in `docs/next/editorconfig-future.md`.
 - **Benchmark framework**: Criterion.rs benchmarks in `crates/lushtext-core/benches/benchmarks.rs` cover all performance-sensitive service code (fuzzy search, file indexing, directory scanning, JSON persistence). All benchmarked functions are GTK-free. `FileIndex::from(Vec<IndexedFile>)` enables synthetic index construction without filesystem I/O. `scripts/bench-report.sh` parses Criterion JSON output into markdown for GitHub release assets. CI compile-checks benchmarks on every PR; full benchmark runs happen on release tags.
+- **Content search panel**: Ctrl+Shift+F opens `LushtextSearchPanel`, a workspace-wide grep panel below the content stack. Uses `GtkRevealer(slide-up, 250ms)` for animated show/hide. The service (`services/content_search.rs`) spawns a background thread with `ignore::WalkParallel` (same crate powering ripgrep) + `grep-searcher`/`grep-regex` for fast parallel file searching. Results stream to the UI via `crossbeam_channel` (bounded, 256 items), polled by a 50ms `glib::timeout_add_local`. Results are grouped by file in a two-level `GtkTreeListModel` (file → matches). Search options: case-sensitive, regex, whole-word (toggle buttons in the header), plus .gitignore toggle and glob filter in an expandable options revealer. GSettings keys: `search-panel-visible` (b), `search-panel-position` (i), `search-case-sensitive` (b), `search-regex` (b), `search-whole-word` (b), `search-panel-options-expanded` (b), `search-gitignore` (b). Match highlighting uses Pango markup (`<b>` tags) with proper escaping. Line content is truncated at 500 chars with ellipsis. Result cap: 10,000 matches (approximate under parallel walkers). Search panel integration logic extracted to `window/search.rs`.
 - **Markdown preview**: `LushtextMarkdownPreview` widget uses `pulldown-cmark` (CommonMark parser) → `GtkTextTag` rendering on a read-only `GtkTextView`. The preview lives as the end-child of `preview_paned` (a `GtkPaned` inside the "tabs" stack page). Three states: editor-only (default, preview hidden), side-by-side (`toggle-preview-pane` action, clamped to max 1/3 window width), and preview-only (Alt+P `toggle-preview-mode`, editor hidden). Animation follows the sidebar pattern: `AdwTimedAnimation` + `EaseOutCubic`, 250ms, 1px minimum. Markdown detection uses GtkSourceView language ID (`"markdown"`). Preview refreshes on tab switch and on buffer changes (300ms debounce, generation counter). TextTags use Adwaita-matching color constants (`#1c71d8`/`#78aeed` accent, `#f6f5f4`/`#3d3846` code bg, `#5e5c64`/`#9a9996` dim), switched by `StyleManager::connect_dark_notify()`. GSettings keys: `preview-pane-position` (i), `preview-pane-visible` (b). Preview logic extracted to `window/preview.rs` to stay under the 1000-line file limit.
 
 ## Build Commands

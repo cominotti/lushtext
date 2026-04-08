@@ -8,6 +8,7 @@
     <file compressed="true" preprocess="xml-stripblanks">ui/sidebar.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/workspace-section.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/search-bar.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ui/search-panel.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/command-palette.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/markdown-preview.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/status-bar.ui</file>

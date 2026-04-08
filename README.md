@@ -11,6 +11,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Session persistence** -- tabs, cursor positions, and scroll offsets restored on restart
 - **Draft recovery** -- unsaved changes auto-saved to disk and recovered after crash
 - **Print** -- native GTK print dialog with syntax highlighting and editor settings preserved
+- **Workspace content search** -- Ctrl+Shift+F parallel grep across all workspace files with streaming results, regex/literal/whole-word modes, .gitignore toggle, and glob file filter
 - **Find and replace** -- per-tab search bar with match highlighting
 - **Command palette** -- Ctrl+P fuzzy search for files and commands (SIMD-accelerated via nucleo)
 - **Large file handling** -- graceful degradation: >1MB toast, >10MB disable syntax, >50MB disable undo, >500MB refuse
@@ -115,8 +116,10 @@ lushtext-core/src/
     session.rs       Tab session model
     palette.rs       Command palette types
     draft.rs         Draft persistence metadata
+    content_search.rs  Content search types (SearchMatch, SearchEvent, etc.)
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
+    content_search.rs  Parallel workspace grep (ignore + grep-searcher)
     editorconfig.rs  .editorconfig resolution
     palette.rs       SIMD fuzzy search + file indexing
     file_tree.rs     Directory scanning
@@ -125,9 +128,10 @@ lushtext-core/src/
     workspace_manager.rs  Workspace CRUD
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
-    window/          Main window + dialogs
+    window/          Main window + dialogs + search integration
     editor_page/     GtkSourceView tab
     sidebar/         Multi-workspace file tree
+    search_panel/    Ctrl+Shift+F workspace content search
     command_palette/ Ctrl+P fuzzy search
     search_bar/      Find/replace
     status_bar/      Bottom bar
@@ -138,7 +142,7 @@ lushtext-core/src/
 ## Testing
 
 ```sh
-make test        # All tests (391 total)
+make test        # All tests (623 total)
 make test-unit   # Unit tests only
 make test-int    # Integration tests only
 make test-widget # Widget tests (requires display server)

@@ -8,6 +8,7 @@
 //! file size policy, fuzzy search, and the background task concurrency guard.
 
 pub mod async_task;
+pub mod content_search;
 pub mod draft_service;
 pub mod editor_io;
 pub mod editorconfig;

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tempfile::TempDir;
 
+use lushtext_core::model::content_search::ContentSearchOptions;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::palette::IndexedFile;
 use lushtext_core::model::palette::SearchMode;
@@ -21,6 +22,7 @@ use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
 };
+use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::file_tree;
@@ -767,6 +769,134 @@ fn bench_draft_restore(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_content_search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("content_search");
+    group.sample_size(20);
+
+    // --- Fixture: 10k files for literal & regex search ---
+    let search_dir = TempDir::new().unwrap();
+    let search_root = search_dir.path();
+    for i in 0..10_000 {
+        let subdir = format!("dir_{}", i / 500);
+        let dir_path = search_root.join(&subdir);
+        std::fs::create_dir_all(&dir_path).unwrap();
+        // Every 5th file contains the search target.
+        let content = if i % 5 == 0 {
+            format!("fn handler_{i}() {{ TODO: implement }}\nlet x = {i};\n")
+        } else {
+            format!("let value_{i} = {i};\nlet other = true;\n")
+        };
+        std::fs::write(dir_path.join(format!("file_{i}.rs")), content).unwrap();
+    }
+
+    // 1. Literal search across 10k files.
+    group.bench_function("literal_10k_files", |b| {
+        b.iter(|| {
+            let (tx, rx) = crossbeam_channel::bounded(1024);
+            let cancel = Arc::new(AtomicBool::new(false));
+            content_search::search(
+                black_box("TODO"),
+                black_box(&[search_root]),
+                &ContentSearchOptions::default(),
+                tx,
+                cancel,
+            );
+            // Drain to avoid backpressure stalls.
+            for _ in rx.iter() {}
+        });
+    });
+
+    // 2. Regex search across 10k files.
+    group.bench_function("regex_10k_files", |b| {
+        let opts = ContentSearchOptions {
+            regex: true,
+            ..Default::default()
+        };
+        b.iter(|| {
+            let (tx, rx) = crossbeam_channel::bounded(1024);
+            let cancel = Arc::new(AtomicBool::new(false));
+            content_search::search(
+                black_box(r"fn\s+\w+"),
+                black_box(&[search_root]),
+                &opts,
+                tx,
+                cancel,
+            );
+            for _ in rx.iter() {}
+        });
+    });
+
+    // --- Fixture: single large file (100k lines) ---
+    let large_dir = TempDir::new().unwrap();
+    let large_root = large_dir.path();
+    {
+        // 100k lines, needle every 1000 lines.
+        let mut content = String::with_capacity(100_000 * 30);
+        for i in 0..100_000 {
+            if i % 1000 == 0 {
+                content.push_str(&format!("line {i}: TODO fix this\n"));
+            } else {
+                content.push_str(&format!("line {i}: normal content here\n"));
+            }
+        }
+        std::fs::write(large_root.join("huge.txt"), content).unwrap();
+    }
+
+    // 3. Large file search (100k lines).
+    group.bench_function("large_file_100k_lines", |b| {
+        b.iter(|| {
+            let (tx, rx) = crossbeam_channel::bounded(1024);
+            let cancel = Arc::new(AtomicBool::new(false));
+            content_search::search(
+                black_box("TODO"),
+                black_box(&[large_root]),
+                &ContentSearchOptions::default(),
+                tx,
+                cancel,
+            );
+            for _ in rx.iter() {}
+        });
+    });
+
+    // --- Fixture: gitignore filtering (10k files, half in ignored dirs) ---
+    let gitignore_dir = TempDir::new().unwrap();
+    let gitignore_root = gitignore_dir.path();
+    {
+        std::fs::create_dir(gitignore_root.join(".git")).unwrap();
+        std::fs::write(gitignore_root.join(".gitignore"), "ignored_*/\n").unwrap();
+        for i in 0..20 {
+            let name = if i < 10 {
+                format!("ignored_{i}")
+            } else {
+                format!("visible_{i}")
+            };
+            let dir_path = gitignore_root.join(&name);
+            std::fs::create_dir_all(&dir_path).unwrap();
+            for j in 0..500 {
+                std::fs::write(dir_path.join(format!("file_{j}.rs")), "fn needle() {}\n").unwrap();
+            }
+        }
+    }
+
+    // 4. Gitignore-filtered search.
+    group.bench_function("gitignore_10k_files", |b| {
+        b.iter(|| {
+            let (tx, rx) = crossbeam_channel::bounded(1024);
+            let cancel = Arc::new(AtomicBool::new(false));
+            content_search::search(
+                black_box("needle"),
+                black_box(&[gitignore_root]),
+                &ContentSearchOptions::default(),
+                tx,
+                cancel,
+            );
+            for _ in rx.iter() {}
+        });
+    });
+
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -785,5 +915,6 @@ criterion_group!(
     bench_tree_population,
     bench_file_size_classify,
     bench_draft_restore,
+    bench_content_search,
 );
 criterion_main!(benches);
