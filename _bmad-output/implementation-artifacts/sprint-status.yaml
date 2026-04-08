@@ -36,8 +36,8 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-07
-last_updated: 2026-04-07
-# status_change: 1-4 marked done 2026-04-07
+last_updated: 2026-04-08
+# status_change: 3-2 marked done 2026-04-08
 project: lushtext
 project_key: NOKEY
 tracking_system: file-system
@@ -50,16 +50,16 @@ development_status:
   1-2-search-panel-with-streaming-results: done
   1-3-search-toggles-match-highlighting: done
   1-4-gitignore-toggle-glob-filter-options-panel: done
-  1-5-match-navigation-progress-reporting: backlog
+  1-5-match-navigation-progress-reporting: done
   epic-1-retrospective: optional
 
   # Epic 2: Multi-File Replace
-  epic-2: backlog
-  2-1-replace-all-with-preview-execution-undo: backlog
+  epic-2: in-progress
+  2-1-replace-all-with-preview-execution-undo: done
   epic-2-retrospective: optional
 
   # Epic 3: Search History & Session Persistence
-  epic-3: backlog
-  3-1-search-history: backlog
-  3-2-saved-searches-panel-state-persistence: backlog
+  epic-3: in-progress
+  3-1-search-history: done
+  3-2-saved-searches-panel-state-persistence: done
   epic-3-retrospective: optional

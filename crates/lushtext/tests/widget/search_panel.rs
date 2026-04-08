@@ -6,8 +6,13 @@ use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::app::LushtextApplication;
+use lushtext_core::model::content_search::{
+    ContentSearchOptions, ReplaceResult, Replacement, SavedSearch, SearchEvent, SearchMatch,
+    generate_replacement_preview,
+};
 use lushtext_core::ui::search_panel::LushtextSearchPanel;
 use lushtext_core::ui::search_panel::item::SearchResultItem;
+use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
 
 /// Drain all pending events from the GTK main loop.
@@ -41,8 +46,16 @@ fn test_search_result_item_new_file() {
 #[test]
 fn test_search_result_item_new_match() {
     ensure_gtk_init();
-    let item =
-        SearchResultItem::new_match("/home/user/project/src/main.rs", 42, "fn main() {", 0, 2);
+    let item = SearchResultItem::new_match(
+        "/home/user/project/src/main.rs",
+        42,
+        "fn main() {",
+        0,
+        2,
+        "fn main() {",
+        0,
+        2,
+    );
     assert!(!item.is_file_item());
     assert!(item.is_match_item());
     assert_eq!(item.file_path(), "/home/user/project/src/main.rs");
@@ -253,7 +266,16 @@ fn test_toggle_search_panel_close_hides_revealer() {
 #[test]
 fn test_search_result_item_match_range_stored_and_returned() {
     ensure_gtk_init();
-    let item = SearchResultItem::new_match("/path/test.rs", 10, "let x = 42;", 4, 5);
+    let item = SearchResultItem::new_match(
+        "/path/test.rs",
+        10,
+        "let x = 42;",
+        4,
+        5,
+        "let x = 42;",
+        4,
+        5,
+    );
     assert_eq!(item.match_start(), 4);
     assert_eq!(item.match_end(), 5);
 }
@@ -371,4 +393,700 @@ fn test_clear_results_removes_warning_class() {
     // Clear results should remove the warning class.
     panel.start_search("");
     assert!(!panel.imp().count_label.has_css_class("warning"));
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.5: SearchEvent::Progress variant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_search_event_progress_variant() {
+    ensure_gtk_init();
+    // Progress variant can be constructed and pattern-matched.
+    let event = SearchEvent::Progress(42);
+    assert!(matches!(event, SearchEvent::Progress(42)));
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.5: Match navigation state
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_navigate_next_match_empty_is_noop() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // With no matches, navigate_next_match should not panic or change state.
+    panel.navigate_next_match();
+    assert!(panel.imp().current_match_index.get().is_none());
+}
+
+#[test]
+fn test_navigate_prev_match_empty_is_noop() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.navigate_prev_match();
+    assert!(panel.imp().current_match_index.get().is_none());
+}
+
+#[test]
+fn test_has_results_false_on_fresh_panel() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    assert!(!panel.has_results());
+}
+
+#[test]
+fn test_has_results_true_after_matches() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Simulate matches arriving (set internal state directly).
+    panel.imp().total_matches.set(5);
+    assert!(panel.has_results());
+}
+
+#[test]
+fn test_current_match_index_resets_on_clear() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Simulate some navigation state.
+    panel.imp().current_match_index.set(Some(3));
+    panel
+        .imp()
+        .match_positions
+        .borrow_mut()
+        .push((std::path::PathBuf::from("/test.rs"), 10));
+
+    // Clear via empty search.
+    panel.start_search("");
+
+    assert!(panel.imp().current_match_index.get().is_none());
+    assert!(panel.imp().match_positions.borrow().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.5: F4/Shift+F4 actions and shortcuts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_f4_shortcut_bound_search_next_match() {
+    ensure_gtk_init();
+    let window = test_window();
+    let action = window.lookup_action("search-next-match");
+    assert!(action.is_some(), "search-next-match action must exist");
+}
+
+#[test]
+fn test_shift_f4_shortcut_bound_search_prev_match() {
+    ensure_gtk_init();
+    let window = test_window();
+    let action = window.lookup_action("search-prev-match");
+    assert!(action.is_some(), "search-prev-match action must exist");
+}
+
+#[test]
+fn test_search_navigation_actions_start_disabled() {
+    ensure_gtk_init();
+    let window = test_window();
+    // No tabs, no search panel visible, no results → actions should be disabled.
+    let next = window.lookup_action("search-next-match").unwrap();
+    assert!(
+        !next.is_enabled(),
+        "search-next-match should start disabled"
+    );
+
+    let prev = window.lookup_action("search-prev-match").unwrap();
+    assert!(
+        !prev.is_enabled(),
+        "search-prev-match should start disabled"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.5: Status bar progress API
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_status_bar_progress_active_default_false() {
+    ensure_gtk_init();
+    let bar = glib::Object::builder::<LushtextStatusBar>().build();
+    assert!(!bar.imp().progress_active.get());
+}
+
+#[test]
+fn test_set_progress_message_sets_label_and_flag() {
+    ensure_gtk_init();
+    let bar = glib::Object::builder::<LushtextStatusBar>().build();
+    bar.set_progress_message("Searching 100 / 500 files\u{2026}");
+    assert!(bar.imp().progress_active.get());
+    assert_eq!(
+        bar.imp().message_label.text().as_str(),
+        "Searching 100 / 500 files\u{2026}"
+    );
+}
+
+#[test]
+fn test_clear_progress_message_clears_when_active() {
+    ensure_gtk_init();
+    let bar = glib::Object::builder::<LushtextStatusBar>().build();
+    bar.set_progress_message("Searching...");
+    assert!(bar.imp().progress_active.get());
+
+    bar.clear_progress_message();
+    assert!(!bar.imp().progress_active.get());
+    assert!(bar.imp().message_label.text().is_empty());
+}
+
+#[test]
+fn test_clear_progress_message_noop_when_not_active() {
+    ensure_gtk_init();
+    let bar = glib::Object::builder::<LushtextStatusBar>().build();
+    // Set a normal message (not progress).
+    bar.push_message(
+        "File saved",
+        lushtext_core::ui::status_bar::MessageKind::Info,
+    );
+    let text = bar.imp().message_label.text().to_string();
+
+    // clear_progress_message should not clear a normal message.
+    bar.clear_progress_message();
+    assert_eq!(bar.imp().message_label.text().as_str(), text);
+}
+
+#[test]
+fn test_push_message_overrides_progress() {
+    ensure_gtk_init();
+    let bar = glib::Object::builder::<LushtextStatusBar>().build();
+    bar.set_progress_message("Searching...");
+    assert!(bar.imp().progress_active.get());
+
+    // Push a normal message — should override progress.
+    bar.push_message("Error!", lushtext_core::ui::status_bar::MessageKind::Error);
+    assert!(!bar.imp().progress_active.get());
+    assert_eq!(bar.imp().message_label.text().as_str(), "Error!");
+}
+
+#[test]
+fn test_connect_navigate_callback_stored() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.connect_navigate_to_match(|_path, _line| {});
+    assert!(panel.imp().navigate_callback.borrow().is_some());
+}
+
+#[test]
+fn test_connect_search_progress_callback_stored() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.connect_search_progress(|_files, _done| {});
+    assert!(panel.imp().progress_callback.borrow().is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Story 2.1: Replace UI widgets exist
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_replace_entry_exists_on_panel() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // replace_entry is accessible as a template child.
+    assert!(panel.imp().replace_entry.text().is_empty());
+}
+
+#[test]
+fn test_replace_all_button_starts_insensitive() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // replace_all_button starts with sensitive=false (no text, no results).
+    assert!(
+        !panel.imp().replace_all_button.is_sensitive(),
+        "replace_all_button should start insensitive"
+    );
+}
+
+#[test]
+fn test_undo_button_starts_hidden() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    assert!(
+        !panel.imp().undo_button.property::<bool>("visible"),
+        "undo_button should start hidden"
+    );
+}
+
+#[test]
+fn test_enter_preview_mode_sets_flag() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    assert!(!panel.is_preview_mode());
+
+    // Simulate some results so enter_preview_mode has data.
+    let file_item = SearchResultItem::new_file("/test.rs", "test.rs", 1);
+    let match_item = SearchResultItem::new_match(
+        "/test.rs",
+        1,
+        "let hello = 1;",
+        4,
+        9,
+        "let hello = 1;",
+        4,
+        9,
+    );
+    let child_store = gtk4::gio::ListStore::new::<SearchResultItem>();
+    child_store.append(&match_item);
+    panel.imp().root_store.append(&file_item);
+    panel.imp().file_groups.borrow_mut().insert(
+        std::path::PathBuf::from("/test.rs"),
+        (file_item, child_store),
+    );
+    panel.imp().total_matches.set(1);
+
+    panel.enter_preview_mode("goodbye");
+    assert!(panel.is_preview_mode());
+}
+
+#[test]
+fn test_exit_preview_mode_clears_state() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+
+    // Enter preview mode with some data.
+    let file_item = SearchResultItem::new_file("/test.rs", "test.rs", 1);
+    let match_item = SearchResultItem::new_match(
+        "/test.rs",
+        1,
+        "let hello = 1;",
+        4,
+        9,
+        "let hello = 1;",
+        4,
+        9,
+    );
+    let child_store = gtk4::gio::ListStore::new::<SearchResultItem>();
+    child_store.append(&match_item);
+    panel.imp().root_store.append(&file_item);
+    panel.imp().file_groups.borrow_mut().insert(
+        std::path::PathBuf::from("/test.rs"),
+        (file_item, child_store),
+    );
+    panel.imp().total_matches.set(1);
+
+    panel.enter_preview_mode("goodbye");
+    assert!(panel.is_preview_mode());
+
+    panel.exit_preview_mode();
+    assert!(!panel.is_preview_mode());
+    assert!(panel.imp().preview_replacements.borrow().is_empty());
+    assert!(panel.imp().checked_indices.borrow().is_empty());
+}
+
+#[test]
+fn test_clear_results_clears_undo_backup() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+
+    // Simulate an undo backup.
+    let mut backup = std::collections::HashMap::new();
+    backup.insert(
+        std::path::PathBuf::from("/test.rs"),
+        b"original content".to_vec(),
+    );
+    panel.set_undo_backup(backup);
+    panel.show_undo_button();
+    assert!(panel.imp().undo_backup.borrow().is_some());
+
+    // Clear results should clear undo backup and hide button.
+    panel.start_search("");
+    assert!(panel.imp().undo_backup.borrow().is_none());
+    assert!(
+        !panel.imp().undo_button.property::<bool>("visible"),
+        "undo_button should be hidden after clear"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Story 2.1: Model types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_replacement_and_replace_result_construction() {
+    ensure_gtk_init();
+    let r = Replacement {
+        path: std::path::PathBuf::from("/test.rs"),
+        line_number: 1,
+        original_line: "let hello = 1;".to_string(),
+        replaced_line: "let goodbye = 1;".to_string(),
+        replacement: "goodbye".to_string(),
+        match_range: 4..9,
+    };
+    assert_eq!(r.path.display().to_string(), "/test.rs");
+    assert_eq!(r.line_number, 1);
+    assert_eq!(r.original_line, "let hello = 1;");
+    assert_eq!(r.replaced_line, "let goodbye = 1;");
+
+    let result = ReplaceResult {
+        replaced_count: 5,
+        files_affected: 2,
+        skipped_paths: vec![std::path::PathBuf::from("/skip.rs")],
+        errors: vec![],
+    };
+    assert_eq!(result.replaced_count, 5);
+    assert_eq!(result.files_affected, 2);
+    assert_eq!(result.skipped_paths.len(), 1);
+}
+
+#[test]
+fn test_generate_replacement_preview_literal() {
+    ensure_gtk_init();
+    let matches = vec![SearchMatch {
+        path: std::path::PathBuf::from("/test.rs"),
+        line_number: 1,
+        line_content: "let hello = 1;".to_string(),
+        match_range: 4..9,
+    }];
+
+    let options = ContentSearchOptions::default();
+    let result = generate_replacement_preview(&matches, "hello", "goodbye", &options);
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].original_line, "let hello = 1;");
+    assert_eq!(result[0].replaced_line, "let goodbye = 1;");
+    assert_eq!(result[0].replacement, "goodbye");
+}
+
+#[test]
+fn test_generate_replacement_preview_regex_backreference() {
+    ensure_gtk_init();
+    let matches = vec![SearchMatch {
+        path: std::path::PathBuf::from("/test.rs"),
+        line_number: 1,
+        line_content: "fn hello_world() {}".to_string(),
+        match_range: 3..14,
+    }];
+
+    let options = ContentSearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+    // Regex: capture word, replace with prefix.
+    let result = generate_replacement_preview(&matches, r"(\w+)_(\w+)", "new_${1}_${2}", &options);
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result[0].replaced_line, "fn new_hello_world() {}",
+        "backreference should expand correctly"
+    );
+}
+
+#[test]
+fn test_connect_replace_all_callback_stored() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.connect_replace_all(|_replacements| {});
+    assert!(panel.imp().replace_callback.borrow().is_some());
+}
+
+#[test]
+fn test_connect_undo_all_callback_stored() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.connect_undo_all(|_backup| {});
+    assert!(panel.imp().undo_callback.borrow().is_some());
+}
+
+#[test]
+fn test_search_navigation_actions_enabled_lifecycle() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    // 1. Start: disabled (no tabs, no panel, no results).
+    let next = window.lookup_action("search-next-match").unwrap();
+    assert!(!next.is_enabled(), "should start disabled");
+
+    // 2. Open a tab — still disabled (panel not visible, no results).
+    window.new_tab();
+    flush_events();
+    assert!(!next.is_enabled(), "disabled: panel not visible yet");
+
+    // 3. Show panel — still disabled (no results).
+    gtk4::prelude::ActionGroupExt::activate_action(&window, "toggle-search-panel", None);
+    flush_events();
+    assert!(
+        window.imp().search_panel_revealer.reveals_child(),
+        "panel should be visible"
+    );
+    assert!(!next.is_enabled(), "disabled: no results yet");
+
+    // 4. Simulate results arriving (set internal state directly).
+    window.imp().search_panel.imp().total_matches.set(5);
+    window.update_search_navigation_actions();
+    assert!(next.is_enabled(), "enabled: tabs + panel visible + results");
+
+    // 5. Close panel — disabled again.
+    window.close_search_panel();
+    flush_events();
+    assert!(!next.is_enabled(), "disabled: panel closed");
+}
+
+// ---------------------------------------------------------------------------
+// Story 3.1: Search History
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_history_popover_and_list_exist_on_fresh_panel() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let imp = panel.imp();
+    // Programmatic widgets should be constructed and parented.
+    assert!(!imp.history_popover.is_visible());
+    assert_eq!(
+        imp.history_list.selection_mode(),
+        gtk4::SelectionMode::Single
+    );
+}
+
+#[test]
+fn test_set_search_history_stores_entries() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+
+    let entries = vec![
+        lushtext_core::model::content_search::SearchHistoryEntry {
+            query: "hello".to_string(),
+            case_sensitive: false,
+            regex: false,
+            whole_word: false,
+            gitignore: true,
+            glob: None,
+        },
+        lushtext_core::model::content_search::SearchHistoryEntry {
+            query: "world".to_string(),
+            case_sensitive: true,
+            regex: true,
+            whole_word: false,
+            gitignore: false,
+            glob: Some("*.rs".to_string()),
+        },
+    ];
+    panel.set_search_history(entries.clone());
+    let retrieved = panel.search_history();
+    assert_eq!(retrieved.len(), 2);
+    assert_eq!(retrieved[0].query, "hello");
+    assert_eq!(retrieved[1].query, "world");
+}
+
+#[test]
+fn test_restore_from_history_sets_search_entry_text() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let entry = lushtext_core::model::content_search::SearchHistoryEntry {
+        query: "restored query".to_string(),
+        case_sensitive: false,
+        regex: false,
+        whole_word: false,
+        gitignore: true,
+        glob: None,
+    };
+    panel.restore_from_history(&entry);
+    assert_eq!(panel.query(), "restored query");
+}
+
+#[test]
+fn test_restore_from_history_sets_toggle_states() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let entry = lushtext_core::model::content_search::SearchHistoryEntry {
+        query: "test".to_string(),
+        case_sensitive: true,
+        regex: true,
+        whole_word: true,
+        gitignore: false,
+        glob: Some("*.toml".to_string()),
+    };
+    panel.restore_from_history(&entry);
+
+    assert!(panel.imp().case_toggle.is_active());
+    assert!(panel.imp().regex_toggle.is_active());
+    assert!(panel.imp().word_toggle.is_active());
+    assert!(!panel.imp().gitignore_toggle.is_active());
+}
+
+#[test]
+fn test_restore_from_history_sets_glob_entry() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let entry = lushtext_core::model::content_search::SearchHistoryEntry {
+        query: "test".to_string(),
+        case_sensitive: false,
+        regex: false,
+        whole_word: false,
+        gitignore: true,
+        glob: Some("*.rs".to_string()),
+    };
+    panel.restore_from_history(&entry);
+    assert_eq!(panel.imp().glob_entry.text().as_str(), "*.rs");
+}
+
+#[test]
+fn test_restore_from_history_with_glob_none_clears_glob_entry() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // First set a glob value.
+    panel.imp().glob_entry.set_text("*.md");
+    assert_eq!(panel.imp().glob_entry.text().as_str(), "*.md");
+
+    // Restore with glob: None should clear it.
+    let entry = lushtext_core::model::content_search::SearchHistoryEntry {
+        query: "test".to_string(),
+        case_sensitive: false,
+        regex: false,
+        whole_word: false,
+        gitignore: true,
+        glob: None,
+    };
+    panel.restore_from_history(&entry);
+    assert!(panel.imp().glob_entry.text().is_empty());
+}
+
+#[test]
+fn test_search_history_entry_serialization_roundtrip() {
+    // Pure data test — no GTK needed, but ensure_gtk_init doesn't hurt.
+    ensure_gtk_init();
+    let entry = lushtext_core::model::content_search::SearchHistoryEntry {
+        query: "test query".to_string(),
+        case_sensitive: true,
+        regex: false,
+        whole_word: true,
+        gitignore: false,
+        glob: Some("*.rs".to_string()),
+    };
+    let json = serde_json::to_string(&entry).unwrap();
+    let deserialized: lushtext_core::model::content_search::SearchHistoryEntry =
+        serde_json::from_str(&json).unwrap();
+    assert_eq!(entry, deserialized);
+}
+
+// ---------------------------------------------------------------------------
+// Story 3.2: Saved Searches & Panel State Persistence
+// ---------------------------------------------------------------------------
+
+fn make_saved_search(name: &str, query: &str) -> SavedSearch {
+    SavedSearch {
+        name: name.to_string(),
+        query: query.to_string(),
+        case_sensitive: false,
+        regex: false,
+        whole_word: false,
+        gitignore: true,
+        glob: None,
+    }
+}
+
+#[test]
+fn test_save_button_exists_and_starts_invisible() {
+    ensure_gtk_init();
+    let window = test_window();
+    let panel = &window.imp().search_panel;
+    let save_btn = &panel.imp().save_button;
+    assert!(!save_btn.property::<bool>("visible"));
+}
+
+#[test]
+fn test_set_and_get_saved_searches() {
+    ensure_gtk_init();
+    let window = test_window();
+    let panel = &window.imp().search_panel;
+
+    let entries = vec![
+        make_saved_search("My Search", "fn main"),
+        make_saved_search("TODOs", "TODO"),
+    ];
+    panel.set_saved_searches(entries.clone());
+
+    let retrieved = panel.saved_searches();
+    assert_eq!(retrieved.len(), 2);
+    assert_eq!(retrieved[0].name, "My Search");
+    assert_eq!(retrieved[1].name, "TODOs");
+}
+
+#[test]
+fn test_restore_from_saved_search_sets_query() {
+    ensure_gtk_init();
+    let window = test_window();
+    let panel = &window.imp().search_panel;
+
+    let entry = SavedSearch {
+        name: "Test".to_string(),
+        query: "fn main".to_string(),
+        case_sensitive: true,
+        regex: true,
+        whole_word: false,
+        gitignore: false,
+        glob: Some("*.rs".to_string()),
+    };
+    panel.restore_from_saved_search(&entry);
+
+    assert_eq!(panel.imp().search_entry.text(), "fn main");
+    assert!(panel.imp().case_toggle.is_active());
+    assert!(panel.imp().regex_toggle.is_active());
+    assert!(!panel.imp().word_toggle.is_active());
+    assert!(!panel.imp().gitignore_toggle.is_active());
+    assert_eq!(panel.imp().glob_entry.text(), "*.rs");
+}
+
+#[test]
+fn test_restore_from_saved_search_clears_glob_when_none() {
+    ensure_gtk_init();
+    let window = test_window();
+    let panel = &window.imp().search_panel;
+
+    // First set a glob.
+    panel.imp().glob_entry.set_text("*.toml");
+
+    let entry = make_saved_search("test", "test");
+    panel.restore_from_saved_search(&entry);
+    assert!(panel.imp().glob_entry.text().is_empty());
+}
+
+#[test]
+fn test_remove_saved_search_updates_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    let panel = &window.imp().search_panel;
+
+    let entries = vec![
+        make_saved_search("First", "fn main"),
+        make_saved_search("Second", "TODO"),
+        make_saved_search("Third", "FIXME"),
+    ];
+    panel.set_saved_searches(entries);
+    assert_eq!(panel.saved_searches().len(), 3);
+
+    // remove_saved_search is private, so we test via the service directly
+    // and verify the panel state after set_saved_searches.
+    let mut current = panel.saved_searches();
+    lushtext_core::services::saved_searches::remove(&mut current, 1);
+    panel.set_saved_searches(current);
+
+    let after = panel.saved_searches();
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0].name, "First");
+    assert_eq!(after[1].name, "Third");
+}
+
+#[test]
+fn test_saved_search_serialization_roundtrip() {
+    ensure_gtk_init();
+    let entry = SavedSearch {
+        name: "My Search".to_string(),
+        query: "fn main".to_string(),
+        case_sensitive: true,
+        regex: false,
+        whole_word: true,
+        gitignore: false,
+        glob: Some("*.rs".to_string()),
+    };
+    let json = serde_json::to_string(&entry).unwrap();
+    let deserialized: SavedSearch = serde_json::from_str(&json).unwrap();
+    assert_eq!(entry, deserialized);
 }

@@ -33,9 +33,13 @@ impl LushtextStatusBar {
 
     /// Display a feedback message, replacing any current message.
     /// The message auto-dismisses after 5 seconds unless superseded.
+    /// Normal messages always override an active progress message.
     pub fn push_message(&self, text: &str, kind: MessageKind) {
         let imp = self.imp();
         let label = &*imp.message_label;
+
+        // Normal messages override progress.
+        imp.progress_active.set(false);
 
         clear_message_classes(label);
 
@@ -67,6 +71,32 @@ impl LushtextStatusBar {
         let label = &*self.imp().message_label;
         clear_message_classes(label);
         label.set_label("");
+    }
+
+    /// Display a non-auto-dismiss progress message (e.g., "Searching X / Y files...").
+    /// Does NOT schedule an auto-dismiss timer. Does NOT bump message_generation,
+    /// so a concurrent `push_message` naturally takes priority.
+    pub fn set_progress_message(&self, text: &str) {
+        let imp = self.imp();
+        let label = &*imp.message_label;
+
+        clear_message_classes(label);
+        label.add_css_class("status-info");
+        label.set_label(text);
+        imp.progress_active.set(true);
+    }
+
+    /// Clear the progress message if one is active. No-ops if a normal
+    /// `push_message` already replaced it (avoids accidentally clearing
+    /// error/warning messages).
+    pub fn clear_progress_message(&self) {
+        let imp = self.imp();
+        if imp.progress_active.get() {
+            imp.progress_active.set(false);
+            let label = &*imp.message_label;
+            clear_message_classes(label);
+            label.set_label("");
+        }
     }
 
     /// Update the file size display. Pass `None` for untitled tabs

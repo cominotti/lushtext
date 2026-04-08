@@ -24,6 +24,11 @@ pub struct LushtextStatusBar {
     /// The auto-dismiss timeout captures the value at post time and skips
     /// clearing if the counter has moved on (a newer message replaced it).
     pub message_generation: Cell<u32>,
+
+    /// Whether a non-auto-dismiss progress message is currently displayed.
+    /// When true, `clear_progress_message()` will clear it; `push_message()`
+    /// always overrides progress (clears this flag and schedules auto-dismiss).
+    pub progress_active: Cell<bool>,
 }
 
 #[glib::object_subclass]

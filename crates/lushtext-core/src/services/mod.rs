@@ -16,5 +16,7 @@ pub mod file_limits;
 pub mod file_tree;
 pub mod json_store;
 pub mod palette;
+pub mod saved_searches;
+pub mod search_history;
 pub mod session_service;
 pub mod workspace_manager;

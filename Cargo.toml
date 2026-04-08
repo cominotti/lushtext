@@ -58,6 +58,9 @@ unicase = "2"
 # EditorConfig parsing (pure Rust, zero deps)
 editorconfig-parser = "0.0.3"
 
+# Regex (backreference expansion in Replace All)
+regex = "1"
+
 # Markdown parsing (CommonMark, streaming events)
 pulldown-cmark = { version = "0.12", default-features = false }
 

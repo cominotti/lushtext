@@ -7,10 +7,17 @@
 //! All methods are `impl LushtextWindow` called from `new()` and `constructed()`.
 
 use crate::config::keys;
+use crate::services::{async_task, content_search, json_store, saved_searches, search_history};
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{self, glib};
+use std::cell::Cell;
+use std::collections::HashSet;
+use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use super::LushtextWindow;
 
@@ -36,33 +43,73 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     // --- Result activation: open file at line ---
     let window_weak = window.downgrade();
     imp.search_panel.connect_open_file(move |path, line| {
-        let Some(window) = window_weak.upgrade() else {
-            return;
-        };
-        window.open_document(path);
-
-        // Scroll to the matching line.
-        let tab_view = &window.imp().tab_view;
-        if let Some(page) = tab_view.selected_page()
-            && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
-        {
-            if editor.is_evicted() {
-                // Evicted tab: buffer was cleared to free memory. Trigger reload
-                // and defer scroll — set_restore_position fires after load completes.
-                let line_0 = line.saturating_sub(1);
-                editor.set_restore_position(line_0, 0, line_0.saturating_sub(3));
-                window.reload_if_evicted();
-            } else if editor.buffer().char_count() > 0 {
-                // File was already open — buffer has content, scroll immediately.
-                scroll_editor_to_line(editor, line);
-            } else {
-                // Newly opened file — async load in progress. Defer scroll via
-                // set_restore_position, which is applied after load completes.
-                let line_0 = line.saturating_sub(1);
-                editor.set_restore_position(line_0, 0, line_0.saturating_sub(3));
-            }
+        if let Some(window) = window_weak.upgrade() {
+            open_file_at_line(&window, path, line);
         }
     });
+
+    // --- F4/Shift+F4 navigation: open file at line (same as activation) ---
+    let window_weak = window.downgrade();
+    imp.search_panel
+        .connect_navigate_to_match(move |path, line| {
+            if let Some(window) = window_weak.upgrade() {
+                open_file_at_line(&window, path, line);
+            }
+        });
+
+    // --- Search progress: status bar + 500ms delay + navigation action update ---
+    let show_progress = Rc::new(Cell::new(false));
+
+    // When a new search starts (search_changed debounce fires), reset the
+    // 500ms delay flag. We detect this via connect_search_changed on the entry.
+    {
+        let show_progress = show_progress.clone();
+        let window_weak = window.downgrade();
+        imp.search_panel
+            .search_entry()
+            .connect_search_changed(move |_| {
+                show_progress.set(false);
+                let show_progress = show_progress.clone();
+                glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                    show_progress.set(true);
+                });
+                // Clear any existing progress message when a new search starts.
+                if let Some(window) = window_weak.upgrade() {
+                    window.imp().status_bar.clear_progress_message();
+                }
+            });
+    }
+
+    {
+        let show_progress = show_progress.clone();
+        let window_weak = window.downgrade();
+        imp.search_panel
+            .connect_search_progress(move |files_searched, is_done| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                let imp = window.imp();
+
+                if is_done {
+                    imp.status_bar.clear_progress_message();
+                    window.update_search_navigation_actions();
+                    return;
+                }
+
+                // Only show progress after the 500ms delay has elapsed.
+                if !show_progress.get() {
+                    return;
+                }
+
+                let file_count = imp.command_palette.file_index_len();
+                let message = if file_count > 0 {
+                    format!("Searching {files_searched} / {file_count} files\u{2026}")
+                } else {
+                    format!("Searching {files_searched} files\u{2026}")
+                };
+                imp.status_bar.set_progress_message(&message);
+            });
+    }
 
     // --- Close request: hide panel + restore focus ---
     let window_weak = window.downgrade();
@@ -72,12 +119,158 @@ pub fn setup_search_panel(window: &LushtextWindow) {
         }
     });
 
+    // --- Status messages from search panel (e.g., "Search saved as '...'" ) ---
+    let window_weak = window.downgrade();
+    imp.search_panel.connect_message(move |text| {
+        if let Some(window) = window_weak.upgrade() {
+            window
+                .imp()
+                .status_bar
+                .push_message(text, MessageKind::Info);
+        }
+    });
+
+    // --- Replace All: skip modified tabs, execute, status bar message ---
+    let window_weak = window.downgrade();
+    imp.search_panel.connect_replace_all(move |replacements| {
+        let Some(window) = window_weak.upgrade() else {
+            return;
+        };
+        let imp = window.imp();
+
+        // Build skip_paths: files open with unsaved modifications.
+        let mut skip_paths = HashSet::new();
+        let tab_view = &imp.tab_view;
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+                && let Some(path) = editor.file_path()
+                && editor.is_modified()
+            {
+                skip_paths.insert(path);
+            }
+        }
+
+        // Count skipped replacements for the status message.
+        let total_replacements = replacements.len();
+        let filtered: Vec<_> = replacements
+            .into_iter()
+            .filter(|r| !skip_paths.contains(&r.path))
+            .collect();
+
+        let skipped_count = total_replacements - filtered.len();
+
+        if filtered.is_empty() {
+            imp.status_bar.push_message(
+                "No replacements to apply (all files have unsaved changes)",
+                MessageKind::Warning,
+            );
+            return;
+        }
+
+        // Collect paths that will be affected (for tab reload after replace).
+        let affected_paths: HashSet<std::path::PathBuf> =
+            filtered.iter().map(|r| r.path.clone()).collect();
+
+        let cancel = AtomicBool::new(false);
+        async_task::spawn_blocking_then(
+            window.clone(),
+            move || content_search::apply_replacements(&filtered, &HashSet::new(), &cancel),
+            move |window, result| {
+                let imp = window.imp();
+                match result {
+                    Ok((replace_result, backup)) => {
+                        let mut msg = format!(
+                            "Replaced {} of {} matches in {} files",
+                            replace_result.replaced_count,
+                            total_replacements,
+                            replace_result.files_affected,
+                        );
+                        if skipped_count > 0 || !replace_result.skipped_paths.is_empty() {
+                            let skip_total = skipped_count + replace_result.skipped_paths.len();
+                            msg.push_str(&format!(" ({skip_total} files skipped)"));
+                        }
+                        if !replace_result.errors.is_empty() {
+                            msg.push_str(&format!(" ({} errors)", replace_result.errors.len()));
+                        }
+                        let kind = if replace_result.errors.is_empty() {
+                            MessageKind::Info
+                        } else {
+                            MessageKind::Warning
+                        };
+                        imp.status_bar.push_message(&msg, kind);
+
+                        // Store backup and show undo button.
+                        imp.search_panel.set_undo_backup(backup);
+                        imp.search_panel.show_undo_button();
+
+                        // Reload affected open tabs to show updated content.
+                        reload_affected_tabs(&window, &affected_paths);
+                    }
+                    Err(e) => {
+                        imp.status_bar
+                            .push_message(&format!("Replace failed: {e}"), MessageKind::Error);
+                    }
+                }
+            },
+        );
+    });
+
+    // --- Undo All: restore files, status bar message ---
+    let window_weak = window.downgrade();
+    imp.search_panel.connect_undo_all(move |backup| {
+        let Some(window) = window_weak.upgrade() else {
+            return;
+        };
+
+        let affected_paths: HashSet<std::path::PathBuf> = backup.keys().cloned().collect();
+
+        async_task::spawn_blocking_then(
+            window.clone(),
+            move || content_search::undo_replacements(&backup),
+            move |window, result| {
+                let imp = window.imp();
+                match result {
+                    Ok(count) => {
+                        imp.status_bar
+                            .push_message(&format!("Reverted {count} files"), MessageKind::Info);
+                        reload_affected_tabs(&window, &affected_paths);
+                    }
+                    Err(e) => {
+                        imp.status_bar
+                            .push_message(&format!("Undo failed: {e}"), MessageKind::Error);
+                    }
+                }
+            },
+        );
+    });
+
     // --- Restore panel visibility from GSettings ---
     let panel_visible = imp.settings.boolean(keys::SEARCH_PANEL_VISIBLE);
     if panel_visible {
         imp.search_panel_revealer.set_reveal_child(true);
         // Don't grab focus on startup — let session restore handle focus.
     }
+
+    // --- Load search history from disk (AC #7, #8) ---
+    let data_dir = json_store::data_dir();
+    let data_dir_saved = data_dir.clone();
+    async_task::spawn_blocking_then(
+        window.clone(),
+        move || search_history::load(&data_dir),
+        |window, entries| {
+            window.imp().search_panel.set_search_history(entries);
+        },
+    );
+
+    // --- Load saved searches from disk (parallel to history) ---
+    async_task::spawn_blocking_then(
+        window.clone(),
+        move || saved_searches::load(&data_dir_saved),
+        |window, entries| {
+            window.imp().search_panel.set_saved_searches(entries);
+        },
+    );
 }
 
 impl LushtextWindow {
@@ -115,6 +308,7 @@ impl LushtextWindow {
         revealer.set_reveal_child(true);
         imp.search_panel.open();
         let _ = imp.settings.set_boolean(keys::SEARCH_PANEL_VISIBLE, true);
+        self.update_search_navigation_actions();
     }
 
     /// Close the search panel and restore focus.
@@ -128,6 +322,7 @@ impl LushtextWindow {
         imp.search_panel.close();
         imp.search_panel_revealer.set_reveal_child(false);
         let _ = imp.settings.set_boolean(keys::SEARCH_PANEL_VISIBLE, false);
+        self.update_search_navigation_actions();
         self.restore_search_saved_focus();
     }
 
@@ -146,6 +341,60 @@ impl LushtextWindow {
             None => {
                 gtk4::prelude::GtkWindowExt::set_focus(self, gtk4::Widget::NONE);
             }
+        }
+    }
+}
+
+/// Open a file at a specific line number. Shared by result activation (double-click/Enter)
+/// and F4/Shift+F4 navigation. Handles evicted tabs, already-loaded buffers, and
+/// newly-opened tabs where the async load is still in progress.
+fn open_file_at_line(window: &LushtextWindow, path: &std::path::Path, line: u32) {
+    window.open_document(path);
+
+    let tab_view = &window.imp().tab_view;
+    if let Some(page) = tab_view.selected_page()
+        && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+    {
+        if editor.is_evicted() {
+            let line_0 = line.saturating_sub(1);
+            editor.set_restore_position(line_0, 0, line_0.saturating_sub(3));
+            window.reload_if_evicted();
+        } else if editor.buffer().char_count() > 0 {
+            scroll_editor_to_line(editor, line);
+        } else {
+            let line_0 = line.saturating_sub(1);
+            editor.set_restore_position(line_0, 0, line_0.saturating_sub(3));
+        }
+        // Explicitly move focus to the editor (AC#4: "focus moves to the editor").
+        // Without this, GTK4's focus traversal may leave focus on the search panel
+        // or sidebar after tab switch.
+        editor.source_view().grab_focus();
+    }
+}
+
+/// Reload open tabs whose file was affected by replace/undo.
+/// Updates `last_known_mtime` to suppress the file monitor's "File Has Changed" bar,
+/// then reloads the file content via `load_file_async`.
+fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::path::PathBuf>) {
+    let tab_view = &window.imp().tab_view;
+    for i in 0..tab_view.n_pages() {
+        let page = tab_view.nth_page(i);
+        if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+            && let Some(path) = editor.file_path()
+            && affected_paths.contains(&path)
+            && !editor.is_modified()
+        {
+            // Update mtime to suppress file monitor "changed" detection for our own write.
+            if let Ok(metadata) = std::fs::metadata(&path) {
+                use std::time::SystemTime;
+                let mtime = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
+                editor.imp().last_known_mtime.set(mtime);
+            }
+            editor.load_file_async(&path);
         }
     }
 }

@@ -11,7 +11,8 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Session persistence** -- tabs, cursor positions, and scroll offsets restored on restart
 - **Draft recovery** -- unsaved changes auto-saved to disk and recovered after crash
 - **Print** -- native GTK print dialog with syntax highlighting and editor settings preserved
-- **Workspace content search** -- Ctrl+Shift+F parallel grep across all workspace files with streaming results, regex/literal/whole-word modes, .gitignore toggle, and glob file filter
+- **Workspace content search** -- Ctrl+Shift+F parallel grep across all workspace files with streaming results, regex/literal/whole-word modes, .gitignore toggle, glob file filter, F4/Shift+F4 match navigation, progress reporting, search history with full state recall, and named saved searches
+- **Multi-file Replace All** -- preview proposed changes with per-match checkboxes, atomic file writes, skip-modified-tabs safety, and full undo support
 - **Find and replace** -- per-tab search bar with match highlighting
 - **Command palette** -- Ctrl+P fuzzy search for files and commands (SIMD-accelerated via nucleo)
 - **Large file handling** -- graceful degradation: >1MB toast, >10MB disable syntax, >50MB disable undo, >500MB refuse
@@ -124,6 +125,8 @@ lushtext-core/src/
     palette.rs       SIMD fuzzy search + file indexing
     file_tree.rs     Directory scanning
     draft_service.rs Draft autosave
+    search_history.rs  Search history persistence
+    saved_searches.rs  Named saved search persistence
     session_service.rs  Session load/save
     workspace_manager.rs  Workspace CRUD
     async_task.rs    spawn_blocking_then concurrency guard

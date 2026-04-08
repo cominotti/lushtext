@@ -934,6 +934,7 @@ dependencies = [
  "libadwaita",
  "lushtext-core",
  "predicates",
+ "serde_json",
  "sourceview5",
  "tempfile",
  "tracing-subscriber",
@@ -962,6 +963,7 @@ dependencies = [
  "nucleo-matcher",
  "pango",
  "pulldown-cmark",
+ "regex",
  "serde",
  "serde_json",
  "simdutf8",
@@ -1931,7 +1933,6 @@ dependencies = [
 name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
- "aho-corasick",
  "bitflags",
  "crossbeam-utils",
  "gio",
@@ -1941,8 +1942,6 @@ dependencies = [
  "gobject-sys",
  "log",
  "num-traits",
- "regex",
- "regex-automata",
  "serde",
  "serde_core",
  "smallvec",

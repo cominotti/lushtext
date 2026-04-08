@@ -54,6 +54,33 @@ When a directory is renamed to/from an ignored name (e.g., `src` → `target`) v
 - **`OverrideBuilder::new(roots[0])` glob for multi-root** — `services/content_search.rs:100` anchors the override builder to the first root. Path-anchored globs (e.g., `src/*.rs`) may not match files under other workspace roots.
 - **Multiline selection pre-fill** — `window/search.rs:107-112` pre-fills the search query with the full multiline selection. In literal mode, newlines won't match line-oriented search, producing silent no-results.
 
+## Deferred from: code review of 1-5-match-navigation-progress-reporting (2026-04-08)
+
+- **500ms timer accumulation across rapid keystrokes** — stale `timeout_add_local_once` closures from rapid typing can set `show_progress=true` prematurely for a new search. The spec prescribes this pattern without a generation counter; adding one would be a minor improvement but not critical.
+- **Progress delay not reset on toggle-button search triggers** — toggling case/regex/whole-word re-triggers search via option `notify::active` handlers, but `connect_search_changed` doesn't fire so the 500ms delay flag is never reset. Could cause progress to show immediately for toggle-triggered searches.
+- **Duplicate (path, line) selects first matching row** — when a file has multiple matches on the same line (common with minified code), `select_match_in_results()` always highlights the first visual row in the model. Navigation index advances correctly but the visual highlight doesn't distinguish same-line matches.
+- **`set_restore_position` scroll context for matches in first 3 lines** — `line_0.saturating_sub(3)` evaluates to 0 for lines 1-3, pinning the viewport to the top. Pre-existing pattern from the open_file_at_line extraction (originally in Story 1.2's connect_open_file).
+
+## Deferred from: code review of 2-1-replace-all-with-preview-execution-undo (2026-04-08)
+
+- **flush() without sync_all() in atomic_write** — `atomic_write()` calls `flush()` but not `sync_all()` before `rename()`. On power failure or kernel panic, the temp file may be renamed but contain incomplete data. Pre-existing project pattern (json_store::save has the same issue). Both locations should eventually use `fsync()` for crash-safe writes.
+
+## Deferred from: code review of 3-1-search-history (2026-04-08)
+
+- **Mixed line ending normalization** — `detect_line_ending()` returns one ending for the whole file; `str::lines()` strips both `\r\n` and `\n`; `join()` normalizes all endings; files with mixed endings are silently changed. Story 2.1 scope.
+- **Undo backup memory unbounded** — `undo_backup` stores full raw bytes of every replaced file. Replace All across thousands of large files could consume hundreds of MB. Needs a design decision on memory limits. Story 2.1 scope.
+- **Overlapping regex matches on same line** — rightmost-first sort handles non-overlapping same-line matches correctly, but overlapping regex ranges (possible in theory) cause stale byte offset corruption after the first mutation. Extremely edge-case. Story 2.1 scope.
+- **Regex preview captures on extracted slice vs full-line** — `re.captures(&original_line[start..end])` applies regex to just the match range, which may behave differently for patterns with anchors or lookaround. Fallback handles gracefully (logs warning, keeps original). Story 2.1 scope.
+- **Blocking `fs::metadata` in `reload_affected_tabs`** — calls `std::fs::metadata()` synchronously on the main thread for each affected tab. Negligible for local disk but could block on NFS/USB with many affected files. Story 2.1 scope.
+
+## Deferred from: code review of 3-2-saved-searches-panel-state-persistence (2026-04-08)
+
+- **`atomic_write` temp file name collision** — `atomic_write()` uses `.{filename}.replace-tmp` as the fixed temp path. Concurrent Replace All or undo operations targeting the same file will race on the same temp file. Low probability (guarded at UI level) but the function itself is not concurrency-safe. Story 2.1 scope.
+- **`render_preview_markup` multi-byte highlight inaccuracy** — The byte-length arithmetic for computing the replacement highlight region in preview rows doesn't account for UTF-8 character alignment differences between original and replaced text. `ceil_char_boundary` prevents panics but the visual highlight may be off by a character for multi-byte replacements. Story 2.1 scope.
+- **Navigation index stale after Replace All** — After `apply_replacements()` writes new file content, `match_positions` still holds pre-replacement `(path, line_number)` pairs. If replacements shift line numbers (e.g., multi-line replacements), F4/Shift+F4 navigates to wrong lines until the next search clears the index. Story 1.5/2.1 scope.
+- **No guard against double Replace All** — The `connect_replace_all` callback uses `spawn_blocking_then` but no flag prevents the user from clicking Replace All again while the first is in-flight. The TOCTOU guard catches stale lines (no data corruption), but the second Replace All's empty backup replaces the first's, losing undo capability. Story 2.1 scope.
+- **CLAUDE.md `search-panel-position` GSettings key** — The CLAUDE.md Content search panel section references `search-panel-position (i)` as a GSettings key, but this key may not exist in the schema XML. Documentation-code inconsistency. Pre-existing.
+
 ## Spec 4: Draft Deletion Safety
 
 Both `wire_info_bar` discard and hamburger-menu `discard_changes` delete the draft file *before* `load_file_async` succeeds. If the backing file is deleted between confirmation and reload, the user's unsaved changes (stored in the draft) are permanently lost with no recovery path. The draft should only be deleted after a successful reload — or at minimum, the draft content should be kept until reload success is confirmed. This affects `wire_info_bar` (existing code) and `discard_changes` (new code).

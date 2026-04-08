@@ -375,6 +375,26 @@ impl LushtextWindow {
                 simple.set_enabled(has_tabs);
             }
         }
+
+        // Search navigation actions have additional conditions beyond has_tabs.
+        self.update_search_navigation_actions();
+    }
+
+    /// Enable or disable the F4/Shift+F4 search navigation actions.
+    /// Disabled when: no tabs open, search panel not visible, or no results.
+    pub fn update_search_navigation_actions(&self) {
+        let imp = self.imp();
+        let enabled = imp.tab_view.n_pages() > 0
+            && imp.search_panel_revealer.reveals_child()
+            && imp.search_panel.has_results();
+
+        for name in ["search-next-match", "search-prev-match"] {
+            if let Some(action) = self.lookup_action(name)
+                && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
+            {
+                simple.set_enabled(enabled);
+            }
+        }
     }
 
     /// Refresh the status bar and header bar for the active tab.
@@ -582,6 +602,16 @@ impl LushtextWindow {
                 .build(),
             gio::ActionEntry::builder("toggle-search-panel")
                 .activate(|window: &Self, _, _| window.toggle_search_panel())
+                .build(),
+            gio::ActionEntry::builder("search-next-match")
+                .activate(|window: &Self, _, _| {
+                    window.imp().search_panel.navigate_next_match();
+                })
+                .build(),
+            gio::ActionEntry::builder("search-prev-match")
+                .activate(|window: &Self, _, _| {
+                    window.imp().search_panel.navigate_prev_match();
+                })
                 .build(),
         ]);
 
@@ -913,6 +943,8 @@ impl LushtextWindow {
             ("win.print", "<Control>p"),
             ("win.toggle-command-palette", "<Control><Shift>p"),
             ("win.toggle-search-panel", "<Control><Shift>f"),
+            ("win.search-next-match", "F4"),
+            ("win.search-prev-match", "<Shift>F4"),
             ("win.toggle-sidebar", "F9"),
             ("win.toggle-preview-mode", "<Alt>p"),
             ("win.toggle-fullscreen", "F11"),

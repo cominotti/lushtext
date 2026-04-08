@@ -38,9 +38,18 @@ mod imp {
         #[property(get, set)]
         pub match_count: Cell<u32>,
         /// Byte offset where the match starts within `line_content` (match items only).
+        /// Clamped to the truncated display content for highlight rendering.
         pub match_start: Cell<u32>,
         /// Byte offset where the match ends within `line_content` (match items only).
+        /// Clamped to the truncated display content for highlight rendering.
         pub match_end: Cell<u32>,
+        /// Original full line content before truncation (match items only).
+        /// Used by Replace All to generate correct replacements on long lines.
+        pub original_line_content: RefCell<String>,
+        /// Unclamped match start from the search engine (match items only).
+        pub original_match_start: Cell<u32>,
+        /// Unclamped match end from the search engine (match items only).
+        pub original_match_end: Cell<u32>,
     }
 
     #[glib::object_subclass]
@@ -76,12 +85,20 @@ impl SearchResultItem {
     }
 
     /// Create a match item (child of a file group).
+    ///
+    /// `match_start`/`match_end` are clamped to the truncated display content.
+    /// `original_line_content` and `original_match_start`/`original_match_end`
+    /// store the unclamped values for Replace All correctness on long lines.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_match(
         file_path: &str,
         line_number: u32,
         line_content: &str,
         match_start: u32,
         match_end: u32,
+        original_line_content: &str,
+        original_match_start: u32,
+        original_match_end: u32,
     ) -> Self {
         let obj: Self = glib::Object::builder().build();
         let inner = obj.imp();
@@ -91,6 +108,11 @@ impl SearchResultItem {
         inner.line_content.replace(line_content.to_string());
         inner.match_start.set(match_start);
         inner.match_end.set(match_end);
+        inner
+            .original_line_content
+            .replace(original_line_content.to_string());
+        inner.original_match_start.set(original_match_start);
+        inner.original_match_end.set(original_match_end);
         obj
     }
 
@@ -124,5 +146,17 @@ impl SearchResultItem {
 
     pub fn match_end(&self) -> u32 {
         self.imp().match_end.get()
+    }
+
+    pub fn original_line_content(&self) -> String {
+        self.imp().original_line_content.borrow().clone()
+    }
+
+    pub fn original_match_start(&self) -> u32 {
+        self.imp().original_match_start.get()
+    }
+
+    pub fn original_match_end(&self) -> u32 {
+        self.imp().original_match_end.get()
     }
 }
