@@ -19,16 +19,17 @@ LushtextWindow (AdwApplicationWindow)
 ├── AdwTabBar → bound to AdwTabView
 ├── GtkRevealer [palette_revealer] → LushtextCommandPalette (Ctrl+P)
 ├── GtkPaned (horizontal)
-│   ├── [start] LushtextSidebar (always visible)
-│   │   ├── GtkScrolledWindow (outer, vexpand)
-│   │   │   └── GtkBox [sections_box]
-│   │   │       └── LushtextWorkspaceSection (per workspace)
-│   │   │           ├── GtkSeparator
-│   │   │           ├── GtkBox [header: label + add_folder_button]
-│   │   │           └── GtkScrolledWindow (inner, propagate-natural-height=true)
-│   │   │               └── GtkListView + TreeListModel
-│   │   ├── GtkSeparator
-│   │   └── GtkBox [footer: "New Workspace" label + button]
+│   ├── [start] GtkRevealer [sidebar_revealer]
+│   │   └── LushtextSidebar
+│   │       ├── GtkScrolledWindow (outer, vexpand)
+│   │       │   └── GtkBox [sections_box]
+│   │       │       └── LushtextWorkspaceSection (per workspace)
+│   │       │           ├── GtkSeparator
+│   │       │           ├── GtkBox [header: label + add_folder_button]
+│   │       │           └── GtkScrolledWindow (inner, propagate-natural-height=true)
+│   │       │               └── GtkListView + TreeListModel
+│   │       ├── GtkSeparator
+│   │       └── GtkBox [footer: "New Workspace" label + button]
 │   └── [end] GtkBox [content_box] (vertical)
 │       ├── GtkStack [content_stack] (vexpand)
 │       │   ├── "tabs": GtkPaned [preview_paned]
@@ -118,23 +119,29 @@ Window geometry and sidebar position are persisted via GSettings (not JSON sessi
 - **Keys**: `window-width` (i), `window-height` (i), `window-maximized` (b), `sidebar-position` (i)
 - **Restore**: in `window/imp.rs` `constructed()` via `set_default_size()` + `maximize()` + `set_position()`, all before `present()`
 - **Persist**: via `connect_notify_local` on `default-width`, `default-height`, `maximized` properties. Width/height only persisted when `!is_maximized()` to avoid overwriting normal dimensions with maximized size.
-- **Sidebar clamp**: `clamp_sidebar_position()` in `window/imp.rs` enforces `position <= min(width / 3, width - stack_min - handle_overhead)`. The `stack_min` is queried via `content_stack.measure(Horizontal, -1)` to prevent squeezing the content stack below its minimum (~415px from `AdwStatusPage`). `handle_overhead` is computed at construction from `paned_min - sidebar_min - stack_min` (replaces the former hardcoded 16px). Called from two places: (1) `WidgetImpl::size_allocate()` — BEFORE `parent_size_allocate` so the position is correct when GTK measures children; (2) `notify::position` on the paned — catches user drag. A `width-request=640` on the window template prevents geometrically impossible layouts. **Do not use property notifications for clamping** — `notify::default-width`/`notify::maximized` fire before the new allocation is applied, so `window.width()` returns the old stale value.
+- **Sidebar clamp**: `clamp_sidebar_position()` in `window/imp.rs` enforces `position <= min(width / 3, max_position)`. When `GtkPaned` is allocated, prefer `main_paned.max_position()` as the authoritative runtime budget and only fall back to `width - content_min - handle_overhead` before allocation. The floor comes from `content_box.measure(Horizontal, -1)`, not the inner stack, because the warning-prone constraint belongs to the actual `GtkBox` end-child GTK is measuring. `handle_overhead` still needs refresh from the live layout budget (`paned_min - sidebar_min - content_min`) after map/realization and after async sidebar mutations such as restored workspaces; do not trust construction-time measurements forever. Called from two places: (1) `WidgetImpl::size_allocate()` — BEFORE `parent_size_allocate` so the position is correct when GTK measures children; (2) `notify::position` on the paned — catches user drag. A `width-request=640` on the window template prevents geometrically impossible layouts. **Do not use property notifications for clamping** — `notify::default-width`/`notify::maximized` fire before the new allocation is applied, so `window.width()` returns the old stale value.
 
 ## Paned Sizing Defense (measure-before-allocate gap)
 
 GTK4's layout cycle runs `measure()` BEFORE `size_allocate()`. During `measure()`, `GtkPaned` distributes width based on its current `position` property, which may be stale from a previous frame. This can cause "Trying to measure GtkBox for width of X, but needs at least Y" warnings even though `size_allocate` corrects the position immediately after.
 
-**Three-layer defense pattern:**
+**Five-layer defense pattern:**
 
 1. **Pre-clamp at construction**: After restoring a paned position from GSettings in `constructed()`, immediately validate it against the restored window width and the content child's measured minimum. Store the original unclamped value in `saved_*_pos` so animations can target it at wider widths.
 
-2. **Explicit `width-request` on the paned end-child**: Set `content_box.set_width_request(stack_min)` so the paned's minimum constraint is explicit in the widget tree and visible to GTK's layout negotiation.
+2. **Explicit `width-request` on the paned end-child**: Set `content_box.set_width_request(content_min)` so the paned's minimum constraint is explicit in the widget tree and visible to GTK's layout negotiation. Refresh that width-request when the realized minimum changes (for example after map or after async children are restored).
 
-3. **`size_allocate` clamp** (existing): Runs BEFORE `parent_size_allocate` on every layout pass with the definitive allocated width. This is the primary runtime defense.
+3. **Hidden-state restore matches hidden runtime state**: If a paned child starts hidden, restore the live `position` to the same collapsed endpoint the hide animation uses (for the sidebar: 0px), while keeping `saved_*_pos` as the preferred visible width. Do not leave the live paned position expanded while the child is invisible.
 
-**Known limitation:** A one-frame warning during fast runtime window resize (many pixels per compositor frame) is a fundamental GTK limitation — `measure()` uses the previous frame's position. The pre-clamp eliminates startup warnings; the `size_allocate` clamp minimizes runtime warnings to at most one frame per resize event.
+4. **Animation-write clamping**: Clamp show targets and per-frame animation writes against the current layout budget **before** calling `GtkPaned::set_position()`. Refresh the measured budget immediately before toggling if async child population may have changed it. `size_allocate` / `notify::position` are backup guards, not the first line of defense for invalid animation ticks.
 
-**Rule for future paned widgets:** Any code that restores a `GtkPaned` position from persistent storage must pre-clamp it in the same scope, before the first layout pass. Any paned with `shrink-end-child=false` should have `width-request` set on the end-child matching the child's measured minimum.
+5. **Wrap fully hidden paned children in `GtkRevealer`**: If a pane must animate all the way to zero width, do not expose the raw complex widget tree directly as the `GtkPaned` child. Wrap it in a `GtkRevealer`, animate the paned against that wrapper, and hide the wrapper (`set_visible(false)`) once the pane reaches the collapsed endpoint. This keeps the offstage child clipped and prevents the paned from reserving handle width while hidden.
+
+6. **Keep clamps active until the wrapper actually leaves layout**: Hide actions often flip a logical visibility flag before the `GtkRevealer` wrapper is removed from the paned. Budget refreshes and runtime clamps must keep running while the wrapper's own `visible` property is still true; do not gate them solely on the logical visibility cache.
+
+7. **`size_allocate` clamp**: Runs BEFORE `parent_size_allocate` on every layout pass with the definitive allocated width. This remains the runtime backstop for drags, live resize, and any other unexpected position changes.
+
+**Rule for future paned widgets:** Any code that restores a `GtkPaned` position from persistent storage must pre-clamp it in the same scope, before the first layout pass. If the pane starts hidden, the live `position` must also be restored to the hidden endpoint used by the hide animation. Any paned with `shrink-end-child=false` should have `width-request` set on the end-child matching the child's measured minimum, and animated show paths must clamp targets before writing them.
 
 ## Entry Width Symmetry in Toggle Layouts (CRITICAL)
 

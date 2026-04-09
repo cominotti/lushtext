@@ -47,6 +47,8 @@ pub struct LushtextWindow {
     #[template_child]
     pub main_paned: TemplateChild<gtk4::Paned>,
     #[template_child]
+    pub sidebar_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
     pub sidebar: TemplateChild<LushtextSidebar>,
     #[template_child]
     pub status_bar: TemplateChild<LushtextStatusBar>,
@@ -136,9 +138,9 @@ pub struct LushtextWindow {
     /// Separate from `saved_focus` (command palette) so both overlays
     /// can independently save/restore focus.
     pub search_saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
-    /// Cached paned separator/handle overhead (pixels), computed once at
-    /// construction from `paned_min - sidebar_min - stack_min`. Used in
-    /// `clamp_sidebar_position` to replace the former hardcoded 16px buffer.
+    /// Cached paned separator/handle overhead (pixels), refreshed from the
+    /// current realized layout budget as `paned_min - sidebar_min - content_min`.
+    /// Used in `clamp_sidebar_position` to replace the former hardcoded 16px buffer.
     pub handle_overhead: Cell<i32>,
     /// Window-scoped notification bus + store.
     pub notification_bus: NotificationBus,
@@ -161,6 +163,7 @@ impl Default for LushtextWindow {
             tab_view: TemplateChild::default(),
             content_stack: TemplateChild::default(),
             main_paned: TemplateChild::default(),
+            sidebar_revealer: TemplateChild::default(),
             sidebar: TemplateChild::default(),
             status_bar: TemplateChild::default(),
             palette_revealer: TemplateChild::default(),
@@ -257,7 +260,7 @@ impl ObjectImpl for LushtextWindow {
         // GTK4's layout cycle runs measure() BEFORE size_allocate(). During
         // measure(), GtkPaned distributes width based on its current `position`,
         // which may be stale from a previous frame or GSettings restore. If the
-        // position leaves less than content_stack's minimum for content_box,
+        // position leaves less than content_box's actual minimum width,
         // GTK warns "Trying to measure GtkBox for width of X, but needs Y".
         //
         // Defense: pre-clamp the restored position against the restored window
@@ -265,30 +268,12 @@ impl ObjectImpl for LushtextWindow {
         // unclamped value is preserved in saved_sidebar_pos for the show
         // animation to use when the window is wider.
         let saved_pos = settings.int(keys::SIDEBAR_POSITION);
-        let (stack_min, _, _, _) = self
-            .content_stack
-            .measure(gtk4::Orientation::Horizontal, -1);
-        let (paned_min, _, _, _) = self.main_paned.measure(gtk4::Orientation::Horizontal, -1);
-        let (sidebar_min, _, _, _) = self.sidebar.measure(gtk4::Orientation::Horizontal, -1);
-        let handle_overhead = (paned_min - sidebar_min - stack_min).max(1);
-        self.handle_overhead.set(handle_overhead);
-
-        // Make the paned's minimum constraint explicit in the widget tree.
-        // This ensures content_box always reports stack_min as its minimum,
-        // making the paned's own size request correct for layout negotiation.
-        if stack_min > 0 {
-            self.content_box.set_width_request(stack_min);
-        }
+        update_sidebar_measurements(&obj, &self.content_box);
 
         // Pre-clamp against the restored default width (best proxy for the
         // first frame). The clamp only reduces, never grows — so if the WM
         // opens at a wider width, the position is still valid.
-        let safe_max = if w > 0 && stack_min > 0 {
-            (w / 3).min(w - stack_min - handle_overhead).max(0)
-        } else {
-            saved_pos
-        };
-        let clamped_pos = saved_pos.min(safe_max).max(0);
+        let clamped_pos = clamp_sidebar_visible_position(&obj, &self.content_box, w, saved_pos);
         self.main_paned.set_position(clamped_pos);
         self.last_sidebar_pos.set(clamped_pos);
         self.pending_sidebar_pos.set(clamped_pos);
@@ -296,7 +281,8 @@ impl ObjectImpl for LushtextWindow {
         // When the window is wider than the GSettings width, animate_sidebar
         // will use this value (which clamp_sidebar_position will then validate
         // against the actual allocated width).
-        self.saved_sidebar_pos.set(saved_pos.max(0));
+        self.saved_sidebar_pos
+            .set(saved_pos.max(SIDEBAR_COLLAPSED_POSITION));
 
         // --- Persist window geometry incrementally via notify signals ---
         // connect_notify_local (not connect_notify) because the closure captures
@@ -328,16 +314,30 @@ impl ObjectImpl for LushtextWindow {
             });
         }
 
+        // Refresh the live layout budget once the widgets are mapped. GtkPaned's
+        // realized handle width can differ from the pre-map measurement by 1px,
+        // which is enough to reintroduce the `GtkBox ... needs at least ...`
+        // warning during the first toggle on some themes/layouts.
+        {
+            let window_weak = obj.downgrade();
+            obj.connect_map(move |_| {
+                if let Some(window) = window_weak.upgrade() {
+                    refresh_sidebar_layout_budget(&window);
+                }
+            });
+        }
+
         // --- Restore sidebar visibility ---
         let sidebar_vis = settings.boolean(keys::SIDEBAR_VISIBLE);
         self.sidebar_visible.set(sidebar_vis);
+        self.sidebar_revealer.set_transition_duration(0);
+        self.sidebar_revealer.set_visible(sidebar_vis);
+        self.sidebar_revealer.set_reveal_child(sidebar_vis);
         if !sidebar_vis {
-            // set_visible(false) makes the paned ignore the start child,
-            // giving all space to the editor. saved_sidebar_pos is already
-            // set to the original unclamped position above — the show
-            // animation will use it (and clamp_sidebar_position will
-            // validate it against the actual allocated width).
-            self.sidebar.set_visible(false);
+            // Mirror the post-hide runtime state on startup so the first
+            // toggle-on animates from the same collapsed endpoint instead of
+            // popping in at the already-restored width.
+            self.main_paned.set_position(SIDEBAR_COLLAPSED_POSITION);
         }
 
         // --- Restore preview pane position ---
@@ -378,8 +378,12 @@ impl ObjectImpl for LushtextWindow {
                         clamp_sidebar_position(
                             &window,
                             paned,
-                            &window.imp().content_stack,
-                            window.width(),
+                            &window.imp().content_box,
+                            if paned.width() > 0 {
+                                paned.width()
+                            } else {
+                                window.width()
+                            },
                         );
                     }
                 });
@@ -501,17 +505,16 @@ impl ObjectImpl for LushtextWindow {
                 return glib::Propagation::Stop;
             }
             // Show save-changes dialog; close_page_finish is called in the callback.
-            if let Some(window) = window_weak.upgrade() {
-                let tab_view_weak = tab_view.downgrade();
-                let page_weak = page.downgrade();
-                window.confirm_close_tab(page, editor, move |confirmed| {
-                    if let Some(tab_view) = tab_view_weak.upgrade()
-                        && let Some(page) = page_weak.upgrade()
-                    {
-                        tab_view.close_page_finish(&page, confirmed);
-                    }
-                });
-            }
+            let Some(window) = window_weak.upgrade() else {
+                tab_view.close_page_finish(page, false);
+                return glib::Propagation::Stop;
+            };
+            let tab_view = tab_view.clone();
+            let page = page.clone();
+            let page_for_finish = page.clone();
+            window.confirm_close_tab(&page, editor, move |confirmed| {
+                tab_view.close_page_finish(&page_for_finish, confirmed);
+            });
             glib::Propagation::Stop // Always inhibit — close_page_finish decides
         });
 
@@ -576,7 +579,7 @@ impl WidgetImpl for LushtextWindow {
         // parent_size_allocate ensures the paned position is already correct
         // when GTK measures the content stack, preventing "needs at least N"
         // measurement warnings.
-        clamp_sidebar_position(&self.obj(), &self.main_paned, &self.content_stack, width);
+        clamp_sidebar_position(&self.obj(), &self.main_paned, &self.content_box, width);
         // Clamp preview pane symmetrically (max 1/3 of window from right).
         self.obj().clamp_preview_position(width);
         // Clamp search panel results height (max 1/3 of window height).
@@ -626,6 +629,103 @@ impl WindowImpl for LushtextWindow {
 impl ApplicationWindowImpl for LushtextWindow {}
 impl AdwApplicationWindowImpl for LushtextWindow {}
 
+pub const SIDEBAR_COLLAPSED_POSITION: i32 = 0;
+
+fn sidebar_max_position(
+    window: &super::LushtextWindow,
+    content_box: &gtk4::Box,
+    window_width: i32,
+) -> Option<i32> {
+    if window_width <= 0 {
+        return None;
+    }
+    let imp = window.imp();
+    if imp.main_paned.width() > 0 {
+        let allocated_width = imp.main_paned.width();
+        let paned_max = imp.main_paned.max_position();
+        if paned_max > 0 {
+            return Some((allocated_width / 3).min(paned_max).max(0));
+        }
+    }
+    // Query the end child's actual minimum width so the sidebar never squeezes it
+    // below that floor. Re-measure the paned handle budget from the live layout
+    // instead of trusting construction-time values; restored workspaces can
+    // change the realized geometry by 1px, which is enough to trigger GTK's
+    // width warning if we keep a stale handle budget.
+    let content_min = measure_content_box_min(content_box);
+    let handle_overhead = measure_sidebar_handle_overhead(window, content_min);
+    let stack_floor = window_width - content_min - handle_overhead;
+    Some((window_width / 3).min(stack_floor).max(0))
+}
+
+fn measure_content_box_min(content_box: &gtk4::Box) -> i32 {
+    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
+    content_min
+}
+
+fn measure_sidebar_handle_overhead(window: &super::LushtextWindow, content_min: i32) -> i32 {
+    let imp = window.imp();
+    let (paned_min, _, _, _) = imp.main_paned.measure(gtk4::Orientation::Horizontal, -1);
+    let (sidebar_min, _, _, _) = imp
+        .sidebar_revealer
+        .measure(gtk4::Orientation::Horizontal, -1);
+    let handle_overhead = (paned_min - sidebar_min - content_min).max(1);
+    imp.handle_overhead.set(handle_overhead);
+    handle_overhead
+}
+
+fn update_sidebar_measurements(window: &super::LushtextWindow, content_box: &gtk4::Box) -> i32 {
+    let content_min = measure_content_box_min(content_box);
+    if content_min > 0 && content_box.width_request() != content_min {
+        content_box.set_width_request(content_min);
+    }
+    measure_sidebar_handle_overhead(window, content_min)
+}
+
+fn sidebar_affects_layout(imp: &LushtextWindow) -> bool {
+    imp.sidebar_visible.get() || imp.sidebar_revealer.property::<bool>("visible")
+}
+
+pub(super) fn refresh_sidebar_layout_budget(window: &super::LushtextWindow) {
+    let imp = window.imp();
+    update_sidebar_measurements(window, &imp.content_box);
+    // Keep clamping active while the revealer is still participating in layout.
+    // The toggle action flips `sidebar_visible` before the hide animation starts,
+    // so the cache alone is not a reliable indicator that the sidebar is fully
+    // offstage yet.
+    if !sidebar_affects_layout(imp) {
+        return;
+    }
+    let budget_width = if imp.main_paned.width() > 0 {
+        imp.main_paned.width()
+    } else {
+        window.width()
+    };
+    let clamped = clamp_sidebar_visible_position(
+        window,
+        &imp.content_box,
+        budget_width,
+        imp.main_paned.position(),
+    );
+    if clamped != imp.main_paned.position() {
+        imp.main_paned.set_position(clamped);
+    }
+}
+
+/// Clamp a desired *visible* sidebar position before it is written into
+/// `GtkPaned`. This is safe for animation targets and animation ticks.
+pub fn clamp_sidebar_visible_position(
+    window: &super::LushtextWindow,
+    content_box: &gtk4::Box,
+    window_width: i32,
+    desired: i32,
+) -> i32 {
+    match sidebar_max_position(window, content_box, window_width) {
+        Some(max) => desired.min(max).max(SIDEBAR_COLLAPSED_POSITION),
+        None => desired.max(SIDEBAR_COLLAPSED_POSITION),
+    }
+}
+
 /// Clamp the sidebar pane position to at most 1/3 of the window width
 /// and ensure the end child (content stack) keeps at least its minimum width.
 /// Uses a generation-counter debounce so resize-time clamping stays immediate
@@ -633,22 +733,16 @@ impl AdwApplicationWindowImpl for LushtextWindow {}
 pub fn clamp_sidebar_position(
     window: &super::LushtextWindow,
     paned: &gtk4::Paned,
-    content_stack: &gtk4::Stack,
+    content_box: &gtk4::Box,
     window_width: i32,
 ) {
-    if window_width <= 0 {
-        return;
-    }
-    if !window.imp().sidebar_visible.get() {
-        return;
-    }
     let imp = window.imp();
-    // Query the stack's minimum width so the sidebar never squeezes it
-    // below that floor. handle_overhead is measured at construction time
-    // (paned_min - sidebar_min - stack_min) instead of the former magic 16px.
-    let (stack_min, _, _, _) = content_stack.measure(gtk4::Orientation::Horizontal, -1);
-    let stack_floor = window_width - stack_min - imp.handle_overhead.get();
-    let max = (window_width / 3).min(stack_floor);
+    if !sidebar_affects_layout(imp) {
+        return;
+    }
+    let Some(max) = sidebar_max_position(window, content_box, window_width) else {
+        return;
+    };
     let current = paned.position();
     let clamped = current.min(max).max(0);
     if clamped != current {

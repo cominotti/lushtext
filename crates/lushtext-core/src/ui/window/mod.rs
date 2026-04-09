@@ -18,7 +18,7 @@ mod session;
 // Zoom controls: hamburger menu widget and window actions.
 mod zoom;
 
-pub use imp::clamp_sidebar_position;
+pub use imp::{SIDEBAR_COLLAPSED_POSITION, clamp_sidebar_position, clamp_sidebar_visible_position};
 
 use crate::config::keys;
 use crate::model::draft::DraftEntry;
@@ -794,12 +794,9 @@ impl LushtextWindow {
 
     /// Animate the sidebar show/hide by sliding the paned divider.
     ///
-    /// `shrink-start-child` is temporarily set to `true` during the animation
-    /// so the divider can slide past the sidebar's natural minimum width.
-    /// The target is 1px (not 0) to avoid zero-width allocations that trigger
-    /// pixman "Invalid rectangle" warnings. `connect_done` calls
-    /// `set_visible(false)` for the final 1→0 snap and restores
-    /// `shrink-start-child=false` so the user can't drag below minimum.
+    /// The hidden endpoint is `SIDEBAR_COLLAPSED_POSITION`; the `GtkRevealer`
+    /// wrapper keeps that zero-width hidden state legal while the raw sidebar
+    /// widget remains clipped offstage.
     fn animate_sidebar(&self, show: bool) {
         let imp = self.imp();
 
@@ -817,54 +814,96 @@ impl LushtextWindow {
         };
 
         let paned = &imp.main_paned;
-        paned.set_shrink_start_child(true);
 
         let (from, to) = if show {
-            let target = imp.saved_sidebar_pos.get();
-            imp.sidebar.set_visible(true);
+            if !imp.sidebar_revealer.reveals_child() {
+                paned.set_position(0);
+            }
+            imp.sidebar_revealer.set_visible(true);
+            imp.sidebar_revealer.set_reveal_child(true);
+            imp::refresh_sidebar_layout_budget(self);
+            let budget_width = if paned.width() > 0 {
+                paned.width()
+            } else {
+                self.width()
+            };
+            let target = imp::clamp_sidebar_visible_position(
+                self,
+                &imp.content_box,
+                budget_width,
+                imp.saved_sidebar_pos.get(),
+            );
             (paned.position() as f64, target as f64)
         } else {
+            imp::refresh_sidebar_layout_budget(self);
             let current = paned.position();
             // Only save the resting position when not interrupting an active
             // animation — otherwise keep the previously saved value.
             if !was_animating {
                 imp.saved_sidebar_pos.set(current);
             }
-            // Animate to 1px (not 0) — zero-width allocations cause pixman
-            // "Invalid rectangle" warnings that corrupt paned state.
-            (current as f64, 1.0)
+            imp.sidebar_revealer.set_reveal_child(false);
+            (current as f64, SIDEBAR_COLLAPSED_POSITION as f64)
         };
 
         let paned_weak = paned.downgrade();
+        let window_weak = if show { Some(self.downgrade()) } else { None };
         let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
             if let Some(p) = paned_weak.upgrade() {
-                p.set_position(value as i32);
+                let next = if let Some(window) = window_weak.as_ref().and_then(|w| w.upgrade()) {
+                    let budget_width = if window.imp().main_paned.width() > 0 {
+                        window.imp().main_paned.width()
+                    } else {
+                        window.width()
+                    };
+                    imp::clamp_sidebar_visible_position(
+                        &window,
+                        &window.imp().content_box,
+                        budget_width,
+                        value as i32,
+                    )
+                } else {
+                    value as i32
+                };
+                p.set_position(next);
             }
         });
 
+        // The custom widget harness does not drive Adw's frame clock reliably
+        // enough to observe timed paned animations, so make them immediate there.
+        let duration_ms = if std::env::var_os("LUSHTEXT_WIDGET_CHILD").is_some() {
+            0
+        } else {
+            250
+        };
+        if duration_ms == 0 {
+            paned.set_position(to as i32);
+            if !show {
+                imp.sidebar_revealer.set_visible(false);
+            }
+            imp.sidebar_animation.replace(None);
+            return;
+        }
         let animation = libadwaita::TimedAnimation::new(
             paned.upcast_ref::<gtk4::Widget>(),
             from,
             to,
-            250,
+            duration_ms,
             anim_target,
         );
         animation.set_easing(libadwaita::Easing::EaseOutCubic);
 
-        // After animation completes: hide sidebar (if closing) and restore
-        // shrink constraint so the user can't drag below minimum.
-        let sidebar_weak = if show {
+        // After animation completes: fully remove the hidden revealer wrapper
+        // from the paned so GTK doesn't reserve handle width offstage.
+        let sidebar_revealer_weak = if show {
             None
         } else {
-            Some(imp.sidebar.downgrade())
+            Some(imp.sidebar_revealer.downgrade())
         };
-        let paned_weak = paned.downgrade();
         animation.connect_done(move |_| {
-            if let Some(sidebar) = sidebar_weak.as_ref().and_then(|w| w.upgrade()) {
-                sidebar.set_visible(false);
-            }
-            if let Some(p) = paned_weak.upgrade() {
-                p.set_shrink_start_child(false);
+            if let Some(sidebar_revealer) = sidebar_revealer_weak.as_ref().and_then(|w| w.upgrade())
+            {
+                sidebar_revealer.set_visible(false);
             }
         });
 

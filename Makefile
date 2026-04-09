@@ -19,18 +19,20 @@
 
 .DEFAULT_GOAL := help
 
-# Test runner: prefer cargo-nextest for per-test process isolation and parallelism.
-# Falls back to cargo test when nextest is not installed.
+# Test runner: prefer cargo-nextest for lib/integration tests. Widget tests use
+# a custom harness and must run via cargo test.
 HAS_NEXTEST := $(shell command -v cargo-nextest 2>/dev/null && echo 1)
 ifdef HAS_NEXTEST
 CARGO_TEST        = cargo nextest run
+CARGO_TEST_UNIT   = cargo nextest run --lib
 CARGO_TEST_INT    = cargo nextest run --test integration
-CARGO_TEST_WIDGET = cargo nextest run --test widget
+RUN_WIDGET_WITH_NEXTEST = 1
 else
 CARGO_TEST        = cargo test
+CARGO_TEST_UNIT   = cargo test --lib
 CARGO_TEST_INT    = cargo test --test integration
-CARGO_TEST_WIDGET = cargo test --test widget
 endif
+CARGO_TEST_WIDGET = cargo test --test widget
 
 # Build the project (release, optimized)
 build:
@@ -51,11 +53,14 @@ run: build-debug
 test:
 	@echo "Running all tests..."
 	$(CARGO_TEST)
+ifdef RUN_WIDGET_WITH_NEXTEST
+	$(CARGO_TEST_WIDGET)
+endif
 
 # Unit tests only (fast, no I/O)
 test-unit:
 	@echo "Running unit tests..."
-	$(CARGO_TEST) --lib
+	$(CARGO_TEST_UNIT)
 
 # Integration tests only
 test-int:

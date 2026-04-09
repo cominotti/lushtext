@@ -37,6 +37,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     let window_weak = window.downgrade();
     imp.sidebar.connect_workspace_changed(move || {
         if let Some(window) = window_weak.upgrade() {
+            super::imp::refresh_sidebar_layout_budget(&window);
             let roots = window.imp().sidebar.workspace_roots();
             window.imp().search_panel.set_workspace_roots(roots);
             // Also rebuild the command palette file index — the sidebar uses a

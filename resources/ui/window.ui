@@ -68,7 +68,14 @@
 
                 <!-- Left: File tree sidebar -->
                 <property name="start-child">
-                  <object class="LushtextSidebar" id="sidebar"/>
+                  <object class="GtkRevealer" id="sidebar_revealer">
+                    <property name="transition-type">slide-right</property>
+                    <property name="transition-duration">250</property>
+                    <property name="reveal-child">true</property>
+                    <property name="child">
+                      <object class="LushtextSidebar" id="sidebar"/>
+                    </property>
+                  </object>
                 </property>
 
                 <!-- Right: Content box wrapping stack + search panel -->

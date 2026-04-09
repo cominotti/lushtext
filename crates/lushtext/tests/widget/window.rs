@@ -8,19 +8,67 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::config::keys;
 use lushtext_core::model::draft::DraftEntry;
-use lushtext_core::services::{draft_service, json_store};
+use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile};
+use lushtext_core::services::{draft_service, json_store, workspace_manager};
 use lushtext_core::services::notifications::{
     InlineActionNotification, InlineNotificationStyle, NOTIFICATION_TIMEOUT, NotificationOwner,
     NotificationSeverity, NotificationSurface,
 };
 use lushtext_core::ui::editor_page::LushtextEditorPage;
-use lushtext_core::ui::window::LushtextWindow;
-use lushtext_core::ui::window::clamp_sidebar_position;
+use lushtext_core::ui::window::{
+    LushtextWindow, SIDEBAR_COLLAPSED_POSITION, clamp_sidebar_position,
+    clamp_sidebar_visible_position,
+};
 use std::time::{Duration, Instant};
 
 /// Create a window attached to a test application (not registered with D-Bus).
 fn test_window() -> LushtextWindow {
     crate::common::test_window()
+}
+
+fn test_window_with_sidebar_state(visible: bool, position: i32) -> LushtextWindow {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SIDEBAR_VISIBLE, visible)
+        .expect("set sidebar-visible");
+    settings
+        .set_int(keys::SIDEBAR_POSITION, position)
+        .expect("set sidebar-position");
+    test_window()
+}
+
+fn seed_restored_workspaces() -> tempfile::TempDir {
+    ensure_gtk_init();
+    let roots_dir = tempfile::tempdir().expect("workspace roots tempdir");
+    let mut workspaces = WorkspacesFile::default();
+
+    for (idx, name) in ["one", "two", "three"].into_iter().enumerate() {
+        let path = roots_dir.path().join(name);
+        std::fs::create_dir_all(&path).expect("create workspace root");
+        workspaces.workspaces.push(WorkspaceConfig {
+            id: WorkspaceId::new(format!("ws-{idx}")),
+            name: name.to_string(),
+            entries: vec![WorkspaceEntry::Directory { path }],
+        });
+    }
+
+    workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save workspaces.json");
+    roots_dir
+}
+
+fn wait_for_workspace_roots(window: &LushtextWindow, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if window.imp().sidebar.workspace_roots().len() == expected {
+            return;
+        }
+        flush_after_delay(Duration::from_millis(20));
+    }
+    panic!(
+        "expected {expected} restored workspace roots, got {}",
+        window.imp().sidebar.workspace_roots().len()
+    );
 }
 
 /// Drain all pending events from the GTK main loop.
@@ -30,6 +78,25 @@ fn flush_events() {
 
 fn flush_after_delay(delay: std::time::Duration) {
     std::thread::sleep(delay);
+    flush_events();
+}
+
+fn wait_for_paned_position(window: &LushtextWindow, expected: i32) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        if window.imp().main_paned.position() == expected {
+            return;
+        }
+        flush_after_delay(Duration::from_millis(20));
+    }
+    panic!(
+        "expected paned position {expected}, got {}",
+        window.imp().main_paned.position()
+    );
+}
+
+fn present_window(window: &LushtextWindow) {
+    window.present();
     flush_events();
 }
 
@@ -678,7 +745,7 @@ fn test_clamp_noop_when_within_limit() {
     paned.set_position(300);
 
     // Window width 1200 → max 400. Position 300 is fine.
-    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_box, 1200);
     assert_eq!(paned.position(), 300);
 }
 
@@ -690,7 +757,7 @@ fn test_clamp_reduces_when_over_limit() {
     paned.set_position(500);
 
     // Window width 1200 → max 400. Position 500 exceeds.
-    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_box, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -702,7 +769,7 @@ fn test_clamp_at_exact_limit() {
     paned.set_position(400);
 
     // Window width 1200 → max 400. Position 400 is exactly at limit.
-    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_box, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -714,7 +781,7 @@ fn test_clamp_noop_when_window_width_zero() {
     paned.set_position(500);
 
     // Width 0 = unrealized window. Should not clamp.
-    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 0);
+    clamp_sidebar_position(&window, paned, &window.imp().content_box, 0);
     assert_eq!(paned.position(), 500);
 }
 
@@ -728,7 +795,7 @@ fn test_clamp_simulates_unmaximize_scenario() {
     paned.set_position(640);
 
     // Window un-maximizes to 1200px — sidebar must be clamped to 400
-    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_box, 1200);
     assert_eq!(paned.position(), 400);
 }
 
@@ -740,7 +807,7 @@ fn test_clamp_persists_to_gsettings() {
     let settings = &window.imp().settings;
     paned.set_position(350);
 
-    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_box, 1200);
     flush_after_delay(std::time::Duration::from_millis(250));
     assert_eq!(settings.int(keys::SIDEBAR_POSITION), 350);
 }
@@ -754,62 +821,62 @@ fn test_clamp_persists_clamped_value_to_gsettings() {
     paned.set_position(600);
 
     // Clamp to 400, should persist 400 not 600
-    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 1200);
+    clamp_sidebar_position(&window, paned, &window.imp().content_box, 1200);
     flush_after_delay(std::time::Duration::from_millis(250));
     assert_eq!(settings.int(keys::SIDEBAR_POSITION), 400);
 }
 
-// --- Sidebar clamp: stack-minimum-aware floor (regression for GtkStack measurement warning) ---
+// --- Sidebar clamp: content-box floor (regression for GtkBox measurement warning) ---
 
 #[test]
-fn test_clamp_respects_stack_minimum_at_narrow_width() {
+fn test_clamp_respects_content_box_minimum_at_narrow_width() {
     ensure_gtk_init();
     let window = test_window();
     let paned = &window.imp().main_paned;
-    let stack = &window.imp().content_stack;
+    let content_box = &window.imp().content_box;
+    let handle_overhead = window.imp().handle_overhead.get();
 
-    // Query the actual stack minimum (driven by AdwStatusPage internals).
-    let (stack_min, _, _, _) = stack.measure(gtk4::Orientation::Horizontal, -1);
-    assert!(stack_min > 0, "stack should have a non-zero minimum width");
+    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
+    assert!(
+        content_min > 0,
+        "content_box should have a non-zero minimum width"
+    );
 
-    // Pick a window width where 1/3 would leave less than stack_min + 16
-    // for the content. E.g., if stack_min=415, width=640 → 1/3=213,
-    // but stack_floor=640-415-16=209, so stack_floor wins.
-    let narrow_width = stack_min + 200 + 16; // sidebar(200) + stack + buffer
+    // Pick a window width where 1/3 would leave less than content_min plus
+    // the measured paned handle overhead.
+    let narrow_width = content_min + 200 + handle_overhead;
     let one_third = narrow_width / 3;
-    let stack_floor = narrow_width - stack_min - 16;
+    let content_floor = narrow_width - content_min - handle_overhead;
 
-    // Only meaningful if the stack floor is tighter than 1/3.
-    if stack_floor < one_third {
+    if content_floor < one_third {
         paned.set_position(one_third + 50); // way over both limits
-        clamp_sidebar_position(&window, paned, stack, narrow_width);
+        clamp_sidebar_position(&window, paned, content_box, narrow_width);
         assert!(
-            paned.position() <= stack_floor,
-            "position {} should be clamped to stack floor {}",
+            paned.position() <= content_floor,
+            "position {} should be clamped to content floor {}",
             paned.position(),
-            stack_floor,
+            content_floor,
         );
     }
 }
 
 #[test]
-fn test_clamp_uses_one_third_when_it_is_tighter_than_stack_floor() {
+fn test_clamp_uses_one_third_when_it_is_tighter_than_content_floor() {
     ensure_gtk_init();
     let window = test_window();
     let paned = &window.imp().main_paned;
-    let stack = &window.imp().content_stack;
+    let content_box = &window.imp().content_box;
+    let handle_overhead = window.imp().handle_overhead.get();
 
-    // At 1200px, 1/3 = 400, stack_floor = 1200 - stack_min - 16 ≈ 769.
-    // The 1/3 rule should dominate.
-    let (stack_min, _, _, _) = stack.measure(gtk4::Orientation::Horizontal, -1);
-    let stack_floor = 1200 - stack_min - 16;
+    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
+    let content_floor = 1200 - content_min - handle_overhead;
     assert!(
-        400 < stack_floor,
-        "precondition: at 1200px, 1/3 (400) should be tighter than stack floor ({stack_floor})"
+        400 < content_floor,
+        "precondition: at 1200px, 1/3 (400) should be tighter than content floor ({content_floor})"
     );
 
     paned.set_position(500);
-    clamp_sidebar_position(&window, paned, stack, 1200);
+    clamp_sidebar_position(&window, paned, content_box, 1200);
     assert_eq!(paned.position(), 400); // 1/3 rule wins
 }
 
@@ -818,11 +885,11 @@ fn test_clamp_never_goes_negative() {
     ensure_gtk_init();
     let window = test_window();
     let paned = &window.imp().main_paned;
-    let stack = &window.imp().content_stack;
+    let content_box = &window.imp().content_box;
 
-    // Extremely narrow width where stack_floor would be negative.
+    // Extremely narrow width where the content floor would be negative.
     paned.set_position(100);
-    clamp_sidebar_position(&window, paned, stack, 50);
+    clamp_sidebar_position(&window, paned, content_box, 50);
     assert!(
         paned.position() >= 0,
         "position should never be negative, got {}",
@@ -846,15 +913,15 @@ fn test_clamp_with_wrong_width_permanently_destroys_position() {
     ensure_gtk_init();
     let window = test_window();
     let paned = &window.imp().main_paned;
-    let stack = &window.imp().content_stack;
+    let content_box = &window.imp().content_box;
 
     // Start with a position valid for 1200px (max = 400).
     paned.set_position(350);
-    clamp_sidebar_position(&window, paned, stack, 1200);
+    clamp_sidebar_position(&window, paned, content_box, 1200);
     assert_eq!(paned.position(), 350, "350 is valid for 1200px");
 
     // Simulate what a measure() override would do: clamp at minimum width.
-    clamp_sidebar_position(&window, paned, stack, 640);
+    clamp_sidebar_position(&window, paned, content_box, 640);
     let destroyed = paned.position();
     assert!(
         destroyed < 350,
@@ -862,7 +929,7 @@ fn test_clamp_with_wrong_width_permanently_destroys_position() {
     );
 
     // Now clamp at the actual width — position is stuck.
-    clamp_sidebar_position(&window, paned, stack, 1200);
+    clamp_sidebar_position(&window, paned, content_box, 1200);
     assert_eq!(
         paned.position(),
         destroyed,
@@ -878,14 +945,14 @@ fn test_clamp_stable_across_repeated_calls_at_same_width() {
     ensure_gtk_init();
     let window = test_window();
     let paned = &window.imp().main_paned;
-    let stack = &window.imp().content_stack;
+    let content_box = &window.imp().content_box;
 
     paned.set_position(300);
-    clamp_sidebar_position(&window, paned, stack, 1200);
+    clamp_sidebar_position(&window, paned, content_box, 1200);
     let first = paned.position();
 
     for _ in 0..10 {
-        clamp_sidebar_position(&window, paned, stack, 1200);
+        clamp_sidebar_position(&window, paned, content_box, 1200);
     }
     assert_eq!(
         paned.position(),
@@ -901,11 +968,11 @@ fn test_clamp_at_actual_width_preserves_valid_position() {
     ensure_gtk_init();
     let window = test_window();
     let paned = &window.imp().main_paned;
-    let stack = &window.imp().content_stack;
+    let content_box = &window.imp().content_box;
 
     // 200 is well under max(400) for 1200px.
     paned.set_position(200);
-    clamp_sidebar_position(&window, paned, stack, 1200);
+    clamp_sidebar_position(&window, paned, content_box, 1200);
     assert_eq!(
         paned.position(),
         200,
@@ -913,11 +980,11 @@ fn test_clamp_at_actual_width_preserves_valid_position() {
     );
 
     // Shrink to 900px (max = 300). 200 still valid.
-    clamp_sidebar_position(&window, paned, stack, 900);
+    clamp_sidebar_position(&window, paned, content_box, 900);
     assert_eq!(paned.position(), 200, "200 still valid at 900px");
 
     // Shrink to 700px (max = 233). 200 is now too large.
-    clamp_sidebar_position(&window, paned, stack, 700);
+    clamp_sidebar_position(&window, paned, content_box, 700);
     assert!(
         paned.position() <= 233,
         "position should be clamped at 700px, got {}",
@@ -2033,7 +2100,7 @@ fn test_clamp_noop_when_sidebar_hidden() {
 
     // Clamp should be a no-op when sidebar is hidden
     let pos_after_hide = paned.position();
-    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 600);
+    clamp_sidebar_position(&window, paned, &window.imp().content_box, 600);
     assert_eq!(paned.position(), pos_after_hide);
 }
 
@@ -2167,12 +2234,12 @@ fn test_clamp_still_works_after_animation_cycle() {
 
     // Clamp should still enforce 1/3 max on a 600px window
     paned.set_position(500);
-    clamp_sidebar_position(&window, paned, &window.imp().content_stack, 600);
+    clamp_sidebar_position(&window, paned, &window.imp().content_box, 600);
     assert_eq!(paned.position(), 200); // 600 / 3 = 200
 }
 
 #[test]
-fn test_hide_animation_targets_1px_not_zero() {
+fn test_hide_animation_targets_collapsed_endpoint() {
     ensure_gtk_init();
     let window = test_window();
     let paned = &window.imp().main_paned;
@@ -2180,26 +2247,225 @@ fn test_hide_animation_targets_1px_not_zero() {
 
     activate_action(&window, "toggle-sidebar");
 
-    // Animation completes instantly in headless tests. Position should be 1
-    // (not 0) to avoid zero-width pixman "Invalid rectangle" warnings.
-    // set_visible(false) in connect_done handles the final 1→0 snap.
-    assert_eq!(paned.position(), 1);
+    // Animation completes instantly in headless tests. Hidden state should land
+    // on the shared collapsed endpoint used by startup-hidden restore too.
+    assert_eq!(paned.position(), SIDEBAR_COLLAPSED_POSITION);
+}
+
+#[test]
+fn test_startup_hidden_sidebar_restores_collapsed_runtime_position() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(false, 275);
+
+    assert!(!sidebar_visible(&window));
+    assert_eq!(
+        window.imp().main_paned.position(),
+        SIDEBAR_COLLAPSED_POSITION,
+        "hidden startup should restore the live paned state to the collapsed endpoint"
+    );
+    assert_eq!(window.imp().saved_sidebar_pos.get(), 275);
+    assert_eq!(window.imp().settings.int(keys::SIDEBAR_POSITION), 275);
+}
+
+#[test]
+fn test_first_show_after_hidden_startup_restores_saved_sidebar_width() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(false, 275);
+
+    activate_action(&window, "toggle-sidebar");
+
+    assert!(sidebar_visible(&window));
+    assert_eq!(window.imp().main_paned.position(), 275);
+}
+
+#[test]
+fn test_hidden_startup_sidebar_cycle_after_present_preserves_positions() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(false, 275);
+    let paned = &window.imp().main_paned;
+
+    // Realize and allocate the window so this exercises the actual GtkPaned
+    // layout path that previously emitted measurement warnings.
+    present_window(&window);
+    assert_eq!(paned.position(), SIDEBAR_COLLAPSED_POSITION);
+
+    activate_action(&window, "toggle-sidebar");
+    wait_for_paned_position(&window, 275);
+    assert!(sidebar_visible(&window));
+    assert_eq!(paned.position(), 275);
+
+    activate_action(&window, "toggle-sidebar");
+    wait_for_paned_position(&window, SIDEBAR_COLLAPSED_POSITION);
+    assert!(!sidebar_visible(&window));
+    assert_eq!(paned.position(), SIDEBAR_COLLAPSED_POSITION);
+
+    activate_action(&window, "toggle-sidebar");
+    wait_for_paned_position(&window, 275);
+    assert!(sidebar_visible(&window));
+    assert_eq!(paned.position(), 275);
+}
+
+#[test]
+fn test_workspace_restore_refreshes_sidebar_handle_budget_after_present() {
+    ensure_gtk_init();
+    let _roots_dir = seed_restored_workspaces();
+    let window = test_window();
+
+    present_window(&window);
+    wait_for_workspace_roots(&window, 3);
+
+    let content_box = &window.imp().content_box;
+    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
+    let (sidebar_min, _, _, _) = window.imp().sidebar.measure(gtk4::Orientation::Horizontal, -1);
+    let (paned_min, _, _, _) = window
+        .imp()
+        .main_paned
+        .measure(gtk4::Orientation::Horizontal, -1);
+    let expected_handle = (paned_min - sidebar_min - content_min).max(1);
+
+    assert_eq!(
+        window.imp().handle_overhead.get(),
+        expected_handle,
+        "workspace restore should refresh the cached paned handle budget against the realized layout",
+    );
+}
+
+#[test]
+fn test_hidden_startup_sidebar_cycle_after_present_with_restored_workspaces_preserves_positions() {
+    ensure_gtk_init();
+    let _roots_dir = seed_restored_workspaces();
+    let window = test_window_with_sidebar_state(false, 275);
+    let paned = &window.imp().main_paned;
+
+    present_window(&window);
+    wait_for_workspace_roots(&window, 3);
+    assert_eq!(paned.position(), SIDEBAR_COLLAPSED_POSITION);
+
+    activate_action(&window, "toggle-sidebar");
+    wait_for_paned_position(&window, 275);
+    assert!(sidebar_visible(&window));
+    assert_eq!(paned.position(), 275);
+
+    activate_action(&window, "toggle-sidebar");
+    wait_for_paned_position(&window, SIDEBAR_COLLAPSED_POSITION);
+    assert!(!sidebar_visible(&window));
+    assert_eq!(paned.position(), SIDEBAR_COLLAPSED_POSITION);
+
+    activate_action(&window, "toggle-sidebar");
+    wait_for_paned_position(&window, 275);
+    assert!(sidebar_visible(&window));
+    assert_eq!(paned.position(), 275);
+}
+
+#[test]
+fn test_hide_after_restored_workspaces_clamps_stale_visible_position_before_saving() {
+    ensure_gtk_init();
+    let _roots_dir = seed_restored_workspaces();
+    let window = test_window_with_sidebar_state(true, 275);
+    let paned = &window.imp().main_paned;
+    let content_box = &window.imp().content_box;
+
+    present_window(&window);
+    wait_for_workspace_roots(&window, 3);
+
+    let budget_width = if paned.width() > 0 {
+        paned.width()
+    } else {
+        window.width()
+    };
+    let max = clamp_sidebar_visible_position(&window, content_box, budget_width, i32::MAX);
+    let stale = max + 1;
+
+    // Reproduce the hide-time bug: the action flips the logical visibility flag
+    // before the revealer leaves layout, so a stale restored position can slip
+    // into the hide path if clamping keys only off `sidebar_visible`.
+    window.imp().sidebar_visible.set(false);
+    paned.set_position(stale);
+
+    activate_action(&window, "toggle-sidebar");
+
+    assert_eq!(
+        window.imp().saved_sidebar_pos.get(),
+        max,
+        "hide should clamp the current visible position before saving it while the sidebar revealer is still on-screen",
+    );
+    assert_eq!(paned.position(), SIDEBAR_COLLAPSED_POSITION);
+}
+
+#[test]
+fn test_hidden_startup_hide_after_first_show_with_restored_workspaces_clamps_stale_position() {
+    ensure_gtk_init();
+    let _roots_dir = seed_restored_workspaces();
+    let window = test_window_with_sidebar_state(false, 275);
+    let paned = &window.imp().main_paned;
+    let content_box = &window.imp().content_box;
+
+    present_window(&window);
+    wait_for_workspace_roots(&window, 3);
+    assert_eq!(paned.position(), SIDEBAR_COLLAPSED_POSITION);
+
+    activate_action(&window, "toggle-sidebar");
+    wait_for_paned_position(&window, 275);
+    assert!(sidebar_visible(&window));
+
+    let budget_width = if paned.width() > 0 {
+        paned.width()
+    } else {
+        window.width()
+    };
+    let max = clamp_sidebar_visible_position(&window, content_box, budget_width, i32::MAX);
+    let stale = max + 1;
+
+    // This is the user-reported path: restore hidden, show once, then hide. The
+    // hide action flips the logical visibility flag before the revealer leaves
+    // layout, so the stale visible position must still be clamped.
+    window.imp().sidebar_visible.set(false);
+    paned.set_position(stale);
+
+    activate_action(&window, "toggle-sidebar");
+
+    assert_eq!(
+        window.imp().saved_sidebar_pos.get(),
+        max,
+        "hide after the first restored show should clamp the stale visible position before saving it",
+    );
+    assert_eq!(paned.position(), SIDEBAR_COLLAPSED_POSITION);
+}
+
+#[test]
+fn test_sidebar_show_target_clamps_to_current_budget() {
+    ensure_gtk_init();
+    let window = test_window();
+    let content_box = &window.imp().content_box;
+    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
+    let expected_max = (640 / 3)
+        .min(640 - content_min - window.imp().handle_overhead.get())
+        .max(0)
+        .max(SIDEBAR_COLLAPSED_POSITION);
+
+    assert_eq!(
+        clamp_sidebar_visible_position(&window, content_box, 640, 500),
+        expected_max,
+        "show targets should be clamped before animation writes them into GtkPaned",
+    );
 }
 
 // --- Pre-clamp and content_box width-request invariant tests ---
 
 #[test]
-fn test_content_box_width_request_matches_stack_min() {
+fn test_content_box_width_request_matches_content_min() {
     ensure_gtk_init();
     let window = test_window();
-    let stack = &window.imp().content_stack;
     let content_box = &window.imp().content_box;
 
-    let (stack_min, _, _, _) = stack.measure(gtk4::Orientation::Horizontal, -1);
-    assert!(stack_min > 0, "stack should have a non-zero minimum width");
+    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
     assert!(
-        content_box.width_request() >= stack_min,
-        "content_box.width_request ({}) should be >= stack_min ({stack_min})",
+        content_min > 0,
+        "content_box should have a non-zero minimum width"
+    );
+    assert!(
+        content_box.width_request() >= content_min,
+        "content_box.width_request ({}) should be >= content_min ({content_min})",
         content_box.width_request(),
     );
 }
@@ -2207,26 +2473,29 @@ fn test_content_box_width_request_matches_stack_min() {
 #[test]
 fn test_pre_clamp_safe_for_narrow_window() {
     // Simulates the startup case where the restored window width is narrow
-    // enough that the default sidebar position would violate the stack minimum.
+    // enough that the default sidebar position would violate the content minimum.
     ensure_gtk_init();
     let window = test_window();
     let paned = &window.imp().main_paned;
-    let stack = &window.imp().content_stack;
+    let content_box = &window.imp().content_box;
 
-    let (stack_min, _, _, _) = stack.measure(gtk4::Orientation::Horizontal, -1);
+    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
     let handle_overhead = window.imp().handle_overhead.get();
     let pos = paned.position();
 
     // At the window's minimum width-request (640), the position must leave
-    // enough room for the content stack minimum plus handle overhead.
+    // enough room for the content box minimum plus handle overhead.
     let min_width = window.width_request();
     assert!(min_width > 0, "window must have a width-request set");
-    assert!(stack_min > 0, "stack must have a non-zero minimum width");
-    if min_width > 0 && stack_min > 0 {
-        let max_safe = min_width - stack_min - handle_overhead;
+    assert!(
+        content_min > 0,
+        "content_box must have a non-zero minimum width"
+    );
+    if min_width > 0 && content_min > 0 {
+        let max_safe = min_width - content_min - handle_overhead;
         assert!(
             pos <= max_safe || max_safe < 0,
-            "pre-clamped position ({pos}) should leave room for stack_min ({stack_min}) \
+            "pre-clamped position ({pos}) should leave room for content_min ({content_min}) \
              + handle ({handle_overhead}) at min window width ({min_width}), \
              max safe = {max_safe}",
         );

@@ -54,15 +54,19 @@ jobs:
       - name: Compile-check benchmarks
         run: cargo bench -p lushtext-core --no-run
 
-      - name: Run tests
-        # Widget tests need a display server. Mutter headless replaces Xvfb:
-        # Xvfb exhausts X11 server resources after ~160 process connect/disconnect
-        # cycles (nextest spawns one process per test). Wayland's client-side
-        # rendering has no such limit. This is the same pattern GNOME GTK CI uses.
+      - name: Run non-widget tests
+        run: cargo nextest run
+
+      - name: Run widget tests
+        # Widget tests use a custom single-threaded harness, so they must run
+        # through `cargo test --test widget` instead of nextest. They still
+        # require a display server; Mutter headless replaces Xvfb because
+        # Wayland's client-side rendering avoids the X11 resource exhaustion
+        # that many short-lived GTK clients can trigger.
         run: |
           export XDG_RUNTIME_DIR="$(mktemp -d)"
           export GDK_BACKEND=wayland
           trap 'rm -rf "$XDG_RUNTIME_DIR"' EXIT
           dbus-run-session -- \
             mutter --headless --wayland --no-x11 --virtual-monitor 1024x768 -- \
-              cargo nextest run
+              cargo test -p lushtext --test widget

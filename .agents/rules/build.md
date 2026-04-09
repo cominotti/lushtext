@@ -7,7 +7,7 @@ globs: "{Cargo.toml,Makefile,.cargo/**,.config/**,build.rs,meson.build,meson_opt
 
 ## Dev Builds
 
-Use `make` targets for development. The Makefile auto-detects nextest.
+Use `make` targets for development. The Makefile auto-detects nextest for lib/integration tests, but widget tests must run through `cargo test --test widget` because their custom harness is not nextest-compatible.
 
 ```
 make run        # build + launch the app
@@ -81,7 +81,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 
 **CRITICAL: GTK/pixman warnings are bugs, not noise.** When running the app via `make run`, the stderr output must be free of these warnings:
 
-- `*** BUG *** In pixman_region32_init_rect: Invalid rectangle passed` — a widget is being allocated with zero or negative dimensions. Typically caused by toggling `shrink-start-child` on GtkPaned or animating widget sizes to 0.
+- `*** BUG *** In pixman_region32_init_rect: Invalid rectangle passed` — a widget is being allocated with zero or negative dimensions. Typically caused by toggling `shrink-start-child` on GtkPaned, or by animating a raw pane child to 0 instead of animating a clipping wrapper (for example `GtkRevealer`) and hiding that wrapper at the collapsed endpoint.
 - `Gtk-CRITICAL` or `Gtk-WARNING` messages — usually indicate incorrect widget lifecycle, invalid property access, or constraint violations.
 - `GLib-GObject-WARNING` — usually indicate signal or property misuse.
 

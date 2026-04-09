@@ -41,9 +41,19 @@ Any code that sets a `GtkPaned` position must ensure it's valid for the current 
 
 **Position restore from GSettings**: Always pre-clamp in `constructed()` immediately after `set_position()`. Use the restored window width from GSettings as the `for_width` parameter. Store the original unclamped value in `saved_*_pos` for animations that target the preferred position at wider widths.
 
-**Animation targets**: When computing an animation target for a paned position (e.g., sidebar show), use the saved unclamped position as the target. The runtime `clamp_sidebar_position` in `size_allocate` / `notify::position` validates each animation tick against the actual allocated width.
+**Hidden restore state**: If the pane starts hidden, do **not** leave the live `GtkPaned::position` at the expanded saved width. Restore the live position to the same collapsed endpoint the hide animation uses, while `saved_*_pos` keeps the preferred visible width.
 
-**New paned children**: When adding a new child to a `GtkPaned` with `shrink-end-child=false`, set `width-request` on the end-child to match its measured minimum. This makes the paned's minimum constraint explicit and prevents GTK from even attempting to measure the child at below its minimum during layout negotiation.
+**Animation targets**: When computing an animation target for a paned position (e.g., sidebar show), start from the saved preferred width but clamp the target against the current allocation before writing it. Clamp per-frame animation writes too — do not rely on `size_allocate` / `notify::position` to sanitize an already-invalid animation tick. If async child population can change the budget (for example restored workspaces adding sidebar sections), refresh the measured budget immediately before the animation starts.
+
+**Clamp against the real end-child**: If the warning references the end-child container (for example `GtkBox`), budget against that container's measured minimum, not a nested child that usually dominates it. One-pixel mismatches often come from clamping against the inner stack while GTK is actually measuring the wrapper box.
+
+**Prefer GTK's runtime paned budget**: Once a `GtkPaned` is allocated, prefer `max-position` / `min-position` over reverse-engineering the legal range from child widths. Those properties already include the current handle width and realized child constraints.
+
+**Wrap zero-width pane animations**: If a pane must fully disappear, wrap the real child widget in a `GtkRevealer` (or equivalent clipping wrapper) and animate the paned against the wrapper, not the raw child. Hide the wrapper once the animation reaches the collapsed endpoint so GTK stops reserving handle width while hidden.
+
+**Hide-time clamps stay live until the wrapper is hidden**: A toggle action may set a logical `*-visible` flag to `false` before the `GtkRevealer` has actually left layout. Clamp/budget helpers must keep treating the pane as layout-active while the wrapper's own `visible` property is still true, or a stale restored position can slip into the first hide frame.
+
+**New paned children**: When adding a new child to a `GtkPaned` with `shrink-end-child=false`, set `width-request` on the end-child to match its measured minimum. This makes the paned's minimum constraint explicit and prevents GTK from even attempting to measure the child at below its minimum during layout negotiation. Re-sync that width-request after map or async child restoration if the realized minimum changes.
 
 ## Focus Restoration on Overlay Close
 
@@ -88,3 +98,5 @@ Every wired signal must have a widget test that asserts the expected state chang
 **`is_visible()` in widget tests:** `WidgetExt::is_visible()` checks the entire parent chain — it returns `false` for any widget inside an unrealized/unpresented window (which is the case in all widget tests). To check a widget's own visibility property, use `widget.property::<bool>("visible")` instead.
 
 **`spawn_blocking_then` results in tests:** Tests that depend on results from `spawn_blocking_then` (e.g., command palette search results, file index rebuilds) must wait for the background thread to complete before asserting. `flush_events()` alone is insufficient — it only drains what's already on the main loop, but the background thread may not have posted its `idle_add_once` callback yet. Use `spin_until(|| predicate())` to poll the main loop until results arrive. Without this, tests are flaky under parallel execution (nextest) because thread scheduling varies.
+
+**Timed animations in the custom widget harness:** Presented-window tests do not reliably advance `AdwTimedAnimation` frame clocks under the `crates/lushtext/tests/widget.rs` subprocess harness. Do not write tests that wait for the real animation duration to elapse. If the assertion depends on the settled post-animation state, expose a narrow test-only immediate-completion path keyed off `LUSHTEXT_WIDGET_CHILD`, or assert a state transition that does not depend on frame-clock progress.

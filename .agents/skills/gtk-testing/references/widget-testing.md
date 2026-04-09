@@ -14,7 +14,7 @@ export XDG_RUNTIME_DIR="$(mktemp -d)"
 export GDK_BACKEND=wayland
 dbus-run-session -- \
   mutter --headless --wayland --no-x11 --virtual-monitor 1024x768 -- \
-    cargo nextest run --test widget
+    cargo test --test widget
 ```
 
 - `--headless`: runs without KMS/DRM hardware (required for containers)
@@ -205,6 +205,14 @@ assert!(widget.property::<bool>("visible"));
 ```
 
 This only affects widgets inside a window. Standalone widgets (no parent) work correctly with `is_visible()`.
+
+## Timed Animations in the Custom Harness
+
+LushText's widget suite runs through a custom subprocess harness (`crates/lushtext/tests/widget.rs`). In presented-window tests, `AdwTimedAnimation` frame clocks do **not** reliably advance just because the GLib main loop is spinning.
+
+- Do **not** block on the nominal animation duration (`150ms`, `250ms`, etc.) and assume the widget reached its final state.
+- Prefer assertions on pre/post invariants that can be observed without real frame-clock progression.
+- If the behavior only becomes observable after the animation settles, add a narrow test-only immediate-completion branch keyed off `LUSHTEXT_WIDGET_CHILD` so the test can inspect the stable end state deterministically.
 
 ## Limitations of Widget Testing
 
