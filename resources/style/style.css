@@ -33,6 +33,13 @@
   color: @error_color;
 }
 
+/* Match count overlay inside the search entry — opaque so text behind is hidden */
+.search-bar-container .match-count {
+  background-color: @view_bg_color;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
 /* Search panel: distinct background separating it from the editor area */
 .search-panel {
   background-color: @headerbar_bg_color;
