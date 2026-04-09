@@ -724,37 +724,32 @@ fn sidebar_max_position(
         return None;
     }
     let imp = window.imp();
-    let content_min = if content_box.width_request() > 0 {
-        content_box.width_request()
+    let for_height = current_paned_for_height(window);
+    let start_req = measure_sidebar_start_min(window, for_height);
+    let end_req = measure_content_box_min(window, content_box);
+    let handle_size = measure_sidebar_handle_overhead(window, end_req);
+    let allocation = (window_width - handle_size).max(1);
+
+    // Mirror GTK's own gtk_paned_compute_position() upper-bound logic:
+    // max = allocation_without_handle;
+    // if !shrink_end_child => max = MAX(1, max - end_child_req);
+    // max = MAX(min, max);
+    let min_pos = if imp.main_paned.shrinks_start_child() {
+        0
     } else {
-        measure_content_box_min(window, content_box)
+        start_req
     };
-    let cached_floor = window_width - content_min - imp.handle_overhead.get();
-    if imp.main_paned.width() > 0 {
-        let allocated_width = imp.main_paned.width();
-        let paned_max = imp.main_paned.max_position();
-        if paned_max > 0 {
-            return Some(
-                ((allocated_width / 3).min(paned_max))
-                    .min(cached_floor)
-                    .max(0),
-            );
-        }
+    let mut max_pos = allocation;
+    if !imp.main_paned.shrinks_end_child() {
+        max_pos = (max_pos - end_req).max(1);
     }
-    // Query the end child's actual minimum width so the sidebar never squeezes it
-    // below that floor. Re-measure the paned handle budget from the live layout
-    // instead of trusting construction-time values; restored workspaces can
-    // change the realized geometry by 1px, which is enough to trigger GTK's
-    // width warning if we keep a stale handle budget.
-    let handle_overhead = measure_sidebar_handle_overhead(window, content_min);
-    let stack_floor = window_width - content_min - handle_overhead;
-    Some((window_width / 3).min(stack_floor).max(0))
+    max_pos = max_pos.max(min_pos);
+
+    Some((window_width / 3).min(max_pos).max(0))
 }
 
 fn measure_content_box_min(window: &super::LushtextWindow, content_box: &gtk4::Box) -> i32 {
-    let imp = window.imp();
-    let for_height = content_box.height().max(imp.main_paned.height());
-    let for_height = if for_height > 0 { for_height } else { -1 };
+    let for_height = current_paned_for_height(window);
     let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, for_height);
     content_min
 }
@@ -784,6 +779,24 @@ fn update_sidebar_measurements(window: &super::LushtextWindow, content_box: &gtk
         content_box.set_width_request(content_min);
     }
     measure_sidebar_handle_overhead(window, content_min)
+}
+
+fn measure_sidebar_start_min(window: &super::LushtextWindow, for_height: i32) -> i32 {
+    let imp = window.imp();
+    let (start_min, _, _, _) = imp
+        .sidebar_revealer
+        .measure(gtk4::Orientation::Horizontal, for_height);
+    start_min
+}
+
+fn current_paned_for_height(window: &super::LushtextWindow) -> i32 {
+    let imp = window.imp();
+    let for_height = imp
+        .content_box
+        .height()
+        .max(imp.main_paned.height())
+        .max(window.height());
+    if for_height > 0 { for_height } else { -1 }
 }
 
 fn paned_handle_widget(paned: &gtk4::Paned) -> Option<gtk4::Widget> {
