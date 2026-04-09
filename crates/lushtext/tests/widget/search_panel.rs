@@ -5,10 +5,13 @@
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::app::LushtextApplication;
 use lushtext_core::model::content_search::{
     ContentSearchOptions, ReplaceResult, Replacement, SavedSearch, SearchEvent, SearchMatch,
     generate_replacement_preview,
+};
+use lushtext_core::services::notifications::{
+    NotificationBus, NotificationOwner, NotificationPayload, NotificationSeverity,
+    NotificationSurface, StatusMessage,
 };
 use lushtext_core::ui::search_panel::LushtextSearchPanel;
 use lushtext_core::ui::search_panel::item::SearchResultItem;
@@ -22,8 +25,7 @@ fn flush_events() {
 
 /// Create a window attached to a test application (not registered with D-Bus).
 fn test_window() -> LushtextWindow {
-    let app: libadwaita::Application = LushtextApplication::new().upcast();
-    LushtextWindow::new(&app)
+    crate::common::test_window()
 }
 
 // ---------------------------------------------------------------------------
@@ -502,22 +504,24 @@ fn test_search_navigation_actions_start_disabled() {
 }
 
 // ---------------------------------------------------------------------------
-// Story 1.5: Status bar progress API
+// Story 1.5: Status bar notification rendering
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_status_bar_progress_active_default_false() {
+fn test_status_bar_starts_empty() {
     ensure_gtk_init();
     let bar = glib::Object::builder::<LushtextStatusBar>().build();
-    assert!(!bar.imp().progress_active.get());
+    assert!(bar.imp().message_label.text().is_empty());
 }
 
 #[test]
-fn test_set_progress_message_sets_label_and_flag() {
+fn test_render_progress_message_sets_label() {
     ensure_gtk_init();
     let bar = glib::Object::builder::<LushtextStatusBar>().build();
-    bar.set_progress_message("Searching 100 / 500 files\u{2026}");
-    assert!(bar.imp().progress_active.get());
+    bar.render_message(Some(&StatusMessage {
+        text: "Searching 100 / 500 files\u{2026}".to_string(),
+        severity: NotificationSeverity::Info,
+    }));
     assert_eq!(
         bar.imp().message_label.text().as_str(),
         "Searching 100 / 500 files\u{2026}"
@@ -525,44 +529,29 @@ fn test_set_progress_message_sets_label_and_flag() {
 }
 
 #[test]
-fn test_clear_progress_message_clears_when_active() {
+fn test_notification_bus_prefers_transient_over_progress() {
     ensure_gtk_init();
-    let bar = glib::Object::builder::<LushtextStatusBar>().build();
-    bar.set_progress_message("Searching...");
-    assert!(bar.imp().progress_active.get());
-
-    bar.clear_progress_message();
-    assert!(!bar.imp().progress_active.get());
-    assert!(bar.imp().message_label.text().is_empty());
-}
-
-#[test]
-fn test_clear_progress_message_noop_when_not_active() {
-    ensure_gtk_init();
-    let bar = glib::Object::builder::<LushtextStatusBar>().build();
-    // Set a normal message (not progress).
-    bar.push_message(
-        "File saved",
-        lushtext_core::ui::status_bar::MessageKind::Info,
+    let bus = NotificationBus::default();
+    bus.publish(
+        NotificationOwner::Search,
+        NotificationSurface::StatusBar,
+        NotificationPayload::Progress(StatusMessage {
+            text: "Searching...".to_string(),
+            severity: NotificationSeverity::Info,
+        }),
     );
-    let text = bar.imp().message_label.text().to_string();
+    bus.publish(
+        NotificationOwner::Window,
+        NotificationSurface::StatusBar,
+        NotificationPayload::Transient(StatusMessage {
+            text: "Error!".to_string(),
+            severity: NotificationSeverity::Error,
+        }),
+    );
 
-    // clear_progress_message should not clear a normal message.
-    bar.clear_progress_message();
-    assert_eq!(bar.imp().message_label.text().as_str(), text);
-}
-
-#[test]
-fn test_push_message_overrides_progress() {
-    ensure_gtk_init();
-    let bar = glib::Object::builder::<LushtextStatusBar>().build();
-    bar.set_progress_message("Searching...");
-    assert!(bar.imp().progress_active.get());
-
-    // Push a normal message — should override progress.
-    bar.push_message("Error!", lushtext_core::ui::status_bar::MessageKind::Error);
-    assert!(!bar.imp().progress_active.get());
-    assert_eq!(bar.imp().message_label.text().as_str(), "Error!");
+    let view = bus.status_bar_view().expect("status bar view exists");
+    assert_eq!(view.text, "Error!");
+    assert_eq!(view.severity, NotificationSeverity::Error);
 }
 
 #[test]

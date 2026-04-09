@@ -9,6 +9,7 @@
 
 mod imp;
 
+use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
@@ -28,70 +29,42 @@ impl LushtextInfoBar {
         Object::builder().build()
     }
 
-    // --- Show methods ---
-
-    /// Show the error bar for a file that could not be opened.
-    /// Displays the error message and a "Retry" button.
-    pub fn show_load_error(&self, message: &str) {
-        let imp = self.imp();
-        imp.access_subtitle.set_label(message);
-        imp.access_infobar.set_revealed(true);
-    }
-
-    /// Show the warning bar indicating draft changes were restored.
-    /// If `has_backing_file` is true, shows "Draft Changes Restored" with
-    /// Save and Discard buttons. If false, shows "Document Restored" with
-    /// Save As and Discard buttons.
-    pub fn show_draft_restored(&self, has_backing_file: bool) {
-        let imp = self.imp();
-        if has_backing_file {
-            imp.discard_title.set_label("Draft Changes Restored");
-            imp.discard_subtitle
-                .set_label("Unsaved changes from a previous session have been restored.");
-            imp.save_button.set_label("_Save\u{2026}");
-        } else {
-            imp.discard_title.set_label("Document Restored");
-            imp.discard_subtitle
-                .set_label("Unsaved document has been restored.");
-            imp.save_button.set_label("Save _As\u{2026}");
-        }
-        imp.save_button.set_visible(true);
-        imp.discard_infobar.set_revealed(true);
-    }
-
-    /// Show the warning bar indicating the file was modified externally.
-    /// Displays "File Has Changed on Disk" with a "Discard Changes and Reload"
-    /// button (reusing the discard button).
-    pub fn show_externally_changed(&self) {
-        let imp = self.imp();
-        imp.discard_title.set_label("File Has Changed on Disk");
-        imp.discard_subtitle
-            .set_label("The file was modified by another program.");
-        imp.discard_button.set_label("_Discard Changes and Reload");
-        imp.save_button.set_visible(false);
-        imp.discard_infobar.set_revealed(true);
-    }
-
-    /// Hide all info bars.
-    pub fn dismiss_all(&self) {
+    pub fn render_notification(&self, notification: Option<&InlineActionNotification>) {
         let imp = self.imp();
         imp.access_infobar.set_revealed(false);
         imp.discard_infobar.set_revealed(false);
+        let Some(notification) = notification else {
+            return;
+        };
+
+        match notification.style {
+            InlineNotificationStyle::Error => {
+                imp.access_title.set_label(&notification.title);
+                imp.access_subtitle.set_label(&notification.body);
+                imp.retry_button
+                    .set_visible(notification.primary_button.is_some());
+                if let Some(label) = &notification.primary_button {
+                    imp.retry_button.set_label(label);
+                }
+                imp.access_infobar.set_revealed(true);
+            }
+            InlineNotificationStyle::Warning => {
+                imp.discard_title.set_label(&notification.title);
+                imp.discard_subtitle.set_label(&notification.body);
+                imp.discard_button
+                    .set_visible(notification.primary_button.is_some());
+                if let Some(label) = &notification.primary_button {
+                    imp.discard_button.set_label(label);
+                }
+                imp.save_button
+                    .set_visible(notification.secondary_button.is_some());
+                if let Some(label) = &notification.secondary_button {
+                    imp.save_button.set_label(label);
+                }
+                imp.discard_infobar.set_revealed(true);
+            }
+        }
     }
-
-    // --- Query methods ---
-
-    /// Whether the discard/draft info bar is currently revealed.
-    pub fn is_discard_revealed(&self) -> bool {
-        self.imp().discard_infobar.is_revealed()
-    }
-
-    /// Whether the access error info bar is currently revealed.
-    pub fn is_access_revealed(&self) -> bool {
-        self.imp().access_infobar.is_revealed()
-    }
-
-    // --- Callback connectors ---
 
     /// Set the callback invoked when the "Retry" button is clicked
     /// on the access error bar.
@@ -109,6 +82,10 @@ impl LushtextInfoBar {
     /// on the draft/discard bar. Also used as "Reload" for external changes.
     pub fn connect_discard<F: Fn() + 'static>(&self, f: F) {
         *self.imp().discard_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_dismissed<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().dismissed_callback.borrow_mut() = Some(Box::new(f));
     }
 }
 

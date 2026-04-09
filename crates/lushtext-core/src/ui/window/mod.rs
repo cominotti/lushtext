@@ -24,6 +24,10 @@ use crate::config::keys;
 use crate::model::draft::DraftEntry;
 use crate::services::async_task;
 use crate::services::editorconfig;
+use crate::services::notifications::{
+    InlineActionNotification, NotificationOwner, NotificationPayload, NotificationSeverity,
+    NotificationSurface,
+};
 use crate::services::palette::FileIndex;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
@@ -33,6 +37,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::AnimationExt;
 use std::path::Path;
+use std::time::Duration;
 
 /// Maximum total estimated buffer memory across all tabs before evicting
 /// unmodified background tabs. ~256MB is comfortable on 8GB machines.
@@ -68,9 +73,11 @@ impl LushtextWindow {
         zoom::setup_zoom_actions(&window);
         zoom::setup_zoom_controls(&window);
         search::setup_search_panel(&window);
+        window.start_notification_sweep_timer();
         window.setup_shortcuts();
         window.update_content_stack();
         window.refresh_status_bar();
+        window.render_notifications();
         window
     }
 
@@ -96,6 +103,7 @@ impl LushtextWindow {
             .borrow_mut()
             .insert(path.to_path_buf());
         let editor_page = LushtextEditorPage::new();
+        self.wire_info_bar(&editor_page);
         editor_page.load_file_async(path);
         editor_page.start_file_monitor();
         self.resolve_editorconfig_for_editor(&editor_page, path);
@@ -133,7 +141,6 @@ impl LushtextWindow {
         let page = tab_view.append(&editor_page);
         page.set_title(&editor_page.title());
         self.wire_modified_indicator(&page, &editor_page);
-        self.wire_info_bar(&editor_page);
         self.track_editor_memory(&editor_page);
 
         tab_view.set_selected_page(&page);
@@ -160,20 +167,14 @@ impl LushtextWindow {
                 }
                 if let Some(editor) = window.active_editor() {
                     editor.set_draft_restored(false);
-                    editor.info_bar().dismiss_all();
+                    window.dismiss_editor_notifications(&editor);
                 }
-                window
-                    .imp()
-                    .status_bar
-                    .push_message("File saved", MessageKind::Info);
+                window.publish_status_message("File saved", MessageKind::Info);
                 window.refresh_status_bar();
             }
             Err(e) => {
                 tracing::error!("Failed to save: {}", e);
-                window
-                    .imp()
-                    .status_bar
-                    .push_message(&format!("Save failed: {e}"), MessageKind::Error);
+                window.publish_status_message(&format!("Save failed: {e}"), MessageKind::Error);
             }
         });
     }
@@ -203,9 +204,83 @@ impl LushtextWindow {
                 window.delete_draft_for_path(&path);
             }
             editor.set_draft_restored(false);
-            editor.info_bar().dismiss_all();
+            if let Some(window) = window_weak.upgrade() {
+                window.dismiss_editor_notifications(&editor);
+            }
             editor.load_file_async(&path);
         });
+    }
+
+    pub fn render_notifications(&self) {
+        let imp = self.imp();
+        let status_view = imp.notification_bus.status_bar_view();
+        imp.status_bar.render_message(status_view.as_ref());
+
+        let tab_view = &imp.tab_view;
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                let editor_view = imp
+                    .notification_bus
+                    .editor_info_bar_view(editor.notification_owner_id());
+                editor.info_bar().render_notification(editor_view.as_ref());
+            }
+        }
+    }
+
+    pub fn publish_status_message(&self, text: &str, severity: NotificationSeverity) {
+        if self.imp().notification_bus.publish(
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            NotificationPayload::Transient(crate::services::notifications::StatusMessage {
+                text: text.to_string(),
+                severity,
+            }),
+        ) {
+            self.render_notifications();
+        }
+    }
+
+    pub fn publish_editor_inline_notification(
+        &self,
+        editor: &LushtextEditorPage,
+        notification: InlineActionNotification,
+    ) {
+        let owner = NotificationOwner::Editor(editor.notification_owner_id());
+        let surface = NotificationSurface::EditorInfoBar(editor.notification_owner_id());
+        if self.imp().notification_bus.publish(
+            owner,
+            surface,
+            NotificationPayload::InlineAction(notification),
+        ) {
+            self.render_notifications();
+        }
+    }
+
+    pub fn dismiss_editor_notifications(&self, editor: &LushtextEditorPage) {
+        if self
+            .imp()
+            .notification_bus
+            .dismiss_owner(NotificationOwner::Editor(editor.notification_owner_id()))
+        {
+            self.render_notifications();
+        }
+    }
+
+    fn start_notification_sweep_timer(&self) {
+        let window_weak = self.downgrade();
+        let source_id = glib::timeout_add_local(Duration::from_secs(1), move || {
+            let Some(window) = window_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if window.imp().notification_bus.sweep_expired() {
+                window.render_notifications();
+            }
+            glib::ControlFlow::Continue
+        });
+        self.imp()
+            .notification_sweep_source_id
+            .replace(Some(source_id));
     }
 
     /// Update the enabled state of the discard-changes action based on the
@@ -300,11 +375,24 @@ impl LushtextWindow {
     /// Wire info bar button callbacks for a newly created editor page.
     /// Connects retry (reload file), save, and discard/reload buttons.
     fn wire_info_bar(&self, editor: &LushtextEditorPage) {
+        let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
+        editor.connect_inline_notification(move |notification| {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(editor) = editor_weak.upgrade()
+            {
+                window.publish_editor_inline_notification(&editor, notification);
+            }
+        });
+
         // Retry: re-attempt loading the file (for access errors)
         let editor_weak = editor.downgrade();
+        let window_weak = self.downgrade();
         editor.info_bar().connect_retry(move || {
             if let Some(editor) = editor_weak.upgrade() {
-                editor.info_bar().dismiss_all();
+                if let Some(window) = window_weak.upgrade() {
+                    window.dismiss_editor_notifications(&editor);
+                }
                 if let Some(ref path) = editor.file_path() {
                     editor.load_file_async(path);
                 }
@@ -326,7 +414,9 @@ impl LushtextWindow {
                     }
                     editor.set_draft_restored(false);
                 }
-                editor.info_bar().dismiss_all();
+                if let Some(window) = window_weak.upgrade() {
+                    window.dismiss_editor_notifications(&editor);
+                }
                 if let Some(ref path) = editor.file_path() {
                     editor.load_file_async(path);
                 }
@@ -338,6 +428,16 @@ impl LushtextWindow {
         editor.info_bar().connect_save(move || {
             if let Some(window) = window_weak.upgrade() {
                 window.save_current();
+            }
+        });
+
+        let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
+        editor.info_bar().connect_dismissed(move || {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(editor) = editor_weak.upgrade()
+            {
+                window.dismiss_editor_notifications(&editor);
             }
         });
     }

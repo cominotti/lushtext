@@ -5,14 +5,12 @@
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::app::LushtextApplication;
 use lushtext_core::ui::sidebar::LushtextSidebar;
 use lushtext_core::ui::window::LushtextWindow;
 
 /// Create a window attached to a test application.
 fn test_window() -> LushtextWindow {
-    let app: libadwaita::Application = LushtextApplication::new().upcast();
-    LushtextWindow::new(&app)
+    crate::common::test_window()
 }
 
 // --- Sidebar construction ---

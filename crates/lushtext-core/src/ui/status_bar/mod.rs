@@ -4,21 +4,13 @@
 
 mod imp;
 
+use crate::services::notifications::StatusMessage;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
-use std::time::Duration;
 
-const MESSAGE_DISMISS_SECS: u64 = 5;
-
-/// Visual severity of a status bar message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageKind {
-    Info,
-    Warning,
-    Error,
-}
+pub use crate::services::notifications::NotificationSeverity as MessageKind;
 
 glib::wrapper! {
     pub struct LushtextStatusBar(ObjectSubclass<imp::LushtextStatusBar>)
@@ -31,72 +23,21 @@ impl LushtextStatusBar {
         Object::builder().build()
     }
 
-    /// Display a feedback message, replacing any current message.
-    /// The message auto-dismisses after 5 seconds unless superseded.
-    /// Normal messages always override an active progress message.
-    pub fn push_message(&self, text: &str, kind: MessageKind) {
-        let imp = self.imp();
-        let label = &*imp.message_label;
-
-        // Normal messages override progress.
-        imp.progress_active.set(false);
-
-        clear_message_classes(label);
-
-        let css_class = match kind {
-            MessageKind::Info => "status-info",
-            MessageKind::Warning => "status-warning",
-            MessageKind::Error => "status-error",
-        };
-        label.add_css_class(css_class);
-        label.set_label(text);
-
-        // Bump generation and schedule auto-dismiss. Stale timers (from
-        // previous messages) will see a mismatched generation and no-op.
-        let generation = imp.message_generation.get().wrapping_add(1);
-        imp.message_generation.set(generation);
-
-        let weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_secs(MESSAGE_DISMISS_SECS), move || {
-            if let Some(bar) = weak.upgrade()
-                && bar.imp().message_generation.get() == generation
-            {
-                bar.clear_message();
-            }
-        });
-    }
-
-    /// Clear the message area immediately.
-    pub fn clear_message(&self) {
+    /// Render the current status-bar notification view from the notification store.
+    pub fn render_message(&self, message: Option<&StatusMessage>) {
         let label = &*self.imp().message_label;
         clear_message_classes(label);
-        label.set_label("");
-    }
-
-    /// Display a non-auto-dismiss progress message (e.g., "Searching X / Y files...").
-    /// Does NOT schedule an auto-dismiss timer. Does NOT bump message_generation,
-    /// so a concurrent `push_message` naturally takes priority.
-    pub fn set_progress_message(&self, text: &str) {
-        let imp = self.imp();
-        let label = &*imp.message_label;
-
-        clear_message_classes(label);
-        label.add_css_class("status-info");
-        label.set_label(text);
-        imp.progress_active.set(true);
-    }
-
-    /// Clear the progress message if one is active. No-ops if a normal
-    /// `push_message` already replaced it (avoids accidentally clearing
-    /// error/warning messages).
-    pub fn clear_progress_message(&self) {
-        let imp = self.imp();
-        if imp.progress_active.get() {
-            imp.progress_active.set(false);
-            let label = &*imp.message_label;
-            clear_message_classes(label);
+        let Some(message) = message else {
             label.set_label("");
-        }
+            return;
+        };
+
+        label.add_css_class(match message.severity {
+            crate::services::notifications::NotificationSeverity::Info => "status-info",
+            crate::services::notifications::NotificationSeverity::Warning => "status-warning",
+            crate::services::notifications::NotificationSeverity::Error => "status-error",
+        });
+        label.set_label(&message.text);
     }
 
     /// Update the file size display. Pass `None` for untitled tabs

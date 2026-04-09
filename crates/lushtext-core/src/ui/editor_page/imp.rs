@@ -9,6 +9,7 @@
 use crate::config::keys;
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::file_limits::FileSizeCheck;
+use crate::services::notifications::InlineActionNotification;
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
 use gtk4::gio;
@@ -23,6 +24,7 @@ use std::sync::atomic::AtomicBool;
 /// Callback for notifying the window when this editor's estimated buffer
 /// memory changes. The `u64` argument is the new estimated byte count.
 type MemoryChangedCallback = Box<dyn Fn(u64)>;
+type NotificationCallback = Box<dyn Fn(InlineActionNotification)>;
 
 // CompositeTemplate loads the UI layout from a compiled XML file (bundled
 // as a GResource at build time). Each #[template_child] field is auto-bound
@@ -81,6 +83,8 @@ pub struct LushtextEditorPage {
     pub buffer_changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Callback invoked when estimated buffer memory changes (load, save, evict).
     pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
+    /// Callback invoked when the editor needs to surface an inline notification.
+    pub notification_callback: RefCell<Option<NotificationCallback>>,
     /// File monitor for detecting external modifications. Created on file load,
     /// cancelled on tab close.
     pub file_monitor: RefCell<Option<gio::FileMonitor>>,
@@ -134,6 +138,7 @@ impl Default for LushtextEditorPage {
             modified_handler_id: RefCell::new(None),
             buffer_changed_handler_id: RefCell::new(None),
             memory_changed_callback: RefCell::default(),
+            notification_callback: RefCell::default(),
             file_monitor: RefCell::new(None),
             monitor_generation: Cell::new(0),
             last_known_mtime: Cell::new(None),

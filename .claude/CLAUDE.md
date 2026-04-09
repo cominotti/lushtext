@@ -11,6 +11,18 @@ A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text
 - **App ID:** `dev.cominotti.lushtext`
 - **License:** GPL-3.0-or-later
 
+## Rules Index / Sync Map
+
+Keep this index in sync with `.claude/rules/*.md`. When a new rule file is added or an existing rule is materially changed, update this section in the same change.
+
+- `build.md` — build, dependency, and test command rules
+- `documentation.md` — documentation maintenance requirements
+- `git.md` — git workflow and commit conventions
+- `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
+- `rust.md` — Rust language and module conventions
+- `ui.md` — UI and theming conventions
+- `widget-wiring.md` — GTK widget composition and signal wiring rules
+
 ## Architecture
 
 Two-crate workspace (plus workspace-hack for cargo-hakari):
@@ -160,8 +172,9 @@ Replicated from invowk-rust:
 
 - Unit tests: `#[cfg(test)]` modules inside `workspace_manager.rs` and `session_service.rs`
 - Integration tests: `crates/lushtext/tests/integration.rs` with `#[path]` split binary pattern
+- Widget tests: `crates/lushtext/tests/widget.rs` uses a custom single-threaded harness so GTK tests stay on one stable thread for the life of the process
 - `TestContext` struct: isolated tempdir with simulated XDG data directory
-- Tests exercise services only (no display server needed)
+- Tests exercise services only (no display server needed), while widget tests require a display server and the custom harness
 
 ## GObject Subclassing Pattern
 
@@ -211,3 +224,9 @@ Both `state` and `then` are wrapped in `glib::thread_guard::ThreadGuard` to safe
 **Key constraint:** GTK objects are NOT `Send`/`Sync` (raw pointers inside). Never pass them directly across threads. Always use `ThreadGuard` or `SendWeakRef`.
 
 **TreeListModel caveat:** Never set `autoexpand = true` on `TreeListModel` — it recursively calls the child-model callback for every directory, which with background I/O spawns unbounded threads, and with synchronous I/O freezes the UI.
+
+## Critical Rule: Pre-existing Blockers
+
+If implementation or verification reveals a pre-existing blocker, fix it in the same work stream instead of deferring around it or treating it as out of scope.
+
+This rule is mandatory and has no exceptions.

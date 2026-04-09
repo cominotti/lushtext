@@ -7,6 +7,7 @@
 
 use crate::config::{self, keys};
 use crate::model::draft::DraftManifest;
+use crate::services::notifications::NotificationBus;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
@@ -139,6 +140,16 @@ pub struct LushtextWindow {
     /// construction from `paned_min - sidebar_min - stack_min`. Used in
     /// `clamp_sidebar_position` to replace the former hardcoded 16px buffer.
     pub handle_overhead: Cell<i32>,
+    /// Window-scoped notification bus + store.
+    pub notification_bus: NotificationBus,
+    /// Periodic sweep for expiring transient/progress notifications.
+    pub notification_sweep_source_id: RefCell<Option<glib::SourceId>>,
+    /// Periodic lease renewal for active search progress notifications.
+    pub search_progress_heartbeat_source_id: RefCell<Option<glib::SourceId>>,
+    /// Generation counter for delayed search progress display.
+    pub search_progress_generation: Cell<u32>,
+    /// Whether search progress is allowed to render after the initial delay.
+    pub search_progress_visible: Cell<bool>,
 }
 
 impl Default for LushtextWindow {
@@ -189,6 +200,11 @@ impl Default for LushtextWindow {
             restoring_session: Cell::new(false),
             search_saved_focus: RefCell::new(None),
             handle_overhead: Cell::new(16),
+            notification_bus: NotificationBus::default(),
+            notification_sweep_source_id: RefCell::new(None),
+            search_progress_heartbeat_source_id: RefCell::new(None),
+            search_progress_generation: Cell::new(0),
+            search_progress_visible: Cell::new(false),
         }
     }
 }
@@ -391,10 +407,7 @@ impl ObjectImpl for LushtextWindow {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    window
-                        .imp()
-                        .status_bar
-                        .push_message(&format!("Renamed to {name}"), MessageKind::Info);
+                    window.publish_status_message(&format!("Renamed to {name}"), MessageKind::Info);
                 }
             });
 
@@ -403,10 +416,7 @@ impl ObjectImpl for LushtextWindow {
             if let Some(window) = window_weak.upgrade() {
                 window.close_tab_for_path(path);
                 window.imp().command_palette.update_index_file_deleted(path);
-                window
-                    .imp()
-                    .status_bar
-                    .push_message("Deleted", MessageKind::Info);
+                window.publish_status_message("Deleted", MessageKind::Info);
             }
         });
 
@@ -512,6 +522,7 @@ impl ObjectImpl for LushtextWindow {
                     if let Some(ref path) = editor.file_path() {
                         window.imp().open_paths.borrow_mut().remove(path.as_path());
                     }
+                    window.dismiss_editor_notifications(editor);
                     window.untrack_editor_memory(editor);
                     editor.cancel_load();
                     editor.stop_file_monitor();
@@ -538,6 +549,12 @@ impl ObjectImpl for LushtextWindow {
     fn dispose(&self) {
         // Cancel the autosave timer to stop ticking after window close.
         if let Some(source_id) = self.autosave_source_id.take() {
+            source_id.remove();
+        }
+        if let Some(source_id) = self.notification_sweep_source_id.take() {
+            source_id.remove();
+        }
+        if let Some(source_id) = self.search_progress_heartbeat_source_id.take() {
             source_id.remove();
         }
     }

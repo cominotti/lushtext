@@ -5,10 +5,16 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 description = "A minimalist text editor for GNOME"
 publish = false
+build = "build.rs"
 
 [[bin]]
 name = "lushtext"
 path = "src/main.rs"
+
+[[test]]
+name = "widget"
+path = "tests/widget.rs"
+harness = false
 
 [dependencies]
 lushtext-core      = { workspace = true }
@@ -25,3 +31,4 @@ gtk4        = { workspace = true }
 libadwaita  = { workspace = true }
 sourceview5 = { workspace = true }
 gio         = { workspace = true }
+libtest-mimic = { workspace = true }

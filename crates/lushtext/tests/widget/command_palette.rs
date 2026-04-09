@@ -383,12 +383,10 @@ fn test_command_palette_results_view_single_click_disabled() {
 // ---------------------------------------------------------------------------
 
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
-use lushtext_core::app::LushtextApplication;
 use lushtext_core::ui::window::LushtextWindow;
 
 fn test_window() -> LushtextWindow {
-    let app: libadwaita::Application = LushtextApplication::new().upcast();
-    LushtextWindow::new(&app)
+    crate::common::test_window()
 }
 
 fn action_enabled(window: &LushtextWindow, name: &str) -> bool {

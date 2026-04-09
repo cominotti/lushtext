@@ -5,6 +5,7 @@
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use lushtext_core::services::notifications::StatusMessage;
 use lushtext_core::ui::status_bar::{LushtextStatusBar, MessageKind};
 
 // --- Construction ---
@@ -28,55 +29,65 @@ fn test_initially_no_message() {
     assert_eq!(bar.imp().message_label.label().as_str(), "");
 }
 
-// --- Message posting ---
+fn status_message(text: &str, severity: MessageKind) -> StatusMessage {
+    StatusMessage {
+        text: text.to_string(),
+        severity,
+    }
+}
+
+// --- Message rendering ---
 
 #[test]
-fn test_push_message_sets_label() {
+fn test_render_message_sets_label() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    bar.push_message("File saved", MessageKind::Info);
+    bar.render_message(Some(&status_message("File saved", MessageKind::Info)));
     assert_eq!(bar.imp().message_label.label().as_str(), "File saved");
 }
 
 #[test]
-fn test_push_message_info_has_css_class() {
+fn test_render_message_info_has_css_class() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    bar.push_message("Loaded", MessageKind::Info);
+    bar.render_message(Some(&status_message("Loaded", MessageKind::Info)));
     assert!(bar.imp().message_label.has_css_class("status-info"));
 }
 
 #[test]
-fn test_push_message_warning_has_css_class() {
+fn test_render_message_warning_has_css_class() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    bar.push_message("Caution", MessageKind::Warning);
+    bar.render_message(Some(&status_message("Caution", MessageKind::Warning)));
     assert!(bar.imp().message_label.has_css_class("status-warning"));
 }
 
 #[test]
-fn test_push_message_error_has_css_class() {
+fn test_render_message_error_has_css_class() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    bar.push_message("Permission denied", MessageKind::Error);
+    bar.render_message(Some(&status_message(
+        "Permission denied",
+        MessageKind::Error,
+    )));
     assert!(bar.imp().message_label.has_css_class("status-error"));
 }
 
 #[test]
-fn test_push_message_replaces_text() {
+fn test_render_message_replaces_text() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    bar.push_message("first", MessageKind::Info);
-    bar.push_message("second", MessageKind::Warning);
+    bar.render_message(Some(&status_message("first", MessageKind::Info)));
+    bar.render_message(Some(&status_message("second", MessageKind::Warning)));
     assert_eq!(bar.imp().message_label.label().as_str(), "second");
 }
 
 #[test]
-fn test_push_message_replaces_css_class() {
+fn test_render_message_replaces_css_class() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    bar.push_message("first", MessageKind::Warning);
-    bar.push_message("second", MessageKind::Error);
+    bar.render_message(Some(&status_message("first", MessageKind::Warning)));
+    bar.render_message(Some(&status_message("second", MessageKind::Error)));
     assert!(bar.imp().message_label.has_css_class("status-error"));
     assert!(!bar.imp().message_label.has_css_class("status-warning"));
 }
@@ -84,44 +95,23 @@ fn test_push_message_replaces_css_class() {
 // --- Message clearing ---
 
 #[test]
-fn test_clear_message_empties_label() {
+fn test_render_none_empties_label() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    bar.push_message("test", MessageKind::Info);
-    bar.clear_message();
+    bar.render_message(Some(&status_message("test", MessageKind::Info)));
+    bar.render_message(None);
     assert_eq!(bar.imp().message_label.label().as_str(), "");
 }
 
 #[test]
-fn test_clear_message_removes_css_classes() {
+fn test_render_none_removes_css_classes() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    bar.push_message("test", MessageKind::Error);
-    bar.clear_message();
+    bar.render_message(Some(&status_message("test", MessageKind::Error)));
+    bar.render_message(None);
     assert!(!bar.imp().message_label.has_css_class("status-error"));
     assert!(!bar.imp().message_label.has_css_class("status-warning"));
     assert!(!bar.imp().message_label.has_css_class("status-info"));
-}
-
-// --- Generation counter ---
-
-#[test]
-fn test_generation_increments_on_push() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    let gen_before = bar.imp().message_generation.get();
-    bar.push_message("msg", MessageKind::Info);
-    assert_eq!(bar.imp().message_generation.get(), gen_before + 1);
-}
-
-#[test]
-fn test_multiple_pushes_increment_generation() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    bar.push_message("first", MessageKind::Info);
-    bar.push_message("second", MessageKind::Warning);
-    bar.push_message("third", MessageKind::Error);
-    assert_eq!(bar.imp().message_generation.get(), 3);
 }
 
 // --- File size ---

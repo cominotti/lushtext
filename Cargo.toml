@@ -69,6 +69,7 @@ tempfile   = "3.14"
 assert_cmd = "2.0"
 predicates = "3.0"
 criterion  = { version = "0.5", features = ["html_reports"] }
+libtest-mimic = "0.8"
 
 # --- Compilation speed profiles ---
 

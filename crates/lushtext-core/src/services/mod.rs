@@ -15,6 +15,7 @@ pub mod editorconfig;
 pub mod file_limits;
 pub mod file_tree;
 pub mod json_store;
+pub mod notifications;
 pub mod palette;
 pub mod saved_searches;
 pub mod search_history;

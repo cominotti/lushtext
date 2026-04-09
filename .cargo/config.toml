@@ -1,4 +1,0 @@
-# Compilation speed optimizations for local development.
-#
-# Rust 1.90+ uses rust-lld as the default linker on x86_64-linux-gnu,
-# providing ~10x faster linking than BFD with zero configuration.

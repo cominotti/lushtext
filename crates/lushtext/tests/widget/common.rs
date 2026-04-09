@@ -6,6 +6,7 @@
 //! must be registered before constructing widgets that use composite templates.
 //! Both operations are one-time setup via `std::sync::Once`.
 
+use gio::prelude::{ApplicationExt, Cast, ObjectExt};
 use std::sync::Once;
 
 static GTK_INIT: Once = Once::new();
@@ -35,4 +36,19 @@ pub fn ensure_gtk_init() {
         sourceview5::init();
         lushtext_core::register_resources();
     });
+}
+
+pub fn test_application() -> libadwaita::Application {
+    ensure_gtk_init();
+    let app: libadwaita::Application = lushtext_core::app::LushtextApplication::new().upcast();
+    app.register(gio::Cancellable::NONE)
+        .expect("test application registration");
+    app.emit_by_name::<()>("startup", &[]);
+    while glib::MainContext::default().iteration(false) {}
+    app
+}
+
+pub fn test_window() -> lushtext_core::ui::window::LushtextWindow {
+    let app = test_application();
+    lushtext_core::ui::window::LushtextWindow::new(&app)
 }

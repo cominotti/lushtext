@@ -58,6 +58,7 @@ pub struct LushtextInfoBar {
     pub retry_callback: RefCell<Option<Callback>>,
     pub save_callback: RefCell<Option<Callback>>,
     pub discard_callback: RefCell<Option<Callback>>,
+    pub dismissed_callback: RefCell<Option<Callback>>,
 }
 
 impl Default for LushtextInfoBar {
@@ -75,6 +76,7 @@ impl Default for LushtextInfoBar {
             retry_callback: RefCell::new(None),
             save_callback: RefCell::new(None),
             discard_callback: RefCell::new(None),
+            dismissed_callback: RefCell::new(None),
         }
     }
 }
@@ -136,14 +138,24 @@ impl ObjectImpl for LushtextInfoBar {
         // GtkInfoBar emits `response` with GTK_RESPONSE_CLOSE when the
         // built-in close button is clicked.
         {
-            let infobar = self.access_infobar.clone();
-            self.access_infobar
-                .connect_response(move |_, _| infobar.set_revealed(false));
+            let obj_weak = self.obj().downgrade();
+            self.access_infobar.connect_response(move |_, _| {
+                if let Some(obj) = obj_weak.upgrade()
+                    && let Some(ref cb) = *obj.imp().dismissed_callback.borrow()
+                {
+                    cb();
+                }
+            });
         }
         {
-            let infobar = self.discard_infobar.clone();
-            self.discard_infobar
-                .connect_response(move |_, _| infobar.set_revealed(false));
+            let obj_weak = self.obj().downgrade();
+            self.discard_infobar.connect_response(move |_, _| {
+                if let Some(obj) = obj_weak.upgrade()
+                    && let Some(ref cb) = *obj.imp().dismissed_callback.borrow()
+                {
+                    cb();
+                }
+            });
         }
     }
 }

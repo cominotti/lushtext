@@ -51,6 +51,8 @@ pub struct LushtextWorkspaceSection {
 
     /// Popover for the right-click context menu on file rows.
     pub context_menu: RefCell<Option<gtk4::PopoverMenu>>,
+    /// Popover for the right-click context menu on the workspace header.
+    pub header_context_menu: RefCell<Option<gtk4::PopoverMenu>>,
     /// Path of the item under the right-click context menu. Set on gesture
     /// press, read by action handlers (rename, delete, new file).
     pub context_path: RefCell<Option<PathBuf>>,
@@ -120,6 +122,15 @@ impl ObjectImpl for LushtextWorkspaceSection {
                 section.notify_add_folder_requested();
             }
         });
+    }
+
+    fn dispose(&self) {
+        if let Some(popover) = self.context_menu.borrow_mut().take() {
+            popover.unparent();
+        }
+        if let Some(popover) = self.header_context_menu.borrow_mut().take() {
+            popover.unparent();
+        }
     }
 }
 
@@ -410,6 +421,7 @@ impl LushtextWorkspaceSection {
         popover.set_parent(&*self.header_box);
         popover.set_has_arrow(false);
         popover.set_halign(gtk4::Align::Start);
+        *self.header_context_menu.borrow_mut() = Some(popover.clone());
 
         let action_group = gio::SimpleActionGroup::new();
 

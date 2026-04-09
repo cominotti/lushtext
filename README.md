@@ -67,6 +67,8 @@ make check       # clippy + fmt check
 
 The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel test execution (optional). Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 
+Critical rule: pre-existing blockers discovered while implementing or verifying a change must be fixed in the same work stream rather than worked around, deferred, or called out as "pre-existing". No exceptions.
+
 ### Flatpak
 
 ```sh
@@ -152,6 +154,8 @@ make test-widget # Widget tests (requires display server)
 ```
 
 Widget tests require a display server. Use `mutter --headless` for headless environments — see `.github/workflows/ci.yml` for the full invocation.
+
+GTK widget tests run through the custom harness in [`crates/lushtext/tests/widget.rs`](./crates/lushtext/tests/widget.rs), which executes each widget test in its own process so GTK objects stay on a real main thread and test state cannot leak across cases.
 
 ## Benchmarks
 

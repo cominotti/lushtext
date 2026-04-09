@@ -2,7 +2,6 @@
 
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
-use std::cell::Cell;
 
 #[derive(Default, CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/status-bar.ui")]
@@ -19,16 +18,6 @@ pub struct LushtextStatusBar {
     pub encoding_label: TemplateChild<gtk4::Label>,
     #[template_child]
     pub file_size_label: TemplateChild<gtk4::Label>,
-
-    /// Monotonically increasing counter. Each posted message bumps this.
-    /// The auto-dismiss timeout captures the value at post time and skips
-    /// clearing if the counter has moved on (a newer message replaced it).
-    pub message_generation: Cell<u32>,
-
-    /// Whether a non-auto-dismiss progress message is currently displayed.
-    /// When true, `clear_progress_message()` will clear it; `push_message()`
-    /// always overrides progress (clears this flag and schedules auto-dismiss).
-    pub progress_active: Cell<bool>,
 }
 
 #[glib::object_subclass]

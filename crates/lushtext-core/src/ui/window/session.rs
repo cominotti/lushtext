@@ -7,6 +7,7 @@
 
 use crate::model::draft::DraftEntry;
 use crate::model::session::{SessionData, SessionTab};
+use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::services::{async_task, draft_service, editor_io, json_store, session_service};
 use crate::ui::editor_page::LushtextEditorPage;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -296,7 +297,25 @@ impl super::LushtextWindow {
         buffer.set_modified(true);
         let has_backing_file = editor.file_path().is_some();
         editor.set_draft_restored(true);
-        editor.info_bar().show_draft_restored(has_backing_file);
+        editor.emit_inline_notification(InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: if has_backing_file {
+                "Draft Changes Restored".to_string()
+            } else {
+                "Document Restored".to_string()
+            },
+            body: if has_backing_file {
+                "Unsaved changes from a previous session have been restored.".to_string()
+            } else {
+                "Unsaved document has been restored.".to_string()
+            },
+            primary_button: Some("_Discard…".to_string()),
+            secondary_button: Some(if has_backing_file {
+                "_Save…".to_string()
+            } else {
+                "Save _As…".to_string()
+            }),
+        });
     }
 
     /// Deferred orphan cleanup — runs after session restore to avoid blocking

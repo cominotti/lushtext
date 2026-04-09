@@ -7,15 +7,16 @@
 //! All methods are `impl LushtextWindow` called from `new()` and `constructed()`.
 
 use crate::config::keys;
+use crate::services::notifications::{
+    NotificationOwner, NotificationSeverity, NotificationSurface,
+};
 use crate::services::{async_task, content_search, json_store, saved_searches, search_history};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{self, glib};
-use std::cell::Cell;
 use std::collections::HashSet;
-use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -57,58 +58,45 @@ pub fn setup_search_panel(window: &LushtextWindow) {
             }
         });
 
-    // --- Search progress: status bar + 500ms delay + navigation action update ---
-    let show_progress = Rc::new(Cell::new(false));
-
-    // When a new search starts (search_changed debounce fires), reset the
-    // 500ms delay flag. We detect this via connect_search_changed on the entry.
-    {
-        let show_progress = show_progress.clone();
-        let window_weak = window.downgrade();
-        imp.search_panel
-            .search_entry()
-            .connect_search_changed(move |_| {
-                show_progress.set(false);
-                let show_progress = show_progress.clone();
-                glib::timeout_add_local_once(Duration::from_millis(500), move || {
-                    show_progress.set(true);
-                });
-                // Clear any existing progress message when a new search starts.
-                if let Some(window) = window_weak.upgrade() {
-                    window.imp().status_bar.clear_progress_message();
-                }
-            });
-    }
+    // --- Search progress: notification store + 500ms delay + navigation action update ---
+    let window_weak = window.downgrade();
+    imp.search_panel
+        .search_entry()
+        .connect_search_changed(move |_| {
+            if let Some(window) = window_weak.upgrade() {
+                window.prepare_search_progress_tracking();
+            }
+        });
 
     {
-        let show_progress = show_progress.clone();
         let window_weak = window.downgrade();
         imp.search_panel
             .connect_search_progress(move |files_searched, is_done| {
                 let Some(window) = window_weak.upgrade() else {
                     return;
                 };
-                let imp = window.imp();
 
                 if is_done {
-                    imp.status_bar.clear_progress_message();
+                    window.finish_search_progress_tracking();
                     window.update_search_navigation_actions();
                     return;
                 }
 
                 // Only show progress after the 500ms delay has elapsed
                 // and while the search panel is still visible.
-                if !show_progress.get() || !imp.search_panel_revealer.reveals_child() {
+                if !window.imp().search_progress_visible.get()
+                    || !window.imp().search_panel_revealer.reveals_child()
+                {
                     return;
                 }
 
-                let file_count = imp.command_palette.file_index_len();
+                let file_count = window.imp().command_palette.file_index_len();
                 let message = if file_count > 0 {
                     format!("Searching {files_searched} / {file_count} files\u{2026}")
                 } else {
                     format!("Searching {files_searched} files\u{2026}")
                 };
-                imp.status_bar.set_progress_message(&message);
+                window.update_search_progress_message(&message);
             });
     }
 
@@ -124,10 +112,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     let window_weak = window.downgrade();
     imp.search_panel.connect_message(move |text| {
         if let Some(window) = window_weak.upgrade() {
-            window
-                .imp()
-                .status_bar
-                .push_message(text, MessageKind::Info);
+            window.publish_status_message(text, MessageKind::Info);
         }
     });
 
@@ -162,7 +147,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
         let skipped_count = total_replacements - filtered.len();
 
         if filtered.is_empty() {
-            imp.status_bar.push_message(
+            window.publish_status_message(
                 "No replacements to apply (all files have unsaved changes)",
                 MessageKind::Warning,
             );
@@ -199,7 +184,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         } else {
                             MessageKind::Warning
                         };
-                        imp.status_bar.push_message(&msg, kind);
+                        window.publish_status_message(&msg, kind);
 
                         // Store backup and show undo button.
                         imp.search_panel.set_undo_backup(backup);
@@ -209,8 +194,10 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         reload_affected_tabs(&window, &affected_paths);
                     }
                     Err(e) => {
-                        imp.status_bar
-                            .push_message(&format!("Replace failed: {e}"), MessageKind::Error);
+                        window.publish_status_message(
+                            &format!("Replace failed: {e}"),
+                            MessageKind::Error,
+                        );
                     }
                 }
             },
@@ -229,18 +216,16 @@ pub fn setup_search_panel(window: &LushtextWindow) {
         async_task::spawn_blocking_then(
             window.clone(),
             move || content_search::undo_replacements(&backup),
-            move |window, result| {
-                let imp = window.imp();
-                match result {
-                    Ok(count) => {
-                        imp.status_bar
-                            .push_message(&format!("Reverted {count} files"), MessageKind::Info);
-                        reload_affected_tabs(&window, &affected_paths);
-                    }
-                    Err(e) => {
-                        imp.status_bar
-                            .push_message(&format!("Undo failed: {e}"), MessageKind::Error);
-                    }
+            move |window, result| match result {
+                Ok(count) => {
+                    window.publish_status_message(
+                        &format!("Reverted {count} files"),
+                        MessageKind::Info,
+                    );
+                    reload_affected_tabs(&window, &affected_paths);
+                }
+                Err(e) => {
+                    window.publish_status_message(&format!("Undo failed: {e}"), MessageKind::Error);
                 }
             },
         );
@@ -342,7 +327,7 @@ impl LushtextWindow {
         }
         imp.search_panel.close();
         imp.search_panel_revealer.set_reveal_child(false);
-        imp.status_bar.clear_progress_message();
+        self.finish_search_progress_tracking();
         let _ = imp.settings.set_boolean(keys::SEARCH_PANEL_VISIBLE, false);
         self.update_search_navigation_actions();
         self.restore_search_saved_focus();
@@ -363,6 +348,87 @@ impl LushtextWindow {
             None => {
                 gtk4::prelude::GtkWindowExt::set_focus(self, gtk4::Widget::NONE);
             }
+        }
+    }
+
+    pub(crate) fn prepare_search_progress_tracking(&self) {
+        self.finish_search_progress_tracking();
+        let imp = self.imp();
+        let generation = imp.search_progress_generation.get().wrapping_add(1);
+        imp.search_progress_generation.set(generation);
+        imp.search_progress_visible.set(false);
+        self.start_search_progress_heartbeat();
+
+        let window_weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(500), move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let imp = window.imp();
+            if imp.search_progress_generation.get() != generation
+                || !imp.search_panel.imp().searching.get()
+                || !imp.search_panel_revealer.reveals_child()
+            {
+                return;
+            }
+            imp.search_progress_visible.set(true);
+        });
+    }
+
+    pub(crate) fn update_search_progress_message(&self, message: &str) {
+        if self.imp().notification_bus.update_progress(
+            NotificationOwner::Search,
+            NotificationSurface::StatusBar,
+            message,
+            NotificationSeverity::Info,
+        ) {
+            self.render_notifications();
+        }
+    }
+
+    pub(crate) fn finish_search_progress_tracking(&self) {
+        self.imp().search_progress_visible.set(false);
+        self.stop_search_progress_heartbeat();
+        if self
+            .imp()
+            .notification_bus
+            .resolve(NotificationOwner::Search, NotificationSurface::StatusBar)
+        {
+            self.render_notifications();
+        }
+    }
+
+    fn start_search_progress_heartbeat(&self) {
+        self.stop_search_progress_heartbeat();
+        let window_weak = self.downgrade();
+        let source_id = glib::timeout_add_local(Duration::from_secs(1), move || {
+            let Some(window) = window_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let imp = window.imp();
+            if !imp.search_panel.imp().searching.get() {
+                window.finish_search_progress_tracking();
+                return glib::ControlFlow::Break;
+            }
+
+            if imp.search_panel_revealer.reveals_child()
+                && imp.search_progress_visible.get()
+                && imp
+                    .notification_bus
+                    .heartbeat(NotificationOwner::Search, NotificationSurface::StatusBar)
+            {
+                window.render_notifications();
+            }
+            glib::ControlFlow::Continue
+        });
+        self.imp()
+            .search_progress_heartbeat_source_id
+            .replace(Some(source_id));
+    }
+
+    fn stop_search_progress_heartbeat(&self) {
+        if let Some(source_id) = self.imp().search_progress_heartbeat_source_id.take() {
+            source_id.remove();
         }
     }
 }

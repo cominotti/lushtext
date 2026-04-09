@@ -75,18 +75,18 @@ impl super::LushtextWindow {
                                     .unwrap_or_default(),
                             );
                         }
-                        window_clone
-                            .imp()
-                            .status_bar
-                            .push_message(&format!("Saved as {path_display}"), MessageKind::Info);
+                        window_clone.publish_status_message(
+                            &format!("Saved as {path_display}"),
+                            MessageKind::Info,
+                        );
                         window_clone.refresh_status_bar();
                     }
                     Err(e) => {
                         tracing::error!("Save As failed: {}", e);
-                        window_clone
-                            .imp()
-                            .status_bar
-                            .push_message(&format!("Save failed: {e}"), MessageKind::Error);
+                        window_clone.publish_status_message(
+                            &format!("Save failed: {e}"),
+                            MessageKind::Error,
+                        );
                     }
                 });
             }

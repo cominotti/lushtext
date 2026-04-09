@@ -6,16 +6,15 @@ use crate::common::ensure_gtk_init;
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::app::LushtextApplication;
 use lushtext_core::config::keys;
+use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::editor_page::LushtextEditorPage;
 use lushtext_core::ui::window::LushtextWindow;
 use lushtext_core::ui::window::clamp_sidebar_position;
 
 /// Create a window attached to a test application (not registered with D-Bus).
 fn test_window() -> LushtextWindow {
-    let app: libadwaita::Application = LushtextApplication::new().upcast();
-    LushtextWindow::new(&app)
+    crate::common::test_window()
 }
 
 /// Drain all pending events from the GTK main loop.
@@ -427,12 +426,80 @@ fn test_status_bar_encoding_shows_utf8() {
 fn test_status_bar_push_message_from_window() {
     ensure_gtk_init();
     let window = test_window();
-    window.imp().status_bar.push_message(
+    window.publish_status_message(
         "Test message",
         lushtext_core::ui::status_bar::MessageKind::Info,
     );
     let msg_text = window.imp().status_bar.imp().message_label.label();
     assert_eq!(msg_text.as_str(), "Test message");
+}
+
+#[test]
+fn test_window_publish_editor_inline_notification_renders_info_bar() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    let editor = active_editor(&window);
+
+    window.publish_editor_inline_notification(
+        &editor,
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Draft Changes Restored".to_string(),
+            body: "Unsaved changes from a previous session have been restored.".to_string(),
+            primary_button: Some("_Discard…".to_string()),
+            secondary_button: Some("_Save…".to_string()),
+        },
+    );
+
+    let info_bar = editor.info_bar();
+    assert!(info_bar.imp().discard_infobar.property::<bool>("revealed"));
+    assert_eq!(
+        info_bar.imp().discard_title.label().as_str(),
+        "Draft Changes Restored"
+    );
+}
+
+#[test]
+fn test_window_dismiss_editor_notifications_hides_info_bar() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    let editor = active_editor(&window);
+
+    window.publish_editor_inline_notification(
+        &editor,
+        InlineActionNotification {
+            style: InlineNotificationStyle::Error,
+            title: "Could Not Open File".to_string(),
+            body: "Permission denied".to_string(),
+            primary_button: Some("_Retry".to_string()),
+            secondary_button: None,
+        },
+    );
+    assert!(
+        editor
+            .info_bar()
+            .imp()
+            .access_infobar
+            .property::<bool>("revealed")
+    );
+
+    window.dismiss_editor_notifications(&editor);
+    assert!(
+        !editor
+            .info_bar()
+            .imp()
+            .access_infobar
+            .property::<bool>("revealed")
+    );
+    assert!(
+        !editor
+            .info_bar()
+            .imp()
+            .discard_infobar
+            .property::<bool>("revealed")
+    );
 }
 
 // --- Save-as action enabled/disabled ---

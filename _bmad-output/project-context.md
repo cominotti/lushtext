@@ -144,6 +144,11 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - GTK/pixman warnings are bugs, not noise. Development is not finished if any warnings appear.
 - Before considering a UI change complete, run the app and exercise the feature while watching stderr.
 
+**Pre-existing blocker policy (CRITICAL):**
+- If implementation or verification reveals a pre-existing blocker, fix it in the same work stream instead of deferring around it or treating it as out of scope.
+- Do not close work with known failing checks or broken test harnesses on the grounds that the failure was already present.
+- This rule is mandatory and has no exceptions.
+
 ### Critical Don't-Miss Rules
 
 **Anti-patterns to NEVER do:**

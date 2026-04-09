@@ -7,6 +7,7 @@ mod imp;
 
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::file_limits::FileSizeCheck;
+use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::services::{async_task, editor_io};
 use crate::ui::info_bar::LushtextInfoBar;
 use glib::Object;
@@ -65,7 +66,7 @@ impl LushtextEditorPage {
                     // Mtime baseline from the metadata already read on the
                     // background thread — no extra stat() on the main thread.
                     editor.imp().last_known_mtime.set(loaded.mtime);
-                    editor.info_bar().dismiss_all();
+                    editor.clear_inline_notification();
                     // Fire the one-shot load-completed callback. Used by the
                     // window to defer draft recovery until after file content
                     // is loaded, preventing the race where load overwrites
@@ -77,7 +78,13 @@ impl LushtextEditorPage {
                 Err(LoadError::Cancelled) => {}
                 Err(e) => {
                     tracing::error!("{}", e);
-                    editor.info_bar().show_load_error(&e.to_string());
+                    editor.emit_inline_notification(InlineActionNotification {
+                        style: InlineNotificationStyle::Error,
+                        title: "Could Not Open File".to_string(),
+                        body: e.to_string(),
+                        primary_button: Some("_Retry".to_string()),
+                        secondary_button: None,
+                    });
                 }
             },
         );
@@ -246,10 +253,30 @@ impl LushtextEditorPage {
         *self.imp().memory_changed_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_inline_notification<F: Fn(InlineActionNotification) + 'static>(&self, f: F) {
+        *self.imp().notification_callback.borrow_mut() = Some(Box::new(f));
+    }
+
     fn notify_estimated_memory_changed(&self) {
         if let Some(ref callback) = *self.imp().memory_changed_callback.borrow() {
             callback(self.estimated_buffer_bytes());
         }
+    }
+
+    pub fn emit_inline_notification(&self, notification: InlineActionNotification) {
+        if let Some(ref callback) = *self.imp().notification_callback.borrow() {
+            callback(notification);
+        } else {
+            self.info_bar().render_notification(Some(&notification));
+        }
+    }
+
+    pub fn clear_inline_notification(&self) {
+        self.info_bar().render_notification(None);
+    }
+
+    pub fn notification_owner_id(&self) -> usize {
+        self.as_ptr() as usize
     }
 
     /// Open the search bar in find-only mode.
@@ -520,7 +547,13 @@ impl LushtextEditorPage {
                     move || editor_io::mtime_secs(&path),
                     move |editor, current_mtime| {
                         if current_mtime != last_known {
-                            editor.info_bar().show_externally_changed();
+                            editor.emit_inline_notification(InlineActionNotification {
+                                style: InlineNotificationStyle::Warning,
+                                title: "File Has Changed on Disk".to_string(),
+                                body: "The file was modified by another program.".to_string(),
+                                primary_button: Some("_Discard Changes and Reload".to_string()),
+                                secondary_button: None,
+                            });
                         }
                     },
                 );
