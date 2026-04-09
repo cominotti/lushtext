@@ -41,14 +41,22 @@ pub fn search(
     options: &ContentSearchOptions,
     tx: Sender<SearchEvent>,
     cancel: Arc<AtomicBool>,
+    progress_counter: Option<Arc<AtomicUsize>>,
+    completion_flag: Option<Arc<AtomicBool>>,
 ) {
     // Empty query → Done immediately, no file traversal.
     if query.is_empty() {
+        if let Some(flag) = &completion_flag {
+            flag.store(true, Ordering::Relaxed);
+        }
         let _ = tx.send(SearchEvent::Done);
         return;
     }
 
     if roots.is_empty() {
+        if let Some(flag) = &completion_flag {
+            flag.store(true, Ordering::Relaxed);
+        }
         let _ = tx.send(SearchEvent::Done);
         return;
     }
@@ -69,6 +77,9 @@ pub fn search(
             Ok(m) => m,
             Err(e) => {
                 let _ = tx.send(SearchEvent::Error(e.to_string()));
+                if let Some(flag) = &completion_flag {
+                    flag.store(true, Ordering::Relaxed);
+                }
                 let _ = tx.send(SearchEvent::Done);
                 return;
             }
@@ -107,6 +118,9 @@ pub fn search(
                 }
                 Err(e) => {
                     let _ = tx.send(SearchEvent::Error(format!("Invalid glob: {e}")));
+                    if let Some(flag) = &completion_flag {
+                        flag.store(true, Ordering::Relaxed);
+                    }
                     let _ = tx.send(SearchEvent::Done);
                     return;
                 }
@@ -128,6 +142,7 @@ pub fn search(
         let matcher = matcher.clone();
         let match_count = match_count.clone();
         let files_visited = files_visited.clone();
+        let progress_counter = progress_counter.clone();
 
         // Per-thread searcher — reused across all files on this thread.
         // Binary detection: skip files containing NUL bytes.
@@ -155,6 +170,9 @@ pub fn search(
 
             // Report progress every 100 files (best-effort via try_send).
             let count = files_visited.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(counter) = &progress_counter {
+                counter.store(count, Ordering::Relaxed);
+            }
             if count.is_multiple_of(100) {
                 let _ = tx.try_send(SearchEvent::Progress(count));
             }
@@ -207,6 +225,9 @@ pub fn search(
         })
     });
 
+    if let Some(flag) = &completion_flag {
+        flag.store(true, Ordering::Relaxed);
+    }
     let _ = tx.send(SearchEvent::Done);
 }
 
@@ -453,7 +474,7 @@ mod tests {
     ) -> Vec<SearchEvent> {
         let (tx, rx) = crossbeam_channel::unbounded();
         let cancel = Arc::new(AtomicBool::new(false));
-        search(query, roots, options, tx, cancel);
+        search(query, roots, options, tx, cancel, None, None);
         rx.iter().collect()
     }
 
@@ -547,6 +568,8 @@ mod tests {
             &ContentSearchOptions::default(),
             tx,
             cancel,
+            None,
+            None,
         );
 
         let count = handle.join().unwrap();
@@ -851,11 +874,86 @@ mod tests {
         }
     }
 
+    #[test]
+    fn progress_counter_tracks_all_visited_files() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        for i in 0..250 {
+            fs::write(root.join(format!("file_{i}.txt")), "content\n").unwrap();
+        }
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let progress_counter = Arc::new(AtomicUsize::new(0));
+
+        search(
+            "nonexistent_needle",
+            &[root],
+            &ContentSearchOptions::default(),
+            tx,
+            cancel,
+            Some(progress_counter.clone()),
+            None,
+        );
+
+        let events: Vec<_> = rx.iter().collect();
+        assert_ends_with_done(&events);
+        assert_eq!(progress_counter.load(Ordering::Relaxed), 250);
+    }
+
     // SearchEvent::Progress variant can be constructed and pattern-matched.
     #[test]
     fn progress_variant_construction() {
         let event = SearchEvent::Progress(42);
         assert!(matches!(event, SearchEvent::Progress(42)));
+    }
+
+    #[test]
+    fn completion_flag_is_set_before_done_send_unblocks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+
+        for i in 0..100 {
+            fs::write(root.join(format!("file_{i}.txt")), "content\n").unwrap();
+        }
+
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let completion_flag = Arc::new(AtomicBool::new(false));
+        let completion_flag_for_search = completion_flag.clone();
+
+        let handle = std::thread::spawn(move || {
+            search(
+                "nonexistent_needle",
+                &[root.as_path()],
+                &ContentSearchOptions::default(),
+                tx,
+                cancel,
+                None,
+                Some(completion_flag_for_search),
+            );
+        });
+
+        for _ in 0..100 {
+            if completion_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(
+            completion_flag.load(Ordering::Relaxed),
+            "completion flag should be set even if Done is still backpressured"
+        );
+
+        let events: Vec<_> = rx.iter().take(2).collect();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, SearchEvent::Done))
+        );
+        handle.join().unwrap();
     }
 
     // AC #14: Invalid regex returns Error.

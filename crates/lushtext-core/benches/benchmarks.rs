@@ -800,6 +800,8 @@ fn bench_content_search(c: &mut Criterion) {
                 &ContentSearchOptions::default(),
                 tx,
                 cancel,
+                None,
+                None,
             );
             // Drain to avoid backpressure stalls.
             for _ in rx.iter() {}
@@ -821,6 +823,8 @@ fn bench_content_search(c: &mut Criterion) {
                 &opts,
                 tx,
                 cancel,
+                None,
+                None,
             );
             for _ in rx.iter() {}
         });
@@ -853,6 +857,8 @@ fn bench_content_search(c: &mut Criterion) {
                 &ContentSearchOptions::default(),
                 tx,
                 cancel,
+                None,
+                None,
             );
             for _ in rx.iter() {}
         });
@@ -889,6 +895,8 @@ fn bench_content_search(c: &mut Criterion) {
                 &ContentSearchOptions::default(),
                 tx,
                 cancel,
+                None,
+                None,
             );
             for _ in rx.iter() {}
         });

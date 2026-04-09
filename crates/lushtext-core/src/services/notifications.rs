@@ -152,9 +152,13 @@ impl NotificationBus {
     }
 
     pub fn sweep_expired(&self) -> bool {
+        self.sweep_expired_at(Instant::now())
+    }
+
+    pub fn sweep_expired_at(&self, now: Instant) -> bool {
         self.reduce_at(
             NotificationEvent::SweepExpired,
-            Instant::now(),
+            now,
             NotificationOwner::Window,
             NotificationSurface::StatusBar,
             None,
@@ -222,22 +226,16 @@ impl NotificationBus {
         surface: NotificationSurface,
         payload: Option<NotificationPayload>,
     ) -> bool {
-        self.prune_expired(now);
+        let expired_changed = self.prune_expired(now);
 
         let mut records = self.records.borrow_mut();
-        let changed = match event {
-            NotificationEvent::Publish => {
-                let Some(payload) = payload else {
-                    return false;
-                };
-                publish_record(&mut records, owner, surface, payload, now)
-            }
-            NotificationEvent::Update => {
-                let Some(payload) = payload else {
-                    return false;
-                };
-                update_progress_record(&mut records, owner, surface, payload, now)
-            }
+        let event_changed = match event {
+            NotificationEvent::Publish => payload
+                .map(|payload| publish_record(&mut records, owner, surface, payload, now))
+                .unwrap_or(false),
+            NotificationEvent::Update => payload
+                .map(|payload| update_progress_record(&mut records, owner, surface, payload, now))
+                .unwrap_or(false),
             NotificationEvent::Heartbeat => {
                 renew_progress_record(&mut records, owner, surface, now)
             }
@@ -254,11 +252,11 @@ impl NotificationBus {
             NotificationEvent::SweepExpired => false,
         };
 
-        if changed {
+        if event_changed {
             self.bump_generation();
         }
 
-        changed
+        expired_changed || event_changed
     }
 
     fn prune_expired(&self, now: Instant) -> bool {
@@ -560,6 +558,28 @@ mod tests {
             bus.status_bar_view_at(now + Duration::from_secs(11))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn sweep_expired_reports_changes_and_advances_generation() {
+        let bus = NotificationBus::default();
+        let now = Instant::now();
+
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now,
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            Some(transient("Saved", NotificationSeverity::Info)),
+        ));
+        let generation_before_sweep = bus.generation();
+
+        assert!(bus.sweep_expired_at(now + NOTIFICATION_TIMEOUT + Duration::from_secs(1)));
+        assert!(
+            bus.status_bar_view_at(now + NOTIFICATION_TIMEOUT + Duration::from_secs(1))
+                .is_none()
+        );
+        assert!(bus.generation() > generation_before_sweep);
     }
 
     #[test]

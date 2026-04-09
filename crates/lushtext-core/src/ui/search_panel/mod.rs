@@ -22,7 +22,7 @@ use libadwaita::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::model::content_search::{
@@ -616,6 +616,8 @@ impl LushtextSearchPanel {
         // Set up channel and cancel token.
         let (tx, rx) = crossbeam_channel::bounded(1024);
         let cancel = Arc::new(AtomicBool::new(false));
+        let progress_counter = Arc::new(AtomicUsize::new(0));
+        let worker_finished = Arc::new(AtomicBool::new(false));
         imp.cancel_token.replace(Some(cancel.clone()));
         imp.searching.set(true);
         imp.result_capped.set(false);
@@ -645,11 +647,22 @@ impl LushtextSearchPanel {
                 }
             },
         };
+        let worker_progress_counter = Arc::clone(&progress_counter);
+        let worker_finished_for_search = Arc::clone(&worker_finished);
         std::thread::spawn(move || {
             let root_refs: Vec<&Path> = roots.iter().map(|p| p.as_path()).collect();
-            content_search::search(&query, &root_refs, &options, tx, cancel);
+            content_search::search(
+                &query,
+                &root_refs,
+                &options,
+                tx,
+                cancel,
+                Some(worker_progress_counter),
+                Some(worker_finished_for_search),
+            );
         });
         let panel_weak = self.downgrade();
+        let mut completion_notified = false;
         glib::timeout_add_local(Duration::from_millis(50), move || {
             let Some(panel) = panel_weak.upgrade() else {
                 return glib::ControlFlow::Break;
@@ -666,9 +679,13 @@ impl LushtextSearchPanel {
             let mut items_this_tick = 0;
             let workspace_roots = imp.workspace_roots.borrow().clone();
 
-            // Drain up to 50 results per tick.
+            // Drain a larger batch per tick so completion doesn't lag behind a
+            // large match backlog and leave progress notifications stale.
+            const MAX_EVENTS_PER_TICK: usize = 250;
+
+            // Drain up to MAX_EVENTS_PER_TICK results per tick.
             loop {
-                if items_this_tick >= 50 {
+                if items_this_tick >= MAX_EVENTS_PER_TICK {
                     break;
                 }
                 match rx.try_recv() {
@@ -796,10 +813,7 @@ impl LushtextSearchPanel {
                         imp.count_label.add_css_class("warning");
                     }
                     Ok(SearchEvent::Progress(count)) => {
-                        imp.last_progress_count.set(count);
-                        if let Some(ref cb) = *imp.progress_callback.borrow() {
-                            cb(count, false);
-                        }
+                        let _ = count;
                     }
                     Ok(SearchEvent::Error(msg)) => {
                         imp.error_label.set_text(&msg);
@@ -814,27 +828,53 @@ impl LushtextSearchPanel {
                 }
             }
 
+            let files_visited = progress_counter.load(Ordering::Relaxed);
+            if !completion_notified && files_visited > imp.last_progress_count.get() {
+                imp.last_progress_count.set(files_visited);
+                if let Some(ref cb) = *imp.progress_callback.borrow() {
+                    cb(files_visited, false);
+                }
+            }
+
+            if worker_finished.load(Ordering::Relaxed) && !completion_notified {
+                completion_notified = true;
+                imp.searching.set(false);
+                if files_visited > imp.last_progress_count.get() {
+                    imp.last_progress_count.set(files_visited);
+                }
+                if let Some(ref cb) = *imp.progress_callback.borrow() {
+                    cb(imp.last_progress_count.get(), true);
+                }
+            }
+
             // Update count label (skip when result cap already set the AC-specified text).
             let total = imp.total_matches.get();
             let files = imp.total_files.get();
             if total > 0 && !imp.result_capped.get() {
                 let text = format!("{total} results in {files} files");
                 imp.count_label.set_text(&text);
-            } else if imp.searching.get() && total == 0 {
+            } else if !completion_notified && imp.searching.get() && total == 0 {
                 imp.count_label.set_text("Searching\u{2026}");
                 imp.results_header_separator.set_visible(true);
                 imp.footer_box.set_visible(true);
             }
 
             if done {
-                imp.searching.set(false);
+                if !completion_notified {
+                    completion_notified = true;
+                    imp.searching.set(false);
+                    let files_visited = progress_counter.load(Ordering::Relaxed);
+                    if files_visited > imp.last_progress_count.get() {
+                        imp.last_progress_count.set(files_visited);
+                    }
+                    if let Some(ref cb) = *imp.progress_callback.borrow() {
+                        cb(imp.last_progress_count.get(), true);
+                    }
+                }
                 if total == 0 {
                     imp.count_label.set_text("No results found");
                     imp.results_header_separator.set_visible(true);
                     imp.footer_box.set_visible(true);
-                }
-                if let Some(ref cb) = *imp.progress_callback.borrow() {
-                    cb(imp.last_progress_count.get(), true);
                 }
                 panel.update_replace_button_sensitivity();
 

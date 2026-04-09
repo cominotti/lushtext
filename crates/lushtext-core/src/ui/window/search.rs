@@ -22,6 +22,10 @@ use std::time::Duration;
 
 use super::LushtextWindow;
 
+fn format_search_progress_message(files_searched: usize) -> String {
+    format!("Searching {files_searched} files\u{2026}")
+}
+
 /// Set up the search panel action, callbacks, and workspace root forwarding.
 pub fn setup_search_panel(window: &LushtextWindow) {
     let imp = window.imp();
@@ -90,12 +94,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                     return;
                 }
 
-                let file_count = window.imp().command_palette.file_index_len();
-                let message = if file_count > 0 {
-                    format!("Searching {files_searched} / {file_count} files\u{2026}")
-                } else {
-                    format!("Searching {files_searched} files\u{2026}")
-                };
+                let message = format_search_progress_message(files_searched);
                 window.update_search_progress_message(&message);
             });
     }
@@ -257,6 +256,19 @@ pub fn setup_search_panel(window: &LushtextWindow) {
             window.imp().search_panel.set_saved_searches(entries);
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_search_progress_message;
+
+    #[test]
+    fn search_progress_message_does_not_use_palette_index_total() {
+        assert_eq!(
+            format_search_progress_message(14_100),
+            "Searching 14100 files\u{2026}"
+        );
+    }
 }
 
 impl LushtextWindow {

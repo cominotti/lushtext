@@ -7,10 +7,14 @@ use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::config::keys;
-use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_core::services::notifications::{
+    InlineActionNotification, InlineNotificationStyle, NOTIFICATION_TIMEOUT, NotificationOwner,
+    NotificationSeverity, NotificationSurface,
+};
 use lushtext_core::ui::editor_page::LushtextEditorPage;
 use lushtext_core::ui::window::LushtextWindow;
 use lushtext_core::ui::window::clamp_sidebar_position;
+use std::time::{Duration, Instant};
 
 /// Create a window attached to a test application (not registered with D-Bus).
 fn test_window() -> LushtextWindow {
@@ -432,6 +436,83 @@ fn test_status_bar_push_message_from_window() {
     );
     let msg_text = window.imp().status_bar.imp().message_label.label();
     assert_eq!(msg_text.as_str(), "Test message");
+}
+
+#[test]
+fn test_expired_status_message_sweep_clears_status_bar() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.publish_status_message(
+        "Expiring message",
+        lushtext_core::ui::status_bar::MessageKind::Info,
+    );
+    assert_eq!(
+        window.imp().status_bar.imp().message_label.label().as_str(),
+        "Expiring message"
+    );
+
+    let swept = window
+        .imp()
+        .notification_bus
+        .sweep_expired_at(Instant::now() + NOTIFICATION_TIMEOUT + Duration::from_secs(1));
+    assert!(
+        swept,
+        "forced sweep should report expired notification removal"
+    );
+
+    if swept {
+        window.render_notifications();
+    }
+
+    assert_eq!(
+        window.imp().status_bar.imp().message_label.label().as_str(),
+        ""
+    );
+}
+
+#[test]
+fn test_status_message_auto_dismisses_after_timeout() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.publish_status_message(
+        "Auto-dismiss message",
+        lushtext_core::ui::status_bar::MessageKind::Info,
+    );
+    assert_eq!(
+        window.imp().status_bar.imp().message_label.label().as_str(),
+        "Auto-dismiss message"
+    );
+
+    flush_after_delay(NOTIFICATION_TIMEOUT + Duration::from_secs(2));
+
+    assert_eq!(
+        window.imp().status_bar.imp().message_label.label().as_str(),
+        ""
+    );
+}
+
+#[test]
+fn test_progress_status_message_auto_dismisses_without_heartbeat() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(window.imp().notification_bus.update_progress(
+        NotificationOwner::Search,
+        NotificationSurface::StatusBar,
+        "Searching 14100 files\u{2026}",
+        NotificationSeverity::Info,
+    ));
+    window.render_notifications();
+    assert_eq!(
+        window.imp().status_bar.imp().message_label.label().as_str(),
+        "Searching 14100 files\u{2026}"
+    );
+
+    flush_after_delay(NOTIFICATION_TIMEOUT + Duration::from_secs(2));
+
+    assert_eq!(
+        window.imp().status_bar.imp().message_label.label().as_str(),
+        ""
+    );
 }
 
 #[test]
