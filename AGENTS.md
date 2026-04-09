@@ -1,5 +1,7 @@
 # LushText
 
+> **Load order:** Agents must always load [SOUL.md](./SOUL.md) first and immediately, before reading the rest of [AGENTS.md](./AGENTS.md), so it can inform how the agent should behave while applying the project guidance below.
+
 A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text Editor but with a left-side file tree pane and workspace support.
 
 ## Tech Stack
