@@ -99,6 +99,52 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
 }
 
 impl LushtextWindow {
+    fn queue_preview_position_persist(&self, preview_width: i32) {
+        let imp = self.imp();
+        imp.pending_preview_pos.set(preview_width);
+
+        if imp.last_preview_pos.get() == preview_width {
+            return;
+        }
+
+        let generation = imp.preview_persist_generation.get().wrapping_add(1);
+        imp.preview_persist_generation.set(generation);
+
+        let window_weak = self.downgrade();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let imp = window.imp();
+            if imp.preview_persist_generation.get() != generation {
+                return;
+            }
+            let preview_width = imp.pending_preview_pos.get();
+            if imp.last_preview_pos.get() == preview_width {
+                return;
+            }
+            if imp
+                .settings
+                .set_int(keys::PREVIEW_PANE_POSITION, preview_width)
+                .is_ok()
+            {
+                imp.last_preview_pos.set(preview_width);
+            }
+        });
+    }
+
+    fn persist_preview_position_preference(&self) {
+        let imp = self.imp();
+        let preview_width = if imp.preview_visible.get() {
+            imp.preview_paned
+                .width()
+                .saturating_sub(imp.preview_paned.position())
+        } else {
+            imp.saved_preview_pos.get()
+        };
+        self.queue_preview_position_persist(preview_width.max(0));
+    }
+
     /// Animate the side-by-side preview pane show/hide.
     ///
     /// Mirrors the sidebar animation pattern from `animate_sidebar()`:
@@ -111,6 +157,7 @@ impl LushtextWindow {
         if let Some(anim) = imp.preview_animation.take() {
             anim.pause();
         }
+        imp.preview_animation_active.set(false);
 
         let paned = &imp.preview_paned;
         let preview = &imp.markdown_preview;
@@ -160,16 +207,21 @@ impl LushtextWindow {
         } else {
             Some(preview.downgrade())
         };
-        let paned_weak = paned.downgrade();
+        let done_window_weak = self.downgrade();
         animation.connect_done(move |_| {
+            let Some(window) = done_window_weak.upgrade() else {
+                return;
+            };
+            let imp = window.imp();
             if let Some(preview) = preview_weak.as_ref().and_then(|w| w.upgrade()) {
                 preview.set_visible(false);
             }
-            if let Some(p) = paned_weak.upgrade() {
-                p.set_shrink_end_child(false);
-            }
+            imp.preview_paned.set_shrink_end_child(false);
+            imp.preview_animation_active.set(false);
+            window.persist_preview_position_preference();
         });
 
+        imp.preview_animation_active.set(true);
         animation.play();
         imp.preview_animation.replace(Some(animation));
     }
@@ -184,6 +236,7 @@ impl LushtextWindow {
         if let Some(anim) = imp.preview_animation.take() {
             anim.pause();
         }
+        imp.preview_animation_active.set(false);
 
         let paned = &imp.preview_paned;
         paned.set_shrink_start_child(true);
@@ -224,8 +277,12 @@ impl LushtextWindow {
         } else {
             Some(imp.markdown_preview.downgrade())
         };
-        let paned_weak = paned.downgrade();
+        let done_window_weak = self.downgrade();
         animation.connect_done(move |_| {
+            let Some(window) = done_window_weak.upgrade() else {
+                return;
+            };
+            let imp = window.imp();
             // After entering preview-only: hide the editor box.
             if let Some(editor_box) = editor_box_weak.as_ref().and_then(|w| w.upgrade()) {
                 editor_box.set_visible(false);
@@ -234,11 +291,12 @@ impl LushtextWindow {
             if let Some(preview) = preview_weak.as_ref().and_then(|w| w.upgrade()) {
                 preview.set_visible(false);
             }
-            if let Some(p) = paned_weak.upgrade() {
-                p.set_shrink_start_child(false);
-            }
+            imp.preview_paned.set_shrink_start_child(false);
+            imp.preview_animation_active.set(false);
+            window.persist_preview_position_preference();
         });
 
+        imp.preview_animation_active.set(true);
         animation.play();
         imp.preview_animation.replace(Some(animation));
     }
@@ -318,38 +376,12 @@ impl LushtextWindow {
             paned.set_position(clamped);
         }
 
-        let final_pos = paned.position();
-        let preview_width = paned_width - final_pos;
-        imp.pending_preview_pos.set(preview_width);
-
-        if imp.last_preview_pos.get() == preview_width {
+        if imp.preview_animation_active.get() {
             return;
         }
-
-        let generation = imp.preview_persist_generation.get().wrapping_add(1);
-        imp.preview_persist_generation.set(generation);
-
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            let imp = window.imp();
-            if imp.preview_persist_generation.get() != generation {
-                return;
-            }
-            let preview_width = imp.pending_preview_pos.get();
-            if imp.last_preview_pos.get() == preview_width {
-                return;
-            }
-            if imp
-                .settings
-                .set_int(keys::PREVIEW_PANE_POSITION, preview_width)
-                .is_ok()
-            {
-                imp.last_preview_pos.set(preview_width);
-            }
-        });
+        let final_pos = paned.position();
+        let preview_width = paned_width - final_pos;
+        self.queue_preview_position_persist(preview_width);
     }
 
     /// Get the active editor for preview purposes.

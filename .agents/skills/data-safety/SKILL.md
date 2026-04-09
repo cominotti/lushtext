@@ -2,20 +2,58 @@
 name: data-safety
 description: "Identify and fix data loss risks: draft persistence failures, save/close
   flow gaps, replace-all backup safety, session restore bugs, async concurrency hazards.
-  Uses 5 parallel grep-based subagents with binary decision trees for deterministic
-  results. Auto-invoked on .rs changes in Rust app code under any */src/ui,
-  */src/services, or */src/model tree. Also invocable as /data-safety for full
-  codebase audit. Trigger whenever code touches: file I/O, buffer state, tab
-  or window close, draft or session persistence, spawn_blocking_then, search/replace,
-  or any async pattern that modifies application state. Every finding must be
-  fixed immediately — never deferred."
+  Auto-invoked on .rs changes in Rust app code under any */src/ui, */src/services,
+  or */src/model tree to provide scoped guidance only. Also invocable as
+  /data-safety for the full deterministic 5-subagent audit. Trigger whenever
+  code touches: file I/O, buffer state, tab or window close, draft or session
+  persistence, spawn_blocking_then, search/replace, or any async pattern that
+  modifies application state. Automatic mode must stay lightweight: no broad
+  scans or audit dispatch. Explicit audit findings must be fixed immediately —
+  never deferred."
 ---
 
-# Data Safety Audit
+# Data Safety
 
-Detect and fix code patterns that cause silent data loss. Data loss is the most severe bug class in a text editor — users who lose work never trust the app again.
+Guide and audit code patterns that can cause silent data loss. Data loss is the most severe bug class in a text editor — users who lose work never trust the app again. Automatic invocation gives scoped guidance for the current task; explicit `/data-safety` runs the full deterministic audit.
+
+## Guidance Mode (automatic invocation)
+
+Use this mode when the skill was triggered automatically by agents because the current task touches relevant Rust app code or data-safety-sensitive patterns.
+
+- Stay scoped to the active task, diff, or already-open files.
+- Do **not** run the explicit audit workflow below.
+- Do **not** dispatch the 5 audit subagents.
+- Do **not** broad-scan the repo or inspect all in-scope Rust files.
+- Do **not** emit the full audit report format, severity list, or fix-policy framing.
+- Output concise guidance only: touched safety domains, must-preserve invariants, concrete pitfalls, and whether the human should explicitly run `/data-safety`.
+- If you lack enough context to give confident guidance without expanding scope, stop at recommending explicit `/data-safety` rather than escalating automatically.
+
+### Responsiveness guardrails
+
+Automatic guidance must not create or encourage responsiveness regressions.
+
+- Do not recommend synchronous file I/O, manifest scans, or broad grep passes on hot UI paths just because data safety is relevant.
+- Do not suggest per-frame, per-animation-tick, per-keystroke, or per-notify safety validation. Safety checks on interactive paths must stay O(1) on the GTK main thread.
+- For animations, timers, signal handlers, and rapid input flows, prefer existing project patterns such as `spawn_blocking_then`, generation counters, and success-gated state transitions.
+- If deeper review would require repo-wide inspection, many-file greps, or parallel audit subagents, recommend explicit `/data-safety` instead of doing it automatically.
+- When safety and responsiveness pull in different directions, preserve both: do not propose data-loss fixes that introduce UI jank, animation stutter, or "Application Not Responding" risks.
+
+### Automatic-mode output
+
+Present guidance as:
+
+1. `Touched domains:` ...
+2. `Protect these invariants:` ...
+3. `Avoid:` ...
+4. `Escalate to /data-safety?` Yes/No + one sentence
+
+## Explicit Audit Mode (`/data-safety`)
+
+Use this mode only when the human explicitly invokes `/data-safety` or explicitly asks for a full data-safety audit. The determinism contract, subagent dispatch, fix policy, and report format below apply only to this mode.
 
 ## Determinism Contract
+
+This contract applies only to explicit audit mode.
 
 Every finding is anchored to a grep match, validated through a binary decision tree (each check resolves to SAFE or continue), and reported only when all conditions resolve to FLAG. Ambiguous matches are dropped silently — false positives erode trust. Multiple runs against the same code produce identical results.
 
@@ -35,18 +73,18 @@ Assigned by trigger likelihood (impact is always data loss):
 - **HIGH**: Specific but realistic conditions in regular use.
 - **MEDIUM**: Edge conditions requiring unusual timing or circumstances.
 
-## Workflow
+## Explicit Audit Workflow
 
 ### 1. Scope
 
-- **Collect candidates**: Read changed `.rs` files from `git diff --name-only` (or known review context). For manual `/data-safety`, inspect all `.rs` files.
+- **Collect candidates**: Read changed `.rs` files from `git diff --name-only` (or known review context). For explicit `/data-safety`, inspect all `.rs` files.
 - **Normalize paths**: Normalize separators to `/`, strip any leading `./`, and derive a **path suffix alias** by removing everything through the last `/src/` when present.
   - `/repo/crates/lushtext-core/src/ui/window/session.rs` → `ui/window/session.rs`
   - `crates/lushtext-core/src/services/session_service.rs` → `services/session_service.rs`
   - `packages/editor-core/src/model/draft.rs` → `model/draft.rs`
 - **Match on suffix aliases, not repo layout**: Trigger matching must work for absolute paths, repo-relative paths, crate-relative paths, and future crate moves/reorgs.
 - **Relevant Rust app files**: Any normalized suffix under `ui/`, `services/`, or `model/` is in scope. If none match and no content-hint fallback below applies → "No data-safety-relevant changes" → stop.
-- **Manual** (`/data-safety`): Audit all in-scope `.rs` files after normalization, plus any other `.rs` files whose contents hit a data-safety content hint.
+- **Explicit `/data-safety`**: Audit all in-scope `.rs` files after normalization, plus any other `.rs` files whose contents hit a data-safety content hint.
 
 ### 2. Context
 
@@ -54,7 +92,7 @@ Read `references/known-vectors.md` from the skill directory. Include the relevan
 
 ### 3. Dispatch
 
-Launch subagents in parallel via the Agent tool. Skip any whose normalized suffixes AND content hints both miss. For manual invocation, dispatch all 5.
+Launch subagents in parallel via the Agent tool. Skip any whose normalized suffixes AND content hints both miss. For explicit `/data-safety` invocation, dispatch all 5.
 
 | Subagent | Trigger suffixes | Content hints / fallback triggers |
 |---|---|---|
@@ -254,11 +292,15 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 
 ### 6. Fix Policy
 
+This policy applies only to explicit audit mode.
+
 Every finding must be fixed in the current work stream. This aligns with `.agents/rules/preexisting-blockers.md`.
 
 Do not defer, document as known, skip as pre-existing, or downgrade severity. If a fix requires a design change (e.g., disk-based undo backup for RS-1), implement the design change.
 
 ### 7. Verification Expectations
+
+These expectations apply only to explicit audit mode.
 
 Every fix must also add or update regression coverage when the harness can reasonably exercise it.
 
