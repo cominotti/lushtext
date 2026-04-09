@@ -137,7 +137,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 
 **Documentation maintenance:**
 - `README.md` must always be in sync with code (features, build, architecture).
-- `.agents/AGENTS.md` updated when modules/patterns/design decisions change.
+- `AGENTS.md` updated when modules/patterns/design decisions change.
 - `.agents/rules/*.md` updated when conventions are refined.
 
 **Runtime warning policy:**
@@ -184,7 +184,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - Read this file before implementing any code
 - Follow ALL rules exactly as documented
 - When in doubt, prefer the more restrictive option
-- Cross-reference with `.agents/AGENTS.md` for architectural details and `.agents/rules/*.md` for full conventions
+- Cross-reference with `AGENTS.md` for architectural details and `.agents/rules/*.md` for full conventions
 
 **For Humans:**
 - Keep this file lean and focused on agent needs

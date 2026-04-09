@@ -355,7 +355,7 @@ The `SearchEvent::Error` is sent by the service when `RegexMatcher` fails to com
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md#UX-DR16 Adwaita Semantic Tokens]
 - [Source: _bmad-output/implementation-artifacts/1-1-content-search-service-types.md#Completion Notes]
 - [Source: _bmad-output/implementation-artifacts/1-2-search-panel-with-streaming-results.md#Review Findings]
-- [Source: .agents/AGENTS.md#GSettings for preferences]
+- [Source: AGENTS.md#GSettings for preferences]
 - [Source: .agents/rules/rust.md#Mutable State on GObject Structs]
 - [Source: .agents/rules/ui.md#GSettings Bindings]
 - [Source: .agents/rules/widget-wiring.md#Testing]

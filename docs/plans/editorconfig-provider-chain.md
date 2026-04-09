@@ -205,7 +205,7 @@ provider is added.
 - `crates/lushtext-core/src/ui/preferences/imp.rs` — toggle row
 - `resources/ui/status-bar.ui`, `resources/ui/preferences.ui` — templates
 - `crates/lushtext/tests/integration.rs` — test module
-- `.agents/AGENTS.md` — architecture documentation
+- `AGENTS.md` — architecture documentation
 
 **Total diff:** +804 / -22 lines
 

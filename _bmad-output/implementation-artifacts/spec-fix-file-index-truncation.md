@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-04-05'
 status: 'done'
 baseline_commit: '7534ad6'
-context: ['.agents/AGENTS.md']
+context: ['AGENTS.md']
 ---
 
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
@@ -89,4 +89,4 @@ The list intentionally excludes ambiguous names like `build`, `dist`, `out`, `bi
   [`palette.rs:1294`](../../crates/lushtext-core/src/services/palette.rs#L1294)
 
 - Documentation update
-  [`AGENTS.md:100`](../../.agents/AGENTS.md#L100)
+  [`AGENTS.md:100`](../../AGENTS.md#L100)

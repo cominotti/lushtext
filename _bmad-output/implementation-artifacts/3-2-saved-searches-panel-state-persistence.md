@@ -244,7 +244,7 @@ If budget becomes tight, extract `setup_results_list()` (the largest method, wit
 | `crates/lushtext-core/src/ui/search_panel/mod.rs` | Add `set_saved_searches`, `saved_searches`, `populate_dropdown` (replaces `populate_history_list`), `restore_from_saved_search`, `show_save_search_dialog`, `remove_saved_search` | +85 lines |
 | `crates/lushtext-core/src/ui/window/search.rs` | Load saved searches at startup | +10 lines |
 | `crates/lushtext/tests/widget/search_panel.rs` | Story 3.2 widget tests | +60 lines |
-| `.agents/AGENTS.md` | Document saved searches design decision | +10 lines |
+| `AGENTS.md` | Document saved searches design decision | +10 lines |
 | `README.md` | Update features list with saved searches | +3 lines |
 
 ### Line Count Impact
@@ -322,8 +322,8 @@ This story implements **saved searches (FR30, FR31)** and **verifies panel state
 - [Source: _bmad-output/implementation-artifacts/3-1-search-history.md] — Previous story (guard patterns, populate_history_list, build_toggle_summary, AdwActionRow rows)
 - [Source: _bmad-output/implementation-artifacts/deferred-work.md#line 45] — Panel visible on startup with empty results (deferred, not this story)
 - [Source: _bmad-output/implementation-artifacts/deferred-work.md#line 50] — SavedSearch type defined but unused (this story resolves it)
-- [Source: .agents/AGENTS.md#Search history] — Current search history architecture
-- [Source: .agents/AGENTS.md#Async I/O Pattern] — spawn_blocking_then for save/load
+- [Source: AGENTS.md#Search history] — Current search history architecture
+- [Source: AGENTS.md#Async I/O Pattern] — spawn_blocking_then for save/load
 - [Source: .agents/rules/rust.md#Background I/O] — Threading model
 - [Source: .agents/rules/rust.md#Mutable State] — Cell/RefCell conventions
 - [Source: .agents/rules/widget-wiring.md#Testing] — Widget test requirements
@@ -382,5 +382,5 @@ None — clean implementation with no blockers.
 - `crates/lushtext-core/src/ui/search_panel/mod.rs` — Added show_save_search_dialog, set_saved_searches, saved_searches, populate_dropdown (renamed from populate_history_list), restore_from_saved_search, remove_saved_search, build_saved_toggle_summary, build_summary_parts
 - `crates/lushtext-core/src/ui/window/search.rs` — Added parallel saved searches load at startup
 - `crates/lushtext/tests/widget/search_panel.rs` — Added 5 Story 3.2 widget tests
-- `.agents/AGENTS.md` — Added saved_searches.rs to module layout, added saved searches design decision
+- `AGENTS.md` — Added saved_searches.rs to module layout, added saved searches design decision
 - `README.md` — Updated features list and module layout with saved searches

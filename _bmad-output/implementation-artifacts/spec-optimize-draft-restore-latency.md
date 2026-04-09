@@ -5,7 +5,7 @@ created: '2026-04-04'
 status: 'done'
 baseline_commit: '458cb5c'
 context:
-  - '.agents/AGENTS.md'
+  - 'AGENTS.md'
 ---
 
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">

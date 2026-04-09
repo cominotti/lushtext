@@ -312,9 +312,9 @@ The window already has `win.next-match` (Ctrl+G) and `win.prev-match` (Ctrl+Shif
 - [Source: _bmad-output/implementation-artifacts/1-4-gitignore-toggle-glob-filter-options-panel.md#Previous Story Intelligence]
 - [Source: _bmad-output/implementation-artifacts/1-4-gitignore-toggle-glob-filter-options-panel.md#Review Findings]
 - [Source: _bmad-output/implementation-artifacts/deferred-work.md] — window/mod.rs over 1000-line limit, polling timer continues when panel hidden
-- [Source: .agents/AGENTS.md#Content search panel]
-- [Source: .agents/AGENTS.md#Status bar auto-dismiss]
-- [Source: .agents/AGENTS.md#Async I/O Pattern]
+- [Source: AGENTS.md#Content search panel]
+- [Source: AGENTS.md#Status bar auto-dismiss]
+- [Source: AGENTS.md#Async I/O Pattern]
 - [Source: .agents/rules/rust.md#Mutable State on GObject Structs]
 - [Source: .agents/rules/widget-wiring.md#Action Enabled State]
 - [Source: .agents/rules/widget-wiring.md#Auto-Dismiss Timers (Generation Counter)]
@@ -357,7 +357,7 @@ None — clean implementation with no debugging issues.
 - `crates/lushtext-core/src/ui/window/mod.rs` — registered `search-next-match`/`search-prev-match` actions, bound F4/Shift+F4, added `update_search_navigation_actions()`
 - `crates/lushtext-core/src/ui/window/search.rs` — extracted `open_file_at_line` helper, wired `connect_navigate_to_match`, `connect_search_progress` with 500ms delay
 - `crates/lushtext/tests/widget/search_panel.rs` — 17 new Story 1.5 widget tests
-- `.agents/AGENTS.md` — documented match navigation and search progress reporting design decisions
+- `AGENTS.md` — documented match navigation and search progress reporting design decisions
 - `README.md` — updated workspace content search feature description
 
 ### Review Findings

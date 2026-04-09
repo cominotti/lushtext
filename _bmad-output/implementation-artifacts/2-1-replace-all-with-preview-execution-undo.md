@@ -290,7 +290,7 @@ The `GtkCheckButton` is added dynamically in `connect_bind` when `preview_mode =
 | `crates/lushtext-core/src/ui/window/search.rs` | Wire replace/undo callbacks, skip-modified-tabs logic, tab reload | +120 lines |
 | `crates/lushtext-core/src/ui/window/mod.rs` | Minor: ensure replace-related actions in `update_content_stack()` | +10 lines |
 | `crates/lushtext/tests/widget/search_panel.rs` | Story 2.1 widget tests | +80 lines |
-| `.agents/AGENTS.md` | Document Replace All design decisions | +30 lines |
+| `AGENTS.md` | Document Replace All design decisions | +30 lines |
 | `README.md` | Update features list with Replace All | +5 lines |
 
 **No new files created.** All changes modify existing files.
@@ -382,8 +382,8 @@ From `deferred-work.md`:
 - [Source: _bmad-output/planning-artifacts/prd.md#NFR11] — Undo All reliability
 - [Source: _bmad-output/implementation-artifacts/1-5-match-navigation-progress-reporting.md] — Previous story learnings
 - [Source: _bmad-output/implementation-artifacts/deferred-work.md] — Premature model types, find_match_range limitation
-- [Source: .agents/AGENTS.md#Content search panel] — Existing search panel architecture
-- [Source: .agents/AGENTS.md#Async I/O Pattern] — spawn_blocking_then pattern
+- [Source: AGENTS.md#Content search panel] — Existing search panel architecture
+- [Source: AGENTS.md#Async I/O Pattern] — spawn_blocking_then pattern
 - [Source: .agents/rules/rust.md#Background I/O] — Threading model
 - [Source: .agents/rules/widget-wiring.md#Action Enabled State] — Button sensitivity lifecycle
 - [Source: .agents/rules/widget-wiring.md#Testing] — Widget test requirements
@@ -441,7 +441,7 @@ No debugging issues encountered. All tests passed on first run.
 - `crates/lushtext-core/src/ui/window/search.rs` — wired replace/undo callbacks, skip-modified-tabs, tab reload
 - `crates/lushtext/tests/widget/search_panel.rs` — added 14 Story 2.1 widget tests
 - `README.md` — added Multi-file Replace All feature description
-- `.agents/AGENTS.md` — documented Replace All design decision
+- `AGENTS.md` — documented Replace All design decision
 - `workspace-hack/Cargo.toml` — updated by cargo-hakari for regex dependency
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` — status: in-progress → review
 - `_bmad-output/implementation-artifacts/2-1-replace-all-with-preview-execution-undo.md` — tasks marked complete

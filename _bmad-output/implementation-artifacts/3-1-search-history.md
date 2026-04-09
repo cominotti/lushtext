@@ -201,7 +201,7 @@ History is loaded once at startup in `window/search.rs::setup_search_panel()` vi
 | `crates/lushtext-core/src/ui/search_panel/mod.rs` | Add `set_search_history`, `search_history`, `restore_from_history`, `populate_history_list`, history save on Done | +100 lines |
 | `crates/lushtext-core/src/ui/window/search.rs` | Load history at startup | +15 lines |
 | `crates/lushtext/tests/widget/search_panel.rs` | Story 3.1 widget tests | +60 lines |
-| `.agents/AGENTS.md` | Document search history design decision | +10 lines |
+| `AGENTS.md` | Document search history design decision | +10 lines |
 | `README.md` | Update features list with search history | +3 lines |
 
 ### Line Count Impact
@@ -288,8 +288,8 @@ The history dropdown should be designed to accommodate a future "Saved Searches"
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md#Journey Flow 4] — Search History and Saved Searches interaction flow
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md#Key interaction details] — History is automatic, dropdown on focus, full state restoration
 - [Source: _bmad-output/implementation-artifacts/2-1-replace-all-with-preview-execution-undo.md] — Previous story learnings (guard patterns, preview mode, clear_results)
-- [Source: .agents/AGENTS.md#Content search panel] — Current search panel architecture
-- [Source: .agents/AGENTS.md#Async I/O Pattern] — spawn_blocking_then for save/load
+- [Source: AGENTS.md#Content search panel] — Current search panel architecture
+- [Source: AGENTS.md#Async I/O Pattern] — spawn_blocking_then for save/load
 - [Source: .agents/rules/rust.md#Background I/O] — Threading model
 - [Source: .agents/rules/rust.md#Mutable State] — Cell/RefCell conventions
 - [Source: .agents/rules/widget-wiring.md#Testing] — Widget test requirements
@@ -337,5 +337,5 @@ Claude Opus 4.6 (1M context)
 - `crates/lushtext-core/src/ui/window/search.rs` — modified (history load at startup via spawn_blocking_then)
 - `crates/lushtext/tests/widget/search_panel.rs` — modified (7 new Story 3.1 widget tests)
 - `crates/lushtext/Cargo.toml` — modified (added serde_json dev-dependency)
-- `.agents/AGENTS.md` — modified (module layout, search history design decision)
+- `AGENTS.md` — modified (module layout, search history design decision)
 - `README.md` — modified (features list, module layout)

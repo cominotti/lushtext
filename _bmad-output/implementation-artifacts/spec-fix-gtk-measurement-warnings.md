@@ -103,7 +103,7 @@ context:
   [`widget-wiring.md:38`](../../.agents/rules/widget-wiring.md#L38)
 
 - AGENTS.md updated sidebar position constraint description
-  [`AGENTS.md:91`](../../.agents/AGENTS.md#L91)
+  [`AGENTS.md:91`](../../AGENTS.md#L91)
 
 **Tests**
 

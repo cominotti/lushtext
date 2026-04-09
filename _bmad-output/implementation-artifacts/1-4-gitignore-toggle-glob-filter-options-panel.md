@@ -334,7 +334,7 @@ Per the architecture and UX spec, these are deferred to later stories:
 - [Source: _bmad-output/implementation-artifacts/1-3-search-toggles-match-highlighting.md#Completion Notes]
 - [Source: _bmad-output/implementation-artifacts/1-2-search-panel-with-streaming-results.md#Dev Notes]
 - [Source: _bmad-output/implementation-artifacts/1-1-content-search-service-types.md#Completion Notes]
-- [Source: .agents/AGENTS.md#GSettings for preferences]
+- [Source: AGENTS.md#GSettings for preferences]
 - [Source: .agents/rules/rust.md#Mutable State on GObject Structs]
 - [Source: .agents/rules/ui.md#GSettings Bindings]
 - [Source: .agents/rules/widget-wiring.md#Auto-Dismiss Timers (Generation Counter)]
