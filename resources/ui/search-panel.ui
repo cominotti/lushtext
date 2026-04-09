@@ -158,45 +158,64 @@
     </child>
 
     <child>
-      <object class="GtkSeparator" id="results_header_separator">
-        <property name="orientation">horizontal</property>
-        <property name="visible">false</property>
-      </object>
-    </child>
-
-    <!-- Results area -->
-    <child>
-      <object class="GtkScrolledWindow" id="results_scroll">
-        <property name="visible">false</property>
-        <property name="propagate-natural-height">true</property>
-        <property name="min-content-height">100</property>
+      <object class="GtkRevealer" id="results_feedback_revealer">
+        <property name="transition-type">slide-up</property>
+        <property name="transition-duration">250</property>
+        <property name="reveal-child">false</property>
         <child>
-          <object class="GtkListView" id="results_list"/>
-        </child>
-      </object>
-    </child>
+          <object class="GtkBox" id="results_feedback_box">
+            <property name="orientation">vertical</property>
+            <child>
+              <object class="GtkSeparator" id="results_header_separator">
+                <property name="orientation">horizontal</property>
+              </object>
+            </child>
 
-    <child>
-      <object class="GtkSeparator" id="results_footer_separator">
-        <property name="orientation">horizontal</property>
-        <property name="visible">false</property>
-      </object>
-    </child>
+            <!-- Results area -->
+            <child>
+              <object class="GtkRevealer" id="results_body_revealer">
+                <property name="transition-type">slide-up</property>
+                <property name="transition-duration">250</property>
+                <property name="reveal-child">false</property>
+                <child>
+                  <object class="GtkBox" id="results_body_box">
+                    <property name="orientation">vertical</property>
+                    <child>
+                      <object class="GtkScrolledWindow" id="results_scroll">
+                        <property name="propagate-natural-height">true</property>
+                        <property name="min-content-height">100</property>
+                        <child>
+                          <object class="GtkListView" id="results_list"/>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkSeparator" id="results_footer_separator">
+                        <property name="orientation">horizontal</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
 
-    <!-- Footer: result count (hidden until results arrive) -->
-    <child>
-      <object class="GtkBox" id="footer_box">
-        <property name="orientation">horizontal</property>
-        <property name="spacing">6</property>
-        <property name="margin-start">6</property>
-        <property name="margin-end">6</property>
-        <property name="margin-top">6</property>
-        <property name="margin-bottom">6</property>
-        <property name="visible">false</property>
-        <child>
-          <object class="GtkLabel" id="count_label">
-            <property name="hexpand">true</property>
-            <property name="xalign">0.0</property>
+            <!-- Footer: result count and search state -->
+            <child>
+              <object class="GtkBox" id="footer_box">
+                <property name="orientation">horizontal</property>
+                <property name="spacing">6</property>
+                <property name="margin-start">6</property>
+                <property name="margin-end">6</property>
+                <property name="margin-top">6</property>
+                <property name="margin-bottom">6</property>
+                <child>
+                  <object class="GtkLabel" id="count_label">
+                    <property name="hexpand">true</property>
+                    <property name="xalign">0.0</property>
+                  </object>
+                </child>
+              </object>
+            </child>
           </object>
         </child>
       </object>

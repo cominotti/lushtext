@@ -17,10 +17,27 @@ use lushtext_core::ui::search_panel::LushtextSearchPanel;
 use lushtext_core::ui::search_panel::item::SearchResultItem;
 use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
+use std::time::{Duration, Instant};
 
 /// Drain all pending events from the GTK main loop.
 fn flush_events() {
     while glib::MainContext::default().iteration(false) {}
+}
+
+fn flush_after_delay(delay: Duration) {
+    std::thread::sleep(delay);
+    flush_events();
+}
+
+fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        flush_after_delay(Duration::from_millis(20));
+        if predicate() {
+            return;
+        }
+    }
+    assert!(predicate(), "timed out waiting for widget state");
 }
 
 /// Create a window attached to a test application (not registered with D-Bus).
@@ -173,16 +190,19 @@ fn test_search_panel_clamp_results_height_sets_max_content_height() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
 
-    // Default: no max-content-height (-1 means unbounded in GTK).
+    // Default: no max-content-height or fixed height request.
     assert_eq!(panel.imp().results_scroll.max_content_height(), -1);
+    assert_eq!(panel.imp().results_scroll.height_request(), -1);
 
     // Clamp to 300px.
     panel.clamp_results_height(300);
     assert_eq!(panel.imp().results_scroll.max_content_height(), 300);
+    assert_eq!(panel.imp().results_scroll.height_request(), 300);
 
     // Clamp to a smaller value.
     panel.clamp_results_height(200);
     assert_eq!(panel.imp().results_scroll.max_content_height(), 200);
+    assert_eq!(panel.imp().results_scroll.height_request(), 200);
 }
 
 #[test]
@@ -193,12 +213,15 @@ fn test_search_panel_clamp_results_height_respects_minimum() {
     // Values below 100 are clamped to 100 (matches min-content-height in template).
     panel.clamp_results_height(50);
     assert_eq!(panel.imp().results_scroll.max_content_height(), 100);
+    assert_eq!(panel.imp().results_scroll.height_request(), 100);
 
     panel.clamp_results_height(0);
     assert_eq!(panel.imp().results_scroll.max_content_height(), 100);
+    assert_eq!(panel.imp().results_scroll.height_request(), 100);
 
     panel.clamp_results_height(-10);
     assert_eq!(panel.imp().results_scroll.max_content_height(), 100);
+    assert_eq!(panel.imp().results_scroll.height_request(), 100);
 }
 
 #[test]
@@ -215,6 +238,7 @@ fn test_search_panel_clamp_results_height_guard_skips_redundant_set() {
     // unnecessary set_max_content_height calls that would trigger re-layout.
     panel.clamp_results_height(300);
     assert_eq!(panel.imp().results_scroll.max_content_height(), 300);
+    assert_eq!(panel.imp().results_scroll.height_request(), 300);
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,4 +1133,125 @@ fn test_search_panel_count_label_uses_default_body_text() {
     // Count label should use default body text (no caption/heading class).
     assert!(!panel.imp().count_label.has_css_class("caption"));
     assert!(!panel.imp().count_label.has_css_class("heading"));
+}
+
+#[test]
+fn test_search_panel_results_revealers_start_hidden_and_match_panel_animation() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let imp = panel.imp();
+
+    assert!(!imp.results_feedback_revealer.reveals_child());
+    assert!(!imp.results_body_revealer.reveals_child());
+    assert_eq!(
+        imp.results_feedback_revealer.transition_type(),
+        gtk4::RevealerTransitionType::SlideUp,
+    );
+    assert_eq!(imp.results_feedback_revealer.transition_duration(), 250);
+    assert_eq!(
+        imp.results_body_revealer.transition_type(),
+        gtk4::RevealerTransitionType::SlideUp,
+    );
+    assert_eq!(imp.results_body_revealer.transition_duration(), 250);
+}
+
+#[test]
+fn test_search_panel_no_results_keeps_results_body_hidden() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "completely unrelated text").unwrap();
+
+    panel.clamp_results_height(240);
+    panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
+    panel.start_search("needle");
+
+    wait_until(Duration::from_secs(2), || !panel.imp().searching.get());
+
+    let imp = panel.imp();
+    assert!(imp.results_feedback_revealer.reveals_child());
+    assert!(!imp.results_body_revealer.reveals_child());
+    assert_eq!(imp.total_matches.get(), 0);
+    assert_eq!(imp.count_label.text().as_str(), "No results found");
+}
+
+#[test]
+fn test_search_panel_first_result_reveals_fixed_max_height_results_body() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("notes.txt"),
+        "needle one\nneedle two\nneedle three\n",
+    )
+    .unwrap();
+
+    panel.clamp_results_height(240);
+    panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
+    panel.start_search("needle");
+
+    wait_until(Duration::from_secs(2), || panel.imp().total_matches.get() > 0);
+
+    let imp = panel.imp();
+    assert!(imp.results_feedback_revealer.reveals_child());
+    assert!(imp.results_body_revealer.reveals_child());
+    assert!(imp.total_matches.get() >= 1);
+    assert_eq!(imp.results_scroll.max_content_height(), 240);
+    assert_eq!(imp.results_scroll.height_request(), 240);
+}
+
+#[test]
+fn test_search_panel_clearing_query_hides_results_revealers_after_results() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "needle once\n").unwrap();
+
+    panel.clamp_results_height(240);
+    panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
+    panel.start_search("needle");
+
+    wait_until(Duration::from_secs(2), || panel.imp().total_matches.get() > 0);
+
+    panel.start_search("");
+    flush_events();
+
+    let imp = panel.imp();
+    assert!(!imp.results_feedback_revealer.reveals_child());
+    assert!(!imp.results_body_revealer.reveals_child());
+    assert_eq!(imp.total_matches.get(), 0);
+    assert!(imp.count_label.text().is_empty());
+}
+
+#[test]
+fn test_search_panel_followup_search_keeps_results_body_open_until_new_outcome() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "needle once\n").unwrap();
+
+    panel.clamp_results_height(240);
+    panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
+    panel.start_search("needle");
+
+    wait_until(Duration::from_secs(2), || panel.imp().total_matches.get() > 0);
+    assert!(panel.imp().results_body_revealer.reveals_child());
+
+    panel.start_search("absent");
+
+    let imp = panel.imp();
+    assert!(
+        imp.results_feedback_revealer.reveals_child(),
+        "follow-up search should preserve the expanded feedback area",
+    );
+    assert!(
+        imp.results_body_revealer.reveals_child(),
+        "follow-up search should keep the results body open until the new search resolves",
+    );
+
+    wait_until(Duration::from_secs(2), || !panel.imp().searching.get());
+
+    assert!(imp.results_feedback_revealer.reveals_child());
+    assert!(!imp.results_body_revealer.reveals_child());
+    assert_eq!(imp.count_label.text().as_str(), "No results found");
 }

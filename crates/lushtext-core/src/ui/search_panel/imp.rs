@@ -43,6 +43,10 @@ pub struct LushtextSearchPanel {
     #[template_child]
     pub results_list: TemplateChild<gtk4::ListView>,
     #[template_child]
+    pub results_feedback_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
+    pub results_body_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
     pub results_scroll: TemplateChild<gtk4::ScrolledWindow>,
     #[template_child]
     pub count_label: TemplateChild<gtk4::Label>,
@@ -170,6 +174,8 @@ impl Default for LushtextSearchPanel {
         Self {
             search_entry: TemplateChild::default(),
             results_list: TemplateChild::default(),
+            results_feedback_revealer: TemplateChild::default(),
+            results_body_revealer: TemplateChild::default(),
             results_scroll: TemplateChild::default(),
             count_label: TemplateChild::default(),
             error_label: TemplateChild::default(),

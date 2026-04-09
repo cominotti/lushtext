@@ -317,6 +317,27 @@ impl LushtextSearchPanel {
         if imp.results_scroll.max_content_height() != clamped {
             imp.results_scroll.set_max_content_height(clamped);
         }
+        if imp.results_scroll.height_request() != clamped {
+            imp.results_scroll.set_height_request(clamped);
+        }
+    }
+
+    fn reveal_results_feedback(&self) {
+        let imp = self.imp();
+        imp.results_body_revealer.set_reveal_child(false);
+        imp.results_feedback_revealer.set_reveal_child(true);
+    }
+
+    fn reveal_results_body(&self) {
+        let imp = self.imp();
+        imp.results_feedback_revealer.set_reveal_child(true);
+        imp.results_body_revealer.set_reveal_child(true);
+    }
+
+    fn hide_results_feedback(&self) {
+        let imp = self.imp();
+        imp.results_body_revealer.set_reveal_child(false);
+        imp.results_feedback_revealer.set_reveal_child(false);
     }
 
     /// Collect all `SearchMatch` data from the current results for preview generation.
@@ -596,8 +617,12 @@ impl LushtextSearchPanel {
             }
         }
 
-        // Clear previous results.
-        self.clear_results();
+        let preserve_feedback = !query.is_empty() && imp.results_feedback_revealer.reveals_child();
+        let preserve_results_body = !query.is_empty() && imp.results_body_revealer.reveals_child();
+
+        // Clear previous results while preserving the current expansion state
+        // during follow-up searches so the panel does not contract and reopen.
+        self.clear_results(preserve_feedback, preserve_results_body);
 
         // Empty query → clear and done.
         if query.is_empty() {
@@ -608,8 +633,7 @@ impl LushtextSearchPanel {
         let roots = imp.workspace_roots.borrow().clone();
         if roots.is_empty() {
             imp.count_label.set_text("No workspace roots");
-            imp.results_header_separator.set_visible(true);
-            imp.footer_box.set_visible(true);
+            self.reveal_results_feedback();
             return;
         }
 
@@ -792,10 +816,7 @@ impl LushtextSearchPanel {
 
                         // Show results area on first match arrival.
                         if imp.total_matches.get() == 0 {
-                            imp.results_header_separator.set_visible(true);
-                            imp.results_scroll.set_visible(true);
-                            imp.results_footer_separator.set_visible(true);
-                            imp.footer_box.set_visible(true);
+                            panel.reveal_results_body();
                         }
                         imp.total_matches.set(imp.total_matches.get() + 1);
 
@@ -855,8 +876,6 @@ impl LushtextSearchPanel {
                 imp.count_label.set_text(&text);
             } else if !completion_notified && imp.searching.get() && total == 0 {
                 imp.count_label.set_text("Searching\u{2026}");
-                imp.results_header_separator.set_visible(true);
-                imp.footer_box.set_visible(true);
             }
 
             if done {
@@ -873,8 +892,7 @@ impl LushtextSearchPanel {
                 }
                 if total == 0 {
                     imp.count_label.set_text("No results found");
-                    imp.results_header_separator.set_visible(true);
-                    imp.footer_box.set_visible(true);
+                    panel.reveal_results_feedback();
                 }
                 panel.update_replace_button_sensitivity();
 
@@ -926,12 +944,15 @@ impl LushtextSearchPanel {
     }
 
     /// Clear all results and reset state.
-    fn clear_results(&self) {
+    fn clear_results(&self, preserve_feedback: bool, preserve_results_body: bool) {
         let imp = self.imp();
-        imp.results_scroll.set_visible(false);
-        imp.results_header_separator.set_visible(false);
-        imp.results_footer_separator.set_visible(false);
-        imp.footer_box.set_visible(false);
+        if preserve_feedback {
+            imp.results_feedback_revealer.set_reveal_child(true);
+            imp.results_body_revealer
+                .set_reveal_child(preserve_results_body);
+        } else {
+            self.hide_results_feedback();
+        }
         imp.root_store.remove_all();
         imp.file_groups.borrow_mut().clear();
         imp.total_matches.set(0);
