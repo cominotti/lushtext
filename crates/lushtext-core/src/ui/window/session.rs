@@ -121,7 +121,7 @@ impl super::LushtextWindow {
                 continue;
             }
             if let Err(e) = draft_service::write_draft(&data_dir, &draft_id, &text) {
-                tracing::warn!("Failed to write draft on close: {e}");
+                tracing::error!("Failed to write draft on close: {e}");
                 continue;
             }
             let original_path = editor.file_path();
@@ -135,7 +135,9 @@ impl super::LushtextWindow {
                 saved_at_secs: now,
             });
         }
-        let _ = draft_service::save_manifest(&data_dir, &manifest);
+        if let Err(e) = draft_service::save_manifest(&data_dir, &manifest) {
+            tracing::error!("Failed to save draft manifest on close: {e}");
+        }
     }
 
     // --- Session restore + draft persistence ---
@@ -271,8 +273,14 @@ impl super::LushtextWindow {
                 let Some(editor) = editor_weak.upgrade() else {
                     return;
                 };
-                if let Ok(Some(draft_content)) = result {
-                    Self::apply_draft(&editor, &draft_content);
+                match result {
+                    Ok(Some(draft_content)) => {
+                        Self::apply_draft(&editor, &draft_content);
+                    }
+                    Ok(None) => {} // No draft on disk — normal.
+                    Err(e) => {
+                        tracing::error!("Failed to read draft from disk: {e}");
+                    }
                 }
             },
         );
@@ -472,8 +480,14 @@ impl super::LushtextWindow {
                 let Some(editor) = editor_weak.upgrade() else {
                     return;
                 };
-                if let Ok(Some(draft_content)) = result {
-                    Self::apply_draft(&editor, &draft_content);
+                match result {
+                    Ok(Some(draft_content)) => {
+                        Self::apply_draft(&editor, &draft_content);
+                    }
+                    Ok(None) => {} // No draft on disk — normal.
+                    Err(e) => {
+                        tracing::error!("Failed to read draft for open file: {e}");
+                    }
                 }
             },
         );
@@ -504,8 +518,12 @@ impl super::LushtextWindow {
         let manifest = self.imp().draft_manifest.borrow().clone();
 
         std::thread::spawn(move || {
-            let _ = draft_service::delete_draft_file(&data_dir, &draft_id);
-            let _ = draft_service::save_manifest(&data_dir, &manifest);
+            if let Err(e) = draft_service::delete_draft_file(&data_dir, &draft_id) {
+                tracing::warn!("Failed to delete draft file {draft_id}: {e}");
+            }
+            if let Err(e) = draft_service::save_manifest(&data_dir, &manifest) {
+                tracing::warn!("Failed to save manifest after draft deletion: {e}");
+            }
         });
     }
 

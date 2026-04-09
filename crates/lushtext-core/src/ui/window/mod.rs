@@ -269,13 +269,22 @@ impl LushtextWindow {
         });
         editor.imp().modified_handler_id.replace(Some(handler_id));
 
-        // Wire buffer text changes to refresh the preview pane (debounced).
-        // Only fires refresh if this editor is the currently selected tab.
+        // Wire buffer text changes to re-arm the draft dirty flag and refresh
+        // the preview pane (debounced). `connect_changed` fires on every text
+        // mutation — unlike `connect_modified_changed` which only fires on
+        // is_modified() state transitions. This ensures `draft_dirty` is re-set
+        // after the autosave timer clears it, even when the buffer stays
+        // continuously modified (e.g., after draft restore).
         // Handler ID is stored and disconnected in EditorPage::dispose() to
         // prevent accumulation across tab open/close cycles.
         let window_weak = self.downgrade();
         let page_weak = page.downgrade();
         let changed_handler_id = buffer.connect_changed(move |_| {
+            if let Some(page) = page_weak.upgrade()
+                && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+            {
+                editor.set_draft_dirty(true);
+            }
             if let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade())
                 && window.imp().tab_view.selected_page().as_ref() == Some(&page)
             {
