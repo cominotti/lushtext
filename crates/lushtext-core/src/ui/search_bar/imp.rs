@@ -29,6 +29,12 @@ pub struct LushtextSearchBar {
     pub replace_mode_button: TemplateChild<gtk4::ToggleButton>,
     #[template_child]
     pub options_button: TemplateChild<gtk4::MenuButton>,
+    #[template_child]
+    pub replace_entry_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
+    pub replace_button_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
+    pub replace_all_revealer: TemplateChild<gtk4::Revealer>,
 
     // --- Search state (populated during attach, cleared on detach) ---
     /// GtkSourceView SearchContext — owns the search state and highlighting.
@@ -78,16 +84,17 @@ impl ObjectImpl for LushtextSearchBar {
     fn constructed(&self) {
         self.parent_constructed();
 
-        // Replace mode toggle: show/hide all row-1 widgets. The GtkGrid
-        // collapses the row when all children are invisible.
-        let replace_entry = self.replace_entry.clone();
-        let replace_btn = self.replace_button.clone();
-        let replace_all_btn = self.replace_all_button.clone();
+        // Replace mode toggle: reveal/hide row-1 via GtkRevealers.
+        // Revealers (not set_visible) keep the children's natural widths in the
+        // grid column calculation, preventing the entry column from shifting.
+        let entry_rev = self.replace_entry_revealer.clone();
+        let btn_rev = self.replace_button_revealer.clone();
+        let all_rev = self.replace_all_revealer.clone();
         self.replace_mode_button.connect_toggled(move |button| {
-            let visible = button.is_active();
-            replace_entry.set_visible(visible);
-            replace_btn.set_visible(visible);
-            replace_all_btn.set_visible(visible);
+            let reveal = button.is_active();
+            entry_rev.set_reveal_child(reveal);
+            btn_rev.set_reveal_child(reveal);
+            all_rev.set_reveal_child(reveal);
         });
 
         // Build the options popover menu with checkbox items for search

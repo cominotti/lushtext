@@ -76,6 +76,11 @@ impl LushtextSearchBar {
         self.imp().replace_mode_button.set_active(active);
     }
 
+    /// Whether the replace row is revealed (target state, not animation state).
+    pub fn is_replace_revealed(&self) -> bool {
+        self.imp().replace_entry_revealer.reveals_child()
+    }
+
     // ─── Attach / Detach ──────────────────────────────────────────────
 
     /// Attach this search bar to a buffer and view, creating a fresh

@@ -136,6 +136,20 @@ GTK4's layout cycle runs `measure()` BEFORE `size_allocate()`. During `measure()
 
 **Rule for future paned widgets:** Any code that restores a `GtkPaned` position from persistent storage must pre-clamp it in the same scope, before the first layout pass. Any paned with `shrink-end-child=false` should have `width-request` set on the end-child matching the child's measured minimum.
 
+## Entry Width Symmetry in Toggle Layouts (CRITICAL)
+
+When a GtkGrid layout has toggle-visible rows sharing columns (e.g., Find/Replace bar), **all entries across rows must have identical widths at all times**, regardless of which rows are currently visible. Toggling a row on or off must not change any column width.
+
+**Root cause of violations:** `set_visible(false)` removes widgets from GtkGrid column sizing. When toggle-visible text buttons (e.g., "Replace", "Replace All") are wider than their counterpart icon buttons, showing them widens those columns, which steals width from the entry column.
+
+**Required pattern:** Wrap toggle-visible widgets in `GtkRevealer` (not `set_visible(false)`) within their grid cells. GtkRevealer with a vertical transition (slide-down, slide-up, crossfade, or none) always reports the child's **full natural width** to the grid — only height is animated. This means column widths are always computed considering both rows' widgets, even when a row is collapsed to zero height.
+
+**Implementation rules:**
+- Set `row-spacing=0` on the grid; use `margin-top` on revealed children for inter-row spacing (the margin is included in the revealer's animated height, so it appears only when revealed).
+- All revealers in the same row must use the same `transition-type` and `transition-duration` for synchronized animation.
+- Never use `set_visible(false)` on individual grid cells if their width affects other rows' layout.
+- The replace row uses `slide-down` / `150ms` for the reveal animation.
+
 ## Syntax Highlighting
 
 Supported via GtkSourceView built-in language specs: JSON, TOML, YAML, Markdown.

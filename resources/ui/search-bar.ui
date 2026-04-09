@@ -2,22 +2,25 @@
 <interface>
   <requires lib="gtk" version="4.14"/>
 
-  <!-- GtkGrid layout (matching GNOME Text Editor pattern) ensures both entries
-       share column 0 for identical width. Column alignment guarantees button
-       groups on the Find row line up exactly with Replace row buttons. -->
+  <!-- GtkGrid layout ensures both entries share column 0 for identical width.
+       Replace row widgets are wrapped in GtkRevealers so their natural widths
+       always influence column sizing even when collapsed — this prevents column
+       width shifts when toggling replace mode. row-spacing is 0; margin-top on
+       row 1 widgets provides spacing only when revealed. -->
   <template class="LushtextSearchBar" parent="GtkGrid">
-    <property name="row-spacing">6</property>
+    <property name="row-spacing">0</property>
     <property name="column-spacing">6</property>
 
     <style>
       <class name="search-bar-container"/>
     </style>
 
-    <!-- Row 0, Col 0: Search entry + match count label -->
+    <!-- Row 0, Col 0: Search entry with match count overlay.
+         GtkOverlay ensures the search entry fills the full column width
+         (identical to the replace entry below), with the match count
+         floating inside, right-aligned before the clear icon. -->
     <child>
-      <object class="GtkBox">
-        <property name="orientation">horizontal</property>
-        <property name="spacing">6</property>
+      <object class="GtkOverlay">
         <property name="hexpand">true</property>
         <layout>
           <property name="column">0</property>
@@ -29,9 +32,10 @@
             <property name="placeholder-text" translatable="yes">Find…</property>
           </object>
         </child>
-        <child>
+        <child type="overlay">
           <object class="GtkLabel" id="match_label">
-            <property name="xalign">1</property>
+            <property name="halign">end</property>
+            <property name="margin-end">28</property>
             <style>
               <class name="dim-label"/>
             </style>
@@ -127,44 +131,71 @@
       </object>
     </child>
 
-    <!-- Row 1, Col 0: Replace entry (hidden by default) -->
+    <!-- Row 1: Replace row. Each widget wrapped in GtkRevealer so its natural
+         width always participates in column sizing, preventing width shifts.
+         GtkRevealer with vertical transition (slide-down) always reports the
+         child's full natural width; only height is animated. -->
+
+    <!-- Row 1, Col 0: Replace entry -->
     <child>
-      <object class="GtkEntry" id="replace_entry">
+      <object class="GtkRevealer" id="replace_entry_revealer">
+        <property name="transition-type">slide-down</property>
+        <property name="transition-duration">150</property>
+        <property name="reveal-child">false</property>
         <property name="hexpand">true</property>
-        <property name="placeholder-text" translatable="yes">Replace…</property>
-        <property name="primary-icon-name">edit-find-replace-symbolic</property>
-        <property name="visible">false</property>
         <layout>
           <property name="column">0</property>
           <property name="row">1</property>
         </layout>
+        <child>
+          <object class="GtkEntry" id="replace_entry">
+            <property name="hexpand">true</property>
+            <property name="margin-top">6</property>
+            <property name="placeholder-text" translatable="yes">Replace…</property>
+            <property name="primary-icon-name">edit-find-replace-symbolic</property>
+          </object>
+        </child>
       </object>
     </child>
 
     <!-- Row 1, Col 1: Replace button (aligned with prev/next) -->
     <child>
-      <object class="GtkButton" id="replace_button">
-        <property name="label" translatable="yes">_Replace</property>
-        <property name="use-underline">true</property>
-        <property name="visible">false</property>
+      <object class="GtkRevealer" id="replace_button_revealer">
+        <property name="transition-type">slide-down</property>
+        <property name="transition-duration">150</property>
+        <property name="reveal-child">false</property>
         <layout>
           <property name="column">1</property>
           <property name="row">1</property>
         </layout>
+        <child>
+          <object class="GtkButton" id="replace_button">
+            <property name="label" translatable="yes">_Replace</property>
+            <property name="use-underline">true</property>
+            <property name="margin-top">6</property>
+          </object>
+        </child>
       </object>
     </child>
 
     <!-- Row 1, Col 2-4: Replace All button (spans toggle+options+close columns) -->
     <child>
-      <object class="GtkButton" id="replace_all_button">
-        <property name="label" translatable="yes">Replace _All</property>
-        <property name="use-underline">true</property>
-        <property name="visible">false</property>
+      <object class="GtkRevealer" id="replace_all_revealer">
+        <property name="transition-type">slide-down</property>
+        <property name="transition-duration">150</property>
+        <property name="reveal-child">false</property>
         <layout>
           <property name="column">2</property>
           <property name="row">1</property>
           <property name="column-span">3</property>
         </layout>
+        <child>
+          <object class="GtkButton" id="replace_all_button">
+            <property name="label" translatable="yes">Replace _All</property>
+            <property name="use-underline">true</property>
+            <property name="margin-top">6</property>
+          </object>
+        </child>
       </object>
     </child>
   </template>
