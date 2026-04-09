@@ -601,11 +601,9 @@ impl WindowImpl for LushtextWindow {
         let window = self.obj().clone();
         let modified = window.modified_editors();
 
-        // Clear undo backup on exit (AC #10: undo backup lifecycle).
-        self.search_panel.close();
-
         if modified.is_empty() {
             // No unsaved changes — flush drafts, save session, close.
+            self.search_panel.close();
             window.flush_dirty_drafts();
             window.save_session_sync();
             return self.parent_close_request();
@@ -615,6 +613,7 @@ impl WindowImpl for LushtextWindow {
         let window_for_close = window.clone();
         window.show_save_changes_dialog(modified, move |confirmed| {
             if confirmed {
+                window_for_close.imp().search_panel.close();
                 window_for_close.flush_dirty_drafts();
                 window_for_close.save_session_sync();
                 window_for_close.destroy();

@@ -225,48 +225,15 @@ impl super::LushtextWindow {
         dialog.connect_response(None::<&str>, move |_, response| match response {
             RESPONSE_SAVE => {
                 let checks = checks.borrow();
-                let mut pending_saves = 0u32;
-                let pending = Rc::new(std::cell::Cell::new(0u32));
-
-                for (check, editor) in checks.iter() {
-                    if check.is_active() && editor.file_path().is_some() {
-                        pending_saves += 1;
-                    }
-                }
-
-                if pending_saves == 0 {
-                    let all: Vec<_> = checks.iter().map(|(_, e)| e.clone()).collect();
-                    window.cleanup_drafts_for_editors(&all);
-                    on_done(true);
-                    return;
-                }
-
-                pending.set(pending_saves);
+                let selected: Vec<_> = checks
+                    .iter()
+                    .filter(|(check, _)| check.is_active())
+                    .map(|(_, editor)| editor.clone())
+                    .collect();
                 let on_done = on_done.clone();
-                let window_c = window.clone();
-                let all_editors: Rc<Vec<LushtextEditorPage>> =
-                    Rc::new(checks.iter().map(|(_, e)| e.clone()).collect());
-
-                for (check, editor) in checks.iter() {
-                    if !check.is_active() || editor.file_path().is_none() {
-                        continue;
-                    }
-                    let pending = pending.clone();
-                    let on_done = on_done.clone();
-                    let window_c = window_c.clone();
-                    let all_editors = all_editors.clone();
-                    editor.save_file_async(move |result| {
-                        if let Err(e) = result {
-                            tracing::error!("Save failed during close: {e}");
-                        }
-                        let remaining = pending.get().saturating_sub(1);
-                        pending.set(remaining);
-                        if remaining == 0 {
-                            window_c.cleanup_drafts_for_editors(&all_editors);
-                            on_done(true);
-                        }
-                    });
-                }
+                window.save_editors_for_close(selected, move |confirmed| {
+                    on_done(confirmed);
+                });
             }
             RESPONSE_DISCARD => {
                 let checks = checks.borrow();
@@ -280,6 +247,60 @@ impl super::LushtextWindow {
         });
 
         dialog.present(Some(self));
+    }
+
+    /// Save the selected editors during a close flow. Only drafts for
+    /// successfully saved editors are cleaned up; any failure keeps the close
+    /// blocked so recovery data remains available.
+    pub fn save_editors_for_close<F: Fn(bool) + 'static>(
+        &self,
+        editors: Vec<LushtextEditorPage>,
+        on_done: F,
+    ) {
+        let selected_file_backed: Vec<_> = editors
+            .into_iter()
+            .filter(|editor| editor.file_path().is_some())
+            .collect();
+        if selected_file_backed.is_empty() {
+            on_done(true);
+            return;
+        }
+
+        let pending = Rc::new(std::cell::Cell::new(selected_file_backed.len() as u32));
+        let any_failed = Rc::new(std::cell::Cell::new(false));
+        let saved_editors: Rc<RefCell<Vec<LushtextEditorPage>>> = Rc::new(RefCell::new(Vec::new()));
+        let on_done = Rc::new(on_done);
+        let window = self.clone();
+
+        for editor in selected_file_backed {
+            let editor_for_callback = editor.clone();
+            let pending = pending.clone();
+            let on_done = on_done.clone();
+            let window = window.clone();
+            let any_failed = any_failed.clone();
+            let saved_editors = saved_editors.clone();
+            editor.save_file_async(move |result| {
+                if let Err(e) = result {
+                    any_failed.set(true);
+                    tracing::error!("Save failed during close: {e}");
+                    window.publish_status_message(
+                        &format!("Save failed during close: {e}"),
+                        MessageKind::Error,
+                    );
+                } else {
+                    saved_editors.borrow_mut().push(editor_for_callback.clone());
+                }
+                let remaining = pending.get().saturating_sub(1);
+                pending.set(remaining);
+                if remaining == 0 {
+                    let saved = saved_editors.borrow().clone();
+                    if !saved.is_empty() {
+                        window.cleanup_drafts_for_editors(&saved);
+                    }
+                    on_done(!any_failed.get());
+                }
+            });
+        }
     }
 
     /// Delete drafts for the given editors. Handles both path-backed files

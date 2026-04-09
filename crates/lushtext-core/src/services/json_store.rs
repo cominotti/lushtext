@@ -49,6 +49,10 @@ pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<
     writer
         .flush()
         .with_context(|| format!("failed to flush {}", tmp_path.display()))?;
+    writer
+        .get_ref()
+        .sync_all()
+        .with_context(|| format!("failed to sync {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, &path).with_context(|| {
         format!(
             "failed to rename {} to {}",

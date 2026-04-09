@@ -1050,6 +1050,7 @@ dependencies = [
  "gtk4",
  "ignore",
  "libadwaita",
+ "libc",
  "nucleo-matcher",
  "pango",
  "pulldown-cmark",

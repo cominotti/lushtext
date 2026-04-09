@@ -222,9 +222,11 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         MessageKind::Info,
                     );
                     reload_affected_tabs(&window, &affected_paths);
+                    window.imp().search_panel.clear_undo_backup();
                 }
                 Err(e) => {
                     window.publish_status_message(&format!("Undo failed: {e}"), MessageKind::Error);
+                    window.imp().search_panel.show_undo_button();
                 }
             },
         );

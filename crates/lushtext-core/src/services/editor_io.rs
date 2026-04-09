@@ -8,6 +8,7 @@
 //! `read_to_string`.
 
 use crate::services::file_limits::FileSizeCheck;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -144,10 +145,28 @@ pub fn write_snapshot_to_path(
             .unwrap_or_else(|| "untitled".to_string())
     );
     let tmp_path = path.with_file_name(&tmp_name);
-    std::fs::write(&tmp_path, &text).map_err(|source| SaveError::WriteTemp {
+    let file = std::fs::File::create(&tmp_path).map_err(|source| SaveError::WriteTemp {
         path: tmp_path.clone(),
         source,
     })?;
+    let mut writer = BufWriter::new(file);
+    writer
+        .write_all(text.as_bytes())
+        .map_err(|source| SaveError::WriteTemp {
+            path: tmp_path.clone(),
+            source,
+        })?;
+    writer.flush().map_err(|source| SaveError::WriteTemp {
+        path: tmp_path.clone(),
+        source,
+    })?;
+    writer
+        .get_ref()
+        .sync_all()
+        .map_err(|source| SaveError::WriteTemp {
+            path: tmp_path.clone(),
+            source,
+        })?;
     std::fs::rename(&tmp_path, &path).map_err(|source| {
         let _ = std::fs::remove_file(&tmp_path);
         SaveError::Finalize {

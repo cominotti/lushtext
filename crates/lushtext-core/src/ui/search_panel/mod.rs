@@ -29,7 +29,7 @@ use crate::model::content_search::{
     ContentSearchOptions, Replacement, SavedSearch, SearchEvent, SearchHistoryEntry,
     generate_replacement_preview,
 };
-use crate::services::{content_search, json_store, saved_searches, search_history};
+use crate::services::{content_search, json_store, saved_searches, search_backup, search_history};
 
 glib::wrapper! {
     pub struct LushtextSearchPanel(ObjectSubclass<imp::LushtextSearchPanel>)
@@ -43,12 +43,11 @@ impl LushtextSearchPanel {
         self.imp().search_entry.grab_focus();
     }
 
-    /// Called when the panel is being hidden. Clears undo backup but preserves
-    /// query text and results for next open.
+    /// Called when the panel is being hidden. Preserves the undo backup so it
+    /// can survive panel close or app restart.
     pub fn close(&self) {
         // Don't cancel the search — preserve results for when the panel reopens.
         // The polling timer is self-managing (stops when Done is received).
-        self.clear_undo_backup();
     }
 
     /// Pre-fill the search entry with text (e.g., editor selection).
@@ -116,18 +115,64 @@ impl LushtextSearchPanel {
 
     /// Store undo backup after a successful replace.
     pub fn set_undo_backup(&self, backup: HashMap<PathBuf, Vec<u8>>) {
-        self.imp().undo_backup.replace(Some(backup));
-    }
+        let generation = self.imp().undo_backup_generation.get().wrapping_add(1);
+        self.imp().undo_backup_generation.set(generation);
+        self.imp().undo_backup.replace(Some(backup.clone()));
 
-    /// Take the undo backup (returns and clears it).
-    pub fn take_undo_backup(&self) -> Option<HashMap<PathBuf, Vec<u8>>> {
-        self.imp().undo_backup.take()
+        let data_dir = json_store::data_dir();
+        if let Err(e) = search_backup::save(&data_dir, &backup) {
+            tracing::error!("Failed to persist replace backup: {e}");
+            if let Err(delete_err) = search_backup::delete(&data_dir) {
+                tracing::warn!(
+                    "Failed to clear stale replace backup after save failure: {delete_err}"
+                );
+            }
+        }
     }
 
     /// Clear undo backup and hide the undo button.
-    fn clear_undo_backup(&self) {
+    pub(crate) fn clear_undo_backup(&self) {
+        let generation = self.imp().undo_backup_generation.get().wrapping_add(1);
+        self.imp().undo_backup_generation.set(generation);
         self.imp().undo_backup.replace(None);
         self.hide_undo_button();
+
+        let data_dir = json_store::data_dir();
+        if let Err(e) = search_backup::delete(&data_dir) {
+            tracing::warn!("Failed to delete replace backup after undo: {e}");
+        }
+    }
+
+    /// Restore a persisted undo backup from a previous session, if present.
+    pub(crate) fn restore_persisted_undo_backup(&self) {
+        if self.imp().undo_backup.borrow().is_some() {
+            return;
+        }
+
+        let generation = self.imp().undo_backup_generation.get();
+        let data_dir = json_store::data_dir();
+        crate::services::async_task::spawn_blocking_then(
+            self.clone(),
+            move || search_backup::load(&data_dir),
+            move |panel, result| {
+                let imp = panel.imp();
+                if imp.undo_backup_generation.get() != generation
+                    || imp.undo_backup.borrow().is_some()
+                {
+                    return;
+                }
+                match result {
+                    Ok(backup) if !backup.is_empty() => {
+                        imp.undo_backup.replace(Some(backup));
+                        panel.show_undo_button();
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("Failed to restore replace backup: {e}");
+                    }
+                }
+            },
+        );
     }
 
     /// Whether the panel is in preview mode.
@@ -972,7 +1017,6 @@ impl LushtextSearchPanel {
         imp.preview_replacements.borrow_mut().clear();
         imp.checked_indices.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
-        self.clear_undo_backup();
         self.update_replace_button_sensitivity();
     }
 }

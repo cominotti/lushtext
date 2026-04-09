@@ -7,6 +7,8 @@ use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::config::keys;
+use lushtext_core::model::draft::DraftEntry;
+use lushtext_core::services::{draft_service, json_store};
 use lushtext_core::services::notifications::{
     InlineActionNotification, InlineNotificationStyle, NOTIFICATION_TIMEOUT, NotificationOwner,
     NotificationSeverity, NotificationSurface,
@@ -1809,6 +1811,86 @@ fn test_show_save_changes_empty_calls_done_true() {
     flush_events();
 
     assert!(done.get(), "Empty modified list should call done(true)");
+}
+
+#[test]
+fn test_flush_dirty_drafts_persists_empty_modified_buffer() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    let buffer = editor.buffer();
+    buffer.set_text("temporary text");
+    flush_events();
+    buffer.set_text("");
+    flush_events();
+
+    window.flush_dirty_drafts();
+
+    let draft_id = editor.draft_id().expect("untitled tab has draft id");
+    let restored = draft_service::read_draft(&json_store::data_dir(), &draft_id).unwrap();
+    assert_eq!(restored.as_deref(), Some(""));
+}
+
+#[test]
+fn test_save_editors_for_close_failure_preserves_draft_and_blocks_close() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let failing_path = tmp.path().join("not-a-file");
+    std::fs::create_dir(&failing_path).unwrap();
+
+    let editor = active_editor(&window);
+    editor.set_file_path(&failing_path);
+    let draft_id = draft_service::draft_id_for_path(&failing_path);
+    editor.set_draft_id(draft_id.clone());
+    editor.buffer().set_text("unsaved close data");
+    flush_events();
+
+    let data_dir = json_store::data_dir();
+    draft_service::write_draft(&data_dir, &draft_id, "draft backup").unwrap();
+    window.imp().draft_manifest.borrow_mut().upsert(DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: Some(failing_path.clone()),
+        original_mtime_secs: None,
+        saved_at_secs: 1,
+    });
+
+    let result = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let result_clone = result.clone();
+    window.save_editors_for_close(vec![editor.clone()], move |confirmed| {
+        *result_clone.borrow_mut() = Some(confirmed);
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && result.borrow().is_none() {
+        flush_after_delay(Duration::from_millis(20));
+    }
+    assert!(result.borrow().is_some(), "close-save callback should complete");
+
+    assert_eq!(*result.borrow(), Some(false));
+    assert!(editor.is_modified(), "failed save should restore modified state");
+    assert!(
+        draft_service::read_draft(&data_dir, &draft_id)
+            .unwrap()
+            .is_some(),
+        "draft must remain on disk after failed close save"
+    );
+    assert!(
+        window
+            .imp()
+            .draft_manifest
+            .borrow()
+            .find_by_path(&failing_path)
+            .is_some(),
+        "manifest entry must survive failed close save"
+    );
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
 }
 
 // --- Sidebar toggle ---

@@ -99,8 +99,8 @@ impl super::LushtextWindow {
     pub fn flush_dirty_drafts(&self) {
         let tab_view = &self.imp().tab_view;
         let data_dir = json_store::data_dir();
-        let mut manifest = self.imp().draft_manifest.borrow().clone();
         let now = editor_io::now_epoch_secs();
+        let mut manifest_updates = Vec::new();
 
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
@@ -118,9 +118,6 @@ impl super::LushtextWindow {
             let text = buffer
                 .text(&buffer.start_iter(), &buffer.end_iter(), true)
                 .to_string();
-            if text.is_empty() {
-                continue;
-            }
             if let Err(e) = draft_service::write_draft(&data_dir, &draft_id, &text) {
                 tracing::error!("Failed to write draft on close: {e}");
                 continue;
@@ -129,14 +126,21 @@ impl super::LushtextWindow {
             let mtime = original_path
                 .as_ref()
                 .and_then(|p| editor_io::mtime_secs(p));
-            manifest.upsert(DraftEntry {
+            manifest_updates.push(DraftEntry {
                 draft_id,
                 original_path,
                 original_mtime_secs: mtime,
                 saved_at_secs: now,
             });
         }
-        if let Err(e) = draft_service::save_manifest(&data_dir, &manifest) {
+        if manifest_updates.is_empty() {
+            return;
+        }
+        if let Err(e) = draft_service::update_manifest(&data_dir, |manifest| {
+            for entry in manifest_updates {
+                manifest.upsert(entry);
+            }
+        }) {
             tracing::error!("Failed to save draft manifest on close: {e}");
         }
     }
@@ -152,37 +156,7 @@ impl super::LushtextWindow {
         let data_dir = json_store::data_dir();
         async_task::spawn_blocking_then(
             self.clone(),
-            move || {
-                let manifest = draft_service::load_manifest(&data_dir).unwrap_or_default();
-                let mut session = session_service::load(&data_dir).unwrap_or_default();
-                session_service::filter_existing_tabs(&mut session);
-
-                // Pre-read draft content for all session tabs that have drafts.
-                // This avoids a separate spawn_blocking_then per tab later.
-                let mut preloaded = std::collections::HashMap::new();
-                for tab in &session.tabs {
-                    let draft_id = match &tab.path {
-                        Some(path) => draft_service::draft_id_for_path(path),
-                        None => match &tab.draft_id {
-                            Some(id) => id.clone(),
-                            None => continue,
-                        },
-                    };
-                    if manifest.find_by_id(&draft_id).is_some() {
-                        match draft_service::read_draft(&data_dir, &draft_id) {
-                            Ok(Some(content)) => {
-                                preloaded.insert(draft_id, content);
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                tracing::warn!("Failed to pre-read draft {draft_id}: {e}");
-                            }
-                        }
-                    }
-                }
-
-                (manifest, session, preloaded)
-            },
+            move || draft_service::load_restore_state(&data_dir),
             |window, (manifest, session, preloaded)| {
                 *window.imp().draft_manifest.borrow_mut() = manifest;
                 *window.imp().preloaded_drafts.borrow_mut() = preloaded;
@@ -411,9 +385,6 @@ impl super::LushtextWindow {
             let text = buffer
                 .text(&buffer.start_iter(), &buffer.end_iter(), true)
                 .to_string();
-            if text.is_empty() {
-                continue;
-            }
             dirty_tabs.push((draft_id, text, editor.file_path()));
             editor.set_draft_dirty(false);
         }
@@ -429,33 +400,64 @@ impl super::LushtextWindow {
         async_task::spawn_blocking_then(
             (),
             move || {
-                let mut manifest = manifest;
                 let now = editor_io::now_epoch_secs();
+                let mut manifest_updates = Vec::new();
+                let mut failed_ids = Vec::new();
 
                 for (draft_id, text, path) in &dirty_tabs {
                     if let Err(e) = draft_service::write_draft(&data_dir, draft_id, text) {
                         tracing::warn!("Failed to write draft {draft_id}: {e}");
+                        failed_ids.push(draft_id.clone());
                         continue;
                     }
                     // Read mtime on background thread to avoid blocking GTK main thread
                     // (stat syscall can be slow on NFS/FUSE mounts).
                     let mtime = path.as_deref().and_then(editor_io::mtime_secs);
-                    let original_path = manifest
-                        .find_by_id(draft_id)
-                        .and_then(|e| e.original_path.clone());
-                    manifest.upsert(DraftEntry {
+                    manifest_updates.push(DraftEntry {
                         draft_id: draft_id.clone(),
-                        original_path,
+                        original_path: path.clone(),
                         original_mtime_secs: mtime,
                         saved_at_secs: now,
                     });
                 }
-                let _ = draft_service::save_manifest(&data_dir, &manifest);
-                manifest
+                let manifest = if manifest_updates.is_empty() {
+                    Some(manifest)
+                } else {
+                    match draft_service::update_manifest(&data_dir, |manifest| {
+                        for entry in manifest_updates {
+                            manifest.upsert(entry);
+                        }
+                    }) {
+                        Ok(manifest) => Some(manifest),
+                        Err(e) => {
+                            tracing::warn!("Failed to save draft manifest: {e}");
+                            failed_ids
+                                .extend(dirty_tabs.iter().map(|(draft_id, _, _)| draft_id.clone()));
+                            None
+                        }
+                    }
+                };
+                (manifest, failed_ids)
             },
-            move |(), manifest| {
+            move |(), (manifest, failed_ids)| {
                 if let Some(window) = window_weak.upgrade() {
-                    *window.imp().draft_manifest.borrow_mut() = manifest;
+                    if let Some(manifest) = manifest {
+                        *window.imp().draft_manifest.borrow_mut() = manifest;
+                    }
+                    if !failed_ids.is_empty() {
+                        let tab_view = &window.imp().tab_view;
+                        for failed_id in failed_ids {
+                            for i in 0..tab_view.n_pages() {
+                                let page = tab_view.nth_page(i);
+                                let child = page.child();
+                                if let Some(editor) = child.downcast_ref::<LushtextEditorPage>()
+                                    && editor.draft_id().as_deref() == Some(failed_id.as_str())
+                                {
+                                    editor.set_draft_dirty(true);
+                                }
+                            }
+                        }
+                    }
                 }
             },
         );
@@ -534,16 +536,30 @@ impl super::LushtextWindow {
 
         let data_dir = json_store::data_dir();
         let draft_id = draft_id.to_string();
-        let manifest = self.imp().draft_manifest.borrow().clone();
-
-        std::thread::spawn(move || {
-            if let Err(e) = draft_service::delete_draft_file(&data_dir, &draft_id) {
-                tracing::warn!("Failed to delete draft file {draft_id}: {e}");
-            }
-            if let Err(e) = draft_service::save_manifest(&data_dir, &manifest) {
-                tracing::warn!("Failed to save manifest after draft deletion: {e}");
-            }
-        });
+        let window_weak = self.downgrade();
+        async_task::spawn_blocking_then(
+            (),
+            move || {
+                if let Err(e) = draft_service::delete_draft_file(&data_dir, &draft_id) {
+                    tracing::warn!("Failed to delete draft file {draft_id}: {e}");
+                }
+                draft_service::update_manifest(&data_dir, |manifest| {
+                    manifest.remove_by_id(&draft_id);
+                })
+            },
+            move |(), result| {
+                if let Some(window) = window_weak.upgrade() {
+                    match result {
+                        Ok(manifest) => {
+                            *window.imp().draft_manifest.borrow_mut() = manifest;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to save manifest after draft deletion: {e}");
+                        }
+                    }
+                }
+            },
+        );
     }
 
     /// Allocate a draft ID for a new editor page. For path-backed files,

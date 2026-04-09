@@ -18,6 +18,7 @@ pub mod json_store;
 pub mod notifications;
 pub mod palette;
 pub mod saved_searches;
+pub mod search_backup;
 pub mod search_history;
 pub mod session_service;
 pub mod workspace_manager;

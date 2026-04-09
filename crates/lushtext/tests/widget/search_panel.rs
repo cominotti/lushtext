@@ -9,6 +9,7 @@ use lushtext_core::model::content_search::{
     ContentSearchOptions, ReplaceResult, Replacement, SavedSearch, SearchEvent, SearchMatch,
     generate_replacement_preview,
 };
+use lushtext_core::services::{json_store, search_backup};
 use lushtext_core::services::notifications::{
     NotificationBus, NotificationOwner, NotificationPayload, NotificationSeverity,
     NotificationSurface, StatusMessage,
@@ -694,9 +695,11 @@ fn test_exit_preview_mode_clears_state() {
 }
 
 #[test]
-fn test_clear_results_clears_undo_backup() {
+fn test_clear_results_preserves_undo_backup() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let data_dir = json_store::data_dir();
+    let _ = search_backup::delete(&data_dir);
 
     // Simulate an undo backup.
     let mut backup = std::collections::HashMap::new();
@@ -708,13 +711,40 @@ fn test_clear_results_clears_undo_backup() {
     panel.show_undo_button();
     assert!(panel.imp().undo_backup.borrow().is_some());
 
-    // Clear results should clear undo backup and hide button.
+    // Clearing results should preserve undo so Replace All can still be reverted.
     panel.start_search("");
-    assert!(panel.imp().undo_backup.borrow().is_none());
+    assert!(panel.imp().undo_backup.borrow().is_some());
     assert!(
-        !panel.imp().undo_button.property::<bool>("visible"),
-        "undo_button should be hidden after clear"
+        panel.imp().undo_button.property::<bool>("visible"),
+        "undo_button should remain visible after clear"
     );
+
+    let _ = search_backup::delete(&data_dir);
+}
+
+#[test]
+fn test_search_panel_restores_persisted_undo_backup() {
+    ensure_gtk_init();
+    let data_dir = json_store::data_dir();
+    let _ = search_backup::delete(&data_dir);
+
+    let mut backup = std::collections::HashMap::new();
+    backup.insert(
+        std::path::PathBuf::from("/persisted.rs"),
+        b"persisted content".to_vec(),
+    );
+    search_backup::save(&data_dir, &backup).unwrap();
+
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    wait_until(Duration::from_secs(2), || {
+        panel.imp().undo_backup.borrow().as_ref() == Some(&backup)
+    });
+    assert!(
+        panel.imp().undo_button.property::<bool>("visible"),
+        "undo button should become visible when persisted backup is restored"
+    );
+
+    let _ = search_backup::delete(&data_dir);
 }
 
 // ---------------------------------------------------------------------------

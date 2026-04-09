@@ -39,6 +39,14 @@ fn release_slot() {
     ACTIVE_THREADS.fetch_sub(1, Ordering::Release);
 }
 
+struct SlotGuard;
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        release_slot();
+    }
+}
+
 /// Run `work` on a background thread, then call `then` on the main thread
 /// with the result.
 ///
@@ -71,8 +79,8 @@ where
     let guarded_state = glib::thread_guard::ThreadGuard::new(state);
     let guarded_then = glib::thread_guard::ThreadGuard::new(then);
     std::thread::spawn(move || {
+        let _slot_guard = SlotGuard;
         let result = work();
-        release_slot();
         // Deliver the result to the main thread via GLib's main loop.
         // GTK widgets can only be accessed from the main thread, so
         // idle_add_once schedules the callback on the next iteration.
@@ -82,4 +90,23 @@ where
             then(state, result);
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic;
+
+    #[test]
+    fn slot_guard_releases_slot_on_panic() {
+        ACTIVE_THREADS.store(1, Ordering::Relaxed);
+
+        let result = panic::catch_unwind(|| {
+            let _guard = SlotGuard;
+            panic!("boom");
+        });
+
+        assert!(result.is_err());
+        assert_eq!(ACTIVE_THREADS.load(Ordering::Relaxed), 0);
+    }
 }

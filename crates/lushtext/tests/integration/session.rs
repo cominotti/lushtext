@@ -3,7 +3,9 @@
 //! Integration tests for session persistence.
 
 use crate::common::TestContext;
+use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::session::{SessionData, SessionTab};
+use lushtext_core::services::draft_service;
 use lushtext_core::services::session_service;
 
 /// Create a file-backed session tab with cursor/scroll state.
@@ -387,4 +389,44 @@ fn test_active_index_out_of_bounds_preserved_in_serialization() {
     session_service::save(ctx.data_dir(), &session).unwrap();
     let loaded = session_service::load(ctx.data_dir()).unwrap();
     assert_eq!(loaded.active_tab_index, Some(99));
+}
+
+#[test]
+fn test_startup_restore_load_preserves_temporarily_unavailable_file_tabs() {
+    let ctx = TestContext::new();
+
+    let missing_path = ctx.path().join("offline-share/notes.md");
+    let real_file = ctx.write_file("local.txt", "local");
+    let real_draft_id = draft_service::draft_id_for_path(&real_file);
+    draft_service::write_draft(ctx.data_dir(), &real_draft_id, "drafted local").unwrap();
+    draft_service::save_manifest(
+        ctx.data_dir(),
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: real_draft_id.clone(),
+                original_path: Some(real_file.clone()),
+                original_mtime_secs: None,
+                saved_at_secs: 1,
+            }],
+        },
+    )
+    .unwrap();
+
+    let session = SessionData {
+        tabs: vec![tab(missing_path.clone(), 5), tab(real_file.clone(), 1)],
+        active_tab_index: Some(0),
+    };
+    session_service::save(ctx.data_dir(), &session).unwrap();
+
+    let (_manifest, restored_session, preloaded) =
+        draft_service::load_restore_state(ctx.data_dir());
+
+    assert_eq!(restored_session.tabs.len(), 2);
+    assert_eq!(restored_session.tabs[0].path, Some(missing_path));
+    assert_eq!(restored_session.tabs[1].path, Some(real_file));
+    assert_eq!(restored_session.active_tab_index, Some(0));
+    assert_eq!(
+        preloaded.get(&real_draft_id).map(String::as_str),
+        Some("drafted local")
+    );
 }

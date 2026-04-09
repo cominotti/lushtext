@@ -18,6 +18,9 @@ use grep_searcher::{BinaryDetection, SearcherBuilder};
 use ignore::overrides::OverrideBuilder;
 use ignore::{WalkBuilder, WalkState};
 
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+
 use crate::model::content_search::{
     ContentSearchOptions, ReplaceResult, Replacement, SearchEvent, SearchMatch,
 };
@@ -264,9 +267,13 @@ pub fn apply_replacements(
     let mut files_affected = 0usize;
     let mut skipped_paths = Vec::new();
     let mut errors: Vec<String> = Vec::new();
+    let mut applied_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut held_locks: Vec<ReplaceFileLock> = Vec::new();
+    let mut cancelled = false;
 
     for (path, mut file_replacements) in by_file {
         if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
             break;
         }
 
@@ -274,6 +281,14 @@ pub fn apply_replacements(
             skipped_paths.push(path);
             continue;
         }
+
+        let lock = match ReplaceFileLock::acquire(&path) {
+            Ok(lock) => lock,
+            Err(e) => {
+                errors.push(format!("Failed to lock {}: {e}", path.display()));
+                continue;
+            }
+        };
 
         // Read original content. On error, skip this file and continue.
         let original_bytes = match std::fs::read(&path) {
@@ -363,8 +378,21 @@ pub fn apply_replacements(
             continue;
         }
 
+        applied_paths.push(path.clone());
+        held_locks.push(lock);
         replaced_count += file_replaced;
         files_affected += 1;
+    }
+
+    if cancelled {
+        let rollback_errors = rollback_applied_files(&backup, &applied_paths);
+        if rollback_errors.is_empty() {
+            return Err(anyhow::anyhow!("Replace cancelled"));
+        }
+        return Err(anyhow::anyhow!(
+            "Replace cancelled; rollback failed: {}",
+            rollback_errors.join("; ")
+        ));
     }
 
     // If no files could be processed at all and we had errors, return the first error.
@@ -398,6 +426,13 @@ pub fn undo_replacements(
     let mut restored = 0usize;
     let mut errors: Vec<String> = Vec::new();
     for (path, original_bytes) in backup {
+        let _lock = match ReplaceFileLock::acquire(path) {
+            Ok(lock) => lock,
+            Err(e) => {
+                errors.push(format!("Failed to lock {}: {e}", path.display()));
+                continue;
+            }
+        };
         if let Err(e) = atomic_write(path, original_bytes) {
             errors.push(format!("Failed to restore {}: {e}", path.display()));
             continue;
@@ -430,6 +465,11 @@ fn atomic_write(path: &Path, content: &[u8]) -> anyhow::Result<()> {
             writer
                 .flush()
                 .map_err(|e| anyhow::anyhow!("Failed to flush {}: {}", tmp_path.display(), e))
+                .and_then(|()| {
+                    writer.get_ref().sync_all().map_err(|e| {
+                        anyhow::anyhow!("Failed to sync {}: {}", tmp_path.display(), e)
+                    })
+                })
         });
     if let Err(e) = write_result {
         let _ = std::fs::remove_file(&tmp_path);
@@ -444,6 +484,65 @@ fn atomic_write(path: &Path, content: &[u8]) -> anyhow::Result<()> {
             e
         )
     })
+}
+
+fn rollback_applied_files(
+    backup: &std::collections::HashMap<std::path::PathBuf, Vec<u8>>,
+    applied_paths: &[std::path::PathBuf],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for path in applied_paths.iter().rev() {
+        let Some(original_bytes) = backup.get(path) else {
+            continue;
+        };
+        if let Err(e) = atomic_write(path, original_bytes) {
+            errors.push(format!("Failed to restore {}: {e}", path.display()));
+        }
+    }
+    errors
+}
+
+#[cfg(unix)]
+struct ReplaceFileLock(std::fs::File);
+
+#[cfg(unix)]
+impl ReplaceFileLock {
+    fn acquire(path: &Path) -> anyhow::Result<Self> {
+        use std::fs::OpenOptions;
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|e| anyhow::anyhow!("failed to open {} for locking: {}", path.display(), e))?;
+        let fd = file.as_raw_fd();
+        let result = unsafe { libc::flock(fd, libc::LOCK_EX) };
+        if result != 0 {
+            return Err(anyhow::anyhow!(
+                "failed to lock {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(Self(file))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ReplaceFileLock {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+#[cfg(not(unix))]
+struct ReplaceFileLock;
+
+#[cfg(not(unix))]
+impl ReplaceFileLock {
+    fn acquire(_path: &Path) -> anyhow::Result<Self> {
+        Ok(Self)
+    }
 }
 
 /// Finds the byte range of the first match within a line.
@@ -1129,9 +1228,49 @@ mod tests {
 
         // Cancel immediately — at least one file may be skipped.
         let cancel = AtomicBool::new(true);
-        let (result, _) = apply_replacements(&replacements, &HashSet::new(), &cancel).unwrap();
-        // With cancel set before starting, no files should be replaced.
-        assert_eq!(result.files_affected, 0);
+        let result = apply_replacements(&replacements, &HashSet::new(), &cancel);
+        assert!(result.is_err(), "cancelled replace should abort");
+        assert_eq!(fs::read_to_string(&file_a).unwrap(), "needle\n");
+        assert_eq!(fs::read_to_string(&file_b).unwrap(), "needle\n");
+    }
+
+    #[test]
+    fn test_apply_replacements_cancel_rolls_back_applied_files() {
+        let dir = tempdir().unwrap();
+        let mut replacements = Vec::new();
+        let mut files = Vec::new();
+        for i in 0..64 {
+            let path = dir.path().join(format!("file_{i}.txt"));
+            fs::write(&path, "needle\n").unwrap();
+            replacements.push(make_replacement(&path, 1, "needle", "replaced", 0..6));
+            files.push(path);
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_for_observer = cancel.clone();
+        let observed_files = files.clone();
+        let observer = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if observed_files.iter().any(|path| {
+                    fs::read_to_string(path)
+                        .map(|content| content.contains("replaced"))
+                        .unwrap_or(false)
+                }) {
+                    cancel_for_observer.store(true, Ordering::Relaxed);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+
+        let result = apply_replacements(&replacements, &HashSet::new(), cancel.as_ref());
+        observer.join().unwrap();
+
+        assert!(result.is_err(), "cancelled replace should roll back");
+        for path in &files {
+            assert_eq!(fs::read_to_string(path).unwrap(), "needle\n");
+        }
     }
 
     #[test]

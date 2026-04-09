@@ -8,13 +8,21 @@
 //! draft IDs to original file paths and metadata.
 
 use crate::model::draft::DraftManifest;
-use crate::services::json_store;
+use crate::model::session::SessionData;
+use crate::services::{json_store, session_service};
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 const DRAFTS_DIR: &str = "drafts";
 const MANIFEST_FILE: &str = "manifest.json";
+
+fn manifest_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// Returns the drafts directory: `{data_dir}/drafts/`.
 pub fn drafts_dir(data_dir: &Path) -> PathBuf {
@@ -50,8 +58,66 @@ pub fn load_manifest(data_dir: &Path) -> Result<DraftManifest> {
 ///
 /// **Threading:** blocking I/O, call from background thread.
 pub fn save_manifest(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
+    let _guard = manifest_write_lock()
+        .lock()
+        .expect("draft manifest write lock poisoned");
+    save_manifest_locked(data_dir, manifest)
+}
+
+fn save_manifest_locked(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
     let dir = drafts_dir(data_dir);
     json_store::save(&dir, MANIFEST_FILE, manifest)
+}
+
+/// Load, mutate, and save the draft manifest under a single lock.
+/// Returns the final manifest snapshot written to disk.
+pub fn update_manifest<F>(data_dir: &Path, update: F) -> Result<DraftManifest>
+where
+    F: FnOnce(&mut DraftManifest),
+{
+    let _guard = manifest_write_lock()
+        .lock()
+        .expect("draft manifest write lock poisoned");
+    let mut manifest = load_manifest(data_dir)?;
+    update(&mut manifest);
+    save_manifest_locked(data_dir, &manifest)?;
+    Ok(manifest)
+}
+
+/// Load the manifest, session, and any draft content needed for startup restore.
+///
+/// This intentionally preserves file-backed session tabs even when their paths
+/// are temporarily unavailable, so startup does not turn a transient mount
+/// outage into permanent session loss on the next save.
+pub fn load_restore_state(
+    data_dir: &Path,
+) -> (DraftManifest, SessionData, HashMap<String, String>) {
+    let manifest = load_manifest(data_dir).unwrap_or_default();
+    let session = session_service::load(data_dir).unwrap_or_default();
+
+    let mut preloaded = HashMap::new();
+    for tab in &session.tabs {
+        let draft_id = match &tab.path {
+            Some(path) => draft_id_for_path(path),
+            None => match &tab.draft_id {
+                Some(id) => id.clone(),
+                None => continue,
+            },
+        };
+        if manifest.find_by_id(&draft_id).is_some() {
+            match read_draft(data_dir, &draft_id) {
+                Ok(Some(content)) => {
+                    preloaded.insert(draft_id, content);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!("Failed to pre-read draft {draft_id}: {e}");
+                }
+            }
+        }
+    }
+
+    (manifest, session, preloaded)
 }
 
 /// Write a single draft file atomically (temp + rename). The draft
@@ -72,6 +138,8 @@ pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()>
         .with_context(|| format!("failed to write temp draft: {}", tmp_path.display()))?;
     file.flush()
         .with_context(|| format!("failed to flush temp draft: {}", tmp_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("failed to sync temp draft: {}", tmp_path.display()))?;
 
     std::fs::rename(&tmp_path, &path).with_context(|| {
         format!(

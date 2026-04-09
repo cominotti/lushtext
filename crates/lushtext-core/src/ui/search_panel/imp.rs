@@ -140,6 +140,8 @@ pub struct LushtextSearchPanel {
     pub preview_mode: Cell<bool>,
     /// In-memory backup of original file content, stored after replace for undo.
     pub undo_backup: RefCell<Option<HashMap<PathBuf, Vec<u8>>>>,
+    /// Generation counter that invalidates stale persisted backup loads.
+    pub undo_backup_generation: Cell<u32>,
     /// Generated preview data shown in preview mode.
     pub preview_replacements: RefCell<Vec<Replacement>>,
     /// Indices of checked replacements in preview mode.
@@ -249,6 +251,7 @@ impl Default for LushtextSearchPanel {
             saved_searches: RefCell::new(Vec::new()),
             preview_mode: Cell::new(false),
             undo_backup: RefCell::new(None),
+            undo_backup_generation: Cell::new(0),
             preview_replacements: RefCell::new(Vec::new()),
             checked_indices: RefCell::new(HashSet::new()),
             match_positions: RefCell::new(Vec::new()),
@@ -304,6 +307,7 @@ impl ObjectImpl for LushtextSearchPanel {
         self.setup_options();
         self.setup_history();
         self.setup_save_button();
+        self.obj().restore_persisted_undo_backup();
         self.constructed_complete.set(true);
     }
 
@@ -772,7 +776,7 @@ impl LushtextSearchPanel {
                 return;
             };
             let imp = panel.imp();
-            if let Some(backup) = imp.undo_backup.take() {
+            if let Some(backup) = imp.undo_backup.borrow().clone() {
                 panel.hide_undo_button();
                 if let Some(ref cb) = *imp.undo_callback.borrow() {
                     cb(backup);
