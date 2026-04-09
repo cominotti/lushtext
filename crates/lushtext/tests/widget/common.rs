@@ -7,6 +7,8 @@
 //! Both operations are one-time setup via `std::sync::Once`.
 
 use gio::prelude::{ApplicationExt, Cast, ObjectExt};
+use lushtext_core::config::APP_ID;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
 
 static GTK_INIT: Once = Once::new();
@@ -40,7 +42,13 @@ pub fn ensure_gtk_init() {
 
 pub fn test_application() -> libadwaita::Application {
     ensure_gtk_init();
-    let app: libadwaita::Application = lushtext_core::app::LushtextApplication::new().upcast();
+    static APP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let app_id = format!(
+        "{APP_ID}.widget-test-{}-{}",
+        std::process::id(),
+        APP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let app: libadwaita::Application = lushtext_core::app::LushtextApplication::new_with_application_id(&app_id).upcast();
     app.register(gio::Cancellable::NONE)
         .expect("test application registration");
     app.emit_by_name::<()>("startup", &[]);

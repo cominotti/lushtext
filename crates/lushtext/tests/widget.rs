@@ -23,6 +23,10 @@ fn main() -> ExitCode {
     }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let list_mode = args.iter().any(|arg| arg == "--list");
+    let terse_list = args
+        .windows(2)
+        .any(|window| window[0] == "--format" && window[1] == "terse");
     let exact = args.iter().any(|arg| arg == "--exact");
     let skip_filters: Vec<String> = args
         .windows(2)
@@ -36,7 +40,12 @@ fn main() -> ExitCode {
         .collect();
     let name_filters: Vec<String> = args
         .iter()
-        .filter(|arg| !arg.starts_with('-') && !skip_filters.contains(arg))
+        .filter(|arg| {
+            !arg.starts_with('-')
+                && *arg != "terse"
+                && *arg != "pretty"
+                && !skip_filters.contains(arg)
+        })
         .cloned()
         .collect();
 
@@ -44,6 +53,16 @@ fn main() -> ExitCode {
         .into_iter()
         .filter(|(name, _)| matches_filters(name, &name_filters, &skip_filters, exact))
         .collect();
+
+    if list_mode {
+        for (name, _) in &selected {
+            println!("{name}: test");
+        }
+        if !terse_list {
+            println!("\n{} tests, 0 benchmarks", selected.len());
+        }
+        return ExitCode::SUCCESS;
+    }
 
     println!("running {} tests", selected.len());
 
