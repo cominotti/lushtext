@@ -361,9 +361,9 @@ Files to modify:
 - [Source: _bmad-output/planning-artifacts/architecture.md#Project Structure & Boundaries]
 - [Source: _bmad-output/planning-artifacts/epics.md#Story 1.1: Content Search Service & Types]
 - [Source: _bmad-output/planning-artifacts/prd.md#Technical Success]
-- [Source: .claude/CLAUDE.md#Async I/O Pattern]
-- [Source: .claude/rules/rust.md#Crate Structure]
-- [Source: .claude/rules/build.md#Adding Dependencies]
+- [Source: .agents/AGENTS.md#Async I/O Pattern]
+- [Source: .agents/rules/rust.md#Crate Structure]
+- [Source: .agents/rules/build.md#Adding Dependencies]
 
 ## Dev Agent Record
 

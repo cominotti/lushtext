@@ -635,7 +635,7 @@ No critical gaps found. All gaps have proposed resolutions that follow existing 
 - Use implementation patterns consistently across all components
 - Respect project structure and boundaries
 - Refer to this document for all architectural questions
-- When in doubt, follow the existing LushText pattern from CLAUDE.md
+- When in doubt, follow the existing LushText pattern from AGENTS.md
 
 **First Implementation Priority:**
 Phase 1 — Service layer: add dependencies, create `model/content_search.rs` and `services/content_search.rs` with unit tests and benchmarks. No UI, no GTK.

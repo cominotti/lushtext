@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-04-04'
 status: 'done'
 baseline_commit: 'd020c598'
-context: ['.claude/CLAUDE.md']
+context: ['.agents/AGENTS.md']
 ---
 
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">

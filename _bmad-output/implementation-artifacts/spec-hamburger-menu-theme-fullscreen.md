@@ -5,8 +5,8 @@ created: '2026-04-04'
 status: 'done'
 baseline_commit: '061b5a1'
 context:
-  - '.claude/rules/ui.md'
-  - '.claude/rules/widget-wiring.md'
+  - '.agents/rules/ui.md'
+  - '.agents/rules/widget-wiring.md'
 ---
 
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">

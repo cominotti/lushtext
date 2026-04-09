@@ -79,7 +79,7 @@ When a directory is renamed to/from an ignored name (e.g., `src` → `target`) v
 - **`render_preview_markup` multi-byte highlight inaccuracy** — The byte-length arithmetic for computing the replacement highlight region in preview rows doesn't account for UTF-8 character alignment differences between original and replaced text. `ceil_char_boundary` prevents panics but the visual highlight may be off by a character for multi-byte replacements. Story 2.1 scope.
 - **Navigation index stale after Replace All** — After `apply_replacements()` writes new file content, `match_positions` still holds pre-replacement `(path, line_number)` pairs. If replacements shift line numbers (e.g., multi-line replacements), F4/Shift+F4 navigates to wrong lines until the next search clears the index. Story 1.5/2.1 scope.
 - **No guard against double Replace All** — The `connect_replace_all` callback uses `spawn_blocking_then` but no flag prevents the user from clicking Replace All again while the first is in-flight. The TOCTOU guard catches stale lines (no data corruption), but the second Replace All's empty backup replaces the first's, losing undo capability. Story 2.1 scope.
-- **CLAUDE.md `search-panel-position` GSettings key** — The CLAUDE.md Content search panel section references `search-panel-position (i)` as a GSettings key, but this key may not exist in the schema XML. Documentation-code inconsistency. Pre-existing.
+- **AGENTS.md `search-panel-position` GSettings key** — The AGENTS.md Content search panel section references `search-panel-position (i)` as a GSettings key, but this key may not exist in the schema XML. Documentation-code inconsistency. Pre-existing.
 
 ## Deferred from: code review of search-panel-ui-polish (2026-04-08)
 

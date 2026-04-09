@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-04-06'
 status: 'done'
 baseline_commit: '359b6a3'
-context: ['.claude/rules/ui.md', '.claude/rules/widget-wiring.md']
+context: ['.agents/rules/ui.md', '.agents/rules/widget-wiring.md']
 ---
 
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
@@ -76,7 +76,7 @@ context: ['.claude/rules/ui.md', '.claude/rules/widget-wiring.md']
 - [x] `src/ui/window/imp.rs` — Add `preview_paned` TemplateChild, `preview_visible`/`preview_mode`/`saved_preview_pos`/`preview_animation`/`preview_render_gen` Cell fields; register `LushtextMarkdownPreview` in `class_init`; extend `size_allocate` to clamp preview position (mirror sidebar logic for right side)
 - [x] `src/ui/window/mod.rs` + `src/ui/window/preview.rs` — `setup_preview_actions`: add `toggle-preview-pane` (stateful bool) and `toggle-preview-mode` (stateful bool); `setup_shortcuts`: `<Alt>p` → `win.toggle-preview-mode`; `animate_preview_pane(bool)` and `animate_preview_mode(bool)` mirroring `animate_sidebar`; wire `tab_view.connect_notify_local("selected-page")` to refresh preview; wire active buffer's `connect_changed` with 300ms debounce to re-render; `update_content_stack` disables preview actions when no tabs
 - [x] Widget tests — 19 tests: preview construction, content/placeholder mode switching, TextTag rendering for headings/bold/italic/code/links/lists/blockquotes/hrule, tag existence check, clear, re-render replacement, read-only and cursor-hidden assertions
-- [x] Documentation — Updated CLAUDE.md (module layout, widget hierarchy, design decision), README.md (features), ui.md (widget hierarchy)
+- [x] Documentation — Updated AGENTS.md (module layout, widget hierarchy, design decision), README.md (features), ui.md (widget hierarchy)
 
 **Acceptance Criteria:**
 - Given a .md file open, when user triggers side-by-side toggle, then preview pane animates in from right showing rendered Markdown

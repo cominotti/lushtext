@@ -434,11 +434,11 @@ Key learnings from Story 1.1 that apply here:
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md#Animation Patterns]
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md#Debounce Patterns]
 - [Source: _bmad-output/implementation-artifacts/1-1-content-search-service-types.md#Completion Notes]
-- [Source: .claude/CLAUDE.md#Async I/O Pattern]
-- [Source: .claude/CLAUDE.md#SIMD fuzzy matching — ListStore splice]
-- [Source: .claude/rules/rust.md#File Size Limit]
-- [Source: .claude/rules/ui.md#Focus Restoration on Overlay Close]
-- [Source: .claude/rules/widget-wiring.md#Auto-Dismiss Timers (Generation Counter)]
+- [Source: .agents/AGENTS.md#Async I/O Pattern]
+- [Source: .agents/AGENTS.md#SIMD fuzzy matching — ListStore splice]
+- [Source: .agents/rules/rust.md#File Size Limit]
+- [Source: .agents/rules/ui.md#Focus Restoration on Overlay Close]
+- [Source: .agents/rules/widget-wiring.md#Auto-Dismiss Timers (Generation Counter)]
 
 ## Dev Agent Record
 

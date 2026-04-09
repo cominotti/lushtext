@@ -118,7 +118,7 @@ So that I can quickly re-run searches I've done before without retyping or recon
     - Type in search input with dropdown visible — dropdown closes
     - Close and reopen the app — history persists
   - [x] Update README.md with search history feature
-  - [x] Update CLAUDE.md with search history design decision
+  - [x] Update AGENTS.md with search history design decision
   - [x] Run `cargo hakari generate` if any dependencies changed (no changes needed)
 
 ## Dev Notes
@@ -201,7 +201,7 @@ History is loaded once at startup in `window/search.rs::setup_search_panel()` vi
 | `crates/lushtext-core/src/ui/search_panel/mod.rs` | Add `set_search_history`, `search_history`, `restore_from_history`, `populate_history_list`, history save on Done | +100 lines |
 | `crates/lushtext-core/src/ui/window/search.rs` | Load history at startup | +15 lines |
 | `crates/lushtext/tests/widget/search_panel.rs` | Story 3.1 widget tests | +60 lines |
-| `.claude/CLAUDE.md` | Document search history design decision | +10 lines |
+| `.agents/AGENTS.md` | Document search history design decision | +10 lines |
 | `README.md` | Update features list with search history | +3 lines |
 
 ### Line Count Impact
@@ -288,12 +288,12 @@ The history dropdown should be designed to accommodate a future "Saved Searches"
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md#Journey Flow 4] — Search History and Saved Searches interaction flow
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md#Key interaction details] — History is automatic, dropdown on focus, full state restoration
 - [Source: _bmad-output/implementation-artifacts/2-1-replace-all-with-preview-execution-undo.md] — Previous story learnings (guard patterns, preview mode, clear_results)
-- [Source: .claude/CLAUDE.md#Content search panel] — Current search panel architecture
-- [Source: .claude/CLAUDE.md#Async I/O Pattern] — spawn_blocking_then for save/load
-- [Source: .claude/rules/rust.md#Background I/O] — Threading model
-- [Source: .claude/rules/rust.md#Mutable State] — Cell/RefCell conventions
-- [Source: .claude/rules/widget-wiring.md#Testing] — Widget test requirements
-- [Source: .claude/rules/ui.md#GSettings Bindings] — Persistence patterns
+- [Source: .agents/AGENTS.md#Content search panel] — Current search panel architecture
+- [Source: .agents/AGENTS.md#Async I/O Pattern] — spawn_blocking_then for save/load
+- [Source: .agents/rules/rust.md#Background I/O] — Threading model
+- [Source: .agents/rules/rust.md#Mutable State] — Cell/RefCell conventions
+- [Source: .agents/rules/widget-wiring.md#Testing] — Widget test requirements
+- [Source: .agents/rules/ui.md#GSettings Bindings] — Persistence patterns
 - [Source: crates/lushtext-core/src/model/content_search.rs:169-176] — Existing SearchHistoryEntry (missing gitignore)
 - [Source: crates/lushtext-core/src/services/json_store.rs] — json_store load/save pattern for reuse
 
@@ -323,7 +323,7 @@ Claude Opus 4.6 (1M context)
 - Task 5: Wired history save into `SearchEvent::Done` handler in `start_search()` polling timer. Only saves when `total_matches > 0` and query non-empty. Uses `spawn_blocking_then` for background I/O.
 - Task 6: Added `spawn_blocking_then` history load at end of `window/search.rs::setup_search_panel()`.
 - Task 7: 7 new widget tests covering popover/list existence, set/get history, restore_from_history (text, toggles, glob, glob=None), and serialization roundtrip.
-- Task 8: `make check` passes (clippy + fmt). All 220 unit, 52 integration, 401 widget tests pass. Updated README.md and CLAUDE.md. `cargo hakari generate` — no changes needed.
+- Task 8: `make check` passes (clippy + fmt). All 220 unit, 52 integration, 401 widget tests pass. Updated README.md and AGENTS.md. `cargo hakari generate` — no changes needed.
 
 ### Change Log
 - 2026-04-08: Implemented Story 3.1 — search history with full state recall, dropdown on focus, persistence across restarts.
@@ -337,5 +337,5 @@ Claude Opus 4.6 (1M context)
 - `crates/lushtext-core/src/ui/window/search.rs` — modified (history load at startup via spawn_blocking_then)
 - `crates/lushtext/tests/widget/search_panel.rs` — modified (7 new Story 3.1 widget tests)
 - `crates/lushtext/Cargo.toml` — modified (added serde_json dev-dependency)
-- `.claude/CLAUDE.md` — modified (module layout, search history design decision)
+- `.agents/AGENTS.md` — modified (module layout, search history design decision)
 - `README.md` — modified (features list, module layout)

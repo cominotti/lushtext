@@ -135,7 +135,7 @@ So that my search workflow is ready exactly where I left it when I reopen the ap
     - Close and reopen app → saved searches and history persist
     - Close app with panel visible + toggles set, reopen → all state restored
   - [x] Update README.md with saved searches feature
-  - [x] Update CLAUDE.md with saved searches design decision
+  - [x] Update AGENTS.md with saved searches design decision
   - [x] Run `cargo hakari generate` if any dependencies changed (no changes expected)
 
 ## Dev Notes
@@ -244,7 +244,7 @@ If budget becomes tight, extract `setup_results_list()` (the largest method, wit
 | `crates/lushtext-core/src/ui/search_panel/mod.rs` | Add `set_saved_searches`, `saved_searches`, `populate_dropdown` (replaces `populate_history_list`), `restore_from_saved_search`, `show_save_search_dialog`, `remove_saved_search` | +85 lines |
 | `crates/lushtext-core/src/ui/window/search.rs` | Load saved searches at startup | +10 lines |
 | `crates/lushtext/tests/widget/search_panel.rs` | Story 3.2 widget tests | +60 lines |
-| `.claude/CLAUDE.md` | Document saved searches design decision | +10 lines |
+| `.agents/AGENTS.md` | Document saved searches design decision | +10 lines |
 | `README.md` | Update features list with saved searches | +3 lines |
 
 ### Line Count Impact
@@ -322,12 +322,12 @@ This story implements **saved searches (FR30, FR31)** and **verifies panel state
 - [Source: _bmad-output/implementation-artifacts/3-1-search-history.md] — Previous story (guard patterns, populate_history_list, build_toggle_summary, AdwActionRow rows)
 - [Source: _bmad-output/implementation-artifacts/deferred-work.md#line 45] — Panel visible on startup with empty results (deferred, not this story)
 - [Source: _bmad-output/implementation-artifacts/deferred-work.md#line 50] — SavedSearch type defined but unused (this story resolves it)
-- [Source: .claude/CLAUDE.md#Search history] — Current search history architecture
-- [Source: .claude/CLAUDE.md#Async I/O Pattern] — spawn_blocking_then for save/load
-- [Source: .claude/rules/rust.md#Background I/O] — Threading model
-- [Source: .claude/rules/rust.md#Mutable State] — Cell/RefCell conventions
-- [Source: .claude/rules/widget-wiring.md#Testing] — Widget test requirements
-- [Source: .claude/rules/ui.md#GSettings Bindings] — Persistence patterns
+- [Source: .agents/AGENTS.md#Search history] — Current search history architecture
+- [Source: .agents/AGENTS.md#Async I/O Pattern] — spawn_blocking_then for save/load
+- [Source: .agents/rules/rust.md#Background I/O] — Threading model
+- [Source: .agents/rules/rust.md#Mutable State] — Cell/RefCell conventions
+- [Source: .agents/rules/widget-wiring.md#Testing] — Widget test requirements
+- [Source: .agents/rules/ui.md#GSettings Bindings] — Persistence patterns
 - [Source: crates/lushtext-core/src/model/content_search.rs:182-190] — Existing SavedSearch (missing gitignore)
 - [Source: crates/lushtext-core/src/services/search_history.rs] — search_history pattern to mirror for saved_searches
 - [Source: crates/lushtext-core/src/ui/search_panel/imp.rs] — 924 prod lines, 76 lines headroom
@@ -343,7 +343,7 @@ This story implements **saved searches (FR30, FR31)** and **verifies panel state
 - [x] [Review][Defer] `render_preview_markup` highlight region visually incorrect for multi-byte replacement text [`search_panel/imp.rs`] — deferred, Story 2.1 scope
 - [x] [Review][Defer] Navigation index (`match_positions`) not cleared after Replace All — F4 navigates stale lines [`search_panel/mod.rs`] — deferred, Story 1.5/2.1 scope
 - [x] [Review][Defer] No guard prevents double Replace All while first is in-flight [`window/search.rs`] — deferred, Story 2.1 scope
-- [x] [Review][Defer] CLAUDE.md references `search-panel-position (i)` GSettings key that may not exist in schema — deferred, pre-existing
+- [x] [Review][Defer] AGENTS.md references `search-panel-position (i)` GSettings key that may not exist in schema — deferred, pre-existing
 
 ## Dev Agent Record
 
@@ -366,7 +366,7 @@ None — clean implementation with no blockers.
 - Task 7: Added parallel `spawn_blocking_then` for saved searches load in `window/search.rs::setup_search_panel()`.
 - Task 8: Verified existing GSettings bindings for toggle/visibility persistence — all working from Stories 1.3-1.4. No bugs found.
 - Task 9: Added 5 widget tests: save_button visibility, set/get saved searches, restore_from_saved_search (toggles + glob), serialization roundtrip. All 406 widget tests pass.
-- Task 10: `make check` clean (clippy + fmt). 225 unit tests, 52 integration tests, 406 widget tests all pass. Updated README.md and CLAUDE.md. imp.rs at 1000 lines (limit), mod.rs at 939.
+- Task 10: `make check` clean (clippy + fmt). 225 unit tests, 52 integration tests, 406 widget tests all pass. Updated README.md and AGENTS.md. imp.rs at 1000 lines (limit), mod.rs at 939.
 
 ### Change Log
 
@@ -382,5 +382,5 @@ None — clean implementation with no blockers.
 - `crates/lushtext-core/src/ui/search_panel/mod.rs` — Added show_save_search_dialog, set_saved_searches, saved_searches, populate_dropdown (renamed from populate_history_list), restore_from_saved_search, remove_saved_search, build_saved_toggle_summary, build_summary_parts
 - `crates/lushtext-core/src/ui/window/search.rs` — Added parallel saved searches load at startup
 - `crates/lushtext/tests/widget/search_panel.rs` — Added 5 Story 3.2 widget tests
-- `.claude/CLAUDE.md` — Added saved_searches.rs to module layout, added saved searches design decision
+- `.agents/AGENTS.md` — Added saved_searches.rs to module layout, added saved searches design decision
 - `README.md` — Updated features list and module layout with saved searches

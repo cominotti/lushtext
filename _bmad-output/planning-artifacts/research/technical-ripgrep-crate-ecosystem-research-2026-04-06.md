@@ -748,7 +748,7 @@ The feature is complete when:
 4. **Respectful:** `.gitignore` patterns are honored by default (toggleable), binary files are skipped
 5. **Resilient:** Invalid regex shows an error message (not a panic), empty workspaces show "no results", very large result sets show "10,000+ results (truncated)"
 6. **Tested:** All unit tests pass, widget tests verify panel lifecycle, Criterion benchmarks establish baselines
-7. **Documented:** CLAUDE.md updated with architecture decisions, README.md updated with feature description
+7. **Documented:** AGENTS.md updated with architecture decisions, README.md updated with feature description
 
 ---
 

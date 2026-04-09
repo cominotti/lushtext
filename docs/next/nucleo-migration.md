@@ -1,6 +1,6 @@
 # Nucleo Full Framework Migration
 
-> Moved from `.claude/skills/gtk-perf-scale/references/search-scaling.md` — this is an aspirational architecture change, not a deployed pattern.
+> Moved from `.agents/skills/gtk-perf-scale/references/search-scaling.md` — this is an aspirational architecture change, not a deployed pattern.
 
 The codebase currently uses `nucleo-matcher = "0.3"` (the low-level scoring library) via `fuzzy_score` and `search_items` in `services/palette.rs`. This document describes upgrading to `nucleo = "0.5"` (the full async framework with background worker threads, incremental results, and match highlighting).
 

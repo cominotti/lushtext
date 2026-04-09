@@ -334,11 +334,11 @@ Per the architecture and UX spec, these are deferred to later stories:
 - [Source: _bmad-output/implementation-artifacts/1-3-search-toggles-match-highlighting.md#Completion Notes]
 - [Source: _bmad-output/implementation-artifacts/1-2-search-panel-with-streaming-results.md#Dev Notes]
 - [Source: _bmad-output/implementation-artifacts/1-1-content-search-service-types.md#Completion Notes]
-- [Source: .claude/CLAUDE.md#GSettings for preferences]
-- [Source: .claude/rules/rust.md#Mutable State on GObject Structs]
-- [Source: .claude/rules/ui.md#GSettings Bindings]
-- [Source: .claude/rules/widget-wiring.md#Auto-Dismiss Timers (Generation Counter)]
-- [Source: .claude/rules/widget-wiring.md#Testing]
+- [Source: .agents/AGENTS.md#GSettings for preferences]
+- [Source: .agents/rules/rust.md#Mutable State on GObject Structs]
+- [Source: .agents/rules/ui.md#GSettings Bindings]
+- [Source: .agents/rules/widget-wiring.md#Auto-Dismiss Timers (Generation Counter)]
+- [Source: .agents/rules/widget-wiring.md#Testing]
 
 ## Dev Agent Record
 
@@ -380,7 +380,7 @@ Claude Opus 4.6 (1M context)
 
 - [x] [Review][Patch] **CRITICAL: Glob debounce never fires — Cell clone diverges from imp field** [search_panel/imp.rs:488-504] — Fixed: mirror `setup_search_entry` pattern (read/write through `panel.imp()` reference).
 - [x] [Review][Patch] AC #5 truncation text overwritten by generic count update [search_panel/mod.rs:272-299] — Fixed: guard count-label update with `!imp.result_capped.get()`.
-- [x] [Review][Patch] Documentation not updated for search feature (README.md, CLAUDE.md, ui.md) — Fixed: added content_search module, search_panel, Ctrl+Shift+F docs, updated widget hierarchy.
+- [x] [Review][Patch] Documentation not updated for search feature (README.md, AGENTS.md, ui.md) — Fixed: added content_search module, search_panel, Ctrl+Shift+F docs, updated widget hierarchy.
 - [x] [Review][Patch] Duplicate doc comment on RESULT_CAP [services/content_search.rs:23-24] — Fixed: removed duplicate line.
 - [x] [Review][Defer] Premature model types (Replacement, ReplaceResult, SearchHistoryEntry, SavedSearch) [model/content_search.rs:68-103] — deferred, from story 1-1 spec forward-planning
 - [x] [Review][Defer] Single-slot `connect_workspace_changed` callback fragile design [window/imp.rs:651, window/search.rs:77] — deferred, design issue not a current bug

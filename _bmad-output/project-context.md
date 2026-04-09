@@ -137,8 +137,8 @@ _This file contains critical rules and patterns that AI agents must follow when 
 
 **Documentation maintenance:**
 - `README.md` must always be in sync with code (features, build, architecture).
-- `.claude/CLAUDE.md` updated when modules/patterns/design decisions change.
-- `.claude/rules/*.md` updated when conventions are refined.
+- `.agents/AGENTS.md` updated when modules/patterns/design decisions change.
+- `.agents/rules/*.md` updated when conventions are refined.
 
 **Runtime warning policy:**
 - GTK/pixman warnings are bugs, not noise. Development is not finished if any warnings appear.
@@ -184,7 +184,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - Read this file before implementing any code
 - Follow ALL rules exactly as documented
 - When in doubt, prefer the more restrictive option
-- Cross-reference with `.claude/CLAUDE.md` for architectural details and `.claude/rules/*.md` for full conventions
+- Cross-reference with `.agents/AGENTS.md` for architectural details and `.agents/rules/*.md` for full conventions
 
 **For Humans:**
 - Keep this file lean and focused on agent needs

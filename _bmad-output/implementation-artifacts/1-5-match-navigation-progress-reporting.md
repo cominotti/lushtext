@@ -258,7 +258,7 @@ The window already has `win.next-match` (Ctrl+G) and `win.prev-match` (Ctrl+Shif
 - `mod.rs` is at 327 lines — adding ~100 lines for navigation methods brings it to ~427, well within limit.
 - Review finding: `gen` is a reserved keyword in Rust Edition 2024. Any generation-counter variables must use a different name (e.g., `current_gen`).
 - Review finding: glob debounce initially had a Cell clone divergence bug. The `match_positions` RefCell must be accessed through `panel.imp()` inside closures, NOT cloned from an outer scope.
-- Review finding: Documentation must be updated (README.md, CLAUDE.md) — include F4/Shift+F4 navigation and progress reporting.
+- Review finding: Documentation must be updated (README.md, AGENTS.md) — include F4/Shift+F4 navigation and progress reporting.
 
 **From Story 1.3:**
 - Toggle `notify::active` handlers use `constructed_complete` guard — same guard needed if any initialization-time changes could trigger navigation.
@@ -312,14 +312,14 @@ The window already has `win.next-match` (Ctrl+G) and `win.prev-match` (Ctrl+Shif
 - [Source: _bmad-output/implementation-artifacts/1-4-gitignore-toggle-glob-filter-options-panel.md#Previous Story Intelligence]
 - [Source: _bmad-output/implementation-artifacts/1-4-gitignore-toggle-glob-filter-options-panel.md#Review Findings]
 - [Source: _bmad-output/implementation-artifacts/deferred-work.md] — window/mod.rs over 1000-line limit, polling timer continues when panel hidden
-- [Source: .claude/CLAUDE.md#Content search panel]
-- [Source: .claude/CLAUDE.md#Status bar auto-dismiss]
-- [Source: .claude/CLAUDE.md#Async I/O Pattern]
-- [Source: .claude/rules/rust.md#Mutable State on GObject Structs]
-- [Source: .claude/rules/widget-wiring.md#Action Enabled State]
-- [Source: .claude/rules/widget-wiring.md#Auto-Dismiss Timers (Generation Counter)]
-- [Source: .claude/rules/widget-wiring.md#Testing]
-- [Source: .claude/rules/ui.md#Status Bar]
+- [Source: .agents/AGENTS.md#Content search panel]
+- [Source: .agents/AGENTS.md#Status bar auto-dismiss]
+- [Source: .agents/AGENTS.md#Async I/O Pattern]
+- [Source: .agents/rules/rust.md#Mutable State on GObject Structs]
+- [Source: .agents/rules/widget-wiring.md#Action Enabled State]
+- [Source: .agents/rules/widget-wiring.md#Auto-Dismiss Timers (Generation Counter)]
+- [Source: .agents/rules/widget-wiring.md#Testing]
+- [Source: .agents/rules/ui.md#Status Bar]
 
 ## Dev Agent Record
 
@@ -357,7 +357,7 @@ None — clean implementation with no debugging issues.
 - `crates/lushtext-core/src/ui/window/mod.rs` — registered `search-next-match`/`search-prev-match` actions, bound F4/Shift+F4, added `update_search_navigation_actions()`
 - `crates/lushtext-core/src/ui/window/search.rs` — extracted `open_file_at_line` helper, wired `connect_navigate_to_match`, `connect_search_progress` with 500ms delay
 - `crates/lushtext/tests/widget/search_panel.rs` — 17 new Story 1.5 widget tests
-- `.claude/CLAUDE.md` — documented match navigation and search progress reporting design decisions
+- `.agents/AGENTS.md` — documented match navigation and search progress reporting design decisions
 - `README.md` — updated workspace content search feature description
 
 ### Review Findings
