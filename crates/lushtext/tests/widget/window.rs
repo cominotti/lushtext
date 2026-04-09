@@ -1893,6 +1893,46 @@ fn test_save_editors_for_close_failure_preserves_draft_and_blocks_close() {
     assert_eq!(window.imp().tab_view.n_pages(), 1);
 }
 
+#[test]
+fn test_save_editors_for_close_untitled_blocks_close_and_keeps_draft() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("untitled close data");
+    flush_events();
+    window.flush_dirty_drafts();
+
+    let draft_id = editor.draft_id().expect("untitled tab has draft id");
+    let data_dir = json_store::data_dir();
+
+    let result = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let result_clone = result.clone();
+    window.save_editors_for_close(vec![editor.clone()], move |confirmed| {
+        *result_clone.borrow_mut() = Some(confirmed);
+    });
+    flush_events();
+
+    assert_eq!(*result.borrow(), Some(false));
+    assert!(editor.is_modified(), "untitled tab should remain dirty");
+    assert!(
+        draft_service::read_draft(&data_dir, &draft_id)
+            .unwrap()
+            .is_some(),
+        "untitled draft must remain on disk when close save is blocked"
+    );
+    assert!(
+        draft_service::load_manifest(&data_dir)
+            .unwrap()
+            .find_by_id(&draft_id)
+            .is_some(),
+        "disk manifest entry must remain for untitled recovery"
+    );
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
+}
+
 // --- Sidebar toggle ---
 
 /// Check the sidebar visibility target state via the Cell cache.

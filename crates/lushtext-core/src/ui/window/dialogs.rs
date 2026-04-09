@@ -178,8 +178,9 @@ impl super::LushtextWindow {
         dialog.set_close_response(RESPONSE_CANCEL);
 
         // Per-file checklist: each row has a checkbox (default: checked) so the
-        // user can select which files to save. Unchecked files are not saved on
-        // "Save" but their drafts are still deleted (same as discard).
+        // user can select which files to save. Untitled tabs stay visible here
+        // so the close flow can block and ask the user to Save As explicitly
+        // instead of silently treating them as already saved.
         let group = libadwaita::PreferencesGroup::new();
         let checks: Rc<RefCell<Vec<(gtk4::CheckButton, LushtextEditorPage)>>> =
             Rc::new(RefCell::new(Vec::new()));
@@ -257,6 +258,15 @@ impl super::LushtextWindow {
         editors: Vec<LushtextEditorPage>,
         on_done: F,
     ) {
+        if editors.iter().any(|editor| editor.file_path().is_none()) {
+            self.publish_status_message(
+                "Untitled documents must be saved with Save As or discarded before closing",
+                MessageKind::Warning,
+            );
+            on_done(false);
+            return;
+        }
+
         let selected_file_backed: Vec<_> = editors
             .into_iter()
             .filter(|editor| editor.file_path().is_some())
