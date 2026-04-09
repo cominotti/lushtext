@@ -50,6 +50,9 @@ pub struct LushtextWindow {
     pub sidebar_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
     pub sidebar: TemplateChild<LushtextSidebar>,
+    /// Frozen sidebar image used during show/hide animation so the live tree
+    /// does not need to relayout on every paned tick.
+    pub sidebar_snapshot_picture: gtk4::Picture,
     #[template_child]
     pub status_bar: TemplateChild<LushtextStatusBar>,
     #[template_child]
@@ -81,6 +84,9 @@ pub struct LushtextWindow {
     /// Currently running sidebar show/hide animation, if any.
     /// Paused on rapid toggle so the new animation can start from the current position.
     pub sidebar_animation: RefCell<Option<libadwaita::TimedAnimation>>,
+    /// True while a programmatic sidebar animation is moving the paned divider.
+    /// Used to suppress per-frame persistence churn from `notify::position`.
+    pub sidebar_animation_active: Cell<bool>,
     /// Whether the side-by-side preview pane is currently visible.
     pub preview_visible: Cell<bool>,
     /// Whether the preview-only mode (Alt+P) is active (editor hidden, preview full-width).
@@ -89,6 +95,9 @@ pub struct LushtextWindow {
     pub saved_preview_pos: Cell<i32>,
     /// Currently running preview show/hide animation, if any.
     pub preview_animation: RefCell<Option<libadwaita::TimedAnimation>>,
+    /// True while a programmatic preview animation is moving the paned divider.
+    /// Used to suppress per-frame persistence churn from `notify::position`.
+    pub preview_animation_active: Cell<bool>,
     /// Generation counter for debouncing preview renders (300ms).
     pub preview_render_generation: Cell<u32>,
     /// Last preview pane position persisted to GSettings.
@@ -165,6 +174,13 @@ impl Default for LushtextWindow {
             main_paned: TemplateChild::default(),
             sidebar_revealer: TemplateChild::default(),
             sidebar: TemplateChild::default(),
+            sidebar_snapshot_picture: gtk4::Picture::builder()
+                .can_shrink(true)
+                .content_fit(gtk4::ContentFit::Cover)
+                .hexpand(true)
+                .halign(gtk4::Align::Start)
+                .vexpand(true)
+                .build(),
             status_bar: TemplateChild::default(),
             palette_revealer: TemplateChild::default(),
             command_palette: TemplateChild::default(),
@@ -179,10 +195,12 @@ impl Default for LushtextWindow {
             sidebar_visible: Cell::new(true),
             saved_sidebar_pos: Cell::new(0),
             sidebar_animation: RefCell::new(None),
+            sidebar_animation_active: Cell::new(false),
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
             saved_preview_pos: Cell::new(0),
             preview_animation: RefCell::new(None),
+            preview_animation_active: Cell::new(false),
             preview_render_generation: Cell::new(0),
             last_preview_pos: Cell::new(-1),
             pending_preview_pos: Cell::new(-1),
@@ -267,7 +285,8 @@ impl ObjectImpl for LushtextWindow {
         // width so the first layout pass has a valid position. The original
         // unclamped value is preserved in saved_sidebar_pos for the show
         // animation to use when the window is wider.
-        let saved_pos = settings.int(keys::SIDEBAR_POSITION);
+        let sidebar_vis = settings.boolean(keys::SIDEBAR_VISIBLE);
+        let saved_pos = restore_saved_sidebar_position(settings);
         update_sidebar_measurements(&obj, &self.content_box);
 
         // Pre-clamp against the restored default width (best proxy for the
@@ -328,7 +347,6 @@ impl ObjectImpl for LushtextWindow {
         }
 
         // --- Restore sidebar visibility ---
-        let sidebar_vis = settings.boolean(keys::SIDEBAR_VISIBLE);
         self.sidebar_visible.set(sidebar_vis);
         self.sidebar_revealer.set_transition_duration(0);
         self.sidebar_revealer.set_visible(sidebar_vis);
@@ -354,6 +372,9 @@ impl ObjectImpl for LushtextWindow {
             self.preview_paned
                 .connect_notify_local(Some("position"), move |_paned, _| {
                     if let Some(window) = window_weak.upgrade() {
+                        if window.imp().preview_animation_active.get() {
+                            return;
+                        }
                         window.clamp_preview_position(window.width());
                     }
                 });
@@ -375,6 +396,9 @@ impl ObjectImpl for LushtextWindow {
             self.main_paned
                 .connect_notify_local(Some("position"), move |paned, _| {
                     if let Some(window) = window_weak.upgrade() {
+                        if window.imp().sidebar_animation_active.get() {
+                            return;
+                        }
                         clamp_sidebar_position(
                             &window,
                             paned,
@@ -630,6 +654,66 @@ impl ApplicationWindowImpl for LushtextWindow {}
 impl AdwApplicationWindowImpl for LushtextWindow {}
 
 pub const SIDEBAR_COLLAPSED_POSITION: i32 = 0;
+const DEFAULT_SIDEBAR_POSITION: i32 = 250;
+
+fn restore_saved_sidebar_position(settings: &gio::Settings) -> i32 {
+    let saved = settings.int(keys::SIDEBAR_POSITION);
+    if saved > SIDEBAR_COLLAPSED_POSITION {
+        saved
+    } else {
+        DEFAULT_SIDEBAR_POSITION
+    }
+}
+
+fn queue_sidebar_position_persist(window: &super::LushtextWindow, persisted_pos: i32) {
+    let imp = window.imp();
+    imp.pending_sidebar_pos.set(persisted_pos);
+    if imp.last_sidebar_pos.get() == persisted_pos {
+        return;
+    }
+
+    let generation = imp.sidebar_persist_generation.get().wrapping_add(1);
+    imp.sidebar_persist_generation.set(generation);
+
+    let window_weak = window.downgrade();
+    // 200ms debounce: coalesces resize events into one GSettings write.
+    // size_allocate fires every frame (~60Hz) during resize, and each
+    // set_int triggers a D-Bus round-trip.
+    glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+        let Some(window) = window_weak.upgrade() else {
+            return;
+        };
+        let imp = window.imp();
+        if imp.sidebar_persist_generation.get() != generation {
+            return;
+        }
+
+        let persisted_pos = imp.pending_sidebar_pos.get();
+        if imp.last_sidebar_pos.get() == persisted_pos {
+            return;
+        }
+        if imp
+            .settings
+            .set_int(keys::SIDEBAR_POSITION, persisted_pos)
+            .is_ok()
+        {
+            imp.last_sidebar_pos.set(persisted_pos);
+        }
+    });
+}
+
+pub(super) fn persist_sidebar_position_preference(window: &super::LushtextWindow) {
+    let imp = window.imp();
+    // Persist the preferred *visible* width, never the collapsed runtime
+    // endpoint. Otherwise a hidden session would save `0` and the next restore
+    // would try to animate the first show from 0 -> 0.
+    let persisted_pos = if imp.sidebar_visible.get() {
+        imp.main_paned.position()
+    } else {
+        imp.saved_sidebar_pos.get()
+    };
+    queue_sidebar_position_persist(window, persisted_pos);
+}
 
 fn sidebar_max_position(
     window: &super::LushtextWindow,
@@ -640,11 +724,21 @@ fn sidebar_max_position(
         return None;
     }
     let imp = window.imp();
+    let content_min = if content_box.width_request() > 0 {
+        content_box.width_request()
+    } else {
+        measure_content_box_min(window, content_box)
+    };
+    let cached_floor = window_width - content_min - imp.handle_overhead.get();
     if imp.main_paned.width() > 0 {
         let allocated_width = imp.main_paned.width();
         let paned_max = imp.main_paned.max_position();
         if paned_max > 0 {
-            return Some((allocated_width / 3).min(paned_max).max(0));
+            return Some(
+                ((allocated_width / 3).min(paned_max))
+                    .min(cached_floor)
+                    .max(0),
+            );
         }
     }
     // Query the end child's actual minimum width so the sidebar never squeezes it
@@ -652,34 +746,55 @@ fn sidebar_max_position(
     // instead of trusting construction-time values; restored workspaces can
     // change the realized geometry by 1px, which is enough to trigger GTK's
     // width warning if we keep a stale handle budget.
-    let content_min = measure_content_box_min(content_box);
     let handle_overhead = measure_sidebar_handle_overhead(window, content_min);
     let stack_floor = window_width - content_min - handle_overhead;
     Some((window_width / 3).min(stack_floor).max(0))
 }
 
-fn measure_content_box_min(content_box: &gtk4::Box) -> i32 {
-    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
+fn measure_content_box_min(window: &super::LushtextWindow, content_box: &gtk4::Box) -> i32 {
+    let imp = window.imp();
+    let for_height = content_box.height().max(imp.main_paned.height());
+    let for_height = if for_height > 0 { for_height } else { -1 };
+    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, for_height);
     content_min
 }
 
 fn measure_sidebar_handle_overhead(window: &super::LushtextWindow, content_min: i32) -> i32 {
     let imp = window.imp();
+    if let Some(handle_widget) = paned_handle_widget(&imp.main_paned) {
+        let orientation = imp.main_paned.orientation();
+        let (handle_min, handle_nat, _, _) = handle_widget.measure(orientation, -1);
+        let handle_overhead = handle_nat.max(handle_min).max(1);
+        imp.handle_overhead.set(handle_overhead);
+        return handle_overhead;
+    }
+
     let (paned_min, _, _, _) = imp.main_paned.measure(gtk4::Orientation::Horizontal, -1);
     let (sidebar_min, _, _, _) = imp
         .sidebar_revealer
         .measure(gtk4::Orientation::Horizontal, -1);
-    let handle_overhead = (paned_min - sidebar_min - content_min).max(1);
+    let handle_overhead = (paned_min - sidebar_min - content_min + 1).max(1);
     imp.handle_overhead.set(handle_overhead);
     handle_overhead
 }
 
 fn update_sidebar_measurements(window: &super::LushtextWindow, content_box: &gtk4::Box) -> i32 {
-    let content_min = measure_content_box_min(content_box);
+    let content_min = measure_content_box_min(window, content_box);
     if content_min > 0 && content_box.width_request() != content_min {
         content_box.set_width_request(content_min);
     }
     measure_sidebar_handle_overhead(window, content_min)
+}
+
+fn paned_handle_widget(paned: &gtk4::Paned) -> Option<gtk4::Widget> {
+    let mut child = paned.first_child();
+    while let Some(widget) = child {
+        if widget.css_name() == "separator" {
+            return Some(widget);
+        }
+        child = widget.next_sibling();
+    }
+    None
 }
 
 fn sidebar_affects_layout(imp: &LushtextWindow) -> bool {
@@ -748,38 +863,8 @@ pub fn clamp_sidebar_position(
     if clamped != current {
         paned.set_position(clamped);
     }
-    let final_pos = paned.position();
-    imp.pending_sidebar_pos.set(final_pos);
-    if imp.last_sidebar_pos.get() == final_pos {
+    if imp.sidebar_animation_active.get() {
         return;
     }
-
-    let generation = imp.sidebar_persist_generation.get().wrapping_add(1);
-    imp.sidebar_persist_generation.set(generation);
-
-    let window_weak = window.downgrade();
-    // 200ms debounce: coalesces resize events into one GSettings write.
-    // size_allocate fires every frame (~60Hz) during resize, and each
-    // set_int triggers a D-Bus round-trip.
-    glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
-        let Some(window) = window_weak.upgrade() else {
-            return;
-        };
-        let imp = window.imp();
-        if imp.sidebar_persist_generation.get() != generation {
-            return;
-        }
-
-        let final_pos = imp.pending_sidebar_pos.get();
-        if imp.last_sidebar_pos.get() == final_pos {
-            return;
-        }
-        if imp
-            .settings
-            .set_int(keys::SIDEBAR_POSITION, final_pos)
-            .is_ok()
-        {
-            imp.last_sidebar_pos.set(final_pos);
-        }
-    });
+    persist_sidebar_position_preference(window);
 }

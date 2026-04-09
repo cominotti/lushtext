@@ -6,20 +6,26 @@ use crate::common::ensure_gtk_init;
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use libadwaita::prelude::AnimationExt;
 use lushtext_core::config::keys;
 use lushtext_core::model::draft::DraftEntry;
-use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile};
-use lushtext_core::services::{draft_service, json_store, workspace_manager};
+use lushtext_core::model::workspace::{
+    WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
+};
 use lushtext_core::services::notifications::{
     InlineActionNotification, InlineNotificationStyle, NOTIFICATION_TIMEOUT, NotificationOwner,
     NotificationSeverity, NotificationSurface,
 };
+use lushtext_core::services::{draft_service, json_store, workspace_manager};
 use lushtext_core::ui::editor_page::LushtextEditorPage;
 use lushtext_core::ui::window::{
     LushtextWindow, SIDEBAR_COLLAPSED_POSITION, clamp_sidebar_position,
     clamp_sidebar_visible_position,
 };
+use std::ffi::OsString;
 use std::time::{Duration, Instant};
+
+const SIDEBAR_ANIMATION_COLLAPSED_POSITION: i32 = 1;
 
 /// Create a window attached to a test application (not registered with D-Bus).
 fn test_window() -> LushtextWindow {
@@ -93,6 +99,59 @@ fn wait_for_paned_position(window: &LushtextWindow, expected: i32) {
         "expected paned position {expected}, got {}",
         window.imp().main_paned.position()
     );
+}
+
+fn paned_separator_widget(paned: &gtk4::Paned) -> Option<gtk4::Widget> {
+    let mut child = paned.first_child();
+    while let Some(widget) = child {
+        if widget.css_name() == "separator" {
+            return Some(widget);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn with_real_sidebar_animation<T>(f: impl FnOnce() -> T) -> T {
+    let old = std::env::var_os("LUSHTEXT_WIDGET_REAL_ANIMATION");
+    unsafe {
+        std::env::set_var("LUSHTEXT_WIDGET_REAL_ANIMATION", "1");
+    }
+    struct Guard(Option<OsString>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            match self.0.as_ref() {
+                Some(value) => unsafe {
+                    std::env::set_var("LUSHTEXT_WIDGET_REAL_ANIMATION", value);
+                },
+                None => unsafe {
+                    std::env::remove_var("LUSHTEXT_WIDGET_REAL_ANIMATION");
+                },
+            }
+        }
+    }
+    let _guard = Guard(old);
+    f()
+}
+
+fn sidebar_animation(window: &LushtextWindow) -> libadwaita::TimedAnimation {
+    window
+        .imp()
+        .sidebar_animation
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("sidebar animation should be active")
+}
+
+fn preview_animation(window: &LushtextWindow) -> libadwaita::TimedAnimation {
+    window
+        .imp()
+        .preview_animation
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("preview animation should be active")
 }
 
 fn present_window(window: &LushtextWindow) {
@@ -1938,10 +1997,16 @@ fn test_save_editors_for_close_failure_preserves_draft_and_blocks_close() {
     while Instant::now() < deadline && result.borrow().is_none() {
         flush_after_delay(Duration::from_millis(20));
     }
-    assert!(result.borrow().is_some(), "close-save callback should complete");
+    assert!(
+        result.borrow().is_some(),
+        "close-save callback should complete"
+    );
 
     assert_eq!(*result.borrow(), Some(false));
-    assert!(editor.is_modified(), "failed save should restore modified state");
+    assert!(
+        editor.is_modified(),
+        "failed save should restore modified state"
+    );
     assert!(
         draft_service::read_draft(&data_dir, &draft_id)
             .unwrap()
@@ -2197,6 +2262,25 @@ fn test_shrink_start_child_stays_false_after_rapid_toggle() {
 }
 
 #[test]
+fn test_shrink_start_child_stays_false_during_real_sidebar_animation() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    present_window(&window);
+
+    with_real_sidebar_animation(|| {
+        activate_action(&window, "toggle-sidebar");
+        assert!(
+            !window.imp().main_paned.shrinks_start_child(),
+            "the snapshot-based sidebar animation should stay smooth without enabling shrink-start-child",
+        );
+        assert_eq!(
+            sidebar_animation(&window).state(),
+            libadwaita::AnimationState::Playing
+        );
+    });
+}
+
+#[test]
 fn test_saved_sidebar_pos_set_on_hide() {
     ensure_gtk_init();
     let window = test_window();
@@ -2314,14 +2398,22 @@ fn test_workspace_restore_refreshes_sidebar_handle_budget_after_present() {
     present_window(&window);
     wait_for_workspace_roots(&window, 3);
 
-    let content_box = &window.imp().content_box;
-    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
-    let (sidebar_min, _, _, _) = window.imp().sidebar.measure(gtk4::Orientation::Horizontal, -1);
-    let (paned_min, _, _, _) = window
-        .imp()
-        .main_paned
-        .measure(gtk4::Orientation::Horizontal, -1);
-    let expected_handle = (paned_min - sidebar_min - content_min).max(1);
+    let paned = &window.imp().main_paned;
+    let expected_handle = paned_separator_widget(paned)
+        .map(|separator| {
+            let (handle_min, handle_nat, _, _) = separator.measure(paned.orientation(), -1);
+            handle_nat.max(handle_min).max(1)
+        })
+        .unwrap_or_else(|| {
+            let content_box = &window.imp().content_box;
+            let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
+            let (sidebar_min, _, _, _) = window
+                .imp()
+                .sidebar
+                .measure(gtk4::Orientation::Horizontal, -1);
+            let (paned_min, _, _, _) = paned.measure(gtk4::Orientation::Horizontal, -1);
+            (paned_min - sidebar_min - content_min + 1).max(1)
+        });
 
     assert_eq!(
         window.imp().handle_overhead.get(),
@@ -2355,6 +2447,229 @@ fn test_hidden_startup_sidebar_cycle_after_present_with_restored_workspaces_pres
     wait_for_paned_position(&window, 275);
     assert!(sidebar_visible(&window));
     assert_eq!(paned.position(), 275);
+}
+
+#[test]
+fn test_hide_persists_last_visible_sidebar_width_in_settings() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    let settings = window.imp().settings.clone();
+
+    window.imp().main_paned.set_position(275);
+    activate_action(&window, "toggle-sidebar");
+    flush_after_delay(Duration::from_millis(250));
+
+    assert!(!sidebar_visible(&window));
+    assert_eq!(window.imp().saved_sidebar_pos.get(), 275);
+    assert_eq!(settings.int(keys::SIDEBAR_POSITION), 275);
+    assert_eq!(
+        window.imp().main_paned.position(),
+        SIDEBAR_COLLAPSED_POSITION,
+        "the live paned can collapse to zero without overwriting the saved visible width",
+    );
+}
+
+#[test]
+fn test_first_show_after_hidden_restart_uses_nonzero_animation_target() {
+    ensure_gtk_init();
+    let first_window = test_window_with_sidebar_state(true, 275);
+
+    first_window.imp().main_paned.set_position(275);
+    activate_action(&first_window, "toggle-sidebar");
+    flush_after_delay(Duration::from_millis(250));
+    first_window.destroy();
+    flush_events();
+
+    let second_window = test_window();
+    present_window(&second_window);
+
+    assert!(!sidebar_visible(&second_window));
+    assert_eq!(second_window.imp().saved_sidebar_pos.get(), 275);
+
+    with_real_sidebar_animation(|| {
+        activate_action(&second_window, "toggle-sidebar");
+        let animation = sidebar_animation(&second_window);
+        assert_eq!(
+            animation.value_from() as i32,
+            SIDEBAR_ANIMATION_COLLAPSED_POSITION
+        );
+        assert_eq!(animation.value_to() as i32, 275);
+        assert_ne!(
+            animation.value_from() as i32,
+            animation.value_to() as i32,
+            "the first restored show must animate toward the remembered visible width",
+        );
+        assert_eq!(animation.state(), libadwaita::AnimationState::Playing);
+    });
+}
+
+#[test]
+fn test_first_show_after_hidden_restart_with_restored_workspaces_uses_nonzero_animation_target() {
+    ensure_gtk_init();
+    let _roots_dir = seed_restored_workspaces();
+    let first_window = test_window_with_sidebar_state(true, 275);
+
+    present_window(&first_window);
+    wait_for_workspace_roots(&first_window, 3);
+    first_window.imp().main_paned.set_position(275);
+    activate_action(&first_window, "toggle-sidebar");
+    flush_after_delay(Duration::from_millis(250));
+    first_window.destroy();
+    flush_events();
+
+    let second_window = test_window();
+    present_window(&second_window);
+    wait_for_workspace_roots(&second_window, 3);
+
+    assert!(!sidebar_visible(&second_window));
+    assert_eq!(second_window.imp().saved_sidebar_pos.get(), 275);
+
+    with_real_sidebar_animation(|| {
+        activate_action(&second_window, "toggle-sidebar");
+        let animation = sidebar_animation(&second_window);
+        let budget_width = if second_window.imp().main_paned.width() > 0 {
+            second_window.imp().main_paned.width()
+        } else {
+            second_window.width()
+        };
+        let expected_target = clamp_sidebar_visible_position(
+            &second_window,
+            &second_window.imp().content_box,
+            budget_width,
+            275,
+        );
+        assert_eq!(
+            animation.value_from() as i32,
+            SIDEBAR_ANIMATION_COLLAPSED_POSITION
+        );
+        assert_eq!(animation.value_to() as i32, expected_target);
+        assert!(
+            animation.value_to() > animation.value_from(),
+            "restored workspaces must not collapse the first-show target to zero",
+        );
+        assert_eq!(animation.state(), libadwaita::AnimationState::Playing);
+    });
+}
+
+#[test]
+fn test_sidebar_animation_does_not_enqueue_position_persistence_per_tick() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(false, 275);
+    present_window(&window);
+    let generation_before = window.imp().sidebar_persist_generation.get();
+
+    with_real_sidebar_animation(|| {
+        activate_action(&window, "toggle-sidebar");
+        assert!(window.imp().sidebar_animation_active.get());
+        assert_eq!(
+            window.imp().sidebar_persist_generation.get(),
+            generation_before,
+            "programmatic sidebar animation should not enqueue debounced settings writes on every tick",
+        );
+        assert_eq!(
+            sidebar_animation(&window).state(),
+            libadwaita::AnimationState::Playing
+        );
+    });
+}
+
+#[test]
+fn test_hide_animation_swaps_sidebar_revealer_child_to_snapshot() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    present_window(&window);
+
+    with_real_sidebar_animation(|| {
+        activate_action(&window, "toggle-sidebar");
+        let snapshot_picture: &gtk4::Picture = &window.imp().sidebar_snapshot_picture;
+        let snapshot_widget = snapshot_picture.upcast_ref::<gtk4::Widget>().clone();
+        assert_eq!(
+            window.imp().sidebar_revealer.child(),
+            Some(snapshot_widget),
+            "hide animation should render a frozen snapshot instead of relayouting the live sidebar subtree",
+        );
+        assert!(
+            window.imp().sidebar_snapshot_picture.paintable().is_some(),
+            "hide animation should cache a sidebar snapshot before the paned starts shrinking",
+        );
+    });
+}
+
+#[test]
+fn test_show_animation_reuses_sidebar_snapshot_child_when_available() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    present_window(&window);
+
+    activate_action(&window, "toggle-sidebar");
+    assert!(
+        window.imp().sidebar_snapshot_picture.paintable().is_some(),
+        "hiding the sidebar should cache a snapshot for the next show animation",
+    );
+
+    with_real_sidebar_animation(|| {
+        activate_action(&window, "toggle-sidebar");
+        let snapshot_picture: &gtk4::Picture = &window.imp().sidebar_snapshot_picture;
+        let snapshot_widget = snapshot_picture.upcast_ref::<gtk4::Widget>().clone();
+        assert_eq!(
+            window.imp().sidebar_revealer.child(),
+            Some(snapshot_widget),
+            "show animation should start from the cached sidebar snapshot to avoid live tree relayout",
+        );
+        assert_eq!(
+            sidebar_animation(&window).state(),
+            libadwaita::AnimationState::Playing
+        );
+    });
+}
+
+#[test]
+fn test_notify_position_skips_persistence_while_sidebar_animation_active() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    present_window(&window);
+    let paned = &window.imp().main_paned;
+    let generation_before = window.imp().sidebar_persist_generation.get();
+
+    window.imp().sidebar_animation_active.set(true);
+    paned.set_position(200);
+    flush_events();
+    flush_after_delay(Duration::from_millis(250));
+
+    assert_eq!(
+        window.imp().sidebar_persist_generation.get(),
+        generation_before,
+        "animation-driven paned ticks must not be reprocessed as user drags",
+    );
+    assert_eq!(
+        window.imp().settings.int(keys::SIDEBAR_POSITION),
+        275,
+        "the remembered visible width should stay untouched while the animation is in flight",
+    );
+}
+
+#[test]
+fn test_clamp_sidebar_position_skips_persistence_while_sidebar_animation_active() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    let paned = &window.imp().main_paned;
+    let generation_before = window.imp().sidebar_persist_generation.get();
+
+    paned.set_position(350);
+    window.imp().sidebar_animation_active.set(true);
+    clamp_sidebar_position(&window, paned, &window.imp().content_box, 1200);
+    flush_after_delay(Duration::from_millis(250));
+
+    assert_eq!(
+        window.imp().sidebar_persist_generation.get(),
+        generation_before,
+        "size_allocate-time clamping may stay live during animations, but it must not schedule persistence",
+    );
+    assert_eq!(
+        window.imp().settings.int(keys::SIDEBAR_POSITION),
+        275,
+        "clamp backstops should not overwrite the saved visible width during the animation",
+    );
 }
 
 #[test]
@@ -2433,13 +2748,69 @@ fn test_hidden_startup_hide_after_first_show_with_restored_workspaces_clamps_sta
 }
 
 #[test]
+fn test_hide_after_first_show_with_restored_workspaces_keeps_revealer_revealed_in_flight() {
+    ensure_gtk_init();
+    let _roots_dir = seed_restored_workspaces();
+    let window = test_window_with_sidebar_state(false, 275);
+
+    present_window(&window);
+    wait_for_workspace_roots(&window, 3);
+
+    activate_action(&window, "toggle-sidebar");
+    wait_for_paned_position(&window, 275);
+    assert!(sidebar_visible(&window));
+
+    with_real_sidebar_animation(|| {
+        activate_action(&window, "toggle-sidebar");
+        assert!(
+            window.imp().sidebar_revealer.property::<bool>("visible"),
+            "hide animation should keep the wrapper in layout until completion",
+        );
+        assert!(
+            window.imp().sidebar_revealer.reveals_child(),
+            "hide animation should not collapse the revealer child before the paned finishes shrinking",
+        );
+        assert!(
+            !sidebar_visible(&window),
+            "logical visibility still flips at hide start even though the wrapper remains in layout",
+        );
+    });
+}
+
+#[test]
+fn test_hide_after_restored_workspaces_keeps_revealer_revealed_in_flight() {
+    ensure_gtk_init();
+    let _roots_dir = seed_restored_workspaces();
+    let window = test_window_with_sidebar_state(true, 275);
+
+    present_window(&window);
+    wait_for_workspace_roots(&window, 3);
+    assert!(sidebar_visible(&window));
+
+    with_real_sidebar_animation(|| {
+        activate_action(&window, "toggle-sidebar");
+        assert!(
+            window.imp().sidebar_revealer.property::<bool>("visible"),
+            "visible-start hide should keep the wrapper in layout until completion",
+        );
+        assert!(
+            window.imp().sidebar_revealer.reveals_child(),
+            "visible-start hide should defer collapsing the revealer child until the paned finishes shrinking",
+        );
+        assert!(!sidebar_visible(&window));
+    });
+}
+
+#[test]
 fn test_sidebar_show_target_clamps_to_current_budget() {
     ensure_gtk_init();
     let window = test_window();
     let content_box = &window.imp().content_box;
     let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
+    let content_floor =
+        640 - content_box.width_request().max(content_min) - window.imp().handle_overhead.get();
     let expected_max = (640 / 3)
-        .min(640 - content_min - window.imp().handle_overhead.get())
+        .min(content_floor)
         .max(0)
         .max(SIDEBAR_COLLAPSED_POSITION);
 
@@ -2447,6 +2818,117 @@ fn test_sidebar_show_target_clamps_to_current_budget() {
         clamp_sidebar_visible_position(&window, content_box, 640, 500),
         expected_max,
         "show targets should be clamped before animation writes them into GtkPaned",
+    );
+}
+
+#[test]
+fn test_allocated_sidebar_clamp_honors_cached_content_floor() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    present_window(&window);
+
+    let paned = &window.imp().main_paned;
+    let content_box = &window.imp().content_box;
+    let budget_width = paned.width().max(window.width());
+    let expected_floor =
+        budget_width - content_box.width_request().max(0) - window.imp().handle_overhead.get();
+    let expected = (budget_width / 3)
+        .min(paned.max_position())
+        .min(expected_floor)
+        .max(SIDEBAR_COLLAPSED_POSITION);
+
+    assert_eq!(
+        clamp_sidebar_visible_position(&window, content_box, budget_width, i32::MAX),
+        expected,
+        "allocated-window clamps must still respect the cached content floor instead of trusting GtkPaned::max_position() alone",
+    );
+}
+
+#[test]
+fn test_preview_pane_toggle_starts_nontrivial_animation() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    activate_action(&window, "toggle-preview-pane");
+
+    let animation = preview_animation(&window);
+    assert_ne!(
+        animation.value_from() as i32,
+        animation.value_to() as i32,
+        "preview pane toggle should start a real paned animation, not jump directly to the endpoint",
+    );
+    assert_eq!(animation.state(), libadwaita::AnimationState::Playing);
+    assert!(
+        window.imp().markdown_preview.property::<bool>("visible"),
+        "preview widget should stay visible while the side-by-side animation is in flight",
+    );
+}
+
+#[test]
+fn test_preview_mode_toggle_starts_nontrivial_animation() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    activate_action(&window, "toggle-preview-mode");
+
+    let animation = preview_animation(&window);
+    assert_ne!(
+        animation.value_from() as i32,
+        animation.value_to() as i32,
+        "preview-only mode should animate the paned instead of snapping immediately",
+    );
+    assert_eq!(animation.state(), libadwaita::AnimationState::Playing);
+    assert!(
+        window.imp().editor_box.property::<bool>("visible"),
+        "editor box should remain visible until the preview-only animation completes",
+    );
+}
+
+#[test]
+fn test_preview_pane_animation_does_not_enqueue_position_persistence_per_tick() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let generation_before = window.imp().preview_persist_generation.get();
+
+    activate_action(&window, "toggle-preview-pane");
+
+    assert!(window.imp().preview_animation_active.get());
+    assert_eq!(
+        window.imp().preview_persist_generation.get(),
+        generation_before,
+        "programmatic preview animation should not enqueue debounced settings writes on every tick",
+    );
+    assert_eq!(
+        preview_animation(&window).state(),
+        libadwaita::AnimationState::Playing
+    );
+}
+
+#[test]
+fn test_preview_mode_animation_does_not_enqueue_position_persistence_per_tick() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let generation_before = window.imp().preview_persist_generation.get();
+
+    activate_action(&window, "toggle-preview-mode");
+
+    assert!(window.imp().preview_animation_active.get());
+    assert_eq!(
+        window.imp().preview_persist_generation.get(),
+        generation_before,
+        "preview-only animation should not enqueue debounced settings writes on every tick",
+    );
+    assert_eq!(
+        preview_animation(&window).state(),
+        libadwaita::AnimationState::Playing
     );
 }
 

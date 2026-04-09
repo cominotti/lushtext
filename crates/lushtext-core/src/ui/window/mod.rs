@@ -33,6 +33,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::gdk::prelude::PaintableExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::AnimationExt;
@@ -42,6 +43,7 @@ use std::time::Duration;
 /// Maximum total estimated buffer memory across all tabs before evicting
 /// unmodified background tabs. ~256MB is comfortable on 8GB machines.
 const BUFFER_MEMORY_BUDGET: u64 = 256_000_000;
+const SIDEBAR_ANIMATION_COLLAPSED_POSITION: i32 = 1;
 
 /// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
 /// Unknown values fall back to `Default` (follow system).
@@ -63,6 +65,37 @@ glib::wrapper! {
 }
 
 impl LushtextWindow {
+    fn cache_sidebar_snapshot(&self) -> bool {
+        let imp = self.imp();
+        if !imp.sidebar.is_drawable() || imp.sidebar.width() <= 0 || imp.sidebar.height() <= 0 {
+            return false;
+        }
+
+        let sidebar: &gtk4::Widget = imp.sidebar.upcast_ref();
+        let paintable = gtk4::WidgetPaintable::new(Some(sidebar));
+        let snapshot = paintable.current_image();
+        imp.sidebar_snapshot_picture.set_paintable(Some(&snapshot));
+        true
+    }
+
+    fn show_live_sidebar_contents(&self) {
+        let imp = self.imp();
+        let sidebar: &gtk4::Widget = imp.sidebar.upcast_ref();
+        imp.sidebar_revealer.set_child(Some(sidebar));
+    }
+
+    fn show_sidebar_snapshot_if_available(&self) -> bool {
+        let imp = self.imp();
+        if imp.sidebar_snapshot_picture.paintable().is_some() {
+            imp.sidebar_revealer
+                .set_child(Some(&imp.sidebar_snapshot_picture));
+            true
+        } else {
+            self.show_live_sidebar_contents();
+            false
+        }
+    }
+
     pub fn new(app: &libadwaita::Application) -> Self {
         let window: Self = Object::builder().property("application", app).build();
         window.setup_actions();
@@ -812,12 +845,17 @@ impl LushtextWindow {
         } else {
             false
         };
+        imp.sidebar_animation_active.set(false);
 
         let paned = &imp.main_paned;
+        imp.sidebar_animation_active.set(true);
 
         let (from, to) = if show {
-            if !imp.sidebar_revealer.reveals_child() {
-                paned.set_position(0);
+            self.show_sidebar_snapshot_if_available();
+            if !imp.sidebar_revealer.property::<bool>("visible")
+                || !imp.sidebar_revealer.reveals_child()
+            {
+                paned.set_position(SIDEBAR_ANIMATION_COLLAPSED_POSITION);
             }
             imp.sidebar_revealer.set_visible(true);
             imp.sidebar_revealer.set_reveal_child(true);
@@ -835,6 +873,7 @@ impl LushtextWindow {
             );
             (paned.position() as f64, target as f64)
         } else {
+            let _ = self.cache_sidebar_snapshot() && self.show_sidebar_snapshot_if_available();
             imp::refresh_sidebar_layout_budget(self);
             let current = paned.position();
             // Only save the resting position when not interrupting an active
@@ -842,15 +881,13 @@ impl LushtextWindow {
             if !was_animating {
                 imp.saved_sidebar_pos.set(current);
             }
-            imp.sidebar_revealer.set_reveal_child(false);
-            (current as f64, SIDEBAR_COLLAPSED_POSITION as f64)
+            (current as f64, SIDEBAR_ANIMATION_COLLAPSED_POSITION as f64)
         };
-
         let paned_weak = paned.downgrade();
-        let window_weak = if show { Some(self.downgrade()) } else { None };
+        let window_weak = self.downgrade();
         let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
             if let Some(p) = paned_weak.upgrade() {
-                let next = if let Some(window) = window_weak.as_ref().and_then(|w| w.upgrade()) {
+                let next = if let Some(window) = window_weak.upgrade() {
                     let budget_width = if window.imp().main_paned.width() > 0 {
                         window.imp().main_paned.width()
                     } else {
@@ -863,7 +900,7 @@ impl LushtextWindow {
                         value as i32,
                     )
                 } else {
-                    value as i32
+                    (value as i32).max(SIDEBAR_COLLAPSED_POSITION)
                 };
                 p.set_position(next);
             }
@@ -871,17 +908,25 @@ impl LushtextWindow {
 
         // The custom widget harness does not drive Adw's frame clock reliably
         // enough to observe timed paned animations, so make them immediate there.
-        let duration_ms = if std::env::var_os("LUSHTEXT_WIDGET_CHILD").is_some() {
+        let duration_ms = if std::env::var_os("LUSHTEXT_WIDGET_CHILD").is_some()
+            && std::env::var_os("LUSHTEXT_WIDGET_REAL_ANIMATION").is_none()
+        {
             0
         } else {
             250
         };
         if duration_ms == 0 {
             paned.set_position(to as i32);
-            if !show {
+            if show {
+                self.show_live_sidebar_contents();
+            } else {
+                paned.set_position(SIDEBAR_COLLAPSED_POSITION);
+                imp.sidebar_revealer.set_reveal_child(false);
                 imp.sidebar_revealer.set_visible(false);
             }
+            imp::persist_sidebar_position_preference(self);
             imp.sidebar_animation.replace(None);
+            imp.sidebar_animation_active.set(false);
             return;
         }
         let animation = libadwaita::TimedAnimation::new(
@@ -900,11 +945,23 @@ impl LushtextWindow {
         } else {
             Some(imp.sidebar_revealer.downgrade())
         };
+        let done_window_weak = self.downgrade();
         animation.connect_done(move |_| {
-            if let Some(sidebar_revealer) = sidebar_revealer_weak.as_ref().and_then(|w| w.upgrade())
+            let Some(window) = done_window_weak.upgrade() else {
+                return;
+            };
+            let imp = window.imp();
+            if show {
+                window.show_live_sidebar_contents();
+            } else if let Some(sidebar_revealer) =
+                sidebar_revealer_weak.as_ref().and_then(|w| w.upgrade())
             {
+                imp.main_paned.set_position(SIDEBAR_COLLAPSED_POSITION);
+                sidebar_revealer.set_reveal_child(false);
                 sidebar_revealer.set_visible(false);
             }
+            imp.sidebar_animation_active.set(false);
+            imp::persist_sidebar_position_preference(&window);
         });
 
         animation.play();
