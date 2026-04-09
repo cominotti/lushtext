@@ -4,6 +4,7 @@
 
   <template class="LushtextSearchPanel" parent="GtkBox">
     <property name="orientation">vertical</property>
+    <style><class name="search-panel"/></style>
 
     <!-- Header: search input -->
     <child>
@@ -69,7 +70,7 @@
         <property name="wrap">true</property>
         <property name="margin-start">6</property>
         <property name="margin-end">6</property>
-        <property name="margin-bottom">4</property>
+        <property name="margin-bottom">6</property>
         <style>
           <class name="caption"/>
         </style>
@@ -85,11 +86,11 @@
         <child>
           <object class="GtkBox" id="options_box">
             <property name="orientation">vertical</property>
-            <property name="spacing">4</property>
+            <property name="spacing">6</property>
             <property name="margin-start">6</property>
             <property name="margin-end">6</property>
-            <property name="margin-top">4</property>
-            <property name="margin-bottom">4</property>
+            <property name="margin-top">6</property>
+            <property name="margin-bottom">6</property>
             <child>
               <object class="GtkBox" id="filter_row">
                 <property name="orientation">horizontal</property>
@@ -168,15 +169,12 @@
         <property name="spacing">6</property>
         <property name="margin-start">6</property>
         <property name="margin-end">6</property>
-        <property name="margin-top">4</property>
-        <property name="margin-bottom">4</property>
+        <property name="margin-top">6</property>
+        <property name="margin-bottom">6</property>
         <child>
           <object class="GtkLabel" id="count_label">
             <property name="hexpand">true</property>
             <property name="xalign">0.0</property>
-            <style>
-              <class name="caption"/>
-            </style>
           </object>
         </child>
       </object>

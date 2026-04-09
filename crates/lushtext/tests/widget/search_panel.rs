@@ -1090,3 +1090,34 @@ fn test_saved_search_serialization_roundtrip() {
     let deserialized: SavedSearch = serde_json::from_str(&json).unwrap();
     assert_eq!(entry, deserialized);
 }
+
+// ---------------------------------------------------------------------------
+// UI Polish: visual distinction, spacing, revealer transition
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_search_panel_has_search_panel_css_class() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    assert!(panel.has_css_class("search-panel"));
+}
+
+#[test]
+fn test_search_panel_revealer_uses_slide_down_transition() {
+    ensure_gtk_init();
+    let window = test_window();
+    let revealer = &window.imp().search_panel_revealer;
+    assert_eq!(
+        revealer.transition_type(),
+        gtk4::RevealerTransitionType::SlideDown,
+    );
+}
+
+#[test]
+fn test_search_panel_count_label_uses_default_body_text() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Count label should use default body text (no caption/heading class).
+    assert!(!panel.imp().count_label.has_css_class("caption"));
+    assert!(!panel.imp().count_label.has_css_class("heading"));
+}

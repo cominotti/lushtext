@@ -81,6 +81,10 @@ When a directory is renamed to/from an ignored name (e.g., `src` → `target`) v
 - **No guard against double Replace All** — The `connect_replace_all` callback uses `spawn_blocking_then` but no flag prevents the user from clicking Replace All again while the first is in-flight. The TOCTOU guard catches stale lines (no data corruption), but the second Replace All's empty backup replaces the first's, losing undo capability. Story 2.1 scope.
 - **CLAUDE.md `search-panel-position` GSettings key** — The CLAUDE.md Content search panel section references `search-panel-position (i)` as a GSettings key, but this key may not exist in the schema XML. Documentation-code inconsistency. Pre-existing.
 
+## Deferred from: code review of search-panel-ui-polish (2026-04-08)
+
+- **Nested revealer animation interaction not tested** — The outer `search_panel_revealer` (slide-down, 250ms) and inner `options_revealer` (slide-down, 150ms) can animate simultaneously when "More Options" is toggled while the panel is already open. No test covers this concurrent animation path.
+
 ## Spec 4: Draft Deletion Safety
 
 Both `wire_info_bar` discard and hamburger-menu `discard_changes` delete the draft file *before* `load_file_async` succeeds. If the backing file is deleted between confirmation and reload, the user's unsaved changes (stored in the draft) are permanently lost with no recovery path. The draft should only be deleted after a successful reload — or at minimum, the draft content should be kept until reload success is confirmed. This affects `wire_info_bar` (existing code) and `discard_changes` (new code).
