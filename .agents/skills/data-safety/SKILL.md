@@ -3,11 +3,12 @@ name: data-safety
 description: "Identify and fix data loss risks: draft persistence failures, save/close
   flow gaps, replace-all backup safety, session restore bugs, async concurrency hazards.
   Uses 5 parallel grep-based subagents with binary decision trees for deterministic
-  results. Auto-invoked on .rs changes in ui/, services/, or model/. Also invocable
-  as /data-safety for full codebase audit. Trigger whenever code touches: file I/O,
-  buffer state, tab or window close, draft or session persistence, spawn_blocking_then,
-  search/replace, or any async pattern that modifies application state. Every finding
-  must be fixed immediately — never deferred."
+  results. Auto-invoked on .rs changes in Rust app code under any */src/ui,
+  */src/services, or */src/model tree. Also invocable as /data-safety for full
+  codebase audit. Trigger whenever code touches: file I/O, buffer state, tab
+  or window close, draft or session persistence, spawn_blocking_then, search/replace,
+  or any async pattern that modifies application state. Every finding must be
+  fixed immediately — never deferred."
 ---
 
 # Data Safety Audit
@@ -38,8 +39,14 @@ Assigned by trigger likelihood (impact is always data loss):
 
 ### 1. Scope
 
-- **Auto-trigger**: Changed `.rs` files (from git diff or known changes). Filter to `src/ui/`, `src/services/`, `src/model/`. If none match → "No data-safety-relevant changes" → stop.
-- **Manual** (`/data-safety`): All `.rs` files under those paths.
+- **Collect candidates**: Read changed `.rs` files from `git diff --name-only` (or known review context). For manual `/data-safety`, inspect all `.rs` files.
+- **Normalize paths**: Normalize separators to `/`, strip any leading `./`, and derive a **path suffix alias** by removing everything through the last `/src/` when present.
+  - `/repo/crates/lushtext-core/src/ui/window/session.rs` → `ui/window/session.rs`
+  - `crates/lushtext-core/src/services/session_service.rs` → `services/session_service.rs`
+  - `packages/editor-core/src/model/draft.rs` → `model/draft.rs`
+- **Match on suffix aliases, not repo layout**: Trigger matching must work for absolute paths, repo-relative paths, crate-relative paths, and future crate moves/reorgs.
+- **Relevant Rust app files**: Any normalized suffix under `ui/`, `services/`, or `model/` is in scope. If none match and no content-hint fallback below applies → "No data-safety-relevant changes" → stop.
+- **Manual** (`/data-safety`): Audit all in-scope `.rs` files after normalization, plus any other `.rs` files whose contents hit a data-safety content hint.
 
 ### 2. Context
 
@@ -47,19 +54,21 @@ Read `references/known-vectors.md` from the skill directory. Include the relevan
 
 ### 3. Dispatch
 
-Launch subagents in parallel via the Agent tool. Skip any whose trigger paths have no files in scope. For manual invocation, dispatch all 5.
+Launch subagents in parallel via the Agent tool. Skip any whose normalized suffixes AND content hints both miss. For manual invocation, dispatch all 5.
 
-| Subagent | Trigger paths |
-|---|---|
-| `draft-integrity` | `services/draft_service.rs`, `ui/window/session.rs`, `ui/editor_page/**` |
-| `close-flow` | `ui/window/imp.rs`, `ui/window/mod.rs`, `ui/window/dialogs.rs`, `ui/editor_page/mod.rs` |
-| `atomic-write` | `services/**/*.rs`, `ui/window/session.rs` |
-| `replace-safety` | `services/content_search.rs`, `ui/search_panel/**`, `ui/window/search.rs` |
-| `restore-lifecycle` | `services/session_service.rs`, `ui/window/session.rs`, `ui/window/mod.rs` |
+| Subagent | Trigger suffixes | Content hints / fallback triggers |
+|---|---|---|
+| `draft-integrity` | `services/draft_service.rs`, `ui/window/session.rs`, `ui/editor_page/**` | `set_draft_dirty`, `draft_dirty`, `write_draft`, `save_manifest`, `find_by_id`, `original_path`, `is_evicted` |
+| `close-flow` | `ui/window/imp.rs`, `ui/window/mod.rs`, `ui/window/dialogs.rs`, `ui/editor_page/mod.rs` | `close_page_finish`, `save_file_async`, `cleanup_drafts`, `on_done(true)`, `.destroy()`, `search_panel.close()` |
+| `atomic-write` | `ui/**/*.rs`, `services/**/*.rs` | `std::thread::spawn`, `spawn_blocking_then`, `json_store::save`, `save_manifest`, `fs::write`, `write_all`, `rename`, `sync_all`, `sync_data`, `release_slot` |
+| `replace-safety` | `services/content_search.rs`, `ui/search_panel/**`, `ui/window/search.rs` | `undo_backup`, `skip_paths`, `apply_replacements`, `original_line`, `content_mismatch` |
+| `restore-lifecycle` | `services/session_service.rs`, `ui/window/session.rs`, `ui/window/mod.rs`, `ui/editor_page/mod.rs` | `load_completed_callback`, `timeout_add_local_once`, `preloaded_drafts`, `filter_existing_tabs`, `path.exists()`, `set_restore_position`, `apply_restore_position` |
+
+If a future feature moves code into a different crate or package but preserves the normalized suffix and/or hits the same content hints, the same subagent must still trigger.
 
 ### 4. Subagent Prompts
 
-Each subagent: read assigned files, grep each pattern, walk the decision tree, report only FLAG results. The prompts below are complete — send each as-is to the Agent tool, replacing `{files}` with the resolved file list and `{known_vectors_section}` with the relevant section from `references/known-vectors.md`.
+Each subagent: read assigned files, grep each pattern, walk the decision tree, report only FLAG results. Resolve `{files}` from normalized suffix matching first, then add any content-hint fallback files that belong to that subagent. The prompts below are complete — send each as-is to the Agent tool, replacing `{files}` with the resolved file list and `{known_vectors_section}` with the relevant section from `references/known-vectors.md`.
 
 ---
 
@@ -215,8 +224,8 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 >
 > **RL-1: Draft recovery callback fires only on success**
 > Grep: `load_completed_callback` usage (set, take, fire)
-> Tree: Callback consumed only in success path of load? → Continue. Also consumed or handled in error path? → Yes: SAFE. On retry (calling load_file_async again), is the original callback still in the RefCell (never taken on error)? → Yes: SAFE (retry will fire it). Callback taken/dropped on error without applying draft?
-> FLAG HIGH: "Load error drops draft recovery callback without applying draft. No retry mechanism → draft not applied."
+> Tree: Callback consumed only in success path of load? → Continue. On error, is the callback preserved for a user-initiated retry or equivalent recovery path? → Yes: SAFE for RL-1. Callback taken/dropped on error without applying draft OR no recovery path exists?
+> FLAG HIGH: "Load error drops draft recovery state without applying draft. Failed open leaves no retry/recovery path, so draft content is stranded."
 >
 > **RL-2: Timed cleanup races slow operations**
 > Grep: `timeout_add_local_once` with `clear` or `take` on cached data (e.g., preloaded_drafts)
@@ -248,6 +257,15 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 Every finding must be fixed in the current work stream. This aligns with `.agents/rules/preexisting-blockers.md`.
 
 Do not defer, document as known, skip as pre-existing, or downgrade severity. If a fix requires a design change (e.g., disk-based undo backup for RS-1), implement the design change.
+
+### 7. Verification Expectations
+
+Every fix must also add or update regression coverage when the harness can reasonably exercise it.
+
+- **Service/data-path fixes**: Prefer `crates/lushtext/tests/integration/` or existing service-unit tests.
+- **Widget/close/restore/replace flows**: Prefer `crates/lushtext/tests/widget/`.
+- **If a full regression test is not practical**: add the narrowest automated assertion available and state what remains manual.
+- **Verification report**: Name the tests/checks that prove the fix, not just the code change.
 
 ## Report Format
 

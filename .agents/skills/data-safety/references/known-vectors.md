@@ -1,8 +1,10 @@
 # Known Data Loss Vectors
 
-Calibration catalog for data-safety subagents. Each entry documents a confirmed data loss pattern with its location, the specific code that causes it, the user scenario, and a safe counterexample where one exists. Subagents use this to distinguish genuinely dangerous code from similar-looking safe patterns.
+Calibration catalog for data-safety subagents. Each entry documents a confirmed or calibration-relevant data loss pattern with its location, the specific code that causes it, the user scenario, and a safe counterexample where one exists. Subagents use this to distinguish genuinely dangerous code from similar-looking safe patterns.
 
-All paths relative to `crates/lushtext-core/src/`.
+All paths are written as normalized suffixes relative to any `*/src/` root.
+- `/repo/crates/lushtext-core/src/ui/window/session.rs` → `ui/window/session.rs`
+- `packages/editor-core/src/services/session_service.rs` → `services/session_service.rs`
 
 ---
 
@@ -85,11 +87,11 @@ All paths relative to `crates/lushtext-core/src/`.
 
 ## Restore Lifecycle
 
-### RL-1: Success-only load callback (CONFIRMED — NUANCED)
+### RL-1: Retry-dependent draft recovery (CALIBRATION — CURRENT CODE PARTIALLY SAFE)
 **Location**: `ui/editor_page/mod.rs` — `load_completed_callback`
-**Code**: Callback set in `open_document()`, consumed via `.take()` ONLY in `load_file_async`'s success callback.
-**Nuance**: On error, the callback stays as `Some(callback)` in the RefCell — it is NOT dropped. If `load_file_async` is called again (retry), the success path WILL take and fire the original callback. The real issue is that there's no built-in retry mechanism (no "Retry" button). If the user closes the error tab, the callback is dropped without firing, and the draft file survives until orphan cleanup on next restart deletes it.
-**Net effect**: Draft content survives on disk through one restart cycle, then is cleaned up as orphan. Not immediate data loss, but data is eventually lost.
+**Code**: Callback is set in `open_document()` and consumed via `.take()` only in `load_file_async`'s success callback. On error, the callback remains stored and current code surfaces `_Retry`, which re-runs `load_file_async`.
+**Nuance**: This means the current code is SAFE for the narrow "callback dropped on first error" failure mode. The remaining risk is lifecycle-based: if the user abandons or closes the failed tab, the callback never fires and the draft can later be deleted by orphan cleanup without ever being reapplied.
+**Calibration takeaway**: Do NOT flag code just because the callback fires only on success. Flag when the error path drops recovery state, omits any retry/recovery path, or later cleanup can delete the draft without another recovery route.
 
 ### RL-3: Session filter drops unavailable files (CONFIRMED)
 **Location**: `services/session_service.rs` — `filter_existing_tabs()`
