@@ -1916,6 +1916,70 @@ fn test_hide_animation_targets_1px_not_zero() {
     assert_eq!(paned.position(), 1);
 }
 
+// --- Pre-clamp and content_box width-request invariant tests ---
+
+#[test]
+fn test_content_box_width_request_matches_stack_min() {
+    ensure_gtk_init();
+    let window = test_window();
+    let stack = &window.imp().content_stack;
+    let content_box = &window.imp().content_box;
+
+    let (stack_min, _, _, _) = stack.measure(gtk4::Orientation::Horizontal, -1);
+    assert!(stack_min > 0, "stack should have a non-zero minimum width");
+    assert!(
+        content_box.width_request() >= stack_min,
+        "content_box.width_request ({}) should be >= stack_min ({stack_min})",
+        content_box.width_request(),
+    );
+}
+
+#[test]
+fn test_pre_clamp_safe_for_narrow_window() {
+    // Simulates the startup case where the restored window width is narrow
+    // enough that the default sidebar position would violate the stack minimum.
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+    let stack = &window.imp().content_stack;
+
+    let (stack_min, _, _, _) = stack.measure(gtk4::Orientation::Horizontal, -1);
+    let handle_overhead = window.imp().handle_overhead.get();
+    let pos = paned.position();
+
+    // At the window's minimum width-request (640), the position must leave
+    // enough room for the content stack minimum plus handle overhead.
+    let min_width = window.width_request();
+    assert!(min_width > 0, "window must have a width-request set");
+    assert!(stack_min > 0, "stack must have a non-zero minimum width");
+    if min_width > 0 && stack_min > 0 {
+        let max_safe = min_width - stack_min - handle_overhead;
+        assert!(
+            pos <= max_safe || max_safe < 0,
+            "pre-clamped position ({pos}) should leave room for stack_min ({stack_min}) \
+             + handle ({handle_overhead}) at min window width ({min_width}), \
+             max safe = {max_safe}",
+        );
+    }
+}
+
+#[test]
+fn test_pre_clamp_preserves_wide_position() {
+    // At the default 1200px window width, a sidebar position of 250 (default)
+    // should NOT be reduced by the pre-clamp — it's well within the 1/3 limit.
+    ensure_gtk_init();
+    let window = test_window();
+    let paned = &window.imp().main_paned;
+
+    // Default GSettings position is 250, default width is 1200.
+    // 250 < 1200/3 = 400, so position should be preserved.
+    let pos = paned.position();
+    assert!(
+        pos >= 200,
+        "at default 1200px width, sidebar position ({pos}) should not be aggressively clamped"
+    );
+}
+
 // --- Fullscreen actions ---
 
 #[test]

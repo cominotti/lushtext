@@ -35,6 +35,16 @@ When a widget's behavior depends on its parent's size (e.g., sidebar ≤ 1/3 win
 - **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes (e.g., user drags a `GtkPaned` divider), also connect `notify::position` on the child.
 - `size_allocate` fires on every layout pass. Keep the handler cheap (comparison + maybe one `set_position`). Guard GSettings writes with a value-change check to avoid D-Bus overhead.
 
+## GtkPaned Position Constraints
+
+Any code that sets a `GtkPaned` position must ensure it's valid for the current allocation width. GTK4's `measure()` phase runs BEFORE `size_allocate()` — if a paned position is stale from a previous frame, GTK warns "Trying to measure ... for width of X, but needs at least Y."
+
+**Position restore from GSettings**: Always pre-clamp in `constructed()` immediately after `set_position()`. Use the restored window width from GSettings as the `for_width` parameter. Store the original unclamped value in `saved_*_pos` for animations that target the preferred position at wider widths.
+
+**Animation targets**: When computing an animation target for a paned position (e.g., sidebar show), use the saved unclamped position as the target. The runtime `clamp_sidebar_position` in `size_allocate` / `notify::position` validates each animation tick against the actual allocated width.
+
+**New paned children**: When adding a new child to a `GtkPaned` with `shrink-end-child=false`, set `width-request` on the end-child to match its measured minimum. This makes the paned's minimum constraint explicit and prevents GTK from even attempting to measure the child at below its minimum during layout negotiation.
+
 ## Focus Restoration on Overlay Close
 
 When an overlay widget steals focus (command palette, search bar, inline rename), the close path **must** explicitly restore focus. GTK4's default behavior after `GtkRevealer.set_reveal_child(false)` walks the widget tree to the first focusable widget — typically a sidebar button, not the editor.

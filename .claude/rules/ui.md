@@ -118,7 +118,23 @@ Window geometry and sidebar position are persisted via GSettings (not JSON sessi
 - **Keys**: `window-width` (i), `window-height` (i), `window-maximized` (b), `sidebar-position` (i)
 - **Restore**: in `window/imp.rs` `constructed()` via `set_default_size()` + `maximize()` + `set_position()`, all before `present()`
 - **Persist**: via `connect_notify_local` on `default-width`, `default-height`, `maximized` properties. Width/height only persisted when `!is_maximized()` to avoid overwriting normal dimensions with maximized size.
-- **Sidebar clamp**: `clamp_sidebar_position()` in `window/imp.rs` enforces `position <= min(width / 3, width - stack_min - 16)`. The `stack_min` is queried via `content_stack.measure(Horizontal, -1)` to prevent squeezing the content stack below its minimum (~415px from `AdwStatusPage`). Called from two places: (1) `WidgetImpl::size_allocate()` — BEFORE `parent_size_allocate` so the position is correct when GTK measures children; (2) `notify::position` on the paned — catches user drag. A `width-request=640` on the window template prevents geometrically impossible layouts. **Do not use property notifications for clamping** — `notify::default-width`/`notify::maximized` fire before the new allocation is applied, so `window.width()` returns the old stale value.
+- **Sidebar clamp**: `clamp_sidebar_position()` in `window/imp.rs` enforces `position <= min(width / 3, width - stack_min - handle_overhead)`. The `stack_min` is queried via `content_stack.measure(Horizontal, -1)` to prevent squeezing the content stack below its minimum (~415px from `AdwStatusPage`). `handle_overhead` is computed at construction from `paned_min - sidebar_min - stack_min` (replaces the former hardcoded 16px). Called from two places: (1) `WidgetImpl::size_allocate()` — BEFORE `parent_size_allocate` so the position is correct when GTK measures children; (2) `notify::position` on the paned — catches user drag. A `width-request=640` on the window template prevents geometrically impossible layouts. **Do not use property notifications for clamping** — `notify::default-width`/`notify::maximized` fire before the new allocation is applied, so `window.width()` returns the old stale value.
+
+## Paned Sizing Defense (measure-before-allocate gap)
+
+GTK4's layout cycle runs `measure()` BEFORE `size_allocate()`. During `measure()`, `GtkPaned` distributes width based on its current `position` property, which may be stale from a previous frame. This can cause "Trying to measure GtkBox for width of X, but needs at least Y" warnings even though `size_allocate` corrects the position immediately after.
+
+**Three-layer defense pattern:**
+
+1. **Pre-clamp at construction**: After restoring a paned position from GSettings in `constructed()`, immediately validate it against the restored window width and the content child's measured minimum. Store the original unclamped value in `saved_*_pos` so animations can target it at wider widths.
+
+2. **Explicit `width-request` on the paned end-child**: Set `content_box.set_width_request(stack_min)` so the paned's minimum constraint is explicit in the widget tree and visible to GTK's layout negotiation.
+
+3. **`size_allocate` clamp** (existing): Runs BEFORE `parent_size_allocate` on every layout pass with the definitive allocated width. This is the primary runtime defense.
+
+**Known limitation:** A one-frame warning during fast runtime window resize (many pixels per compositor frame) is a fundamental GTK limitation — `measure()` uses the previous frame's position. The pre-clamp eliminates startup warnings; the `size_allocate` clamp minimizes runtime warnings to at most one frame per resize event.
+
+**Rule for future paned widgets:** Any code that restores a `GtkPaned` position from persistent storage must pre-clamp it in the same scope, before the first layout pass. Any paned with `shrink-end-child=false` should have `width-request` set on the end-child matching the child's measured minimum.
 
 ## Syntax Highlighting
 
