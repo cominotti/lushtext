@@ -94,7 +94,7 @@ impl super::LushtextWindow {
 
     /// Write all dirty drafts synchronously. Called on window close so that
     /// unsaved buffer content survives even if the autosave timer hadn't
-    /// fired yet (its 30-second interval can miss short editing sessions).
+    /// fired yet (its 5-second interval can miss very short editing sessions).
     pub fn flush_dirty_drafts(&self) {
         let tab_view = &self.imp().tab_view;
         let data_dir = json_store::data_dir();
@@ -355,12 +355,12 @@ impl super::LushtextWindow {
         });
     }
 
-    /// Start the global 30-second autosave timer. Iterates all tabs on each
+    /// Start the global 5-second autosave timer. Iterates all tabs on each
     /// tick and writes drafts for modified buffers that changed since the
     /// last draft write.
     pub fn start_autosave_timer(&self) {
         let window_weak = self.downgrade();
-        let source_id = glib::timeout_add_local(Duration::from_secs(30), move || {
+        let source_id = glib::timeout_add_local(Duration::from_secs(5), move || {
             let Some(window) = window_weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };

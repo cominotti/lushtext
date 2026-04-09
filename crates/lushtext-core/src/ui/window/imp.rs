@@ -116,7 +116,7 @@ pub struct LushtextWindow {
     /// Per-editor estimated buffer memory, keyed by `editor.as_ptr() as usize`
     /// for stable identity without preventing widget finalization.
     pub buffer_memory_by_editor: RefCell<HashMap<usize, u64>>,
-    /// Source ID for the global 30-second autosave timer. Removed on dispose.
+    /// Source ID for the global 5-second autosave timer. Removed on dispose.
     pub autosave_source_id: RefCell<Option<glib::SourceId>>,
     /// In-memory copy of the draft manifest, kept in sync with disk.
     pub draft_manifest: RefCell<DraftManifest>,
