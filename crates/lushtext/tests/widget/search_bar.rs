@@ -123,16 +123,19 @@ fn test_connect_close_fires_on_button_click() {
 fn test_replace_mode_toggle_shows_replace_row() {
     ensure_gtk_init();
     let bar = LushtextSearchBar::new();
-    // Replace row is hidden by default.
+    // Replace widgets are hidden by default (visible=false in template).
     assert!(!bar.replace_mode_button().is_active());
+    assert!(!bar.replace_entry().property::<bool>("visible"));
 
-    // Activate the toggle.
+    // Activate the toggle — replace widgets become visible.
     bar.set_replace_mode(true);
     assert!(bar.replace_mode_button().is_active());
+    assert!(bar.replace_entry().property::<bool>("visible"));
 
-    // Deactivate.
+    // Deactivate — replace widgets hidden again.
     bar.set_replace_mode(false);
     assert!(!bar.replace_mode_button().is_active());
+    assert!(!bar.replace_entry().property::<bool>("visible"));
 }
 
 // --- Navigation state ---

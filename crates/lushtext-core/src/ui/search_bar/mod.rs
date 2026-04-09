@@ -16,7 +16,7 @@ use sourceview5::prelude::*;
 
 glib::wrapper! {
     pub struct LushtextSearchBar(ObjectSubclass<imp::LushtextSearchBar>)
-        @extends gtk4::Box, gtk4::Widget,
+        @extends gtk4::Grid, gtk4::Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;
 }
 

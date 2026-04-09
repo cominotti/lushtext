@@ -29,8 +29,6 @@ pub struct LushtextSearchBar {
     pub replace_mode_button: TemplateChild<gtk4::ToggleButton>,
     #[template_child]
     pub options_button: TemplateChild<gtk4::MenuButton>,
-    #[template_child]
-    pub replace_row: TemplateChild<gtk4::Box>,
 
     // --- Search state (populated during attach, cleared on detach) ---
     /// GtkSourceView SearchContext — owns the search state and highlighting.
@@ -65,7 +63,7 @@ pub struct LushtextSearchBar {
 impl ObjectSubclass for LushtextSearchBar {
     const NAME: &'static str = "LushtextSearchBar";
     type Type = super::LushtextSearchBar;
-    type ParentType = gtk4::Box;
+    type ParentType = gtk4::Grid;
 
     fn class_init(klass: &mut Self::Class) {
         klass.bind_template();
@@ -80,10 +78,17 @@ impl ObjectImpl for LushtextSearchBar {
     fn constructed(&self) {
         self.parent_constructed();
 
-        // Replace mode toggle: show/hide the replace row.
-        let replace_row = self.replace_row.clone();
-        self.replace_mode_button
-            .connect_toggled(move |button| replace_row.set_visible(button.is_active()));
+        // Replace mode toggle: show/hide all row-1 widgets. The GtkGrid
+        // collapses the row when all children are invisible.
+        let replace_entry = self.replace_entry.clone();
+        let replace_btn = self.replace_button.clone();
+        let replace_all_btn = self.replace_all_button.clone();
+        self.replace_mode_button.connect_toggled(move |button| {
+            let visible = button.is_active();
+            replace_entry.set_visible(visible);
+            replace_btn.set_visible(visible);
+            replace_all_btn.set_visible(visible);
+        });
 
         // Build the options popover menu with checkbox items for search
         // settings (regex, case-sensitive, whole word). The actions are
@@ -99,7 +104,7 @@ impl ObjectImpl for LushtextSearchBar {
 }
 
 impl WidgetImpl for LushtextSearchBar {}
-impl BoxImpl for LushtextSearchBar {}
+impl GridImpl for LushtextSearchBar {}
 
 impl LushtextSearchBar {
     /// Build the gear-icon popover menu with three toggle options.
