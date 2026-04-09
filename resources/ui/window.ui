@@ -129,7 +129,7 @@
                     </child>
                     <child>
                       <object class="GtkRevealer" id="search_panel_revealer">
-                        <property name="transition-type">slide-down</property>
+                        <property name="transition-type">slide-up</property>
                         <property name="transition-duration">250</property>
                         <property name="reveal-child">false</property>
                         <child>

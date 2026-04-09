@@ -587,9 +587,13 @@ impl LushtextSearchPanel {
     pub fn start_search(&self, query: &str) {
         let imp = self.imp();
 
-        // Cancel previous search.
+        // Cancel previous search. Notify progress callback with is_done=true so
+        // the window clears any lingering "Searching X / Y files..." status message.
         if let Some(old_cancel) = imp.cancel_token.take() {
             old_cancel.store(true, Ordering::Relaxed);
+            if let Some(ref cb) = *imp.progress_callback.borrow() {
+                cb(0, true);
+            }
         }
 
         // Clear previous results.
@@ -604,6 +608,8 @@ impl LushtextSearchPanel {
         let roots = imp.workspace_roots.borrow().clone();
         if roots.is_empty() {
             imp.count_label.set_text("No workspace roots");
+            imp.results_header_separator.set_visible(true);
+            imp.footer_box.set_visible(true);
             return;
         }
 
@@ -767,6 +773,13 @@ impl LushtextSearchPanel {
                             }
                         }
 
+                        // Show results area on first match arrival.
+                        if imp.total_matches.get() == 0 {
+                            imp.results_header_separator.set_visible(true);
+                            imp.results_scroll.set_visible(true);
+                            imp.results_footer_separator.set_visible(true);
+                            imp.footer_box.set_visible(true);
+                        }
                         imp.total_matches.set(imp.total_matches.get() + 1);
 
                         // Append to the flat navigation index for F4/Shift+F4.
@@ -808,13 +821,17 @@ impl LushtextSearchPanel {
                 let text = format!("{total} results in {files} files");
                 imp.count_label.set_text(&text);
             } else if imp.searching.get() && total == 0 {
-                imp.count_label.set_text("Searching…");
+                imp.count_label.set_text("Searching\u{2026}");
+                imp.results_header_separator.set_visible(true);
+                imp.footer_box.set_visible(true);
             }
 
             if done {
                 imp.searching.set(false);
                 if total == 0 {
                     imp.count_label.set_text("No results found");
+                    imp.results_header_separator.set_visible(true);
+                    imp.footer_box.set_visible(true);
                 }
                 if let Some(ref cb) = *imp.progress_callback.borrow() {
                     cb(imp.last_progress_count.get(), true);
@@ -871,6 +888,10 @@ impl LushtextSearchPanel {
     /// Clear all results and reset state.
     fn clear_results(&self) {
         let imp = self.imp();
+        imp.results_scroll.set_visible(false);
+        imp.results_header_separator.set_visible(false);
+        imp.results_footer_separator.set_visible(false);
+        imp.footer_box.set_visible(false);
         imp.root_store.remove_all();
         imp.file_groups.borrow_mut().clear();
         imp.total_matches.set(0);

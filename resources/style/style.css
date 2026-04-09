@@ -36,7 +36,6 @@
 /* Search panel: distinct background separating it from the editor area */
 .search-panel {
   background-color: @headerbar_bg_color;
-  border-top: 1px solid @borders;
 }
 
 /* Command palette: floating overlay at top-center */

@@ -1103,13 +1103,13 @@ fn test_search_panel_has_search_panel_css_class() {
 }
 
 #[test]
-fn test_search_panel_revealer_uses_slide_down_transition() {
+fn test_search_panel_revealer_uses_slide_up_transition() {
     ensure_gtk_init();
     let window = test_window();
     let revealer = &window.imp().search_panel_revealer;
     assert_eq!(
         revealer.transition_type(),
-        gtk4::RevealerTransitionType::SlideDown,
+        gtk4::RevealerTransitionType::SlideUp,
     );
 }
 

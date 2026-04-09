@@ -70,6 +70,14 @@ pub struct LushtextSearchPanel {
     pub undo_button: TemplateChild<gtk4::Button>,
     #[template_child]
     pub save_button: TemplateChild<gtk4::Button>,
+    #[template_child]
+    pub close_button: TemplateChild<gtk4::Button>,
+    #[template_child]
+    pub results_header_separator: TemplateChild<gtk4::Separator>,
+    #[template_child]
+    pub results_footer_separator: TemplateChild<gtk4::Separator>,
+    #[template_child]
+    pub footer_box: TemplateChild<gtk4::Box>,
 
     /// Dropdown popover for saved searches + recent history. Parented to search_entry.
     pub history_popover: gtk4::Popover,
@@ -176,6 +184,10 @@ impl Default for LushtextSearchPanel {
             replace_all_button: TemplateChild::default(),
             undo_button: TemplateChild::default(),
             save_button: TemplateChild::default(),
+            close_button: TemplateChild::default(),
+            results_header_separator: TemplateChild::default(),
+            results_footer_separator: TemplateChild::default(),
+            footer_box: TemplateChild::default(),
             history_popover: {
                 let popover = gtk4::Popover::new();
                 popover.set_autohide(true);
@@ -346,9 +358,10 @@ impl LushtextSearchPanel {
             let expander = gtk4::TreeExpander::new();
 
             // Content box for the row: either file header or match line.
+            // margin-end=24 prevents overlay scrollbar from obscuring the count badge.
             let content_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
             content_box.set_margin_start(4);
-            content_box.set_margin_end(4);
+            content_box.set_margin_end(24);
             content_box.set_margin_top(2);
             content_box.set_margin_bottom(2);
 
@@ -363,7 +376,6 @@ impl LushtextSearchPanel {
 
             let count_badge = gtk4::Label::new(None);
             count_badge.add_css_class("caption");
-            count_badge.add_css_class("dim-label");
 
             let line_num_label = gtk4::Label::new(None);
             line_num_label.add_css_class("caption");
@@ -840,6 +852,17 @@ impl LushtextSearchPanel {
         // Escape key: signal close request.
         let panel_weak = self.obj().downgrade();
         self.search_entry.connect_stop_search(move |_| {
+            let Some(panel) = panel_weak.upgrade() else {
+                return;
+            };
+            if let Some(ref cb) = *panel.imp().close_requested_callback.borrow() {
+                cb();
+            }
+        });
+
+        // Close button: same as Escape.
+        let panel_weak = self.obj().downgrade();
+        self.close_button.connect_clicked(move |_| {
             let Some(panel) = panel_weak.upgrade() else {
                 return;
             };

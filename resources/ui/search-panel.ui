@@ -6,6 +6,13 @@
     <property name="orientation">vertical</property>
     <style><class name="search-panel"/></style>
 
+    <!-- Top separator: replaces CSS border-top so it animates cleanly with the revealer -->
+    <child>
+      <object class="GtkSeparator">
+        <property name="orientation">horizontal</property>
+      </object>
+    </child>
+
     <!-- Header: search input -->
     <child>
       <object class="GtkBox" id="header_box">
@@ -59,6 +66,17 @@
             <style><class name="flat"/></style>
           </object>
         </child>
+        <child>
+          <object class="GtkButton" id="close_button">
+            <property name="icon-name">window-close-symbolic</property>
+            <property name="tooltip-text" translatable="yes">Close Search Panel</property>
+            <property name="focus-on-click">false</property>
+            <style>
+              <class name="flat"/>
+              <class name="circular"/>
+            </style>
+          </object>
+        </child>
       </object>
     </child>
 
@@ -89,7 +107,7 @@
             <property name="spacing">6</property>
             <property name="margin-start">6</property>
             <property name="margin-end">6</property>
-            <property name="margin-top">6</property>
+            <property name="margin-top">0</property>
             <property name="margin-bottom">6</property>
             <child>
               <object class="GtkBox" id="filter_row">
@@ -140,15 +158,17 @@
     </child>
 
     <child>
-      <object class="GtkSeparator">
+      <object class="GtkSeparator" id="results_header_separator">
         <property name="orientation">horizontal</property>
+        <property name="visible">false</property>
       </object>
     </child>
 
     <!-- Results area -->
     <child>
       <object class="GtkScrolledWindow" id="results_scroll">
-        <property name="vexpand">true</property>
+        <property name="visible">false</property>
+        <property name="propagate-natural-height">true</property>
         <property name="min-content-height">100</property>
         <child>
           <object class="GtkListView" id="results_list"/>
@@ -157,12 +177,13 @@
     </child>
 
     <child>
-      <object class="GtkSeparator">
+      <object class="GtkSeparator" id="results_footer_separator">
         <property name="orientation">horizontal</property>
+        <property name="visible">false</property>
       </object>
     </child>
 
-    <!-- Footer: result count -->
+    <!-- Footer: result count (hidden until results arrive) -->
     <child>
       <object class="GtkBox" id="footer_box">
         <property name="orientation">horizontal</property>
@@ -171,6 +192,7 @@
         <property name="margin-end">6</property>
         <property name="margin-top">6</property>
         <property name="margin-bottom">6</property>
+        <property name="visible">false</property>
         <child>
           <object class="GtkLabel" id="count_label">
             <property name="hexpand">true</property>

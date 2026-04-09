@@ -96,8 +96,9 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                     return;
                 }
 
-                // Only show progress after the 500ms delay has elapsed.
-                if !show_progress.get() {
+                // Only show progress after the 500ms delay has elapsed
+                // and while the search panel is still visible.
+                if !show_progress.get() || !imp.search_panel_revealer.reveals_child() {
                     return;
                 }
 
@@ -275,17 +276,37 @@ pub fn setup_search_panel(window: &LushtextWindow) {
 
 impl LushtextWindow {
     /// Toggle the search panel visibility. Handles open, re-invocation, and pre-fill.
+    /// If the in-editor Find bar is open, closes it first with animation, then
+    /// opens the search panel after the animation completes (260ms delay).
     pub fn toggle_search_panel(&self) {
         let imp = self.imp();
         let revealer = &imp.search_panel_revealer;
 
         if revealer.reveals_child() {
-            // Re-invocation: refocus and select all text.
-            let entry = imp.search_panel.search_entry();
-            entry.grab_focus();
-            entry.select_region(0, -1);
+            self.close_search_panel();
             return;
         }
+
+        // If the in-editor Find bar is visible, close it first with animation.
+        if let Some(editor) = self.active_editor()
+            && editor.is_search_visible()
+        {
+            editor.hide_search();
+            let window_weak = self.downgrade();
+            glib::timeout_add_local_once(Duration::from_millis(260), move || {
+                if let Some(window) = window_weak.upgrade() {
+                    window.open_search_panel();
+                }
+            });
+            return;
+        }
+
+        self.open_search_panel();
+    }
+
+    /// Internal helper: open the search panel with pre-fill and focus.
+    fn open_search_panel(&self) {
+        let imp = self.imp();
 
         // Save focus before the panel steals it.
         let weak = glib::WeakRef::new();
@@ -305,7 +326,7 @@ impl LushtextWindow {
             }
         }
 
-        revealer.set_reveal_child(true);
+        imp.search_panel_revealer.set_reveal_child(true);
         imp.search_panel.open();
         let _ = imp.settings.set_boolean(keys::SEARCH_PANEL_VISIBLE, true);
         self.update_search_navigation_actions();
@@ -321,6 +342,7 @@ impl LushtextWindow {
         }
         imp.search_panel.close();
         imp.search_panel_revealer.set_reveal_child(false);
+        imp.status_bar.clear_progress_message();
         let _ = imp.settings.set_boolean(keys::SEARCH_PANEL_VISIBLE, false);
         self.update_search_navigation_actions();
         self.restore_search_saved_focus();

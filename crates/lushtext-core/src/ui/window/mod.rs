@@ -556,14 +556,40 @@ impl LushtextWindow {
                 .build(),
             gio::ActionEntry::builder("begin-search")
                 .activate(|window: &Self, _, _| {
-                    if let Some(editor) = window.active_editor() {
+                    if window.imp().search_panel_revealer.reveals_child() {
+                        window.close_search_panel();
+                        let window_weak = window.downgrade();
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(260),
+                            move || {
+                                if let Some(window) = window_weak.upgrade()
+                                    && let Some(editor) = window.active_editor()
+                                {
+                                    editor.show_search();
+                                }
+                            },
+                        );
+                    } else if let Some(editor) = window.active_editor() {
                         editor.show_search();
                     }
                 })
                 .build(),
             gio::ActionEntry::builder("begin-replace")
                 .activate(|window: &Self, _, _| {
-                    if let Some(editor) = window.active_editor() {
+                    if window.imp().search_panel_revealer.reveals_child() {
+                        window.close_search_panel();
+                        let window_weak = window.downgrade();
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(260),
+                            move || {
+                                if let Some(window) = window_weak.upgrade()
+                                    && let Some(editor) = window.active_editor()
+                                {
+                                    editor.show_replace();
+                                }
+                            },
+                        );
+                    } else if let Some(editor) = window.active_editor() {
                         editor.show_replace();
                     }
                 })
