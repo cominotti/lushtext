@@ -341,7 +341,7 @@ fn update_progress_record(
 }
 
 fn renew_progress_record(
-    records: &mut Vec<NotificationRecord>,
+    records: &mut [NotificationRecord],
     owner: NotificationOwner,
     surface: NotificationSurface,
     now: Instant,

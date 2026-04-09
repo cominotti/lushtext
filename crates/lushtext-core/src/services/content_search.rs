@@ -254,10 +254,10 @@ pub fn apply_replacements(
     ReplaceResult,
     std::collections::HashMap<std::path::PathBuf, Vec<u8>>,
 )> {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
     // Group replacements by file path.
-    let mut by_file: HashMap<std::path::PathBuf, Vec<&Replacement>> = HashMap::new();
+    let mut by_file: BTreeMap<std::path::PathBuf, Vec<&Replacement>> = BTreeMap::new();
     for r in replacements {
         by_file.entry(r.path.clone()).or_default().push(r);
     }
@@ -289,6 +289,10 @@ pub fn apply_replacements(
                 continue;
             }
         };
+        if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
 
         // Read original content. On error, skip this file and continue.
         let original_bytes = match std::fs::read(&path) {
@@ -1235,42 +1239,43 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_apply_replacements_cancel_rolls_back_applied_files() {
         let dir = tempdir().unwrap();
-        let mut replacements = Vec::new();
-        let mut files = Vec::new();
-        for i in 0..64 {
-            let path = dir.path().join(format!("file_{i}.txt"));
-            fs::write(&path, "needle\n").unwrap();
-            replacements.push(make_replacement(&path, 1, "needle", "replaced", 0..6));
-            files.push(path);
-        }
+        let file_a = dir.path().join("a.txt");
+        let file_b = dir.path().join("b.txt");
+        fs::write(&file_a, "needle\n").unwrap();
+        fs::write(&file_b, "needle\n").unwrap();
+        let replacements = vec![
+            make_replacement(&file_a, 1, "needle", "replaced", 0..6),
+            make_replacement(&file_b, 1, "needle", "replaced", 0..6),
+        ];
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_for_observer = cancel.clone();
-        let observed_files = files.clone();
-        let observer = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while std::time::Instant::now() < deadline {
-                if observed_files.iter().any(|path| {
-                    fs::read_to_string(path)
-                        .map(|content| content.contains("replaced"))
-                        .unwrap_or(false)
-                }) {
-                    cancel_for_observer.store(true, Ordering::Relaxed);
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+        let lock_b = ReplaceFileLock::acquire(&file_b).unwrap();
+        let cancel_for_worker = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            apply_replacements(&replacements, &HashSet::new(), cancel_for_worker.as_ref())
         });
 
-        let result = apply_replacements(&replacements, &HashSet::new(), cancel.as_ref());
-        observer.join().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if fs::read_to_string(&file_a)
+                .map(|content| content.contains("replaced"))
+                .unwrap_or(false)
+            {
+                cancel.store(true, Ordering::Relaxed);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(lock_b);
+
+        let result = worker.join().unwrap();
 
         assert!(result.is_err(), "cancelled replace should roll back");
-        for path in &files {
-            assert_eq!(fs::read_to_string(path).unwrap(), "needle\n");
-        }
+        assert_eq!(fs::read_to_string(&file_a).unwrap(), "needle\n");
+        assert_eq!(fs::read_to_string(&file_b).unwrap(), "needle\n");
     }
 
     #[test]
