@@ -11,6 +11,8 @@ Guide and review Rust code for keeping LushText buttery smooth — no "Waiting f
 
 The main thread runs the GLib main loop, which processes user input events, widget drawing, signal dispatch, timer callbacks, and D-Bus messages. If your code takes >16ms on the main thread (~60fps frame budget), the UI stutters. If it takes >5 seconds, the desktop environment shows "Application Not Responding." There is no exception.
 
+For paned/revealer animations, "responsive" also includes **warning-free live geometry**. A sidebar toggle that feels smooth in a widget test but still logs `GtkBox ... needs at least ...` in the real app is not responsive enough to ship.
+
 ## Decision Matrix: Sync vs Async
 
 | Operation | Time | Pattern | Where |
@@ -25,6 +27,13 @@ The main thread runs the GLib main loop, which processes user input events, widg
 | Tree model population | Per-directory | `spawn_blocking_then` | Return empty store, populate async |
 
 **The 1ms Rule**: If an operation can exceed 1ms in the worst case (large file, slow disk, network mount, many entries), it must run off the main thread. The overhead of `spawn_blocking_then` is negligible compared to a UI freeze.
+
+## Sidebar / Paned Animation Lessons
+
+- Large restored workspace trees can make sidebar toggle stutter even when no explicit I/O runs during the animation. The problem can be per-frame relayout of the live subtree, not blocking calls.
+- Snapshotting a heavy sidebar subtree with `GtkWidgetPaintable` can reduce animation cost, but only if the live child is truly removed from the paned's measurement path during the animation.
+- GTK source matters here: `gtk_paned_size_allocate()` computes positions using the handle widget's natural size, and `gtk_revealer_measure()` scales and rounds child sizes during transitions. One-pixel geometry gaps are therefore common in live runs.
+- Because of that, sidebar animation fixes must be validated in the real app (`make run`) against restored workspaces while watching stderr. Widget tests alone are not enough to prove geometry safety.
 
 ## Execution Model: Parallel Subagents
 
@@ -80,12 +89,14 @@ Review criteria:
 - For file operations: is the path cloned/moved into the closure correctly? (Borrowed paths can't cross thread boundaries)
 - Cancel tokens: for large file loads, does EditorPage store an Arc<AtomicBool> checked before AND after the I/O call?
 - ThreadGuard vs SendWeakRef: is the correct cross-thread reference type used? ThreadGuard (used by spawn_blocking_then automatically) is for short-lived cross-thread references where the object is guaranteed to exist. SendWeakRef is for long-lived references (periodic timers, callbacks that may outlive the widget) — it returns None on upgrade if the widget was destroyed instead of panicking. Common mistake: using ThreadGuard in a periodic timer closure — if the widget is destroyed, into_inner() panics.
+- For animated sidebars/panes: if the code avoids I/O but still resizes a heavy tree or list every frame, flag that as a responsiveness hazard anyway. A frozen snapshot or lighter animation surface may be required.
 
 Anti-patterns to flag:
 - [FLAG] std::fs::read_to_string, fs::write, fs::read_dir, fs::metadata, or Command::new in ui/ code outside spawn_blocking_then
 - [FLAG] Large data parsing (serde_json::from_str on >10KB) in the `then` callback
 - [RECOMMEND] Missing cancel token for file loads that may become stale (tab closed during load)
 - [FLAG] ThreadGuard used in a periodic timer or long-lived callback — panics if widget is destroyed; use SendWeakRef instead
+- [RECOMMEND] Paned animation keeps a large live tree/list widget in the measurement path for every frame even though a snapshot/clipping strategy is possible
 - [CONSIDER] Synchronous small config reads at startup (<1KB) — acceptable but note it
 
 Output format — return findings as:
@@ -246,6 +257,7 @@ When implementing new features (not reviewing existing code), check:
 4. Does it touch TreeListModel? → Ensure `autoexpand = false` and lazy population
 5. Does the closure capture large state? → Move it to the imp struct, access via `&self`
 6. Does a timer reference a widget? → Use `SendWeakRef` and `ControlFlow::Break`
+7. Does a paned animation touch a large sidebar/tree subtree? → validate with `make run` on restored workspaces and inspect stderr for geometry warnings, not just widget tests
 
 ## Tone
 

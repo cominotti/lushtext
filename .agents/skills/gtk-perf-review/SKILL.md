@@ -40,6 +40,8 @@ LushText has three complementary performance skills:
 
 They cover different concerns but often all apply to the same code change. This umbrella skill dispatches all three in parallel and produces one unified report, avoiding duplicate work and ensuring complete coverage.
 
+When a change touches `GtkPaned` / `GtkRevealer` animation around a heavy sidebar or tree, treat live geometry warnings as part of the responsiveness review. A fix that feels smooth in widget tests but still logs `Trying to measure GtkBox ...` under `make run` is not complete.
+
 ## Execution Model
 
 This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent internally dispatches its own focused sub-subagents based on which files were changed. Do NOT attempt to review code inline — delegate everything.

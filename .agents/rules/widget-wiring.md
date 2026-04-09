@@ -34,6 +34,8 @@ When a widget's behavior depends on its parent's size (e.g., sidebar ≤ 1/3 win
 - **`size_allocate(width, height, baseline)`** receives the **actual allocated dimensions as parameters**. No timing issues.
 - **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes (e.g., user drags a `GtkPaned` divider), also connect `notify::position` on the child.
 - `size_allocate` fires on every layout pass. Keep the handler cheap (comparison + maybe one `set_position`). Guard GSettings writes with a value-change check to avoid D-Bus overhead.
+- If `notify::position` also persists state, suppress that persistence while a programmatic paned animation is in flight. Clamp can stay live every frame; debounced settings writes should run once from the animation completion path.
+- Treat `notify::position` primarily as the **user-drag** path. If a timed animation is already driving valid paned positions directly, short-circuit the `notify::position` handler while that animation is active so the same frame is not reprocessed as if it were a manual drag.
 
 ## GtkPaned Position Constraints
 
@@ -45,11 +47,19 @@ Any code that sets a `GtkPaned` position must ensure it's valid for the current 
 
 **Animation targets**: When computing an animation target for a paned position (e.g., sidebar show), start from the saved preferred width but clamp the target against the current allocation before writing it. Clamp per-frame animation writes too — do not rely on `size_allocate` / `notify::position` to sanitize an already-invalid animation tick. If async child population can change the budget (for example restored workspaces adding sidebar sections), refresh the measured budget immediately before the animation starts.
 
+**Real-session proof beats harness-only proof**: Presented widget tests can verify action state, wrapper visibility, and persistence guards, but they can still miss live `GtkBox ... needs at least ...` warnings. Any sidebar/paned animation fix must also be exercised through `make run` against restored workspaces while watching stderr. Treat widget green + live warning as a failed fix, not a partial success.
+
+**Animation persistence**: Programmatic paned animations may still trigger `notify::position` and `size_allocate` on every frame. Those paths may clamp, but they must not enqueue debounced GSettings writes on every tick. Persist the preferred visible width once from `connect_done` (or the immediate-completion test path) after the animation settles.
+
 **Clamp against the real end-child**: If the warning references the end-child container (for example `GtkBox`), budget against that container's measured minimum, not a nested child that usually dominates it. One-pixel mismatches often come from clamping against the inner stack while GTK is actually measuring the wrapper box.
 
 **Prefer GTK's runtime paned budget**: Once a `GtkPaned` is allocated, prefer `max-position` / `min-position` over reverse-engineering the legal range from child widths. Those properties already include the current handle width and realized child constraints.
 
-**Wrap zero-width pane animations**: If a pane must fully disappear, wrap the real child widget in a `GtkRevealer` (or equivalent clipping wrapper) and animate the paned against the wrapper, not the raw child. Hide the wrapper once the animation reaches the collapsed endpoint so GTK stops reserving handle width while hidden.
+**But know where `max-position` comes from**: GTK source (`gtkpaned.c`) computes positions with the handle widget's measured natural size and the current child minimums. During animated `GtkRevealer` transitions those minimums can round up by one pixel. If a live warning persists, inspect GTK's own `gtk_paned_compute_position` / `gtk_revealer_measure` behavior before adding more local clamp churn.
+
+**Wrap zero-width pane animations**: If a pane must fully disappear, wrap the real child widget in a `GtkRevealer` (or equivalent clipping wrapper) and animate the paned against the wrapper, not the raw child. Keep the wrapper revealed while the paned is shrinking, then drop `reveal-child` and `visible` together when the animation finishes so GTK stops reserving handle width while hidden without changing the layout budget too early.
+
+**Heavy child optimization**: If the wrapped pane contains a large tree/list that causes visible stutter, consider swapping the live child out for a frozen snapshot during the animation. But do not assume an intermediate container stops affecting layout; validate that the real child is truly out of the paned's measurement path in the live app.
 
 **Hide-time clamps stay live until the wrapper is hidden**: A toggle action may set a logical `*-visible` flag to `false` before the `GtkRevealer` has actually left layout. Clamp/budget helpers must keep treating the pane as layout-active while the wrapper's own `visible` property is still true, or a stale restored position can slip into the first hide frame.
 
@@ -100,3 +110,5 @@ Every wired signal must have a widget test that asserts the expected state chang
 **`spawn_blocking_then` results in tests:** Tests that depend on results from `spawn_blocking_then` (e.g., command palette search results, file index rebuilds) must wait for the background thread to complete before asserting. `flush_events()` alone is insufficient — it only drains what's already on the main loop, but the background thread may not have posted its `idle_add_once` callback yet. Use `spin_until(|| predicate())` to poll the main loop until results arrive. Without this, tests are flaky under parallel execution (nextest) because thread scheduling varies.
 
 **Timed animations in the custom widget harness:** Presented-window tests do not reliably advance `AdwTimedAnimation` frame clocks under the `crates/lushtext/tests/widget.rs` subprocess harness. Do not write tests that wait for the real animation duration to elapse. If the assertion depends on the settled post-animation state, expose a narrow test-only immediate-completion path keyed off `LUSHTEXT_WIDGET_CHILD`, or assert a state transition that does not depend on frame-clock progress.
+
+**Live paned warnings are a separate acceptance gate:** If a change touches `GtkPaned`, `GtkRevealer`, or a heavy animated sidebar subtree, widget tests are necessary but not sufficient. The acceptance checklist must include a real `make run` cycle with restored workspaces and an stderr check for `Trying to measure GtkBox ...` warnings.
