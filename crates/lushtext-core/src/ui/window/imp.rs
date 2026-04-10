@@ -45,9 +45,13 @@ pub struct LushtextWindow {
     #[template_child]
     pub content_stack: TemplateChild<gtk4::Stack>,
     #[template_child]
+    pub content_animation_stack: TemplateChild<gtk4::Stack>,
+    #[template_child]
     pub main_paned: TemplateChild<gtk4::Paned>,
     #[template_child]
     pub sidebar_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
+    pub sidebar_animation_stack: TemplateChild<gtk4::Stack>,
     #[template_child]
     pub sidebar: TemplateChild<LushtextSidebar>,
     /// Frozen sidebar image used during show/hide animation so the live tree
@@ -69,6 +73,9 @@ pub struct LushtextWindow {
     pub markdown_preview: TemplateChild<LushtextMarkdownPreview>,
     #[template_child]
     pub content_box: TemplateChild<gtk4::Box>,
+    /// Frozen content image used during sidebar hide animation so the live
+    /// editor stack does not need to relayout on every paned tick.
+    pub content_snapshot_picture: gtk4::Picture,
     #[template_child]
     pub search_panel_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
@@ -84,9 +91,21 @@ pub struct LushtextWindow {
     /// Currently running sidebar show/hide animation, if any.
     /// Paused on rapid toggle so the new animation can start from the current position.
     pub sidebar_animation: RefCell<Option<libadwaita::TimedAnimation>>,
+    /// Cached legal maximum sidebar position for the current programmatic
+    /// animation. Lets animation ticks and size_allocate use a cheap clamp
+    /// instead of remeasuring the widget tree every frame.
+    pub sidebar_animation_max: Cell<i32>,
     /// True while a programmatic sidebar animation is moving the paned divider.
     /// Used to suppress per-frame persistence churn from `notify::position`.
     pub sidebar_animation_active: Cell<bool>,
+    /// Generation counter for deferred sidebar snapshot refreshes. Lets the
+    /// window coalesce repeated snapshot requests and avoid capturing on the
+    /// immediate interaction path.
+    pub sidebar_snapshot_generation: Cell<u32>,
+    /// Generation counter for deferred content snapshot refreshes. Used so the
+    /// end-child snapshot can be refreshed while the UI is idle instead of on
+    /// the sidebar-hide click path.
+    pub content_snapshot_generation: Cell<u32>,
     /// Whether the side-by-side preview pane is currently visible.
     pub preview_visible: Cell<bool>,
     /// Whether the preview-only mode (Alt+P) is active (editor hidden, preview full-width).
@@ -171,8 +190,10 @@ impl Default for LushtextWindow {
             tab_bar: TemplateChild::default(),
             tab_view: TemplateChild::default(),
             content_stack: TemplateChild::default(),
+            content_animation_stack: TemplateChild::default(),
             main_paned: TemplateChild::default(),
             sidebar_revealer: TemplateChild::default(),
+            sidebar_animation_stack: TemplateChild::default(),
             sidebar: TemplateChild::default(),
             sidebar_snapshot_picture: gtk4::Picture::builder()
                 .can_shrink(true)
@@ -189,13 +210,24 @@ impl Default for LushtextWindow {
             editor_box: TemplateChild::default(),
             markdown_preview: TemplateChild::default(),
             content_box: TemplateChild::default(),
+            content_snapshot_picture: gtk4::Picture::builder()
+                .can_shrink(true)
+                .content_fit(gtk4::ContentFit::Fill)
+                .hexpand(true)
+                .halign(gtk4::Align::Fill)
+                .vexpand(true)
+                .valign(gtk4::Align::Fill)
+                .build(),
             search_panel_revealer: TemplateChild::default(),
             search_panel: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
             sidebar_visible: Cell::new(true),
             saved_sidebar_pos: Cell::new(0),
             sidebar_animation: RefCell::new(None),
+            sidebar_animation_max: Cell::new(-1),
             sidebar_animation_active: Cell::new(false),
+            sidebar_snapshot_generation: Cell::new(0),
+            content_snapshot_generation: Cell::new(0),
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
             saved_preview_pos: Cell::new(0),
@@ -264,6 +296,13 @@ impl ObjectImpl for LushtextWindow {
 
         let obj = self.obj();
         let settings = &self.settings;
+        self.sidebar_animation_stack
+            .add_named(&self.sidebar_snapshot_picture, Some("snapshot"));
+        self.sidebar_animation_stack
+            .set_visible_child_name("live");
+        self.content_animation_stack
+            .add_named(&self.content_snapshot_picture, Some("snapshot"));
+        self.content_animation_stack.set_visible_child_name("live");
 
         // --- Restore window geometry from GSettings ---
         let w = settings.int(keys::WINDOW_WIDTH);
@@ -342,6 +381,8 @@ impl ObjectImpl for LushtextWindow {
             obj.connect_map(move |_| {
                 if let Some(window) = window_weak.upgrade() {
                     refresh_sidebar_layout_budget(&window);
+                    window.queue_sidebar_snapshot_refresh();
+                    window.queue_content_snapshot_refresh();
                 }
             });
         }
@@ -510,6 +551,7 @@ impl ObjectImpl for LushtextWindow {
                     window.maybe_evict_background_tabs();
                     window.save_session_debounced();
                     window.refresh_preview();
+                    window.queue_content_snapshot_refresh();
                 }
             });
 
@@ -744,14 +786,54 @@ fn sidebar_max_position(
         max_pos = (max_pos - end_req).max(1);
     }
     max_pos = max_pos.max(min_pos);
+    if imp.main_paned.width() > 0 && imp.main_paned.width() == window_width {
+        max_pos = max_pos.min(imp.main_paned.max_position().max(min_pos));
+    }
 
     Some((window_width / 3).min(max_pos).max(0))
 }
 
+/// GTK validates a widget's legal `for_width` floor by measuring it
+/// horizontally with `for_height = -1` before it performs a vertical measure.
+///
+/// For layout budgeting we also care about the current realized height, because
+/// height-for-width widgets can request a larger width once they know their
+/// live height. Using the max of both keeps the paned safe for GTK's legality
+/// checks and for the current runtime layout.
+#[derive(Clone, Copy, Debug)]
+struct HorizontalMeasurementFloor {
+    legal_min: i32,
+    runtime_min: i32,
+}
+
+impl HorizontalMeasurementFloor {
+    fn resolved(self) -> i32 {
+        self.legal_min.max(self.runtime_min)
+    }
+}
+
+fn measure_horizontal_floor(
+    widget: &impl IsA<gtk4::Widget>,
+    runtime_for_height: i32,
+) -> HorizontalMeasurementFloor {
+    let widget = widget.as_ref();
+    let (legal_min, _, _, _) = widget.measure(gtk4::Orientation::Horizontal, -1);
+    let runtime_min = if runtime_for_height > 0 {
+        let (runtime_min, _, _, _) =
+            widget.measure(gtk4::Orientation::Horizontal, runtime_for_height);
+        runtime_min
+    } else {
+        legal_min
+    };
+
+    HorizontalMeasurementFloor {
+        legal_min,
+        runtime_min,
+    }
+}
+
 fn measure_content_box_min(window: &super::LushtextWindow, content_box: &gtk4::Box) -> i32 {
-    let for_height = current_paned_for_height(window);
-    let (content_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, for_height);
-    content_min
+    measure_horizontal_floor(content_box, current_paned_for_height(window)).resolved()
 }
 
 fn measure_sidebar_handle_overhead(window: &super::LushtextWindow, content_min: i32) -> i32 {
@@ -778,15 +860,18 @@ fn update_sidebar_measurements(window: &super::LushtextWindow, content_box: &gtk
     if content_min > 0 && content_box.width_request() != content_min {
         content_box.set_width_request(content_min);
     }
-    measure_sidebar_handle_overhead(window, content_min)
+    let handle_overhead = measure_sidebar_handle_overhead(window, content_min);
+    let paned_min = content_min.saturating_add(handle_overhead);
+    let main_paned = &window.imp().main_paned;
+    if paned_min > 0 && main_paned.width_request() != paned_min {
+        main_paned.set_width_request(paned_min);
+    }
+    handle_overhead
 }
 
 fn measure_sidebar_start_min(window: &super::LushtextWindow, for_height: i32) -> i32 {
-    let imp = window.imp();
-    let (start_min, _, _, _) = imp
-        .sidebar_revealer
-        .measure(gtk4::Orientation::Horizontal, for_height);
-    start_min
+    let sidebar_revealer: &gtk4::Widget = window.imp().sidebar_revealer.upcast_ref();
+    measure_horizontal_floor(sidebar_revealer, for_height).resolved()
 }
 
 fn current_paned_for_height(window: &super::LushtextWindow) -> i32 {
@@ -866,6 +951,17 @@ pub fn clamp_sidebar_position(
 ) {
     let imp = window.imp();
     if !sidebar_affects_layout(imp) {
+        return;
+    }
+    if imp.sidebar_animation_active.get() {
+        let animation_max = imp.sidebar_animation_max.get();
+        if animation_max >= 0 {
+            let current = paned.position();
+            let clamped = current.min(animation_max).max(0);
+            if clamped != current {
+                paned.set_position(clamped);
+            }
+        }
         return;
     }
     let Some(max) = sidebar_max_position(window, content_box, window_width) else {

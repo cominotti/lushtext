@@ -69,79 +69,105 @@
                 <!-- Left: File tree sidebar -->
                 <property name="start-child">
                   <object class="GtkRevealer" id="sidebar_revealer">
-                    <property name="transition-type">slide-right</property>
-                    <property name="transition-duration">250</property>
+                    <property name="transition-type">none</property>
+                    <property name="transition-duration">0</property>
                     <property name="reveal-child">true</property>
                     <property name="child">
-                      <object class="LushtextSidebar" id="sidebar"/>
+                      <object class="GtkStack" id="sidebar_animation_stack">
+                        <property name="hhomogeneous">false</property>
+                        <property name="vhomogeneous">false</property>
+                        <property name="transition-type">none</property>
+                        <property name="transition-duration">0</property>
+                        <child>
+                          <object class="GtkStackPage">
+                            <property name="name">live</property>
+                            <property name="child">
+                              <object class="LushtextSidebar" id="sidebar"/>
+                            </property>
+                          </object>
+                        </child>
+                      </object>
                     </property>
                   </object>
                 </property>
 
                 <!-- Right: Content box wrapping stack + search panel -->
                 <property name="end-child">
-                  <object class="GtkBox" id="content_box">
-                    <property name="orientation">vertical</property>
+                  <object class="GtkStack" id="content_animation_stack">
+                    <property name="hhomogeneous">false</property>
+                    <property name="vhomogeneous">false</property>
+                    <property name="transition-type">none</property>
+                    <property name="transition-duration">0</property>
                     <child>
-                      <object class="GtkStack" id="content_stack">
-                        <property name="vexpand">true</property>
-                        <property name="hexpand">true</property>
-
-                        <child>
-                          <object class="GtkStackPage">
-                            <property name="name">tabs</property>
-                            <property name="child">
-                              <object class="GtkPaned" id="preview_paned">
+                      <object class="GtkStackPage">
+                        <property name="name">live</property>
+                        <property name="child">
+                          <object class="GtkBox" id="content_box">
+                            <property name="orientation">vertical</property>
+                            <child>
+                              <object class="GtkStack" id="content_stack">
                                 <property name="vexpand">true</property>
-                                <property name="shrink-start-child">false</property>
-                                <property name="shrink-end-child">false</property>
-                                <property name="resize-end-child">false</property>
+                                <property name="hexpand">true</property>
 
-                                <!-- Left: editor tab view -->
-                                <property name="start-child">
-                                  <object class="GtkBox" id="editor_box">
-                                    <property name="orientation">vertical</property>
-                                    <child>
-                                      <object class="AdwTabView" id="tab_view">
+                                <child>
+                                  <object class="GtkStackPage">
+                                    <property name="name">tabs</property>
+                                    <property name="child">
+                                      <object class="GtkPaned" id="preview_paned">
                                         <property name="vexpand">true</property>
+                                        <property name="shrink-start-child">false</property>
+                                        <property name="shrink-end-child">false</property>
+                                        <property name="resize-end-child">false</property>
+
+                                        <!-- Left: editor tab view -->
+                                        <property name="start-child">
+                                          <object class="GtkBox" id="editor_box">
+                                            <property name="orientation">vertical</property>
+                                            <child>
+                                              <object class="AdwTabView" id="tab_view">
+                                                <property name="vexpand">true</property>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </property>
+
+                                        <!-- Right: markdown preview (starts hidden) -->
+                                        <property name="end-child">
+                                          <object class="LushtextMarkdownPreview" id="markdown_preview">
+                                            <property name="visible">false</property>
+                                          </object>
+                                        </property>
                                       </object>
-                                    </child>
+                                    </property>
                                   </object>
-                                </property>
+                                </child>
 
-                                <!-- Right: markdown preview (starts hidden) -->
-                                <property name="end-child">
-                                  <object class="LushtextMarkdownPreview" id="markdown_preview">
-                                    <property name="visible">false</property>
+                                <child>
+                                  <object class="GtkStackPage">
+                                    <property name="name">empty</property>
+                                    <property name="child">
+                                      <object class="AdwStatusPage" id="empty_page">
+                                        <property name="icon-name">document-edit-symbolic</property>
+                                        <property name="title" translatable="yes">Open a File</property>
+                                        <property name="description" translatable="yes">Open a file from the sidebar or create a new document</property>
+                                      </object>
+                                    </property>
                                   </object>
-                                </property>
+                                </child>
                               </object>
-                            </property>
-                          </object>
-                        </child>
-
-                        <child>
-                          <object class="GtkStackPage">
-                            <property name="name">empty</property>
-                            <property name="child">
-                              <object class="AdwStatusPage" id="empty_page">
-                                <property name="icon-name">document-edit-symbolic</property>
-                                <property name="title" translatable="yes">Open a File</property>
-                                <property name="description" translatable="yes">Open a file from the sidebar or create a new document</property>
+                            </child>
+                            <child>
+                              <object class="GtkRevealer" id="search_panel_revealer">
+                                <property name="transition-type">slide-up</property>
+                                <property name="transition-duration">250</property>
+                                <property name="reveal-child">false</property>
+                                <child>
+                                  <object class="LushtextSearchPanel" id="search_panel"/>
+                                </child>
                               </object>
-                            </property>
+                            </child>
                           </object>
-                        </child>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkRevealer" id="search_panel_revealer">
-                        <property name="transition-type">slide-up</property>
-                        <property name="transition-duration">250</property>
-                        <property name="reveal-child">false</property>
-                        <child>
-                          <object class="LushtextSearchPanel" id="search_panel"/>
-                        </child>
+                        </property>
                       </object>
                     </child>
                   </object>

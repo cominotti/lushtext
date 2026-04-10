@@ -13,16 +13,41 @@ Use this playbook when the failure only becomes visible while a GTK app is runni
    - Fresh launch is best when startup logs matter.
    - Existing-instance watch is safer when the user already has unsaved work in the app.
    - If a unique `gio::Application` instance is already running, a second `make run` may return immediately after activating the existing window.
+   - Do not treat `cargo run` or `make run` printing `Running target/debug/...` as proof that you are observing a newly launched GUI process.
 3. **Keep the launcher in a PTY**
    - Prefer `functions.exec_command` with `tty: true`.
    - Poll the session with `write_stdin` instead of restarting the app for every question.
    - Use the helper runner so stdout, stderr, journal output, and D-Bus traffic land in one artifact directory.
-4. **Let the human reproduce the bug**
+4. **Choose a tight pid pattern**
+   - Prefer an anchored executable regex such as `(^| )target/debug/lushtext($| )`.
+   - Avoid broad alternations or loose substrings such as `target/debug/lushtext|dev.cominotti.lushtext`.
+   - After launch, inspect `process-before.txt`, `process-after.txt`, and `status.txt`. If they mention `run-gtk-debug-session.sh` or `pgrep`, tighten the pattern before trusting the PID-based launch note.
+5. **Let the human reproduce the bug**
    - The human can interact with the real window while the capture session stays open.
    - When no input injection tool is installed, this is the most reliable path.
-5. **Summarize before opening everything**
+6. **Summarize before opening everything**
    - Read `summary.md` first.
    - Open raw logs only around the relevant timestamps or repeated signatures.
+7. **Match the warned widget to the real widget tree when geometry is involved**
+   - If the warning includes a widget pointer such as `GtkBox 0x...`, match that pointer against the actual widgets in the live tree before deciding what is broken.
+   - In paned animations, the warned end-child widget can be only the symptom. A start-child `GtkPicture` or other snapshot wrapper that under-reports the live child's minimum width can cause the end child to be measured illegally.
+
+## Preferred Live Debug Loop
+
+When the user can reproduce the issue interactively, prefer this loop:
+
+1. Launch a fresh real app instance under the helper.
+2. Let the human reproduce the bug in the actual window.
+3. Keep the PTY open and watch the first live warning burst or symptom.
+4. Add one narrow trace that answers the next missing question.
+   Good traces:
+   - widget pointer identities
+   - measured minima and allocation widths for the specific widgets in play
+   - snapshot or wrapper identity swaps
+5. Relaunch and reproduce again on the real app instance.
+6. Compare the new traces to the warning timestamps and only then narrow the fix.
+
+This workflow is usually superior to broad speculative edits. It is also usually better than starting with synthetic action calls when the user already has a reliable manual repro path.
 
 ## What the Helper Captures
 
@@ -39,6 +64,7 @@ Use this playbook when the failure only becomes visible while a GTK app is runni
   - Compare the PID set before and after launch.
   - If the sets are identical, treat it as a likely unique-app handoff to an existing instance.
   - If the post-launch set includes a new PID, treat it as a newly launched app that detached from the launcher.
+- These heuristics are only trustworthy if the pattern matched the app and not the debugging machinery. A contaminated `pid-pattern` can make the helper shell look like the target process.
 - Do not kill matching processes automatically. Surface the finding and let the human choose.
 
 ## Screenshot Strategy
@@ -66,5 +92,11 @@ Use this playbook when the failure only becomes visible while a GTK app is runni
 1. Identify the dominant signature from `summary.md`.
 2. Search for the affected widget or action with `rg`.
 3. For geometry warnings, inspect size negotiation, revealers, paned positions, min-content widths, and animation endpoints.
+   - If a snapshot surface replaced a live child during the animation, verify that the snapshot host preserves the live child's minimum width contract.
+   - If a stable host such as `GtkStack` only exists to swap live and frozen children, verify that its own transition type and duration are disabled unless a second animation is intentional.
+   - If the frozen image shows up as black or empty, do not assume the swap logic is wrong first; confirm the cached snapshot itself is visually valid and not merely non-null.
+   - If a one-shot capture still yields a black frozen pane, compare it against a persistent `GtkWidgetPaintable` observer and its warmed `current_image()`. The issue may be snapshot validity, not only swap timing.
+   - Also ask when the snapshot is generated. A synchronous snapshot on the click path can remove one bug while introducing visible hide-time stutter.
+   - Prefer adding surgical traces and rerunning the live repro over trying to infer the entire widget tree from static code alone.
 4. For lifecycle warnings, inspect weak refs, signal disconnects, and object disposal paths.
 5. For portal or shell-related symptoms, inspect whether the app is waiting on user-session state instead of its own business logic.

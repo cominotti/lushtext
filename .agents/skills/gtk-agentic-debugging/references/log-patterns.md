@@ -20,11 +20,16 @@ For any GTK or Adwaita warning or critical, prefer these source-backed reference
   - revealer or animation endpoints moving through illegal widths
   - stale handle-overhead or minimum-size calculations
   - hidden widgets still participating in layout longer than expected
+  - a snapshot wrapper replacing a live paned child without preserving that live child's minimum width
 - Debug focus:
   - `measure()` versus `size_allocate()` timing
   - min-content widths
   - animated paned or revealer transitions
   - off-by-one handle width budgets
+  - widget pointer matching: confirm whether the warned `GtkBox` is the real root cause or just the place GTK finally noticed the invalid width
+  - snapshot timing: if a frozen sidebar image is created on the interaction path, separate "geometry fixed" from "animation still stutters"
+  - stable host behavior: if a `GtkStack` or similar wrapper is only meant to swap live vs frozen children, verify its own transition settings are disabled so it is not running a second hidden animation
+  - black-frame snapshots: if the pane turns black briefly, compare a fresh one-shot snapshot against a warmed persistent `GtkWidgetPaintable::current_image()`; the latter can be valid when the former is still effectively empty
 
 ## Lifecycle and Object Ownership
 

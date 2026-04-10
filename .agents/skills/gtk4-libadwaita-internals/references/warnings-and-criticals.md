@@ -40,7 +40,12 @@ So the right posture is:
   - wrapper widgets that still participate in layout
   - `GtkPaned` handle subtraction
   - `GtkRevealer` transition rounding
+  - snapshot wrappers that replaced a live paned child but no longer advertise the live child's minimum width
   - CSS margin or border or padding
+- Subtle but important:
+  - the widget named in the warning can still be the symptom site rather than the root cause
+  - if a `GtkPaned` start-child snapshot under-reports its minimum width, GTK may later warn while measuring the end child instead
+  - match the warned widget pointer against the real widget tree before deciding which branch of the paned is broken
 
 ### `widget tried to gtk_widget_measure inside GtkWidget::measure implementation`
 

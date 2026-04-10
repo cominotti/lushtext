@@ -8,6 +8,7 @@
 - `GtkBox` and why it is often named in warnings
 - `GtkPaned` handle math and child slot math
 - `GtkRevealer` transition scaling and integer rounding
+- Snapshot surfaces used as paned children
 - Libadwaita adaptive containers in the same pipeline
 - Related warnings from the same invariant family
 - Rust implications
@@ -133,6 +134,35 @@ The source calls out the consequences:
 
 This is the exact class of math that creates one-pixel warnings in animation-heavy layouts. A `GtkPaned` width budget can be mathematically valid at one stage, then become invalid by one pixel after revealer scaling, handle subtraction, CSS extras, or a late child minimum remeasurement.
 
+## Snapshot Surfaces Used As Paned Children
+
+Replacing a heavy live child with a frozen snapshot can improve animation smoothness, but the snapshot is still part of GTK's measurement pipeline.
+
+Important consequences:
+
+- a `GtkPicture` or other snapshot host does not automatically inherit the live child's minimum width contract
+- if the snapshot surface reports a smaller minimum than the real child, `GtkPaned` may believe the start child can shrink further than it really can
+- the resulting warning may still name the end child, because that is the widget GTK was directly measuring when the illegal `for_width` finally surfaced
+
+Real-world failure pattern:
+
+- the live sidebar has a minimum width, for example 200px
+- a frozen snapshot replaces it during hide or show animation
+- the snapshot host reports `0` or another undersized minimum width
+- `GtkPaned` reallocates more width to the end child than should be legal
+- GTK later measures the end `GtkBox` with a width that is one pixel too small and warns there, even though the root cause is the start-child snapshot contract
+
+The robust fix pattern is:
+
+- preserve the live child's minimum width on the snapshot host, for example with `width-request` set from `live_child.measure(Horizontal, -1)`
+- treat the snapshot as a geometry participant, not only a paint optimization
+- if you use a stable host such as `GtkStack` or a similar multiplexer purely to swap between live and frozen children, disable that host's own transitions unless you explicitly want a second animation system
+- generate or refresh the snapshot off the direct interaction path when possible, such as idle time or a steady-state refresh, because synchronous snapshot capture on the click path can remove the warning but still cause hide-time stutter
+- do not treat `paintable().is_some()` as proof that the frozen image is visually valid; `GtkWidgetPaintable` can still yield an empty or transparent current image when the observed widget has no usable render node yet
+- when a fresh `GtkSnapshot::to_paintable()` capture still produces a black or empty frozen pane, prefer a persistent `GtkWidgetPaintable` observer and freeze its warmed `current_image()` instead of demanding a brand-new render snapshot at hide start
+
+When debugging this class of bug, compare the warned widget pointer with the actual widget pointers in the live tree. If the warned widget is the end child, still inspect the start-child wrapper or snapshot surface before assuming the end child is the root cause.
+
 ## Libadwaita Adaptive Containers In The Same Pipeline
 
 Libadwaita widgets are not outside GTK's layout model. They are GTK widgets that implement custom measurement and allocation.
@@ -185,4 +215,6 @@ Read them as a family:
 - In Rust subclasses, the same measurement and allocation rules apply. If your widget implements `measure` or `size_allocate`, obey GTK's contracts exactly.
 - When reviewing application code, clamp animated widths before they reach paned or split-view allocation, not after warnings appear.
 - Treat one-pixel warnings as real. They often mean a layout budget is only accidentally valid on one frame or one monitor scale.
+- If a snapshot surface replaces a live paned child, preserve the live child's minimum width on the snapshot widget or host container. Otherwise GTK can under-measure the opposite child while still naming that opposite child in the warning.
+- Do not capture heavyweight snapshots synchronously on the click path unless you have measured that cost. Moving snapshot refresh to idle or another steady-state moment can preserve smoothness without reintroducing geometry bugs.
 - Validate complex geometry fixes in a live app session, not only in widget tests. The rounding and handle math happens at runtime with real allocations.

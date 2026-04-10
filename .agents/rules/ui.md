@@ -131,6 +131,8 @@ GTK4's layout cycle runs `measure()` BEFORE `size_allocate()`. During `measure()
 
 2. **Explicit `width-request` on the paned end-child**: Set `content_box.set_width_request(content_min)` so the paned's minimum constraint is explicit in the widget tree and visible to GTK's layout negotiation. Refresh that width-request when the realized minimum changes (for example after map or after async children are restored).
 
+   **Measure the legal floor the same way GTK validates it**: when a warning says `Trying to measure ... for width of X, but it needs at least Y`, GTK is comparing `X` against the widget's horizontal minimum measured with `for_height = -1`. Do not budget only from a height-adjusted measurement such as `measure(Horizontal, current_height)`. Resolve the end-child floor as `max(measure(..., -1), measure(..., current_height))`, and set `width-request` from that resolved floor.
+
 3. **Hidden-state restore matches hidden runtime state**: If a paned child starts hidden, restore the live `position` to the same collapsed endpoint the hide animation uses (for the sidebar: 0px), while keeping `saved_*_pos` as the preferred visible width. Do not leave the live paned position expanded while the child is invisible.
 
 4. **Animation-write clamping**: Clamp show targets and per-frame animation writes against the current layout budget **before** calling `GtkPaned::set_position()`. Refresh the measured budget immediately before toggling if async child population may have changed it. `size_allocate` / `notify::position` are backup guards, not the first line of defense for invalid animation ticks.

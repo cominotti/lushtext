@@ -33,7 +33,6 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::gdk::prelude::PaintableExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::AnimationExt;
@@ -65,33 +64,129 @@ glib::wrapper! {
 }
 
 impl LushtextWindow {
-    fn cache_sidebar_snapshot(&self) -> bool {
+    fn queue_content_snapshot_refresh(&self) {
+        let generation = self.imp().content_snapshot_generation.get().wrapping_add(1);
+        self.imp().content_snapshot_generation.set(generation);
+        let window_weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(150), move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let imp = window.imp();
+            if imp.content_snapshot_generation.get() != generation
+                || imp.sidebar_animation_active.get()
+                || !imp.content_box.is_drawable()
+            {
+                return;
+            }
+            let _ = window.cache_content_snapshot();
+        });
+    }
+
+    fn queue_sidebar_snapshot_refresh(&self) {
+        let generation = self.imp().sidebar_snapshot_generation.get().wrapping_add(1);
+        self.imp().sidebar_snapshot_generation.set(generation);
+        let window_weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(150), move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let imp = window.imp();
+            if imp.sidebar_snapshot_generation.get() != generation
+                || !imp.sidebar_visible.get()
+                || imp.sidebar_animation_active.get()
+                || !imp.sidebar.is_drawable()
+            {
+                return;
+            }
+            let _ = window.cache_sidebar_snapshot();
+        });
+    }
+
+    fn cache_content_snapshot(&self) -> bool {
         let imp = self.imp();
-        if !imp.sidebar.is_drawable() || imp.sidebar.width() <= 0 || imp.sidebar.height() <= 0 {
+        let width = imp.content_box.width();
+        let height = imp.content_box.height();
+        if !imp.content_box.is_drawable() || width <= 0 || height <= 0 {
             return false;
         }
 
+        let snapshot = gtk4::Snapshot::new();
+        imp.content_animation_stack
+            .snapshot_child(imp.content_box.upcast_ref::<gtk4::Widget>(), &snapshot);
+        let Some(paintable) = snapshot.to_paintable(Some(&gtk4::graphene::Size::new(
+            width as f32,
+            height as f32,
+        )))
+        else {
+            return false;
+        };
+
+        let content: &gtk4::Widget = imp.content_box.upcast_ref();
+        let (min_width, _, _, _) = content.measure(gtk4::Orientation::Horizontal, -1);
+        imp.content_snapshot_picture.set_paintable(Some(&paintable));
+        imp.content_snapshot_picture
+            .set_width_request(min_width.max(1));
+        true
+    }
+
+    fn cache_sidebar_snapshot(&self) -> bool {
+        let imp = self.imp();
+        let width = imp.sidebar.width();
+        let height = imp.sidebar.height();
+        if !imp.sidebar.is_drawable() || width <= 0 || height <= 0 {
+            return false;
+        }
+
+        let snapshot = gtk4::Snapshot::new();
+        imp.sidebar_animation_stack
+            .snapshot_child(imp.sidebar.upcast_ref::<gtk4::Widget>(), &snapshot);
+        let Some(paintable) = snapshot.to_paintable(Some(&gtk4::graphene::Size::new(
+            width as f32,
+            height as f32,
+        ))) else {
+            return false;
+        };
+
         let sidebar: &gtk4::Widget = imp.sidebar.upcast_ref();
-        let paintable = gtk4::WidgetPaintable::new(Some(sidebar));
-        let snapshot = paintable.current_image();
-        imp.sidebar_snapshot_picture.set_paintable(Some(&snapshot));
+        let (min_width, _, _, _) = sidebar.measure(gtk4::Orientation::Horizontal, -1);
+        imp.sidebar_snapshot_picture.set_paintable(Some(&paintable));
+        imp.sidebar_snapshot_picture
+            .set_width_request(min_width.max(1));
         true
     }
 
     fn show_live_sidebar_contents(&self) {
         let imp = self.imp();
-        let sidebar: &gtk4::Widget = imp.sidebar.upcast_ref();
-        imp.sidebar_revealer.set_child(Some(sidebar));
+        imp.sidebar_animation_stack.set_visible_child_name("live");
+        self.queue_sidebar_snapshot_refresh();
+    }
+
+    fn show_live_content_contents(&self) {
+        let imp = self.imp();
+        imp.content_animation_stack.set_visible_child_name("live");
+        self.queue_content_snapshot_refresh();
     }
 
     fn show_sidebar_snapshot_if_available(&self) -> bool {
         let imp = self.imp();
         if imp.sidebar_snapshot_picture.paintable().is_some() {
-            imp.sidebar_revealer
-                .set_child(Some(&imp.sidebar_snapshot_picture));
+            imp.sidebar_animation_stack
+                .set_visible_child_name("snapshot");
             true
         } else {
             self.show_live_sidebar_contents();
+            false
+        }
+    }
+
+    fn show_content_snapshot_if_available(&self) -> bool {
+        let imp = self.imp();
+        if imp.content_snapshot_picture.paintable().is_some() {
+            imp.content_animation_stack.set_visible_child_name("snapshot");
+            true
+        } else {
+            self.show_live_content_contents();
             false
         }
     }
@@ -111,6 +206,7 @@ impl LushtextWindow {
         window.update_content_stack();
         window.refresh_status_bar();
         window.render_notifications();
+        window.queue_content_snapshot_refresh();
         window
     }
 
@@ -846,12 +942,15 @@ impl LushtextWindow {
             false
         };
         imp.sidebar_animation_active.set(false);
+        imp.sidebar_animation_max.set(-1);
 
         let paned = &imp.main_paned;
         imp.sidebar_animation_active.set(true);
 
         let (from, to) = if show {
+            paned.set_shrink_start_child(false);
             self.show_sidebar_snapshot_if_available();
+            self.show_live_content_contents();
             if !imp.sidebar_revealer.property::<bool>("visible")
                 || !imp.sidebar_revealer.reveals_child()
             {
@@ -871,16 +970,22 @@ impl LushtextWindow {
                 budget_width,
                 imp.saved_sidebar_pos.get(),
             );
+            imp.sidebar_animation_max.set(target);
             (paned.position() as f64, target as f64)
         } else {
-            let _ = self.cache_sidebar_snapshot() && self.show_sidebar_snapshot_if_available();
-            imp::refresh_sidebar_layout_budget(self);
+            paned.set_shrink_start_child(true);
+            let _ = self.show_sidebar_snapshot_if_available();
+            let _ = self.cache_content_snapshot() && self.show_content_snapshot_if_available();
             let current = paned.position();
             // Only save the resting position when not interrupting an active
             // animation — otherwise keep the previously saved value.
             if !was_animating {
                 imp.saved_sidebar_pos.set(current);
             }
+            // Hide starts from the currently visible position and only moves
+            // inward. Reusing that already-valid width avoids an extra full
+            // geometry recomputation on the click path.
+            imp.sidebar_animation_max.set(current.max(SIDEBAR_COLLAPSED_POSITION));
             (current as f64, SIDEBAR_ANIMATION_COLLAPSED_POSITION as f64)
         };
         let paned_weak = paned.downgrade();
@@ -888,21 +993,20 @@ impl LushtextWindow {
         let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
             if let Some(p) = paned_weak.upgrade() {
                 let next = if let Some(window) = window_weak.upgrade() {
-                    let budget_width = if window.imp().main_paned.width() > 0 {
-                        window.imp().main_paned.width()
+                    let animation_max = window.imp().sidebar_animation_max.get();
+                    if animation_max >= 0 {
+                        (value as i32)
+                            .min(animation_max)
+                            .max(SIDEBAR_COLLAPSED_POSITION)
                     } else {
-                        window.width()
-                    };
-                    imp::clamp_sidebar_visible_position(
-                        &window,
-                        &window.imp().content_box,
-                        budget_width,
-                        value as i32,
-                    )
+                        (value as i32).max(SIDEBAR_COLLAPSED_POSITION)
+                    }
                 } else {
                     (value as i32).max(SIDEBAR_COLLAPSED_POSITION)
                 };
-                p.set_position(next);
+                if p.position() != next {
+                    p.set_position(next);
+                }
             }
         });
 
@@ -918,14 +1022,19 @@ impl LushtextWindow {
         if duration_ms == 0 {
             paned.set_position(to as i32);
             if show {
+                imp.main_paned.set_shrink_start_child(false);
                 self.show_live_sidebar_contents();
+                self.show_live_content_contents();
             } else {
+                imp.main_paned.set_shrink_start_child(false);
                 paned.set_position(SIDEBAR_COLLAPSED_POSITION);
                 imp.sidebar_revealer.set_reveal_child(false);
                 imp.sidebar_revealer.set_visible(false);
+                self.show_live_content_contents();
             }
             imp::persist_sidebar_position_preference(self);
             imp.sidebar_animation.replace(None);
+            imp.sidebar_animation_max.set(-1);
             imp.sidebar_animation_active.set(false);
             return;
         }
@@ -952,14 +1061,19 @@ impl LushtextWindow {
             };
             let imp = window.imp();
             if show {
+                imp.main_paned.set_shrink_start_child(false);
                 window.show_live_sidebar_contents();
+                window.show_live_content_contents();
             } else if let Some(sidebar_revealer) =
                 sidebar_revealer_weak.as_ref().and_then(|w| w.upgrade())
             {
+                imp.main_paned.set_shrink_start_child(false);
                 imp.main_paned.set_position(SIDEBAR_COLLAPSED_POSITION);
                 sidebar_revealer.set_reveal_child(false);
                 sidebar_revealer.set_visible(false);
+                window.show_live_content_contents();
             }
+            imp.sidebar_animation_max.set(-1);
             imp.sidebar_animation_active.set(false);
             imp::persist_sidebar_position_preference(&window);
         });

@@ -1062,6 +1062,42 @@ fn test_window_has_minimum_width_request() {
     );
 }
 
+#[test]
+fn test_presented_content_box_width_request_covers_gtk_legal_floor() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+
+    present_window(&window);
+
+    let content_box = &window.imp().content_box;
+    let (legal_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
+    assert!(
+        content_box.width_request() >= legal_min,
+        "presented content_box width-request {} must cover GTK's legal width floor {}",
+        content_box.width_request(),
+        legal_min,
+    );
+}
+
+#[test]
+fn test_presented_visible_sidebar_clamp_preserves_gtk_legal_floor() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+
+    present_window(&window);
+
+    let content_box = &window.imp().content_box;
+    let handle_overhead = window.imp().handle_overhead.get();
+    let (legal_min, _, _, _) = content_box.measure(gtk4::Orientation::Horizontal, -1);
+    let clamped = clamp_sidebar_visible_position(&window, content_box, 640, 275);
+    let remaining_width = 640 - handle_overhead - clamped;
+
+    assert!(
+        remaining_width >= legal_min,
+        "clamped width must leave at least GTK's legal floor: remaining {remaining_width}, legal {legal_min}, handle {handle_overhead}, clamped {clamped}",
+    );
+}
+
 // --- Tab modified dot (• prefix in tab title) ---
 
 #[test]
@@ -2581,16 +2617,35 @@ fn test_hide_animation_swaps_sidebar_revealer_child_to_snapshot() {
 
     with_real_sidebar_animation(|| {
         activate_action(&window, "toggle-sidebar");
-        let snapshot_picture: &gtk4::Picture = &window.imp().sidebar_snapshot_picture;
-        let snapshot_widget = snapshot_picture.upcast_ref::<gtk4::Widget>().clone();
         assert_eq!(
-            window.imp().sidebar_revealer.child(),
-            Some(snapshot_widget),
-            "hide animation should render a frozen snapshot instead of relayouting the live sidebar subtree",
+            window.imp().sidebar_animation_stack.visible_child_name(),
+            Some("snapshot".into()),
+            "hide animation should switch the stable stack host to the frozen snapshot instead of reparenting the live sidebar subtree",
         );
         assert!(
             window.imp().sidebar_snapshot_picture.paintable().is_some(),
             "hide animation should cache a sidebar snapshot before the paned starts shrinking",
+        );
+    });
+}
+
+#[test]
+fn test_hide_animation_snapshot_preserves_sidebar_min_width() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    present_window(&window);
+
+    with_real_sidebar_animation(|| {
+        let live_sidebar: &gtk4::Widget = window.imp().sidebar.upcast_ref();
+        let (sidebar_min, _, _, _) = live_sidebar.measure(gtk4::Orientation::Horizontal, -1);
+
+        activate_action(&window, "toggle-sidebar");
+
+        assert!(
+            window.imp().sidebar_snapshot_picture.width_request() >= sidebar_min,
+            "snapshot width-request {} should preserve the live sidebar minimum {} during hide",
+            window.imp().sidebar_snapshot_picture.width_request(),
+            sidebar_min,
         );
     });
 }
@@ -2609,12 +2664,10 @@ fn test_show_animation_reuses_sidebar_snapshot_child_when_available() {
 
     with_real_sidebar_animation(|| {
         activate_action(&window, "toggle-sidebar");
-        let snapshot_picture: &gtk4::Picture = &window.imp().sidebar_snapshot_picture;
-        let snapshot_widget = snapshot_picture.upcast_ref::<gtk4::Widget>().clone();
         assert_eq!(
-            window.imp().sidebar_revealer.child(),
-            Some(snapshot_widget),
-            "show animation should start from the cached sidebar snapshot to avoid live tree relayout",
+            window.imp().sidebar_animation_stack.visible_child_name(),
+            Some("snapshot".into()),
+            "show animation should start from the cached sidebar snapshot inside the stable stack host",
         );
         assert_eq!(
             sidebar_animation(&window).state(),

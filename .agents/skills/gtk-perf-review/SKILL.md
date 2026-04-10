@@ -52,6 +52,13 @@ They cover different concerns but often all apply to the same code change. This 
 
 When a change touches `GtkPaned` / `GtkRevealer` animation around a heavy sidebar or tree, treat live geometry warnings as part of the responsiveness review. A fix that feels smooth in widget tests but still logs `Trying to measure GtkBox ...` under `make run` is not complete. Use `gtk4-libadwaita-internals` to establish the measurement contract before judging the performance fix.
 
+Snapshot-based pane optimizations need two separate checks:
+- geometry correctness: the snapshot surface must preserve the live child's minimum width, or GTK may warn on the opposite child instead
+- interaction-path cost: the snapshot must not be generated synchronously on the click path if that capture itself causes hide-time stutter
+- host behavior: if a `GtkStack` or similar wrapper is only being used as a stable swap host, disable its own transitions or you may accidentally introduce a second animation and extra allocation work
+- visual validity: a cached paintable can still be visually empty or black; confirm the frozen surface is actually valid, not just present
+- freeze strategy: if a one-shot capture is visually invalid, a persistent `GtkWidgetPaintable::current_image()` can be the correct frozen surface even though it is not the cheapest-looking abstraction at first glance
+
 ## Execution Model
 
 This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent internally dispatches its own focused sub-subagents based on which files were changed. Do NOT attempt to review code inline — delegate everything.

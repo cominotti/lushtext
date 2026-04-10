@@ -53,6 +53,8 @@ Any code that sets a `GtkPaned` position must ensure it's valid for the current 
 
 **Clamp against the real end-child**: If the warning references the end-child container (for example `GtkBox`), budget against that container's measured minimum, not a nested child that usually dominates it. One-pixel mismatches often come from clamping against the inner stack while GTK is actually measuring the wrapper box.
 
+**Use GTK's legal opposite-axis floor, not only the live-height floor**: `gtk_widget_measure()` validates a supplied `for_width` or `for_height` against the opposite orientation measured with `-1` before it continues. For paned budgeting, resolve each child's width floor as `max(measure(Horizontal, -1), measure(Horizontal, current_height))`. If you only use the height-adjusted floor, the app can still emit `Trying to measure ... needs at least ...` warnings even though the clamp looked correct in app code.
+
 **Prefer GTK's runtime paned budget**: Once a `GtkPaned` is allocated, prefer `max-position` / `min-position` over reverse-engineering the legal range from child widths. Those properties already include the current handle width and realized child constraints.
 
 **But know where `max-position` comes from**: GTK source (`gtkpaned.c`) computes positions with the handle widget's measured natural size and the current child minimums. During animated `GtkRevealer` transitions those minimums can round up by one pixel. If a live warning persists, inspect GTK's own `gtk_paned_compute_position` / `gtk_revealer_measure` behavior before adding more local clamp churn.
