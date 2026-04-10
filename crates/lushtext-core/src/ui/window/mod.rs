@@ -43,6 +43,11 @@ use std::time::Duration;
 /// unmodified background tabs. ~256MB is comfortable on 8GB machines.
 const BUFFER_MEMORY_BUDGET: u64 = 256_000_000;
 const SIDEBAR_ANIMATION_COLLAPSED_POSITION: i32 = 1;
+const SIDEBAR_ANIMATION_BASE_DURATION_MS: u32 = 250;
+const SIDEBAR_ANIMATION_MIN_DURATION_MS: u32 = 140;
+const SIDEBAR_ANIMATION_REFERENCE_DISTANCE_PX: u32 = 300;
+const SIDEBAR_SHOW_SNAPSHOT_THRESHOLD_DENOMINATOR: i32 = 4;
+const SIDEBAR_LIVE_SHOW_DURATION_MS: u32 = 160;
 
 /// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
 /// Unknown values fall back to `Default` (follow system).
@@ -64,6 +69,34 @@ glib::wrapper! {
 }
 
 impl LushtextWindow {
+    fn sidebar_animation_duration_ms(from: i32, to: i32, use_snapshot_for_show: bool) -> u32 {
+        let distance = (to - from).unsigned_abs();
+        if distance == 0 {
+            return 0;
+        }
+
+        if !use_snapshot_for_show {
+            return SIDEBAR_LIVE_SHOW_DURATION_MS;
+        }
+
+        // Keep the widest sidebar travel at the original 250ms feel, but
+        // shorten narrower travels so integer paned positions do not spend too
+        // many frames repeating the same value near the end of the curve.
+        distance
+            .min(SIDEBAR_ANIMATION_REFERENCE_DISTANCE_PX)
+            .saturating_mul(SIDEBAR_ANIMATION_BASE_DURATION_MS)
+            .div_ceil(SIDEBAR_ANIMATION_REFERENCE_DISTANCE_PX)
+            .max(SIDEBAR_ANIMATION_MIN_DURATION_MS)
+    }
+
+    fn should_use_sidebar_snapshot_for_show(target: i32, budget_width: i32) -> bool {
+        if target <= 0 || budget_width <= 0 {
+            return true;
+        }
+
+        target.saturating_mul(SIDEBAR_SHOW_SNAPSHOT_THRESHOLD_DENOMINATOR) > budget_width
+    }
+
     fn queue_sidebar_snapshot_refresh(&self) {
         let generation = self.imp().sidebar_snapshot_generation.get().wrapping_add(1);
         self.imp().sidebar_snapshot_generation.set(generation);
@@ -105,6 +138,7 @@ impl LushtextWindow {
         let sidebar: &gtk4::Widget = imp.sidebar.upcast_ref();
         let (min_width, _, _, _) = sidebar.measure(gtk4::Orientation::Horizontal, -1);
         imp.sidebar_snapshot_picture.set_paintable(Some(&paintable));
+        imp.sidebar_snapshot_width.set(width);
         imp.sidebar_snapshot_picture
             .set_width_request(min_width.max(1));
         true
@@ -123,7 +157,17 @@ impl LushtextWindow {
 
     fn show_sidebar_snapshot_if_available(&self) -> bool {
         let imp = self.imp();
-        if imp.sidebar_snapshot_picture.paintable().is_some() {
+        let snapshot_stale = imp.sidebar.is_drawable()
+            && imp.sidebar.width() > 0
+            && imp.sidebar_snapshot_width.get() != imp.sidebar.width();
+        let snapshot_ready = if snapshot_stale || imp.sidebar_snapshot_picture.paintable().is_none()
+        {
+            self.cache_sidebar_snapshot()
+        } else {
+            true
+        };
+
+        if snapshot_ready {
             imp.sidebar_animation_stack
                 .set_visible_child_name("snapshot");
             true
@@ -888,10 +932,9 @@ impl LushtextWindow {
         let paned = &imp.main_paned;
         imp.sidebar_animation_active.set(true);
 
+        let use_snapshot_for_show;
         let (from, to) = if show {
             paned.set_shrink_start_child(false);
-            self.show_sidebar_snapshot_if_available();
-            self.show_live_content_contents();
             if !imp.sidebar_revealer.property::<bool>("visible")
                 || !imp.sidebar_revealer.reveals_child()
             {
@@ -909,9 +952,17 @@ impl LushtextWindow {
                 budget_width,
                 imp.saved_sidebar_pos.get(),
             );
+            use_snapshot_for_show = Self::should_use_sidebar_snapshot_for_show(target, budget_width);
+            if use_snapshot_for_show {
+                self.show_sidebar_snapshot_if_available();
+            } else {
+                self.show_live_sidebar_contents();
+            }
+            self.show_live_content_contents();
             imp.sidebar_animation_max.set(target);
             (paned.position() as f64, target as f64)
         } else {
+            use_snapshot_for_show = true;
             paned.set_shrink_start_child(true);
             let _ = self.show_sidebar_snapshot_if_available();
             self.show_live_content_contents();
@@ -957,7 +1008,7 @@ impl LushtextWindow {
         {
             0
         } else {
-            250
+            Self::sidebar_animation_duration_ms(from as i32, to as i32, use_snapshot_for_show)
         };
         if duration_ms == 0 {
             paned.set_position(to as i32);

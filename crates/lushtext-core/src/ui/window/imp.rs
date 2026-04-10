@@ -99,6 +99,10 @@ pub struct LushtextWindow {
     /// window coalesce repeated snapshot requests and avoid capturing on the
     /// immediate interaction path.
     pub sidebar_snapshot_generation: Cell<u32>,
+    /// Width of the currently cached sidebar snapshot paintable. Lets the
+    /// animation path detect when a recent manual resize made the warmed
+    /// snapshot stale before the next hide/show cycle begins.
+    pub sidebar_snapshot_width: Cell<i32>,
     /// Whether the side-by-side preview pane is currently visible.
     pub preview_visible: Cell<bool>,
     /// Whether the preview-only mode (Alt+P) is active (editor hidden, preview full-width).
@@ -212,6 +216,7 @@ impl Default for LushtextWindow {
             sidebar_animation_max: Cell::new(-1),
             sidebar_animation_active: Cell::new(false),
             sidebar_snapshot_generation: Cell::new(0),
+            sidebar_snapshot_width: Cell::new(0),
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
             saved_preview_pos: Cell::new(0),

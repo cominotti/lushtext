@@ -2651,6 +2651,32 @@ fn test_first_show_after_hidden_restart_with_restored_workspaces_uses_nonzero_an
 }
 
 #[test]
+fn test_narrower_sidebar_show_animation_uses_shorter_duration() {
+    ensure_gtk_init();
+
+    let narrow_window = test_window_with_sidebar_state(false, 200);
+    present_window(&narrow_window);
+    let narrow_duration = with_real_sidebar_animation(|| {
+        activate_action(&narrow_window, "toggle-sidebar");
+        sidebar_animation(&narrow_window).duration()
+    });
+    narrow_window.destroy();
+    flush_events();
+
+    let wide_window = test_window_with_sidebar_state(false, 340);
+    present_window(&wide_window);
+    let wide_duration = with_real_sidebar_animation(|| {
+        activate_action(&wide_window, "toggle-sidebar");
+        sidebar_animation(&wide_window).duration()
+    });
+
+    assert!(
+        narrow_duration < wide_duration,
+        "narrower sidebar shows should animate faster to avoid repeated integer paned positions: narrow {narrow_duration}ms, wide {wide_duration}ms",
+    );
+}
+
+#[test]
 fn test_sidebar_animation_does_not_enqueue_position_persistence_per_tick() {
     ensure_gtk_init();
     let window = test_window_with_sidebar_state(false, 275);
@@ -2734,7 +2760,7 @@ fn test_hide_animation_keeps_content_host_live() {
 #[test]
 fn test_show_animation_reuses_sidebar_snapshot_child_when_available() {
     ensure_gtk_init();
-    let window = test_window_with_sidebar_state(true, 275);
+    let window = test_window_with_sidebar_state(true, 340);
     present_window(&window);
     wait_for_sidebar_snapshot(&window);
 
@@ -2750,6 +2776,60 @@ fn test_show_animation_reuses_sidebar_snapshot_child_when_available() {
             window.imp().sidebar_animation_stack.visible_child_name(),
             Some("snapshot".into()),
             "show animation should start from the cached sidebar snapshot inside the stable stack host",
+        );
+        assert_eq!(
+            sidebar_animation(&window).state(),
+            libadwaita::AnimationState::Playing
+        );
+    });
+}
+
+#[test]
+fn test_narrow_show_animation_keeps_live_sidebar_contents() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 180);
+    present_window(&window);
+    wait_for_sidebar_snapshot(&window);
+
+    activate_action(&window, "toggle-sidebar");
+    assert!(
+        window.imp().sidebar_snapshot_picture.paintable().is_some(),
+        "hiding the sidebar should still keep a warmed snapshot ready",
+    );
+
+    with_real_sidebar_animation(|| {
+        activate_action(&window, "toggle-sidebar");
+        assert_eq!(
+            window.imp().sidebar_animation_stack.visible_child_name(),
+            Some("live".into()),
+            "narrow show animations should keep the live sidebar subtree visible instead of stretching the cached snapshot",
+        );
+        assert_eq!(
+            sidebar_animation(&window).state(),
+            libadwaita::AnimationState::Playing
+        );
+    });
+}
+
+#[test]
+fn test_intermediate_show_animation_keeps_live_sidebar_contents() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    present_window(&window);
+    wait_for_sidebar_snapshot(&window);
+
+    activate_action(&window, "toggle-sidebar");
+    assert!(
+        window.imp().sidebar_snapshot_picture.paintable().is_some(),
+        "hiding the sidebar should still keep a warmed snapshot ready",
+    );
+
+    with_real_sidebar_animation(|| {
+        activate_action(&window, "toggle-sidebar");
+        assert_eq!(
+            window.imp().sidebar_animation_stack.visible_child_name(),
+            Some("live".into()),
+            "intermediate-width show animations should keep the live sidebar subtree to avoid stretched snapshot artifacts",
         );
         assert_eq!(
             sidebar_animation(&window).state(),
@@ -2787,6 +2867,36 @@ fn test_sidebar_resize_refreshes_warmed_snapshot_before_next_toggle() {
         original_ptr,
         "resizing the visible sidebar should refresh the cached snapshot before the next hide/show cycle",
     );
+}
+
+#[test]
+fn test_hide_after_sidebar_resize_recaptures_snapshot_before_animation() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    present_window(&window);
+    wait_for_sidebar_snapshot(&window);
+
+    let current_width = window.imp().sidebar.width();
+    assert!(current_width > 0, "sidebar should be allocated before hide");
+    window
+        .imp()
+        .sidebar_snapshot_width
+        .set(current_width.saturating_sub(17));
+    flush_events();
+
+    with_real_sidebar_animation(|| {
+        activate_action(&window, "toggle-sidebar");
+        assert_eq!(
+            window.imp().sidebar_animation_stack.visible_child_name(),
+            Some("snapshot".into()),
+            "hide animation should still use the frozen snapshot host after a manual resize",
+        );
+        assert_eq!(
+            window.imp().sidebar_snapshot_width.get(),
+            current_width,
+            "hide should refresh a stale cached snapshot width before reusing it for animation",
+        );
+    });
 }
 
 #[test]
