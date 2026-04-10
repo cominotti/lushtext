@@ -2,7 +2,7 @@
 
 //! Private implementation for the multi-workspace sidebar.
 //!
-//! Manages workspace sections, the "New Workspace" footer, and
+//! Manages workspace sections, the fixed "New Workspace" affordance, and
 //! debounced persistence of workspace state to disk.
 
 use crate::model::workspace::WorkspacesFile;
@@ -22,6 +22,8 @@ type RenameCallback = Box<dyn Fn(&Path, &Path)>;
 #[derive(Default, CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/sidebar.ui")]
 pub struct LushtextSidebar {
+    #[template_child]
+    pub outer_scrolled_window: TemplateChild<gtk4::ScrolledWindow>,
     #[template_child]
     pub sections_box: TemplateChild<gtk4::Box>,
     #[template_child]
@@ -70,7 +72,7 @@ impl ObjectImpl for LushtextSidebar {
     fn constructed(&self) {
         self.parent_constructed();
 
-        // Wire the "New Workspace" footer button
+        // Wire the fixed "New Workspace" button at the top of the sidebar.
         let sidebar_weak = self.obj().downgrade();
         self.new_workspace_button.connect_clicked(move |_| {
             if let Some(sidebar) = sidebar_weak.upgrade() {

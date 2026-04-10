@@ -119,6 +119,17 @@ fn flush_after_delay(delay: Duration) {
     flush_events();
 }
 
+fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        flush_after_delay(Duration::from_millis(20));
+    }
+    panic!("condition was not met within {:?}", timeout);
+}
+
 fn present_window(window: &LushtextWindow) {
     window.present();
     flush_events();
@@ -155,6 +166,19 @@ fn properties_sidebar_visible(window: &LushtextWindow) -> bool {
     window.imp().properties_split_view.shows_sidebar()
 }
 
+fn workspace_total_fraction(window: &LushtextWindow) -> f64 {
+    window.imp().workspace_split_view.sidebar_width_fraction()
+}
+
+fn properties_total_fraction(window: &LushtextWindow) -> f64 {
+    let properties_fraction = window.imp().properties_split_view.sidebar_width_fraction();
+    if workspace_sidebar_visible(window) && !window.imp().workspace_split_view.is_collapsed() {
+        properties_fraction * (1.0 - workspace_total_fraction(window))
+    } else {
+        properties_fraction
+    }
+}
+
 fn preview_animation(window: &LushtextWindow) -> libadwaita::TimedAnimation {
     window
         .imp()
@@ -181,9 +205,9 @@ fn test_split_view_settings_defaults() {
     let settings = &window.imp().settings;
 
     assert!(settings.boolean(keys::WORKSPACE_SIDEBAR_VISIBLE));
-    assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.2);
+    assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.25);
     assert!(!settings.boolean(keys::PROPERTIES_SIDEBAR_VISIBLE));
-    assert_eq!(settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION), 0.28);
+    assert_eq!(settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION), 0.25);
 }
 
 #[test]
@@ -193,12 +217,20 @@ fn test_split_view_defaults_restore_on_window() {
 
     assert!(workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
-    assert!(
-        (window.imp().workspace_split_view.sidebar_width_fraction() - 0.2).abs() < 0.001
-    );
-    assert!(
-        (window.imp().properties_split_view.sidebar_width_fraction() - 0.28).abs() < 0.001
-    );
+    assert!((workspace_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
+}
+
+#[test]
+fn test_saved_split_view_widths_normalize_to_fixed_quarters() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.4, true, 0.6);
+    let settings = &window.imp().settings;
+
+    assert!((workspace_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.25);
+    assert_eq!(settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION), 0.25);
 }
 
 #[test]
@@ -210,10 +242,7 @@ fn test_legacy_sidebar_settings_migrate_to_workspace_split_view() {
     assert!(settings.boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED));
     assert!(!workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
-    assert!(
-        (window.imp().workspace_split_view.sidebar_width_fraction() - (275.0 / 1200.0)).abs()
-            < 0.001
-    );
+    assert!((workspace_total_fraction(&window) - 0.25).abs() < 0.001);
 }
 
 #[test]
@@ -296,6 +325,8 @@ fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     activate_action(&window, "toggle-properties");
     assert!(workspace_sidebar_visible(&window));
     assert!(properties_sidebar_visible(&window));
+    assert!((workspace_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
 }
 
 #[test]
@@ -315,7 +346,7 @@ fn test_properties_pane_collapses_before_workspace_pane() {
 #[test]
 fn test_properties_visibility_preference_survives_breakpoint_changes() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.2, true, 0.28);
+    let window = test_window_with_split_view_state(true, 0.25, true, 0.25);
     window.set_default_size(1400, 900);
     present_window(&window);
 
@@ -343,7 +374,7 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
 fn test_restored_workspaces_survive_dual_sidebar_shell() {
     ensure_gtk_init();
     let _roots_dir = seed_restored_workspaces();
-    let window = test_window_with_split_view_state(true, 0.2, false, 0.28);
+    let window = test_window_with_split_view_state(true, 0.25, false, 0.25);
 
     present_window(&window);
     wait_for_workspace_roots(&window, 3);
@@ -477,11 +508,11 @@ fn test_complete_save_as_success_updates_editor_identity_and_cleans_old_draft() 
         window.imp().open_paths.borrow().contains(&path),
         "successful Save As must register the new destination as open",
     );
-    assert_eq!(
-        draft_service::read_draft(&data_dir, &old_draft_id).expect("read draft"),
-        None,
-        "successful Save As should remove the old untitled draft",
-    );
+    wait_until(Duration::from_secs(2), || {
+        draft_service::read_draft(&data_dir, &old_draft_id)
+            .expect("read draft")
+            .is_none()
+    });
 }
 
 #[test]
@@ -516,7 +547,12 @@ fn test_closing_properties_pane_restores_editor_focus() {
     flush_events();
 
     activate_action(&window, "toggle-properties");
-    window.imp().properties_toggle_button.grab_focus();
+    window
+        .imp()
+        .status_bar
+        .imp()
+        .properties_toggle_button
+        .grab_focus();
     flush_events();
     let hidden_row_ptr = window
         .imp()
@@ -554,11 +590,17 @@ fn test_closing_properties_pane_with_no_editor_clears_focus() {
 }
 
 #[test]
-fn test_properties_toggle_button_exists_and_is_wired() {
+fn test_properties_toggle_button_lives_in_status_bar_and_is_wired() {
     ensure_gtk_init();
     let window = test_window();
     assert_eq!(
-        window.imp().properties_toggle_button.action_name().as_deref(),
+        window
+            .imp()
+            .status_bar
+            .imp()
+            .properties_toggle_button
+            .action_name()
+            .as_deref(),
         Some("win.toggle-properties")
     );
 }

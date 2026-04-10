@@ -27,16 +27,10 @@ use std::path::PathBuf;
 
 /// Workspace sidebar minimum width in scale-independent pixels.
 const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 180.0;
-/// Workspace sidebar maximum width in scale-independent pixels.
-const WORKSPACE_SIDEBAR_MAX_WIDTH_SP: f64 = 280.0;
-/// Default workspace sidebar width fraction on desktop.
-const WORKSPACE_SIDEBAR_DEFAULT_FRACTION: f64 = 0.20;
 /// Properties sidebar minimum width in scale-independent pixels.
 const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 260.0;
-/// Properties sidebar maximum width in scale-independent pixels.
-const PROPERTIES_SIDEBAR_MAX_WIDTH_SP: f64 = 380.0;
-/// Default properties sidebar width fraction on desktop.
-const PROPERTIES_SIDEBAR_DEFAULT_FRACTION: f64 = 0.28;
+/// Target total-window width for each visible side pane.
+const FIXED_SIDEBAR_FRACTION: f64 = 0.25;
 /// Collapse the right properties pane before the left workspace pane.
 const PROPERTIES_BREAKPOINT_MAX_WIDTH_SP: &str = "max-width: 1100sp";
 /// Collapse the left workspace pane on narrower windows.
@@ -70,8 +64,6 @@ pub struct LushtextWindow {
     pub command_palette: TemplateChild<LushtextCommandPalette>,
     #[template_child]
     pub primary_menu_button: TemplateChild<gtk4::MenuButton>,
-    #[template_child]
-    pub properties_toggle_button: TemplateChild<gtk4::ToggleButton>,
     #[template_child]
     pub preview_paned: TemplateChild<gtk4::Paned>,
     #[template_child]
@@ -165,7 +157,6 @@ impl Default for LushtextWindow {
             palette_revealer: TemplateChild::default(),
             command_palette: TemplateChild::default(),
             primary_menu_button: TemplateChild::default(),
-            properties_toggle_button: TemplateChild::default(),
             preview_paned: TemplateChild::default(),
             editor_box: TemplateChild::default(),
             markdown_preview: TemplateChild::default(),
@@ -312,15 +303,16 @@ impl ObjectImpl for LushtextWindow {
                         return;
                     };
                     let width = current_window_width(&window);
-                    let clamped = clamp_workspace_fraction(width, split.sidebar_width_fraction());
-                    if (clamped - split.sidebar_width_fraction()).abs() > f64::EPSILON {
-                        split.set_sidebar_width_fraction(clamped);
+                    let fixed = fixed_workspace_fraction(width);
+                    if (fixed - split.sidebar_width_fraction()).abs() > f64::EPSILON {
+                        split.set_sidebar_width_fraction(fixed);
                         return;
                     }
                     let _ = window
                         .imp()
                         .settings
-                        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, clamped);
+                        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fixed);
+                    sync_properties_split_view(&window, width);
                 },
             );
         }
@@ -334,15 +326,15 @@ impl ObjectImpl for LushtextWindow {
                         return;
                     };
                     let width = current_window_width(&window);
-                    let clamped = clamp_properties_fraction(width, split.sidebar_width_fraction());
-                    if (clamped - split.sidebar_width_fraction()).abs() > f64::EPSILON {
-                        split.set_sidebar_width_fraction(clamped);
+                    let fixed = effective_properties_fraction(&window, width);
+                    if (fixed - split.sidebar_width_fraction()).abs() > f64::EPSILON {
+                        split.set_sidebar_width_fraction(fixed);
                         return;
                     }
-                    let _ = window
-                        .imp()
-                        .settings
-                        .set_double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION, clamped);
+                    let _ = window.imp().settings.set_double(
+                        keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
+                        desired_properties_fraction(width),
+                    );
                 },
             );
         }
@@ -510,6 +502,7 @@ impl WidgetImpl for LushtextWindow {
             if self.command_palette.width_request() != palette_width {
                 self.command_palette.set_width_request(palette_width);
             }
+            sync_split_view_widths(&self.obj(), width);
         }
     }
 }
@@ -550,7 +543,6 @@ fn configure_split_views(
     workspace_split_view.set_sidebar_position(gtk4::PackType::Start);
     workspace_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
     workspace_split_view.set_min_sidebar_width(WORKSPACE_SIDEBAR_MIN_WIDTH_SP);
-    workspace_split_view.set_max_sidebar_width(WORKSPACE_SIDEBAR_MAX_WIDTH_SP);
     workspace_split_view.set_pin_sidebar(true);
     workspace_split_view.set_enable_show_gesture(false);
     workspace_split_view.set_enable_hide_gesture(false);
@@ -558,7 +550,6 @@ fn configure_split_views(
     properties_split_view.set_sidebar_position(gtk4::PackType::End);
     properties_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
     properties_split_view.set_min_sidebar_width(PROPERTIES_SIDEBAR_MIN_WIDTH_SP);
-    properties_split_view.set_max_sidebar_width(PROPERTIES_SIDEBAR_MAX_WIDTH_SP);
     properties_split_view.set_pin_sidebar(true);
     properties_split_view.set_enable_show_gesture(false);
     properties_split_view.set_enable_hide_gesture(false);
@@ -575,19 +566,8 @@ fn migrate_split_view_settings(settings: &gio::Settings, restored_width: i32) {
     } else {
         true
     };
-    let legacy_fraction = if settings.user_value(keys::SIDEBAR_POSITION).is_some() {
-        let legacy_position = settings.int(keys::SIDEBAR_POSITION);
-        if legacy_position > 0 {
-            legacy_position as f64 / width as f64
-        } else {
-            WORKSPACE_SIDEBAR_DEFAULT_FRACTION
-        }
-    } else {
-        WORKSPACE_SIDEBAR_DEFAULT_FRACTION
-    };
-
-    let workspace_fraction = clamp_workspace_fraction(width, legacy_fraction);
-    let properties_fraction = clamp_properties_fraction(width, PROPERTIES_SIDEBAR_DEFAULT_FRACTION);
+    let workspace_fraction = fixed_workspace_fraction(width);
+    let properties_fraction = desired_properties_fraction(width);
 
     let _ = settings.set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, legacy_visible);
     let _ = settings.set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, workspace_fraction);
@@ -602,19 +582,18 @@ fn restore_workspace_split_view(window: &super::LushtextWindow) {
         .imp()
         .settings
         .boolean(keys::WORKSPACE_SIDEBAR_VISIBLE);
-    let fraction = clamp_workspace_fraction(
-        width,
-        window
-            .imp()
-            .settings
-            .double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
-    );
+    let fraction = fixed_workspace_fraction(width);
     window
         .imp()
         .workspace_split_view
         .set_sidebar_width_fraction(fraction);
+    let _ = window
+        .imp()
+        .settings
+        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fraction);
     window.imp().workspace_split_view.set_show_sidebar(visible);
     window.imp().sidebar_visible.set(visible);
+    sync_properties_split_view(window, width);
 }
 
 fn restore_properties_split_view(window: &super::LushtextWindow) {
@@ -623,17 +602,15 @@ fn restore_properties_split_view(window: &super::LushtextWindow) {
         .imp()
         .settings
         .boolean(keys::PROPERTIES_SIDEBAR_VISIBLE);
-    let fraction = clamp_properties_fraction(
-        width,
-        window
-            .imp()
-            .settings
-            .double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION),
-    );
+    let fraction = effective_properties_fraction(window, width);
     window
         .imp()
         .properties_split_view
         .set_sidebar_width_fraction(fraction);
+    let _ = window.imp().settings.set_double(
+        keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
+        desired_properties_fraction(width),
+    );
     window.imp().properties_split_view.set_show_sidebar(visible);
     window.imp().properties_sidebar_visible.set(visible);
 }
@@ -677,40 +654,66 @@ fn current_window_width(window: &super::LushtextWindow) -> i32 {
     }
 }
 
-fn clamp_workspace_fraction(window_width: i32, fraction: f64) -> f64 {
-    clamp_fraction(
-        window_width,
-        fraction,
-        WORKSPACE_SIDEBAR_MIN_WIDTH_SP,
-        WORKSPACE_SIDEBAR_MAX_WIDTH_SP,
-        WORKSPACE_SIDEBAR_DEFAULT_FRACTION,
-    )
+fn fixed_workspace_fraction(window_width: i32) -> f64 {
+    fixed_fraction(window_width, WORKSPACE_SIDEBAR_MIN_WIDTH_SP)
 }
 
-fn clamp_properties_fraction(window_width: i32, fraction: f64) -> f64 {
-    clamp_fraction(
-        window_width,
-        fraction,
-        PROPERTIES_SIDEBAR_MIN_WIDTH_SP,
-        PROPERTIES_SIDEBAR_MAX_WIDTH_SP,
-        PROPERTIES_SIDEBAR_DEFAULT_FRACTION,
-    )
+fn desired_properties_fraction(window_width: i32) -> f64 {
+    fixed_fraction(window_width, PROPERTIES_SIDEBAR_MIN_WIDTH_SP)
 }
 
-fn clamp_fraction(
-    window_width: i32,
-    fraction: f64,
-    min_width_sp: f64,
-    max_width_sp: f64,
-    default_fraction: f64,
-) -> f64 {
+fn effective_properties_fraction(window: &super::LushtextWindow, window_width: i32) -> f64 {
+    let total_fraction = desired_properties_fraction(window_width);
+    if workspace_sidebar_consumes_width(window) {
+        let workspace_fraction = fixed_workspace_fraction(window_width);
+        let remaining_fraction = (1.0 - workspace_fraction).max(f64::EPSILON);
+        let inner_width = (window_width.max(1) as f64 * remaining_fraction).max(1.0);
+        let lower = (PROPERTIES_SIDEBAR_MIN_WIDTH_SP / inner_width).min(1.0);
+        (total_fraction / remaining_fraction).max(lower).min(1.0)
+    } else {
+        total_fraction
+    }
+}
+
+fn workspace_sidebar_consumes_width(window: &super::LushtextWindow) -> bool {
+    let split = &window.imp().workspace_split_view;
+    split.shows_sidebar() && !split.is_collapsed()
+}
+
+fn sync_properties_split_view(window: &super::LushtextWindow, window_width: i32) {
+    let expected = effective_properties_fraction(window, window_width);
+    if (window.imp().properties_split_view.sidebar_width_fraction() - expected).abs() > f64::EPSILON
+    {
+        window
+            .imp()
+            .properties_split_view
+            .set_sidebar_width_fraction(expected);
+    }
+    let _ = window.imp().settings.set_double(
+        keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
+        desired_properties_fraction(window_width),
+    );
+}
+
+fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
+    let workspace_fraction = fixed_workspace_fraction(window_width);
+    if (window.imp().workspace_split_view.sidebar_width_fraction() - workspace_fraction).abs()
+        > f64::EPSILON
+    {
+        window
+            .imp()
+            .workspace_split_view
+            .set_sidebar_width_fraction(workspace_fraction);
+    }
+    let _ = window
+        .imp()
+        .settings
+        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, workspace_fraction);
+    sync_properties_split_view(window, window_width);
+}
+
+fn fixed_fraction(window_width: i32, min_width_sp: f64) -> f64 {
     let width = window_width.max(1) as f64;
     let lower = (min_width_sp / width).min(1.0);
-    let upper = (max_width_sp / width).min(1.0).max(lower);
-    let candidate = if fraction.is_finite() && fraction > 0.0 {
-        fraction
-    } else {
-        default_fraction
-    };
-    candidate.clamp(lower, upper)
+    FIXED_SIDEBAR_FRACTION.max(lower).min(1.0)
 }

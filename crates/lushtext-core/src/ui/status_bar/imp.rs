@@ -9,6 +9,8 @@ pub struct LushtextStatusBar {
     #[template_child]
     pub sidebar_toggle_button: TemplateChild<gtk4::ToggleButton>,
     #[template_child]
+    pub properties_toggle_button: TemplateChild<gtk4::ToggleButton>,
+    #[template_child]
     pub message_label: TemplateChild<gtk4::Label>,
     #[template_child]
     pub metadata_box: TemplateChild<gtk4::Box>,

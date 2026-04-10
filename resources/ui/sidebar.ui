@@ -10,26 +10,8 @@
       <class name="sidebar"/>
     </style>
 
-    <!-- Scrollable area for all workspace sections -->
     <child>
-      <object class="GtkScrolledWindow" id="outer_scrolled_window">
-        <property name="vexpand">true</property>
-        <property name="hscrollbar-policy">never</property>
-        <child>
-          <object class="GtkBox" id="sections_box">
-            <property name="orientation">vertical</property>
-            <!-- Workspace sections appended programmatically -->
-          </object>
-        </child>
-      </object>
-    </child>
-
-    <!-- Footer: always visible below scroll area -->
-    <child>
-      <object class="GtkSeparator"/>
-    </child>
-    <child>
-      <object class="GtkBox" id="footer_box">
+      <object class="GtkBox" id="new_workspace_box">
         <property name="orientation">horizontal</property>
         <property name="spacing">6</property>
         <property name="margin-start">12</property>
@@ -42,7 +24,6 @@
             <property name="label">New Workspace</property>
             <property name="hexpand">true</property>
             <property name="xalign">0</property>
-            <property name="ellipsize">end</property>
             <style>
               <class name="dim-label"/>
             </style>
@@ -55,6 +36,25 @@
             <style>
               <class name="flat"/>
             </style>
+          </object>
+        </child>
+      </object>
+    </child>
+
+    <child>
+      <object class="GtkSeparator"/>
+    </child>
+
+    <!-- Scrollable area for all workspace sections -->
+    <child>
+      <object class="GtkScrolledWindow" id="outer_scrolled_window">
+        <property name="vexpand">true</property>
+        <property name="propagate-natural-width">true</property>
+        <property name="hscrollbar-policy">automatic</property>
+        <child>
+          <object class="GtkBox" id="sections_box">
+            <property name="orientation">vertical</property>
+            <!-- Workspace sections appended programmatically -->
           </object>
         </child>
       </object>

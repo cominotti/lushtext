@@ -36,16 +36,6 @@
               </object>
             </property>
             <child type="end">
-              <object class="GtkToggleButton" id="properties_toggle_button">
-                <property name="icon-name">sidebar-show-right-symbolic</property>
-                <property name="tooltip-text" translatable="yes">Toggle Properties</property>
-                <property name="action-name">win.toggle-properties</property>
-                <style>
-                  <class name="flat"/>
-                </style>
-              </object>
-            </child>
-            <child type="end">
               <object class="GtkMenuButton" id="primary_menu_button">
                 <property name="icon-name">open-menu-symbolic</property>
                 <property name="tooltip-text" translatable="yes">Main Menu</property>

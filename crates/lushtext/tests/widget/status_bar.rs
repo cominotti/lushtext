@@ -235,3 +235,66 @@ fn test_sidebar_toggle_button_action_name() {
         "win.toggle-sidebar"
     );
 }
+
+// --- Properties toggle button ---
+
+#[test]
+fn test_properties_toggle_button_exists() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    let _button = &bar.imp().properties_toggle_button;
+}
+
+#[test]
+fn test_properties_toggle_button_icon() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    assert_eq!(
+        bar.imp()
+            .properties_toggle_button
+            .icon_name()
+            .unwrap()
+            .as_str(),
+        "sidebar-show-right-symbolic"
+    );
+}
+
+#[test]
+fn test_properties_toggle_button_is_flat() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    assert!(bar.imp().properties_toggle_button.has_css_class("flat"));
+}
+
+#[test]
+fn test_properties_toggle_button_has_tooltip() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    let tooltip = bar.imp().properties_toggle_button.tooltip_text().unwrap();
+    assert!(tooltip.contains("Properties"));
+}
+
+#[test]
+fn test_properties_toggle_button_action_name() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    assert_eq!(
+        bar.imp()
+            .properties_toggle_button
+            .action_name()
+            .unwrap()
+            .as_str(),
+        "win.toggle-properties"
+    );
+}
+
+#[test]
+fn test_properties_toggle_button_is_rightmost_child() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    let last = bar
+        .last_child()
+        .and_downcast::<gtk4::ToggleButton>()
+        .expect("rightmost child is a toggle button");
+    assert_eq!(last.as_ptr(), bar.imp().properties_toggle_button.as_ptr());
+}

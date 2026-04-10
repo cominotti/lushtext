@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Multi-workspace sidebar: orchestrates workspace sections, persistence, and footer.
+//! Multi-workspace sidebar: orchestrates workspace sections, persistence,
+//! and the fixed "New Workspace" affordance.
 
 pub mod file_tree_item;
 // Private implementation module (GObject pattern).
@@ -49,7 +50,7 @@ impl LushtextSidebar {
     }
 
     /// Create a new workspace by opening a folder dialog.
-    /// Called from the footer button and from `win.open-folder`.
+    /// Called from the fixed top button and from `win.open-folder`.
     pub fn create_new_workspace(&self) {
         let Some(root) = self.root() else { return };
         let Some(window) = root.downcast_ref::<gtk4::Window>() else {

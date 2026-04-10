@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Bottom status bar widget — feedback messages and file metadata.
+//! Bottom status bar widget — mirrored pane toggles, feedback messages,
+//! and file metadata.
 
 mod imp;
 
@@ -54,8 +55,8 @@ impl LushtextStatusBar {
         self.imp().editorconfig_label.set_visible(active);
     }
 
-    /// Show or hide the right-side metadata section (encoding + file size).
-    /// Hidden when no tabs are open.
+    /// Show or hide the metadata section between the message area and the
+    /// right-side properties toggle. Hidden when no tabs are open.
     pub fn set_metadata_visible(&self, visible: bool) {
         self.imp().metadata_box.set_visible(visible);
     }

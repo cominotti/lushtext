@@ -44,6 +44,8 @@ pub struct LushtextWorkspaceSection {
     #[template_child]
     pub add_folder_button: TemplateChild<gtk4::Button>,
     #[template_child]
+    pub inner_scrolled_window: TemplateChild<gtk4::ScrolledWindow>,
+    #[template_child]
     pub file_tree_view: TemplateChild<gtk4::ListView>,
 
     /// Unique ID for this workspace (matches `WorkspaceConfig.id`).
@@ -154,13 +156,15 @@ impl LushtextWorkspaceSection {
 
             let expander = gtk4::TreeExpander::new();
             let content_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            content_box.set_halign(gtk4::Align::Start);
 
             let icon = gtk4::Image::new();
             icon.set_icon_size(gtk4::IconSize::Normal);
 
             let label = gtk4::Label::new(None);
             label.set_xalign(0.0);
-            label.set_ellipsize(pango::EllipsizeMode::End);
+            label.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+            label.set_wrap(false);
 
             content_box.append(&icon);
             content_box.append(&label);

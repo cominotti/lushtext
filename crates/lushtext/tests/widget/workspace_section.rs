@@ -43,6 +43,23 @@ fn test_workspace_section_set_name() {
     assert_eq!(section.workspace_name(), "my project");
 }
 
+#[test]
+fn test_workspace_section_header_label_does_not_ellipsize() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+    assert_eq!(
+        section.imp().header_label.ellipsize(),
+        gtk4::pango::EllipsizeMode::None
+    );
+}
+
+#[test]
+fn test_workspace_section_inner_scroller_propagates_natural_width() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+    assert!(section.imp().inner_scrolled_window.propagates_natural_width());
+}
+
 // --- Context menu ---
 
 #[test]

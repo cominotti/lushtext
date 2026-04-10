@@ -22,7 +22,7 @@ fn test_sidebar_new() {
 }
 
 #[test]
-fn test_sidebar_footer_label() {
+fn test_sidebar_new_workspace_label() {
     ensure_gtk_init();
     let sidebar = LushtextSidebar::new();
     assert_eq!(
@@ -39,10 +39,39 @@ fn test_sidebar_starts_with_no_sections() {
 }
 
 #[test]
-fn test_sidebar_footer_button_exists() {
+fn test_sidebar_new_workspace_button_exists() {
     ensure_gtk_init();
     let sidebar = LushtextSidebar::new();
     let _button = &sidebar.imp().new_workspace_button;
+}
+
+#[test]
+fn test_new_workspace_affordance_stays_above_sections_scroll_area() {
+    ensure_gtk_init();
+    let sidebar = LushtextSidebar::new();
+
+    let first = sidebar
+        .first_child()
+        .expect("first child is the fixed new-workspace box");
+    let last = sidebar
+        .last_child()
+        .and_downcast::<gtk4::ScrolledWindow>()
+        .expect("last child is the workspace scrolled window");
+
+    assert!(first.is::<gtk4::Box>());
+    assert_eq!(first.as_ptr(), sidebar.imp().new_workspace_button.parent().unwrap().as_ptr());
+    assert_eq!(last.as_ptr(), sidebar.imp().outer_scrolled_window.as_ptr());
+}
+
+#[test]
+fn test_sidebar_outer_scroller_allows_horizontal_overflow() {
+    ensure_gtk_init();
+    let sidebar = LushtextSidebar::new();
+    assert_eq!(
+        sidebar.imp().outer_scrolled_window.hscrollbar_policy(),
+        gtk4::PolicyType::Automatic
+    );
+    assert!(sidebar.imp().outer_scrolled_window.propagates_natural_width());
 }
 
 // --- Window integration: tab path updates (moved from old sidebar.rs) ---

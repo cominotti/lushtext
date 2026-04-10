@@ -20,15 +20,15 @@ LushtextWindow (AdwApplicationWindow)
 ├── GtkRevealer [palette_revealer] → LushtextCommandPalette (Ctrl+P)
 ├── AdwOverlaySplitView [workspace_split_view]
 │   ├── [sidebar/start] LushtextSidebar
-│   │   ├── GtkScrolledWindow (outer, vexpand)
-│   │   │   └── GtkBox [sections_box]
-│   │   │       └── LushtextWorkspaceSection (per workspace)
-│   │   │           ├── GtkSeparator
-│   │   │           ├── GtkBox [header: label + add_folder_button]
-│   │   │           └── GtkScrolledWindow (inner, propagate-natural-height=true)
-│   │   │               └── GtkListView + TreeListModel
+│   │   ├── GtkBox ["New Workspace" label + button]
 │   │   ├── GtkSeparator
-│   │   └── GtkBox [footer: "New Workspace" label + button]
+│   │   └── GtkScrolledWindow (outer, vexpand, horizontal scroll when needed)
+│   │       └── GtkBox [sections_box]
+│   │           └── LushtextWorkspaceSection (per workspace)
+│   │               ├── GtkSeparator
+│   │               ├── GtkBox [header: label + add_folder_button]
+│   │               └── GtkScrolledWindow (inner, propagate-natural-height=true, propagate-natural-width=true)
+│   │                   └── GtkListView + TreeListModel
 │   └── [content] AdwOverlaySplitView [properties_split_view]
 │       ├── [content] GtkBox [content_box] (vertical)
 │       │   ├── GtkStack [content_stack] (vexpand)
@@ -42,7 +42,8 @@ LushtextWindow (AdwApplicationWindow)
 └── LushtextStatusBar (always visible, full width)
     ├── GtkToggleButton [sidebar_toggle_button] — toggle sidebar (action: win.toggle-sidebar)
     ├── GtkLabel [message_label] — feedback messages (left, hexpand)
-    └── GtkBox [metadata_box] — encoding + file size (right, hidden when no tabs)
+    ├── GtkBox [metadata_box] — EditorConfig + file size + encoding (right, hidden when no tabs)
+    └── GtkToggleButton [properties_toggle_button] — toggle properties (action: win.toggle-properties)
 ```
 
 ## Libadwaita Widgets to Use
@@ -64,10 +65,11 @@ LushtextWindow (AdwApplicationWindow)
 
 ## Multi-Workspace Sidebar
 
-- `LushtextSidebar` is an orchestrator: manages workspace sections, the "New Workspace" footer, and persistence (`workspaces.json`).
+- `LushtextSidebar` is an orchestrator: manages the fixed top "New Workspace" affordance, workspace sections, and persistence (`workspaces.json`).
 - `LushtextWorkspaceSection` encapsulates per-workspace state: file tree, file context menu, header context menu.
-- **Inner ScrolledWindow pattern**: Each section wraps its `GtkListView` in `GtkScrolledWindow(propagate-natural-height=true, vscrollbar-policy=never)`. This provides the vadjustment that ListView requires. The outer ScrolledWindow handles all scrolling.
-- **Footer always visible**: The "New Workspace" footer (GtkSeparator + label + button) sits below the outer ScrolledWindow, outside the scrollable area.
+- **Inner ScrolledWindow pattern**: Each section wraps its `GtkListView` in `GtkScrolledWindow(propagate-natural-height=true, propagate-natural-width=true, vscrollbar-policy=never, hscrollbar-policy=never)`. This provides the vadjustment that ListView requires while letting natural width bubble up to the outer sidebar scroller.
+- **Top affordance always visible**: The "New Workspace" affordance (label + button) sits above the outer ScrolledWindow, outside the scrollable area.
+- **Long sidebar content must not be ellipsized**: workspace headers and file-tree labels stay fully rendered; the outer sidebar scroller is responsible for horizontal overflow.
 - **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder, rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
 - **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation saves to disk via `workspace_manager::save()`.
 
@@ -98,7 +100,8 @@ LushtextWindow (AdwApplicationWindow)
 ## Status Bar
 
 - Per-window, below the split-view shell, always visible regardless of tab count.
-- `metadata_box` (encoding + file size) is hidden via `set_visible(false)` when no tabs are open; the message area remains available.
+- The left workspace toggle stays at the far left and the properties toggle stays at the far right so both pane controls remain visually mirrored in the bottom bar.
+- `metadata_box` (EditorConfig + file size + encoding) is hidden via `set_visible(false)` when no tabs are open; the message area and both pane toggles remain available.
 - Messages use Adwaita semantic color tokens: `@accent_color` (Info), `@warning_color` (Warning), `@error_color` (Error). These adapt to light/dark mode automatically — no Rust-side dark mode handling needed.
 - Background uses `@headerbar_bg_color` to visually distinguish from the editor area.
 - Use the `caption` Adwaita CSS class for status bar text (small font, standard GNOME HIG for secondary UI).
@@ -126,7 +129,8 @@ Window geometry and split-view state are persisted via GSettings (not JSON sessi
 
 - Use nested `AdwOverlaySplitView`s for the window shell instead of an outer `GtkPaned`.
 - `workspace_split_view` owns the left workspace pane and stays bound to `win.toggle-sidebar` in the status bar.
-- `properties_split_view` owns the right properties pane and stays bound to `win.toggle-properties` in the header bar.
+- `properties_split_view` owns the right properties pane and stays bound to `win.toggle-properties` in the status bar.
+- Both side panes normalize to a quarter-width fraction whenever they are shown.
 - Breakpoints collapse the properties pane before the workspace pane so medium-width windows keep the file tree visible longer.
 - When a utility pane closes, return focus to the active editor rather than leaving focus stranded on a toggle button.
 
