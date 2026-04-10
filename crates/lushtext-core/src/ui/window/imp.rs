@@ -14,7 +14,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
 use crate::ui::properties_panel::LushtextPropertiesPanel;
 use crate::ui::search_panel::LushtextSearchPanel;
-use crate::ui::sidebar::LushtextSidebar;
+use crate::ui::sidebar::{LushtextSidebar, WorkspaceSidebarWidthPreset};
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
 use glib::prelude::*;
 use gtk4::prelude::*;
@@ -26,11 +26,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// Workspace sidebar minimum width in scale-independent pixels.
-const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 180.0;
+const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 160.0;
 /// Properties sidebar minimum width in scale-independent pixels.
 const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 260.0;
-/// Target total-window width for each visible side pane.
-const FIXED_SIDEBAR_FRACTION: f64 = 0.25;
+/// Target total-window width for the visible right properties pane.
+const FIXED_PROPERTIES_SIDEBAR_FRACTION: f64 = 0.25;
 /// Minimum center-column width that keeps restored-document info bars stable
 /// once their titles and actions are allowed to wrap on narrow windows.
 const MIN_EDITOR_CONTENT_WIDTH_SP: f64 = 620.0;
@@ -143,6 +143,9 @@ pub struct LushtextWindow {
     pub search_progress_generation: Cell<u32>,
     /// Whether search progress is allowed to render after the initial delay.
     pub search_progress_visible: Cell<bool>,
+    /// Stored so the properties breakpoint condition can track the selected
+    /// workspace preset and whether the left pane currently consumes width.
+    pub properties_breakpoint: RefCell<Option<libadwaita::Breakpoint>>,
 }
 
 impl Default for LushtextWindow {
@@ -197,6 +200,7 @@ impl Default for LushtextWindow {
             search_progress_heartbeat_source_id: RefCell::new(None),
             search_progress_generation: Cell::new(0),
             search_progress_visible: Cell::new(false),
+            properties_breakpoint: RefCell::new(None),
         }
     }
 }
@@ -240,9 +244,9 @@ impl ObjectImpl for LushtextWindow {
 
         configure_split_views(&self.workspace_split_view, &self.properties_split_view);
         migrate_split_view_settings(settings, w);
+        install_split_view_breakpoints(&obj);
         restore_workspace_split_view(&obj);
         restore_properties_split_view(&obj);
-        install_split_view_breakpoints(&obj);
 
         // Restore preview pane position even though the pane starts hidden so
         // the first reveal animation still targets the user's preferred width.
@@ -307,7 +311,7 @@ impl ObjectImpl for LushtextWindow {
                         return;
                     };
                     let width = current_window_width(&window);
-                    let fixed = fixed_workspace_fraction(width);
+                    let fixed = desired_workspace_fraction(&window);
                     if (fixed - split.sidebar_width_fraction()).abs() > f64::EPSILON {
                         split.set_sidebar_width_fraction(fixed);
                         return;
@@ -316,6 +320,39 @@ impl ObjectImpl for LushtextWindow {
                         .imp()
                         .settings
                         .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fixed);
+                    window
+                        .imp()
+                        .sidebar
+                        .set_width_preset(workspace_sidebar_preset(&window));
+                    sync_properties_breakpoint(&window);
+                    sync_properties_split_view(&window, width);
+                },
+            );
+        }
+
+        {
+            let window_weak = obj.downgrade();
+            self.workspace_split_view
+                .connect_notify_local(Some("collapsed"), move |_split, _| {
+                    let Some(window) = window_weak.upgrade() else {
+                        return;
+                    };
+                    let width = current_window_width(&window);
+                    sync_properties_breakpoint(&window);
+                    sync_properties_split_view(&window, width);
+                });
+        }
+
+        {
+            let window_weak = obj.downgrade();
+            self.workspace_split_view.connect_notify_local(
+                Some("show-sidebar"),
+                move |_split, _| {
+                    let Some(window) = window_weak.upgrade() else {
+                        return;
+                    };
+                    let width = current_window_width(&window);
+                    sync_properties_breakpoint(&window);
                     sync_properties_split_view(&window, width);
                 },
             );
@@ -360,6 +397,13 @@ impl ObjectImpl for LushtextWindow {
         self.sidebar.connect_file_activated(move |path| {
             if let Some(window) = window_weak.upgrade() {
                 window.open_document(path);
+            }
+        });
+
+        let window_weak = obj.downgrade();
+        self.sidebar.connect_width_preset_selected(move |preset| {
+            if let Some(window) = window_weak.upgrade() {
+                set_workspace_sidebar_preset(&window, preset);
             }
         });
 
@@ -560,6 +604,7 @@ fn configure_split_views(
     workspace_split_view.set_sidebar_position(gtk4::PackType::Start);
     workspace_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
     workspace_split_view.set_min_sidebar_width(WORKSPACE_SIDEBAR_MIN_WIDTH_SP);
+    workspace_split_view.set_max_sidebar_width(WORKSPACE_SIDEBAR_MIN_WIDTH_SP);
     workspace_split_view.set_pin_sidebar(true);
     workspace_split_view.set_enable_show_gesture(false);
     workspace_split_view.set_enable_hide_gesture(false);
@@ -583,7 +628,7 @@ fn migrate_split_view_settings(settings: &gio::Settings, restored_width: i32) {
     } else {
         true
     };
-    let workspace_fraction = fixed_workspace_fraction(width);
+    let workspace_fraction = WorkspaceSidebarWidthPreset::DEFAULT.fraction();
     let properties_fraction = desired_properties_fraction(width);
 
     let _ = settings.set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, legacy_visible);
@@ -599,7 +644,9 @@ fn restore_workspace_split_view(window: &super::LushtextWindow) {
         .imp()
         .settings
         .boolean(keys::WORKSPACE_SIDEBAR_VISIBLE);
-    let fraction = fixed_workspace_fraction(width);
+    let preset = workspace_sidebar_preset(window);
+    let fraction = preset.fraction();
+    sync_workspace_sidebar_width_constraints(window, width);
     window
         .imp()
         .workspace_split_view
@@ -608,8 +655,10 @@ fn restore_workspace_split_view(window: &super::LushtextWindow) {
         .imp()
         .settings
         .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fraction);
+    window.imp().sidebar.set_width_preset(preset);
     window.imp().workspace_split_view.set_show_sidebar(visible);
     window.imp().sidebar_visible.set(visible);
+    sync_properties_breakpoint(window);
     sync_properties_split_view(window, width);
 }
 
@@ -634,7 +683,7 @@ fn restore_properties_split_view(window: &super::LushtextWindow) {
 
 fn install_split_view_breakpoints(window: &super::LushtextWindow) {
     let properties_bp = libadwaita::Breakpoint::new(
-        libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition())
+        libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(window))
             .expect("valid properties breakpoint condition"),
     );
     properties_bp.add_setter(
@@ -645,6 +694,10 @@ fn install_split_view_breakpoints(window: &super::LushtextWindow) {
         "collapsed",
         Some(&true.to_value()),
     );
+    window
+        .imp()
+        .properties_breakpoint
+        .replace(Some(properties_bp.clone()));
     window.add_breakpoint(properties_bp);
 
     let workspace_bp = libadwaita::Breakpoint::new(
@@ -664,15 +717,21 @@ fn install_split_view_breakpoints(window: &super::LushtextWindow) {
 
 /// Build the properties-pane breakpoint from the minimum center width instead
 /// of a magic number so the shell explains *why* it collapses earlier.
-fn properties_breakpoint_condition() -> String {
-    format!("max-width: {}sp", properties_breakpoint_max_width_sp())
+fn properties_breakpoint_condition(window: &super::LushtextWindow) -> String {
+    format!(
+        "max-width: {}sp",
+        properties_breakpoint_max_width_sp(properties_breakpoint_workspace_fraction(window))
+    )
 }
 
 /// Compute the total window width below which the properties pane should
 /// overlay instead of consuming layout width in the quarter-width shell.
-fn properties_breakpoint_max_width_sp() -> i32 {
-    dual_sidebar_window_width_for_center(MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP)
-        .ceil() as i32
+fn properties_breakpoint_max_width_sp(workspace_fraction: f64) -> i32 {
+    let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
+    let fraction_guard = dual_sidebar_window_width_for_center(center_target, workspace_fraction);
+    let min_width_guard = (center_target + PROPERTIES_SIDEBAR_MIN_WIDTH_SP)
+        / (1.0 - workspace_fraction).max(f64::EPSILON);
+    fraction_guard.max(min_width_guard).ceil() as i32
 }
 
 fn current_window_width(window: &super::LushtextWindow) -> i32 {
@@ -684,24 +743,56 @@ fn current_window_width(window: &super::LushtextWindow) -> i32 {
     }
 }
 
-fn fixed_workspace_fraction(window_width: i32) -> f64 {
-    fixed_fraction(window_width, WORKSPACE_SIDEBAR_MIN_WIDTH_SP)
+fn workspace_sidebar_preset(window: &super::LushtextWindow) -> WorkspaceSidebarWidthPreset {
+    WorkspaceSidebarWidthPreset::from_fraction(
+        window
+            .imp()
+            .settings
+            .double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
+    )
 }
 
 /// Convert a desired center-column width into the total window width needed to
-/// preserve that space while both quarter-width side panes are visible.
-fn dual_sidebar_window_width_for_center(center_width_sp: f64) -> f64 {
-    center_width_sp / (1.0 - (FIXED_SIDEBAR_FRACTION * 2.0))
+/// preserve that space while the selected left preset and the right pane are
+/// both consuming layout width.
+fn dual_sidebar_window_width_for_center(center_width_sp: f64, workspace_fraction: f64) -> f64 {
+    let remaining_fraction =
+        (1.0 - workspace_fraction - FIXED_PROPERTIES_SIDEBAR_FRACTION).max(f64::EPSILON);
+    center_width_sp / remaining_fraction
+}
+
+fn desired_workspace_fraction(window: &super::LushtextWindow) -> f64 {
+    workspace_sidebar_preset(window).fraction()
+}
+
+fn workspace_sidebar_target_width_sp(window: &super::LushtextWindow, window_width: i32) -> f64 {
+    (window_width.max(1) as f64 * desired_workspace_fraction(window))
+        .max(WORKSPACE_SIDEBAR_MIN_WIDTH_SP)
+}
+
+fn sync_workspace_sidebar_width_constraints(window: &super::LushtextWindow, window_width: i32) {
+    let target_width = workspace_sidebar_target_width_sp(window, window_width);
+    let split = &window.imp().workspace_split_view;
+    if (split.min_sidebar_width() - target_width).abs() > f64::EPSILON {
+        split.set_min_sidebar_width(target_width);
+    }
+    if (split.max_sidebar_width() - target_width).abs() > f64::EPSILON {
+        split.set_max_sidebar_width(target_width);
+    }
 }
 
 fn desired_properties_fraction(window_width: i32) -> f64 {
-    fixed_fraction(window_width, PROPERTIES_SIDEBAR_MIN_WIDTH_SP)
+    fixed_fraction(
+        window_width,
+        PROPERTIES_SIDEBAR_MIN_WIDTH_SP,
+        FIXED_PROPERTIES_SIDEBAR_FRACTION,
+    )
 }
 
 fn effective_properties_fraction(window: &super::LushtextWindow, window_width: i32) -> f64 {
     let total_fraction = desired_properties_fraction(window_width);
     if workspace_sidebar_consumes_width(window) {
-        let workspace_fraction = fixed_workspace_fraction(window_width);
+        let workspace_fraction = desired_workspace_fraction(window);
         let remaining_fraction = (1.0 - workspace_fraction).max(f64::EPSILON);
         let inner_width = (window_width.max(1) as f64 * remaining_fraction).max(1.0);
         let lower = (PROPERTIES_SIDEBAR_MIN_WIDTH_SP / inner_width).min(1.0);
@@ -711,9 +802,48 @@ fn effective_properties_fraction(window: &super::LushtextWindow, window_width: i
     }
 }
 
+fn properties_breakpoint_workspace_fraction(window: &super::LushtextWindow) -> f64 {
+    if workspace_sidebar_consumes_width(window) {
+        desired_workspace_fraction(window)
+    } else {
+        0.0
+    }
+}
+
 fn workspace_sidebar_consumes_width(window: &super::LushtextWindow) -> bool {
     let split = &window.imp().workspace_split_view;
     split.shows_sidebar() && !split.is_collapsed()
+}
+
+fn set_workspace_sidebar_preset(
+    window: &super::LushtextWindow,
+    preset: WorkspaceSidebarWidthPreset,
+) {
+    let fraction = preset.fraction();
+    if (window
+        .imp()
+        .settings
+        .double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION)
+        - fraction)
+        .abs()
+        > f64::EPSILON
+    {
+        let _ = window
+            .imp()
+            .settings
+            .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fraction);
+    }
+    window.imp().sidebar.set_width_preset(preset);
+    sync_split_view_widths(window, current_window_width(window));
+}
+
+fn sync_properties_breakpoint(window: &super::LushtextWindow) {
+    let condition =
+        libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(window))
+            .expect("valid properties breakpoint condition");
+    if let Some(breakpoint) = window.imp().properties_breakpoint.borrow().as_ref() {
+        breakpoint.set_condition(Some(&condition));
+    }
 }
 
 fn sync_properties_split_view(window: &super::LushtextWindow, window_width: i32) {
@@ -732,7 +862,8 @@ fn sync_properties_split_view(window: &super::LushtextWindow, window_width: i32)
 }
 
 fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
-    let workspace_fraction = fixed_workspace_fraction(window_width);
+    let workspace_fraction = desired_workspace_fraction(window);
+    sync_workspace_sidebar_width_constraints(window, window_width);
     if (window.imp().workspace_split_view.sidebar_width_fraction() - workspace_fraction).abs()
         > f64::EPSILON
     {
@@ -745,33 +876,44 @@ fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
         .imp()
         .settings
         .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, workspace_fraction);
+    window
+        .imp()
+        .sidebar
+        .set_width_preset(workspace_sidebar_preset(window));
+    sync_properties_breakpoint(window);
     sync_properties_split_view(window, window_width);
 }
 
-fn fixed_fraction(window_width: i32, min_width_sp: f64) -> f64 {
+fn fixed_fraction(window_width: i32, min_width_sp: f64, target_fraction: f64) -> f64 {
     let width = window_width.max(1) as f64;
     let lower = (min_width_sp / width).min(1.0);
-    FIXED_SIDEBAR_FRACTION.max(lower).min(1.0)
+    target_fraction.max(lower).min(1.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP,
+        DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP, WorkspaceSidebarWidthPreset,
         dual_sidebar_window_width_for_center, properties_breakpoint_max_width_sp,
     };
 
     #[test]
-    fn properties_breakpoint_width_accounts_for_shell_overhead() {
-        assert_eq!(properties_breakpoint_max_width_sp(), 1304);
+    fn properties_breakpoint_width_accounts_for_workspace_preset() {
+        assert_eq!(
+            properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Comfy.fraction()),
+            1449
+        );
+        assert_eq!(properties_breakpoint_max_width_sp(0.0), 912);
     }
 
     #[test]
     fn dual_sidebar_width_helper_preserves_requested_center_space() {
         let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
-        assert_eq!(
-            dual_sidebar_window_width_for_center(center_target),
-            center_target * 2.0
+        let total_width = dual_sidebar_window_width_for_center(
+            center_target,
+            WorkspaceSidebarWidthPreset::Large.fraction(),
         );
+        let remaining_fraction = 1.0 - WorkspaceSidebarWidthPreset::Large.fraction() - 0.25;
+        assert!((total_width * remaining_fraction - center_target).abs() < 0.001);
     }
 }

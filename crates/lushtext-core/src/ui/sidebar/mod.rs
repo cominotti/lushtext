@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Multi-workspace sidebar: orchestrates workspace sections, persistence,
-//! and the fixed "New Workspace" affordance.
+//! the fixed "New Workspace" affordance, and the fixed width-preset footer.
 
 pub mod file_tree_item;
 // Private implementation module (GObject pattern).
@@ -21,6 +21,41 @@ use workspace_section::LushtextWorkspaceSection;
 // Re-export for window integration
 pub use file_tree_item::FileTreeItem;
 pub use workspace_section::LushtextWorkspaceSection as WorkspaceSection;
+
+/// Supported fixed-width presets for the workspace sidebar footer controls.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceSidebarWidthPreset {
+    Small,
+    Comfy,
+    Large,
+}
+
+impl WorkspaceSidebarWidthPreset {
+    pub const DEFAULT: Self = Self::Comfy;
+
+    pub fn fraction(self) -> f64 {
+        match self {
+            Self::Small => 0.2,
+            Self::Comfy => 0.3,
+            Self::Large => 0.4,
+        }
+    }
+
+    pub fn from_fraction(fraction: f64) -> Self {
+        let small_delta = (fraction - Self::Small.fraction()).abs();
+        let comfy_delta = (fraction - Self::Comfy.fraction()).abs();
+        let large_delta = (fraction - Self::Large.fraction()).abs();
+        let min_delta = small_delta.min(comfy_delta.min(large_delta));
+
+        if (comfy_delta - min_delta).abs() < f64::EPSILON {
+            Self::Comfy
+        } else if (small_delta - min_delta).abs() < f64::EPSILON {
+            Self::Small
+        } else {
+            Self::Large
+        }
+    }
+}
 
 // glib::wrapper! generates the public wrapper type for this widget.
 glib::wrapper! {
@@ -104,6 +139,18 @@ impl LushtextSidebar {
         *self.imp().workspace_changed_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_width_preset_selected<F: Fn(WorkspaceSidebarWidthPreset) + 'static>(
+        &self,
+        f: F,
+    ) {
+        *self.imp().width_preset_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Sync the footer toggle state without re-emitting the window callback.
+    pub fn set_width_preset(&self, preset: WorkspaceSidebarWidthPreset) {
+        self.apply_width_preset_selection(preset, false);
+    }
+
     /// Collect all directory root paths from all workspaces.
     /// Used by the window to build the command palette's file index.
     pub fn workspace_roots(&self) -> Vec<PathBuf> {
@@ -122,6 +169,30 @@ impl LushtextSidebar {
     }
 
     // --- Internal orchestration ---
+
+    fn select_width_preset(&self, preset: WorkspaceSidebarWidthPreset) {
+        self.apply_width_preset_selection(preset, true);
+    }
+
+    fn apply_width_preset_selection(&self, preset: WorkspaceSidebarWidthPreset, emit: bool) {
+        let imp = self.imp();
+        if imp.syncing_width_preset.get() {
+            return;
+        }
+
+        imp.syncing_width_preset.set(true);
+        imp.small_width_button
+            .set_active(matches!(preset, WorkspaceSidebarWidthPreset::Small));
+        imp.comfy_width_button
+            .set_active(matches!(preset, WorkspaceSidebarWidthPreset::Comfy));
+        imp.large_width_button
+            .set_active(matches!(preset, WorkspaceSidebarWidthPreset::Large));
+        imp.syncing_width_preset.set(false);
+
+        if emit && let Some(ref cb) = *imp.width_preset_callback.borrow() {
+            cb(preset);
+        }
+    }
 
     /// Build workspace sections from a loaded WorkspacesFile.
     fn build_sections_from_file(&self, workspaces_file: WorkspacesFile) {
