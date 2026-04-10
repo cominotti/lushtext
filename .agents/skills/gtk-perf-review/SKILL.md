@@ -5,6 +5,16 @@ description: "Unified performance review entry point for GTK4/Libadwaita Rust co
 
 Unified performance review for LushText. This skill is a lightweight orchestrator that dispatches three focused subagents — one for **responsiveness** (main-thread blocking), one for **scale** (data-path performance and RAM), and one for **Rust code quality** (SIMD hot paths, modern idioms, benchmark coverage) — then merges their reports into a single unified audit.
 
+## Boundary with gtk4-libadwaita-internals
+
+Before treating a bug as purely "performance", check whether the report or diff contains a GTK or Adwaita contract question:
+
+- `Trying to measure ...`, allocation or snapshot warnings, or `GtkPaned` / `GtkRevealer` layout math
+- `GtkSignalListItemFactory` lifecycle, `GtkListView` row reuse, or `GtkTreeListModel` semantics
+- builder-template child types, parentage, disposal, focus, CSS-node, or adaptive container rules
+
+If so, read `gtk4-libadwaita-internals` first so the performance review does not misclassify a contract violation as a throughput bug.
+
 ## Philosophy: Readability First
 
 Performance matters, but **code readability is the top priority**. Every recommendation from this review must pass the readability gate:
@@ -40,7 +50,7 @@ LushText has three complementary performance skills:
 
 They cover different concerns but often all apply to the same code change. This umbrella skill dispatches all three in parallel and produces one unified report, avoiding duplicate work and ensuring complete coverage.
 
-When a change touches `GtkPaned` / `GtkRevealer` animation around a heavy sidebar or tree, treat live geometry warnings as part of the responsiveness review. A fix that feels smooth in widget tests but still logs `Trying to measure GtkBox ...` under `make run` is not complete.
+When a change touches `GtkPaned` / `GtkRevealer` animation around a heavy sidebar or tree, treat live geometry warnings as part of the responsiveness review. A fix that feels smooth in widget tests but still logs `Trying to measure GtkBox ...` under `make run` is not complete. Use `gtk4-libadwaita-internals` to establish the measurement contract before judging the performance fix.
 
 ## Execution Model
 

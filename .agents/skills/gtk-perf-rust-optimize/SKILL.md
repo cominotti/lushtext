@@ -37,6 +37,12 @@ The threshold: **if the suggestion makes the code harder to read and you need a 
 
 If you find a GTK threading issue, flag it but reference `gtk-responsiveness`. If you find a scaling issue, reference `gtk-perf-scale`.
 
+## Boundary with gtk4-libadwaita-internals
+
+Do not invent GTK or Libadwaita behavior from Rust syntax alone.
+
+If a recommendation depends on widget lifecycle, measurement, builder-template child rules, focus contracts, or list-factory semantics, hand that part to `gtk4-libadwaita-internals` and keep this skill focused on Rust idioms, established project patterns, and correctness.
+
 ## Execution Model: Parallel Subagents
 
 This skill uses **parallel subagents** for independent review concerns. Do NOT review all concerns inline — dispatch focused subagents.

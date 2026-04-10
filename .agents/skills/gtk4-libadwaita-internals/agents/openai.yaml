@@ -1,0 +1,4 @@
+interface:
+  display_name: "GTK4 Libadwaita Internals"
+  short_description: "Deep GTK4 and Libadwaita internals guide"
+  default_prompt: "Use $gtk4-libadwaita-internals to explain a GTK4 or Libadwaita behavior, warning, lifecycle, or layout issue in Rust."

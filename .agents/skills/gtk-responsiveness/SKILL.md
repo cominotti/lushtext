@@ -5,6 +5,18 @@ description: "Guide and review Rust code for GTK4/Libadwaita responsiveness, per
 
 Guide and review Rust code for keeping LushText buttery smooth — no "Waiting for application to respond" dialogs, no UI freezes, no janky scrolling, no memory leaks from signal handlers. The GTK main loop runs on a single thread; any blocking call on that thread freezes the entire UI. This skill ensures every I/O operation, heavy computation, and signal handler follows patterns that keep the main loop free and memory usage low.
 
+## Boundary with gtk4-libadwaita-internals
+
+Use this skill for main-thread load, timer churn, signal lifetime, and row-bind work that is too expensive.
+
+Use `gtk4-libadwaita-internals` when the real question is a toolkit contract:
+
+- `Trying to measure ...` warnings, allocation math, or `GtkPaned` / `GtkRevealer` invariants
+- `GtkSignalListItemFactory` lifecycle order, row reuse semantics, or `GtkTreeListModel` behavior
+- builder-template child types, focus chains, CSS-node assumptions, parenting, disposal, or accessibility behavior
+
+If a responsiveness recommendation depends on GTK semantics, confirm it through the internals skill's official-docs-and-source workflow before treating it as settled.
+
 ## The Golden Rule
 
 > **Never block the GTK main thread.**
@@ -32,7 +44,7 @@ For paned/revealer animations, "responsive" also includes **warning-free live ge
 
 - Large restored workspace trees can make sidebar toggle stutter even when no explicit I/O runs during the animation. The problem can be per-frame relayout of the live subtree, not blocking calls.
 - Snapshotting a heavy sidebar subtree with `GtkWidgetPaintable` can reduce animation cost, but only if the live child is truly removed from the paned's measurement path during the animation.
-- GTK source matters here: `gtk_paned_size_allocate()` computes positions using the handle widget's natural size, and `gtk_revealer_measure()` scales and rounds child sizes during transitions. One-pixel geometry gaps are therefore common in live runs.
+- GTK source matters here: `gtk_paned_size_allocate()` computes positions using the handle widget's natural size, and `gtk_revealer_measure()` scales and rounds child sizes during transitions. One-pixel geometry gaps are therefore common in live runs. Use `gtk4-libadwaita-internals` to verify the exact measurement contract before rewriting the animation.
 - Because of that, sidebar animation fixes must be validated in the real app (`make run`) against restored workspaces while watching stderr. Widget tests alone are not enough to prove geometry safety.
 
 ## Execution Model: Parallel Subagents
@@ -144,9 +156,12 @@ Description. Memory impact if applicable. Fix.
 - paths: `services/file_tree.rs`, `ui/sidebar/workspace_section/**/*.rs`
 - content: `TreeListModel|SignalListItemFactory|connect_bind|connect_setup|connect_unbind`
 
-**Subagent prompt** (self-contained — no reference file needed):
+**Subagent prompt**:
 ```
 You are reviewing Rust code in a GTK4/Libadwaita text editor for TreeListModel and ListView factory correctness.
+
+Read the reference file at: .agents/skills/gtk4-libadwaita-internals/references/containers-lists-and-factories.md
+Use it for the authoritative factory lifecycle order and TreeListModel contract. This audit still focuses on responsiveness impact.
 
 Changed files to review:
 {changed_files}
@@ -156,14 +171,14 @@ While reviewing, also check for genuine memory leaks: strong reference cycles th
 Review criteria:
 - autoexpand = true: NEVER set autoexpand to true on TreeListModel. It recursively calls create_model_func for EVERY directory, spawning unbounded threads (with spawn_blocking_then) or freezing the UI (with sync I/O).
 - Lazy population: build_children_model should return an EMPTY ListStore immediately, then populate async via spawn_blocking_then. The then callback appends FileTreeItems; TreeListModel reacts to items-changed automatically.
-- Factory bind performance: connect_bind is called on every scroll. It must be <1ms. No I/O, no new widget creation, no signal connections (disconnect in unbind if you must).
+- Factory bind performance: connect_bind is called on every scroll. It must be <1ms. No I/O, no new widget creation, and no signal connections unless you disconnect them in unbind.
 - Factory setup vs bind: connect_setup creates the widget structure once (recycled). connect_bind only sets properties. Never allocate widgets in bind.
-- ListStore memory from recycling: GtkListView recycles list items. connect_unbind should reset bindings. connect_bind cleanup should remove any lingering widgets from previous binds (e.g., rename GtkEntry from row recycling).
+- Recycled row state: GtkListView recycles list items. connect_unbind should reset bindings. connect_bind cleanup should remove any lingering widgets or state from previous binds (for example, an inline-rename GtkEntry left behind by row reuse).
 
 Anti-patterns to flag:
 - [FLAG] autoexpand = true on TreeListModel — catastrophic: unbounded thread spawns or UI freeze
 - [FLAG] I/O (fs::read, network) in connect_bind — freezes UI on every scroll
-- [FLAG] Widget creation (Label::new, Box::new) in connect_bind — leaks memory, breaks recycling
+- [FLAG] Widget creation (Label::new, Box::new) in connect_bind — defeats list-item recycling and causes per-scroll churn
 - [RECOMMEND] Signal connections in connect_bind without disconnect in connect_unbind
 - [GOOD] Lazy population with empty ListStore + spawn_blocking_then
 
@@ -258,6 +273,7 @@ When implementing new features (not reviewing existing code), check:
 5. Does the closure capture large state? → Move it to the imp struct, access via `&self`
 6. Does a timer reference a widget? → Use `SendWeakRef` and `ControlFlow::Break`
 7. Does a paned animation touch a large sidebar/tree subtree? → validate with `make run` on restored workspaces and inspect stderr for geometry warnings, not just widget tests
+8. Is the problem really about GTK measurement, factory lifecycle, focus, or parentage? → Switch to `gtk4-libadwaita-internals` for the toolkit contract, then return here for the performance implications
 
 ## Tone
 

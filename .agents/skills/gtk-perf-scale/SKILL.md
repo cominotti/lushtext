@@ -37,6 +37,12 @@ These two skills are complementary, not overlapping:
 
 If you find a main-thread blocking issue while doing a scale audit, flag it but reference `gtk-responsiveness` for the fix pattern.
 
+## Boundary with gtk4-libadwaita-internals
+
+This skill answers "will the architecture still behave well at 10x-100x scale?"
+
+It does **not** define GTK or Libadwaita widget contracts. When a scale recommendation depends on `GtkTreeListModel`, `GtkListView`, `GtkRevealer`, `GtkPaned`, or adaptive Adwaita container semantics, confirm the toolkit behavior via `gtk4-libadwaita-internals` and then apply the scale judgment here.
+
 ## Execution Model: Parallel Subagents
 
 This skill uses **parallel subagents** for independent review concerns. Do NOT attempt to review all concerns inline — dispatch focused subagents instead.
@@ -184,9 +190,12 @@ Description. Threshold. Impact. Fix.
 - paths: `services/file_tree.rs`, `ui/sidebar/workspace_section/**/*.rs`
 - content: `TreeListModel|ListStore|build_children_model`
 
-**Subagent prompt** (self-contained — no reference file needed):
+**Subagent prompt**:
 ```
 You are reviewing Rust code in a GTK4/Libadwaita text editor for file tree scalability.
+
+Read the reference file at: .agents/skills/gtk4-libadwaita-internals/references/containers-lists-and-factories.md
+Use it for authoritative `GtkTreeListModel` and row-reuse behavior. This audit still focuses on scale thresholds and user-visible degradation.
 
 Changed files to review:
 {changed_files}

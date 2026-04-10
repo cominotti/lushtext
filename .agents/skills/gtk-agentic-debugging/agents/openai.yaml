@@ -1,0 +1,4 @@
+interface:
+  display_name: "GTK Agentic Debugging"
+  short_description: "Live GTK debugging with logs, D-Bus, screenshots, and warning triage"
+  default_prompt: "Use $gtk-agentic-debugging to run the app, capture runtime evidence, and separate live GTK symptoms from toolkit-contract issues."
