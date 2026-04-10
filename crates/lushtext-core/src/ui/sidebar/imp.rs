@@ -27,6 +27,8 @@ pub struct LushtextSidebar {
     #[template_child]
     pub sections_box: TemplateChild<gtk4::Box>,
     #[template_child]
+    pub new_workspace_box: TemplateChild<gtk4::Box>,
+    #[template_child]
     pub new_workspace_button: TemplateChild<gtk4::Button>,
     #[template_child]
     pub new_workspace_label: TemplateChild<gtk4::Label>,

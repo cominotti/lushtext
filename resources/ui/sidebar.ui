@@ -13,11 +13,10 @@
     <child>
       <object class="GtkBox" id="new_workspace_box">
         <property name="orientation">horizontal</property>
+        <property name="height-request">54</property>
         <property name="spacing">6</property>
         <property name="margin-start">12</property>
         <property name="margin-end">6</property>
-        <property name="margin-top">6</property>
-        <property name="margin-bottom">6</property>
 
         <child>
           <object class="GtkLabel" id="new_workspace_label">
