@@ -3,7 +3,8 @@
 //! Persisted undo backup for Replace All.
 //!
 //! The backup maps file paths to original file bytes so a Replace All can be
-//! reversed even after the search panel closes or the app restarts.
+//! reverted during the current app session. The search panel clears any stale
+//! backup on close and discards leftovers from earlier sessions on startup.
 
 use crate::services::json_store;
 use anyhow::{Context, Result};

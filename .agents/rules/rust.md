@@ -93,7 +93,9 @@ if let Some(obj) = obj_weak.upgrade() {
 
 ## File Size Limit
 
-**Hard limit: 1000 lines of production code per `.rs` file.** `#[cfg(test)]` modules are excluded from this count — co-located tests are encouraged and should not trigger file splits.
+**Target limit: keep production `.rs` files under roughly 1000 lines when practical.** `#[cfg(test)]` modules are excluded from this count — co-located tests are encouraged and should not trigger file splits.
+
+Existing over-limit files are accepted refactor debt. When you touch one substantially, prefer extracting helpers or sibling modules that reduce responsibility count and local complexity instead of letting the file grow unchecked.
 
 When production code approaches 1000 lines:
 1. **Split by responsibility.** Extract cohesive groups of functions into new modules. For UI widgets, the `mod.rs` / `imp.rs` split already helps — if `mod.rs` grows, extract helpers (e.g., `actions.rs`, `dialogs.rs`). For services, split by sub-domain.

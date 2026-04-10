@@ -13,7 +13,7 @@ mod preview;
 mod print;
 // Workspace-wide search panel: toggle, pre-fill, result activation, focus.
 mod search;
-// Session persistence and draft management (extracted to stay under 1000 lines).
+// Session persistence and draft management.
 mod session;
 // Zoom controls: hamburger menu widget and window actions.
 mod zoom;
@@ -667,17 +667,11 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| {
                     if window.imp().search_panel_revealer.reveals_child() {
                         window.close_search_panel();
-                        let window_weak = window.downgrade();
-                        glib::timeout_add_local_once(
-                            std::time::Duration::from_millis(260),
-                            move || {
-                                if let Some(window) = window_weak.upgrade()
-                                    && let Some(editor) = window.active_editor()
-                                {
-                                    editor.show_search();
-                                }
-                            },
-                        );
+                        window.after_search_panel_transition(|window| {
+                            if let Some(editor) = window.active_editor() {
+                                editor.show_search();
+                            }
+                        });
                     } else if let Some(editor) = window.active_editor() {
                         editor.show_search();
                     }
@@ -687,17 +681,11 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| {
                     if window.imp().search_panel_revealer.reveals_child() {
                         window.close_search_panel();
-                        let window_weak = window.downgrade();
-                        glib::timeout_add_local_once(
-                            std::time::Duration::from_millis(260),
-                            move || {
-                                if let Some(window) = window_weak.upgrade()
-                                    && let Some(editor) = window.active_editor()
-                                {
-                                    editor.show_replace();
-                                }
-                            },
-                        );
+                        window.after_search_panel_transition(|window| {
+                            if let Some(editor) = window.active_editor() {
+                                editor.show_replace();
+                            }
+                        });
                     } else if let Some(editor) = window.active_editor() {
                         editor.show_replace();
                     }
@@ -765,85 +753,61 @@ impl LushtextWindow {
         }
         self.add_action(&discard_action);
 
-        // Stateful toggle for workspace sidebar visibility. The actual state is
-        // driven by the split view so overlay dismissals and button clicks stay
-        // in sync through one source of truth.
-        let sidebar_visible = self.imp().workspace_split_view.shows_sidebar();
-        let sidebar_action =
-            gio::SimpleAction::new_stateful("toggle-sidebar", None, &sidebar_visible.to_variant());
-        {
-            let split_view = self.imp().workspace_split_view.clone();
-            sidebar_action.connect_change_state(move |_action, state| {
-                let Some(state) = state else { return };
-                let Some(new_visible) = state.get::<bool>() else {
-                    tracing::error!("toggle-sidebar: expected bool state");
-                    return;
-                };
-                split_view.set_show_sidebar(new_visible);
-            });
-        }
-        self.add_action(&sidebar_action);
-
-        {
-            let window_weak = self.downgrade();
-            let sidebar_action = sidebar_action.clone();
-            self.imp()
-                .workspace_split_view
-                .connect_show_sidebar_notify(move |split| {
-                    let visible = split.shows_sidebar();
-                    sidebar_action.set_state(&visible.to_variant());
-                    if let Some(window) = window_weak.upgrade() {
-                        window.imp().sidebar_visible.set(visible);
-                        let _ = window
-                            .imp()
-                            .settings
-                            .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, visible);
-                        if !visible {
-                            window.restore_focus_after_secondary_pane_close();
-                        }
-                    }
-                });
-        }
-
-        let properties_visible = self.imp().properties_split_view.shows_sidebar();
-        let properties_action = gio::SimpleAction::new_stateful(
+        self.register_split_view_toggle_action(
+            "toggle-sidebar",
+            &self.imp().workspace_split_view,
+            keys::WORKSPACE_SIDEBAR_VISIBLE,
+            |imp, visible| {
+                imp.sidebar_visible.set(visible);
+            },
+        );
+        self.register_split_view_toggle_action(
             "toggle-properties",
+            &self.imp().properties_split_view,
+            keys::PROPERTIES_SIDEBAR_VISIBLE,
+            |imp, visible| {
+                imp.properties_sidebar_visible.set(visible);
+            },
+        );
+    }
+
+    fn register_split_view_toggle_action(
+        &self,
+        action_name: &'static str,
+        split_view: &libadwaita::OverlaySplitView,
+        settings_key: &'static str,
+        cache_visible: fn(&imp::LushtextWindow, bool),
+    ) {
+        let action = gio::SimpleAction::new_stateful(
+            action_name,
             None,
-            &properties_visible.to_variant(),
+            &split_view.shows_sidebar().to_variant(),
         );
         {
-            let split_view = self.imp().properties_split_view.clone();
-            properties_action.connect_change_state(move |_action, state| {
+            let split_view = split_view.clone();
+            action.connect_change_state(move |_action, state| {
                 let Some(state) = state else { return };
                 let Some(new_visible) = state.get::<bool>() else {
-                    tracing::error!("toggle-properties: expected bool state");
+                    tracing::error!("{action_name}: expected bool state");
                     return;
                 };
                 split_view.set_show_sidebar(new_visible);
             });
         }
-        self.add_action(&properties_action);
+        self.add_action(&action);
 
-        {
-            let window_weak = self.downgrade();
-            let properties_action = properties_action.clone();
-            self.imp()
-                .properties_split_view
-                .connect_show_sidebar_notify(move |split| {
-                    let visible = split.shows_sidebar();
-                    properties_action.set_state(&visible.to_variant());
-                    if let Some(window) = window_weak.upgrade() {
-                        window.imp().properties_sidebar_visible.set(visible);
-                        let _ = window
-                            .imp()
-                            .settings
-                            .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, visible);
-                        if !visible {
-                            window.restore_focus_after_secondary_pane_close();
-                        }
-                    }
-                });
-        }
+        let window_weak = self.downgrade();
+        split_view.connect_show_sidebar_notify(move |split| {
+            let visible = split.shows_sidebar();
+            action.set_state(&visible.to_variant());
+            if let Some(window) = window_weak.upgrade() {
+                cache_visible(window.imp(), visible);
+                let _ = window.imp().settings.set_boolean(settings_key, visible);
+                if !visible {
+                    window.restore_focus_after_secondary_pane_close();
+                }
+            }
+        });
     }
 
     /// Update the file path and title for any tab matching `old_path`.

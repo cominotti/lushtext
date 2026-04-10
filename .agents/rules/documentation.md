@@ -10,7 +10,7 @@ globs: "**/*.{rs,ui,css,toml}"
 Whenever code changes are made, evaluate whether the following files need updates:
 
 1. **`README.md`** — features list, build instructions, EditorConfig docs, architecture overview, test count
-2. **`.agents/AGENTS.md`** — module layout, key design decisions, architecture overview
+2. **`AGENTS.md`** — module layout, key design decisions, architecture overview
 3. **`.agents/rules/*.md`** — coding conventions, widget wiring patterns, UI rules, build rules
 4. **`.agents/skills/*/references/*.md`** — testing patterns, async patterns, architecture references
 

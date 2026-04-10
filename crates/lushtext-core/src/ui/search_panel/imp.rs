@@ -35,6 +35,8 @@ type ReplaceCallback = Box<dyn Fn(Vec<Replacement>)>;
 type UndoCallback = Box<dyn Fn(HashMap<PathBuf, Vec<u8>>)>;
 type MessageCallback = Box<dyn Fn(&str)>;
 
+const SEARCH_INPUT_DEBOUNCE_MS: u64 = 300;
+
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/search-panel.ui")]
 pub struct LushtextSearchPanel {
@@ -307,7 +309,7 @@ impl ObjectImpl for LushtextSearchPanel {
         self.setup_options();
         self.setup_history();
         self.setup_save_button();
-        self.obj().restore_persisted_undo_backup();
+        self.obj().clear_stale_persisted_undo_backup();
         self.constructed_complete.set(true);
     }
 
@@ -806,19 +808,17 @@ impl LushtextSearchPanel {
             let current_gen = imp.glob_generation.get().wrapping_add(1);
             imp.glob_generation.set(current_gen);
 
-            let panel_weak = panel.downgrade();
-            glib::timeout_add_local_once(Duration::from_millis(300), move || {
-                let Some(panel) = panel_weak.upgrade() else {
-                    return;
-                };
-                if panel.imp().glob_generation.get() != current_gen {
-                    return; // Superseded by a newer keystroke.
-                }
-                let query = panel.query();
-                if !query.is_empty() {
-                    panel.start_search(&query);
-                }
-            });
+            schedule_panel_debounce(
+                &panel,
+                current_gen,
+                |panel| panel.imp().glob_generation.get(),
+                move |panel| {
+                    let query = panel.query();
+                    if !query.is_empty() {
+                        panel.start_search(&query);
+                    }
+                },
+            );
         });
     }
 
@@ -847,16 +847,12 @@ impl LushtextSearchPanel {
             let generation = imp.search_generation.get().wrapping_add(1);
             imp.search_generation.set(generation);
 
-            let panel_weak = panel.downgrade();
-            glib::timeout_add_local_once(Duration::from_millis(300), move || {
-                let Some(panel) = panel_weak.upgrade() else {
-                    return;
-                };
-                if panel.imp().search_generation.get() != generation {
-                    return; // Superseded by a newer keystroke.
-                }
-                panel.start_search(&query);
-            });
+            schedule_panel_debounce(
+                &panel,
+                generation,
+                |panel| panel.imp().search_generation.get(),
+                move |panel| panel.start_search(&query),
+            );
         });
 
         // Escape key: signal close request.
@@ -1030,4 +1026,27 @@ pub fn make_display_path(path: &Path, roots: &[PathBuf]) -> String {
         }
     }
     path.display().to_string()
+}
+
+fn schedule_panel_debounce<F>(
+    panel: &super::LushtextSearchPanel,
+    generation: u32,
+    current_generation: fn(&super::LushtextSearchPanel) -> u32,
+    callback: F,
+) where
+    F: FnOnce(super::LushtextSearchPanel) + 'static,
+{
+    let panel_weak = panel.downgrade();
+    let callback = RefCell::new(Some(callback));
+    glib::timeout_add_local_once(Duration::from_millis(SEARCH_INPUT_DEBOUNCE_MS), move || {
+        let Some(panel) = panel_weak.upgrade() else {
+            return;
+        };
+        if current_generation(&panel) != generation {
+            return;
+        }
+        if let Some(callback) = callback.borrow_mut().take() {
+            callback(panel);
+        }
+    });
 }

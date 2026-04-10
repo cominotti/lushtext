@@ -123,17 +123,20 @@ lushtext-core/src/
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
     content_search.rs  Parallel workspace grep (ignore + grep-searcher)
+    editor_io.rs     Text file load/save helpers and mtimes
     editorconfig.rs  .editorconfig resolution
+    notifications.rs Window-scoped status and inline notification store
     palette.rs       SIMD fuzzy search + file indexing
     file_tree.rs     Directory scanning
     draft_service.rs Draft autosave
+    search_backup.rs Replace All undo backup persistence for the active session
     search_history.rs  Search history persistence
     saved_searches.rs  Named saved search persistence
     session_service.rs  Session load/save
     workspace_manager.rs  Workspace CRUD
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
-    window/          Main window + split-view shell + dialogs + search integration
+    window/          Main window shell plus dialogs, search, session, print, and zoom wiring
     editor_page/     GtkSourceView tab
     sidebar/         Multi-workspace file tree
     properties_panel/ Right-side metadata + formatting controls

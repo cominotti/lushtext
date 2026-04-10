@@ -15,8 +15,8 @@ use lushtext_core::config::keys;
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
 };
-use lushtext_core::services::{json_store, workspace_manager};
-use lushtext_core::ui::editor_page::LushtextEditorPage;
+use lushtext_core::services::{draft_service, json_store, workspace_manager};
+use lushtext_core::ui::editor_page::{LushtextEditorPage, SaveError};
 use lushtext_core::ui::window::LushtextWindow;
 use std::time::{Duration, Instant};
 
@@ -365,6 +365,122 @@ fn test_properties_panel_shows_safe_untitled_metadata_state() {
     assert_eq!(
         panel.formatting_source_row.subtitle().as_deref(),
         Some("Not available for untitled tabs")
+    );
+}
+
+#[test]
+fn test_flush_dirty_drafts_skips_close_discarded_editors() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("discard me");
+    editor.buffer().set_modified(true);
+
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    draft_service::write_draft(&data_dir, &draft_id, "stale draft").expect("seed draft");
+    draft_service::delete_draft_file(&data_dir, &draft_id).expect("delete seeded draft");
+
+    window
+        .imp()
+        .close_discard_draft_ids
+        .borrow_mut()
+        .insert(draft_id.clone());
+    window.flush_dirty_drafts();
+
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read draft"),
+        None,
+        "discarded drafts must not be recreated during close flush",
+    );
+    assert!(
+        window.imp().close_discard_draft_ids.borrow().is_empty(),
+        "close discard state should be cleared after the flush",
+    );
+}
+
+#[test]
+fn test_complete_save_as_failure_keeps_existing_editor_identity() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("unsaved draft");
+    editor.buffer().set_modified(true);
+
+    let old_draft_id = editor.draft_id().expect("untitled draft id");
+    let data_dir = json_store::data_dir();
+    draft_service::write_draft(&data_dir, &old_draft_id, "unsaved draft").expect("seed draft");
+
+    let path = std::env::temp_dir()
+        .join("lushtext-save-as-missing-parent")
+        .join("failure.txt");
+    window.complete_save_as(
+        &editor,
+        None,
+        Some(old_draft_id.clone()),
+        path.clone(),
+        Err(SaveError::WriteTemp {
+            path: path.clone(),
+            source: std::io::Error::other("boom"),
+        }),
+    );
+
+    assert_eq!(editor.file_path(), None);
+    assert_eq!(editor.draft_id().as_deref(), Some(old_draft_id.as_str()));
+    assert!(
+        !window.imp().open_paths.borrow().contains(&path),
+        "failed Save As must not register the destination as open",
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &old_draft_id).expect("read draft"),
+        Some("unsaved draft".to_string()),
+        "failed Save As must keep the prior draft available",
+    );
+}
+
+#[test]
+fn test_complete_save_as_success_updates_editor_identity_and_cleans_old_draft() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("saved content");
+    editor.buffer().set_modified(false);
+
+    let old_draft_id = editor.draft_id().expect("untitled draft id");
+    let data_dir = json_store::data_dir();
+    draft_service::write_draft(&data_dir, &old_draft_id, "saved content").expect("seed draft");
+
+    let dir = tempfile::tempdir().expect("save as tempdir");
+    let path = dir.path().join("saved.txt");
+    std::fs::write(&path, "saved content").expect("seed saved file");
+
+    window.complete_save_as(
+        &editor,
+        None,
+        Some(old_draft_id.clone()),
+        path.clone(),
+        Ok(()),
+    );
+
+    assert_eq!(editor.file_path(), Some(path.clone()));
+    assert_eq!(editor.title(), "saved.txt");
+    assert!(
+        window.imp().open_paths.borrow().contains(&path),
+        "successful Save As must register the new destination as open",
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &old_draft_id).expect("read draft"),
+        None,
+        "successful Save As should remove the old untitled draft",
     );
 }
 

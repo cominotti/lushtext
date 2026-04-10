@@ -2,8 +2,8 @@
 
 //! Session persistence and draft management for the main window.
 //!
-//! Extracted from `mod.rs` to keep per-file line counts under the 1000-line
-//! production code limit. All methods are `impl super::LushtextWindow`.
+//! Extracted from `mod.rs` to keep the main window responsibilities split into
+//! smaller, easier-to-navigate modules. All methods are `impl super::LushtextWindow`.
 
 use crate::model::draft::DraftEntry;
 use crate::model::session::{SessionData, SessionTab};
@@ -101,6 +101,7 @@ impl super::LushtextWindow {
         let data_dir = json_store::data_dir();
         let now = editor_io::now_epoch_secs();
         let mut manifest_updates = Vec::new();
+        let discarded_draft_ids = self.imp().close_discard_draft_ids.borrow().clone();
 
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
@@ -114,6 +115,9 @@ impl super::LushtextWindow {
             let Some(draft_id) = editor.draft_id() else {
                 continue;
             };
+            if discarded_draft_ids.contains(&draft_id) {
+                continue;
+            }
             let buffer = editor.buffer();
             let text = buffer
                 .text(&buffer.start_iter(), &buffer.end_iter(), true)
@@ -134,6 +138,7 @@ impl super::LushtextWindow {
             });
         }
         if manifest_updates.is_empty() {
+            self.clear_close_discard_drafts();
             return;
         }
         if let Err(e) = draft_service::update_manifest(&data_dir, |manifest| {
@@ -143,6 +148,7 @@ impl super::LushtextWindow {
         }) {
             tracing::error!("Failed to save draft manifest on close: {e}");
         }
+        self.clear_close_discard_drafts();
     }
 
     // --- Session restore + draft persistence ---

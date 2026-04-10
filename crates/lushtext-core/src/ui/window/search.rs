@@ -3,7 +3,8 @@
 //! Search panel wiring: toggle action, keyboard shortcut, pre-fill,
 //! result activation, workspace root forwarding, and focus management.
 //!
-//! Extracted from `window/mod.rs` to stay under the 1000-line file limit.
+//! Extracted from `window/mod.rs` to keep the main window responsibilities
+//! split into smaller modules.
 //! All methods are `impl LushtextWindow` called from `new()` and `constructed()`.
 
 use crate::config::keys;
@@ -21,6 +22,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use super::LushtextWindow;
+
+pub(super) const SEARCH_PANEL_TRANSITION_DELAY_MS: u64 = 260;
 
 fn format_search_progress_message(files_searched: usize) -> String {
     format!("Searching {files_searched} files\u{2026}")
@@ -291,11 +294,8 @@ impl LushtextWindow {
             && editor.is_search_visible()
         {
             editor.hide_search();
-            let window_weak = self.downgrade();
-            glib::timeout_add_local_once(Duration::from_millis(260), move || {
-                if let Some(window) = window_weak.upgrade() {
-                    window.open_search_panel();
-                }
+            self.after_search_panel_transition(|window| {
+                window.open_search_panel();
             });
             return;
         }
@@ -363,6 +363,25 @@ impl LushtextWindow {
                 gtk4::prelude::GtkWindowExt::set_focus(self, gtk4::Widget::NONE);
             }
         }
+    }
+
+    pub(super) fn after_search_panel_transition<F: FnOnce(&LushtextWindow) + 'static>(
+        &self,
+        callback: F,
+    ) {
+        let window_weak = self.downgrade();
+        let callback = std::cell::RefCell::new(Some(callback));
+        glib::timeout_add_local_once(
+            Duration::from_millis(SEARCH_PANEL_TRANSITION_DELAY_MS),
+            move || {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                if let Some(callback) = callback.borrow_mut().take() {
+                    callback(&window);
+                }
+            },
+        );
     }
 
     pub(crate) fn prepare_search_progress_tracking(&self) {

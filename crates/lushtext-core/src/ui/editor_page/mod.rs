@@ -156,6 +156,17 @@ impl LushtextEditorPage {
                 return;
             }
         };
+        self.save_file_async_to_path(path, callback);
+    }
+
+    /// Save the current buffer to an explicit path without mutating the
+    /// editor's tracked file path first. Used by Save As so tab identity only
+    /// changes after the write succeeds.
+    pub(crate) fn save_file_async_to_path<F: FnOnce(Result<(), SaveError>) + 'static>(
+        &self,
+        path: PathBuf,
+        callback: F,
+    ) {
         let callback: SaveCallback = Box::new(callback);
 
         if self.file_size().unwrap_or_default() >= LARGE_SAVE_SNAPSHOT_THRESHOLD {

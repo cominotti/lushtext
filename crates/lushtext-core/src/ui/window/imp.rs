@@ -127,6 +127,10 @@ pub struct LushtextWindow {
     pub preloaded_drafts: RefCell<HashMap<String, String>>,
     /// Monotonic counter for generating unique IDs for untitled tab drafts.
     pub next_tab_id: Cell<u64>,
+    /// Draft IDs explicitly discarded during an in-progress close flow.
+    /// These must not be re-written by `flush_dirty_drafts()` right before the
+    /// window is destroyed.
+    pub close_discard_draft_ids: RefCell<HashSet<String>>,
     /// Generation counter for debouncing session saves (500ms).
     pub session_save_generation: Cell<u32>,
     /// Guard flag while restoring session state from disk.
@@ -189,6 +193,7 @@ impl Default for LushtextWindow {
             draft_manifest: RefCell::new(DraftManifest::default()),
             preloaded_drafts: RefCell::new(HashMap::new()),
             next_tab_id: Cell::new(0),
+            close_discard_draft_ids: RefCell::new(HashSet::new()),
             session_save_generation: Cell::new(0),
             restoring_session: Cell::new(false),
             search_saved_focus: RefCell::new(None),
@@ -512,6 +517,7 @@ impl WidgetImpl for LushtextWindow {
 impl WindowImpl for LushtextWindow {
     fn close_request(&self) -> glib::Propagation {
         let window = self.obj().clone();
+        window.clear_close_discard_drafts();
         let modified = window.modified_editors();
 
         if modified.is_empty() {

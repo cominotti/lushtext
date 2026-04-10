@@ -6,7 +6,7 @@
 #   make build       - Release build
 #   make build-debug - Debug build
 #   make run         - Debug build + run
-#   make test        - Run all tests (unit + integration)
+#   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
 #   make test-int    - Integration tests only
 #   make check       - clippy + fmt check

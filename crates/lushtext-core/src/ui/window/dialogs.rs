@@ -10,6 +10,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 const RESPONSE_CANCEL: &str = "cancel";
@@ -53,44 +54,75 @@ impl super::LushtextWindow {
             if let Ok(file) = result
                 && let Some(path) = file.path()
             {
+                let old_path = editor.file_path();
+                let old_draft_id = editor.draft_id();
+                let editor = editor.clone();
+                let editor_for_result = editor.clone();
+                let window_clone = window.clone();
+                editor.save_file_async_to_path(path.clone(), move |save_result| {
+                    window_clone.complete_save_as(
+                        &editor_for_result,
+                        old_path.clone(),
+                        old_draft_id.clone(),
+                        path.clone(),
+                        save_result,
+                    );
+                });
+            }
+        });
+    }
+
+    /// Complete the Save As state transition after the background write
+    /// resolves. State only switches to the new path on success.
+    #[doc(hidden)]
+    pub fn complete_save_as(
+        &self,
+        editor: &LushtextEditorPage,
+        old_path: Option<PathBuf>,
+        old_draft_id: Option<String>,
+        path: PathBuf,
+        save_result: Result<(), crate::ui::editor_page::SaveError>,
+    ) {
+        let path_display = path.display().to_string();
+        match save_result {
+            Ok(()) => {
                 {
-                    let mut open_paths = window.imp().open_paths.borrow_mut();
-                    if let Some(ref old) = editor.file_path() {
+                    let mut open_paths = self.imp().open_paths.borrow_mut();
+                    if let Some(ref old) = old_path {
                         open_paths.remove(old.as_path());
                     }
                     open_paths.insert(path.clone());
                 }
                 editor.set_file_path(&path);
-                window.resolve_editorconfig_for_editor(&editor, &path);
-                let path_display = path.display().to_string();
-                let window_clone = window.clone();
-                editor.save_file_async(move |save_result| match save_result {
-                    Ok(()) => {
-                        if let Some(page) = window_clone.imp().tab_view.selected_page() {
-                            page.set_title(
-                                &page
-                                    .child()
-                                    .downcast_ref::<crate::ui::editor_page::LushtextEditorPage>()
-                                    .map(|e| e.title())
-                                    .unwrap_or_default(),
-                            );
-                        }
-                        window_clone.publish_status_message(
-                            &format!("Saved as {path_display}"),
-                            MessageKind::Info,
-                        );
-                        window_clone.refresh_status_bar();
+                self.assign_draft_id(editor);
+                self.resolve_editorconfig_for_editor(editor, &path);
+                if let Some(ref old) = old_path {
+                    self.delete_draft_for_path(old);
+                } else if let Some(ref draft_id) = old_draft_id {
+                    self.delete_draft_by_id(draft_id);
+                }
+                self.delete_draft_for_path(&path);
+                editor.set_draft_restored(false);
+                self.dismiss_editor_notifications(editor);
+
+                let tab_view = &self.imp().tab_view;
+                for i in 0..tab_view.n_pages() {
+                    let page = tab_view.nth_page(i);
+                    if let Some(candidate) = page.child().downcast_ref::<LushtextEditorPage>()
+                        && candidate.as_ptr() == editor.as_ptr()
+                    {
+                        page.set_title(&editor.title());
+                        break;
                     }
-                    Err(e) => {
-                        tracing::error!("Save As failed: {}", e);
-                        window_clone.publish_status_message(
-                            &format!("Save failed: {e}"),
-                            MessageKind::Error,
-                        );
-                    }
-                });
+                }
+                self.publish_status_message(&format!("Saved as {path_display}"), MessageKind::Info);
+                self.refresh_status_bar();
             }
-        });
+            Err(e) => {
+                tracing::error!("Save As failed: {}", e);
+                self.publish_status_message(&format!("Save failed: {e}"), MessageKind::Error);
+            }
+        }
     }
 
     // --- Discard changes confirmation ---
@@ -231,15 +263,20 @@ impl super::LushtextWindow {
                     .filter(|(check, _)| check.is_active())
                     .map(|(_, editor)| editor.clone())
                     .collect();
+                let discarded: Vec<_> = checks
+                    .iter()
+                    .filter(|(check, _)| !check.is_active())
+                    .map(|(_, editor)| editor.clone())
+                    .collect();
                 let on_done = on_done.clone();
-                window.save_editors_for_close(selected, move |confirmed| {
+                window.save_editors_for_close(selected, discarded, move |confirmed| {
                     on_done(confirmed);
                 });
             }
             RESPONSE_DISCARD => {
                 let checks = checks.borrow();
                 let all: Vec<_> = checks.iter().map(|(_, e)| e.clone()).collect();
-                window.cleanup_drafts_for_editors(&all);
+                window.stage_close_discard_drafts(&all);
                 on_done(true);
             }
             _ => {
@@ -250,12 +287,13 @@ impl super::LushtextWindow {
         dialog.present(Some(self));
     }
 
-    /// Save the selected editors during a close flow. Only drafts for
-    /// successfully saved editors are cleaned up; any failure keeps the close
-    /// blocked so recovery data remains available.
+    /// Save the selected editors during a close flow. Drafts for unchecked
+    /// editors are only removed after every requested save succeeds so a
+    /// failed close attempt never drops recovery data prematurely.
     pub fn save_editors_for_close<F: Fn(bool) + 'static>(
         &self,
         editors: Vec<LushtextEditorPage>,
+        discarded_editors: Vec<LushtextEditorPage>,
         on_done: F,
     ) {
         if editors.iter().any(|editor| editor.file_path().is_none()) {
@@ -272,6 +310,9 @@ impl super::LushtextWindow {
             .filter(|editor| editor.file_path().is_some())
             .collect();
         if selected_file_backed.is_empty() {
+            if !discarded_editors.is_empty() {
+                self.stage_close_discard_drafts(&discarded_editors);
+            }
             on_done(true);
             return;
         }
@@ -279,6 +320,7 @@ impl super::LushtextWindow {
         let pending = Rc::new(std::cell::Cell::new(selected_file_backed.len() as u32));
         let any_failed = Rc::new(std::cell::Cell::new(false));
         let saved_editors: Rc<RefCell<Vec<LushtextEditorPage>>> = Rc::new(RefCell::new(Vec::new()));
+        let discarded_editors = Rc::new(discarded_editors);
         let on_done = Rc::new(on_done);
         let window = self.clone();
 
@@ -289,6 +331,7 @@ impl super::LushtextWindow {
             let window = window.clone();
             let any_failed = any_failed.clone();
             let saved_editors = saved_editors.clone();
+            let discarded_editors = discarded_editors.clone();
             editor.save_file_async(move |result| {
                 if let Err(e) = result {
                     any_failed.set(true);
@@ -303,14 +346,32 @@ impl super::LushtextWindow {
                 let remaining = pending.get().saturating_sub(1);
                 pending.set(remaining);
                 if remaining == 0 {
+                    if any_failed.get() {
+                        on_done(false);
+                        return;
+                    }
                     let saved = saved_editors.borrow().clone();
                     if !saved.is_empty() {
                         window.cleanup_drafts_for_editors(&saved);
                     }
-                    on_done(!any_failed.get());
+                    if !discarded_editors.is_empty() {
+                        window.stage_close_discard_drafts(discarded_editors.as_ref());
+                    }
+                    on_done(true);
                 }
             });
         }
+    }
+
+    fn stage_close_discard_drafts(&self, editors: &[LushtextEditorPage]) {
+        let mut discarded_ids = self.imp().close_discard_draft_ids.borrow_mut();
+        discarded_ids.extend(editors.iter().filter_map(LushtextEditorPage::draft_id));
+        drop(discarded_ids);
+        self.cleanup_drafts_for_editors(editors);
+    }
+
+    pub(crate) fn clear_close_discard_drafts(&self) {
+        self.imp().close_discard_draft_ids.borrow_mut().clear();
     }
 
     /// Delete drafts for the given editors. Handles both path-backed files

@@ -22,4 +22,4 @@ This rule is mandatory and has no exceptions.
 
 - A full test suite fails because of an old harness/threading issue: fix the harness, then run the suite again.
 - A runtime warning appears in an untouched subsystem but blocks acceptance of the feature: fix the warning before calling the work done.
-- An outdated rule or missing documentation caused the blocker to recur: update `.agents/AGENTS.md` and the relevant `.agents/rules/*.md` entry in the same work stream.
+- An outdated rule or missing documentation caused the blocker to recur: update `AGENTS.md` and the relevant `.agents/rules/*.md` entry in the same work stream.

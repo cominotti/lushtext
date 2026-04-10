@@ -695,7 +695,7 @@ fn test_exit_preview_mode_clears_state() {
 }
 
 #[test]
-fn test_clear_results_preserves_undo_backup() {
+fn test_clear_results_clears_undo_backup() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let data_dir = json_store::data_dir();
@@ -711,19 +711,20 @@ fn test_clear_results_preserves_undo_backup() {
     panel.show_undo_button();
     assert!(panel.imp().undo_backup.borrow().is_some());
 
-    // Clearing results should preserve undo so Replace All can still be reverted.
+    // Starting a new search should clear any old undo state.
     panel.start_search("");
-    assert!(panel.imp().undo_backup.borrow().is_some());
+    assert!(panel.imp().undo_backup.borrow().is_none());
     assert!(
-        panel.imp().undo_button.property::<bool>("visible"),
-        "undo_button should remain visible after clear"
+        !panel.imp().undo_button.property::<bool>("visible"),
+        "undo_button should hide after clear"
     );
+    assert!(search_backup::load(&data_dir).unwrap().is_empty());
 
     let _ = search_backup::delete(&data_dir);
 }
 
 #[test]
-fn test_search_panel_restores_persisted_undo_backup() {
+fn test_search_panel_discards_stale_persisted_undo_backup_on_construction() {
     ensure_gtk_init();
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
@@ -736,12 +737,11 @@ fn test_search_panel_restores_persisted_undo_backup() {
     search_backup::save(&data_dir, &backup).unwrap();
 
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    wait_until(Duration::from_secs(2), || {
-        panel.imp().undo_backup.borrow().as_ref() == Some(&backup)
-    });
+    wait_until(Duration::from_secs(2), || search_backup::load(&data_dir).unwrap().is_empty());
+    assert!(panel.imp().undo_backup.borrow().is_none());
     assert!(
-        panel.imp().undo_button.property::<bool>("visible"),
-        "undo button should become visible when persisted backup is restored"
+        !panel.imp().undo_button.property::<bool>("visible"),
+        "undo button should stay hidden when stale persisted backup is discarded"
     );
 
     let _ = search_backup::delete(&data_dir);

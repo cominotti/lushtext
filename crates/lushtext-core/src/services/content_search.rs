@@ -220,7 +220,11 @@ pub fn search(
                 }),
             );
 
-            if search_result.is_err() || cancel.load(Ordering::Relaxed) {
+            if let Err(e) = search_result {
+                tracing::warn!("Skipping {} during search: {e}", path.display());
+            }
+
+            if cancel.load(Ordering::Relaxed) {
                 return WalkState::Quit;
             }
 
@@ -713,6 +717,45 @@ mod tests {
             matches[0].path.ends_with("code.rs"),
             "match should be from code.rs"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_does_not_abort_search() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let visible = root.join("visible.rs");
+        let unreadable = root.join("secret.rs");
+
+        fs::write(&visible, "needle\n").unwrap();
+        fs::write(&unreadable, "needle\n").unwrap();
+
+        let mut perms = fs::metadata(&unreadable).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&unreadable, perms).unwrap();
+        assert!(
+            fs::File::open(&unreadable).is_err(),
+            "test requires an unreadable file"
+        );
+
+        let events = search_collect("needle", &[root], &ContentSearchOptions::default());
+
+        let mut restore = fs::metadata(&unreadable).unwrap().permissions();
+        restore.set_mode(0o644);
+        fs::set_permissions(&unreadable, restore).unwrap();
+
+        assert_ends_with_done(&events);
+        let matches: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                SearchEvent::Match(search_match) => Some(search_match),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(matches.len(), 1, "unreadable file should be skipped");
+        assert!(matches[0].path.ends_with("visible.rs"));
     }
 
     // AC #6: Gitignore rules are respected.

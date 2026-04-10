@@ -44,10 +44,11 @@ impl LushtextSearchPanel {
     }
 
     /// Called when the panel is being hidden. Preserves the undo backup so it
-    /// can survive panel close or app restart.
+    /// does not outlive the panel-close safety boundary.
     pub fn close(&self) {
         // Don't cancel the search — preserve results for when the panel reopens.
         // The polling timer is self-managing (stops when Done is received).
+        self.clear_undo_backup();
     }
 
     /// Pre-fill the search entry with text (e.g., editor selection).
@@ -143,33 +144,15 @@ impl LushtextSearchPanel {
         }
     }
 
-    /// Restore a persisted undo backup from a previous session, if present.
-    pub(crate) fn restore_persisted_undo_backup(&self) {
-        if self.imp().undo_backup.borrow().is_some() {
-            return;
-        }
-
-        let generation = self.imp().undo_backup_generation.get();
+    /// Delete any stale persisted undo backup from an earlier session.
+    pub(crate) fn clear_stale_persisted_undo_backup(&self) {
         let data_dir = json_store::data_dir();
         crate::services::async_task::spawn_blocking_then(
             self.clone(),
-            move || search_backup::load(&data_dir),
-            move |panel, result| {
-                let imp = panel.imp();
-                if imp.undo_backup_generation.get() != generation
-                    || imp.undo_backup.borrow().is_some()
-                {
-                    return;
-                }
-                match result {
-                    Ok(backup) if !backup.is_empty() => {
-                        imp.undo_backup.replace(Some(backup));
-                        panel.show_undo_button();
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("Failed to restore replace backup: {e}");
-                    }
+            move || search_backup::delete(&data_dir),
+            |_panel, result| {
+                if let Err(e) = result {
+                    tracing::warn!("Failed to clear stale replace backup: {e}");
                 }
             },
         );
@@ -516,20 +499,14 @@ impl LushtextSearchPanel {
 
     /// Restore search state from a saved search and trigger immediate search.
     pub fn restore_from_saved_search(&self, entry: &SavedSearch) {
-        let imp = self.imp();
-        imp.restoring_history.set(true);
-
-        imp.search_entry.set_text(&entry.query);
-        imp.case_toggle.set_active(entry.case_sensitive);
-        imp.regex_toggle.set_active(entry.regex);
-        imp.word_toggle.set_active(entry.whole_word);
-        imp.gitignore_toggle.set_active(entry.gitignore);
-        imp.glob_entry.set_text(entry.glob.as_deref().unwrap_or(""));
-
-        imp.history_popover.popdown();
-
-        imp.restoring_history.set(false);
-        self.start_search(&entry.query);
+        self.restore_search_state(
+            &entry.query,
+            entry.case_sensitive,
+            entry.regex,
+            entry.whole_word,
+            entry.gitignore,
+            entry.glob.as_deref(),
+        );
     }
 
     /// Remove a saved search by index and persist.
@@ -554,23 +531,42 @@ impl LushtextSearchPanel {
 
     /// Restore search state from a history entry and trigger immediate search.
     pub fn restore_from_history(&self, entry: &SearchHistoryEntry) {
+        self.restore_search_state(
+            &entry.query,
+            entry.case_sensitive,
+            entry.regex,
+            entry.whole_word,
+            entry.gitignore,
+            entry.glob.as_deref(),
+        );
+    }
+
+    fn restore_search_state(
+        &self,
+        query: &str,
+        case_sensitive: bool,
+        regex: bool,
+        whole_word: bool,
+        gitignore: bool,
+        glob: Option<&str>,
+    ) {
         let imp = self.imp();
 
         // Set the guard to suppress redundant searches during state restoration.
         imp.restoring_history.set(true);
 
-        imp.search_entry.set_text(&entry.query);
-        imp.case_toggle.set_active(entry.case_sensitive);
-        imp.regex_toggle.set_active(entry.regex);
-        imp.word_toggle.set_active(entry.whole_word);
-        imp.gitignore_toggle.set_active(entry.gitignore);
-        imp.glob_entry.set_text(entry.glob.as_deref().unwrap_or(""));
+        imp.search_entry.set_text(query);
+        imp.case_toggle.set_active(case_sensitive);
+        imp.regex_toggle.set_active(regex);
+        imp.word_toggle.set_active(whole_word);
+        imp.gitignore_toggle.set_active(gitignore);
+        imp.glob_entry.set_text(glob.unwrap_or(""));
 
         imp.history_popover.popdown();
 
         // Clear the guard and trigger one search directly (bypassing debounce).
         imp.restoring_history.set(false);
-        self.start_search(&entry.query);
+        self.start_search(query);
     }
 
     /// Show the save search dialog. Builds a `SavedSearch` from the current
@@ -654,7 +650,7 @@ impl LushtextSearchPanel {
         let imp = self.imp();
 
         // Cancel previous search. Notify progress callback with is_done=true so
-        // the window clears any lingering "Searching X / Y files..." status message.
+        // the window clears any lingering search progress notification.
         if let Some(old_cancel) = imp.cancel_token.take() {
             old_cancel.store(true, Ordering::Relaxed);
             if let Some(ref cb) = *imp.progress_callback.borrow() {
@@ -1017,6 +1013,7 @@ impl LushtextSearchPanel {
         imp.preview_replacements.borrow_mut().clear();
         imp.checked_indices.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
+        self.clear_undo_backup();
         self.update_replace_button_sensitivity();
     }
 }
