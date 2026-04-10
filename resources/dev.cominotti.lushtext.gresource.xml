@@ -11,6 +11,7 @@
     <file compressed="true" preprocess="xml-stripblanks">ui/search-panel.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/command-palette.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/markdown-preview.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ui/properties-panel.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/status-bar.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/preferences.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/shortcuts.ui</file>

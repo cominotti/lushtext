@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <requires lib="gtk" version="4.14"/>
+  <requires lib="libadwaita" version="1.6"/>
+
+  <template class="LushtextPropertiesPanel" parent="GtkBox">
+    <property name="orientation">vertical</property>
+    <property name="width-request">280</property>
+
+    <child>
+      <object class="GtkScrolledWindow">
+        <property name="vexpand">true</property>
+        <property name="hscrollbar-policy">never</property>
+        <property name="child">
+          <object class="GtkBox">
+            <property name="orientation">vertical</property>
+            <property name="margin-top">12</property>
+            <property name="margin-bottom">12</property>
+            <property name="margin-start">12</property>
+            <property name="margin-end">12</property>
+            <property name="spacing">12</property>
+
+            <child>
+              <object class="AdwPreferencesGroup">
+                <property name="title" translatable="yes">Document</property>
+
+                <child>
+                  <object class="AdwActionRow" id="path_row">
+                    <property name="title" translatable="yes">Path</property>
+                    <property name="subtitle" translatable="yes">No document selected</property>
+                  </object>
+                </child>
+
+                <child>
+                  <object class="AdwActionRow" id="encoding_row">
+                    <property name="title" translatable="yes">Encoding</property>
+                    <property name="subtitle" translatable="yes">Not available</property>
+                  </object>
+                </child>
+
+                <child>
+                  <object class="AdwActionRow" id="file_size_row">
+                    <property name="title" translatable="yes">File Size</property>
+                    <property name="subtitle" translatable="yes">Not available</property>
+                  </object>
+                </child>
+
+                <child>
+                  <object class="AdwActionRow" id="formatting_source_row">
+                    <property name="title" translatable="yes">Formatting Source</property>
+                    <property name="subtitle" translatable="yes">Not available</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+
+            <child>
+              <object class="AdwPreferencesGroup">
+                <property name="title" translatable="yes">Editor</property>
+
+                <child>
+                  <object class="AdwSwitchRow" id="editorconfig_row">
+                    <property name="title" translatable="yes">Use EditorConfig</property>
+                    <property name="subtitle" translatable="yes">Apply .editorconfig files for per-file formatting</property>
+                  </object>
+                </child>
+
+                <child>
+                  <object class="AdwSwitchRow" id="word_wrap_row">
+                    <property name="title" translatable="yes">Word Wrap</property>
+                  </object>
+                </child>
+
+                <child>
+                  <object class="AdwSpinRow" id="tab_width_row">
+                    <property name="title" translatable="yes">Tab Width</property>
+                    <property name="adjustment">
+                      <object class="GtkAdjustment">
+                        <property name="lower">1</property>
+                        <property name="upper">12</property>
+                        <property name="step-increment">1</property>
+                        <property name="value">4</property>
+                      </object>
+                    </property>
+                  </object>
+                </child>
+
+                <child>
+                  <object class="AdwSwitchRow" id="insert_spaces_row">
+                    <property name="title" translatable="yes">Insert Spaces Instead of Tabs</property>
+                  </object>
+                </child>
+
+                <child>
+                  <object class="AdwSwitchRow" id="show_line_numbers_row">
+                    <property name="title" translatable="yes">Show Line Numbers</property>
+                  </object>
+                </child>
+
+                <child>
+                  <object class="AdwSwitchRow" id="highlight_line_row">
+                    <property name="title" translatable="yes">Highlight Current Line</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </child>
+  </template>
+</interface>

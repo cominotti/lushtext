@@ -2,8 +2,9 @@
 
 //! Private implementation for the main application window.
 //!
-//! Handles window geometry persistence via GSettings, sidebar clamping,
-//! tab lifecycle signals, and command palette integration.
+//! This module owns the composite-template wiring, long-lived window state,
+//! split-view persistence, and the callback glue that binds the sidebar,
+//! command palette, session restore, and notifications into one shell.
 
 use crate::config::{self, keys};
 use crate::model::draft::DraftManifest;
@@ -11,26 +12,35 @@ use crate::services::notifications::NotificationBus;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
+use crate::ui::properties_panel::LushtextPropertiesPanel;
 use crate::ui::search_panel::LushtextSearchPanel;
 use crate::ui::sidebar::LushtextSidebar;
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
 use glib::prelude::*;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
+use libadwaita::prelude::AdwApplicationWindowExt;
 use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-// CompositeTemplate loads the UI layout from a compiled XML file (bundled
-// as a GResource at build time). Each #[template_child] field is auto-bound
-// to the widget with the matching `id` attribute in the XML.
-//
-// GObject methods always take &self because multiple widgets can hold
-// references to the same window at once. To store mutable state, we use
-// Cell<T> for Copy types (generation counters, positions) and RefCell<T>
-// for complex types (HashSet, HashMap). Cell has no borrow overhead;
-// RefCell panics on overlapping borrows.
+/// Workspace sidebar minimum width in scale-independent pixels.
+const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 180.0;
+/// Workspace sidebar maximum width in scale-independent pixels.
+const WORKSPACE_SIDEBAR_MAX_WIDTH_SP: f64 = 280.0;
+/// Default workspace sidebar width fraction on desktop.
+const WORKSPACE_SIDEBAR_DEFAULT_FRACTION: f64 = 0.20;
+/// Properties sidebar minimum width in scale-independent pixels.
+const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 260.0;
+/// Properties sidebar maximum width in scale-independent pixels.
+const PROPERTIES_SIDEBAR_MAX_WIDTH_SP: f64 = 380.0;
+/// Default properties sidebar width fraction on desktop.
+const PROPERTIES_SIDEBAR_DEFAULT_FRACTION: f64 = 0.28;
+/// Collapse the right properties pane before the left workspace pane.
+const PROPERTIES_BREAKPOINT_MAX_WIDTH_SP: &str = "max-width: 1100sp";
+/// Collapse the left workspace pane on narrower windows.
+const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: &str = "max-width: 860sp";
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
 pub struct LushtextWindow {
@@ -41,22 +51,17 @@ pub struct LushtextWindow {
     #[template_child]
     pub tab_bar: TemplateChild<libadwaita::TabBar>,
     #[template_child]
+    pub workspace_split_view: TemplateChild<libadwaita::OverlaySplitView>,
+    #[template_child]
+    pub properties_split_view: TemplateChild<libadwaita::OverlaySplitView>,
+    #[template_child]
     pub tab_view: TemplateChild<libadwaita::TabView>,
     #[template_child]
     pub content_stack: TemplateChild<gtk4::Stack>,
     #[template_child]
-    pub content_animation_stack: TemplateChild<gtk4::Stack>,
-    #[template_child]
-    pub main_paned: TemplateChild<gtk4::Paned>,
-    #[template_child]
-    pub sidebar_revealer: TemplateChild<gtk4::Revealer>,
-    #[template_child]
-    pub sidebar_animation_stack: TemplateChild<gtk4::Stack>,
-    #[template_child]
     pub sidebar: TemplateChild<LushtextSidebar>,
-    /// Frozen sidebar image used during show/hide animation so the live tree
-    /// does not need to relayout on every paned tick.
-    pub sidebar_snapshot_picture: gtk4::Picture,
+    #[template_child]
+    pub properties_panel: TemplateChild<LushtextPropertiesPanel>,
     #[template_child]
     pub status_bar: TemplateChild<LushtextStatusBar>,
     #[template_child]
@@ -65,6 +70,8 @@ pub struct LushtextWindow {
     pub command_palette: TemplateChild<LushtextCommandPalette>,
     #[template_child]
     pub primary_menu_button: TemplateChild<gtk4::MenuButton>,
+    #[template_child]
+    pub properties_toggle_button: TemplateChild<gtk4::ToggleButton>,
     #[template_child]
     pub preview_paned: TemplateChild<gtk4::Paned>,
     #[template_child]
@@ -78,31 +85,12 @@ pub struct LushtextWindow {
     #[template_child]
     pub search_panel: TemplateChild<LushtextSearchPanel>,
 
-    /// Application-wide GSettings for window geometry and sidebar position.
+    /// Application-wide settings for geometry, sidebar layout, and editor behavior.
     pub settings: gio::Settings,
-    /// Cached sidebar visibility for the `clamp_sidebar_position` hot path.
-    /// Avoids a GObject property lookup (~60Hz during resize).
+    /// Cached workspace sidebar visibility for action-state synchronization and tests.
     pub sidebar_visible: Cell<bool>,
-    /// Sidebar position saved before hide animation, restored on show.
-    pub saved_sidebar_pos: Cell<i32>,
-    /// Currently running sidebar show/hide animation, if any.
-    /// Paused on rapid toggle so the new animation can start from the current position.
-    pub sidebar_animation: RefCell<Option<libadwaita::TimedAnimation>>,
-    /// Cached legal maximum sidebar position for the current programmatic
-    /// animation. Lets animation ticks and size_allocate use a cheap clamp
-    /// instead of remeasuring the widget tree every frame.
-    pub sidebar_animation_max: Cell<i32>,
-    /// True while a programmatic sidebar animation is moving the paned divider.
-    /// Used to suppress per-frame persistence churn from `notify::position`.
-    pub sidebar_animation_active: Cell<bool>,
-    /// Generation counter for deferred sidebar snapshot refreshes. Lets the
-    /// window coalesce repeated snapshot requests and avoid capturing on the
-    /// immediate interaction path.
-    pub sidebar_snapshot_generation: Cell<u32>,
-    /// Width of the currently cached sidebar snapshot paintable. Lets the
-    /// animation path detect when a recent manual resize made the warmed
-    /// snapshot stale before the next hide/show cycle begins.
-    pub sidebar_snapshot_width: Cell<i32>,
+    /// Cached properties sidebar visibility for action-state synchronization and tests.
+    pub properties_sidebar_visible: Cell<bool>,
     /// Whether the side-by-side preview pane is currently visible.
     pub preview_visible: Cell<bool>,
     /// Whether the preview-only mode (Alt+P) is active (editor hidden, preview full-width).
@@ -112,7 +100,6 @@ pub struct LushtextWindow {
     /// Currently running preview show/hide animation, if any.
     pub preview_animation: RefCell<Option<libadwaita::TimedAnimation>>,
     /// True while a programmatic preview animation is moving the paned divider.
-    /// Used to suppress per-frame persistence churn from `notify::position`.
     pub preview_animation_active: Cell<bool>,
     /// Generation counter for debouncing preview renders (300ms).
     pub preview_render_generation: Cell<u32>,
@@ -123,53 +110,32 @@ pub struct LushtextWindow {
     /// Generation counter for debouncing preview position GSettings writes (200ms).
     pub preview_persist_generation: Cell<u32>,
     /// Generation counter for debouncing file index rebuilds (300ms).
-    /// Incremented on each workspace change; stale timer callbacks no-op.
     pub index_rebuild_generation: Cell<u32>,
     /// Focus widget saved before the command palette steals focus.
-    /// `WeakRef` avoids preventing widget finalization if the tab closes
-    /// while the palette is open. Consumed by `restore_saved_focus()`.
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
-    /// Last sidebar position persisted to GSettings. Compared against pending
-    /// to skip redundant D-Bus writes during rapid resize events.
-    pub last_sidebar_pos: Cell<i32>,
-    /// Sidebar position that will be persisted after the debounce settles.
-    pub pending_sidebar_pos: Cell<i32>,
-    /// Generation counter for debouncing sidebar position GSettings writes (200ms).
-    pub sidebar_persist_generation: Cell<u32>,
     /// Set of file paths with open tabs, for O(1) duplicate detection in `open_document`.
     pub open_paths: RefCell<HashSet<PathBuf>>,
     /// Running total of estimated buffer memory across all tabs (bytes).
-    /// Compared against `BUFFER_MEMORY_BUDGET` to trigger eviction.
     pub buffer_memory_total: Cell<u64>,
-    /// Per-editor estimated buffer memory, keyed by `editor.as_ptr() as usize`
-    /// for stable identity without preventing widget finalization.
+    /// Per-editor estimated buffer memory keyed by `editor.as_ptr() as usize`.
     pub buffer_memory_by_editor: RefCell<HashMap<usize, u64>>,
-    /// Source ID for the global 5-second autosave timer. Removed on dispose.
+    /// Source ID for the global autosave timer. Removed on dispose.
     pub autosave_source_id: RefCell<Option<glib::SourceId>>,
-    /// In-memory copy of the draft manifest, kept in sync with disk.
+    /// In-memory draft manifest kept in sync with disk.
     pub draft_manifest: RefCell<DraftManifest>,
-    /// Draft content pre-loaded during session restore (draft_id → text).
-    /// Populated in `load_session_and_drafts`, consumed by `check_draft_on_open`
-    /// and `check_draft_by_id` to avoid a per-tab background thread hop.
+    /// Draft content preloaded during session restore (draft_id -> text).
     pub preloaded_drafts: RefCell<HashMap<String, String>>,
     /// Monotonic counter for generating unique IDs for untitled tab drafts.
     pub next_tab_id: Cell<u64>,
     /// Generation counter for debouncing session saves (500ms).
     pub session_save_generation: Cell<u32>,
-    /// Guard flag: true while restoring a session from disk.
-    /// Prevents `save_session_debounced` from firing during restore.
+    /// Guard flag while restoring session state from disk.
     pub restoring_session: Cell<bool>,
     /// Focus widget saved before the search panel steals focus.
-    /// Separate from `saved_focus` (command palette) so both overlays
-    /// can independently save/restore focus.
     pub search_saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
-    /// Cached paned separator/handle overhead (pixels), refreshed from the
-    /// current realized layout budget as `paned_min - sidebar_min - content_min`.
-    /// Used in `clamp_sidebar_position` to replace the former hardcoded 16px buffer.
-    pub handle_overhead: Cell<i32>,
     /// Window-scoped notification bus + store.
     pub notification_bus: NotificationBus,
-    /// Periodic sweep for expiring transient/progress notifications.
+    /// Periodic sweep for expiring transient and progress notifications.
     pub notification_sweep_source_id: RefCell<Option<glib::SourceId>>,
     /// Periodic lease renewal for active search progress notifications.
     pub search_progress_heartbeat_source_id: RefCell<Option<glib::SourceId>>,
@@ -185,24 +151,17 @@ impl Default for LushtextWindow {
             header_bar: TemplateChild::default(),
             title_widget: TemplateChild::default(),
             tab_bar: TemplateChild::default(),
+            workspace_split_view: TemplateChild::default(),
+            properties_split_view: TemplateChild::default(),
             tab_view: TemplateChild::default(),
             content_stack: TemplateChild::default(),
-            content_animation_stack: TemplateChild::default(),
-            main_paned: TemplateChild::default(),
-            sidebar_revealer: TemplateChild::default(),
-            sidebar_animation_stack: TemplateChild::default(),
             sidebar: TemplateChild::default(),
-            sidebar_snapshot_picture: gtk4::Picture::builder()
-                .can_shrink(true)
-                .content_fit(gtk4::ContentFit::Cover)
-                .hexpand(true)
-                .halign(gtk4::Align::Start)
-                .vexpand(true)
-                .build(),
+            properties_panel: TemplateChild::default(),
             status_bar: TemplateChild::default(),
             palette_revealer: TemplateChild::default(),
             command_palette: TemplateChild::default(),
             primary_menu_button: TemplateChild::default(),
+            properties_toggle_button: TemplateChild::default(),
             preview_paned: TemplateChild::default(),
             editor_box: TemplateChild::default(),
             markdown_preview: TemplateChild::default(),
@@ -211,12 +170,7 @@ impl Default for LushtextWindow {
             search_panel: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
             sidebar_visible: Cell::new(true),
-            saved_sidebar_pos: Cell::new(0),
-            sidebar_animation: RefCell::new(None),
-            sidebar_animation_max: Cell::new(-1),
-            sidebar_animation_active: Cell::new(false),
-            sidebar_snapshot_generation: Cell::new(0),
-            sidebar_snapshot_width: Cell::new(0),
+            properties_sidebar_visible: Cell::new(false),
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
             saved_preview_pos: Cell::new(0),
@@ -228,9 +182,6 @@ impl Default for LushtextWindow {
             preview_persist_generation: Cell::new(0),
             index_rebuild_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
-            last_sidebar_pos: Cell::new(-1),
-            pending_sidebar_pos: Cell::new(-1),
-            sidebar_persist_generation: Cell::new(0),
             open_paths: RefCell::new(HashSet::new()),
             buffer_memory_total: Cell::new(0),
             buffer_memory_by_editor: RefCell::new(HashMap::new()),
@@ -241,7 +192,6 @@ impl Default for LushtextWindow {
             session_save_generation: Cell::new(0),
             restoring_session: Cell::new(false),
             search_saved_focus: RefCell::new(None),
-            handle_overhead: Cell::new(16),
             notification_bus: NotificationBus::default(),
             notification_sweep_source_id: RefCell::new(None),
             search_progress_heartbeat_source_id: RefCell::new(None),
@@ -251,9 +201,6 @@ impl Default for LushtextWindow {
     }
 }
 
-// ObjectSubclass registers this struct with GLib's runtime type system.
-// NAME must match the `class` attribute in the UI template XML.
-// ParentType sets which Adwaita/GTK widget we extend.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextWindow {
     const NAME: &'static str = "LushtextWindow";
@@ -261,14 +208,12 @@ impl ObjectSubclass for LushtextWindow {
     type ParentType = libadwaita::ApplicationWindow;
 
     fn class_init(klass: &mut Self::Class) {
-        // Register custom widget types BEFORE the template is parsed.
-        // GTK needs to know about these types when it encounters them in
-        // the UI XML — without ensure_type(), template parsing fails.
         LushtextSidebar::ensure_type();
         LushtextEditorPage::ensure_type();
         LushtextStatusBar::ensure_type();
         LushtextCommandPalette::ensure_type();
         LushtextMarkdownPreview::ensure_type();
+        LushtextPropertiesPanel::ensure_type();
         LushtextSearchPanel::ensure_type();
 
         klass.bind_template();
@@ -285,12 +230,7 @@ impl ObjectImpl for LushtextWindow {
 
         let obj = self.obj();
         let settings = &self.settings;
-        self.sidebar_animation_stack
-            .add_named(&self.sidebar_snapshot_picture, Some("snapshot"));
-        self.sidebar_animation_stack.set_visible_child_name("live");
-        self.content_animation_stack.set_visible_child_name("live");
 
-        // --- Restore window geometry from GSettings ---
         let w = settings.int(keys::WINDOW_WIDTH);
         let h = settings.int(keys::WINDOW_HEIGHT);
         obj.set_default_size(w, h);
@@ -298,41 +238,19 @@ impl ObjectImpl for LushtextWindow {
             obj.maximize();
         }
 
-        // --- Compute paned handle overhead and pre-clamp sidebar position ---
-        //
-        // GTK4's layout cycle runs measure() BEFORE size_allocate(). During
-        // measure(), GtkPaned distributes width based on its current `position`,
-        // which may be stale from a previous frame or GSettings restore. If the
-        // position leaves less than content_box's actual minimum width,
-        // GTK warns "Trying to measure GtkBox for width of X, but needs Y".
-        //
-        // Defense: pre-clamp the restored position against the restored window
-        // width so the first layout pass has a valid position. The original
-        // unclamped value is preserved in saved_sidebar_pos for the show
-        // animation to use when the window is wider.
-        let sidebar_vis = settings.boolean(keys::SIDEBAR_VISIBLE);
-        let saved_pos = restore_saved_sidebar_position(settings);
-        update_sidebar_measurements(&obj, &self.content_box);
+        configure_split_views(&self.workspace_split_view, &self.properties_split_view);
+        migrate_split_view_settings(settings, w);
+        restore_workspace_split_view(&obj);
+        restore_properties_split_view(&obj);
+        install_split_view_breakpoints(&obj);
 
-        // Pre-clamp against the restored default width (best proxy for the
-        // first frame). The clamp only reduces, never grows — so if the WM
-        // opens at a wider width, the position is still valid.
-        let clamped_pos = clamp_sidebar_visible_position(&obj, &self.content_box, w, saved_pos);
-        self.main_paned.set_position(clamped_pos);
-        self.last_sidebar_pos.set(clamped_pos);
-        self.pending_sidebar_pos.set(clamped_pos);
-        // Preserve the original unclamped position for show-animation target.
-        // When the window is wider than the GSettings width, animate_sidebar
-        // will use this value (which clamp_sidebar_position will then validate
-        // against the actual allocated width).
-        self.saved_sidebar_pos
-            .set(saved_pos.max(SIDEBAR_COLLAPSED_POSITION));
+        // Restore preview pane position even though the pane starts hidden so
+        // the first reveal animation still targets the user's preferred width.
+        let saved_preview_pos = settings.int(keys::PREVIEW_PANE_POSITION);
+        self.saved_preview_pos.set(saved_preview_pos);
+        self.last_preview_pos.set(saved_preview_pos);
+        self.pending_preview_pos.set(saved_preview_pos);
 
-        // --- Persist window geometry incrementally via notify signals ---
-        // connect_notify_local (not connect_notify) because the closure captures
-        // GTK widgets that are not thread-safe. The _local variant guarantees
-        // main-thread execution only.
-        // (Sidebar clamping is handled in size_allocate, not here.)
         {
             let settings = settings.clone();
             obj.connect_notify_local(Some("default-width"), move |window, _| {
@@ -358,41 +276,6 @@ impl ObjectImpl for LushtextWindow {
             });
         }
 
-        // Refresh the live layout budget once the widgets are mapped. GtkPaned's
-        // realized handle width can differ from the pre-map measurement by 1px,
-        // which is enough to reintroduce the `GtkBox ... needs at least ...`
-        // warning during the first toggle on some themes/layouts.
-        {
-            let window_weak = obj.downgrade();
-            obj.connect_map(move |_| {
-                if let Some(window) = window_weak.upgrade() {
-                    refresh_sidebar_layout_budget(&window);
-                    window.queue_sidebar_snapshot_refresh();
-                }
-            });
-        }
-
-        // --- Restore sidebar visibility ---
-        self.sidebar_visible.set(sidebar_vis);
-        self.sidebar_revealer.set_transition_duration(0);
-        self.sidebar_revealer.set_visible(sidebar_vis);
-        self.sidebar_revealer.set_reveal_child(sidebar_vis);
-        if !sidebar_vis {
-            // Mirror the post-hide runtime state on startup so the first
-            // toggle-on animates from the same collapsed endpoint instead of
-            // popping in at the already-restored width.
-            self.main_paned.set_position(SIDEBAR_COLLAPSED_POSITION);
-        }
-
-        // --- Restore preview pane position ---
-        // Preview starts hidden (default), but we restore the saved position
-        // so the first show animation can slide to it.
-        let saved_preview_pos = settings.int(keys::PREVIEW_PANE_POSITION);
-        self.saved_preview_pos.set(saved_preview_pos);
-        self.last_preview_pos.set(saved_preview_pos);
-        self.pending_preview_pos.set(saved_preview_pos);
-
-        // --- Preview pane position clamp on user drag ---
         {
             let window_weak = obj.downgrade();
             self.preview_paned
@@ -406,7 +289,6 @@ impl ObjectImpl for LushtextWindow {
                 });
         }
 
-        // --- EditorConfig toggle ---
         {
             let window_weak = obj.downgrade();
             settings.connect_changed(Some(keys::USE_EDITORCONFIG), move |s, _| {
@@ -416,33 +298,50 @@ impl ObjectImpl for LushtextWindow {
             });
         }
 
-        // --- Sidebar position persist on user drag ---
         {
             let window_weak = obj.downgrade();
-            self.main_paned
-                .connect_notify_local(Some("position"), move |paned, _| {
-                    if let Some(window) = window_weak.upgrade() {
-                        if window.imp().sidebar_animation_active.get() {
-                            return;
-                        }
-                        clamp_sidebar_position(
-                            &window,
-                            paned,
-                            &window.imp().content_box,
-                            if paned.width() > 0 {
-                                paned.width()
-                            } else {
-                                window.width()
-                            },
-                        );
-                        if window.imp().sidebar_visible.get() {
-                            window.queue_sidebar_snapshot_refresh();
-                        }
+            self.workspace_split_view.connect_notify_local(
+                Some("sidebar-width-fraction"),
+                move |split, _| {
+                    let Some(window) = window_weak.upgrade() else {
+                        return;
+                    };
+                    let width = current_window_width(&window);
+                    let clamped = clamp_workspace_fraction(width, split.sidebar_width_fraction());
+                    if (clamped - split.sidebar_width_fraction()).abs() > f64::EPSILON {
+                        split.set_sidebar_width_fraction(clamped);
+                        return;
                     }
-                });
+                    let _ = window
+                        .imp()
+                        .settings
+                        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, clamped);
+                },
+            );
         }
 
-        // --- Sidebar file activation ---
+        {
+            let window_weak = obj.downgrade();
+            self.properties_split_view.connect_notify_local(
+                Some("sidebar-width-fraction"),
+                move |split, _| {
+                    let Some(window) = window_weak.upgrade() else {
+                        return;
+                    };
+                    let width = current_window_width(&window);
+                    let clamped = clamp_properties_fraction(width, split.sidebar_width_fraction());
+                    if (clamped - split.sidebar_width_fraction()).abs() > f64::EPSILON {
+                        split.set_sidebar_width_fraction(clamped);
+                        return;
+                    }
+                    let _ = window
+                        .imp()
+                        .settings
+                        .set_double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION, clamped);
+                },
+            );
+        }
+
         let window_weak = obj.downgrade();
         self.sidebar.connect_file_activated(move |path| {
             if let Some(window) = window_weak.upgrade() {
@@ -450,7 +349,6 @@ impl ObjectImpl for LushtextWindow {
             }
         });
 
-        // --- Sidebar rename/delete notifications ---
         let window_weak = obj.downgrade();
         self.sidebar
             .connect_file_renamed(move |old_path, new_path| {
@@ -485,7 +383,6 @@ impl ObjectImpl for LushtextWindow {
             }
         });
 
-        // --- Command palette callbacks ---
         let window_weak = obj.downgrade();
         self.command_palette.connect_item_activated(move |item| {
             let Some(window) = window_weak.upgrade() else {
@@ -515,13 +412,6 @@ impl ObjectImpl for LushtextWindow {
             }
         });
 
-        // --- Sidebar workspace change → rebuild file index ---
-        // NOTE: The callback is registered in search::setup_search_panel() which
-        // also needs to forward workspace roots to the search panel. Since the
-        // sidebar uses a single-slot callback, both operations are combined there.
-        // Do NOT register a separate callback here — it would be overwritten.
-
-        // --- Tab change signals ---
         let window_weak = obj.downgrade();
         self.tab_view
             .connect_notify_local(Some("n-pages"), move |_, _| {
@@ -542,10 +432,6 @@ impl ObjectImpl for LushtextWindow {
                 }
             });
 
-        // --- Tab close confirmation ---
-        // Intercept tab close to show "Save Changes?" dialog for modified tabs.
-        // Returning true inhibits the close; close_page_finish() is called
-        // after the user confirms or cancels.
         let window_weak = obj.downgrade();
         self.tab_view.connect_close_page(move |tab_view, page| {
             let child = page.child();
@@ -557,7 +443,6 @@ impl ObjectImpl for LushtextWindow {
                 tab_view.close_page_finish(page, true);
                 return glib::Propagation::Stop;
             }
-            // Show save-changes dialog; close_page_finish is called in the callback.
             let Some(window) = window_weak.upgrade() else {
                 tab_view.close_page_finish(page, false);
                 return glib::Propagation::Stop;
@@ -568,7 +453,7 @@ impl ObjectImpl for LushtextWindow {
             window.confirm_close_tab(&page, editor, move |confirmed| {
                 tab_view.close_page_finish(&page_for_finish, confirmed);
             });
-            glib::Propagation::Stop // Always inhibit — close_page_finish decides
+            glib::Propagation::Stop
         });
 
         let window_weak = obj.downgrade();
@@ -589,21 +474,13 @@ impl ObjectImpl for LushtextWindow {
             }
         });
 
-        // Start with empty state
         obj.update_content_stack();
-
-        // Load workspaces from disk asynchronously; the completion callback
-        // triggers notify_workspace_changed which rebuilds the file index.
         self.sidebar.load_workspaces();
-
-        // Load draft manifest + session, then restore tabs. Combined so the
-        // manifest is ready before restored tabs call check_draft_on_open.
         obj.load_session_and_drafts();
         obj.start_autosave_timer();
     }
 
     fn dispose(&self) {
-        // Cancel the autosave timer to stop ticking after window close.
         if let Some(source_id) = self.autosave_source_id.take() {
             source_id.remove();
         }
@@ -617,32 +494,12 @@ impl ObjectImpl for LushtextWindow {
 }
 
 impl WidgetImpl for LushtextWindow {
-    // NOTE: No measure() override here — intentional.
-    //
-    // clamp_sidebar_position mutates paned.set_position(), which is a
-    // side effect. GTK calls measure() speculatively with various for_size
-    // values, including the *minimum* window width (640px). Calling clamp
-    // from measure permanently ratchets the sidebar position down to the
-    // minimum-width constraint (~209px), and size_allocate at the real width
-    // (1200px) cannot restore it because the clamp only reduces, never grows.
-
     fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
-        // Clamp sidebar BEFORE the parent allocates — this is the definitive
-        // width, free from stale-value timing issues. Running before
-        // parent_size_allocate ensures the paned position is already correct
-        // when GTK measures the content stack, preventing "needs at least N"
-        // measurement warnings.
-        clamp_sidebar_position(&self.obj(), &self.main_paned, &self.content_box, width);
-        // Clamp preview pane symmetrically (max 1/3 of window from right).
         self.obj().clamp_preview_position(width);
-        // Clamp search panel results height (max 1/3 of window height).
         if height > 0 {
             self.search_panel.clamp_results_height(height / 3);
         }
         self.parent_size_allocate(width, height, baseline);
-        // Keep palette at 60% window width for readability.
-        // Guarded with width_request comparison to avoid triggering a
-        // re-layout on every allocation.
         if width > 0 {
             let palette_width = width * 6 / 10;
             if self.command_palette.width_request() != palette_width {
@@ -658,14 +515,12 @@ impl WindowImpl for LushtextWindow {
         let modified = window.modified_editors();
 
         if modified.is_empty() {
-            // No unsaved changes — flush drafts, save session, close.
             self.search_panel.close();
             window.flush_dirty_drafts();
             window.save_session_sync();
             return self.parent_close_request();
         }
 
-        // Show save-changes dialog and inhibit close until the user responds.
         let window_for_close = window.clone();
         window.show_save_changes_dialog(modified, move |confirmed| {
             if confirmed {
@@ -674,359 +529,182 @@ impl WindowImpl for LushtextWindow {
                 window_for_close.save_session_sync();
                 window_for_close.destroy();
             }
-            // If !confirmed (cancel), the window stays open.
         });
         glib::Propagation::Stop
     }
 }
+
 impl ApplicationWindowImpl for LushtextWindow {}
 impl AdwApplicationWindowImpl for LushtextWindow {}
 
-pub const SIDEBAR_COLLAPSED_POSITION: i32 = 0;
-const DEFAULT_SIDEBAR_POSITION: i32 = 250;
-
-fn restore_saved_sidebar_position(settings: &gio::Settings) -> i32 {
-    let saved = settings.int(keys::SIDEBAR_POSITION);
-    if saved > SIDEBAR_COLLAPSED_POSITION {
-        saved
-    } else {
-        DEFAULT_SIDEBAR_POSITION
-    }
-}
-
-fn queue_sidebar_position_persist(window: &super::LushtextWindow, persisted_pos: i32) {
-    let imp = window.imp();
-    imp.pending_sidebar_pos.set(persisted_pos);
-    if imp.last_sidebar_pos.get() == persisted_pos {
-        return;
-    }
-
-    let generation = imp.sidebar_persist_generation.get().wrapping_add(1);
-    imp.sidebar_persist_generation.set(generation);
-
-    let window_weak = window.downgrade();
-    // 200ms debounce: coalesces resize events into one GSettings write.
-    // size_allocate fires every frame (~60Hz) during resize, and each
-    // set_int triggers a D-Bus round-trip.
-    glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
-        let Some(window) = window_weak.upgrade() else {
-            return;
-        };
-        let imp = window.imp();
-        if imp.sidebar_persist_generation.get() != generation {
-            return;
-        }
-
-        let persisted_pos = imp.pending_sidebar_pos.get();
-        if imp.last_sidebar_pos.get() == persisted_pos {
-            return;
-        }
-        if imp
-            .settings
-            .set_int(keys::SIDEBAR_POSITION, persisted_pos)
-            .is_ok()
-        {
-            imp.last_sidebar_pos.set(persisted_pos);
-        }
-    });
-}
-
-pub(super) fn persist_sidebar_position_preference(window: &super::LushtextWindow) {
-    let imp = window.imp();
-    // Persist the preferred *visible* width, never the collapsed runtime
-    // endpoint. Otherwise a hidden session would save `0` and the next restore
-    // would try to animate the first show from 0 -> 0.
-    let persisted_pos = if imp.sidebar_visible.get() {
-        imp.main_paned.position()
-    } else {
-        imp.saved_sidebar_pos.get()
-    };
-    queue_sidebar_position_persist(window, persisted_pos);
-}
-
-fn sidebar_max_position(
-    window: &super::LushtextWindow,
-    content_box: &gtk4::Box,
-    window_width: i32,
-) -> Option<i32> {
-    if window_width <= 0 {
-        return None;
-    }
-    let for_height = current_paned_for_height(window);
-    let start_req = measure_sidebar_start_min(window, for_height);
-    let end_req = measure_content_host_min(window, content_box);
-    let handle_size = measure_sidebar_handle_overhead(window, end_req);
-    sidebar_max_position_from_constraints(window, window_width, start_req, end_req, handle_size)
-}
-
-/// GTK validates a widget's legal `for_width` floor by measuring it
-/// horizontally with `for_height = -1` before it performs a vertical measure.
-///
-/// For layout budgeting we also care about the current realized height, because
-/// height-for-width widgets can request a larger width once they know their
-/// live height. Using the max of both keeps the paned safe for GTK's legality
-/// checks and for the current runtime layout.
-#[derive(Clone, Copy, Debug)]
-struct HorizontalMeasurementFloor {
-    legal_min: i32,
-    runtime_min: i32,
-}
-
-impl HorizontalMeasurementFloor {
-    fn resolved(self) -> i32 {
-        self.legal_min.max(self.runtime_min)
-    }
-}
-
-fn measure_horizontal_floor(
-    widget: &impl IsA<gtk4::Widget>,
-    runtime_for_height: i32,
-) -> HorizontalMeasurementFloor {
-    let widget = widget.as_ref();
-    let (legal_min, _, _, _) = widget.measure(gtk4::Orientation::Horizontal, -1);
-    let runtime_min = if runtime_for_height > 0 {
-        let (runtime_min, _, _, _) =
-            widget.measure(gtk4::Orientation::Horizontal, runtime_for_height);
-        runtime_min
-    } else {
-        legal_min
-    };
-
-    HorizontalMeasurementFloor {
-        legal_min,
-        runtime_min,
-    }
-}
-
-fn measure_content_host_min(window: &super::LushtextWindow, content_box: &gtk4::Box) -> i32 {
-    let runtime_for_height = current_paned_for_height(window);
-    let content_box_min = measure_horizontal_floor(content_box, runtime_for_height).resolved();
-    let content_host: &gtk4::Widget = window.imp().content_animation_stack.upcast_ref();
-    let content_host_min = measure_horizontal_floor(content_host, runtime_for_height).resolved();
-    content_box_min.max(content_host_min)
-}
-
-fn measure_sidebar_handle_overhead(window: &super::LushtextWindow, content_min: i32) -> i32 {
-    let imp = window.imp();
-    if let Some(handle_widget) = paned_handle_widget(&imp.main_paned) {
-        let orientation = imp.main_paned.orientation();
-        let (handle_min, handle_nat, _, _) = handle_widget.measure(orientation, -1);
-        let handle_overhead = handle_nat.max(handle_min).max(1);
-        imp.handle_overhead.set(handle_overhead);
-        return handle_overhead;
-    }
-
-    let (paned_min, _, _, _) = imp.main_paned.measure(gtk4::Orientation::Horizontal, -1);
-    let (sidebar_min, _, _, _) = imp
-        .sidebar_revealer
-        .measure(gtk4::Orientation::Horizontal, -1);
-    let handle_overhead = (paned_min - sidebar_min - content_min + 1).max(1);
-    imp.handle_overhead.set(handle_overhead);
-    handle_overhead
-}
-
-fn update_sidebar_measurements(
-    window: &super::LushtextWindow,
-    content_box: &gtk4::Box,
-) -> (i32, i32) {
-    let content_min = measure_content_host_min(window, content_box);
-    if content_min > 0 && content_box.width_request() != content_min {
-        content_box.set_width_request(content_min);
-    }
-    let content_animation_stack = &window.imp().content_animation_stack;
-    // The paned end-child is the animation stack, not the inner content box.
-    // Preserve the same legal horizontal floor on the real end-host so
-    // swapping visible children during sidebar hide cannot under-budget it by
-    // one pixel and trigger `Trying to measure GtkStack ... needs at least ...`.
-    if content_min > 0 && content_animation_stack.width_request() != content_min {
-        content_animation_stack.set_width_request(content_min);
-    }
-    let handle_overhead = measure_sidebar_handle_overhead(window, content_min);
-    // During hide, the start child still occupies a 1px slot while the
-    // revealer remains in layout for the collapse animation. Keep that extra
-    // pixel in the paned's own minimum so the end-child stack never gets
-    // measured at `content_min - 1` during height-for-width passes.
-    let paned_min = content_min
-        .saturating_add(handle_overhead)
-        .saturating_add(1);
-    let main_paned = &window.imp().main_paned;
-    if paned_min > 0 && main_paned.width_request() != paned_min {
-        main_paned.set_width_request(paned_min);
-    }
-    (content_min, handle_overhead)
-}
-
-fn measure_sidebar_start_min(window: &super::LushtextWindow, for_height: i32) -> i32 {
-    let sidebar_revealer: &gtk4::Widget = window.imp().sidebar_revealer.upcast_ref();
-    measure_horizontal_floor(sidebar_revealer, for_height).resolved()
-}
-
-fn current_paned_for_height(window: &super::LushtextWindow) -> i32 {
-    let imp = window.imp();
-    let for_height = imp
-        .content_box
-        .height()
-        .max(imp.main_paned.height())
-        .max(window.height());
-    if for_height > 0 { for_height } else { -1 }
-}
-
-fn paned_handle_widget(paned: &gtk4::Paned) -> Option<gtk4::Widget> {
-    let mut child = paned.first_child();
-    while let Some(widget) = child {
-        if widget.css_name() == "separator" {
-            return Some(widget);
-        }
-        child = widget.next_sibling();
-    }
-    None
-}
-
-fn sidebar_affects_layout(imp: &LushtextWindow) -> bool {
-    imp.sidebar_visible.get() || imp.sidebar_revealer.property::<bool>("visible")
-}
-
-fn sidebar_max_position_from_constraints(
-    window: &super::LushtextWindow,
-    window_width: i32,
-    start_req: i32,
-    end_req: i32,
-    handle_size: i32,
-) -> Option<i32> {
-    if window_width <= 0 {
-        return None;
-    }
-
-    let imp = window.imp();
-    let allocation = (window_width - handle_size).max(1);
-
-    // Mirror GTK's own gtk_paned_compute_position() upper-bound logic:
-    // max = allocation_without_handle;
-    // if !shrink_end_child => max = MAX(1, max - end_child_req);
-    // max = MAX(min, max).
-    let min_pos = if imp.main_paned.shrinks_start_child() {
-        0
-    } else {
-        start_req
-    };
-    let mut max_pos = allocation;
-    if !imp.main_paned.shrinks_end_child() {
-        max_pos = (max_pos - end_req).max(1);
-    }
-    max_pos = max_pos.max(min_pos);
-    if imp.main_paned.width() > 0 && imp.main_paned.width() == window_width {
-        max_pos = max_pos.min(imp.main_paned.max_position().max(min_pos));
-    }
-
-    Some((window_width / 3).min(max_pos).max(0))
-}
-
-pub(super) fn refreshed_sidebar_visible_target(
-    window: &super::LushtextWindow,
-    window_width: i32,
-    desired: i32,
-) -> i32 {
-    let imp = window.imp();
-    let (content_min, handle_overhead) = update_sidebar_measurements(window, &imp.content_box);
-    let for_height = current_paned_for_height(window);
-    let start_req = measure_sidebar_start_min(window, for_height);
-    match sidebar_max_position_from_constraints(
-        window,
-        window_width,
-        start_req,
-        content_min,
-        handle_overhead,
-    ) {
-        Some(max) => desired.min(max).max(SIDEBAR_COLLAPSED_POSITION),
-        None => desired.max(SIDEBAR_COLLAPSED_POSITION),
-    }
-}
-
-pub(super) fn refresh_sidebar_layout_budget(window: &super::LushtextWindow) {
-    let imp = window.imp();
-    let (content_min, handle_overhead) = update_sidebar_measurements(window, &imp.content_box);
-    // Keep clamping active while the revealer is still participating in layout.
-    // The toggle action flips `sidebar_visible` before the hide animation starts,
-    // so the cache alone is not a reliable indicator that the sidebar is fully
-    // offstage yet.
-    if !sidebar_affects_layout(imp) {
-        return;
-    }
-    let budget_width = if imp.main_paned.width() > 0 {
-        imp.main_paned.width()
-    } else {
-        window.width()
-    };
-    let for_height = current_paned_for_height(window);
-    let start_req = measure_sidebar_start_min(window, for_height);
-    let clamped = sidebar_max_position_from_constraints(
-        window,
-        budget_width,
-        start_req,
-        content_min,
-        handle_overhead,
-    )
-    .map(|max| {
-        imp.main_paned
-            .position()
-            .min(max)
-            .max(SIDEBAR_COLLAPSED_POSITION)
-    })
-    .unwrap_or_else(|| imp.main_paned.position().max(SIDEBAR_COLLAPSED_POSITION));
-    if clamped != imp.main_paned.position() {
-        imp.main_paned.set_position(clamped);
-    }
-}
-
-/// Clamp a desired *visible* sidebar position before it is written into
-/// `GtkPaned`. This is safe for animation targets and animation ticks.
-pub fn clamp_sidebar_visible_position(
-    window: &super::LushtextWindow,
-    content_box: &gtk4::Box,
-    window_width: i32,
-    desired: i32,
-) -> i32 {
-    match sidebar_max_position(window, content_box, window_width) {
-        Some(max) => desired.min(max).max(SIDEBAR_COLLAPSED_POSITION),
-        None => desired.max(SIDEBAR_COLLAPSED_POSITION),
-    }
-}
-
-/// Clamp the sidebar pane position to at most 1/3 of the window width
-/// and ensure the end child (content stack) keeps at least its minimum width.
-/// Uses a generation-counter debounce so resize-time clamping stays immediate
-/// while D-Bus-backed persistence only happens once resizing settles.
-pub fn clamp_sidebar_position(
-    window: &super::LushtextWindow,
-    paned: &gtk4::Paned,
-    content_box: &gtk4::Box,
-    window_width: i32,
+fn configure_split_views(
+    workspace_split_view: &libadwaita::OverlaySplitView,
+    properties_split_view: &libadwaita::OverlaySplitView,
 ) {
-    let imp = window.imp();
-    if !sidebar_affects_layout(imp) {
+    workspace_split_view.set_sidebar_position(gtk4::PackType::Start);
+    workspace_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
+    workspace_split_view.set_min_sidebar_width(WORKSPACE_SIDEBAR_MIN_WIDTH_SP);
+    workspace_split_view.set_max_sidebar_width(WORKSPACE_SIDEBAR_MAX_WIDTH_SP);
+    workspace_split_view.set_pin_sidebar(true);
+    workspace_split_view.set_enable_show_gesture(false);
+    workspace_split_view.set_enable_hide_gesture(false);
+
+    properties_split_view.set_sidebar_position(gtk4::PackType::End);
+    properties_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
+    properties_split_view.set_min_sidebar_width(PROPERTIES_SIDEBAR_MIN_WIDTH_SP);
+    properties_split_view.set_max_sidebar_width(PROPERTIES_SIDEBAR_MAX_WIDTH_SP);
+    properties_split_view.set_pin_sidebar(true);
+    properties_split_view.set_enable_show_gesture(false);
+    properties_split_view.set_enable_hide_gesture(false);
+}
+
+fn migrate_split_view_settings(settings: &gio::Settings, restored_width: i32) {
+    if settings.boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED) {
         return;
     }
-    if imp.sidebar_animation_active.get() {
-        let animation_max = imp.sidebar_animation_max.get();
-        if animation_max >= 0 {
-            let current = paned.position();
-            let clamped = current.min(animation_max).max(0);
-            if clamped != current {
-                paned.set_position(clamped);
-            }
-        }
-        return;
-    }
-    let Some(max) = sidebar_max_position(window, content_box, window_width) else {
-        return;
+
+    let width = restored_width.max(1);
+    let legacy_visible = if settings.user_value(keys::SIDEBAR_VISIBLE).is_some() {
+        settings.boolean(keys::SIDEBAR_VISIBLE)
+    } else {
+        true
     };
-    let current = paned.position();
-    let clamped = current.min(max).max(0);
-    if clamped != current {
-        paned.set_position(clamped);
+    let legacy_fraction = if settings.user_value(keys::SIDEBAR_POSITION).is_some() {
+        let legacy_position = settings.int(keys::SIDEBAR_POSITION);
+        if legacy_position > 0 {
+            legacy_position as f64 / width as f64
+        } else {
+            WORKSPACE_SIDEBAR_DEFAULT_FRACTION
+        }
+    } else {
+        WORKSPACE_SIDEBAR_DEFAULT_FRACTION
+    };
+
+    let workspace_fraction = clamp_workspace_fraction(width, legacy_fraction);
+    let properties_fraction = clamp_properties_fraction(width, PROPERTIES_SIDEBAR_DEFAULT_FRACTION);
+
+    let _ = settings.set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, legacy_visible);
+    let _ = settings.set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, workspace_fraction);
+    let _ = settings.set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, false);
+    let _ = settings.set_double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION, properties_fraction);
+    let _ = settings.set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true);
+}
+
+fn restore_workspace_split_view(window: &super::LushtextWindow) {
+    let width = current_window_width(window);
+    let visible = window
+        .imp()
+        .settings
+        .boolean(keys::WORKSPACE_SIDEBAR_VISIBLE);
+    let fraction = clamp_workspace_fraction(
+        width,
+        window
+            .imp()
+            .settings
+            .double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
+    );
+    window
+        .imp()
+        .workspace_split_view
+        .set_sidebar_width_fraction(fraction);
+    window.imp().workspace_split_view.set_show_sidebar(visible);
+    window.imp().sidebar_visible.set(visible);
+}
+
+fn restore_properties_split_view(window: &super::LushtextWindow) {
+    let width = current_window_width(window);
+    let visible = window
+        .imp()
+        .settings
+        .boolean(keys::PROPERTIES_SIDEBAR_VISIBLE);
+    let fraction = clamp_properties_fraction(
+        width,
+        window
+            .imp()
+            .settings
+            .double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION),
+    );
+    window
+        .imp()
+        .properties_split_view
+        .set_sidebar_width_fraction(fraction);
+    window.imp().properties_split_view.set_show_sidebar(visible);
+    window.imp().properties_sidebar_visible.set(visible);
+}
+
+fn install_split_view_breakpoints(window: &super::LushtextWindow) {
+    let properties_bp = libadwaita::Breakpoint::new(
+        libadwaita::BreakpointCondition::parse(PROPERTIES_BREAKPOINT_MAX_WIDTH_SP)
+            .expect("valid properties breakpoint condition"),
+    );
+    properties_bp.add_setter(
+        window
+            .imp()
+            .properties_split_view
+            .upcast_ref::<glib::Object>(),
+        "collapsed",
+        Some(&true.to_value()),
+    );
+    window.add_breakpoint(properties_bp);
+
+    let workspace_bp = libadwaita::Breakpoint::new(
+        libadwaita::BreakpointCondition::parse(WORKSPACE_BREAKPOINT_MAX_WIDTH_SP)
+            .expect("valid workspace breakpoint condition"),
+    );
+    workspace_bp.add_setter(
+        window
+            .imp()
+            .workspace_split_view
+            .upcast_ref::<glib::Object>(),
+        "collapsed",
+        Some(&true.to_value()),
+    );
+    window.add_breakpoint(workspace_bp);
+}
+
+fn current_window_width(window: &super::LushtextWindow) -> i32 {
+    if window.width() > 0 {
+        window.width()
+    } else {
+        let (w, _) = window.default_size();
+        w.max(1)
     }
-    if imp.sidebar_animation_active.get() {
-        return;
-    }
-    persist_sidebar_position_preference(window);
+}
+
+fn clamp_workspace_fraction(window_width: i32, fraction: f64) -> f64 {
+    clamp_fraction(
+        window_width,
+        fraction,
+        WORKSPACE_SIDEBAR_MIN_WIDTH_SP,
+        WORKSPACE_SIDEBAR_MAX_WIDTH_SP,
+        WORKSPACE_SIDEBAR_DEFAULT_FRACTION,
+    )
+}
+
+fn clamp_properties_fraction(window_width: i32, fraction: f64) -> f64 {
+    clamp_fraction(
+        window_width,
+        fraction,
+        PROPERTIES_SIDEBAR_MIN_WIDTH_SP,
+        PROPERTIES_SIDEBAR_MAX_WIDTH_SP,
+        PROPERTIES_SIDEBAR_DEFAULT_FRACTION,
+    )
+}
+
+fn clamp_fraction(
+    window_width: i32,
+    fraction: f64,
+    min_width_sp: f64,
+    max_width_sp: f64,
+    default_fraction: f64,
+) -> f64 {
+    let width = window_width.max(1) as f64;
+    let lower = (min_width_sp / width).min(1.0);
+    let upper = (max_width_sp / width).min(1.0).max(lower);
+    let candidate = if fraction.is_finite() && fraction > 0.0 {
+        fraction
+    } else {
+        default_fraction
+    };
+    candidate.clamp(lower, upper)
 }

@@ -18,8 +18,6 @@ mod session;
 // Zoom controls: hamburger menu widget and window actions.
 mod zoom;
 
-pub use imp::{SIDEBAR_COLLAPSED_POSITION, clamp_sidebar_position, clamp_sidebar_visible_position};
-
 use crate::config::keys;
 use crate::model::draft::DraftEntry;
 use crate::services::async_task;
@@ -42,12 +40,6 @@ use std::time::Duration;
 /// Maximum total estimated buffer memory across all tabs before evicting
 /// unmodified background tabs. ~256MB is comfortable on 8GB machines.
 const BUFFER_MEMORY_BUDGET: u64 = 256_000_000;
-const SIDEBAR_ANIMATION_COLLAPSED_POSITION: i32 = 1;
-const SIDEBAR_ANIMATION_BASE_DURATION_MS: u32 = 250;
-const SIDEBAR_ANIMATION_MIN_DURATION_MS: u32 = 140;
-const SIDEBAR_ANIMATION_REFERENCE_DISTANCE_PX: u32 = 300;
-const SIDEBAR_SHOW_SNAPSHOT_THRESHOLD_DENOMINATOR: i32 = 4;
-const SIDEBAR_LIVE_SHOW_DURATION_MS: u32 = 160;
 
 /// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
 /// Unknown values fall back to `Default` (follow system).
@@ -69,114 +61,6 @@ glib::wrapper! {
 }
 
 impl LushtextWindow {
-    fn sidebar_animation_duration_ms(from: i32, to: i32, use_snapshot_for_show: bool) -> u32 {
-        let distance = (to - from).unsigned_abs();
-        if distance == 0 {
-            return 0;
-        }
-
-        if !use_snapshot_for_show {
-            return SIDEBAR_LIVE_SHOW_DURATION_MS;
-        }
-
-        // Keep the widest sidebar travel at the original 250ms feel, but
-        // shorten narrower travels so integer paned positions do not spend too
-        // many frames repeating the same value near the end of the curve.
-        distance
-            .min(SIDEBAR_ANIMATION_REFERENCE_DISTANCE_PX)
-            .saturating_mul(SIDEBAR_ANIMATION_BASE_DURATION_MS)
-            .div_ceil(SIDEBAR_ANIMATION_REFERENCE_DISTANCE_PX)
-            .max(SIDEBAR_ANIMATION_MIN_DURATION_MS)
-    }
-
-    fn should_use_sidebar_snapshot_for_show(target: i32, budget_width: i32) -> bool {
-        if target <= 0 || budget_width <= 0 {
-            return true;
-        }
-
-        target.saturating_mul(SIDEBAR_SHOW_SNAPSHOT_THRESHOLD_DENOMINATOR) > budget_width
-    }
-
-    fn queue_sidebar_snapshot_refresh(&self) {
-        let generation = self.imp().sidebar_snapshot_generation.get().wrapping_add(1);
-        self.imp().sidebar_snapshot_generation.set(generation);
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(150), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            let imp = window.imp();
-            if imp.sidebar_snapshot_generation.get() != generation
-                || !imp.sidebar_visible.get()
-                || imp.sidebar_animation_active.get()
-                || !imp.sidebar.is_drawable()
-            {
-                return;
-            }
-            let _ = window.cache_sidebar_snapshot();
-        });
-    }
-
-    fn cache_sidebar_snapshot(&self) -> bool {
-        let imp = self.imp();
-        let width = imp.sidebar.width();
-        let height = imp.sidebar.height();
-        if !imp.sidebar.is_drawable() || width <= 0 || height <= 0 {
-            return false;
-        }
-
-        let snapshot = gtk4::Snapshot::new();
-        imp.sidebar_animation_stack
-            .snapshot_child(imp.sidebar.upcast_ref::<gtk4::Widget>(), &snapshot);
-        let Some(paintable) = snapshot.to_paintable(Some(&gtk4::graphene::Size::new(
-            width as f32,
-            height as f32,
-        ))) else {
-            return false;
-        };
-
-        let sidebar: &gtk4::Widget = imp.sidebar.upcast_ref();
-        let (min_width, _, _, _) = sidebar.measure(gtk4::Orientation::Horizontal, -1);
-        imp.sidebar_snapshot_picture.set_paintable(Some(&paintable));
-        imp.sidebar_snapshot_width.set(width);
-        imp.sidebar_snapshot_picture
-            .set_width_request(min_width.max(1));
-        true
-    }
-
-    fn show_live_sidebar_contents(&self) {
-        let imp = self.imp();
-        imp.sidebar_animation_stack.set_visible_child_name("live");
-        self.queue_sidebar_snapshot_refresh();
-    }
-
-    fn show_live_content_contents(&self) {
-        let imp = self.imp();
-        imp.content_animation_stack.set_visible_child_name("live");
-    }
-
-    fn show_sidebar_snapshot_if_available(&self) -> bool {
-        let imp = self.imp();
-        let snapshot_stale = imp.sidebar.is_drawable()
-            && imp.sidebar.width() > 0
-            && imp.sidebar_snapshot_width.get() != imp.sidebar.width();
-        let snapshot_ready = if snapshot_stale || imp.sidebar_snapshot_picture.paintable().is_none()
-        {
-            self.cache_sidebar_snapshot()
-        } else {
-            true
-        };
-
-        if snapshot_ready {
-            imp.sidebar_animation_stack
-                .set_visible_child_name("snapshot");
-            true
-        } else {
-            self.show_live_sidebar_contents();
-            false
-        }
-    }
-
     pub fn new(app: &libadwaita::Application) -> Self {
         let window: Self = Object::builder().property("application", app).build();
         window.setup_actions();
@@ -249,6 +133,7 @@ impl LushtextWindow {
                 && let Some(editor) = editor_weak.upgrade()
             {
                 window.check_draft_on_open(&editor, &path_for_draft);
+                window.refresh_status_bar();
             }
         }));
 
@@ -625,6 +510,7 @@ impl LushtextWindow {
     fn refresh_status_bar(&self) {
         let imp = self.imp();
         let editor = self.active_editor();
+        imp.properties_panel.set_active_editor(editor.as_ref());
         // Status bar
         match &editor {
             Some(e) => {
@@ -879,198 +765,85 @@ impl LushtextWindow {
         }
         self.add_action(&discard_action);
 
-        // Stateful toggle for sidebar visibility. GtkToggleButton auto-syncs
-        // its pressed state with this action's boolean value.
-        let sidebar_visible = self.imp().settings.boolean(keys::SIDEBAR_VISIBLE);
+        // Stateful toggle for workspace sidebar visibility. The actual state is
+        // driven by the split view so overlay dismissals and button clicks stay
+        // in sync through one source of truth.
+        let sidebar_visible = self.imp().workspace_split_view.shows_sidebar();
         let sidebar_action =
             gio::SimpleAction::new_stateful("toggle-sidebar", None, &sidebar_visible.to_variant());
         {
-            let window_weak = self.downgrade();
-            sidebar_action.connect_change_state(move |action, state| {
+            let split_view = self.imp().workspace_split_view.clone();
+            sidebar_action.connect_change_state(move |_action, state| {
                 let Some(state) = state else { return };
                 let Some(new_visible) = state.get::<bool>() else {
                     tracing::error!("toggle-sidebar: expected bool state");
                     return;
                 };
-                action.set_state(state);
-                if let Some(window) = window_weak.upgrade() {
-                    window.imp().sidebar_visible.set(new_visible);
-                    window.animate_sidebar(new_visible);
-                    let _ = window
-                        .imp()
-                        .settings
-                        .set_boolean(keys::SIDEBAR_VISIBLE, new_visible);
-                }
+                split_view.set_show_sidebar(new_visible);
             });
         }
         self.add_action(&sidebar_action);
-    }
 
-    /// Animate the sidebar show/hide by sliding the paned divider.
-    ///
-    /// The hidden endpoint is `SIDEBAR_COLLAPSED_POSITION`; the `GtkRevealer`
-    /// wrapper keeps that zero-width hidden state legal while the raw sidebar
-    /// widget remains clipped offstage.
-    fn animate_sidebar(&self, show: bool) {
-        let imp = self.imp();
-
-        // Cancel any running animation so we can start fresh from the
-        // current position (handles rapid toggle gracefully).
-        // Track whether it was actively playing (vs already finished) —
-        // a finished animation still sits in the RefCell but shouldn't
-        // prevent saving the resting position on the next hide.
-        let was_animating = if let Some(anim) = imp.sidebar_animation.take() {
-            let playing = anim.state() == libadwaita::AnimationState::Playing;
-            anim.pause();
-            playing
-        } else {
-            false
-        };
-        imp.sidebar_animation_active.set(false);
-        imp.sidebar_animation_max.set(-1);
-
-        let paned = &imp.main_paned;
-        imp.sidebar_animation_active.set(true);
-
-        let use_snapshot_for_show;
-        let (from, to) = if show {
-            paned.set_shrink_start_child(false);
-            if !imp.sidebar_revealer.property::<bool>("visible")
-                || !imp.sidebar_revealer.reveals_child()
-            {
-                paned.set_position(SIDEBAR_ANIMATION_COLLAPSED_POSITION);
-            }
-            imp.sidebar_revealer.set_visible(true);
-            imp.sidebar_revealer.set_reveal_child(true);
-            let budget_width = if paned.width() > 0 {
-                paned.width()
-            } else {
-                self.width()
-            };
-            let target = imp::refreshed_sidebar_visible_target(
-                self,
-                budget_width,
-                imp.saved_sidebar_pos.get(),
-            );
-            use_snapshot_for_show = Self::should_use_sidebar_snapshot_for_show(target, budget_width);
-            if use_snapshot_for_show {
-                self.show_sidebar_snapshot_if_available();
-            } else {
-                self.show_live_sidebar_contents();
-            }
-            self.show_live_content_contents();
-            imp.sidebar_animation_max.set(target);
-            (paned.position() as f64, target as f64)
-        } else {
-            use_snapshot_for_show = true;
-            paned.set_shrink_start_child(true);
-            let _ = self.show_sidebar_snapshot_if_available();
-            self.show_live_content_contents();
-            let current = paned.position();
-            // Only save the resting position when not interrupting an active
-            // animation — otherwise keep the previously saved value.
-            if !was_animating {
-                imp.saved_sidebar_pos.set(current);
-            }
-            // Hide starts from the currently visible position and only moves
-            // inward. Reusing that already-valid width avoids an extra full
-            // geometry recomputation on the click path.
-            imp.sidebar_animation_max
-                .set(current.max(SIDEBAR_COLLAPSED_POSITION));
-            (current as f64, SIDEBAR_ANIMATION_COLLAPSED_POSITION as f64)
-        };
-        let paned_weak = paned.downgrade();
-        let window_weak = self.downgrade();
-        let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
-            if let Some(p) = paned_weak.upgrade() {
-                let next = if let Some(window) = window_weak.upgrade() {
-                    let animation_max = window.imp().sidebar_animation_max.get();
-                    if animation_max >= 0 {
-                        (value as i32)
-                            .min(animation_max)
-                            .max(SIDEBAR_COLLAPSED_POSITION)
-                    } else {
-                        (value as i32).max(SIDEBAR_COLLAPSED_POSITION)
-                    }
-                } else {
-                    (value as i32).max(SIDEBAR_COLLAPSED_POSITION)
-                };
-                if p.position() != next {
-                    p.set_position(next);
-                }
-            }
-        });
-
-        // The custom widget harness does not drive Adw's frame clock reliably
-        // enough to observe timed paned animations, so make them immediate there.
-        let duration_ms = if std::env::var_os("LUSHTEXT_WIDGET_CHILD").is_some()
-            && std::env::var_os("LUSHTEXT_WIDGET_REAL_ANIMATION").is_none()
         {
-            0
-        } else {
-            Self::sidebar_animation_duration_ms(from as i32, to as i32, use_snapshot_for_show)
-        };
-        if duration_ms == 0 {
-            paned.set_position(to as i32);
-            if show {
-                imp.main_paned.set_shrink_start_child(false);
-                self.show_live_sidebar_contents();
-                self.show_live_content_contents();
-            } else {
-                imp.main_paned.set_shrink_start_child(false);
-                paned.set_position(SIDEBAR_COLLAPSED_POSITION);
-                imp.sidebar_revealer.set_reveal_child(false);
-                imp.sidebar_revealer.set_visible(false);
-                self.show_live_content_contents();
-            }
-            imp::persist_sidebar_position_preference(self);
-            imp.sidebar_animation.replace(None);
-            imp.sidebar_animation_max.set(-1);
-            imp.sidebar_animation_active.set(false);
-            return;
+            let window_weak = self.downgrade();
+            let sidebar_action = sidebar_action.clone();
+            self.imp()
+                .workspace_split_view
+                .connect_show_sidebar_notify(move |split| {
+                    let visible = split.shows_sidebar();
+                    sidebar_action.set_state(&visible.to_variant());
+                    if let Some(window) = window_weak.upgrade() {
+                        window.imp().sidebar_visible.set(visible);
+                        let _ = window
+                            .imp()
+                            .settings
+                            .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, visible);
+                        if !visible {
+                            window.restore_focus_after_secondary_pane_close();
+                        }
+                    }
+                });
         }
-        let animation = libadwaita::TimedAnimation::new(
-            paned.upcast_ref::<gtk4::Widget>(),
-            from,
-            to,
-            duration_ms,
-            anim_target,
+
+        let properties_visible = self.imp().properties_split_view.shows_sidebar();
+        let properties_action = gio::SimpleAction::new_stateful(
+            "toggle-properties",
+            None,
+            &properties_visible.to_variant(),
         );
-        animation.set_easing(libadwaita::Easing::EaseOutCubic);
+        {
+            let split_view = self.imp().properties_split_view.clone();
+            properties_action.connect_change_state(move |_action, state| {
+                let Some(state) = state else { return };
+                let Some(new_visible) = state.get::<bool>() else {
+                    tracing::error!("toggle-properties: expected bool state");
+                    return;
+                };
+                split_view.set_show_sidebar(new_visible);
+            });
+        }
+        self.add_action(&properties_action);
 
-        // After animation completes: fully remove the hidden revealer wrapper
-        // from the paned so GTK doesn't reserve handle width offstage.
-        let sidebar_revealer_weak = if show {
-            None
-        } else {
-            Some(imp.sidebar_revealer.downgrade())
-        };
-        let done_window_weak = self.downgrade();
-        animation.connect_done(move |_| {
-            let Some(window) = done_window_weak.upgrade() else {
-                return;
-            };
-            let imp = window.imp();
-            if show {
-                imp.main_paned.set_shrink_start_child(false);
-                window.show_live_sidebar_contents();
-                window.show_live_content_contents();
-            } else if let Some(sidebar_revealer) =
-                sidebar_revealer_weak.as_ref().and_then(|w| w.upgrade())
-            {
-                imp.main_paned.set_shrink_start_child(false);
-                imp.main_paned.set_position(SIDEBAR_COLLAPSED_POSITION);
-                sidebar_revealer.set_reveal_child(false);
-                sidebar_revealer.set_visible(false);
-                window.show_live_content_contents();
-            }
-            imp.sidebar_animation_max.set(-1);
-            imp.sidebar_animation_active.set(false);
-            imp::persist_sidebar_position_preference(&window);
-        });
-
-        animation.play();
-        imp.sidebar_animation.replace(Some(animation));
+        {
+            let window_weak = self.downgrade();
+            let properties_action = properties_action.clone();
+            self.imp()
+                .properties_split_view
+                .connect_show_sidebar_notify(move |split| {
+                    let visible = split.shows_sidebar();
+                    properties_action.set_state(&visible.to_variant());
+                    if let Some(window) = window_weak.upgrade() {
+                        window.imp().properties_sidebar_visible.set(visible);
+                        let _ = window
+                            .imp()
+                            .settings
+                            .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, visible);
+                        if !visible {
+                            window.restore_focus_after_secondary_pane_close();
+                        }
+                    }
+                });
+        }
     }
 
     /// Update the file path and title for any tab matching `old_path`.
@@ -1100,6 +873,7 @@ impl LushtextWindow {
             }
         }
         self.refresh_header_bar();
+        self.refresh_status_bar();
     }
 
     /// Close any tab whose file path matches `path` or is inside it (for directories).
@@ -1147,6 +921,21 @@ impl LushtextWindow {
         imp.command_palette.close();
         imp.palette_revealer.set_reveal_child(false);
         self.restore_saved_focus();
+    }
+
+    /// Return focus to the active editor after a split-view pane closes.
+    fn restore_focus_after_secondary_pane_close(&self) {
+        let window_weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            if let Some(editor) = window.active_editor() {
+                editor.source_view().grab_focus();
+            } else {
+                gtk4::prelude::GtkWindowExt::set_focus(&window, gtk4::Widget::NONE);
+            }
+        });
     }
 
     /// Restore focus to the widget saved before an overlay was opened.

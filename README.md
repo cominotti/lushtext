@@ -1,10 +1,10 @@
 # LushText
 
-A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. Similar in spirit to GNOME Text Editor, but with an always-visible file tree sidebar and workspace support.
+A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. Similar in spirit to GNOME Text Editor, but with a persistent workspace sidebar, an optional properties sidebar, and workspace support.
 
 ## Features
 
-- **File tree sidebar** -- always-visible left pane with directory navigation
+- **Dual sidebars** -- persistent left workspace tree plus optional right properties panel for document metadata and editor formatting controls
 - **Workspaces** -- named collections of root directories, persisted across sessions
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)
 - **EditorConfig support** -- per-file formatting overrides from `.editorconfig` files (`indent_style`, `tab_width`, `indent_size`); toggle in Preferences
@@ -133,9 +133,10 @@ lushtext-core/src/
     workspace_manager.rs  Workspace CRUD
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
-    window/          Main window + dialogs + search integration
+    window/          Main window + split-view shell + dialogs + search integration
     editor_page/     GtkSourceView tab
     sidebar/         Multi-workspace file tree
+    properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search
     command_palette/ Ctrl+P fuzzy search
     search_bar/      Find/replace
@@ -147,7 +148,7 @@ lushtext-core/src/
 ## Testing
 
 ```sh
-make test        # All tests (623 total)
+make test        # All tests
 make test-unit   # Unit tests only
 make test-int    # Integration tests only
 make test-widget # Widget tests (requires display server)

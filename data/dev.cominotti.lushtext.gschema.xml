@@ -69,15 +69,40 @@
       <default>false</default>
       <summary>Window Maximized</summary>
     </key>
+    <key name="split-view-layout-migrated" type="b">
+      <default>false</default>
+      <summary>Dual sidebar settings migrated</summary>
+      <description>Whether legacy left-sidebar settings have been migrated to the split-view layout keys.</description>
+    </key>
+    <key name="workspace-sidebar-visible" type="b">
+      <default>true</default>
+      <summary>Workspace sidebar visibility</summary>
+      <description>Whether the left workspace sidebar is visible in the split-view layout.</description>
+    </key>
+    <key name="workspace-sidebar-width-fraction" type="d">
+      <default>0.2</default>
+      <summary>Workspace sidebar width fraction</summary>
+      <description>Preferred fraction of the window width reserved for the workspace sidebar.</description>
+    </key>
+    <key name="properties-sidebar-visible" type="b">
+      <default>false</default>
+      <summary>Properties sidebar visibility</summary>
+      <description>Whether the right properties sidebar is visible in the split-view layout.</description>
+    </key>
+    <key name="properties-sidebar-width-fraction" type="d">
+      <default>0.28</default>
+      <summary>Properties sidebar width fraction</summary>
+      <description>Preferred fraction of the window width reserved for the properties sidebar.</description>
+    </key>
     <key name="sidebar-position" type="i">
       <default>250</default>
-      <summary>Sidebar Position</summary>
-      <description>GtkPaned divider position in pixels</description>
+      <summary>Legacy Sidebar Position</summary>
+      <description>Legacy GtkPaned divider position in pixels, retained for one-shot split-view migration.</description>
     </key>
     <key name="sidebar-visible" type="b">
       <default>true</default>
-      <summary>Sidebar Visible</summary>
-      <description>Whether the file tree sidebar is visible</description>
+      <summary>Legacy Sidebar Visible</summary>
+      <description>Legacy left-sidebar visibility, retained for one-shot split-view migration.</description>
     </key>
     <key name="preview-pane-position" type="i">
       <default>300</default>

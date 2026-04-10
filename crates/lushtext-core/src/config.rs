@@ -27,6 +27,11 @@ pub mod keys {
     pub const WINDOW_WIDTH: &str = "window-width";
     pub const WINDOW_HEIGHT: &str = "window-height";
     pub const WINDOW_MAXIMIZED: &str = "window-maximized";
+    pub const SPLIT_VIEW_LAYOUT_MIGRATED: &str = "split-view-layout-migrated";
+    pub const WORKSPACE_SIDEBAR_VISIBLE: &str = "workspace-sidebar-visible";
+    pub const WORKSPACE_SIDEBAR_WIDTH_FRACTION: &str = "workspace-sidebar-width-fraction";
+    pub const PROPERTIES_SIDEBAR_VISIBLE: &str = "properties-sidebar-visible";
+    pub const PROPERTIES_SIDEBAR_WIDTH_FRACTION: &str = "properties-sidebar-width-fraction";
     pub const SIDEBAR_POSITION: &str = "sidebar-position";
     pub const SIDEBAR_VISIBLE: &str = "sidebar-visible";
     pub const PREVIEW_PANE_POSITION: &str = "preview-pane-position";

@@ -8,7 +8,7 @@ globs: "**/*.{rs,ui,css}"
 ## Visual Target
 
 LushText should look and feel like GNOME Text Editor, with these differences:
-- Always-visible left sidebar with file tree (GNOME Text Editor has a right-side properties panel)
+- Persistent left workspace sidebar on desktop, plus an optional right-side properties panel
 - Workspace concept with multiple roots
 
 ## Widget Hierarchy
@@ -18,26 +18,27 @@ LushtextWindow (AdwApplicationWindow)
 ├── AdwHeaderBar
 ├── AdwTabBar → bound to AdwTabView
 ├── GtkRevealer [palette_revealer] → LushtextCommandPalette (Ctrl+P)
-├── GtkPaned (horizontal)
-│   ├── [start] GtkRevealer [sidebar_revealer]
-│   │   └── LushtextSidebar
-│   │       ├── GtkScrolledWindow (outer, vexpand)
-│   │       │   └── GtkBox [sections_box]
-│   │       │       └── LushtextWorkspaceSection (per workspace)
-│   │       │           ├── GtkSeparator
-│   │       │           ├── GtkBox [header: label + add_folder_button]
-│   │       │           └── GtkScrolledWindow (inner, propagate-natural-height=true)
-│   │       │               └── GtkListView + TreeListModel
-│   │       ├── GtkSeparator
-│   │       └── GtkBox [footer: "New Workspace" label + button]
-│   └── [end] GtkBox [content_box] (vertical)
-│       ├── GtkStack [content_stack] (vexpand)
-│       │   ├── "tabs": GtkPaned [preview_paned]
-│       │   │   ├── [start] GtkBox [editor_box] → AdwTabView → LushtextEditorPage per tab
-│       │   │   └── [end] LushtextMarkdownPreview (starts hidden)
-│       │   └── "empty": AdwStatusPage
-│       └── GtkRevealer [search_panel_revealer] (slide-up, 250ms)
-│           └── LushtextSearchPanel (Ctrl+Shift+F workspace search)
+├── AdwOverlaySplitView [workspace_split_view]
+│   ├── [sidebar/start] LushtextSidebar
+│   │   ├── GtkScrolledWindow (outer, vexpand)
+│   │   │   └── GtkBox [sections_box]
+│   │   │       └── LushtextWorkspaceSection (per workspace)
+│   │   │           ├── GtkSeparator
+│   │   │           ├── GtkBox [header: label + add_folder_button]
+│   │   │           └── GtkScrolledWindow (inner, propagate-natural-height=true)
+│   │   │               └── GtkListView + TreeListModel
+│   │   ├── GtkSeparator
+│   │   └── GtkBox [footer: "New Workspace" label + button]
+│   └── [content] AdwOverlaySplitView [properties_split_view]
+│       ├── [content] GtkBox [content_box] (vertical)
+│       │   ├── GtkStack [content_stack] (vexpand)
+│       │   │   ├── "tabs": GtkPaned [preview_paned]
+│       │   │   │   ├── [start] GtkBox [editor_box] → AdwTabView → LushtextEditorPage per tab
+│       │   │   │   └── [end] LushtextMarkdownPreview (starts hidden)
+│       │   │   └── "empty": AdwStatusPage
+│       │   └── GtkRevealer [search_panel_revealer] (slide-up, 250ms)
+│       │       └── LushtextSearchPanel (Ctrl+Shift+F workspace search)
+│       └── [sidebar/end] LushtextPropertiesPanel
 └── LushtextStatusBar (always visible, full width)
     ├── GtkToggleButton [sidebar_toggle_button] — toggle sidebar (action: win.toggle-sidebar)
     ├── GtkLabel [message_label] — feedback messages (left, hexpand)
@@ -96,7 +97,7 @@ LushtextWindow (AdwApplicationWindow)
 
 ## Status Bar
 
-- Per-window, below `GtkPaned`, always visible regardless of tab count.
+- Per-window, below the split-view shell, always visible regardless of tab count.
 - `metadata_box` (encoding + file size) is hidden via `set_visible(false)` when no tabs are open; the message area remains available.
 - Messages use Adwaita semantic color tokens: `@accent_color` (Info), `@warning_color` (Warning), `@error_color` (Error). These adapt to light/dark mode automatically — no Rust-side dark mode handling needed.
 - Background uses `@headerbar_bg_color` to visually distinguish from the editor area.
@@ -114,44 +115,20 @@ Editor preferences use GSettings (`dev.cominotti.lushtext` schema) with `gio::Se
 
 ## Window State Persistence
 
-Window geometry and sidebar position are persisted via GSettings (not JSON session files):
+Window geometry and split-view state are persisted via GSettings (not JSON session files):
 
-- **Keys**: `window-width` (i), `window-height` (i), `window-maximized` (b), `sidebar-position` (i)
-- **Restore**: in `window/imp.rs` `constructed()` via `set_default_size()` + `maximize()` + `set_position()`, all before `present()`
-- **Persist**: via `connect_notify_local` on `default-width`, `default-height`, `maximized` properties. Width/height only persisted when `!is_maximized()` to avoid overwriting normal dimensions with maximized size.
-- **Sidebar clamp**: `clamp_sidebar_position()` in `window/imp.rs` enforces `position <= min(width / 3, max_position)`. When `GtkPaned` is allocated, prefer `main_paned.max_position()` as the authoritative runtime budget and only fall back to `width - content_min - handle_overhead` before allocation. The floor comes from `content_box.measure(Horizontal, -1)`, not the inner stack, because the warning-prone constraint belongs to the actual `GtkBox` end-child GTK is measuring. `handle_overhead` still needs refresh from the live layout budget (`paned_min - sidebar_min - content_min`) after map/realization and after async sidebar mutations such as restored workspaces; do not trust construction-time measurements forever. Called from two places: (1) `WidgetImpl::size_allocate()` — BEFORE `parent_size_allocate` so the position is correct when GTK measures children; (2) `notify::position` on the paned — catches user drag. A `width-request=640` on the window template prevents geometrically impossible layouts. **Do not use property notifications for clamping** — `notify::default-width`/`notify::maximized` fire before the new allocation is applied, so `window.width()` returns the old stale value. **Do not let `notify::position` persist settings during timed paned animations** — keep the clamp live, but defer GSettings writes until the animation completion path so sidebar/preview animations stay smooth.
+- **Keys**: `window-width` (i), `window-height` (i), `window-maximized` (b), `workspace-sidebar-visible` (b), `workspace-sidebar-width-fraction` (d), `properties-sidebar-visible` (b), `properties-sidebar-width-fraction` (d)
+- **Restore**: in `window/imp.rs` `constructed()` via `set_default_size()`, `maximize()`, split-view property restoration, and breakpoint installation before `present()`
+- **Persist**: width/height/maximized still use `connect_notify_local`; split-view booleans persist from `notify::show-sidebar` handlers and width fractions persist from `notify::sidebar-width-fraction`
+- **Migration**: legacy `sidebar-position` / `sidebar-visible` keys remain only as one-shot migration inputs for existing installs; fresh installs keep the split-view defaults directly
 
-## Paned Sizing Defense (measure-before-allocate gap)
+## Split-View Rules
 
-GTK4's layout cycle runs `measure()` BEFORE `size_allocate()`. During `measure()`, `GtkPaned` distributes width based on its current `position` property, which may be stale from a previous frame. This can cause "Trying to measure GtkBox for width of X, but needs at least Y" warnings even though `size_allocate` corrects the position immediately after.
-
-**Five-layer defense pattern:**
-
-1. **Pre-clamp at construction**: After restoring a paned position from GSettings in `constructed()`, immediately validate it against the restored window width and the content child's measured minimum. Store the original unclamped value in `saved_*_pos` so animations can target it at wider widths.
-
-2. **Explicit `width-request` on the paned end-child**: Set `content_box.set_width_request(content_min)` so the paned's minimum constraint is explicit in the widget tree and visible to GTK's layout negotiation. Refresh that width-request when the realized minimum changes (for example after map or after async children are restored).
-
-   **Measure the legal floor the same way GTK validates it**: when a warning says `Trying to measure ... for width of X, but it needs at least Y`, GTK is comparing `X` against the widget's horizontal minimum measured with `for_height = -1`. Do not budget only from a height-adjusted measurement such as `measure(Horizontal, current_height)`. Resolve the end-child floor as `max(measure(..., -1), measure(..., current_height))`, and set `width-request` from that resolved floor.
-
-3. **Hidden-state restore matches hidden runtime state**: If a paned child starts hidden, restore the live `position` to the same collapsed endpoint the hide animation uses (for the sidebar: 0px), while keeping `saved_*_pos` as the preferred visible width. Do not leave the live paned position expanded while the child is invisible.
-
-4. **Animation-write clamping**: Clamp show targets and per-frame animation writes against the current layout budget **before** calling `GtkPaned::set_position()`. Refresh the measured budget immediately before toggling if async child population may have changed it. `size_allocate` / `notify::position` are backup guards, not the first line of defense for invalid animation ticks.
-
-   GTK source lesson: `GtkPaned` computes legal positions using the handle widget's measured natural size, while `GtkRevealer` scales and rounds its child size during transitions. One-pixel gaps are therefore common in live animations. If a paned animation still logs `GtkBox ... needs at least ...`, do not assume `max-position` alone is authoritative enough; inspect the real child minimum plus the live handle budget and validate with a real app run.
-
-5. **Wrap fully hidden paned children in `GtkRevealer`**: If a pane must animate all the way to zero width, do not expose the raw complex widget tree directly as the `GtkPaned` child. Wrap it in a `GtkRevealer`, animate the paned against that wrapper, and hide the wrapper (`set_visible(false)`) once the pane reaches the collapsed endpoint. During hide, keep the wrapper **revealed** until the paned animation completes, then drop `reveal-child`/`visible` together in the completion path. This keeps the offstage child clipped, avoids shrinking the start-child budget too early, and prevents the paned from reserving handle width while fully hidden.
-
-6. **Keep clamps active until the wrapper actually leaves layout**: Hide actions often flip a logical visibility flag before the `GtkRevealer` wrapper is removed from the paned. Budget refreshes and runtime clamps must keep running while the wrapper's own `visible` property is still true; do not gate them solely on the logical visibility cache.
-
-7. **Animation-time persistence is a completion concern, not a tick concern**: `notify::position` / `size_allocate` may still clamp during a timed paned animation, but they must not enqueue debounced persistence work on every frame. Track an `*_animation_active` flag (or equivalent) so timed animations only write the remembered visible width once from `connect_done` (or the immediate-completion test path), not from every animation tick.
-
-8. **`size_allocate` clamp**: Runs BEFORE `parent_size_allocate` on every layout pass with the definitive allocated width. This remains the runtime backstop for drags, live resize, and any other unexpected position changes.
-
-9. **Heavy sidebar trees need live validation, not widget-only confidence**: For paned animations that wrap a large workspace/sidebar subtree, green widget tests are not enough. A fix can stay smooth in the harness yet still emit geometry warnings or hitch in the real app because restored workspaces change the measured child minimums at runtime. Always validate sidebar toggle changes through `make run` against the user's restored workspaces while watching stderr.
-
-10. **Snapshotting can remove stutter but must not keep hidden live children in layout**: Replacing a heavy sidebar subtree with a frozen `GtkWidgetPaintable` snapshot during the animation can eliminate frame-by-frame relayout cost. But any container used for that swap (`GtkStack`, nested wrappers, etc.) must be verified in the live app to ensure the hidden live child no longer influences `GtkPaned` measurement. If it still affects layout, the geometry warning is not fixed even if the animation feels smoother.
-
-**Rule for future paned widgets:** Any code that restores a `GtkPaned` position from persistent storage must pre-clamp it in the same scope, before the first layout pass. If the pane starts hidden, the live `position` must also be restored to the hidden endpoint used by the hide animation. Any paned with `shrink-end-child=false` should have `width-request` set on the end-child matching the child's measured minimum, and animated show paths must clamp targets before writing them.
+- Use nested `AdwOverlaySplitView`s for the window shell instead of an outer `GtkPaned`.
+- `workspace_split_view` owns the left workspace pane and stays bound to `win.toggle-sidebar` in the status bar.
+- `properties_split_view` owns the right properties pane and stays bound to `win.toggle-properties` in the header bar.
+- Breakpoints collapse the properties pane before the workspace pane so medium-width windows keep the file tree visible longer.
+- When a utility pane closes, return focus to the active editor rather than leaving focus stranded on a toggle button.
 
 ## Entry Width Symmetry in Toggle Layouts (CRITICAL)
 
