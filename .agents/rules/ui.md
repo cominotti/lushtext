@@ -31,7 +31,7 @@ LushtextWindow (AdwApplicationWindow)
 │   │                   └── GtkListView + TreeListModel
 │   │   ├── GtkSeparator
 │   │   └── GtkBox [workspace_size_box]
-│   │       └── GtkBox.linked [Small (20%), Comfy (30%), Large (40%) toggle buttons]
+│   │       └── GtkBox.linked [Small, Comfy, Large toggle buttons with percentage tooltips]
 │   └── [content] AdwOverlaySplitView [properties_split_view]
 │       ├── [content] GtkBox [content_box] (vertical)
 │       │   ├── GtkStack [content_stack] (vexpand)
@@ -73,7 +73,7 @@ LushtextWindow (AdwApplicationWindow)
 - **Inner ScrolledWindow pattern**: Each section wraps its `GtkListView` in `GtkScrolledWindow(propagate-natural-height=true, propagate-natural-width=true, vscrollbar-policy=never, hscrollbar-policy=never)`. This provides the vadjustment that ListView requires while letting natural width bubble up to the outer sidebar scroller.
 - **Pinned top and bottom rows**: The "New Workspace" affordance sits above the outer ScrolledWindow and the width-preset footer sits below it; both stay fixed while only the middle workspace list scrolls.
 - **No horizontal sidebar scrollbar**: workspace headers and file-tree labels still avoid ellipsizing, but the left sidebar must not expose a horizontal scrollbar. Overflow is clipped by the viewport instead of enabling sideways scrolling.
-- **Width presets drive the shell**: The footer buttons are centered, mutually exclusive, and map to total-window left-pane fractions of `20%`, `30%`, and `40%`. The window layer owns the split-view math; the sidebar only emits preset selections and reflects the active preset state.
+- **Width presets drive the shell**: The footer buttons use compact `Small`, `Comfy`, and `Large` labels so the controls do not become the sidebar's width floor, while tooltips carry the `20%`, `30%`, and `40%` total-window targets. The window layer owns the split-view math; the sidebar only emits preset selections and reflects the active preset state.
 - **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder, rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
 - **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation saves to disk via `workspace_manager::save()`.
 

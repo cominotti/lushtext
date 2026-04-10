@@ -95,12 +95,9 @@ fn test_sidebar_footer_buttons_exist_and_default_to_comfy() {
     ensure_gtk_init();
     let sidebar = LushtextSidebar::new();
 
-    assert_eq!(sidebar.imp().small_width_button.label().as_deref(), Some("Small (20%)"));
-    assert_eq!(
-        sidebar.imp().comfy_width_button.label().as_deref(),
-        Some("Comfy (30%)")
-    );
-    assert_eq!(sidebar.imp().large_width_button.label().as_deref(), Some("Large (40%)"));
+    assert_eq!(sidebar.imp().small_width_button.label().as_deref(), Some("Small"));
+    assert_eq!(sidebar.imp().comfy_width_button.label().as_deref(), Some("Comfy"));
+    assert_eq!(sidebar.imp().large_width_button.label().as_deref(), Some("Large"));
     assert!(!sidebar.imp().small_width_button.is_active());
     assert!(sidebar.imp().comfy_width_button.is_active());
     assert!(!sidebar.imp().large_width_button.is_active());

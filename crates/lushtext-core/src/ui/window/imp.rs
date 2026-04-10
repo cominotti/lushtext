@@ -25,8 +25,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-/// Workspace sidebar minimum width in scale-independent pixels.
-const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 160.0;
+/// Tiny non-zero floor used only before the first real split-view sync.
+const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 1.0;
 /// Properties sidebar minimum width in scale-independent pixels.
 const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 260.0;
 /// Target total-window width for the visible right properties pane.
@@ -765,19 +765,23 @@ fn desired_workspace_fraction(window: &super::LushtextWindow) -> f64 {
     workspace_sidebar_preset(window).fraction()
 }
 
-fn workspace_sidebar_target_width_sp(window: &super::LushtextWindow, window_width: i32) -> f64 {
-    (window_width.max(1) as f64 * desired_workspace_fraction(window))
-        .max(WORKSPACE_SIDEBAR_MIN_WIDTH_SP)
+fn workspace_sidebar_target_width_sp(window_width: i32, workspace_fraction: f64) -> f64 {
+    (window_width.max(1) as f64 * workspace_fraction).max(WORKSPACE_SIDEBAR_MIN_WIDTH_SP)
 }
 
 fn sync_workspace_sidebar_width_constraints(window: &super::LushtextWindow, window_width: i32) {
-    let target_width = workspace_sidebar_target_width_sp(window, window_width);
+    let target_width =
+        workspace_sidebar_target_width_sp(window_width, desired_workspace_fraction(window));
+    let target_width_request = target_width.round() as i32;
     let split = &window.imp().workspace_split_view;
     if (split.min_sidebar_width() - target_width).abs() > f64::EPSILON {
         split.set_min_sidebar_width(target_width);
     }
     if (split.max_sidebar_width() - target_width).abs() > f64::EPSILON {
         split.set_max_sidebar_width(target_width);
+    }
+    if window.imp().sidebar.width_request() != target_width_request {
+        window.imp().sidebar.set_width_request(target_width_request);
     }
 }
 
@@ -895,6 +899,7 @@ mod tests {
     use super::{
         DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP, WorkspaceSidebarWidthPreset,
         dual_sidebar_window_width_for_center, properties_breakpoint_max_width_sp,
+        workspace_sidebar_target_width_sp,
     };
 
     #[test]
@@ -915,5 +920,21 @@ mod tests {
         );
         let remaining_fraction = 1.0 - WorkspaceSidebarWidthPreset::Large.fraction() - 0.25;
         assert!((total_width * remaining_fraction - center_target).abs() < 0.001);
+    }
+
+    #[test]
+    fn workspace_sidebar_target_width_tracks_exact_total_window_fraction() {
+        assert_eq!(
+            workspace_sidebar_target_width_sp(700, WorkspaceSidebarWidthPreset::Small.fraction()),
+            140.0
+        );
+        assert_eq!(
+            workspace_sidebar_target_width_sp(700, WorkspaceSidebarWidthPreset::Comfy.fraction()),
+            210.0
+        );
+        assert_eq!(
+            workspace_sidebar_target_width_sp(700, WorkspaceSidebarWidthPreset::Large.fraction()),
+            280.0
+        );
     }
 }

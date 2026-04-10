@@ -4,7 +4,6 @@
 
   <template class="LushtextSidebar" parent="GtkBox">
     <property name="orientation">vertical</property>
-    <property name="width-request">200</property>
 
     <style>
       <class name="sidebar"/>
@@ -84,21 +83,21 @@
 
             <child>
               <object class="GtkToggleButton" id="small_width_button">
-                <property name="label" translatable="yes">Small (20%)</property>
+                <property name="label" translatable="yes">Small</property>
                 <property name="tooltip-text" translatable="yes">Use 20% of the app window width for the workspace sidebar</property>
               </object>
             </child>
 
             <child>
               <object class="GtkToggleButton" id="comfy_width_button">
-                <property name="label" translatable="yes">Comfy (30%)</property>
+                <property name="label" translatable="yes">Comfy</property>
                 <property name="tooltip-text" translatable="yes">Use 30% of the app window width for the workspace sidebar</property>
               </object>
             </child>
 
             <child>
               <object class="GtkToggleButton" id="large_width_button">
-                <property name="label" translatable="yes">Large (40%)</property>
+                <property name="label" translatable="yes">Large</property>
                 <property name="tooltip-text" translatable="yes">Use 40% of the app window width for the workspace sidebar</property>
               </object>
             </child>
