@@ -65,6 +65,7 @@ Prefer this loop for real GTK bugs that only show up in a live desktop session:
 5. Relaunch the real app, reproduce again, and compare the new traces with the warning timestamps.
 6. Match warned widget pointers to the real widget tree before deciding which widget is actually wrong.
 7. Only then make a narrow fix, rerun the same real-app loop, and verify both correctness and UX.
+8. Once the manual repro is proven, prefer driving the exact exported `org.gtk.Actions` window action over D-Bus for restart-to-restart verification. This keeps the reproduction on the real application path without guessing at lower-level input injection.
 
 This is the preferred workflow over broad speculative code changes. For geometry bugs especially, "launch real app -> human reproduces -> inspect live warnings -> add narrow tracing -> pointer-match the real widgets -> rerun" is usually faster and more trustworthy than static reasoning alone.
 
@@ -76,6 +77,7 @@ This is the preferred workflow over broad speculative code changes. For geometry
 - Validate the helper's process snapshots before trusting the launch note. If `process-before.txt` or `process-after.txt` contains `run-gtk-debug-session.sh` or `pgrep`, the PID heuristic is not trustworthy yet.
 - For unique GTK apps, distinguish "launcher command ran" from "new instance exists". `make run` may rebuild and invoke the launcher while the already-running app window is the one still being observed.
 - Prefer human-driven reproduction over synthetic action triggering when the user can reproduce the issue reliably. Synthetic actions are useful for narrowing once the live symptom is already understood, not as the default first proof.
+- After the first confirmed repro, check whether the app exports `org.gtk.Actions` on a `/.../window/N` object. If it does, use `gdbus call ... org.gtk.Actions.SetState` or `Activate` to replay the exact window action path across fresh launches.
 - For geometry warnings during paned animations, do not assume the widget named in the warning is the true root cause. A snapshot wrapper that replaced the opposite pane can under-report the live child's minimum width and make GTK complain while measuring the other side.
 - Also allow for the opposite outcome: the warned widget may be the actual `GtkPaned` child host, such as a `GtkStack` used to swap live vs frozen children. In that case, preserving the descendant's width floor is not enough; the host itself must advertise the legal minimum width.
 - Add tracing surgically and remove it after the question it answered is settled. Good traces expose widget pointers, measured minima, allocation widths, or wrapper identity without turning the whole session into noise.

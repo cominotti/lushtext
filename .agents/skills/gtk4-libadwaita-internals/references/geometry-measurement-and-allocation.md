@@ -111,6 +111,7 @@ Subtle but important details from source:
 - it still allocates children at least `MAX(1, slot)`
 - if a child's minimum exceeds its slot, GTK inflates the child's allocation to its minimum
 - that can shift positions or make animation endpoints temporarily illegal
+- during a hide animation, a collapsing start child can still consume that `MAX(1, slot)` while it remains in layout, so the end child may need one more pixel of budget than `end_min + handle_size` would suggest
 
 This is why paned bugs often show up only during live animations or after restoring a large widget subtree. The handle is not bookkeeping; it consumes width.
 
@@ -157,6 +158,7 @@ The robust fix pattern is:
 
 - preserve the live child's minimum width on the snapshot host, for example with `width-request` set from `live_child.measure(Horizontal, -1)`
 - if the paned child is a stable host such as `GtkStack`, preserve that same width floor on the host itself as well
+- if the start child remains in layout during collapse, make the `GtkPaned` host advertise enough minimum width for `end_child_legal_min + handle + 1px collapsing slot`; fixing only the end host `width-request` can still leave GTK measuring it at `legal_min - 1`
 - treat the snapshot as a geometry participant, not only a paint optimization
 - if you use a stable host such as `GtkStack` or a similar multiplexer purely to swap between live and frozen children, disable that host's own transitions unless you explicitly want a second animation system
 - generate or refresh the snapshot off the direct interaction path when possible, such as idle time or a steady-state refresh, because synchronous snapshot capture on the click path can remove the warning but still cause hide-time stutter
@@ -220,6 +222,7 @@ Read them as a family:
 - Treat one-pixel warnings as real. They often mean a layout budget is only accidentally valid on one frame or one monitor scale.
 - If a snapshot surface replaces a live paned child, preserve the live child's minimum width on the snapshot widget or host container. Otherwise GTK can under-measure the opposite child while still naming that opposite child in the warning.
 - If the actual paned child is a wrapper host, preserve the legal width floor on that host too. A descendant `width-request` does not automatically satisfy GTK when the host itself is what `GtkPaned` measures.
+- If a paned hide animation still warns by exactly one pixel after the end host advertises the correct floor, inspect the paned's own minimum width. The collapsing opposite child may still require a `+1px` budget while it participates in layout.
 - Do not capture heavyweight snapshots synchronously on the click path unless you have measured that cost. Moving snapshot refresh to idle or another steady-state moment can preserve smoothness without reintroducing geometry bugs.
 - Freeze only the pane that benefits from it. Keeping the content pane live while freezing the heavy sidebar can be the correct fix when content snapshots introduce distortion or end-of-animation artifacts.
 - Validate complex geometry fixes in a live app session, not only in widget tests. The rounding and handle math happens at runtime with real allocations.

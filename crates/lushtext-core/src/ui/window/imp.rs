@@ -853,7 +853,11 @@ fn update_sidebar_measurements(window: &super::LushtextWindow, content_box: &gtk
         content_animation_stack.set_width_request(content_min);
     }
     let handle_overhead = measure_sidebar_handle_overhead(window, content_min);
-    let paned_min = content_min.saturating_add(handle_overhead);
+    // During hide, the start child still occupies a 1px slot while the
+    // revealer remains in layout for the collapse animation. Keep that extra
+    // pixel in the paned's own minimum so the end-child stack never gets
+    // measured at `content_min - 1` during height-for-width passes.
+    let paned_min = content_min.saturating_add(handle_overhead).saturating_add(1);
     let main_paned = &window.imp().main_paned;
     if paned_min > 0 && main_paned.width_request() != paned_min {
         main_paned.set_width_request(paned_min);

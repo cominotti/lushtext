@@ -1126,6 +1126,28 @@ fn test_presented_visible_sidebar_clamp_preserves_gtk_legal_floor() {
     );
 }
 
+#[test]
+fn test_presented_main_paned_width_request_covers_collapsing_sidebar_slot() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+
+    present_window(&window);
+
+    let paned = &window.imp().main_paned;
+    let content_stack_host = &window.imp().content_animation_stack;
+    let handle_overhead = window.imp().handle_overhead.get();
+    let (legal_min, _, _, _) = content_stack_host.measure(gtk4::Orientation::Horizontal, -1);
+    let required_min = legal_min + handle_overhead + 1;
+
+    assert!(
+        paned.width_request() >= required_min,
+        "presented main_paned width-request {} must cover content legal floor {} + handle {} + collapsing start slot 1",
+        paned.width_request(),
+        legal_min,
+        handle_overhead,
+    );
+}
+
 // --- Tab modified dot (• prefix in tab title) ---
 
 #[test]

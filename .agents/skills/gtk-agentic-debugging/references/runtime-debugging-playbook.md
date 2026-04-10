@@ -25,6 +25,7 @@ Use this playbook when the failure only becomes visible while a GTK app is runni
 5. **Let the human reproduce the bug**
    - The human can interact with the real window while the capture session stays open.
    - When no input injection tool is installed, this is the most reliable path.
+   - After the first manual proof, check whether the app exposes a window-scoped `org.gtk.Actions` object such as `/dev/cominotti/lushtext/window/1`. Driving that action path over D-Bus is often the cleanest way to rerun the exact behavior after a rebuild.
 6. **Summarize before opening everything**
    - Read `summary.md` first.
    - Open raw logs only around the relevant timestamps or repeated signatures.
@@ -79,6 +80,9 @@ This workflow is usually superior to broad speculative edits. It is also usually
 
 ## D-Bus Reading Guide
 
+- `org.gtk.Actions` on `/.../window/N`
+  - Useful for replaying the exact action path after the first manual repro, especially for single-instance apps that are awkward to relaunch and click through repeatedly.
+  - Prefer this over ad hoc synthetic input when the bug is already narrowed to a specific exported action such as `toggle-sidebar`.
 - `org.gnome.Shell.Introspect.WindowsChanged`
   - Often spikes during map, unmap, focus, and workspace transitions.
   - Useful for correlating “something on screen changed” with GTK warnings.
