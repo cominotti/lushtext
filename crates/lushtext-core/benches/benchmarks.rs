@@ -693,12 +693,11 @@ fn bench_draft_restore(c: &mut Criterion) {
                     for tab in &session.tabs {
                         if let Some(ref path) = tab.path {
                             let draft_id = draft_service::draft_id_for_path(path);
-                            if manifest.find_by_id(&draft_id).is_some() {
-                                if let Ok(Some(content)) =
+                            if manifest.find_by_id(&draft_id).is_some()
+                                && let Ok(Some(content)) =
                                     draft_service::read_draft(dir.path(), &draft_id)
-                                {
-                                    preloaded.insert(draft_id, content);
-                                }
+                            {
+                                preloaded.insert(draft_id, content);
                             }
                         }
                     }

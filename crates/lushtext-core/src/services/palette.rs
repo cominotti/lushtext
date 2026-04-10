@@ -763,7 +763,7 @@ mod tests {
         std::fs::write(dir.path().join("src/lib.rs"), "").unwrap();
 
         let root = dir.path().to_path_buf();
-        let index = FileIndex::rebuild(&[root.clone()]);
+        let index = FileIndex::rebuild(std::slice::from_ref(&root));
         assert_eq!(*index.files()[0].workspace_root, root);
     }
 
@@ -983,7 +983,7 @@ mod tests {
         // z: → filesystem root (would scan entire filesystem without protection)
         std::os::unix::fs::symlink("/", dosdevices.join("z:")).unwrap();
 
-        let index = FileIndex::rebuild(&[game_dir.clone()]);
+        let index = FileIndex::rebuild(std::slice::from_ref(&game_dir));
         // Should complete without hanging
         let names = file_names(&index);
         assert!(names.contains(&"game.exe"));
@@ -1089,7 +1089,7 @@ mod tests {
         // s: → parent (cycle)
         std::os::unix::fs::symlink(&prefix, dosdevices.join("s:")).unwrap();
 
-        let index = FileIndex::rebuild(&[prefix.clone()]);
+        let index = FileIndex::rebuild(std::slice::from_ref(&prefix));
         let names = file_names(&index);
         // drive_c content should be found
         assert!(names.contains(&"Program Files"));

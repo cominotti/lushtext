@@ -153,9 +153,14 @@ mod tests {
 
     #[test]
     fn test_threshold_ordering() {
-        assert!(LARGE_FILE_TOAST < DISABLE_SYNTAX_HIGHLIGHTING);
-        assert!(DISABLE_SYNTAX_HIGHLIGHTING < DISABLE_UNDO_HISTORY);
-        assert!(DISABLE_UNDO_HISTORY < REFUSE_TO_OPEN);
+        let large_file_toast = std::hint::black_box(LARGE_FILE_TOAST);
+        let disable_syntax = std::hint::black_box(DISABLE_SYNTAX_HIGHLIGHTING);
+        let disable_undo = std::hint::black_box(DISABLE_UNDO_HISTORY);
+        let refuse_to_open = std::hint::black_box(REFUSE_TO_OPEN);
+
+        assert!(large_file_toast < disable_syntax);
+        assert!(disable_syntax < disable_undo);
+        assert!(disable_undo < refuse_to_open);
     }
 
     #[test]

@@ -12,10 +12,11 @@ use gtk4::{self, CompositeTemplate, glib};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 
-use super::workspace_section::LushtextWorkspaceSection;
+use super::{WorkspaceSidebarWidthPreset, workspace_section::LushtextWorkspaceSection};
 
 type FileCallback = Box<dyn Fn(&Path)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
+type WidthPresetCallback = Box<dyn Fn(WorkspaceSidebarWidthPreset)>;
 
 // CompositeTemplate loads the UI layout from a compiled XML file.
 // GObject methods always take &self; RefCell/Cell provide interior mutability.
@@ -27,9 +28,19 @@ pub struct LushtextSidebar {
     #[template_child]
     pub sections_box: TemplateChild<gtk4::Box>,
     #[template_child]
+    pub new_workspace_box: TemplateChild<gtk4::Box>,
+    #[template_child]
     pub new_workspace_button: TemplateChild<gtk4::Button>,
     #[template_child]
     pub new_workspace_label: TemplateChild<gtk4::Label>,
+    #[template_child]
+    pub workspace_size_box: TemplateChild<gtk4::Box>,
+    #[template_child]
+    pub small_width_button: TemplateChild<gtk4::ToggleButton>,
+    #[template_child]
+    pub comfy_width_button: TemplateChild<gtk4::ToggleButton>,
+    #[template_child]
+    pub large_width_button: TemplateChild<gtk4::ToggleButton>,
 
     /// Current in-memory workspace configuration. Cloned out of `RefCell`
     /// for background save operations.
@@ -44,6 +55,10 @@ pub struct LushtextSidebar {
     pub create_callback: RefCell<Option<FileCallback>>,
     /// Callback notifying the window that workspace structure changed.
     pub workspace_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
+    /// Callback notifying the window that the width preset changed.
+    pub width_preset_callback: RefCell<Option<WidthPresetCallback>>,
+    /// Guard to suppress re-entrant button updates while syncing selection.
+    pub syncing_width_preset: Cell<bool>,
     /// Generation counter for debouncing workspace persistence (150ms).
     pub persist_generation: Cell<u32>,
     /// Guard preventing overlapping persistence writes to disk.
@@ -79,6 +94,22 @@ impl ObjectImpl for LushtextSidebar {
                 sidebar.create_new_workspace();
             }
         });
+
+        for (button, preset) in [
+            (&self.small_width_button, WorkspaceSidebarWidthPreset::Small),
+            (&self.comfy_width_button, WorkspaceSidebarWidthPreset::Comfy),
+            (&self.large_width_button, WorkspaceSidebarWidthPreset::Large),
+        ] {
+            let sidebar_weak = self.obj().downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(sidebar) = sidebar_weak.upgrade() {
+                    sidebar.select_width_preset(preset);
+                }
+            });
+        }
+
+        self.obj()
+            .set_width_preset(WorkspaceSidebarWidthPreset::DEFAULT);
     }
 }
 

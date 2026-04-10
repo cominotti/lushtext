@@ -29,6 +29,21 @@ type Callback = Box<dyn Fn()>;
 #[allow(deprecated)]
 type GtkInfoBar = gtk4::InfoBar;
 
+/// Allow a button's internal label to wrap so `GtkInfoBar` actions stay
+/// visible when the editor column gets narrow instead of collapsing away.
+fn wrap_button_label(button: &gtk4::Button) {
+    let Some(child) = button.child() else {
+        return;
+    };
+    let Ok(label) = child.downcast::<gtk4::Label>() else {
+        return;
+    };
+
+    label.set_wrap(true);
+    label.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+    label.set_justify(gtk4::Justification::Center);
+}
+
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/info-bar.ui")]
 pub struct LushtextInfoBar {
@@ -100,6 +115,13 @@ impl ObjectImpl for LushtextInfoBar {
     #[allow(deprecated)]
     fn constructed(&self) {
         self.parent_constructed();
+
+        // GNOME Text Editor wraps its infobar action labels so restored-file
+        // banners stay readable on narrow windows. LushText follows the same
+        // pattern instead of hiding actions behind a larger window minimum.
+        wrap_button_label(&self.retry_button);
+        wrap_button_label(&self.discard_button);
+        wrap_button_label(&self.save_button);
 
         // Wire button clicks to invoke stored callbacks.
         // Each button fires its callback and then hides the parent info bar.

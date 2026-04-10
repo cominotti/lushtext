@@ -5,8 +5,17 @@
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::editor_page::LushtextEditorPage;
 use sourceview5::prelude::*;
+
+fn button_label(button: &gtk4::Button) -> gtk4::Label {
+    button
+        .child()
+        .expect("button child")
+        .downcast::<gtk4::Label>()
+        .expect("button label")
+}
 
 #[test]
 fn test_new() {
@@ -225,6 +234,88 @@ fn test_close_button_hides_search() {
 
     // Search bar should be hidden
     assert!(!page.imp().search_revealer.reveals_child());
+}
+
+#[test]
+fn test_warning_infobar_wraps_titles_and_action_labels() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "Draft Changes Restored".to_string(),
+        body: "Unsaved changes to the document have been restored.".to_string(),
+        primary_button: Some("_Discard…".to_string()),
+        secondary_button: Some("_Save…".to_string()),
+    });
+
+    let imp = page.info_bar().imp();
+    assert!(
+        imp.discard_infobar.property::<bool>("revealed"),
+        "warning infobar should be shown"
+    );
+    assert!(imp.discard_title.wraps(), "warning title should wrap");
+    assert_eq!(
+        imp.discard_title.wrap_mode(),
+        gtk4::pango::WrapMode::WordChar
+    );
+    assert!(imp.discard_subtitle.wraps(), "warning subtitle should wrap");
+    assert_eq!(
+        imp.discard_subtitle.wrap_mode(),
+        gtk4::pango::WrapMode::WordChar
+    );
+
+    let discard_label = button_label(&imp.discard_button);
+    assert!(discard_label.wraps(), "discard action label should wrap");
+    assert_eq!(
+        discard_label.wrap_mode(),
+        gtk4::pango::WrapMode::WordChar
+    );
+    assert_eq!(
+        discard_label.justify(),
+        gtk4::Justification::Center,
+        "discard action label should stay centered when it wraps"
+    );
+
+    let save_label = button_label(&imp.save_button);
+    assert!(save_label.wraps(), "save action label should wrap");
+    assert_eq!(save_label.wrap_mode(), gtk4::pango::WrapMode::WordChar);
+    assert_eq!(save_label.justify(), gtk4::Justification::Center);
+}
+
+#[test]
+fn test_document_restored_infobar_keeps_save_as_visible() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "Document Restored".to_string(),
+        body: "Unsaved document has been restored.".to_string(),
+        primary_button: None,
+        secondary_button: Some("Save _As…".to_string()),
+    });
+
+    let imp = page.info_bar().imp();
+    assert!(
+        imp.discard_infobar.property::<bool>("revealed"),
+        "restored-document infobar should be shown"
+    );
+    assert!(
+        !imp.discard_button.property::<bool>("visible"),
+        "untitled restore should not expose discard"
+    );
+    assert!(
+        imp.save_button.property::<bool>("visible"),
+        "Save As must stay visible"
+    );
+
+    let save_label = button_label(&imp.save_button);
+    assert_eq!(save_label.label(), "Save _As…");
+    assert!(
+        save_label.wraps(),
+        "Save As label should wrap instead of disappearing"
+    );
 }
 
 #[test]

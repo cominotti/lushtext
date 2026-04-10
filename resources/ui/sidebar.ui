@@ -4,7 +4,6 @@
 
   <template class="LushtextSidebar" parent="GtkBox">
     <property name="orientation">vertical</property>
-    <property name="width-request">200</property>
 
     <style>
       <class name="sidebar"/>
@@ -13,11 +12,10 @@
     <child>
       <object class="GtkBox" id="new_workspace_box">
         <property name="orientation">horizontal</property>
+        <property name="height-request">54</property>
         <property name="spacing">6</property>
         <property name="margin-start">12</property>
         <property name="margin-end">6</property>
-        <property name="margin-top">6</property>
-        <property name="margin-bottom">6</property>
 
         <child>
           <object class="GtkLabel" id="new_workspace_label">
@@ -49,12 +47,60 @@
     <child>
       <object class="GtkScrolledWindow" id="outer_scrolled_window">
         <property name="vexpand">true</property>
-        <property name="propagate-natural-width">true</property>
-        <property name="hscrollbar-policy">automatic</property>
+        <property name="propagate-natural-width">false</property>
+        <property name="hscrollbar-policy">never</property>
         <child>
           <object class="GtkBox" id="sections_box">
             <property name="orientation">vertical</property>
             <!-- Workspace sections appended programmatically -->
+          </object>
+        </child>
+      </object>
+    </child>
+
+    <child>
+      <object class="GtkSeparator"/>
+    </child>
+
+    <child>
+      <object class="GtkBox" id="workspace_size_box">
+        <property name="orientation">horizontal</property>
+        <property name="height-request">54</property>
+        <property name="hexpand">true</property>
+        <property name="margin-start">12</property>
+        <property name="margin-end">12</property>
+
+        <child>
+          <object class="GtkBox" id="workspace_size_buttons_box">
+            <property name="spacing">0</property>
+            <property name="hexpand">true</property>
+            <property name="halign">center</property>
+            <property name="valign">center</property>
+
+            <style>
+              <class name="linked"/>
+            </style>
+
+            <child>
+              <object class="GtkToggleButton" id="small_width_button">
+                <property name="label" translatable="yes">Small</property>
+                <property name="tooltip-text" translatable="yes">Use 20% of the app window width for the workspace sidebar</property>
+              </object>
+            </child>
+
+            <child>
+              <object class="GtkToggleButton" id="comfy_width_button">
+                <property name="label" translatable="yes">Comfy</property>
+                <property name="tooltip-text" translatable="yes">Use 30% of the app window width for the workspace sidebar</property>
+              </object>
+            </child>
+
+            <child>
+              <object class="GtkToggleButton" id="large_width_button">
+                <property name="label" translatable="yes">Large</property>
+                <property name="tooltip-text" translatable="yes">Use 40% of the app window width for the workspace sidebar</property>
+              </object>
+            </child>
           </object>
         </child>
       </object>

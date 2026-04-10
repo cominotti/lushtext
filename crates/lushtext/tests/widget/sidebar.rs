@@ -7,6 +7,9 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::ui::sidebar::LushtextSidebar;
 use lushtext_core::ui::window::LushtextWindow;
+use std::time::{Duration, Instant};
+
+const WARNING_BAR_ROW_HEIGHT: i32 = 54;
 
 /// Create a window attached to a test application.
 fn test_window() -> LushtextWindow {
@@ -53,25 +56,79 @@ fn test_new_workspace_affordance_stays_above_sections_scroll_area() {
     let first = sidebar
         .first_child()
         .expect("first child is the fixed new-workspace box");
-    let last = sidebar
-        .last_child()
+    let separator_after_top = first
+        .next_sibling()
+        .expect("separator follows the new-workspace box");
+    let scroller = separator_after_top
+        .next_sibling()
         .and_downcast::<gtk4::ScrolledWindow>()
-        .expect("last child is the workspace scrolled window");
+        .expect("workspace scroller sits between the fixed top and bottom rows");
+    let separator_before_footer = scroller
+        .next_sibling()
+        .expect("separator precedes the footer row");
+    let footer = separator_before_footer
+        .next_sibling()
+        .and_downcast::<gtk4::Box>()
+        .expect("footer row is the last child");
 
     assert!(first.is::<gtk4::Box>());
     assert_eq!(first.as_ptr(), sidebar.imp().new_workspace_button.parent().unwrap().as_ptr());
-    assert_eq!(last.as_ptr(), sidebar.imp().outer_scrolled_window.as_ptr());
+    assert!(separator_after_top.is::<gtk4::Separator>());
+    assert_eq!(scroller.as_ptr(), sidebar.imp().outer_scrolled_window.as_ptr());
+    assert!(separator_before_footer.is::<gtk4::Separator>());
+    assert_eq!(footer.as_ptr(), sidebar.imp().workspace_size_box.as_ptr());
 }
 
 #[test]
-fn test_sidebar_outer_scroller_allows_horizontal_overflow() {
+fn test_sidebar_outer_scroller_disables_horizontal_scrollbar() {
     ensure_gtk_init();
     let sidebar = LushtextSidebar::new();
     assert_eq!(
         sidebar.imp().outer_scrolled_window.hscrollbar_policy(),
-        gtk4::PolicyType::Automatic
+        gtk4::PolicyType::Never
     );
-    assert!(sidebar.imp().outer_scrolled_window.propagates_natural_width());
+    assert!(!sidebar.imp().outer_scrolled_window.propagates_natural_width());
+}
+
+#[test]
+fn test_sidebar_footer_buttons_exist_and_default_to_comfy() {
+    ensure_gtk_init();
+    let sidebar = LushtextSidebar::new();
+
+    assert_eq!(sidebar.imp().small_width_button.label().as_deref(), Some("Small"));
+    assert_eq!(sidebar.imp().comfy_width_button.label().as_deref(), Some("Comfy"));
+    assert_eq!(sidebar.imp().large_width_button.label().as_deref(), Some("Large"));
+    assert!(!sidebar.imp().small_width_button.is_active());
+    assert!(sidebar.imp().comfy_width_button.is_active());
+    assert!(!sidebar.imp().large_width_button.is_active());
+}
+
+#[test]
+fn test_sidebar_new_workspace_affordance_matches_document_restored_warning_height() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(1200, 800);
+    present_window(&window);
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().sidebar.imp().new_workspace_box.height() > 0
+    });
+
+    let sidebar_height = window.imp().sidebar.imp().new_workspace_box.height();
+    assert_eq!(
+        sidebar_height, WARNING_BAR_ROW_HEIGHT,
+        "new workspace affordance height should preserve the warning-bar sizing contract (sidebar={sidebar_height}, expected={WARNING_BAR_ROW_HEIGHT})",
+    );
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().sidebar.imp().workspace_size_box.height() > 0
+    });
+    let footer_height = window.imp().sidebar.imp().workspace_size_box.height();
+    assert_eq!(
+        footer_height, WARNING_BAR_ROW_HEIGHT,
+        "workspace size footer should match the same fixed row height contract (footer={footer_height}, expected={WARNING_BAR_ROW_HEIGHT})",
+    );
+    assert_eq!(footer_height, sidebar_height);
 }
 
 // --- Window integration: tab path updates (moved from old sidebar.rs) ---
@@ -140,6 +197,27 @@ fn test_update_tab_path_no_match_is_noop() {
 /// Drain all pending events from the GTK main loop.
 fn flush_events() {
     while glib::MainContext::default().iteration(false) {}
+}
+
+fn flush_after_delay(delay: Duration) {
+    std::thread::sleep(delay);
+    flush_events();
+}
+
+fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        flush_after_delay(Duration::from_millis(20));
+    }
+    panic!("condition was not met within {:?}", timeout);
+}
+
+fn present_window(window: &LushtextWindow) {
+    window.present();
+    flush_events();
 }
 
 // --- Window integration: close tabs ---

@@ -15,6 +15,7 @@ use lushtext_core::config::keys;
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
 };
+use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::{draft_service, json_store, workspace_manager};
 use lushtext_core::ui::editor_page::{LushtextEditorPage, SaveError};
 use lushtext_core::ui::window::LushtextWindow;
@@ -62,18 +63,6 @@ fn test_window_with_legacy_sidebar_state(visible: bool, position: i32) -> Lushte
     settings
         .set_int(keys::SIDEBAR_POSITION, position)
         .expect("set legacy sidebar-position");
-    test_window()
-}
-
-fn test_window_with_initial_size(width: i32, height: i32) -> LushtextWindow {
-    ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
-    settings
-        .set_int(keys::WINDOW_WIDTH, width)
-        .expect("set window-width");
-    settings
-        .set_int(keys::WINDOW_HEIGHT, height)
-        .expect("set window-height");
     test_window()
 }
 
@@ -170,6 +159,31 @@ fn workspace_total_fraction(window: &LushtextWindow) -> f64 {
     window.imp().workspace_split_view.sidebar_width_fraction()
 }
 
+fn assert_workspace_sidebar_width_locked(window: &LushtextWindow, expected_fraction: f64) {
+    let width = if window.width() > 0 {
+        window.width()
+    } else {
+        let (default_width, _) = window.default_size();
+        default_width
+    };
+    let expected_width = width as f64 * expected_fraction;
+    let split = &window.imp().workspace_split_view;
+    assert!(
+        (split.min_sidebar_width() - expected_width).abs() < 1.0,
+        "expected min sidebar width near {expected_width}, got {}",
+        split.min_sidebar_width()
+    );
+    assert!(
+        (split.max_sidebar_width() - expected_width).abs() < 1.0,
+        "expected max sidebar width near {expected_width}, got {}",
+        split.max_sidebar_width()
+    );
+}
+
+fn workspace_sidebar_comfy_selected(window: &LushtextWindow) -> bool {
+    window.imp().sidebar.imp().comfy_width_button.is_active()
+}
+
 fn properties_total_fraction(window: &LushtextWindow) -> f64 {
     let properties_fraction = window.imp().properties_split_view.sidebar_width_fraction();
     if workspace_sidebar_visible(window) && !window.imp().workspace_split_view.is_collapsed() {
@@ -205,7 +219,7 @@ fn test_split_view_settings_defaults() {
     let settings = &window.imp().settings;
 
     assert!(settings.boolean(keys::WORKSPACE_SIDEBAR_VISIBLE));
-    assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.25);
+    assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.3);
     assert!(!settings.boolean(keys::PROPERTIES_SIDEBAR_VISIBLE));
     assert_eq!(settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION), 0.25);
 }
@@ -217,20 +231,23 @@ fn test_split_view_defaults_restore_on_window() {
 
     assert!(workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
-    assert!((workspace_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
     assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert!(workspace_sidebar_comfy_selected(&window));
+    assert_workspace_sidebar_width_locked(&window, 0.3);
 }
 
 #[test]
-fn test_saved_split_view_widths_normalize_to_fixed_quarters() {
+fn test_saved_split_view_widths_snap_to_supported_workspace_presets() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.4, true, 0.6);
+    let window = test_window_with_split_view_state(true, 0.25, true, 0.6);
     let settings = &window.imp().settings;
 
-    assert!((workspace_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
     assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
-    assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.25);
+    assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.3);
     assert_eq!(settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION), 0.25);
+    assert!(workspace_sidebar_comfy_selected(&window));
 }
 
 #[test]
@@ -242,7 +259,7 @@ fn test_legacy_sidebar_settings_migrate_to_workspace_split_view() {
     assert!(settings.boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED));
     assert!(!workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
-    assert!((workspace_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
 }
 
 #[test]
@@ -316,7 +333,7 @@ fn test_toggle_properties_action_state_syncs_with_split_view() {
 fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     ensure_gtk_init();
     let window = test_window();
-    window.set_default_size(1400, 900);
+    window.set_default_size(1600, 900);
     present_window(&window);
 
     assert!(!window.imp().workspace_split_view.is_collapsed());
@@ -325,29 +342,90 @@ fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     activate_action(&window, "toggle-properties");
     assert!(workspace_sidebar_visible(&window));
     assert!(properties_sidebar_visible(&window));
-    assert!((workspace_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
     assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert_workspace_sidebar_width_locked(&window, 0.3);
+}
+
+#[test]
+fn test_sidebar_footer_buttons_update_workspace_fraction_and_settings() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(1400, 900);
+    present_window(&window);
+
+    window.imp().sidebar.imp().large_width_button.emit_clicked();
+    flush_events();
+
+    assert!((workspace_total_fraction(&window) - 0.4).abs() < 0.001);
+    assert_eq!(
+        window.imp().settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
+        0.4
+    );
+    assert!(window.imp().sidebar.imp().large_width_button.is_active());
+    assert!(!window.imp().sidebar.imp().comfy_width_button.is_active());
+    assert_workspace_sidebar_width_locked(&window, 0.4);
+
+    window.imp().sidebar.imp().small_width_button.emit_clicked();
+    flush_events();
+
+    assert!((workspace_total_fraction(&window) - 0.2).abs() < 0.001);
+    assert_eq!(
+        window.imp().settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
+        0.2
+    );
+    assert!(window.imp().sidebar.imp().small_width_button.is_active());
+    assert!(!window.imp().sidebar.imp().large_width_button.is_active());
+    assert_workspace_sidebar_width_locked(&window, 0.2);
 }
 
 #[test]
 fn test_properties_pane_collapses_before_workspace_pane() {
     ensure_gtk_init();
-    let wide_window = test_window_with_initial_size(1400, 900);
-    present_window(&wide_window);
-    assert!(!wide_window.imp().properties_split_view.is_collapsed());
-    assert!(!wide_window.imp().workspace_split_view.is_collapsed());
+    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
+    window.set_default_size(1600, 900);
+    present_window(&window);
 
-    let medium_window = test_window_with_initial_size(1000, 900);
-    present_window(&medium_window);
-    assert!(medium_window.imp().properties_split_view.is_collapsed());
-    assert!(!medium_window.imp().workspace_split_view.is_collapsed());
+    assert!(properties_sidebar_visible(&window));
+    assert!(!window.imp().properties_split_view.is_collapsed());
+    assert!(!window.imp().workspace_split_view.is_collapsed());
+
+    window.set_default_size(1400, 900);
+    flush_after_delay(Duration::from_millis(20));
+    assert!(properties_sidebar_visible(&window));
+    assert!(window.imp().properties_split_view.is_collapsed());
+    assert!(!window.imp().workspace_split_view.is_collapsed());
+}
+
+#[test]
+fn test_large_workspace_preset_collapses_properties_pane_earlier() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.4, true, 0.25);
+    window.set_default_size(1400, 900);
+    present_window(&window);
+
+    assert!(properties_sidebar_visible(&window));
+    assert!(window.imp().properties_split_view.is_collapsed());
+    assert!(!window.imp().workspace_split_view.is_collapsed());
+}
+
+#[test]
+fn test_hiding_workspace_sidebar_relaxes_properties_breakpoint() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(false, 0.4, true, 0.25);
+    window.set_default_size(1400, 900);
+    present_window(&window);
+
+    assert!(properties_sidebar_visible(&window));
+    assert!(!window.imp().properties_split_view.is_collapsed());
+    assert!(!workspace_sidebar_visible(&window));
 }
 
 #[test]
 fn test_properties_visibility_preference_survives_breakpoint_changes() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.25, true, 0.25);
-    window.set_default_size(1400, 900);
+    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
+    window.set_default_size(1600, 900);
     present_window(&window);
 
     assert!(properties_sidebar_visible(&window));
@@ -358,7 +436,7 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
             .boolean(keys::PROPERTIES_SIDEBAR_VISIBLE)
     );
 
-    window.set_default_size(1000, 900);
+    window.set_default_size(1200, 900);
     flush_after_delay(Duration::from_millis(20));
 
     assert!(properties_sidebar_visible(&window));
@@ -371,10 +449,70 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
 }
 
 #[test]
+fn test_warning_infobar_actions_stay_allocated_in_a_narrow_window() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
+    window.set_default_size(1600, 900);
+    window.new_tab();
+    present_window(&window);
+
+    let editor = active_editor(&window);
+    editor.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "Draft Changes Restored".to_string(),
+        body: "Unsaved changes to the document have been restored, and the inline actions must remain visible while the window narrows.".to_string(),
+        primary_button: Some("_Discard…".to_string()),
+        secondary_button: Some("_Save…".to_string()),
+    });
+    flush_events();
+
+    window.set_default_size(1400, 900);
+    wait_until(Duration::from_secs(1), || {
+        window.imp().properties_split_view.is_collapsed()
+    });
+    flush_after_delay(Duration::from_millis(20));
+
+    let info_bar = editor.info_bar().imp();
+    assert!(info_bar.discard_button.property::<bool>("visible"));
+    assert!(info_bar.save_button.property::<bool>("visible"));
+    assert!(info_bar.discard_button.width() > 0);
+    assert!(info_bar.save_button.width() > 0);
+}
+
+#[test]
+fn test_access_error_infobar_action_stays_allocated_in_a_narrow_window() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
+    window.set_default_size(1600, 900);
+    window.new_tab();
+    present_window(&window);
+
+    let editor = active_editor(&window);
+    editor.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Error,
+        title: "Could Not Open File".to_string(),
+        body: "Permission was denied while opening the document, so the retry action must stay visible after the shell tightens.".to_string(),
+        primary_button: Some("_Retry".to_string()),
+        secondary_button: None,
+    });
+    flush_events();
+
+    window.set_default_size(1400, 900);
+    wait_until(Duration::from_secs(1), || {
+        window.imp().properties_split_view.is_collapsed()
+    });
+    flush_after_delay(Duration::from_millis(20));
+
+    let info_bar = editor.info_bar().imp();
+    assert!(info_bar.retry_button.property::<bool>("visible"));
+    assert!(info_bar.retry_button.width() > 0);
+}
+
+#[test]
 fn test_restored_workspaces_survive_dual_sidebar_shell() {
     ensure_gtk_init();
     let _roots_dir = seed_restored_workspaces();
-    let window = test_window_with_split_view_state(true, 0.25, false, 0.25);
+    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
 
     present_window(&window);
     wait_for_workspace_roots(&window, 3);

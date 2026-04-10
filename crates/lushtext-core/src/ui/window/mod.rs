@@ -888,16 +888,59 @@ impl LushtextWindow {
     }
 
     /// Return focus to the active editor after a split-view pane closes.
-    fn restore_focus_after_secondary_pane_close(&self) {
+    pub(super) fn restore_focus_after_secondary_pane_close(&self) {
         let window_weak = self.downgrade();
         glib::idle_add_local_once(move || {
             let Some(window) = window_weak.upgrade() else {
                 return;
             };
             if let Some(editor) = window.active_editor() {
+                gtk4::prelude::GtkWindowExt::set_focus(
+                    &window,
+                    Some(editor.source_view().upcast_ref::<gtk4::Widget>()),
+                );
                 editor.source_view().grab_focus();
             } else {
                 gtk4::prelude::GtkWindowExt::set_focus(&window, gtk4::Widget::NONE);
+            }
+        });
+    }
+
+    /// Breakpoint-driven split-view collapse can clear focus more than once as
+    /// GTK settles the new adaptive layout, so retry a few short ticks until
+    /// the active editor successfully owns focus again.
+    pub(super) fn restore_focus_after_breakpoint_collapse(&self) {
+        let window_weak = self.downgrade();
+        let attempts = std::rc::Rc::new(std::cell::Cell::new(0_u8));
+        let attempts_clone = attempts.clone();
+
+        glib::timeout_add_local(Duration::from_millis(30), move || {
+            let Some(window) = window_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+
+            let Some(editor) = window.active_editor() else {
+                gtk4::prelude::GtkWindowExt::set_focus(&window, gtk4::Widget::NONE);
+                return glib::ControlFlow::Break;
+            };
+
+            let source_view = editor.source_view();
+            let source_ptr = source_view.upcast_ref::<gtk4::Widget>().as_ptr();
+            gtk4::prelude::GtkWindowExt::set_focus(
+                &window,
+                Some(source_view.upcast_ref::<gtk4::Widget>()),
+            );
+            source_view.grab_focus();
+
+            let focused = gtk4::prelude::GtkWindowExt::focus(&window).map(|widget| widget.as_ptr())
+                == Some(source_ptr);
+            let next_attempt = attempts_clone.get().saturating_add(1);
+            attempts_clone.set(next_attempt);
+
+            if focused || next_attempt >= 6 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
             }
         });
     }
