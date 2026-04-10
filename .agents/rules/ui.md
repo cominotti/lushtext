@@ -106,6 +106,12 @@ LushtextWindow (AdwApplicationWindow)
 - Background uses `@headerbar_bg_color` to visually distinguish from the editor area.
 - Use the `caption` Adwaita CSS class for status bar text (small font, standard GNOME HIG for secondary UI).
 
+## Info Bars
+
+- `LushtextInfoBar` remains the inline notification surface above each editor page; do not replace it with a global status message for restored-file or access-error actions.
+- Titles, subtitles, and infobar action labels must stay readable on narrow windows by wrapping instead of disappearing or being truncated.
+- Save/Discard action widths should stay visually balanced so restored-document banners do not jitter while the window is being resized.
+
 ## GSettings Bindings
 
 Editor preferences use GSettings (`dev.cominotti.lushtext` schema) with `gio::Settings::bind()`:
@@ -132,6 +138,7 @@ Window geometry and split-view state are persisted via GSettings (not JSON sessi
 - `properties_split_view` owns the right properties pane and stays bound to `win.toggle-properties` in the status bar.
 - Both side panes normalize to a quarter-width fraction whenever they are shown.
 - Breakpoints collapse the properties pane before the workspace pane so medium-width windows keep the file tree visible longer.
+- The properties-pane breakpoint should be tuned to protect the center editor width, especially for restored-document infobars and other editor chrome, rather than only mirroring split-view math.
 - When a utility pane closes, return focus to the active editor rather than leaving focus stranded on a toggle button.
 
 ## Entry Width Symmetry in Toggle Layouts (CRITICAL)

@@ -15,6 +15,7 @@ use lushtext_core::config::keys;
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
 };
+use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::{draft_service, json_store, workspace_manager};
 use lushtext_core::ui::editor_page::{LushtextEditorPage, SaveError};
 use lushtext_core::ui::window::LushtextWindow;
@@ -62,18 +63,6 @@ fn test_window_with_legacy_sidebar_state(visible: bool, position: i32) -> Lushte
     settings
         .set_int(keys::SIDEBAR_POSITION, position)
         .expect("set legacy sidebar-position");
-    test_window()
-}
-
-fn test_window_with_initial_size(width: i32, height: i32) -> LushtextWindow {
-    ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
-    settings
-        .set_int(keys::WINDOW_WIDTH, width)
-        .expect("set window-width");
-    settings
-        .set_int(keys::WINDOW_HEIGHT, height)
-        .expect("set window-height");
     test_window()
 }
 
@@ -332,15 +321,19 @@ fn test_both_sidebars_can_be_visible_together_on_wide_window() {
 #[test]
 fn test_properties_pane_collapses_before_workspace_pane() {
     ensure_gtk_init();
-    let wide_window = test_window_with_initial_size(1400, 900);
-    present_window(&wide_window);
-    assert!(!wide_window.imp().properties_split_view.is_collapsed());
-    assert!(!wide_window.imp().workspace_split_view.is_collapsed());
+    let window = test_window_with_split_view_state(true, 0.25, true, 0.25);
+    window.set_default_size(1400, 900);
+    present_window(&window);
 
-    let medium_window = test_window_with_initial_size(1000, 900);
-    present_window(&medium_window);
-    assert!(medium_window.imp().properties_split_view.is_collapsed());
-    assert!(!medium_window.imp().workspace_split_view.is_collapsed());
+    assert!(properties_sidebar_visible(&window));
+    assert!(!window.imp().properties_split_view.is_collapsed());
+    assert!(!window.imp().workspace_split_view.is_collapsed());
+
+    window.set_default_size(1200, 900);
+    flush_after_delay(Duration::from_millis(20));
+    assert!(properties_sidebar_visible(&window));
+    assert!(window.imp().properties_split_view.is_collapsed());
+    assert!(!window.imp().workspace_split_view.is_collapsed());
 }
 
 #[test]
@@ -368,6 +361,66 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
             .settings
             .boolean(keys::PROPERTIES_SIDEBAR_VISIBLE)
     );
+}
+
+#[test]
+fn test_warning_infobar_actions_stay_allocated_in_a_narrow_window() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.25, true, 0.25);
+    window.set_default_size(1400, 900);
+    window.new_tab();
+    present_window(&window);
+
+    let editor = active_editor(&window);
+    editor.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "Draft Changes Restored".to_string(),
+        body: "Unsaved changes to the document have been restored, and the inline actions must remain visible while the window narrows.".to_string(),
+        primary_button: Some("_Discard…".to_string()),
+        secondary_button: Some("_Save…".to_string()),
+    });
+    flush_events();
+
+    window.set_default_size(1280, 900);
+    wait_until(Duration::from_secs(1), || {
+        window.imp().properties_split_view.is_collapsed()
+    });
+    flush_after_delay(Duration::from_millis(20));
+
+    let info_bar = editor.info_bar().imp();
+    assert!(info_bar.discard_button.property::<bool>("visible"));
+    assert!(info_bar.save_button.property::<bool>("visible"));
+    assert!(info_bar.discard_button.width() > 0);
+    assert!(info_bar.save_button.width() > 0);
+}
+
+#[test]
+fn test_access_error_infobar_action_stays_allocated_in_a_narrow_window() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.25, true, 0.25);
+    window.set_default_size(1400, 900);
+    window.new_tab();
+    present_window(&window);
+
+    let editor = active_editor(&window);
+    editor.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Error,
+        title: "Could Not Open File".to_string(),
+        body: "Permission was denied while opening the document, so the retry action must stay visible after the shell tightens.".to_string(),
+        primary_button: Some("_Retry".to_string()),
+        secondary_button: None,
+    });
+    flush_events();
+
+    window.set_default_size(1280, 900);
+    wait_until(Duration::from_secs(1), || {
+        window.imp().properties_split_view.is_collapsed()
+    });
+    flush_after_delay(Duration::from_millis(20));
+
+    let info_bar = editor.info_bar().imp();
+    assert!(info_bar.retry_button.property::<bool>("visible"));
+    assert!(info_bar.retry_button.width() > 0);
 }
 
 #[test]

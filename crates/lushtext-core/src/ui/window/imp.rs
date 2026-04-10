@@ -31,8 +31,12 @@ const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 180.0;
 const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 260.0;
 /// Target total-window width for each visible side pane.
 const FIXED_SIDEBAR_FRACTION: f64 = 0.25;
-/// Collapse the right properties pane before the left workspace pane.
-const PROPERTIES_BREAKPOINT_MAX_WIDTH_SP: &str = "max-width: 1100sp";
+/// Minimum center-column width that keeps restored-document info bars stable
+/// once their titles and actions are allowed to wrap on narrow windows.
+const MIN_EDITOR_CONTENT_WIDTH_SP: f64 = 620.0;
+/// Extra width budget for split separators, padding, and rounding noise that
+/// the raw `25% / 50% / 25%` fractions do not capture near the breakpoint.
+const DUAL_PANE_LAYOUT_OVERHEAD_SP: f64 = 32.0;
 /// Collapse the left workspace pane on narrower windows.
 const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: &str = "max-width: 860sp";
 #[derive(CompositeTemplate)]
@@ -339,6 +343,19 @@ impl ObjectImpl for LushtextWindow {
             );
         }
 
+        {
+            let window_weak = obj.downgrade();
+            self.properties_split_view
+                .connect_notify_local(Some("collapsed"), move |split, _| {
+                    let Some(window) = window_weak.upgrade() else {
+                        return;
+                    };
+                    if split.is_collapsed() && split.shows_sidebar() {
+                        window.restore_focus_after_breakpoint_collapse();
+                    }
+                });
+        }
+
         let window_weak = obj.downgrade();
         self.sidebar.connect_file_activated(move |path| {
             if let Some(window) = window_weak.upgrade() {
@@ -617,7 +634,7 @@ fn restore_properties_split_view(window: &super::LushtextWindow) {
 
 fn install_split_view_breakpoints(window: &super::LushtextWindow) {
     let properties_bp = libadwaita::Breakpoint::new(
-        libadwaita::BreakpointCondition::parse(PROPERTIES_BREAKPOINT_MAX_WIDTH_SP)
+        libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition())
             .expect("valid properties breakpoint condition"),
     );
     properties_bp.add_setter(
@@ -645,6 +662,19 @@ fn install_split_view_breakpoints(window: &super::LushtextWindow) {
     window.add_breakpoint(workspace_bp);
 }
 
+/// Build the properties-pane breakpoint from the minimum center width instead
+/// of a magic number so the shell explains *why* it collapses earlier.
+fn properties_breakpoint_condition() -> String {
+    format!("max-width: {}sp", properties_breakpoint_max_width_sp())
+}
+
+/// Compute the total window width below which the properties pane should
+/// overlay instead of consuming layout width in the quarter-width shell.
+fn properties_breakpoint_max_width_sp() -> i32 {
+    dual_sidebar_window_width_for_center(MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP)
+        .ceil() as i32
+}
+
 fn current_window_width(window: &super::LushtextWindow) -> i32 {
     if window.width() > 0 {
         window.width()
@@ -656,6 +686,12 @@ fn current_window_width(window: &super::LushtextWindow) -> i32 {
 
 fn fixed_workspace_fraction(window_width: i32) -> f64 {
     fixed_fraction(window_width, WORKSPACE_SIDEBAR_MIN_WIDTH_SP)
+}
+
+/// Convert a desired center-column width into the total window width needed to
+/// preserve that space while both quarter-width side panes are visible.
+fn dual_sidebar_window_width_for_center(center_width_sp: f64) -> f64 {
+    center_width_sp / (1.0 - (FIXED_SIDEBAR_FRACTION * 2.0))
 }
 
 fn desired_properties_fraction(window_width: i32) -> f64 {
@@ -716,4 +752,26 @@ fn fixed_fraction(window_width: i32, min_width_sp: f64) -> f64 {
     let width = window_width.max(1) as f64;
     let lower = (min_width_sp / width).min(1.0);
     FIXED_SIDEBAR_FRACTION.max(lower).min(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP,
+        dual_sidebar_window_width_for_center, properties_breakpoint_max_width_sp,
+    };
+
+    #[test]
+    fn properties_breakpoint_width_accounts_for_shell_overhead() {
+        assert_eq!(properties_breakpoint_max_width_sp(), 1304);
+    }
+
+    #[test]
+    fn dual_sidebar_width_helper_preserves_requested_center_space() {
+        let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
+        assert_eq!(
+            dual_sidebar_window_width_for_center(center_target),
+            center_target * 2.0
+        );
+    }
 }

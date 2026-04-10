@@ -263,19 +263,6 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::format_search_progress_message;
-
-    #[test]
-    fn search_progress_message_does_not_use_palette_index_total() {
-        assert_eq!(
-            format_search_progress_message(14_100),
-            "Searching 14100 files\u{2026}"
-        );
-    }
-}
-
 impl LushtextWindow {
     /// Toggle the search panel visibility. Handles open, re-invocation, and pre-fill.
     /// If the in-editor Find bar is open, closes it first with animation, then
@@ -535,4 +522,17 @@ fn scroll_editor_to_line(editor: &LushtextEditorPage, line: u32) {
     editor
         .source_view()
         .scroll_to_iter(&mut scroll_iter, 0.0, true, 0.0, 0.3);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_search_progress_message;
+
+    #[test]
+    fn search_progress_message_does_not_use_palette_index_total() {
+        assert_eq!(
+            format_search_progress_message(14_100),
+            "Searching 14100 files\u{2026}"
+        );
+    }
 }
