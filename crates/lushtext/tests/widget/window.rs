@@ -77,6 +77,17 @@ fn wait_for_workspace_roots(window: &LushtextWindow, expected: usize) {
     );
 }
 
+fn wait_for_sidebar_snapshot(window: &LushtextWindow) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if window.imp().sidebar_snapshot_picture.paintable().is_some() {
+            return;
+        }
+        flush_after_delay(Duration::from_millis(20));
+    }
+    panic!("expected warmed sidebar snapshot to become available");
+}
+
 /// Drain all pending events from the GTK main loop.
 fn flush_events() {
     while glib::MainContext::default().iteration(false) {}
@@ -1075,6 +1086,23 @@ fn test_presented_content_box_width_request_covers_gtk_legal_floor() {
         content_box.width_request() >= legal_min,
         "presented content_box width-request {} must cover GTK's legal width floor {}",
         content_box.width_request(),
+        legal_min,
+    );
+}
+
+#[test]
+fn test_presented_content_animation_stack_width_request_covers_gtk_legal_floor() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+
+    present_window(&window);
+
+    let content_stack_host = &window.imp().content_animation_stack;
+    let (legal_min, _, _, _) = content_stack_host.measure(gtk4::Orientation::Horizontal, -1);
+    assert!(
+        content_stack_host.width_request() >= legal_min,
+        "presented content_animation_stack width-request {} must cover GTK's legal width floor {}",
+        content_stack_host.width_request(),
         legal_min,
     );
 }
@@ -2614,6 +2642,7 @@ fn test_hide_animation_swaps_sidebar_revealer_child_to_snapshot() {
     ensure_gtk_init();
     let window = test_window_with_sidebar_state(true, 275);
     present_window(&window);
+    wait_for_sidebar_snapshot(&window);
 
     with_real_sidebar_animation(|| {
         activate_action(&window, "toggle-sidebar");
@@ -2634,6 +2663,7 @@ fn test_hide_animation_snapshot_preserves_sidebar_min_width() {
     ensure_gtk_init();
     let window = test_window_with_sidebar_state(true, 275);
     present_window(&window);
+    wait_for_sidebar_snapshot(&window);
 
     with_real_sidebar_animation(|| {
         let live_sidebar: &gtk4::Widget = window.imp().sidebar.upcast_ref();
@@ -2651,10 +2681,27 @@ fn test_hide_animation_snapshot_preserves_sidebar_min_width() {
 }
 
 #[test]
+fn test_hide_animation_keeps_content_host_live() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    present_window(&window);
+
+    with_real_sidebar_animation(|| {
+        activate_action(&window, "toggle-sidebar");
+        assert_eq!(
+            window.imp().content_animation_stack.visible_child_name(),
+            Some("live".into()),
+            "hide animation should keep the content host on the live pane; freezing the content pane reintroduced distortion and the final GtkStack width warning",
+        );
+    });
+}
+
+#[test]
 fn test_show_animation_reuses_sidebar_snapshot_child_when_available() {
     ensure_gtk_init();
     let window = test_window_with_sidebar_state(true, 275);
     present_window(&window);
+    wait_for_sidebar_snapshot(&window);
 
     activate_action(&window, "toggle-sidebar");
     assert!(

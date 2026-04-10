@@ -73,13 +73,6 @@ pub struct LushtextWindow {
     pub markdown_preview: TemplateChild<LushtextMarkdownPreview>,
     #[template_child]
     pub content_box: TemplateChild<gtk4::Box>,
-    /// Frozen content image used during sidebar hide animation so the live
-    /// editor stack does not need to relayout on every paned tick.
-    pub content_snapshot_picture: gtk4::Picture,
-    /// Persistent observer for the live content pane. We freeze its warmed
-    /// `current_image()` at hide start instead of forcing a brand-new snapshot
-    /// on the interaction path.
-    pub content_widget_paintable: RefCell<Option<gtk4::WidgetPaintable>>,
     #[template_child]
     pub search_panel_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
@@ -210,15 +203,6 @@ impl Default for LushtextWindow {
             editor_box: TemplateChild::default(),
             markdown_preview: TemplateChild::default(),
             content_box: TemplateChild::default(),
-            content_snapshot_picture: gtk4::Picture::builder()
-                .can_shrink(true)
-                .content_fit(gtk4::ContentFit::Fill)
-                .hexpand(true)
-                .halign(gtk4::Align::Fill)
-                .vexpand(true)
-                .valign(gtk4::Align::Fill)
-                .build(),
-            content_widget_paintable: RefCell::new(None),
             search_panel_revealer: TemplateChild::default(),
             search_panel: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
@@ -300,12 +284,7 @@ impl ObjectImpl for LushtextWindow {
             .add_named(&self.sidebar_snapshot_picture, Some("snapshot"));
         self.sidebar_animation_stack
             .set_visible_child_name("live");
-        self.content_animation_stack
-            .add_named(&self.content_snapshot_picture, Some("snapshot"));
         self.content_animation_stack.set_visible_child_name("live");
-        let content_box: &gtk4::Widget = self.content_box.upcast_ref();
-        *self.content_widget_paintable.borrow_mut() =
-            Some(gtk4::WidgetPaintable::new(Some(content_box)));
 
         // --- Restore window geometry from GSettings ---
         let w = settings.int(keys::WINDOW_WIDTH);
@@ -769,7 +748,7 @@ fn sidebar_max_position(
     let imp = window.imp();
     let for_height = current_paned_for_height(window);
     let start_req = measure_sidebar_start_min(window, for_height);
-    let end_req = measure_content_box_min(window, content_box);
+    let end_req = measure_content_host_min(window, content_box);
     let handle_size = measure_sidebar_handle_overhead(window, end_req);
     let allocation = (window_width - handle_size).max(1);
 
@@ -833,8 +812,12 @@ fn measure_horizontal_floor(
     }
 }
 
-fn measure_content_box_min(window: &super::LushtextWindow, content_box: &gtk4::Box) -> i32 {
-    measure_horizontal_floor(content_box, current_paned_for_height(window)).resolved()
+fn measure_content_host_min(window: &super::LushtextWindow, content_box: &gtk4::Box) -> i32 {
+    let runtime_for_height = current_paned_for_height(window);
+    let content_box_min = measure_horizontal_floor(content_box, runtime_for_height).resolved();
+    let content_host: &gtk4::Widget = window.imp().content_animation_stack.upcast_ref();
+    let content_host_min = measure_horizontal_floor(content_host, runtime_for_height).resolved();
+    content_box_min.max(content_host_min)
 }
 
 fn measure_sidebar_handle_overhead(window: &super::LushtextWindow, content_min: i32) -> i32 {
@@ -857,9 +840,17 @@ fn measure_sidebar_handle_overhead(window: &super::LushtextWindow, content_min: 
 }
 
 fn update_sidebar_measurements(window: &super::LushtextWindow, content_box: &gtk4::Box) -> i32 {
-    let content_min = measure_content_box_min(window, content_box);
+    let content_min = measure_content_host_min(window, content_box);
     if content_min > 0 && content_box.width_request() != content_min {
         content_box.set_width_request(content_min);
+    }
+    let content_animation_stack = &window.imp().content_animation_stack;
+    // The paned end-child is the animation stack, not the inner content box.
+    // Preserve the same legal horizontal floor on the real end-host so
+    // swapping visible children during sidebar hide cannot under-budget it by
+    // one pixel and trigger `Trying to measure GtkStack ... needs at least ...`.
+    if content_min > 0 && content_animation_stack.width_request() != content_min {
+        content_animation_stack.set_width_request(content_min);
     }
     let handle_overhead = measure_sidebar_handle_overhead(window, content_min);
     let paned_min = content_min.saturating_add(handle_overhead);

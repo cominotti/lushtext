@@ -33,7 +33,6 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::gdk::prelude::PaintableExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::AnimationExt;
@@ -85,29 +84,6 @@ impl LushtextWindow {
         });
     }
 
-    fn cache_content_snapshot(&self) -> bool {
-        let imp = self.imp();
-        if !imp.content_box.is_drawable() {
-            return false;
-        }
-
-        let Some(paintable) = imp
-            .content_widget_paintable
-            .borrow()
-            .as_ref()
-            .map(|paintable| paintable.current_image())
-        else {
-            return false;
-        };
-
-        let content: &gtk4::Widget = imp.content_box.upcast_ref();
-        let (min_width, _, _, _) = content.measure(gtk4::Orientation::Horizontal, -1);
-        imp.content_snapshot_picture.set_paintable(Some(&paintable));
-        imp.content_snapshot_picture
-            .set_width_request(min_width.max(1));
-        true
-    }
-
     fn cache_sidebar_snapshot(&self) -> bool {
         let imp = self.imp();
         let width = imp.sidebar.width();
@@ -153,17 +129,6 @@ impl LushtextWindow {
             true
         } else {
             self.show_live_sidebar_contents();
-            false
-        }
-    }
-
-    fn show_content_snapshot_if_available(&self) -> bool {
-        let imp = self.imp();
-        if imp.content_snapshot_picture.paintable().is_some() {
-            imp.content_animation_stack.set_visible_child_name("snapshot");
-            true
-        } else {
-            self.show_live_content_contents();
             false
         }
     }
@@ -951,7 +916,7 @@ impl LushtextWindow {
         } else {
             paned.set_shrink_start_child(true);
             let _ = self.show_sidebar_snapshot_if_available();
-            let _ = self.cache_content_snapshot() && self.show_content_snapshot_if_available();
+            self.show_live_content_contents();
             let current = paned.position();
             // Only save the resting position when not interrupting an active
             // animation — otherwise keep the previously saved value.

@@ -11,7 +11,7 @@ For any GTK or Adwaita warning or critical, prefer these source-backed reference
 
 ## Geometry and Measurement
 
-### `Gtk-WARNING **: Trying to measure GtkBox ... for width of X, but it needs at least Y`
+### `Gtk-WARNING **: Trying to measure GtkBox ...` or `GtkStack ... for width of X, but it needs at least Y`
 
 - Meaning: GTK attempted a width measurement smaller than the widget tree's minimum width.
 - Authoritative follow-up: open the internals geometry reference above before deciding whether the problem is clamping, handle width accounting, `GtkRevealer` transition rounding, or another measurement invariant.
@@ -21,15 +21,18 @@ For any GTK or Adwaita warning or critical, prefer these source-backed reference
   - stale handle-overhead or minimum-size calculations
   - hidden widgets still participating in layout longer than expected
   - a snapshot wrapper replacing a live paned child without preserving that live child's minimum width
+  - a `GtkStack` or similar host used as the actual paned child without carrying the same width floor as its live descendant
 - Debug focus:
   - `measure()` versus `size_allocate()` timing
   - min-content widths
   - animated paned or revealer transitions
   - off-by-one handle width budgets
   - widget pointer matching: confirm whether the warned `GtkBox` is the real root cause or just the place GTK finally noticed the invalid width
+  - actual paned-child host: if the warning names a `GtkStack`, confirm whether that stack is the end-child host and whether only its descendant was given `width-request`
   - snapshot timing: if a frozen sidebar image is created on the interaction path, separate "geometry fixed" from "animation still stutters"
   - stable host behavior: if a `GtkStack` or similar wrapper is only meant to swap live vs frozen children, verify its own transition settings are disabled so it is not running a second hidden animation
   - black-frame snapshots: if the pane turns black briefly, compare a fresh one-shot snapshot against a warmed persistent `GtkWidgetPaintable::current_image()`; the latter can be valid when the former is still effectively empty
+  - stretched frozen panes: if the content visually distorts during the animation, inspect `GtkPicture:content-fit` and ask whether that pane should be frozen at all
 
 ## Lifecycle and Object Ownership
 

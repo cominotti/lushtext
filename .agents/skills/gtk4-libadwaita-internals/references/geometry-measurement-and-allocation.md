@@ -143,6 +143,7 @@ Important consequences:
 - a `GtkPicture` or other snapshot host does not automatically inherit the live child's minimum width contract
 - if the snapshot surface reports a smaller minimum than the real child, `GtkPaned` may believe the start child can shrink further than it really can
 - the resulting warning may still name the end child, because that is the widget GTK was directly measuring when the illegal `for_width` finally surfaced
+- a stable host such as `GtkStack` sitting directly under `GtkPaned` is itself part of the contract; preserving the inner child's width floor is not enough if the host is the real paned child
 
 Real-world failure pattern:
 
@@ -155,11 +156,13 @@ Real-world failure pattern:
 The robust fix pattern is:
 
 - preserve the live child's minimum width on the snapshot host, for example with `width-request` set from `live_child.measure(Horizontal, -1)`
+- if the paned child is a stable host such as `GtkStack`, preserve that same width floor on the host itself as well
 - treat the snapshot as a geometry participant, not only a paint optimization
 - if you use a stable host such as `GtkStack` or a similar multiplexer purely to swap between live and frozen children, disable that host's own transitions unless you explicitly want a second animation system
 - generate or refresh the snapshot off the direct interaction path when possible, such as idle time or a steady-state refresh, because synchronous snapshot capture on the click path can remove the warning but still cause hide-time stutter
 - do not treat `paintable().is_some()` as proof that the frozen image is visually valid; `GtkWidgetPaintable` can still yield an empty or transparent current image when the observed widget has no usable render node yet
 - when a fresh `GtkSnapshot::to_paintable()` capture still produces a black or empty frozen pane, prefer a persistent `GtkWidgetPaintable` observer and freeze its warmed `current_image()` instead of demanding a brand-new render snapshot at hide start
+- if a frozen content pane stretches or shows a seam near the final collapsed frame, inspect `GtkPicture:content-fit` and ask whether the content pane should remain live while only the expensive opposite pane is frozen
 
 When debugging this class of bug, compare the warned widget pointer with the actual widget pointers in the live tree. If the warned widget is the end child, still inspect the start-child wrapper or snapshot surface before assuming the end child is the root cause.
 
@@ -216,5 +219,7 @@ Read them as a family:
 - When reviewing application code, clamp animated widths before they reach paned or split-view allocation, not after warnings appear.
 - Treat one-pixel warnings as real. They often mean a layout budget is only accidentally valid on one frame or one monitor scale.
 - If a snapshot surface replaces a live paned child, preserve the live child's minimum width on the snapshot widget or host container. Otherwise GTK can under-measure the opposite child while still naming that opposite child in the warning.
+- If the actual paned child is a wrapper host, preserve the legal width floor on that host too. A descendant `width-request` does not automatically satisfy GTK when the host itself is what `GtkPaned` measures.
 - Do not capture heavyweight snapshots synchronously on the click path unless you have measured that cost. Moving snapshot refresh to idle or another steady-state moment can preserve smoothness without reintroducing geometry bugs.
+- Freeze only the pane that benefits from it. Keeping the content pane live while freezing the heavy sidebar can be the correct fix when content snapshots introduce distortion or end-of-animation artifacts.
 - Validate complex geometry fixes in a live app session, not only in widget tests. The rounding and handle math happens at runtime with real allocations.

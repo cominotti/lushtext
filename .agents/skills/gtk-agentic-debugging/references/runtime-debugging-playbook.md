@@ -31,6 +31,7 @@ Use this playbook when the failure only becomes visible while a GTK app is runni
 7. **Match the warned widget to the real widget tree when geometry is involved**
    - If the warning includes a widget pointer such as `GtkBox 0x...`, match that pointer against the actual widgets in the live tree before deciding what is broken.
    - In paned animations, the warned end-child widget can be only the symptom. A start-child `GtkPicture` or other snapshot wrapper that under-reports the live child's minimum width can cause the end child to be measured illegally.
+   - The warned widget can also be the real paned child host. If the pointer resolves to a `GtkStack` or similar host sitting directly under `GtkPaned`, verify that the host itself carries the same legal minimum width as the live pane it wraps.
 
 ## Preferred Live Debug Loop
 
@@ -93,10 +94,12 @@ This workflow is usually superior to broad speculative edits. It is also usually
 2. Search for the affected widget or action with `rg`.
 3. For geometry warnings, inspect size negotiation, revealers, paned positions, min-content widths, and animation endpoints.
    - If a snapshot surface replaced a live child during the animation, verify that the snapshot host preserves the live child's minimum width contract.
+   - If the warning names a `GtkStack` or similar stable host directly, verify that you are fixing the width floor on that host and not only on a descendant such as the inner `GtkBox`.
    - If a stable host such as `GtkStack` only exists to swap live and frozen children, verify that its own transition type and duration are disabled unless a second animation is intentional.
    - If the frozen image shows up as black or empty, do not assume the swap logic is wrong first; confirm the cached snapshot itself is visually valid and not merely non-null.
    - If a one-shot capture still yields a black frozen pane, compare it against a persistent `GtkWidgetPaintable` observer and its warmed `current_image()`. The issue may be snapshot validity, not only swap timing.
    - Also ask when the snapshot is generated. A synchronous snapshot on the click path can remove one bug while introducing visible hide-time stutter.
+   - Do not assume both panes need the same freeze strategy. If only the sidebar subtree is expensive, freezing the content pane can introduce stretching, black frames, or end-of-animation seams without buying meaningful smoothness.
    - Prefer adding surgical traces and rerunning the live repro over trying to infer the entire widget tree from static code alone.
 4. For lifecycle warnings, inspect weak refs, signal disconnects, and object disposal paths.
 5. For portal or shell-related symptoms, inspect whether the app is waiting on user-session state instead of its own business logic.
