@@ -282,8 +282,7 @@ impl ObjectImpl for LushtextWindow {
         let settings = &self.settings;
         self.sidebar_animation_stack
             .add_named(&self.sidebar_snapshot_picture, Some("snapshot"));
-        self.sidebar_animation_stack
-            .set_visible_child_name("live");
+        self.sidebar_animation_stack.set_visible_child_name("live");
         self.content_animation_stack.set_visible_child_name("live");
 
         // --- Restore window geometry from GSettings ---
@@ -431,6 +430,9 @@ impl ObjectImpl for LushtextWindow {
                                 window.width()
                             },
                         );
+                        if window.imp().sidebar_visible.get() {
+                            window.queue_sidebar_snapshot_refresh();
+                        }
                     }
                 });
         }
@@ -745,32 +747,11 @@ fn sidebar_max_position(
     if window_width <= 0 {
         return None;
     }
-    let imp = window.imp();
     let for_height = current_paned_for_height(window);
     let start_req = measure_sidebar_start_min(window, for_height);
     let end_req = measure_content_host_min(window, content_box);
     let handle_size = measure_sidebar_handle_overhead(window, end_req);
-    let allocation = (window_width - handle_size).max(1);
-
-    // Mirror GTK's own gtk_paned_compute_position() upper-bound logic:
-    // max = allocation_without_handle;
-    // if !shrink_end_child => max = MAX(1, max - end_child_req);
-    // max = MAX(min, max);
-    let min_pos = if imp.main_paned.shrinks_start_child() {
-        0
-    } else {
-        start_req
-    };
-    let mut max_pos = allocation;
-    if !imp.main_paned.shrinks_end_child() {
-        max_pos = (max_pos - end_req).max(1);
-    }
-    max_pos = max_pos.max(min_pos);
-    if imp.main_paned.width() > 0 && imp.main_paned.width() == window_width {
-        max_pos = max_pos.min(imp.main_paned.max_position().max(min_pos));
-    }
-
-    Some((window_width / 3).min(max_pos).max(0))
+    sidebar_max_position_from_constraints(window, window_width, start_req, end_req, handle_size)
 }
 
 /// GTK validates a widget's legal `for_width` floor by measuring it
@@ -839,7 +820,10 @@ fn measure_sidebar_handle_overhead(window: &super::LushtextWindow, content_min: 
     handle_overhead
 }
 
-fn update_sidebar_measurements(window: &super::LushtextWindow, content_box: &gtk4::Box) -> i32 {
+fn update_sidebar_measurements(
+    window: &super::LushtextWindow,
+    content_box: &gtk4::Box,
+) -> (i32, i32) {
     let content_min = measure_content_host_min(window, content_box);
     if content_min > 0 && content_box.width_request() != content_min {
         content_box.set_width_request(content_min);
@@ -857,12 +841,14 @@ fn update_sidebar_measurements(window: &super::LushtextWindow, content_box: &gtk
     // revealer remains in layout for the collapse animation. Keep that extra
     // pixel in the paned's own minimum so the end-child stack never gets
     // measured at `content_min - 1` during height-for-width passes.
-    let paned_min = content_min.saturating_add(handle_overhead).saturating_add(1);
+    let paned_min = content_min
+        .saturating_add(handle_overhead)
+        .saturating_add(1);
     let main_paned = &window.imp().main_paned;
     if paned_min > 0 && main_paned.width_request() != paned_min {
         main_paned.set_width_request(paned_min);
     }
-    handle_overhead
+    (content_min, handle_overhead)
 }
 
 fn measure_sidebar_start_min(window: &super::LushtextWindow, for_height: i32) -> i32 {
@@ -895,9 +881,65 @@ fn sidebar_affects_layout(imp: &LushtextWindow) -> bool {
     imp.sidebar_visible.get() || imp.sidebar_revealer.property::<bool>("visible")
 }
 
+fn sidebar_max_position_from_constraints(
+    window: &super::LushtextWindow,
+    window_width: i32,
+    start_req: i32,
+    end_req: i32,
+    handle_size: i32,
+) -> Option<i32> {
+    if window_width <= 0 {
+        return None;
+    }
+
+    let imp = window.imp();
+    let allocation = (window_width - handle_size).max(1);
+
+    // Mirror GTK's own gtk_paned_compute_position() upper-bound logic:
+    // max = allocation_without_handle;
+    // if !shrink_end_child => max = MAX(1, max - end_child_req);
+    // max = MAX(min, max).
+    let min_pos = if imp.main_paned.shrinks_start_child() {
+        0
+    } else {
+        start_req
+    };
+    let mut max_pos = allocation;
+    if !imp.main_paned.shrinks_end_child() {
+        max_pos = (max_pos - end_req).max(1);
+    }
+    max_pos = max_pos.max(min_pos);
+    if imp.main_paned.width() > 0 && imp.main_paned.width() == window_width {
+        max_pos = max_pos.min(imp.main_paned.max_position().max(min_pos));
+    }
+
+    Some((window_width / 3).min(max_pos).max(0))
+}
+
+pub(super) fn refreshed_sidebar_visible_target(
+    window: &super::LushtextWindow,
+    window_width: i32,
+    desired: i32,
+) -> i32 {
+    let imp = window.imp();
+    let (content_min, handle_overhead) = update_sidebar_measurements(window, &imp.content_box);
+    let for_height = current_paned_for_height(window);
+    let start_req = measure_sidebar_start_min(window, for_height);
+    match sidebar_max_position_from_constraints(
+        window,
+        window_width,
+        start_req,
+        content_min,
+        handle_overhead,
+    ) {
+        Some(max) => desired.min(max).max(SIDEBAR_COLLAPSED_POSITION),
+        None => desired.max(SIDEBAR_COLLAPSED_POSITION),
+    }
+}
+
 pub(super) fn refresh_sidebar_layout_budget(window: &super::LushtextWindow) {
     let imp = window.imp();
-    update_sidebar_measurements(window, &imp.content_box);
+    let (content_min, handle_overhead) = update_sidebar_measurements(window, &imp.content_box);
     // Keep clamping active while the revealer is still participating in layout.
     // The toggle action flips `sidebar_visible` before the hide animation starts,
     // so the cache alone is not a reliable indicator that the sidebar is fully
@@ -910,12 +952,22 @@ pub(super) fn refresh_sidebar_layout_budget(window: &super::LushtextWindow) {
     } else {
         window.width()
     };
-    let clamped = clamp_sidebar_visible_position(
+    let for_height = current_paned_for_height(window);
+    let start_req = measure_sidebar_start_min(window, for_height);
+    let clamped = sidebar_max_position_from_constraints(
         window,
-        &imp.content_box,
         budget_width,
-        imp.main_paned.position(),
-    );
+        start_req,
+        content_min,
+        handle_overhead,
+    )
+    .map(|max| {
+        imp.main_paned
+            .position()
+            .min(max)
+            .max(SIDEBAR_COLLAPSED_POSITION)
+    })
+    .unwrap_or_else(|| imp.main_paned.position().max(SIDEBAR_COLLAPSED_POSITION));
     if clamped != imp.main_paned.position() {
         imp.main_paned.set_position(clamped);
     }

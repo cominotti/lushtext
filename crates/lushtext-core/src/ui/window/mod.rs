@@ -899,15 +899,13 @@ impl LushtextWindow {
             }
             imp.sidebar_revealer.set_visible(true);
             imp.sidebar_revealer.set_reveal_child(true);
-            imp::refresh_sidebar_layout_budget(self);
             let budget_width = if paned.width() > 0 {
                 paned.width()
             } else {
                 self.width()
             };
-            let target = imp::clamp_sidebar_visible_position(
+            let target = imp::refreshed_sidebar_visible_target(
                 self,
-                &imp.content_box,
                 budget_width,
                 imp.saved_sidebar_pos.get(),
             );
@@ -926,7 +924,8 @@ impl LushtextWindow {
             // Hide starts from the currently visible position and only moves
             // inward. Reusing that already-valid width avoids an extra full
             // geometry recomputation on the click path.
-            imp.sidebar_animation_max.set(current.max(SIDEBAR_COLLAPSED_POSITION));
+            imp.sidebar_animation_max
+                .set(current.max(SIDEBAR_COLLAPSED_POSITION));
             (current as f64, SIDEBAR_ANIMATION_COLLAPSED_POSITION as f64)
         };
         let paned_weak = paned.downgrade();

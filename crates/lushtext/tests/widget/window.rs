@@ -88,6 +88,19 @@ fn wait_for_sidebar_snapshot(window: &LushtextWindow) {
     panic!("expected warmed sidebar snapshot to become available");
 }
 
+fn wait_for_sidebar_snapshot_change(window: &LushtextWindow, old_ptr: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if let Some(paintable) = window.imp().sidebar_snapshot_picture.paintable()
+            && paintable.as_ptr() as usize != old_ptr
+        {
+            return;
+        }
+        flush_after_delay(Duration::from_millis(20));
+    }
+    panic!("expected warmed sidebar snapshot to refresh after resize");
+}
+
 /// Drain all pending events from the GTK main loop.
 fn flush_events() {
     while glib::MainContext::default().iteration(false) {}
@@ -2743,6 +2756,37 @@ fn test_show_animation_reuses_sidebar_snapshot_child_when_available() {
             libadwaita::AnimationState::Playing
         );
     });
+}
+
+#[test]
+fn test_sidebar_resize_refreshes_warmed_snapshot_before_next_toggle() {
+    ensure_gtk_init();
+    let window = test_window_with_sidebar_state(true, 275);
+    present_window(&window);
+    wait_for_sidebar_snapshot(&window);
+
+    let original_snapshot = window
+        .imp()
+        .sidebar_snapshot_picture
+        .paintable()
+        .expect("initial warmed sidebar snapshot");
+    let original_ptr = original_snapshot.as_ptr() as usize;
+
+    window.imp().main_paned.set_position(340);
+    flush_events();
+
+    wait_for_sidebar_snapshot_change(&window, original_ptr);
+
+    let refreshed_snapshot = window
+        .imp()
+        .sidebar_snapshot_picture
+        .paintable()
+        .expect("refreshed warmed sidebar snapshot");
+    assert_ne!(
+        refreshed_snapshot.as_ptr() as usize,
+        original_ptr,
+        "resizing the visible sidebar should refresh the cached snapshot before the next hide/show cycle",
+    );
 }
 
 #[test]
