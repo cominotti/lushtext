@@ -8,6 +8,10 @@
 - YOU MUST ALWAYS SPEAK OUTPUT in your Agent communication style with the config `{communication_language}`
 - NEVER auto-push.
 
+## PRECONDITION
+
+Verify `review_decision_pending` in `{spec_file}` frontmatter is `false`. If it is `true`, HALT and return to `./step-04-review.md` for the mandatory human decision before presenting anything.
+
 ## INSTRUCTIONS
 
 ### Generate Suggested Review Order

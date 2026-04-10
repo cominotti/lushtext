@@ -6,7 +6,7 @@ main_config: '{project-root}/_bmad/bmm/config.yaml'
 
 **Goal:** Turn user intent into a hardened, reviewable artifact.
 
-**CRITICAL:** If a step says "read fully and follow step-XX", you read and follow step-XX. No exceptions.
+**CRITICAL:** If a step says "read fully and follow step-XX", you read and follow step-XX. No exceptions. No alternate route may bypass a numbered step.
 
 
 ## READY FOR DEVELOPMENT STANDARD
@@ -52,8 +52,10 @@ This uses **step-file architecture** for disciplined execution:
 - **NEVER** load multiple step files simultaneously
 - **ALWAYS** read entire step file before execution
 - **NEVER** skip steps or optimize the sequence
+- **NEVER** introduce or follow a bypass flow that short-circuits the numbered chain
 - **ALWAYS** follow the exact instructions in the step file
 - **ALWAYS** halt at checkpoints and wait for human input
+- If a mandatory subagent step is blocked by runtime policy, **HALT** and ask the human instead of downgrading the step
 
 
 ## INITIALIZATION SEQUENCE

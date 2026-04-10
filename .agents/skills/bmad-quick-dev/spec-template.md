@@ -3,6 +3,7 @@ title: '{title}'
 type: 'feature' # feature | bugfix | refactor | chore
 created: '{date}'
 status: 'draft' # draft | ready-for-dev | in-progress | in-review | done
+review_decision_pending: false # false | true
 context: [] # optional: max 3 project-wide standards/docs. NO source code files.
 ---
 
@@ -68,6 +69,13 @@ context: [] # optional: max 3 project-wide standards/docs. NO source code files.
      Each entry records: what finding triggered the change, what was amended, what known-bad state
      the amendment avoids, and any KEEP instructions (what worked well and must survive re-derivation).
      Empty until the first bad_spec loopback. -->
+
+## Review Findings Log
+
+<!-- Append-only. Populated by step-04 after each classified review pass. Do not modify or delete existing entries.
+     Each entry records: timestamp, reviewers used, grouped findings by category, the highest-priority category,
+     and the exact human decision required before the workflow may continue.
+     Empty until the first review pass. -->
 
 ## Design Notes
 
