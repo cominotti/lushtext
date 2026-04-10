@@ -33,6 +33,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::gdk::prelude::PaintableExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::AnimationExt;
@@ -64,25 +65,6 @@ glib::wrapper! {
 }
 
 impl LushtextWindow {
-    fn queue_content_snapshot_refresh(&self) {
-        let generation = self.imp().content_snapshot_generation.get().wrapping_add(1);
-        self.imp().content_snapshot_generation.set(generation);
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(150), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            let imp = window.imp();
-            if imp.content_snapshot_generation.get() != generation
-                || imp.sidebar_animation_active.get()
-                || !imp.content_box.is_drawable()
-            {
-                return;
-            }
-            let _ = window.cache_content_snapshot();
-        });
-    }
-
     fn queue_sidebar_snapshot_refresh(&self) {
         let generation = self.imp().sidebar_snapshot_generation.get().wrapping_add(1);
         self.imp().sidebar_snapshot_generation.set(generation);
@@ -105,19 +87,15 @@ impl LushtextWindow {
 
     fn cache_content_snapshot(&self) -> bool {
         let imp = self.imp();
-        let width = imp.content_box.width();
-        let height = imp.content_box.height();
-        if !imp.content_box.is_drawable() || width <= 0 || height <= 0 {
+        if !imp.content_box.is_drawable() {
             return false;
         }
 
-        let snapshot = gtk4::Snapshot::new();
-        imp.content_animation_stack
-            .snapshot_child(imp.content_box.upcast_ref::<gtk4::Widget>(), &snapshot);
-        let Some(paintable) = snapshot.to_paintable(Some(&gtk4::graphene::Size::new(
-            width as f32,
-            height as f32,
-        )))
+        let Some(paintable) = imp
+            .content_widget_paintable
+            .borrow()
+            .as_ref()
+            .map(|paintable| paintable.current_image())
         else {
             return false;
         };
@@ -165,7 +143,6 @@ impl LushtextWindow {
     fn show_live_content_contents(&self) {
         let imp = self.imp();
         imp.content_animation_stack.set_visible_child_name("live");
-        self.queue_content_snapshot_refresh();
     }
 
     fn show_sidebar_snapshot_if_available(&self) -> bool {
@@ -206,7 +183,6 @@ impl LushtextWindow {
         window.update_content_stack();
         window.refresh_status_bar();
         window.render_notifications();
-        window.queue_content_snapshot_refresh();
         window
     }
 

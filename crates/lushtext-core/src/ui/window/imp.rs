@@ -76,6 +76,10 @@ pub struct LushtextWindow {
     /// Frozen content image used during sidebar hide animation so the live
     /// editor stack does not need to relayout on every paned tick.
     pub content_snapshot_picture: gtk4::Picture,
+    /// Persistent observer for the live content pane. We freeze its warmed
+    /// `current_image()` at hide start instead of forcing a brand-new snapshot
+    /// on the interaction path.
+    pub content_widget_paintable: RefCell<Option<gtk4::WidgetPaintable>>,
     #[template_child]
     pub search_panel_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
@@ -102,10 +106,6 @@ pub struct LushtextWindow {
     /// window coalesce repeated snapshot requests and avoid capturing on the
     /// immediate interaction path.
     pub sidebar_snapshot_generation: Cell<u32>,
-    /// Generation counter for deferred content snapshot refreshes. Used so the
-    /// end-child snapshot can be refreshed while the UI is idle instead of on
-    /// the sidebar-hide click path.
-    pub content_snapshot_generation: Cell<u32>,
     /// Whether the side-by-side preview pane is currently visible.
     pub preview_visible: Cell<bool>,
     /// Whether the preview-only mode (Alt+P) is active (editor hidden, preview full-width).
@@ -218,6 +218,7 @@ impl Default for LushtextWindow {
                 .vexpand(true)
                 .valign(gtk4::Align::Fill)
                 .build(),
+            content_widget_paintable: RefCell::new(None),
             search_panel_revealer: TemplateChild::default(),
             search_panel: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
@@ -227,7 +228,6 @@ impl Default for LushtextWindow {
             sidebar_animation_max: Cell::new(-1),
             sidebar_animation_active: Cell::new(false),
             sidebar_snapshot_generation: Cell::new(0),
-            content_snapshot_generation: Cell::new(0),
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
             saved_preview_pos: Cell::new(0),
@@ -303,6 +303,9 @@ impl ObjectImpl for LushtextWindow {
         self.content_animation_stack
             .add_named(&self.content_snapshot_picture, Some("snapshot"));
         self.content_animation_stack.set_visible_child_name("live");
+        let content_box: &gtk4::Widget = self.content_box.upcast_ref();
+        *self.content_widget_paintable.borrow_mut() =
+            Some(gtk4::WidgetPaintable::new(Some(content_box)));
 
         // --- Restore window geometry from GSettings ---
         let w = settings.int(keys::WINDOW_WIDTH);
@@ -382,7 +385,6 @@ impl ObjectImpl for LushtextWindow {
                 if let Some(window) = window_weak.upgrade() {
                     refresh_sidebar_layout_budget(&window);
                     window.queue_sidebar_snapshot_refresh();
-                    window.queue_content_snapshot_refresh();
                 }
             });
         }
@@ -551,7 +553,6 @@ impl ObjectImpl for LushtextWindow {
                     window.maybe_evict_background_tabs();
                     window.save_session_debounced();
                     window.refresh_preview();
-                    window.queue_content_snapshot_refresh();
                 }
             });
 
