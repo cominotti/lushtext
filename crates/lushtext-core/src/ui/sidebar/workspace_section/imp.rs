@@ -61,6 +61,10 @@ pub struct LushtextWorkspaceSection {
     pub drilldown_stack: RefCell<Vec<PathBuf>>,
     /// Original workspace roots to restore when exiting drill-down.
     pub original_roots: RefCell<Vec<(PathBuf, bool)>>,
+    /// Remember expanded paths across drill-downs to restore tree state.
+    pub expanded_paths: RefCell<std::collections::HashSet<PathBuf>>,
+    /// Path to select and scroll to once it loads (used after navigating back).
+    pub pending_selection: RefCell<Option<PathBuf>>,
 
     /// Popover for the right-click context menu on file rows.
     pub context_menu: RefCell<Option<gtk4::PopoverMenu>>,
