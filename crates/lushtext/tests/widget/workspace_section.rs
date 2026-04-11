@@ -54,10 +54,10 @@ fn test_workspace_section_header_label_does_not_ellipsize() {
 }
 
 #[test]
-fn test_workspace_section_inner_scroller_propagates_natural_width() {
+fn test_workspace_section_inner_scroller_does_not_propagate_natural_width() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
-    assert!(section.imp().inner_scrolled_window.propagates_natural_width());
+    assert!(!section.imp().inner_scrolled_window.propagates_natural_width());
 }
 
 // --- Context menu ---

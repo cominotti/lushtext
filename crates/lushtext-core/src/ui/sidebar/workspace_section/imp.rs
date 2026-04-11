@@ -44,12 +44,23 @@ pub struct LushtextWorkspaceSection {
     #[template_child]
     pub add_folder_button: TemplateChild<gtk4::Button>,
     #[template_child]
+    pub drilldown_header_box: TemplateChild<gtk4::Box>,
+    #[template_child]
+    pub drilldown_back_button: TemplateChild<gtk4::Button>,
+    #[template_child]
+    pub drilldown_path_label: TemplateChild<gtk4::Label>,
+    #[template_child]
     pub inner_scrolled_window: TemplateChild<gtk4::ScrolledWindow>,
     #[template_child]
     pub file_tree_view: TemplateChild<gtk4::ListView>,
 
     /// Unique ID for this workspace (matches `WorkspaceConfig.id`).
     pub workspace_id: RefCell<WorkspaceId>,
+
+    /// Stack of paths for deep-nesting drill-down navigation.
+    pub drilldown_stack: RefCell<Vec<PathBuf>>,
+    /// Original workspace roots to restore when exiting drill-down.
+    pub original_roots: RefCell<Vec<(PathBuf, bool)>>,
 
     /// Popover for the right-click context menu on file rows.
     pub context_menu: RefCell<Option<gtk4::PopoverMenu>>,
@@ -124,6 +135,14 @@ impl ObjectImpl for LushtextWorkspaceSection {
                 section.notify_add_folder_requested();
             }
         });
+
+        // Wire drilldown back button
+        let obj_weak = self.obj().downgrade();
+        self.drilldown_back_button.connect_clicked(move |_| {
+            if let Some(section) = obj_weak.upgrade() {
+                section.navigate_back();
+            }
+        });
     }
 
     fn dispose(&self) {
@@ -154,6 +173,8 @@ impl LushtextWorkspaceSection {
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("item is ListItem");
 
+            let overlay = gtk4::Overlay::new();
+
             let expander = gtk4::TreeExpander::new();
             let content_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
             content_box.set_halign(gtk4::Align::Start);
@@ -163,14 +184,47 @@ impl LushtextWorkspaceSection {
 
             let label = gtk4::Label::new(None);
             label.set_xalign(0.0);
-            label.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
             label.set_wrap(false);
+            label.set_hexpand(true);
+
+            let focus_btn = gtk4::Button::from_icon_name("go-next-symbolic");
+            focus_btn.set_valign(gtk4::Align::Center);
+            focus_btn.set_halign(gtk4::Align::End);
+            focus_btn.add_css_class("flat");
+            focus_btn.add_css_class("circular");
+            focus_btn.set_tooltip_text(Some("Focus Folder"));
+            focus_btn.set_margin_end(6);
+            focus_btn.set_visible(false);
+
+            let list_item_clone = list_item.clone();
+            let overlay_clone = overlay.clone();
+            focus_btn.connect_clicked(move |_| {
+                if let Some(tree_row) = list_item_clone.item().and_downcast::<gtk4::TreeListRow>() {
+                    if let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() {
+                        if let Some(path) = file_item.path() {
+                            // Find the WorkspaceSection by walking up the widget tree
+                            let mut current: Option<gtk4::Widget> = Some(overlay_clone.clone().upcast::<gtk4::Widget>());
+                            while let Some(w) = current {
+                                if let Some(section) = w.downcast_ref::<super::LushtextWorkspaceSection>() {
+                                    section.focus_folder(&path);
+                                    break;
+                                }
+                                current = w.parent();
+                            }
+                        }
+                    }
+                }
+            });
 
             content_box.append(&icon);
             content_box.append(&label);
             expander.set_child(Some(&content_box));
 
-            list_item.set_child(Some(&expander));
+            overlay.set_child(Some(&expander));
+            overlay.add_overlay(&focus_btn);
+
+            list_item.set_child(Some(&overlay));
         });
 
         let section_weak = self.obj().downgrade();
@@ -184,12 +238,28 @@ impl LushtextWorkspaceSection {
                 .and_downcast::<gtk4::TreeListRow>()
                 .expect("item is TreeListRow");
 
-            let expander = list_item
+            let overlay = list_item
+                .child()
+                .and_downcast::<gtk4::Overlay>()
+                .expect("child is Overlay");
+
+            let expander = overlay
                 .child()
                 .and_downcast::<gtk4::TreeExpander>()
-                .expect("child is TreeExpander");
+                .expect("overlay child is TreeExpander");
 
             expander.set_list_row(Some(&tree_row));
+
+            let mut focus_btn_opt = None;
+            let mut current = overlay.first_child();
+            while let Some(child) = current {
+                if child.downcast_ref::<gtk4::Button>().is_some() {
+                    focus_btn_opt = child.downcast::<gtk4::Button>().ok();
+                    break;
+                }
+                current = child.next_sibling();
+            }
+            let focus_btn = focus_btn_opt.expect("focus_btn missing");
 
             if let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() {
                 let content_box = expander
@@ -217,6 +287,23 @@ impl LushtextWorkspaceSection {
                 icon.set_icon_name(Some(icon_name));
                 label.set_label(&file_item.name());
 
+                if let Some(path) = file_item.path() {
+                    expander.set_tooltip_text(Some(&path.to_string_lossy()));
+                } else {
+                    expander.set_tooltip_text(None);
+                }
+
+                // Show "Focus" button if the depth is 5 or more (heuristic for deep nesting)
+                let is_too_deep = tree_row.depth() >= 5;
+                let show_focus = file_item.is_dir() && !file_item.is_placeholder() && is_too_deep;
+                focus_btn.set_visible(show_focus);
+                
+                if show_focus {
+                    content_box.set_margin_end(36);
+                } else {
+                    content_box.set_margin_end(0);
+                }
+
                 if file_item.is_dir()
                     && !file_item.is_placeholder()
                     && let Some(section) = section_weak.upgrade()
@@ -231,10 +318,12 @@ impl LushtextWorkspaceSection {
 
                 // GTK recycles ListItem widgets: a row previously used for
                 // inline rename may still have a GtkEntry appended.
-                if let Some(sibling) = label.next_sibling()
-                    && sibling.downcast_ref::<gtk4::Entry>().is_some()
-                {
-                    content_box.remove(&sibling);
+                let mut child = label.next_sibling();
+                while let Some(sibling) = child {
+                    child = sibling.next_sibling();
+                    if sibling.downcast_ref::<gtk4::Entry>().is_some() {
+                        content_box.remove(&sibling);
+                    }
                 }
                 label.set_visible(true);
 

@@ -50,6 +50,13 @@ impl LushtextWorkspaceSection {
     /// Load root paths into the file tree. Builds the `TreeListModel`
     /// and child models asynchronously for responsive UI.
     pub fn load_roots(&self, roots: &[(PathBuf, bool)]) {
+        *self.imp().original_roots.borrow_mut() = roots.to_vec();
+        self.imp().drilldown_stack.borrow_mut().clear();
+        self.imp().drilldown_header_box.set_visible(false);
+        self._load_roots(roots);
+    }
+
+    fn _load_roots(&self, roots: &[(PathBuf, bool)]) {
         self.clear_all_dir_state();
         self.reset_item_cache();
         let root_store = gio::ListStore::new::<FileTreeItem>();
@@ -88,16 +95,21 @@ impl LushtextWorkspaceSection {
     /// Add a single root path to an existing file tree.
     /// `is_dir` avoids a `stat(2)` call — callers already know the entry type.
     pub fn add_root(&self, path: &Path, is_dir: bool) {
-        let has_store = self.imp().root_store.borrow().is_some();
+        let has_store = !self.imp().original_roots.borrow().is_empty();
         if has_store {
-            let already_exists = self.imp().root_paths.borrow().iter().any(|p| p == path);
+            let already_exists = self.imp().original_roots.borrow().iter().any(|(p, _)| p == path);
             if !already_exists {
-                let store_ref = self.imp().root_store.borrow();
-                let root_store = store_ref.as_ref().unwrap();
-                let item = FileTreeItem::new(path.to_path_buf(), is_dir);
-                let index = root_store.n_items() as usize;
-                root_store.append(&item);
-                self.cache_root_item(path.to_path_buf(), index);
+                self.imp().original_roots.borrow_mut().push((path.to_path_buf(), is_dir));
+                // Only update the tree model if we are NOT drilled down
+                if self.imp().drilldown_stack.borrow().is_empty() {
+                    let store_ref = self.imp().root_store.borrow();
+                    if let Some(root_store) = store_ref.as_ref() {
+                        let item = FileTreeItem::new(path.to_path_buf(), is_dir);
+                        let index = root_store.n_items() as usize;
+                        root_store.append(&item);
+                        self.cache_root_item(path.to_path_buf(), index);
+                    }
+                }
             }
         } else {
             self.load_roots(&[(path.to_path_buf(), is_dir)]);
@@ -107,11 +119,38 @@ impl LushtextWorkspaceSection {
 
     /// Returns true if this section has at least one root loaded.
     pub fn has_roots(&self) -> bool {
-        self.imp()
-            .root_store
-            .borrow()
-            .as_ref()
-            .is_some_and(|s| s.n_items() > 0)
+        !self.imp().original_roots.borrow().is_empty()
+    }
+
+    /// Focuses the workspace panel on a specific deep directory, allowing users
+    /// to navigate past the horizontal clipping limit.
+    pub fn focus_folder(&self, dir_path: &Path) {
+        self.imp().drilldown_stack.borrow_mut().push(dir_path.to_path_buf());
+        self.imp().drilldown_header_box.set_visible(true);
+        
+        let path_str = dir_path.to_string_lossy();
+        self.imp().drilldown_path_label.set_label(&path_str);
+        self.imp().drilldown_path_label.set_tooltip_text(Some(&path_str));
+
+        self._load_roots(&[(dir_path.to_path_buf(), true)]);
+    }
+
+    /// Navigates one level up the drill-down stack. Restores original roots if empty.
+    pub fn navigate_back(&self) {
+        let mut stack = self.imp().drilldown_stack.borrow_mut();
+        stack.pop();
+        if let Some(parent_path) = stack.last().cloned() {
+            let path_str = parent_path.to_string_lossy();
+            self.imp().drilldown_path_label.set_label(&path_str);
+            self.imp().drilldown_path_label.set_tooltip_text(Some(&path_str));
+            drop(stack);
+            self._load_roots(&[(parent_path, true)]);
+        } else {
+            drop(stack);
+            self.imp().drilldown_header_box.set_visible(false);
+            let original = self.imp().original_roots.borrow().clone();
+            self._load_roots(&original);
+        }
     }
 
     /// Update the add-folder button icon and tooltip based on whether roots exist.

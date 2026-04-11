@@ -41,11 +41,43 @@
       </object>
     </child>
 
+    <!-- Drilldown header (hidden by default) -->
+    <child>
+      <object class="GtkBox" id="drilldown_header_box">
+        <property name="orientation">horizontal</property>
+        <property name="height-request">40</property>
+        <property name="spacing">6</property>
+        <property name="margin-start">6</property>
+        <property name="margin-end">6</property>
+        <property name="visible">false</property>
+
+        <child>
+          <object class="GtkButton" id="drilldown_back_button">
+            <property name="icon-name">go-previous-symbolic</property>
+            <property name="tooltip-text" translatable="yes">Back to Parent</property>
+            <style>
+              <class name="flat"/>
+            </style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkLabel" id="drilldown_path_label">
+            <property name="hexpand">true</property>
+            <property name="xalign">0</property>
+            <property name="ellipsize">middle</property>
+            <style>
+              <class name="dim-label"/>
+            </style>
+          </object>
+        </child>
+      </object>
+    </child>
+
     <!-- File tree in inner ScrolledWindow (provides vadjustment for ListView) -->
     <child>
       <object class="GtkScrolledWindow" id="inner_scrolled_window">
         <property name="propagate-natural-height">true</property>
-        <property name="propagate-natural-width">true</property>
+        <property name="propagate-natural-width">false</property>
         <property name="vscrollbar-policy">never</property>
         <property name="hscrollbar-policy">never</property>
         <child>
