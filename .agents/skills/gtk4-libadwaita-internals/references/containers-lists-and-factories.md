@@ -94,3 +94,4 @@ If a list or search surface behaves strangely, confirm the structural contract f
 - Disconnect item-specific signals in `unbind`, not only in `teardown`.
 - Treat `gio::ListModel` item identity as meaningful. Reusing the same object incorrectly can confuse GTK's recycling machinery.
 - Be careful with `GtkTreeListModel::autoexpand` in Rust apps that create child models from filesystem data or any expensive source.
+- **Deep Tree Nesting & Inline Actions**: When placing fixed action buttons (like a hover button) in a `GtkTreeListModel` row, DO NOT put the button inside the `GtkTreeExpander`'s content box. Deep nesting indentation will eventually push the button off-screen. Instead, wrap the `GtkTreeExpander` in a `GtkOverlay` and add the button as an overlay widget anchored to the right edge (`halign=End`). This guarantees the action remains visible regardless of tree depth.

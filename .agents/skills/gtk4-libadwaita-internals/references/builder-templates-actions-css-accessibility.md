@@ -115,6 +115,8 @@ Examples from official docs:
 
 This matters when a widget appears hidden or inert visually but still participates in accessibility, focus traversal, or semantics.
 
+**Hover Actions and HIG Accessibility:** Hover-only interactions (`GtkEventControllerMotion`) are inherently invisible to keyboard-only users and screen readers. The GNOME HIG requires that any UI action triggered exclusively by pointer hover MUST have an accessible alternative. Usually, this means putting the identical action into the element's right-click context menu (`GtkPopoverMenu`).
+
 ## Rust Implications
 
 - In Rust composite widgets, respect the same template child types, property names, and lifecycle phases that the C docs describe.
