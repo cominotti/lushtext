@@ -51,6 +51,21 @@ pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool, Option<bool>)> {
     scan_directory_bounded(dir_path, usize::MAX, 1000, None).entries
 }
 
+/// Peek into a directory to see if it contains any visible (non-hidden) entries.
+pub fn is_dir_empty(path: &Path) -> bool {
+    if let Ok(mut rd) = std::fs::read_dir(path) {
+        !rd.any(|e| {
+            if let Ok(e) = e {
+                e.file_name().as_encoded_bytes().first() != Some(&b'.')
+            } else {
+                false
+            }
+        })
+    } else {
+        false // Assume not empty on error to allow user to try expanding it
+    }
+}
+
 /// Scan a directory while bounding memory and allowing cooperative cancellation.
 ///
 /// The result is still sorted directories-first and alphabetically, but for
@@ -92,19 +107,7 @@ pub fn scan_directory_bounded(
         if is_dir {
             if dirs_checked < lookahead_cap {
                 dirs_checked += 1;
-                // Peek into the directory. It's considered empty if it contains no visible entries.
-                if let Ok(mut rd) = std::fs::read_dir(&path) {
-                    let has_visible = rd.any(|e| {
-                        if let Ok(e) = e {
-                            e.file_name().as_encoded_bytes().first() != Some(&b'.')
-                        } else {
-                            false
-                        }
-                    });
-                    is_empty = Some(!has_visible);
-                } else {
-                    is_empty = Some(false); // Can't read, assume not empty to show expander and allow error later
-                }
+                is_empty = Some(is_dir_empty(&path));
             }
         }
 

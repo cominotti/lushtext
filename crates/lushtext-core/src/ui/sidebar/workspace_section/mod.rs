@@ -62,7 +62,12 @@ impl LushtextWorkspaceSection {
         self.reset_item_cache();
         let root_store = gio::ListStore::new::<FileTreeItem>();
         for (root, is_dir) in roots {
-            let item = FileTreeItem::new(root.clone(), *is_dir, None);
+            let is_empty = if *is_dir {
+                Some(crate::services::file_tree::is_dir_empty(root))
+            } else {
+                None
+            };
+            let item = FileTreeItem::new(root.clone(), *is_dir, is_empty);
             let index = root_store.n_items() as usize;
             root_store.append(&item);
             self.cache_root_item(root.clone(), index);
@@ -116,7 +121,12 @@ impl LushtextWorkspaceSection {
                 if self.imp().drilldown_stack.borrow().is_empty() {
                     let store_ref = self.imp().root_store.borrow();
                     if let Some(root_store) = store_ref.as_ref() {
-                        let item = FileTreeItem::new(path.to_path_buf(), is_dir, None);
+                        let is_empty = if is_dir {
+                            Some(crate::services::file_tree::is_dir_empty(path))
+                        } else {
+                            None
+                        };
+                        let item = FileTreeItem::new(path.to_path_buf(), is_dir, is_empty);
                         let index = root_store.n_items() as usize;
                         root_store.append(&item);
                         self.cache_root_item(path.to_path_buf(), index);
