@@ -228,6 +228,19 @@ impl LushtextWorkspaceSection {
             overlay.set_child(Some(&expander));
             overlay.add_overlay(&focus_btn);
 
+            let motion = gtk4::EventControllerMotion::new();
+            let btn_enter = focus_btn.clone();
+            motion.connect_enter(move |_, _, _| {
+                if btn_enter.has_css_class("can-focus") {
+                    btn_enter.set_visible(true);
+                }
+            });
+            let btn_leave = focus_btn.clone();
+            motion.connect_leave(move |_| {
+                btn_leave.set_visible(false);
+            });
+            overlay.add_controller(motion);
+
             list_item.set_child(Some(&overlay));
         });
 
@@ -297,15 +310,14 @@ impl LushtextWorkspaceSection {
                     expander.set_tooltip_text(None);
                 }
 
-                // Show "Focus" button if the depth is 5 or more (heuristic for deep nesting)
-                let is_too_deep = tree_row.depth() >= 5;
-                let show_focus = file_item.is_dir() && !file_item.is_placeholder() && is_too_deep;
-                focus_btn.set_visible(show_focus);
-                
+                let show_focus = file_item.is_dir() && !file_item.is_placeholder();
                 if show_focus {
+                    focus_btn.add_css_class("can-focus");
                     content_box.set_margin_end(36);
                 } else {
+                    focus_btn.remove_css_class("can-focus");
                     content_box.set_margin_end(0);
+                    focus_btn.set_visible(false);
                 }
 
                 if file_item.is_dir()
@@ -403,6 +415,10 @@ impl LushtextWorkspaceSection {
 
         let menu = gio::Menu::new();
 
+        let nav_section = gio::Menu::new();
+        nav_section.append(Some("Focus Folder"), Some("section.focus-folder"));
+        menu.append_section(None, &nav_section);
+
         let create_section = gio::Menu::new();
         create_section.append(Some("New File"), Some("section.new-file"));
         create_section.append(Some("New Folder"), Some("section.new-dir"));
@@ -423,6 +439,19 @@ impl LushtextWorkspaceSection {
         // reference them as "section.new-file", "section.rename", etc.
         // GTK resolves these by walking up the widget tree for the prefix.
         let action_group = gio::SimpleActionGroup::new();
+
+        let focus_folder_action = gio::SimpleAction::new("focus-folder", None);
+        let section_weak = obj.downgrade();
+        focus_folder_action.connect_activate(move |_, _| {
+            if let Some(section) = section_weak.upgrade() {
+                if let Some(path) = section.imp().context_path.borrow().clone() {
+                    if section.imp().context_is_dir.get() {
+                        section.focus_folder(&path);
+                    }
+                }
+            }
+        });
+        action_group.add_action(&focus_folder_action);
 
         let new_file_action = gio::SimpleAction::new("new-file", None);
         let section_weak = obj.downgrade();
@@ -467,6 +496,7 @@ impl LushtextWorkspaceSection {
         gesture.set_button(3);
 
         let section_weak = obj.downgrade();
+        let focus_folder_action_clone = focus_folder_action.clone();
         gesture.connect_pressed(move |gesture, _n_press, x, y| {
             let Some(section) = section_weak.upgrade() else {
                 return;
@@ -495,6 +525,8 @@ impl LushtextWorkspaceSection {
             *imp.context_path.borrow_mut() = Some(path);
             imp.context_is_dir.set(file_item.is_dir());
             *imp.context_expander.borrow_mut() = Some(expander);
+
+            focus_folder_action_clone.set_enabled(file_item.is_dir() && !file_item.is_placeholder());
 
             let popover = imp.context_menu.borrow().clone();
             if let Some(popover) = popover {
