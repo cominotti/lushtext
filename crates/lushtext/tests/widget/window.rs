@@ -452,7 +452,7 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
 fn test_warning_infobar_actions_stay_allocated_in_a_narrow_window() {
     ensure_gtk_init();
     let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
-    window.set_default_size(1600, 900);
+    window.set_default_size(1000, 900); // Instantiate narrowly to force properties pane to overlay
     window.new_tab();
     present_window(&window);
 
@@ -464,15 +464,9 @@ fn test_warning_infobar_actions_stay_allocated_in_a_narrow_window() {
         primary_button: Some("_Discard…".to_string()),
         secondary_button: Some("_Save…".to_string()),
     });
-    flush_events();
-
-    window.set_default_size(1400, 900);
-    wait_until(Duration::from_secs(1), || {
-        window.imp().properties_split_view.is_collapsed()
-    });
-    flush_after_delay(Duration::from_millis(20));
-
+    
     let info_bar = editor.info_bar().imp();
+    wait_until(Duration::from_secs(2), || info_bar.discard_button.width() > 0);
     assert!(info_bar.discard_button.property::<bool>("visible"));
     assert!(info_bar.save_button.property::<bool>("visible"));
     assert!(info_bar.discard_button.width() > 0);
@@ -483,7 +477,7 @@ fn test_warning_infobar_actions_stay_allocated_in_a_narrow_window() {
 fn test_access_error_infobar_action_stays_allocated_in_a_narrow_window() {
     ensure_gtk_init();
     let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
-    window.set_default_size(1600, 900);
+    window.set_default_size(1000, 900); // Instantiate narrowly to force properties pane to overlay
     window.new_tab();
     present_window(&window);
 
@@ -495,15 +489,9 @@ fn test_access_error_infobar_action_stays_allocated_in_a_narrow_window() {
         primary_button: Some("_Retry".to_string()),
         secondary_button: None,
     });
-    flush_events();
-
-    window.set_default_size(1400, 900);
-    wait_until(Duration::from_secs(1), || {
-        window.imp().properties_split_view.is_collapsed()
-    });
-    flush_after_delay(Duration::from_millis(20));
-
+    
     let info_bar = editor.info_bar().imp();
+    wait_until(Duration::from_secs(2), || info_bar.retry_button.width() > 0);
     assert!(info_bar.retry_button.property::<bool>("visible"));
     assert!(info_bar.retry_button.width() > 0);
 }

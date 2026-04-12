@@ -62,7 +62,7 @@ impl LushtextWorkspaceSection {
         self.reset_item_cache();
         let root_store = gio::ListStore::new::<FileTreeItem>();
         for (root, is_dir) in roots {
-            let item = FileTreeItem::new(root.clone(), *is_dir);
+            let item = FileTreeItem::new(root.clone(), *is_dir, None);
             let index = root_store.n_items() as usize;
             root_store.append(&item);
             self.cache_root_item(root.clone(), index);
@@ -79,10 +79,14 @@ impl LushtextWorkspaceSection {
         let section_weak = self.downgrade();
         let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, move |item| {
             let section = section_weak.upgrade()?;
-            item.downcast_ref::<FileTreeItem>()
-                .filter(|fi| fi.is_dir())
-                .and_then(|fi| fi.path())
-                .map(|p| section.build_children_model(&p).upcast::<gio::ListModel>())
+            let fi = item.downcast_ref::<FileTreeItem>()?;
+            if !fi.is_dir() {
+                return None;
+            }
+            if fi.is_empty() == Some(true) {
+                return None; // Folders known to be empty don't get child models, hiding the arrow natively.
+            }
+            fi.path().map(|p| section.build_children_model(&p).upcast::<gio::ListModel>())
         });
 
         let selection = gtk4::SingleSelection::new(Some(tree_model.clone()));
@@ -112,7 +116,7 @@ impl LushtextWorkspaceSection {
                 if self.imp().drilldown_stack.borrow().is_empty() {
                     let store_ref = self.imp().root_store.borrow();
                     if let Some(root_store) = store_ref.as_ref() {
-                        let item = FileTreeItem::new(path.to_path_buf(), is_dir);
+                        let item = FileTreeItem::new(path.to_path_buf(), is_dir, None);
                         let index = root_store.n_items() as usize;
                         root_store.append(&item);
                         self.cache_root_item(path.to_path_buf(), index);
@@ -597,10 +601,12 @@ impl LushtextWorkspaceSection {
         }
 
         let section_weak = self.downgrade();
+        let lookahead_cap = gtk4::gio::Settings::new(crate::config::APP_ID)
+            .uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP) as usize;
         services::async_task::spawn_blocking_then(
             (store.clone(), path.clone(), Arc::clone(&cancel)),
             move || {
-                services::file_tree::scan_directory_bounded(&path, MAX_DIR_ENTRIES, Some(&cancel))
+                services::file_tree::scan_directory_bounded(&path, MAX_DIR_ENTRIES, lookahead_cap, Some(&cancel))
             },
             move |(store, path, cancel), scan| {
                 if scan.cancelled {
@@ -630,7 +636,7 @@ impl LushtextWorkspaceSection {
                 let remaining_budget = MAX_DIR_ENTRIES.saturating_sub(existing.len());
                 let mut new_entries = Vec::with_capacity(scan.entries.len().min(remaining_budget));
                 let mut truncated = scan.truncated;
-                for (entry_path, is_dir) in scan.entries {
+                for (entry_path, is_dir, is_empty) in scan.entries {
                     if existing.contains(&entry_path) {
                         continue;
                     }
@@ -638,7 +644,7 @@ impl LushtextWorkspaceSection {
                         truncated = true;
                         break;
                     }
-                    new_entries.push((entry_path, is_dir));
+                    new_entries.push((entry_path, is_dir, is_empty));
                 }
 
                 if truncated {
@@ -749,7 +755,7 @@ impl LushtextWorkspaceSection {
         store: gio::ListStore,
         dir_path: PathBuf,
         token: Arc<AtomicBool>,
-        entries: Vec<(PathBuf, bool)>,
+        entries: Vec<(PathBuf, bool, Option<bool>)>,
         truncated: bool,
     ) {
         let pending = std::rc::Rc::new(RefCell::new(VecDeque::from(entries)));
@@ -761,7 +767,7 @@ impl LushtextWorkspaceSection {
         store: gio::ListStore,
         dir_path: PathBuf,
         token: Arc<AtomicBool>,
-        pending: std::rc::Rc<RefCell<VecDeque<(PathBuf, bool)>>>,
+        pending: std::rc::Rc<RefCell<VecDeque<(PathBuf, bool, Option<bool>)>>>,
         truncated: bool,
     ) {
         if !self.child_scan_is_active(&dir_path, &token) {
@@ -772,10 +778,10 @@ impl LushtextWorkspaceSection {
         {
             let mut pending_entries = pending.borrow_mut();
             for _ in 0..CHILD_APPEND_BATCH_SIZE {
-                let Some((entry_path, is_dir)) = pending_entries.pop_front() else {
+                let Some((entry_path, is_dir, is_empty)) = pending_entries.pop_front() else {
                     break;
                 };
-                batch.push(FileTreeItem::new(entry_path, is_dir));
+                batch.push(FileTreeItem::new(entry_path, is_dir, is_empty));
             }
         }
 

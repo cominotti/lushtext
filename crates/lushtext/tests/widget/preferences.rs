@@ -78,6 +78,15 @@ fn test_workspace_auto_collapse_row_bound_to_settings() {
 }
 
 #[test]
+fn test_workspace_empty_folder_lookahead_cap_row_bound_to_settings() {
+    ensure_gtk_init();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    assert_eq!(imp.workspace_empty_folder_lookahead_cap_row.value(), 1000.0);
+}
+
+#[test]
 fn test_custom_font_row_disabled_when_system_font() {
     ensure_gtk_init();
     let prefs = LushtextPreferences::new();

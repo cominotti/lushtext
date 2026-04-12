@@ -37,6 +37,8 @@ pub struct LushtextPreferences {
     pub highlight_line_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
     pub workspace_auto_collapse_row: TemplateChild<libadwaita::SwitchRow>,
+    #[template_child]
+    pub workspace_empty_folder_lookahead_cap_row: TemplateChild<libadwaita::SpinRow>,
 
     pub settings: gio::Settings,
 }
@@ -55,6 +57,7 @@ impl Default for LushtextPreferences {
             show_line_numbers_row: TemplateChild::default(),
             highlight_line_row: TemplateChild::default(),
             workspace_auto_collapse_row: TemplateChild::default(),
+            workspace_empty_folder_lookahead_cap_row: TemplateChild::default(),
             settings: gio::Settings::new(crate::config::APP_ID),
         }
     }
@@ -110,6 +113,12 @@ impl ObjectImpl for LushtextPreferences {
             keys::WORKSPACE_AUTO_COLLAPSE,
             &*self.workspace_auto_collapse_row,
             "active",
+        )
+        .build();
+        s.bind(
+            keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP,
+            &self.workspace_empty_folder_lookahead_cap_row.adjustment(),
+            "value",
         )
         .build();
 

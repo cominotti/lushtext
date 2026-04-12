@@ -6,10 +6,10 @@ use crate::common::TestContext;
 use lushtext_core::services::file_tree;
 
 /// Helper: extract file names from scan results.
-fn names(entries: &[(std::path::PathBuf, bool)]) -> Vec<String> {
+fn names(entries: &[(std::path::PathBuf, bool, Option<bool>)]) -> Vec<String> {
     entries
         .iter()
-        .map(|(p, _)| p.file_name().unwrap().to_string_lossy().to_string())
+        .map(|(p, _, _)| p.file_name().unwrap().to_string_lossy().to_string())
         .collect()
 }
 
@@ -54,7 +54,7 @@ fn test_scan_subdirectory_contents() {
     let entry_names = names(&entries);
 
     assert_eq!(entry_names, vec!["app.rs", "lib.rs", "main.rs"]);
-    assert!(entries.iter().all(|(_, is_dir)| !is_dir));
+    assert!(entries.iter().all(|(_, is_dir, _)| !is_dir));
 }
 
 #[test]

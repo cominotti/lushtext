@@ -303,7 +303,15 @@ impl LushtextWorkspaceSection {
                     "text-x-generic-symbolic"
                 };
                 icon.set_icon_name(Some(icon_name));
-                label.set_label(&file_item.name());
+
+                if file_item.is_empty() == Some(true) {
+                    label.set_markup(&format!(
+                        "{} <span alpha=\"60%\"><i>(Empty)</i></span>",
+                        glib::markup_escape_text(&file_item.name())
+                    ));
+                } else {
+                    label.set_label(&file_item.name());
+                }
 
                 if let Some(path) = file_item.path() {
                     expander.set_tooltip_text(Some(&path.to_string_lossy()));
@@ -311,7 +319,7 @@ impl LushtextWorkspaceSection {
                     expander.set_tooltip_text(None);
                 }
 
-                let show_focus = file_item.is_dir() && !file_item.is_placeholder();
+                let show_focus = file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true);
                 if show_focus {
                     focus_btn.add_css_class("can-focus");
                     content_box.set_margin_end(36);

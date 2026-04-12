@@ -118,6 +118,21 @@
                 <property name="active">true</property>
               </object>
             </child>
+
+            <child>
+              <object class="AdwSpinRow" id="workspace_empty_folder_lookahead_cap_row">
+                <property name="title" translatable="yes">Empty Folder Lookahead Cap</property>
+                <property name="subtitle" translatable="yes">Maximum subdirectories to check for emptiness per scan</property>
+                <property name="adjustment">
+                  <object class="GtkAdjustment">
+                    <property name="lower">100</property>
+                    <property name="upper">10000</property>
+                    <property name="step-increment">100</property>
+                    <property name="value">1000</property>
+                  </object>
+                </property>
+              </object>
+            </child>
           </object>
         </child>
       </object>
