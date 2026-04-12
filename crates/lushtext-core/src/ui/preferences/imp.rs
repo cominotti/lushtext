@@ -35,6 +35,8 @@ pub struct LushtextPreferences {
     pub show_line_numbers_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
     pub highlight_line_row: TemplateChild<libadwaita::SwitchRow>,
+    #[template_child]
+    pub workspace_auto_collapse_row: TemplateChild<libadwaita::SwitchRow>,
 
     pub settings: gio::Settings,
 }
@@ -52,6 +54,7 @@ impl Default for LushtextPreferences {
             insert_spaces_row: TemplateChild::default(),
             show_line_numbers_row: TemplateChild::default(),
             highlight_line_row: TemplateChild::default(),
+            workspace_auto_collapse_row: TemplateChild::default(),
             settings: gio::Settings::new(crate::config::APP_ID),
         }
     }
@@ -103,6 +106,12 @@ impl ObjectImpl for LushtextPreferences {
             .build();
         s.bind(keys::TAB_WIDTH, &self.tab_width_row.adjustment(), "value")
             .build();
+        s.bind(
+            keys::WORKSPACE_AUTO_COLLAPSE,
+            &*self.workspace_auto_collapse_row,
+            "active",
+        )
+        .build();
 
         s.bind(keys::USE_SYSTEM_FONT, &*self.custom_font_row, "sensitive")
             .flags(gio::SettingsBindFlags::GET | gio::SettingsBindFlags::INVERT_BOOLEAN)

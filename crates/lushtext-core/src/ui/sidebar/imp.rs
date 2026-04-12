@@ -20,7 +20,7 @@ type WidthPresetCallback = Box<dyn Fn(WorkspaceSidebarWidthPreset)>;
 
 // CompositeTemplate loads the UI layout from a compiled XML file.
 // GObject methods always take &self; RefCell/Cell provide interior mutability.
-#[derive(Default, CompositeTemplate)]
+#[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/sidebar.ui")]
 pub struct LushtextSidebar {
     #[template_child]
@@ -65,6 +65,37 @@ pub struct LushtextSidebar {
     pub persist_inflight: Cell<bool>,
     /// Dirty flag set when a mutation occurs while persistence is in-flight.
     pub persist_dirty: Cell<bool>,
+    /// Application settings for feature toggles.
+    pub settings: gio::Settings,
+}
+
+impl Default for LushtextSidebar {
+    fn default() -> Self {
+        Self {
+            outer_scrolled_window: TemplateChild::default(),
+            sections_box: TemplateChild::default(),
+            new_workspace_box: TemplateChild::default(),
+            new_workspace_button: TemplateChild::default(),
+            new_workspace_label: TemplateChild::default(),
+            workspace_size_box: TemplateChild::default(),
+            small_width_button: TemplateChild::default(),
+            comfy_width_button: TemplateChild::default(),
+            large_width_button: TemplateChild::default(),
+            workspaces_file: RefCell::default(),
+            sections: RefCell::default(),
+            file_activated_callback: RefCell::default(),
+            rename_callback: RefCell::default(),
+            delete_callback: RefCell::default(),
+            create_callback: RefCell::default(),
+            workspace_changed_callback: RefCell::default(),
+            width_preset_callback: RefCell::default(),
+            syncing_width_preset: Cell::default(),
+            persist_generation: Cell::default(),
+            persist_inflight: Cell::default(),
+            persist_dirty: Cell::default(),
+            settings: gio::Settings::new(crate::config::APP_ID),
+        }
+    }
 }
 
 #[glib::object_subclass]

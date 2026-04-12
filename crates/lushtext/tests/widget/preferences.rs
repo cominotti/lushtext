@@ -69,6 +69,15 @@ fn test_use_system_font_row_bound_to_settings() {
 }
 
 #[test]
+fn test_workspace_auto_collapse_row_bound_to_settings() {
+    ensure_gtk_init();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    assert!(imp.workspace_auto_collapse_row.is_active());
+}
+
+#[test]
 fn test_custom_font_row_disabled_when_system_font() {
     ensure_gtk_init();
     let prefs = LushtextPreferences::new();

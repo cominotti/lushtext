@@ -141,6 +141,7 @@ impl LushtextWorkspaceSection {
         self.imp().drilldown_path_label.set_tooltip_text(Some(&path_str));
 
         self._load_roots(&[(dir_path.to_path_buf(), true)]);
+        self.notify_folder_focused();
     }
 
     /// Navigates one level up the drill-down stack. Restores original roots if empty.
@@ -215,6 +216,10 @@ impl LushtextWorkspaceSection {
         *self.imp().unlist_workspace_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_folder_focused<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
+        *self.imp().folder_focused_callback.borrow_mut() = Some(Box::new(f));
+    }
+
     // --- Callback notification helpers (called from imp.rs closures) ---
 
     pub fn notify_add_folder_requested(&self) {
@@ -235,6 +240,30 @@ impl LushtextWorkspaceSection {
         let ws_id = self.workspace_id();
         if let Some(ref cb) = *self.imp().unlist_workspace_callback.borrow() {
             cb(&ws_id);
+        }
+    }
+
+    pub fn notify_folder_focused(&self) {
+        let ws_id = self.workspace_id();
+        if let Some(ref cb) = *self.imp().folder_focused_callback.borrow() {
+            cb(&ws_id);
+        }
+    }
+
+    /// Collapses the root directories of this workspace section.
+    pub fn collapse_roots(&self) {
+        if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
+            let mut roots = Vec::new();
+            for i in 0..tree_model.n_items() {
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
+                    if row.depth() == 0 && row.is_expanded() {
+                        roots.push(row);
+                    }
+                }
+            }
+            for row in roots {
+                row.set_expanded(false);
+            }
         }
     }
 

@@ -30,6 +30,7 @@ pub mod keys {
     pub const SPLIT_VIEW_LAYOUT_MIGRATED: &str = "split-view-layout-migrated";
     pub const WORKSPACE_SIDEBAR_VISIBLE: &str = "workspace-sidebar-visible";
     pub const WORKSPACE_SIDEBAR_WIDTH_FRACTION: &str = "workspace-sidebar-width-fraction";
+    pub const WORKSPACE_AUTO_COLLAPSE: &str = "workspace-auto-collapse";
     pub const PROPERTIES_SIDEBAR_VISIBLE: &str = "properties-sidebar-visible";
     pub const PROPERTIES_SIDEBAR_WIDTH_FRACTION: &str = "properties-sidebar-width-fraction";
     pub const SIDEBAR_POSITION: &str = "sidebar-position";

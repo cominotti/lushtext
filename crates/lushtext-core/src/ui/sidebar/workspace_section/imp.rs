@@ -108,6 +108,7 @@ pub struct LushtextWorkspaceSection {
     pub add_folder_callback: RefCell<Option<WorkspaceCallback>>,
     pub rename_workspace_callback: RefCell<Option<WorkspaceCallback>>,
     pub unlist_workspace_callback: RefCell<Option<WorkspaceCallback>>,
+    pub folder_focused_callback: RefCell<Option<WorkspaceCallback>>,
 }
 
 #[glib::object_subclass]

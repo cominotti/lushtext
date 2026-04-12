@@ -144,5 +144,10 @@
       <summary>Search Gitignore</summary>
       <description>Whether workspace content search respects .gitignore patterns</description>
     </key>
+    <key name="workspace-auto-collapse" type="b">
+      <default>true</default>
+      <summary>Auto-Collapse Workspaces</summary>
+      <description>Automatically collapse other workspaces when focusing a folder</description>
+    </key>
   </schema>
 </schemalist>
