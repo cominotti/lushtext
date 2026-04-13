@@ -342,17 +342,18 @@ fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     let window = test_window();
     present_window(&window);
 
+    activate_action(&window, "toggle-properties");
     wait_until(Duration::from_secs(2), || {
-        !window.imp().workspace_split_view.is_collapsed()
+        workspace_sidebar_visible(&window)
+            && properties_sidebar_visible(&window)
+            && !window.imp().workspace_split_view.is_collapsed()
             && !window.imp().properties_split_view.is_collapsed()
     });
 
-    assert!(!window.imp().workspace_split_view.is_collapsed());
-    assert!(!window.imp().properties_split_view.is_collapsed());
-
-    activate_action(&window, "toggle-properties");
     assert!(workspace_sidebar_visible(&window));
     assert!(properties_sidebar_visible(&window));
+    assert!(!window.imp().workspace_split_view.is_collapsed());
+    assert!(!window.imp().properties_split_view.is_collapsed());
     assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
     assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
     assert_workspace_sidebar_width_locked(&window, 0.3);
