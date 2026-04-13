@@ -87,7 +87,7 @@ pub fn scan_directory_bounded(
     let mut heap = BinaryHeap::with_capacity(max_entries.saturating_add(1).min(256));
     let mut truncated = false;
     let mut dirs_checked = 0;
-    
+
     for entry in read_dir.flatten() {
         if cancel.is_some_and(|flag| flag.load(AtomicOrdering::Acquire)) {
             return DirectoryScan {
@@ -104,14 +104,16 @@ pub fn scan_directory_bounded(
         };
 
         let mut is_empty = None;
-        if is_dir {
-            if dirs_checked < lookahead_cap {
-                dirs_checked += 1;
-                is_empty = Some(is_dir_empty(&path));
-            }
+        if is_dir && dirs_checked < lookahead_cap {
+            dirs_checked += 1;
+            is_empty = Some(is_dir_empty(&path));
         }
 
-        heap.push(SortedEntry { path, is_dir, is_empty });
+        heap.push(SortedEntry {
+            path,
+            is_dir,
+            is_empty,
+        });
         if heap.len() > max_entries {
             heap.pop();
             truncated = true;

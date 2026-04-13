@@ -206,19 +206,19 @@ impl LushtextWorkspaceSection {
             let list_item_clone = list_item.clone();
             let overlay_clone = overlay.clone();
             focus_btn.connect_clicked(move |_| {
-                if let Some(tree_row) = list_item_clone.item().and_downcast::<gtk4::TreeListRow>() {
-                    if let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() {
-                        if let Some(path) = file_item.path() {
-                            // Find the WorkspaceSection by walking up the widget tree
-                            let mut current: Option<gtk4::Widget> = Some(overlay_clone.clone().upcast::<gtk4::Widget>());
-                            while let Some(w) = current {
-                                if let Some(section) = w.downcast_ref::<super::LushtextWorkspaceSection>() {
-                                    section.focus_folder(&path);
-                                    break;
-                                }
-                                current = w.parent();
-                            }
+                if let Some(tree_row) = list_item_clone.item().and_downcast::<gtk4::TreeListRow>()
+                    && let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>()
+                    && let Some(path) = file_item.path()
+                {
+                    // Find the WorkspaceSection by walking up the widget tree
+                    let mut current: Option<gtk4::Widget> =
+                        Some(overlay_clone.clone().upcast::<gtk4::Widget>());
+                    while let Some(w) = current {
+                        if let Some(section) = w.downcast_ref::<super::LushtextWorkspaceSection>() {
+                            section.focus_folder(&path);
+                            break;
                         }
+                        current = w.parent();
                     }
                 }
             });
@@ -320,7 +320,10 @@ impl LushtextWorkspaceSection {
                     expander.set_tooltip_text(None);
                 }
 
-                let show_focus = file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true) && tree_row.depth() > 0;
+                let show_focus = file_item.is_dir()
+                    && !file_item.is_placeholder()
+                    && file_item.is_empty() != Some(true)
+                    && tree_row.depth() > 0;
                 if show_focus {
                     focus_btn.add_css_class("can-focus");
                     content_box.set_margin_end(36);
@@ -453,12 +456,11 @@ impl LushtextWorkspaceSection {
         let focus_folder_action = gio::SimpleAction::new("focus-folder", None);
         let section_weak = obj.downgrade();
         focus_folder_action.connect_activate(move |_, _| {
-            if let Some(section) = section_weak.upgrade() {
-                if let Some(path) = section.imp().context_path.borrow().clone() {
-                    if section.imp().context_is_dir.get() {
-                        section.focus_folder(&path);
-                    }
-                }
+            if let Some(section) = section_weak.upgrade()
+                && let Some(path) = section.imp().context_path.borrow().clone()
+                && section.imp().context_is_dir.get()
+            {
+                section.focus_folder(&path);
             }
         });
         action_group.add_action(&focus_folder_action);
@@ -536,7 +538,9 @@ impl LushtextWorkspaceSection {
             imp.context_is_dir.set(file_item.is_dir());
             *imp.context_expander.borrow_mut() = Some(expander);
 
-            focus_folder_action_clone.set_enabled(file_item.is_dir() && !file_item.is_placeholder() && tree_row.depth() > 0);
+            focus_folder_action_clone.set_enabled(
+                file_item.is_dir() && !file_item.is_placeholder() && tree_row.depth() > 0,
+            );
 
             let popover = imp.context_menu.borrow().clone();
             if let Some(popover) = popover {
@@ -604,10 +608,10 @@ impl LushtextWorkspaceSection {
 
         let section_weak = obj.downgrade();
         gesture.connect_pressed(move |_, n_press, _, _| {
-            if n_press == 2 {
-                if let Some(section) = section_weak.upgrade() {
-                    section.toggle_roots();
-                }
+            if n_press == 2
+                && let Some(section) = section_weak.upgrade()
+            {
+                section.toggle_roots();
             }
         });
 

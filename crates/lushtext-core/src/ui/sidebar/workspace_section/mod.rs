@@ -21,6 +21,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+/// A pending file tree entry: (path, is_dir, is_empty).
+type PendingEntries = std::rc::Rc<RefCell<VecDeque<(PathBuf, bool, Option<bool>)>>>;
+
 // glib::wrapper! generates the public wrapper type for this widget.
 glib::wrapper! {
     pub struct LushtextWorkspaceSection(ObjectSubclass<imp::LushtextWorkspaceSection>)
@@ -91,7 +94,8 @@ impl LushtextWorkspaceSection {
             if fi.is_empty() == Some(true) {
                 return None; // Folders known to be empty don't get child models, hiding the arrow natively.
             }
-            fi.path().map(|p| section.build_children_model(&p).upcast::<gio::ListModel>())
+            fi.path()
+                .map(|p| section.build_children_model(&p).upcast::<gio::ListModel>())
         });
 
         let selection = gtk4::SingleSelection::new(Some(tree_model.clone()));
@@ -116,9 +120,17 @@ impl LushtextWorkspaceSection {
     pub fn add_root(&self, path: &Path, is_dir: bool) {
         let has_store = !self.imp().original_roots.borrow().is_empty();
         if has_store {
-            let already_exists = self.imp().original_roots.borrow().iter().any(|(p, _)| p == path);
+            let already_exists = self
+                .imp()
+                .original_roots
+                .borrow()
+                .iter()
+                .any(|(p, _)| p == path);
             if !already_exists {
-                self.imp().original_roots.borrow_mut().push((path.to_path_buf(), is_dir));
+                self.imp()
+                    .original_roots
+                    .borrow_mut()
+                    .push((path.to_path_buf(), is_dir));
                 // Only update the tree model if we are NOT drilled down
                 if self.imp().drilldown_stack.borrow().is_empty() {
                     let store_ref = self.imp().root_store.borrow();
@@ -149,12 +161,17 @@ impl LushtextWorkspaceSection {
     /// Focuses the workspace panel on a specific deep directory, allowing users
     /// to navigate past the horizontal clipping limit.
     pub fn focus_folder(&self, dir_path: &Path) {
-        self.imp().drilldown_stack.borrow_mut().push(dir_path.to_path_buf());
+        self.imp()
+            .drilldown_stack
+            .borrow_mut()
+            .push(dir_path.to_path_buf());
         self.imp().drilldown_header_box.set_visible(true);
-        
+
         let path_str = dir_path.to_string_lossy();
         self.imp().drilldown_path_label.set_label(&path_str);
-        self.imp().drilldown_path_label.set_tooltip_text(Some(&path_str));
+        self.imp()
+            .drilldown_path_label
+            .set_tooltip_text(Some(&path_str));
 
         self._load_roots(&[(dir_path.to_path_buf(), true)], true);
         self.notify_folder_focused();
@@ -167,7 +184,9 @@ impl LushtextWorkspaceSection {
         if let Some(parent_path) = stack.last().cloned() {
             let path_str = parent_path.to_string_lossy();
             self.imp().drilldown_path_label.set_label(&path_str);
-            self.imp().drilldown_path_label.set_tooltip_text(Some(&path_str));
+            self.imp()
+                .drilldown_path_label
+                .set_tooltip_text(Some(&path_str));
             if let Some(target) = popped_path {
                 *self.imp().pending_selection.borrow_mut() = Some(target);
             }
@@ -271,10 +290,11 @@ impl LushtextWorkspaceSection {
         if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
             let mut roots = Vec::new();
             for i in 0..tree_model.n_items() {
-                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
-                    if row.depth() == 0 && row.is_expanded() {
-                        roots.push(row);
-                    }
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
+                    && row.depth() == 0
+                    && row.is_expanded()
+                {
+                    roots.push(row);
                 }
             }
             for row in roots {
@@ -288,14 +308,13 @@ impl LushtextWorkspaceSection {
         if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
             let mut roots = Vec::new();
             for i in 0..tree_model.n_items() {
-                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
-                    if row.depth() == 0 && !row.is_expanded() {
-                        if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
-                            if item.is_empty() != Some(true) {
-                                roots.push(row);
-                            }
-                        }
-                    }
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
+                    && row.depth() == 0
+                    && !row.is_expanded()
+                    && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+                    && item.is_empty() != Some(true)
+                {
+                    roots.push(row);
                 }
             }
             for row in roots {
@@ -310,18 +329,18 @@ impl LushtextWorkspaceSection {
         if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
             let mut roots = Vec::new();
             let mut any_collapsed = false;
-            
+
             for i in 0..tree_model.n_items() {
-                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
-                    if row.depth() == 0 {
-                        if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
-                            if item.is_dir() && !item.is_placeholder() && item.is_empty() != Some(true) {
-                                roots.push(row.clone());
-                                if !row.is_expanded() {
-                                    any_collapsed = true;
-                                }
-                            }
-                        }
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
+                    && row.depth() == 0
+                    && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+                    && item.is_dir()
+                    && !item.is_placeholder()
+                    && item.is_empty() != Some(true)
+                {
+                    roots.push(row.clone());
+                    if !row.is_expanded() {
+                        any_collapsed = true;
                     }
                 }
             }
@@ -335,17 +354,23 @@ impl LushtextWorkspaceSection {
     fn select_and_scroll_to(&self, target_path: &Path) {
         if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
             for i in 0..tree_model.n_items() {
-                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
-                    if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
-                        if item.path().as_deref() == Some(target_path) {
-                            if let Some(selection) = self.imp().file_tree_view.model().and_downcast::<gtk4::SingleSelection>() {
-                                selection.set_selected(i);
-                                self.imp().file_tree_view.scroll_to(i, gtk4::ListScrollFlags::FOCUS, None);
-                            }
-                            self.imp().pending_selection.borrow_mut().take();
-                            return;
-                        }
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
+                    && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+                    && item.path().as_deref() == Some(target_path)
+                {
+                    if let Some(selection) = self
+                        .imp()
+                        .file_tree_view
+                        .model()
+                        .and_downcast::<gtk4::SingleSelection>()
+                    {
+                        selection.set_selected(i);
+                        self.imp()
+                            .file_tree_view
+                            .scroll_to(i, gtk4::ListScrollFlags::FOCUS, None);
                     }
+                    self.imp().pending_selection.borrow_mut().take();
+                    return;
                 }
             }
         }
@@ -355,14 +380,12 @@ impl LushtextWorkspaceSection {
         if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
             let mut expanded = self.imp().expanded_paths.borrow_mut();
             for i in 0..tree_model.n_items() {
-                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
-                    if row.is_expanded() {
-                        if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
-                            if let Some(path) = item.path() {
-                                expanded.insert(path);
-                            }
-                        }
-                    }
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
+                    && row.is_expanded()
+                    && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+                    && let Some(path) = item.path()
+                {
+                    expanded.insert(path);
                 }
             }
         }
@@ -663,11 +686,17 @@ impl LushtextWorkspaceSection {
 
         let section_weak = self.downgrade();
         let lookahead_cap = gtk4::gio::Settings::new(crate::config::APP_ID)
-            .uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP) as usize;
+            .uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP)
+            as usize;
         services::async_task::spawn_blocking_then(
             (store.clone(), path.clone(), Arc::clone(&cancel)),
             move || {
-                services::file_tree::scan_directory_bounded(&path, MAX_DIR_ENTRIES, lookahead_cap, Some(&cancel))
+                services::file_tree::scan_directory_bounded(
+                    &path,
+                    MAX_DIR_ENTRIES,
+                    lookahead_cap,
+                    Some(&cancel),
+                )
             },
             move |(store, path, cancel), scan| {
                 if scan.cancelled {
@@ -819,7 +848,7 @@ impl LushtextWorkspaceSection {
         entries: Vec<(PathBuf, bool, Option<bool>)>,
         truncated: bool,
     ) {
-        let pending = std::rc::Rc::new(RefCell::new(VecDeque::from(entries)));
+        let pending: PendingEntries = std::rc::Rc::new(RefCell::new(VecDeque::from(entries)));
         self.append_next_child_batch(store, dir_path, token, pending, truncated);
     }
 
@@ -828,7 +857,7 @@ impl LushtextWorkspaceSection {
         store: gio::ListStore,
         dir_path: PathBuf,
         token: Arc<AtomicBool>,
-        pending: std::rc::Rc<RefCell<VecDeque<(PathBuf, bool, Option<bool>)>>>,
+        pending: PendingEntries,
         truncated: bool,
     ) {
         if !self.child_scan_is_active(&dir_path, &token) {
@@ -854,20 +883,20 @@ impl LushtextWorkspaceSection {
                 .get(&dir_path)
                 .map_or(0, Vec::len);
             store.splice(store.n_items(), 0, &batch);
-            
+
             let mut to_expand = Vec::new();
             let mut to_select = None;
-            
+
             for (offset, item) in batch.iter().enumerate() {
                 if let Some(path) = item.path() {
                     self.cache_child_item(&dir_path, path.clone(), start_index + offset);
                     if self.imp().expanded_paths.borrow().contains(&path) {
                         to_expand.push(path.clone());
                     }
-                    if let Some(pending) = self.imp().pending_selection.borrow().as_ref() {
-                        if pending == &path {
-                            to_select = Some(path.clone());
-                        }
+                    if let Some(pending) = self.imp().pending_selection.borrow().as_ref()
+                        && pending == &path
+                    {
+                        to_select = Some(path.clone());
                     }
                 }
             }
@@ -920,7 +949,9 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
     {
         if file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true) {
             tree_row.set_expanded(!tree_row.is_expanded());
-        } else if !file_item.is_dir() && let Some(ref path) = file_item.path() {
+        } else if !file_item.is_dir()
+            && let Some(ref path) = file_item.path()
+        {
             callback(path);
         }
     }

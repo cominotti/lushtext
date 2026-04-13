@@ -231,7 +231,8 @@ fn collect_files_recursive(
         return;
     }
 
-            for (path, is_dir, _) in file_tree::scan_directory(dir) {        if is_dir {
+    for (path, is_dir, _) in file_tree::scan_directory(dir) {
+        if is_dir {
             if !is_ignored_index_dir(&path) {
                 collect_files_recursive(
                     &path,
