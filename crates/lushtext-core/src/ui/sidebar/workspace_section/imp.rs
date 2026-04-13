@@ -296,9 +296,9 @@ impl LushtextWorkspaceSection {
                     .and_downcast::<gtk4::Label>()
                     .expect("second child is Label");
 
-                let root_presentation = section_weak
-                    .upgrade()
-                    .and_then(|section| workspace_root_row_presentation(&section, &tree_row, &file_item));
+                let root_presentation = section_weak.upgrade().and_then(|section| {
+                    workspace_root_row_presentation(&section, &tree_row, &file_item)
+                });
 
                 let icon_name = if let Some((icon_name, _)) = root_presentation {
                     icon_name
@@ -311,8 +311,10 @@ impl LushtextWorkspaceSection {
                 };
                 icon.set_icon_name(Some(icon_name));
 
-                let display_name = root_presentation
-                    .map_or_else(|| file_item.name(), |(_, display_name)| display_name.to_string());
+                let display_name = root_presentation.map_or_else(
+                    || file_item.name(),
+                    |(_, display_name)| display_name.to_string(),
+                );
 
                 if file_item.is_empty() == Some(true) {
                     label.set_markup(&format!(
