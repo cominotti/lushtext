@@ -5,24 +5,16 @@
 mod actions;
 // Private implementation module (GObject pattern).
 mod imp;
+mod tree_loading;
 
 use super::file_tree_item::FileTreeItem;
 use crate::model::workspace::WorkspaceId;
-use crate::services;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use imp::ItemLocation;
-use std::cell::RefCell;
-use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-
-/// A pending file tree entry: (path, is_dir, is_empty).
-type PendingEntries = std::rc::Rc<RefCell<VecDeque<(PathBuf, bool, Option<bool>)>>>;
 
 // glib::wrapper! generates the public wrapper type for this widget.
 glib::wrapper! {
@@ -64,7 +56,7 @@ impl LushtextWorkspaceSection {
 
     fn _load_roots(&self, roots: &[(PathBuf, bool)], auto_expand: bool) {
         self.save_expanded_paths();
-        self.clear_all_dir_state();
+        tree_loading::clear_all_dir_state(self);
         self.reset_item_cache();
         let root_store = gio::ListStore::new::<FileTreeItem>();
         for (root, is_dir) in roots {
@@ -97,8 +89,9 @@ impl LushtextWorkspaceSection {
             if fi.is_empty() == Some(true) {
                 return None; // Folders known to be empty don't get child models, hiding the arrow natively.
             }
-            fi.path()
-                .map(|p| section.build_children_model(&p).upcast::<gio::ListModel>())
+            fi.path().map(|p| {
+                tree_loading::build_children_model(&section, &p).upcast::<gio::ListModel>()
+            })
         });
 
         let selection = gtk4::SingleSelection::new(Some(tree_model.clone()));
@@ -355,7 +348,11 @@ impl LushtextWorkspaceSection {
         }
     }
 
-    fn select_and_scroll_to(&self, target_path: &Path) {
+    /// Select and scroll to a path after its row exists in the flattened tree model.
+    ///
+    /// Tree expansion is asynchronous, so pending selections are fulfilled by the
+    /// tree-loading helper after child batches land in the `TreeListModel`.
+    pub(super) fn select_and_scroll_to(&self, target_path: &Path) {
         if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
             for i in 0..tree_model.n_items() {
                 if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
@@ -417,7 +414,8 @@ impl LushtextWorkspaceSection {
         );
     }
 
-    fn cache_child_item(&self, parent_dir: &Path, path: PathBuf, index: usize) {
+    /// Cache a child row's parent directory and index for O(1) later lookup.
+    pub(super) fn cache_child_item(&self, parent_dir: &Path, path: PathBuf, index: usize) {
         let imp = self.imp();
         let parent_key = parent_dir.to_path_buf();
         let mut child_paths = imp.child_paths.borrow_mut();
@@ -553,7 +551,8 @@ impl LushtextWorkspaceSection {
         }
     }
 
-    fn find_dir_row(&self, dir_path: &Path) -> Option<gtk4::TreeListRow> {
+    /// Resolve the live `TreeListRow` for a directory path, reusing the weak cache when possible.
+    pub(super) fn find_dir_row(&self, dir_path: &Path) -> Option<gtk4::TreeListRow> {
         if let Some(row) = self
             .imp()
             .dir_rows
@@ -613,7 +612,7 @@ impl LushtextWorkspaceSection {
     /// Remove an item from the tree model by path. Returns true if found and removed.
     pub fn remove_from_model(&self, target_path: &Path) -> bool {
         let imp = self.imp();
-        self.clear_dir_state(target_path);
+        tree_loading::clear_dir_state(self, target_path);
 
         if let Some(location) = self.remove_cached_item(target_path) {
             #[expect(clippy::cast_possible_truncation)] // list store ≪ u32::MAX
@@ -670,275 +669,6 @@ impl LushtextWorkspaceSection {
         }
         false
     }
-
-    fn build_children_model(&self, dir_path: &Path) -> gio::ListStore {
-        let store = gio::ListStore::new::<FileTreeItem>();
-        let path = dir_path.to_path_buf();
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.imp()
-            .dir_stores
-            .borrow_mut()
-            .insert(path.clone(), store.downgrade());
-
-        if let Some(previous) = self
-            .imp()
-            .child_scan_tokens
-            .borrow_mut()
-            .insert(path.clone(), Arc::clone(&cancel))
-        {
-            previous.store(true, Ordering::Release);
-        }
-
-        let section_weak = self.downgrade();
-        let lookahead_cap = gtk4::gio::Settings::new(crate::config::APP_ID)
-            .uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP)
-            as usize;
-        services::async_task::spawn_blocking_then(
-            (store.clone(), path.clone(), Arc::clone(&cancel)),
-            move || {
-                services::file_tree::scan_directory_bounded(
-                    &path,
-                    MAX_DIR_ENTRIES,
-                    lookahead_cap,
-                    Some(&cancel),
-                )
-            },
-            move |(store, path, cancel), scan| {
-                if scan.cancelled {
-                    if let Some(section) = section_weak.upgrade() {
-                        section.finish_child_scan(&path, &cancel);
-                    }
-                    return;
-                }
-
-                let Some(section) = section_weak.upgrade() else {
-                    return;
-                };
-
-                if !section.child_scan_is_active(&path, &cancel) {
-                    return;
-                }
-
-                let mut existing = HashSet::with_capacity(store.n_items() as usize);
-                for i in 0..store.n_items() {
-                    if let Some(fi) = store.item(i).and_downcast::<FileTreeItem>()
-                        && let Some(existing_path) = fi.path()
-                    {
-                        existing.insert(existing_path);
-                    }
-                }
-
-                let remaining_budget = MAX_DIR_ENTRIES.saturating_sub(existing.len());
-                let mut new_entries = Vec::with_capacity(scan.entries.len().min(remaining_budget));
-                let mut truncated = scan.truncated;
-                for (entry_path, is_dir, is_empty) in scan.entries {
-                    if existing.contains(&entry_path) {
-                        continue;
-                    }
-                    if new_entries.len() >= remaining_budget {
-                        truncated = true;
-                        break;
-                    }
-                    new_entries.push((entry_path, is_dir, is_empty));
-                }
-
-                if truncated {
-                    tracing::warn!("Directory truncated to {MAX_DIR_ENTRIES} entries");
-                }
-
-                section.append_child_batches(store, path, cancel, new_entries, truncated);
-            },
-        );
-
-        store
-    }
-
-    fn finish_child_scan(&self, dir_path: &Path, token: &Arc<AtomicBool>) {
-        let mut tokens = self.imp().child_scan_tokens.borrow_mut();
-        let should_remove = tokens
-            .get(dir_path)
-            .is_some_and(|active| Arc::ptr_eq(active, token));
-        if should_remove {
-            tokens.remove(dir_path);
-        }
-    }
-
-    fn clear_dir_state(&self, dir_path: &Path) {
-        self.imp()
-            .dir_rows
-            .borrow_mut()
-            .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
-        self.imp()
-            .dir_stores
-            .borrow_mut()
-            .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
-        self.imp()
-            .child_paths
-            .borrow_mut()
-            .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
-        self.imp()
-            .item_locations
-            .borrow_mut()
-            .retain(|path, _| path.as_path() == dir_path || !path.starts_with(dir_path));
-
-        let cancelled: Vec<_> = {
-            let mut tokens = self.imp().child_scan_tokens.borrow_mut();
-            let paths: Vec<_> = tokens
-                .keys()
-                .filter(|path| path.as_path() == dir_path || path.starts_with(dir_path))
-                .cloned()
-                .collect();
-            paths
-                .into_iter()
-                .filter_map(|path| tokens.remove(&path))
-                .collect()
-        };
-
-        for token in cancelled {
-            token.store(true, Ordering::Release);
-        }
-    }
-
-    fn clear_all_dir_state(&self) {
-        self.imp().dir_rows.borrow_mut().clear();
-        self.imp().dir_stores.borrow_mut().clear();
-        self.imp().child_paths.borrow_mut().clear();
-        self.imp().item_locations.borrow_mut().clear();
-        self.imp().root_paths.borrow_mut().clear();
-
-        let cancelled: Vec<_> = self
-            .imp()
-            .child_scan_tokens
-            .borrow_mut()
-            .drain()
-            .map(|(_, token)| token)
-            .collect();
-        for token in cancelled {
-            token.store(true, Ordering::Release);
-        }
-    }
-
-    fn child_scan_is_active(&self, dir_path: &Path, token: &Arc<AtomicBool>) -> bool {
-        if token.load(Ordering::Acquire) {
-            self.finish_child_scan(dir_path, token);
-            return false;
-        }
-
-        {
-            let tokens = self.imp().child_scan_tokens.borrow();
-            let Some(active) = tokens.get(dir_path) else {
-                return false;
-            };
-            if !Arc::ptr_eq(active, token) {
-                return false;
-            }
-        }
-
-        if let Some(row) = self.find_dir_row(dir_path)
-            && !row.is_expanded()
-        {
-            token.store(true, Ordering::Release);
-            self.finish_child_scan(dir_path, token);
-            return false;
-        }
-
-        true
-    }
-
-    fn append_child_batches(
-        &self,
-        store: gio::ListStore,
-        dir_path: PathBuf,
-        token: Arc<AtomicBool>,
-        entries: Vec<(PathBuf, bool, Option<bool>)>,
-        truncated: bool,
-    ) {
-        let pending: PendingEntries = std::rc::Rc::new(RefCell::new(VecDeque::from(entries)));
-        self.append_next_child_batch(store, dir_path, token, pending, truncated);
-    }
-
-    fn append_next_child_batch(
-        &self,
-        store: gio::ListStore,
-        dir_path: PathBuf,
-        token: Arc<AtomicBool>,
-        pending: PendingEntries,
-        truncated: bool,
-    ) {
-        if !self.child_scan_is_active(&dir_path, &token) {
-            return;
-        }
-
-        let mut batch = Vec::with_capacity(CHILD_APPEND_BATCH_SIZE);
-        {
-            let mut pending_entries = pending.borrow_mut();
-            for _ in 0..CHILD_APPEND_BATCH_SIZE {
-                let Some((entry_path, is_dir, is_empty)) = pending_entries.pop_front() else {
-                    break;
-                };
-                batch.push(FileTreeItem::new(entry_path, is_dir, is_empty));
-            }
-        }
-
-        if !batch.is_empty() {
-            let start_index = self
-                .imp()
-                .child_paths
-                .borrow()
-                .get(&dir_path)
-                .map_or(0, Vec::len);
-            store.splice(store.n_items(), 0, &batch);
-
-            let mut to_expand = Vec::new();
-            let mut to_select = None;
-
-            for (offset, item) in batch.iter().enumerate() {
-                if let Some(path) = item.path() {
-                    self.cache_child_item(&dir_path, path.clone(), start_index + offset);
-                    if self.imp().expanded_paths.borrow().contains(&path) {
-                        to_expand.push(path.clone());
-                    }
-                    if let Some(pending) = self.imp().pending_selection.borrow().as_ref()
-                        && pending == &path
-                    {
-                        to_select = Some(path.clone());
-                    }
-                }
-            }
-
-            if !to_expand.is_empty() || to_select.is_some() {
-                let section_weak = self.downgrade();
-                glib::timeout_add_local_once(Duration::from_millis(1), move || {
-                    if let Some(section) = section_weak.upgrade() {
-                        for path in to_expand {
-                            if let Some(row) = section.find_dir_row(&path) {
-                                row.set_expanded(true);
-                            }
-                        }
-                        if let Some(path) = to_select {
-                            section.select_and_scroll_to(&path);
-                        }
-                    }
-                });
-            }
-        }
-
-        if pending.borrow().is_empty() {
-            if truncated {
-                let placeholder = [FileTreeItem::new_placeholder(truncated_directory_label())];
-                store.splice(store.n_items(), 0, &placeholder);
-            }
-            self.finish_child_scan(&dir_path, &token);
-            return;
-        }
-
-        let section_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(1), move || {
-            if let Some(section) = section_weak.upgrade() {
-                section.append_next_child_batch(store, dir_path, token, pending, truncated);
-            }
-        });
-    }
 }
 
 /// Extract the file item at the given position and call the callback if it's a file.
@@ -960,18 +690,6 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
             callback(path);
         }
     }
-}
-
-/// Maximum directory entries before truncation. A single `gio::ListStore`
-/// with >10k items causes slow model diff updates in `GtkListView`.
-/// Truncated directories show a placeholder row with the count.
-const MAX_DIR_ENTRIES: usize = 10_000;
-/// Rows appended per main-loop tick when populating a directory tree.
-/// 256 items splice in <2ms, staying under the 16ms frame budget.
-const CHILD_APPEND_BATCH_SIZE: usize = 256;
-
-fn truncated_directory_label() -> String {
-    format!("{MAX_DIR_ENTRIES}+ items - showing first {MAX_DIR_ENTRIES}")
 }
 
 impl Default for LushtextWorkspaceSection {

@@ -12,11 +12,31 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use unicase::UniCase;
 
+/// A single sidebar-visible filesystem entry returned by a directory scan.
+///
+/// This stays in the service layer as plain Rust data so callers in the UI,
+/// benchmarks, and other services can share one documented shape without
+/// depending on tuple field positions.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DirectoryEntry {
+    /// Absolute filesystem path for the file or directory.
+    pub path: PathBuf,
+    /// True when the path points to a directory.
+    pub is_dir: bool,
+    /// Empty-directory hint for sidebar affordances.
+    ///
+    /// `Some(true)` means the directory was checked and found empty,
+    /// `Some(false)` means it was checked and contains visible entries,
+    /// and `None` means emptiness was not checked (files, or directories past
+    /// the scan's lookahead budget).
+    pub is_empty: Option<bool>,
+}
+
 /// Result of a bounded directory scan.
 #[derive(Debug, Default)]
 pub struct DirectoryScan {
-    /// Sorted entries: path, is_dir, and is_empty (Some(true) if empty, Some(false) if not, None if skipped).
-    pub entries: Vec<(PathBuf, bool, Option<bool>)>,
+    /// Sorted entries for the directory, directories-first then alphabetical.
+    pub entries: Vec<DirectoryEntry>,
     /// True if the directory had more entries than `max_entries`.
     pub truncated: bool,
     /// True if the cancellation token was set during scanning.
@@ -48,7 +68,7 @@ impl PartialOrd for SortedEntry {
 /// Scan a directory and return sorted entries (directories first, then alphabetical).
 /// Skips hidden files (starting with `.`).
 #[must_use]
-pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool, Option<bool>)> {
+pub fn scan_directory(dir_path: &Path) -> Vec<DirectoryEntry> {
     scan_directory_bounded(dir_path, usize::MAX, 1000, None).entries
 }
 
@@ -145,10 +165,14 @@ fn classify_entry(entry: &DirEntry) -> Option<(PathBuf, bool)> {
     }
 }
 
-fn drain_sorted_entries(heap: BinaryHeap<SortedEntry>) -> Vec<(PathBuf, bool, Option<bool>)> {
+fn drain_sorted_entries(heap: BinaryHeap<SortedEntry>) -> Vec<DirectoryEntry> {
     heap.into_sorted_vec()
         .into_iter()
-        .map(|entry| (entry.path, entry.is_dir, entry.is_empty))
+        .map(|entry| DirectoryEntry {
+            path: entry.path,
+            is_dir: entry.is_dir,
+            is_empty: entry.is_empty,
+        })
         .collect()
 }
 
@@ -177,10 +201,17 @@ mod tests {
     use tempfile::TempDir;
 
     /// Helper: extract file names from scan results.
-    fn names(entries: &[(PathBuf, bool, Option<bool>)]) -> Vec<String> {
+    fn names(entries: &[DirectoryEntry]) -> Vec<String> {
         entries
             .iter()
-            .map(|(p, _, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|entry| {
+                entry
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect()
     }
 
@@ -221,7 +252,7 @@ mod tests {
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 1);
-        assert!(!entries[0].1);
+        assert!(!entries[0].is_dir);
     }
 
     #[test]
@@ -231,7 +262,7 @@ mod tests {
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].1);
+        assert!(entries[0].is_dir);
     }
 
     #[test]
@@ -243,8 +274,8 @@ mod tests {
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 2);
-        assert!(entries[0].1, "first entry should be directory");
-        assert!(!entries[1].1, "second entry should be file");
+        assert!(entries[0].is_dir, "first entry should be directory");
+        assert!(!entries[1].is_dir, "second entry should be file");
     }
 
     #[test]
@@ -299,7 +330,7 @@ mod tests {
         std::fs::write(dir.path().join("file.txt"), "").unwrap();
 
         let entries = scan_directory(dir.path());
-        assert!(entries[0].0.is_absolute());
+        assert!(entries[0].path.is_absolute());
     }
 
     #[cfg(unix)]

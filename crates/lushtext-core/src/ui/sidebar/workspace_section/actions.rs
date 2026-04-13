@@ -236,7 +236,7 @@ impl super::LushtextWorkspaceSection {
                             && let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>()
                         {
                             if is_dir {
-                                section.clear_dir_state(&old_path);
+                                super::tree_loading::clear_dir_state(&section, &old_path);
                                 imp.dir_rows
                                     .borrow_mut()
                                     .insert(new_path.clone(), tree_row.downgrade());

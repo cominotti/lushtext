@@ -138,7 +138,7 @@ lushtext-core/src/
   ui/                GTK4/Libadwaita widgets
     window/          Main window shell plus dialogs, search, session, print, and zoom wiring
     editor_page/     GtkSourceView tab
-    sidebar/         Multi-workspace file tree
+    sidebar/         Multi-workspace file tree, including per-section async child-tree loading
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search
     command_palette/ Ctrl+P fuzzy search

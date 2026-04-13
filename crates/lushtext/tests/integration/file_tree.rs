@@ -3,13 +3,20 @@
 //! Integration tests for file tree scanning with realistic project layouts.
 
 use crate::common::TestContext;
-use lushtext_core::services::file_tree;
+use lushtext_core::services::file_tree::{self, DirectoryEntry};
 
 /// Helper: extract file names from scan results.
-fn names(entries: &[(std::path::PathBuf, bool, Option<bool>)]) -> Vec<String> {
+fn names(entries: &[DirectoryEntry]) -> Vec<String> {
     entries
         .iter()
-        .map(|(p, _, _)| p.file_name().unwrap().to_string_lossy().to_string())
+        .map(|entry| {
+            entry
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        })
         .collect()
 }
 
@@ -34,10 +41,10 @@ fn test_scan_realistic_project_layout() {
     assert_eq!(entry_names, vec!["src", "tests", "Cargo.toml", "README.md"]);
 
     // Verify is_dir flags
-    assert!(entries[0].1, "src should be dir");
-    assert!(entries[1].1, "tests should be dir");
-    assert!(!entries[2].1, "Cargo.toml should be file");
-    assert!(!entries[3].1, "README.md should be file");
+    assert!(entries[0].is_dir, "src should be dir");
+    assert!(entries[1].is_dir, "tests should be dir");
+    assert!(!entries[2].is_dir, "Cargo.toml should be file");
+    assert!(!entries[3].is_dir, "README.md should be file");
 }
 
 #[test]
@@ -54,7 +61,7 @@ fn test_scan_subdirectory_contents() {
     let entry_names = names(&entries);
 
     assert_eq!(entry_names, vec!["app.rs", "lib.rs", "main.rs"]);
-    assert!(entries.iter().all(|(_, is_dir, _)| !is_dir));
+    assert!(entries.iter().all(|entry| !entry.is_dir));
 }
 
 #[test]

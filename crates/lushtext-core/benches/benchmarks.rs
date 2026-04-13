@@ -25,7 +25,7 @@ use lushtext_core::model::workspace::{
 use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
 use lushtext_core::services::file_limits::FileSizeCheck;
-use lushtext_core::services::file_tree;
+use lushtext_core::services::file_tree::{self, DirectoryEntry};
 use lushtext_core::services::json_store;
 use lushtext_core::services::palette::{self, FileIndex};
 use lushtext_core::services::workspace_manager;
@@ -95,7 +95,7 @@ fn make_flat_dir(entry_count: usize) -> TempDir {
     dir
 }
 
-fn populate_tree_store(entries: Vec<(PathBuf, bool)>, truncated: bool) -> gio::ListStore {
+fn populate_tree_store(entries: Vec<DirectoryEntry>, truncated: bool) -> gio::ListStore {
     const MAX_DIR_ENTRIES: usize = 10_000;
     const CHILD_APPEND_BATCH_SIZE: usize = 256;
 
@@ -105,10 +105,10 @@ fn populate_tree_store(entries: Vec<(PathBuf, bool)>, truncated: bool) -> gio::L
     while !pending.is_empty() {
         let mut batch = Vec::with_capacity(CHILD_APPEND_BATCH_SIZE);
         for _ in 0..CHILD_APPEND_BATCH_SIZE {
-            let Some((entry_path, is_dir)) = pending.pop_front() else {
+            let Some(entry) = pending.pop_front() else {
                 break;
             };
-            batch.push(FileTreeItem::new(entry_path, is_dir, None));
+            batch.push(FileTreeItem::new(entry.path, entry.is_dir, entry.is_empty));
         }
         store.splice(store.n_items(), 0, &batch);
     }
@@ -526,6 +526,9 @@ fn bench_editor_file_io(c: &mut Criterion) {
 fn bench_tree_population(c: &mut Criterion) {
     let mut group = c.benchmark_group("tree_population");
     group.sample_size(20);
+    // Match `scan_directory`'s default lookahead so the benchmark tracks the
+    // real sidebar scan contract instead of silently skipping empty-dir probes.
+    const BENCH_LOOKAHEAD_CAP: usize = 1000;
 
     for &(label, entry_count, max_entries) in &[
         ("full", 10_000usize, 10_000usize),
@@ -536,8 +539,12 @@ fn bench_tree_population(c: &mut Criterion) {
                 || {
                     let dir = make_flat_dir(entry_count);
                     let cancel = AtomicBool::new(false);
-                    let scan =
-                        file_tree::scan_directory_bounded(dir.path(), max_entries, Some(&cancel));
+                    let scan = file_tree::scan_directory_bounded(
+                        dir.path(),
+                        max_entries,
+                        BENCH_LOOKAHEAD_CAP,
+                        Some(&cancel),
+                    );
                     (dir, scan)
                 },
                 |(dir, scan)| {

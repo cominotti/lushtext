@@ -233,11 +233,11 @@ fn collect_files_recursive(
         return;
     }
 
-    for (path, is_dir, _) in file_tree::scan_directory(dir) {
-        if is_dir {
-            if !is_ignored_index_dir(&path) {
+    for entry in file_tree::scan_directory(dir) {
+        if entry.is_dir {
+            if !is_ignored_index_dir(&entry.path) {
                 collect_files_recursive(
-                    &path,
+                    &entry.path,
                     workspace_root,
                     out,
                     visited,
@@ -246,7 +246,7 @@ fn collect_files_recursive(
                 );
             }
         } else {
-            out.push(IndexedFile::new(path, Arc::clone(workspace_root)));
+            out.push(IndexedFile::new(entry.path, Arc::clone(workspace_root)));
         }
     }
 }
