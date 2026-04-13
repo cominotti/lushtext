@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 
 /// One open tab in the session.
@@ -35,11 +36,15 @@ pub struct SessionData {
 }
 
 impl SessionData {
-    /// Retain only file-backed tabs whose paths are in the given set.
-    /// Untitled tabs (path = None) are always kept.
-    /// Adjusts `active_tab_index` to track the same tab after removal,
-    /// or clears it if the active tab was removed.
-    pub fn retain_tabs_by_path(&mut self, existing_paths: &HashSet<PathBuf>) {
+    /// Retain only untitled tabs and file-backed tabs whose paths satisfy `keep`.
+    ///
+    /// This keeps the "rebase the active index onto the surviving tab list"
+    /// rule in the domain model so service code can provide only the filesystem
+    /// predicate (`Path::exists`, precomputed path sets, and so on).
+    pub fn retain_tabs_where<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&Path) -> bool,
+    {
         let active_original_idx = self.active_tab_index;
 
         // Rebuild the tab list, tracking how the active tab index shifts.
@@ -48,11 +53,11 @@ impl SessionData {
         let mut new_active_index: Option<usize> = None;
 
         for (old_idx, tab) in old_tabs.into_iter().enumerate() {
-            let keep = match &tab.path {
+            let keep_tab = match &tab.path {
                 None => true, // untitled tabs always survive
-                Some(path) => existing_paths.contains(path),
+                Some(path) => keep(path),
             };
-            if keep {
+            if keep_tab {
                 if active_original_idx == Some(old_idx) {
                     new_active_index = Some(self.tabs.len());
                 }
@@ -61,6 +66,14 @@ impl SessionData {
         }
 
         self.active_tab_index = new_active_index;
+    }
+
+    /// Retain only file-backed tabs whose paths are in the given set.
+    /// Untitled tabs (path = None) are always kept.
+    /// Adjusts `active_tab_index` to track the same tab after removal,
+    /// or clears it if the active tab was removed.
+    pub fn retain_tabs_by_path(&mut self, existing_paths: &HashSet<PathBuf>) {
+        self.retain_tabs_where(|path| existing_paths.contains(path));
     }
 }
 

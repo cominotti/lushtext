@@ -33,6 +33,7 @@ Each category has a **density rule** indicating when comments are required. See 
 - Its role in the architecture — which layer, what depends on it
 - Key design constraints (e.g., "no GTK dependencies — fully unit-testable")
 - If the module's layer placement is non-obvious, explain why
+- If the file is one slice of a split widget or service (for example `history.rs`, `runtime.rs`, `actions.rs`), explain which workflow it owns and why that slice was extracted
 
 ### Type Docs — Structs, Enums, Traits (`///`)
 
@@ -50,6 +51,7 @@ Each category has a **density rule** indicating when comments are required. See 
 - What the field tracks and why
 - If the type choice is non-obvious (e.g., `Arc<PathBuf>` for memory sharing, `Cell<u32>` as a generation counter): explain the reasoning
 - If there's a lifecycle constraint (e.g., "populated during `constructed()`, never `None` after"): state it
+- When related fields are grouped into a plain Rust helper struct inside `imp.rs`, document what workflow the grouping isolates and why that makes the adapter easier to navigate
 
 ### Function Docs (`///`)
 

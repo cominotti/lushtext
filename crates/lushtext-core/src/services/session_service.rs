@@ -31,24 +31,7 @@ pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
 /// path. Always call from a background thread via `spawn_blocking_then`,
 /// never on the GTK main thread.
 pub fn filter_existing_tabs(session: &mut SessionData) {
-    let active_original_idx = session.active_tab_index;
-    let old_tabs = std::mem::take(&mut session.tabs);
-    let mut new_active_index: Option<usize> = None;
-
-    for (old_idx, tab) in old_tabs.into_iter().enumerate() {
-        let keep = match &tab.path {
-            None => true, // untitled tabs always survive
-            Some(path) => path.exists(),
-        };
-        if keep {
-            if active_original_idx == Some(old_idx) {
-                new_active_index = Some(session.tabs.len());
-            }
-            session.tabs.push(tab);
-        }
-    }
-
-    session.active_tab_index = new_active_index;
+    session.retain_tabs_where(Path::exists);
 }
 
 #[cfg(test)]

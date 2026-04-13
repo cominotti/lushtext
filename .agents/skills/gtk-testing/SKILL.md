@@ -53,6 +53,7 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 4. If the code under test uses async GTK callbacks or `spawn_blocking_then`, wait on a visible predicate with a timeout.
 5. If the behavior depends on real frame-clock progression, do **not** just sleep for the nominal animation duration. Assert on stable invariants or use the repo's narrow test-only knobs when they already exist.
 6. Run the smallest relevant command before broadening to the full suite.
+7. When refactoring a large widget or window into sibling modules without changing behavior, still run the widget target for that surface and its adjacent orchestration surface. Visibility and wiring regressions often show up only from the external `crates/lushtext` test crate, not from `lushtext-core` alone.
 
 ## Headless GTK Runs
 
@@ -82,6 +83,7 @@ Use `make test-widget` locally when a display server is already available.
 - New widget state, signal wiring, or window orchestration: widget tests.
 - Bug fix: add the lowest-level regression test that reproduces the bug reliably.
 - Workflow that truly needs compositor behavior beyond the current widget harness: discuss whether a new dedicated target is justified before creating one.
+- Large adapter refactor with no intended behavior change: rerun the widget suites for the touched widget plus neighboring window/sidebar/search orchestration so extracted helper visibility and callback wiring stay covered.
 
 ## References
 

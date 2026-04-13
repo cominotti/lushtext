@@ -39,6 +39,27 @@ const MIN_EDITOR_CONTENT_WIDTH_SP: f64 = 620.0;
 const DUAL_PANE_LAYOUT_OVERHEAD_SP: f64 = 32.0;
 /// Collapse the left workspace pane on narrower windows.
 const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: &str = "max-width: 860sp";
+
+/// Editor-memory accounting shared by the eviction helpers.
+#[derive(Default)]
+pub struct EditorMemoryState {
+    /// Running total of estimated buffer memory across all open tabs.
+    pub total: Cell<u64>,
+    /// Per-editor estimates keyed by `editor.as_ptr() as usize`.
+    pub by_editor: RefCell<HashMap<usize, u64>>,
+}
+
+/// Search-progress lease state used by the status-bar heartbeat flow.
+#[derive(Default)]
+pub struct SearchProgressState {
+    /// Periodic lease renewal for active search progress notifications.
+    pub heartbeat_source_id: RefCell<Option<glib::SourceId>>,
+    /// Generation counter for delayed search-progress display.
+    pub generation: Cell<u32>,
+    /// Whether search progress is allowed to render after the initial delay.
+    pub visible: Cell<bool>,
+}
+
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
 pub struct LushtextWindow {
@@ -111,10 +132,8 @@ pub struct LushtextWindow {
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     /// Set of file paths with open tabs, for O(1) duplicate detection in `open_document`.
     pub open_paths: RefCell<HashSet<PathBuf>>,
-    /// Running total of estimated buffer memory across all tabs (bytes).
-    pub buffer_memory_total: Cell<u64>,
-    /// Per-editor estimated buffer memory keyed by `editor.as_ptr() as usize`.
-    pub buffer_memory_by_editor: RefCell<HashMap<usize, u64>>,
+    /// Editor-memory accounting used by the eviction helpers.
+    pub editor_memory: EditorMemoryState,
     /// Source ID for the global autosave timer. Removed on dispose.
     pub autosave_source_id: RefCell<Option<glib::SourceId>>,
     /// In-memory draft manifest kept in sync with disk.
@@ -137,12 +156,8 @@ pub struct LushtextWindow {
     pub notification_bus: NotificationBus,
     /// Periodic sweep for expiring transient and progress notifications.
     pub notification_sweep_source_id: RefCell<Option<glib::SourceId>>,
-    /// Periodic lease renewal for active search progress notifications.
-    pub search_progress_heartbeat_source_id: RefCell<Option<glib::SourceId>>,
-    /// Generation counter for delayed search progress display.
-    pub search_progress_generation: Cell<u32>,
-    /// Whether search progress is allowed to render after the initial delay.
-    pub search_progress_visible: Cell<bool>,
+    /// Search-progress lease state used by the status-bar notification flow.
+    pub search_progress: SearchProgressState,
     /// Stored so the properties breakpoint condition can track the selected
     /// workspace preset and whether the left pane currently consumes width.
     pub properties_breakpoint: RefCell<Option<libadwaita::Breakpoint>>,
@@ -185,8 +200,7 @@ impl Default for LushtextWindow {
             index_rebuild_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
             open_paths: RefCell::new(HashSet::new()),
-            buffer_memory_total: Cell::new(0),
-            buffer_memory_by_editor: RefCell::new(HashMap::new()),
+            editor_memory: EditorMemoryState::default(),
             autosave_source_id: RefCell::new(None),
             draft_manifest: RefCell::new(DraftManifest::default()),
             preloaded_drafts: RefCell::new(HashMap::new()),
@@ -197,9 +211,7 @@ impl Default for LushtextWindow {
             search_saved_focus: RefCell::new(None),
             notification_bus: NotificationBus::default(),
             notification_sweep_source_id: RefCell::new(None),
-            search_progress_heartbeat_source_id: RefCell::new(None),
-            search_progress_generation: Cell::new(0),
-            search_progress_visible: Cell::new(false),
+            search_progress: SearchProgressState::default(),
             properties_breakpoint: RefCell::new(None),
         }
     }
@@ -545,7 +557,7 @@ impl ObjectImpl for LushtextWindow {
         if let Some(source_id) = self.notification_sweep_source_id.take() {
             source_id.remove();
         }
-        if let Some(source_id) = self.search_progress_heartbeat_source_id.take() {
+        if let Some(source_id) = self.search_progress.heartbeat_source_id.take() {
             source_id.remove();
         }
     }

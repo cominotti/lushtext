@@ -31,6 +31,12 @@ These principles override pattern-matching instinct. When in doubt, favor the si
 
 10. **`gio::ListStore` and other GLib collection types belong in the UI layer, not services.** Services should return standard Rust types (`Vec<T>`, `HashMap<K,V>`). The conversion to GLib types (`gio::ListStore`, `glib::BoxedAnyObject`) should happen at the adapter boundary — in the UI code that consumes the service result.
 
+11. **Large driving adapters should split by workflow before adding more abstraction.** If one widget starts mixing unrelated flows (for example: actions, notifications, focus restoration, persistence, search runtime), keep the widget type as the adapter and extract sibling modules like `actions.rs`, `documents.rs`, `history.rs`, or `runtime.rs`. Splitting the file is usually better than inventing a new service or trait.
+
+12. **Repeated value-object shaping belongs in `model/`.** If UI or services rebuild the same bundle of fields in 2+ places (for example query text + search toggles + glob), extract a small domain value object plus conversion helpers instead of repeating field-by-field assembly.
+
+13. **Large `imp` structs may group related state into plain Rust helper structs.** Grouping fields like search-progress timers or editor-memory accounting is still normal GTK adapter state, not an architecture smell, when it makes the implementation easier to navigate.
+
 ## Target Module Structure
 
 Feature-first with layer separation within `lushtext-core/src/`. The structure below reflects the current layout plus the target direction for new features:
@@ -46,16 +52,17 @@ crates/lushtext-core/src/
 │   └── session.rs               #   SessionTab, SessionData
 ├── services/                    # Application + Driven Adapters
 │   ├── async_task.rs            #   Infrastructure: spawn_blocking_then utility
+│   ├── content_search/          #   Application: streaming search + replace/undo flows
 │   ├── json_store.rs            #   Driven Adapter: JSON file persistence
 │   ├── workspace_manager.rs     #   Application: workspace CRUD operations
 │   ├── session_service.rs       #   Application: session save/restore
-│   └── file_tree.rs             #   Application: directory scanning logic
-│                                #   (NOTE: GTK type construction should move to UI)
+│   └── file_tree.rs             #   Application: directory scanning logic (plain Rust results)
 └── ui/                          # Driving Adapters: GTK4/Libadwaita widgets
-    ├── window/                  #   Main window: tab management, file opening, actions
+    ├── window/                  #   Main window: shell API + sibling modules per workflow
     ├── editor_page/             #   GtkSourceView wrapper: file loading, editing, search
     ├── sidebar/                 #   File tree: ListView + TreeListModel + TreeExpander
     │   └── file_tree_item.rs    #   GObject data wrapper for tree entries
+    ├── search_panel/            #   Workspace search widget split into runtime/history/results
     ├── search_bar/              #   Find/replace widget
     └── preferences/             #   AdwPreferencesDialog
 ```
@@ -184,7 +191,7 @@ impl WorkspaceManager { pub fn load(&self) -> Result<WorkspacesFile> }
 
 Application-layer services must NOT import `gtk4`, `libadwaita`, `glib`, `gio`, or `sourceview5`. They must not construct GObject types (`gio::ListStore`, `glib::Object`, any `glib::wrapper!` type).
 
-**Current violation to be aware of**: `file_tree.rs` imports `crate::ui::sidebar::file_tree_item::FileTreeItem` and constructs `gio::ListStore`. The pure scanning logic (`scan_directory`) is correctly separated, but the public functions `build_root_model` and `build_children_model` return GTK types. The scan logic belongs in services; the GTK model construction belongs in the UI layer.
+**Historical pitfall to watch for**: services sometimes grow GTK return types for convenience during feature work. If a service starts constructing `gio::ListStore`, `TreeListModel`, or any widget-facing object, move that construction back into the UI layer and keep the service returning plain Rust data (as `file_tree.rs` does today).
 
 ### 2d. Error Handling
 
@@ -243,6 +250,8 @@ impl LushtextWindow {
     pub fn save_current(&self) { ... }
 }
 ```
+
+If `mod.rs` starts mixing multiple workflows, extract sibling modules and leave `mod.rs` as the small facade that defines the widget's public surface.
 
 ## Step 4: Driven Adapter Zone Review (`services/` I/O) — Moderate Scrutiny
 

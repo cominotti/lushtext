@@ -101,6 +101,8 @@ When production code approaches 1000 lines:
 1. **Split by responsibility.** Extract cohesive groups of functions into new modules. For UI widgets, the `mod.rs` / `imp.rs` split already helps — if `mod.rs` grows, extract helpers (e.g., `actions.rs`, `dialogs.rs`). For services, split by sub-domain.
 2. **Never split mid-impl block.** Keep all trait impls for a type in one file. Split by extracting private helper functions into sibling modules, then calling them from the main impl.
 3. **Prefer vertical, not horizontal splitting.** A 900-line file with one clear responsibility is better than 3 files that constantly cross-reference each other.
+4. **Split GTK adapters by workflow before inventing new abstraction layers.** If a widget starts mixing unrelated flows (actions, notifications, persistence, search runtime, focus recovery), prefer sibling modules under the widget folder over new traits or faux-manager types.
+5. **Promote repeated field bundles into named value objects or state groupings.** If multiple call sites rebuild the same shape (for example query text + toggle state), move it into `model/`. If an `imp` struct accumulates unrelated timers/counters/maps, group them into small helper structs with clear workflow ownership.
 
 ## Testing
 

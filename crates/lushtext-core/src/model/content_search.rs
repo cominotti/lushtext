@@ -23,7 +23,7 @@ pub struct SearchMatch {
 }
 
 /// Options controlling search behavior.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentSearchOptions {
     /// When true, matching is case-sensitive. Default: false.
     pub case_sensitive: bool,
@@ -45,6 +45,30 @@ impl Default for ContentSearchOptions {
             whole_word: false,
             gitignore: true,
             glob: None,
+        }
+    }
+}
+
+/// Shared search query state used across runtime search, history, and saved searches.
+///
+/// This stays in the domain layer so GTK adapters can pass around one value
+/// object instead of rebuilding the same query-plus-toggle shape in multiple
+/// widget methods.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchQuerySpec {
+    /// Free-form search text entered by the user.
+    pub query: String,
+    /// Toggle and filter state that changes how the query is interpreted.
+    pub options: ContentSearchOptions,
+}
+
+impl SearchQuerySpec {
+    /// Build a query spec from the current query text and resolved options.
+    #[must_use]
+    pub fn new(query: impl Into<String>, options: ContentSearchOptions) -> Self {
+        Self {
+            query: query.into(),
+            options,
         }
     }
 }
@@ -179,6 +203,36 @@ pub struct SearchHistoryEntry {
     pub glob: Option<String>,
 }
 
+impl SearchHistoryEntry {
+    /// Convert a persisted history record into the shared query-spec shape.
+    #[must_use]
+    pub fn query_spec(&self) -> SearchQuerySpec {
+        SearchQuerySpec::new(
+            self.query.clone(),
+            ContentSearchOptions {
+                case_sensitive: self.case_sensitive,
+                regex: self.regex,
+                whole_word: self.whole_word,
+                gitignore: self.gitignore,
+                glob: self.glob.clone(),
+            },
+        )
+    }
+
+    /// Create a history record from the shared query-spec value object.
+    #[must_use]
+    pub fn from_spec(spec: SearchQuerySpec) -> Self {
+        Self {
+            query: spec.query,
+            case_sensitive: spec.options.case_sensitive,
+            regex: spec.options.regex,
+            whole_word: spec.options.whole_word,
+            gitignore: spec.options.gitignore,
+            glob: spec.options.glob,
+        }
+    }
+}
+
 /// A named saved search, persisted permanently to `saved-searches.json`.
 ///
 /// Unlike `SearchHistoryEntry` (capped at 20, auto-managed), saved searches
@@ -192,4 +246,35 @@ pub struct SavedSearch {
     pub whole_word: bool,
     pub gitignore: bool,
     pub glob: Option<String>,
+}
+
+impl SavedSearch {
+    /// Convert a saved search into the shared runtime query-spec shape.
+    #[must_use]
+    pub fn query_spec(&self) -> SearchQuerySpec {
+        SearchQuerySpec::new(
+            self.query.clone(),
+            ContentSearchOptions {
+                case_sensitive: self.case_sensitive,
+                regex: self.regex,
+                whole_word: self.whole_word,
+                gitignore: self.gitignore,
+                glob: self.glob.clone(),
+            },
+        )
+    }
+
+    /// Build a named saved search from the shared query-spec value object.
+    #[must_use]
+    pub fn from_spec(name: impl Into<String>, spec: SearchQuerySpec) -> Self {
+        Self {
+            name: name.into(),
+            query: spec.query,
+            case_sensitive: spec.options.case_sensitive,
+            regex: spec.options.regex,
+            whole_word: spec.options.whole_word,
+            gitignore: spec.options.gitignore,
+            glob: spec.options.glob,
+        }
+    }
 }

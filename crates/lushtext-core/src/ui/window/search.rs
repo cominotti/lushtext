@@ -91,7 +91,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
 
                 // Only show progress after the 500ms delay has elapsed
                 // and while the search panel is still visible.
-                if !window.imp().search_progress_visible.get()
+                if !window.imp().search_progress.visible.get()
                     || !window.imp().search_panel_revealer.reveals_child()
                 {
                     return;
@@ -374,9 +374,9 @@ impl LushtextWindow {
     pub(crate) fn prepare_search_progress_tracking(&self) {
         self.finish_search_progress_tracking();
         let imp = self.imp();
-        let generation = imp.search_progress_generation.get().wrapping_add(1);
-        imp.search_progress_generation.set(generation);
-        imp.search_progress_visible.set(false);
+        let generation = imp.search_progress.generation.get().wrapping_add(1);
+        imp.search_progress.generation.set(generation);
+        imp.search_progress.visible.set(false);
         self.start_search_progress_heartbeat();
 
         let window_weak = self.downgrade();
@@ -385,13 +385,13 @@ impl LushtextWindow {
                 return;
             };
             let imp = window.imp();
-            if imp.search_progress_generation.get() != generation
+            if imp.search_progress.generation.get() != generation
                 || !imp.search_panel.imp().searching.get()
                 || !imp.search_panel_revealer.reveals_child()
             {
                 return;
             }
-            imp.search_progress_visible.set(true);
+            imp.search_progress.visible.set(true);
         });
     }
 
@@ -407,7 +407,7 @@ impl LushtextWindow {
     }
 
     pub(crate) fn finish_search_progress_tracking(&self) {
-        self.imp().search_progress_visible.set(false);
+        self.imp().search_progress.visible.set(false);
         self.stop_search_progress_heartbeat();
         if self
             .imp()
@@ -432,7 +432,7 @@ impl LushtextWindow {
             }
 
             if imp.search_panel_revealer.reveals_child()
-                && imp.search_progress_visible.get()
+                && imp.search_progress.visible.get()
                 && imp
                     .notification_bus
                     .heartbeat(NotificationOwner::Search, NotificationSurface::StatusBar)
@@ -442,12 +442,13 @@ impl LushtextWindow {
             glib::ControlFlow::Continue
         });
         self.imp()
-            .search_progress_heartbeat_source_id
+            .search_progress
+            .heartbeat_source_id
             .replace(Some(source_id));
     }
 
     fn stop_search_progress_heartbeat(&self) {
-        if let Some(source_id) = self.imp().search_progress_heartbeat_source_id.take() {
+        if let Some(source_id) = self.imp().search_progress.heartbeat_source_id.take() {
             source_id.remove();
         }
     }
