@@ -334,7 +334,7 @@ fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     ensure_gtk_init();
     let settings = gio::Settings::new(lushtext_core::config::APP_ID);
     settings
-        .set_int(keys::WINDOW_WIDTH, 1600)
+        .set_int(keys::WINDOW_WIDTH, 2200)
         .expect("set window width");
     settings
         .set_int(keys::WINDOW_HEIGHT, 900)
