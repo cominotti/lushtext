@@ -10,7 +10,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::Path;
 use std::rc::Rc;
 
 const RESPONSE_CANCEL: &str = "cancel";
@@ -62,9 +62,9 @@ impl super::LushtextWindow {
                 editor.save_file_async_to_path(path.clone(), move |save_result| {
                     window_clone.complete_save_as(
                         &editor_for_result,
-                        old_path.clone(),
-                        old_draft_id.clone(),
-                        path.clone(),
+                        old_path.as_deref(),
+                        old_draft_id.as_deref(),
+                        &path,
                         save_result,
                     );
                 });
@@ -78,9 +78,9 @@ impl super::LushtextWindow {
     pub fn complete_save_as(
         &self,
         editor: &LushtextEditorPage,
-        old_path: Option<PathBuf>,
-        old_draft_id: Option<String>,
-        path: PathBuf,
+        old_path: Option<&Path>,
+        old_draft_id: Option<&str>,
+        path: &Path,
         save_result: Result<(), crate::ui::editor_page::SaveError>,
     ) {
         let path_display = path.display().to_string();
@@ -88,20 +88,20 @@ impl super::LushtextWindow {
             Ok(()) => {
                 {
                     let mut open_paths = self.imp().open_paths.borrow_mut();
-                    if let Some(ref old) = old_path {
-                        open_paths.remove(old.as_path());
+                    if let Some(old) = old_path {
+                        open_paths.remove(old);
                     }
-                    open_paths.insert(path.clone());
+                    open_paths.insert(path.to_path_buf());
                 }
-                editor.set_file_path(&path);
+                editor.set_file_path(path);
                 self.assign_draft_id(editor);
-                self.resolve_editorconfig_for_editor(editor, &path);
-                if let Some(ref old) = old_path {
+                self.resolve_editorconfig_for_editor(editor, path);
+                if let Some(old) = old_path {
                     self.delete_draft_for_path(old);
-                } else if let Some(ref draft_id) = old_draft_id {
+                } else if let Some(draft_id) = old_draft_id {
                     self.delete_draft_by_id(draft_id);
                 }
-                self.delete_draft_for_path(&path);
+                self.delete_draft_for_path(path);
                 editor.set_draft_restored(false);
                 self.dismiss_editor_notifications(editor);
 
@@ -156,6 +156,7 @@ impl super::LushtextWindow {
     // --- Save changes confirmation ---
 
     /// Collect all modified editor pages in the tab view.
+    #[must_use]
     pub fn modified_editors(&self) -> Vec<(libadwaita::TabPage, LushtextEditorPage)> {
         let tab_view = &self.imp().tab_view;
         let mut result = Vec::new();
@@ -176,7 +177,7 @@ impl super::LushtextWindow {
     /// proceed with close (save or discard completed), `false` means cancel.
     pub fn show_save_changes_dialog<F: Fn(bool) + 'static>(
         &self,
-        modified: Vec<(libadwaita::TabPage, LushtextEditorPage)>,
+        modified: &[(libadwaita::TabPage, LushtextEditorPage)],
         on_done: F,
     ) {
         if modified.is_empty() {
@@ -217,7 +218,7 @@ impl super::LushtextWindow {
         let checks: Rc<RefCell<Vec<(gtk4::CheckButton, LushtextEditorPage)>>> =
             Rc::new(RefCell::new(Vec::new()));
 
-        for (_page, editor) in &modified {
+        for (_page, editor) in modified {
             let title = editor.title();
             let path = editor.file_path();
             let subtitle = path
@@ -398,6 +399,6 @@ impl super::LushtextWindow {
             confirm_close(true);
             return;
         }
-        self.show_save_changes_dialog(vec![(page.clone(), editor.clone())], confirm_close);
+        self.show_save_changes_dialog(&[(page.clone(), editor.clone())], confirm_close);
     }
 }

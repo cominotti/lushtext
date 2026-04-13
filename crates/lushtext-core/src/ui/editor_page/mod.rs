@@ -32,6 +32,7 @@ glib::wrapper! {
 }
 
 impl LushtextEditorPage {
+    #[must_use]
     pub fn new() -> Self {
         Object::builder().build()
     }
@@ -118,6 +119,7 @@ impl LushtextEditorPage {
     }
 
     /// The size classification from the last file load.
+    #[must_use]
     pub fn size_check(&self) -> FileSizeCheck {
         self.imp().size_check.get()
     }
@@ -149,12 +151,9 @@ impl LushtextEditorPage {
     /// Sets `modified(false)` optimistically before the write so the tab
     /// title loses its dot immediately. On write failure the flag is rolled back.
     pub fn save_file_async<F: FnOnce(Result<(), SaveError>) + 'static>(&self, callback: F) {
-        let path = match self.imp().file_path.borrow().clone() {
-            Some(p) => p,
-            None => {
-                callback(Err(SaveError::NoPath));
-                return;
-            }
+        let Some(path) = self.imp().file_path.borrow().clone() else {
+            callback(Err(SaveError::NoPath));
+            return;
         };
         self.save_file_async_to_path(path, callback);
     }
@@ -192,6 +191,7 @@ impl LushtextEditorPage {
         self.write_snapshot_async(path, text, None, callback);
     }
 
+    #[must_use]
     pub fn buffer(&self) -> sourceview5::Buffer {
         self.source_view()
             .buffer()
@@ -199,34 +199,42 @@ impl LushtextEditorPage {
             .expect("source view buffer is always a sourceview5::Buffer")
     }
 
+    #[must_use]
     pub fn source_view(&self) -> &sourceview5::View {
         self.imp().source_view.as_ref()
     }
 
+    #[must_use]
     pub fn info_bar(&self) -> &LushtextInfoBar {
         self.imp().info_bar.as_ref()
     }
 
+    #[must_use]
     pub fn file_path(&self) -> Option<std::path::PathBuf> {
         self.imp().file_path.borrow().clone()
     }
 
     /// On-disk size in bytes, populated after async load completes.
     /// `None` for untitled tabs or before the load finishes.
+    #[must_use]
     pub fn file_size(&self) -> Option<u64> {
         self.imp().file_size.get()
     }
 
+    #[must_use]
     pub fn title(&self) -> String {
         self.imp()
             .file_path
             .borrow()
             .as_ref()
             .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Untitled".to_string())
+            .map_or_else(
+                || "Untitled".to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
     }
 
+    #[must_use]
     pub fn is_modified(&self) -> bool {
         self.buffer().is_modified()
     }
@@ -246,18 +254,20 @@ impl LushtextEditorPage {
         self.notify_estimated_memory_changed();
     }
 
+    #[must_use]
     pub fn is_evicted(&self) -> bool {
         self.imp().evicted.get()
     }
 
+    #[must_use]
     pub fn estimated_buffer_bytes(&self) -> u64 {
         if self.is_evicted() {
             return 0;
         }
 
-        self.file_size()
-            .map(|size| size.saturating_mul(self.size_check().estimated_buffer_multiplier()))
-            .unwrap_or(0)
+        self.file_size().map_or(0, |size| {
+            size.saturating_mul(self.size_check().estimated_buffer_multiplier())
+        })
     }
 
     pub fn connect_estimated_memory_changed<F: Fn(u64) + 'static>(&self, f: F) {
@@ -286,6 +296,7 @@ impl LushtextEditorPage {
         self.info_bar().render_notification(None);
     }
 
+    #[must_use]
     pub fn notification_owner_id(&self) -> usize {
         self.as_ptr() as usize
     }
@@ -324,11 +335,13 @@ impl LushtextEditorPage {
     }
 
     /// Access the search bar widget (for window-level next/prev delegation).
+    #[must_use]
     pub fn search_bar(&self) -> &crate::ui::search_bar::LushtextSearchBar {
         &self.imp().search_bar
     }
 
     /// Whether the search bar is currently visible.
+    #[must_use]
     pub fn is_search_visible(&self) -> bool {
         self.imp().search_revealer.reveals_child()
     }
@@ -393,6 +406,7 @@ impl LushtextEditorPage {
 
     // --- Draft state ---
 
+    #[must_use]
     pub fn draft_dirty(&self) -> bool {
         self.imp().draft_dirty.get()
     }
@@ -401,6 +415,7 @@ impl LushtextEditorPage {
         self.imp().draft_dirty.set(dirty);
     }
 
+    #[must_use]
     pub fn draft_id(&self) -> Option<String> {
         self.imp().draft_id.borrow().clone()
     }
@@ -409,6 +424,7 @@ impl LushtextEditorPage {
         *self.imp().draft_id.borrow_mut() = Some(id);
     }
 
+    #[must_use]
     pub fn is_draft_restored(&self) -> bool {
         self.imp().draft_restored.get()
     }
@@ -433,6 +449,7 @@ impl LushtextEditorPage {
     }
 
     /// Current formatting overrides (for status bar indicator).
+    #[must_use]
     pub fn formatting_overrides(&self) -> FormattingOverrides {
         self.imp().formatting_overrides.get()
     }
@@ -448,6 +465,7 @@ impl LushtextEditorPage {
     }
 
     /// Read the current cursor position as (line, column).
+    #[must_use]
     pub fn cursor_position(&self) -> (u32, u32) {
         let buffer = self.buffer();
         let iter = buffer.iter_at_mark(&buffer.get_insert());
@@ -455,6 +473,7 @@ impl LushtextEditorPage {
     }
 
     /// Read the line number at the top of the visible scroll area.
+    #[must_use]
     pub fn visible_top_line(&self) -> u32 {
         let view = self.source_view();
         let Some(vadj) = view.vadjustment() else {
@@ -594,7 +613,7 @@ impl LushtextEditorPage {
 
         async_task::spawn_blocking_then(
             self.clone(),
-            move || editor_io::write_snapshot_to_path(path, text),
+            move || editor_io::write_snapshot_to_path(&path, &text),
             move |editor, result| {
                 if let Some((editable, cursor_visible)) = restore_view_state {
                     editor.source_view().set_editable(editable);
@@ -640,6 +659,7 @@ const LARGE_SAVE_SNAPSHOT_THRESHOLD: u64 = 10_000_000;
 /// completes in <1ms on the main thread, within a 16ms frame budget.
 const SAVE_SNAPSHOT_CHUNK_CHARS: i32 = 64 * 1024;
 
+#[allow(clippy::needless_pass_by_value)] // GObject: reference-counted, pass-by-value is idiomatic
 fn snapshot_buffer_text_async<F: FnOnce(String) + 'static>(
     buffer: sourceview5::Buffer,
     callback: F,

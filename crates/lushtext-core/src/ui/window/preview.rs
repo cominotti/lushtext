@@ -213,7 +213,7 @@ impl LushtextWindow {
                 return;
             };
             let imp = window.imp();
-            if let Some(preview) = preview_weak.as_ref().and_then(|w| w.upgrade()) {
+            if let Some(preview) = preview_weak.as_ref().and_then(glib::WeakRef::upgrade) {
                 preview.set_visible(false);
             }
             imp.preview_paned.set_shrink_end_child(false);
@@ -284,11 +284,11 @@ impl LushtextWindow {
             };
             let imp = window.imp();
             // After entering preview-only: hide the editor box.
-            if let Some(editor_box) = editor_box_weak.as_ref().and_then(|w| w.upgrade()) {
+            if let Some(editor_box) = editor_box_weak.as_ref().and_then(glib::WeakRef::upgrade) {
                 editor_box.set_visible(false);
             }
             // After exiting preview-only: hide the preview widget.
-            if let Some(preview) = preview_weak.as_ref().and_then(|w| w.upgrade()) {
+            if let Some(preview) = preview_weak.as_ref().and_then(glib::WeakRef::upgrade) {
                 preview.set_visible(false);
             }
             imp.preview_paned.set_shrink_start_child(false);

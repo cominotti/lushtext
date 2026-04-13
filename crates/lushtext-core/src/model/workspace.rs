@@ -14,10 +14,12 @@ impl WorkspaceId {
         Self(id.into())
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -32,12 +34,14 @@ pub enum WorkspaceEntry {
 }
 
 impl WorkspaceEntry {
+    #[must_use]
     pub fn path(&self) -> &Path {
         match self {
             WorkspaceEntry::Directory { path } | WorkspaceEntry::File { path } => path,
         }
     }
 
+    #[must_use]
     pub fn is_dir(&self) -> bool {
         matches!(self, WorkspaceEntry::Directory { .. })
     }

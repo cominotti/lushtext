@@ -53,6 +53,7 @@ glib::wrapper! {
 }
 
 impl FileTreeItem {
+    #[must_use]
     pub fn new(path: PathBuf, is_dir: bool, is_empty: Option<bool>) -> Self {
         let obj: Self = glib::Object::builder().build();
         obj.imp().display_name.replace(display_name_for_path(&path));
@@ -69,10 +70,12 @@ impl FileTreeItem {
         obj
     }
 
+    #[must_use]
     pub fn path(&self) -> Option<PathBuf> {
         self.imp().path.borrow().clone()
     }
 
+    #[must_use]
     pub fn name(&self) -> String {
         self.imp().display_name.borrow().clone()
     }
@@ -85,18 +88,22 @@ impl FileTreeItem {
         self.imp().is_placeholder.set(false);
     }
 
+    #[must_use]
     pub fn is_dir(&self) -> bool {
         self.imp().is_dir.get()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> Option<bool> {
         self.imp().is_empty.get()
     }
 
+    #[must_use]
     pub fn is_placeholder(&self) -> bool {
         self.imp().is_placeholder.get()
     }
 
+    #[must_use]
     pub fn is_pending_rename(&self) -> bool {
         self.imp().pending_rename.get()
     }
@@ -107,7 +114,8 @@ impl FileTreeItem {
 }
 
 pub(crate) fn display_name_for_path(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string())
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }

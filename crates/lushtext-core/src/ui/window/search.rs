@@ -189,7 +189,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         window.publish_status_message(&msg, kind);
 
                         // Store backup and show undo button.
-                        imp.search_panel.set_undo_backup(backup);
+                        imp.search_panel.set_undo_backup(&backup);
                         imp.search_panel.show_undo_button();
 
                         // Reload affected open tabs to show updated content.

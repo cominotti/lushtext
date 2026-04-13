@@ -34,6 +34,7 @@ impl FileIndex {
     ///
     /// Uses visited-path tracking and depth limiting to handle symlink cycles
     /// (e.g., Wine/Proton `dosdevices/` symlink loops).
+    #[must_use]
     pub fn rebuild(roots: &[PathBuf]) -> Self {
         Self::rebuild_with_hint(roots, 10_000)
     }
@@ -46,9 +47,8 @@ impl FileIndex {
         let mut visited = HashSet::new();
         let mut root_arcs = Vec::new();
         for root in roots {
-            let canonical_root = match root.canonicalize() {
-                Ok(p) => p,
-                Err(_) => continue,
+            let Ok(canonical_root) = root.canonicalize() else {
+                continue;
             };
             let root_arc = Arc::new(root.clone());
             collect_files_recursive(
@@ -75,14 +75,17 @@ impl FileIndex {
         }
     }
 
+    #[must_use]
     pub fn files(&self) -> &[IndexedFile] {
         &self.files
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.files.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
     }
@@ -218,9 +221,8 @@ fn collect_files_recursive(
         return;
     }
 
-    let canonical = match dir.canonicalize() {
-        Ok(p) => p,
-        Err(_) => return, // broken symlink or permission denied
+    let Ok(canonical) = dir.canonicalize() else {
+        return; // broken symlink or permission denied
     };
 
     if !canonical.starts_with(canonical_root) {
@@ -254,6 +256,7 @@ fn collect_files_recursive(
 // ---------------------------------------------------------------------------
 
 /// All built-in commands available in the palette.
+#[must_use]
 pub fn all_commands() -> &'static [CommandDef] {
     static COMMANDS: &[CommandDef] = &[
         // File
@@ -382,6 +385,7 @@ pub fn search_commands(query: &str, max: usize) -> Vec<ScoredResult<'static>> {
 // ---------------------------------------------------------------------------
 
 /// Search both files and commands according to the given mode.
+#[must_use]
 pub fn search_all<'a>(
     index: &'a FileIndex,
     query: &str,
@@ -446,6 +450,7 @@ fn merge_sorted<'a>(
 /// For batch scoring (e.g., scoring many candidates against the same query),
 /// use [`search_items`] instead — it reuses a single `Matcher` and buffer
 /// across all candidates.
+#[must_use]
 pub fn fuzzy_score(query: &str, candidate: &str) -> Option<u32> {
     if query.is_empty() {
         return Some(0);

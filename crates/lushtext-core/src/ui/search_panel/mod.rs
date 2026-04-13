@@ -57,6 +57,7 @@ impl LushtextSearchPanel {
     }
 
     /// Get the current query text.
+    #[must_use]
     pub fn query(&self) -> String {
         self.imp().search_entry.text().to_string()
     }
@@ -115,13 +116,13 @@ impl LushtextSearchPanel {
     }
 
     /// Store undo backup after a successful replace.
-    pub fn set_undo_backup(&self, backup: HashMap<PathBuf, Vec<u8>>) {
+    pub fn set_undo_backup(&self, backup: &HashMap<PathBuf, Vec<u8>>) {
         let generation = self.imp().undo_backup_generation.get().wrapping_add(1);
         self.imp().undo_backup_generation.set(generation);
         self.imp().undo_backup.replace(Some(backup.clone()));
 
         let data_dir = json_store::data_dir();
-        if let Err(e) = search_backup::save(&data_dir, &backup) {
+        if let Err(e) = search_backup::save(&data_dir, backup) {
             tracing::error!("Failed to persist replace backup: {e}");
             if let Err(delete_err) = search_backup::delete(&data_dir) {
                 tracing::warn!(
@@ -159,6 +160,7 @@ impl LushtextSearchPanel {
     }
 
     /// Whether the panel is in preview mode.
+    #[must_use]
     pub fn is_preview_mode(&self) -> bool {
         self.imp().preview_mode.get()
     }
@@ -237,6 +239,7 @@ impl LushtextSearchPanel {
     }
 
     /// Whether the panel has any search results.
+    #[must_use]
     pub fn has_results(&self) -> bool {
         self.imp().total_matches.get() > 0
     }
@@ -250,11 +253,7 @@ impl LushtextSearchPanel {
             return;
         }
 
-        let next = imp
-            .current_match_index
-            .get()
-            .map(|i| (i + 1) % len)
-            .unwrap_or(0);
+        let next = imp.current_match_index.get().map_or(0, |i| (i + 1) % len);
         imp.current_match_index.set(Some(next));
 
         let (path, line) = positions[next].clone();
@@ -279,8 +278,7 @@ impl LushtextSearchPanel {
         let prev = imp
             .current_match_index
             .get()
-            .map(|i| if i == 0 { len - 1 } else { i - 1 })
-            .unwrap_or(len - 1);
+            .map_or(len - 1, |i| if i == 0 { len - 1 } else { i - 1 });
         imp.current_match_index.set(Some(prev));
 
         let (path, line) = positions[prev].clone();
@@ -331,6 +329,7 @@ impl LushtextSearchPanel {
     }
 
     /// Get the search entry widget (for re-invocation focus/selection).
+    #[must_use]
     pub fn search_entry(&self) -> &gtk4::SearchEntry {
         &self.imp().search_entry
     }
@@ -416,6 +415,7 @@ impl LushtextSearchPanel {
     }
 
     /// Clone the current search history entries.
+    #[must_use]
     pub fn search_history(&self) -> Vec<SearchHistoryEntry> {
         self.imp().history_entries.borrow().clone()
     }
@@ -426,6 +426,7 @@ impl LushtextSearchPanel {
     }
 
     /// Clone the current saved search entries.
+    #[must_use]
     pub fn saved_searches(&self) -> Vec<SavedSearch> {
         self.imp().saved_searches.borrow().clone()
     }
@@ -715,7 +716,7 @@ impl LushtextSearchPanel {
         let worker_progress_counter = Arc::clone(&progress_counter);
         let worker_finished_for_search = Arc::clone(&worker_finished);
         std::thread::spawn(move || {
-            let root_refs: Vec<&Path> = roots.iter().map(|p| p.as_path()).collect();
+            let root_refs: Vec<&Path> = roots.iter().map(std::path::PathBuf::as_path).collect();
             content_search::search(
                 &query,
                 &root_refs,

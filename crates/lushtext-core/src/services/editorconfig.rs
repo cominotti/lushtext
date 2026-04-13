@@ -23,6 +23,7 @@ use std::path::Path;
 ///
 /// **Threading:** performs blocking filesystem I/O — call from a
 /// background thread only.
+#[must_use]
 pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
     let Some(start_dir) = file_path.parent() else {
         return FormattingOverrides::default();

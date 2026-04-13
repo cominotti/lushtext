@@ -50,6 +50,7 @@ glib::wrapper! {
 }
 
 impl LushtextCommandPalette {
+    #[must_use]
     pub fn new() -> Self {
         Object::builder().build()
     }
@@ -90,11 +91,13 @@ impl LushtextCommandPalette {
     }
 
     /// The current search mode.
+    #[must_use]
     pub fn mode(&self) -> SearchMode {
         self.imp().mode.get()
     }
 
     /// Number of files in the current index (used as capacity hint for rebuilds).
+    #[must_use]
     pub fn file_index_len(&self) -> usize {
         self.imp().file_index.borrow().len()
     }

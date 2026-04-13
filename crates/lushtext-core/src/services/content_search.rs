@@ -38,6 +38,7 @@ const RESULT_CAP: usize = 10_000;
 ///
 /// The `tx` channel should be `bounded(1024)` in production to apply backpressure.
 /// Using `unbounded()` is acceptable in tests.
+#[allow(clippy::needless_pass_by_value)] // Intentional: cloned into parallel walker thread closures
 pub fn search(
     query: &str,
     roots: &[&Path],
@@ -159,9 +160,8 @@ pub fn search(
                 return WalkState::Quit;
             }
 
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => return WalkState::Continue,
+            let Ok(entry) = entry else {
+                return WalkState::Continue;
             };
 
             // Skip directories and non-files.

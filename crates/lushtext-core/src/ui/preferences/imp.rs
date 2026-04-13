@@ -142,7 +142,7 @@ impl LushtextPreferences {
             .scheme_ids()
             .iter()
             .filter(|id| !id.ends_with("-dark"))
-            .map(|id| id.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
 
         for id in &scheme_ids {

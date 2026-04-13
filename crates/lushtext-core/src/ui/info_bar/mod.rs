@@ -25,6 +25,7 @@ glib::wrapper! {
 // GNOME Text Editor still uses GtkInfoBar in its latest code for the same reason.
 #[allow(deprecated)]
 impl LushtextInfoBar {
+    #[must_use]
     pub fn new() -> Self {
         Object::builder().build()
     }

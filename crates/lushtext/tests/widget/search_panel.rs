@@ -707,7 +707,7 @@ fn test_clear_results_clears_undo_backup() {
         std::path::PathBuf::from("/test.rs"),
         b"original content".to_vec(),
     );
-    panel.set_undo_backup(backup);
+    panel.set_undo_backup(&backup);
     panel.show_undo_button();
     assert!(panel.imp().undo_backup.borrow().is_some());
 

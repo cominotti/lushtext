@@ -212,7 +212,7 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
         }
         flush_after_delay(Duration::from_millis(20));
     }
-    panic!("condition was not met within {:?}", timeout);
+    panic!("condition was not met within {timeout:?}");
 }
 
 fn present_window(window: &LushtextWindow) {

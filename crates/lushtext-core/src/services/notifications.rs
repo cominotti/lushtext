@@ -231,11 +231,10 @@ impl NotificationBus {
         let mut records = self.records.borrow_mut();
         let event_changed = match event {
             NotificationEvent::Publish => payload
-                .map(|payload| publish_record(&mut records, owner, surface, payload, now))
-                .unwrap_or(false),
-            NotificationEvent::Update => payload
-                .map(|payload| update_progress_record(&mut records, owner, surface, payload, now))
-                .unwrap_or(false),
+                .is_some_and(|payload| publish_record(&mut records, owner, surface, payload, now)),
+            NotificationEvent::Update => payload.is_some_and(|payload| {
+                update_progress_record(&mut records, owner, surface, payload, now)
+            }),
             NotificationEvent::Heartbeat => {
                 renew_progress_record(&mut records, owner, surface, now)
             }

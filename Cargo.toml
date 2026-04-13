@@ -72,6 +72,26 @@ predicates = "3.0"
 criterion  = { version = "0.5", features = ["html_reports"] }
 libtest-mimic = "0.8"
 
+# --- Workspace-wide lint configuration ---
+# Crates opt in with `[lints] workspace = true`.
+
+[workspace.lints.clippy]
+# High value: catch API design issues and Edition 2024 idioms
+must_use_candidate            = "deny"
+needless_pass_by_value        = "deny"
+uninlined_format_args         = "deny"
+cloned_instead_of_copied      = "deny"
+semicolon_if_nothing_returned = "deny"
+manual_let_else               = "deny"
+# Medium value: idiomatic Rust
+redundant_closure_for_method_calls = "deny"
+implicit_clone                     = "deny"
+map_unwrap_or                      = "deny"
+
+[workspace.lints.rust]
+# Edition 2024 defaults we want to keep enforced
+unsafe_op_in_unsafe_fn = "deny"
+
 # --- Compilation speed profiles ---
 
 [profile.dev]

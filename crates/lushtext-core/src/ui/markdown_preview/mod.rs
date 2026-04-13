@@ -31,6 +31,7 @@ glib::wrapper! {
 }
 
 impl LushtextMarkdownPreview {
+    #[must_use]
     pub fn new() -> Self {
         Object::builder().build()
     }
@@ -114,7 +115,8 @@ impl LushtextMarkdownPreview {
                                 }
                                 _ => "\u{2022} ".to_string(), // bullet: •
                             };
-                            let tags: Vec<&str> = tag_stack.iter().map(|s| s.as_str()).collect();
+                            let tags: Vec<&str> =
+                                tag_stack.iter().map(std::string::String::as_str).collect();
                             let mut all_tags = tags.clone();
                             all_tags.push(TAG_LIST_ITEM);
                             insert_with_tags(&buffer, &mut iter, &prefix, &all_tags);
@@ -153,7 +155,8 @@ impl LushtextMarkdownPreview {
                         }
                         TagEnd::CodeBlock => {
                             // Ensure code block ends with a newline for clean separation.
-                            let tags: Vec<&str> = tag_stack.iter().map(|s| s.as_str()).collect();
+                            let tags: Vec<&str> =
+                                tag_stack.iter().map(std::string::String::as_str).collect();
                             insert_with_tags(&buffer, &mut iter, "\n", &tags);
                             pop_tag(&mut tag_stack);
                             needs_block_separator = true;
@@ -180,12 +183,14 @@ impl LushtextMarkdownPreview {
                     }
                 }
                 Event::Text(text) => {
-                    let tags: Vec<&str> = tag_stack.iter().map(|s| s.as_str()).collect();
+                    let tags: Vec<&str> =
+                        tag_stack.iter().map(std::string::String::as_str).collect();
                     insert_with_tags(&buffer, &mut iter, &text, &tags);
                 }
                 Event::Code(code) => {
                     // Inline code: apply the code tag in addition to any active stack tags.
-                    let mut tags: Vec<&str> = tag_stack.iter().map(|s| s.as_str()).collect();
+                    let mut tags: Vec<&str> =
+                        tag_stack.iter().map(std::string::String::as_str).collect();
                     tags.push(TAG_CODE);
                     insert_with_tags(&buffer, &mut iter, &code, &tags);
                 }
@@ -230,12 +235,14 @@ impl LushtextMarkdownPreview {
     }
 
     /// Whether the widget is currently showing rendered Markdown content.
+    #[must_use]
     pub fn is_showing_content(&self) -> bool {
         self.imp().showing_content.get()
     }
 
     /// Get the rendered text content from the internal buffer.
     /// Useful for verifying rendering output in tests.
+    #[must_use]
     pub fn buffer_text(&self) -> String {
         let buffer = self.imp().text_view.buffer();
         buffer
@@ -244,17 +251,20 @@ impl LushtextMarkdownPreview {
     }
 
     /// Whether the text view is editable (should always be false).
+    #[must_use]
     pub fn is_editable(&self) -> bool {
         self.imp().text_view.is_editable()
     }
 
     /// Whether the cursor is visible in the text view (should always be false).
+    #[must_use]
     pub fn is_cursor_visible(&self) -> bool {
         self.imp().text_view.is_cursor_visible()
     }
 
     /// Look up a tag by name in the internal buffer's tag table.
     /// Returns true if the tag exists.
+    #[must_use]
     pub fn has_tag(&self, name: &str) -> bool {
         self.imp()
             .text_view

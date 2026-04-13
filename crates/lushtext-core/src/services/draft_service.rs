@@ -25,6 +25,7 @@ fn manifest_write_lock() -> &'static Mutex<()> {
 }
 
 /// Returns the drafts directory: `{data_dir}/drafts/`.
+#[must_use]
 pub fn drafts_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(DRAFTS_DIR)
 }
@@ -32,6 +33,7 @@ pub fn drafts_dir(data_dir: &Path) -> PathBuf {
 /// Generate a stable draft ID from an absolute file path using the
 /// standard library's `DefaultHasher` (SipHash). Produces a 16-char
 /// hex string that is deterministic for the same path.
+#[must_use]
 pub fn draft_id_for_path(path: &Path) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
@@ -41,6 +43,7 @@ pub fn draft_id_for_path(path: &Path) -> String {
 
 /// Generate a unique draft ID for an untitled tab using a monotonic
 /// counter value. Each untitled tab gets a different ID.
+#[must_use]
 pub fn draft_id_for_untitled(counter: u64) -> String {
     format!("untitled-{counter:016x}")
 }

@@ -47,11 +47,13 @@ impl PartialOrd for SortedEntry {
 
 /// Scan a directory and return sorted entries (directories first, then alphabetical).
 /// Skips hidden files (starting with `.`).
+#[must_use]
 pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool, Option<bool>)> {
     scan_directory_bounded(dir_path, usize::MAX, 1000, None).entries
 }
 
 /// Peek into a directory to see if it contains any visible (non-hidden) entries.
+#[must_use]
 pub fn is_dir_empty(path: &Path) -> bool {
     if let Ok(mut rd) = std::fs::read_dir(path) {
         !rd.any(|e| {
@@ -99,7 +101,7 @@ pub fn scan_directory_bounded(
         if entry.file_name().as_encoded_bytes().first() == Some(&b'.') {
             continue;
         }
-        let Some((path, is_dir)) = classify_entry(entry) else {
+        let Some((path, is_dir)) = classify_entry(&entry) else {
             continue;
         };
 
@@ -129,7 +131,7 @@ pub fn scan_directory_bounded(
 
 /// Classify a DirEntry as file or directory, resolving symlinks.
 /// Returns `None` for broken symlinks.
-fn classify_entry(entry: DirEntry) -> Option<(PathBuf, bool)> {
+fn classify_entry(entry: &DirEntry) -> Option<(PathBuf, bool)> {
     let path = entry.path();
 
     match entry.file_type() {

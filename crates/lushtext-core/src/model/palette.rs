@@ -20,6 +20,7 @@ pub struct IndexedFile {
 
 impl IndexedFile {
     /// Create an indexed file, deriving the name from the path's last component.
+    #[must_use]
     pub fn new(path: PathBuf, workspace_root: Arc<PathBuf>) -> Self {
         let name = path
             .file_name()
@@ -33,11 +34,14 @@ impl IndexedFile {
     }
 
     /// Path relative to the workspace root, for display purposes.
+    #[must_use]
     pub fn relative_display(&self) -> String {
         self.path
             .strip_prefix(self.workspace_root.as_path())
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| self.path.display().to_string())
+            .map_or_else(
+                |_| self.path.display().to_string(),
+                |p| p.display().to_string(),
+            )
     }
 }
 
@@ -55,6 +59,7 @@ pub struct CommandDef {
 }
 
 impl CommandDef {
+    #[must_use]
     pub fn display_subtitle(&self) -> String {
         match self.shortcut {
             Some(s) => format!("{} · {}", self.category.label(), s),
@@ -73,6 +78,7 @@ pub enum CommandCategory {
 }
 
 impl CommandCategory {
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::File => "File",
@@ -94,6 +100,7 @@ pub enum SearchMode {
 
 impl SearchMode {
     /// Cycle to the next mode: All → Files → Commands → All.
+    #[must_use]
     pub fn next(self) -> Self {
         match self {
             Self::All => Self::Files,
@@ -102,6 +109,7 @@ impl SearchMode {
         }
     }
 
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::All => "All ⇥",
@@ -111,6 +119,7 @@ impl SearchMode {
     }
 
     /// Placeholder text for the search entry when this mode is active.
+    #[must_use]
     pub fn placeholder(self) -> &'static str {
         match self {
             Self::All => "Search files and commands (Tab to switch mode)",

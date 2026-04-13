@@ -21,22 +21,27 @@ glib::wrapper! {
 }
 
 impl LushtextSearchBar {
+    #[must_use]
     pub fn new() -> Self {
         Object::builder().build()
     }
 
+    #[must_use]
     pub fn search_entry(&self) -> &gtk4::SearchEntry {
         &self.imp().search_entry
     }
 
+    #[must_use]
     pub fn replace_entry(&self) -> &gtk4::Entry {
         &self.imp().replace_entry
     }
 
+    #[must_use]
     pub fn close_button(&self) -> &gtk4::Button {
         &self.imp().close_button
     }
 
+    #[must_use]
     pub fn replace_mode_button(&self) -> &gtk4::ToggleButton {
         &self.imp().replace_mode_button
     }
@@ -67,6 +72,7 @@ impl LushtextSearchBar {
 
     /// Whether the user has navigated to a match (next/prev) during this
     /// search session. Controls whether Escape restores the pre-search cursor.
+    #[must_use]
     pub fn has_navigated(&self) -> bool {
         self.imp().navigated.get()
     }
@@ -77,6 +83,7 @@ impl LushtextSearchBar {
     }
 
     /// Whether the replace row is revealed (target state, not animation state).
+    #[must_use]
     pub fn is_replace_revealed(&self) -> bool {
         self.imp().replace_entry_revealer.reveals_child()
     }

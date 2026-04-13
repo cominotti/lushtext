@@ -510,7 +510,7 @@ fn bench_editor_file_io(c: &mut Criterion) {
                     },
                     |(dir, path, text)| {
                         let _written =
-                            editor_io::write_snapshot_to_path(black_box(path), black_box(text))
+                            editor_io::write_snapshot_to_path(black_box(&path), black_box(&text))
                                 .unwrap();
                         dir
                     },

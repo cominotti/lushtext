@@ -36,6 +36,7 @@ pub struct DraftManifest {
 
 impl DraftManifest {
     /// Find a draft entry by original file path.
+    #[must_use]
     pub fn find_by_path(&self, path: &std::path::Path) -> Option<&DraftEntry> {
         self.drafts
             .iter()
@@ -43,6 +44,7 @@ impl DraftManifest {
     }
 
     /// Find a draft entry by draft ID.
+    #[must_use]
     pub fn find_by_id(&self, draft_id: &str) -> Option<&DraftEntry> {
         self.drafts.iter().find(|d| d.draft_id == draft_id)
     }

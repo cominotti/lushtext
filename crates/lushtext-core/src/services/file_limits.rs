@@ -42,6 +42,7 @@ pub enum FileSizeCheck {
 
 impl FileSizeCheck {
     /// Classify a file size into the appropriate threshold category.
+    #[must_use]
     pub fn classify(size: u64) -> Self {
         if size > REFUSE_TO_OPEN {
             Self::TooLarge
@@ -57,11 +58,13 @@ impl FileSizeCheck {
     }
 
     /// Whether syntax highlighting should be enabled.
+    #[must_use]
     pub fn syntax_enabled(self) -> bool {
         matches!(self, Self::Normal | Self::LargeFileToast)
     }
 
     /// Whether undo history should be enabled.
+    #[must_use]
     pub fn undo_enabled(self) -> bool {
         matches!(
             self,
@@ -74,6 +77,7 @@ impl FileSizeCheck {
     /// Undo history is the dominant extra overhead, so we use a higher
     /// estimate while undo is enabled and a lower one once large-file mode
     /// disables it.
+    #[must_use]
     pub fn estimated_buffer_multiplier(self) -> u64 {
         if self.undo_enabled() { 3 } else { 2 }
     }

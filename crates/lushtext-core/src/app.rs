@@ -84,10 +84,12 @@ glib::wrapper! {
 }
 
 impl LushtextApplication {
+    #[must_use]
     pub fn new() -> Self {
         Self::new_with_application_id(config::APP_ID)
     }
 
+    #[must_use]
     pub fn new_with_application_id(application_id: &str) -> Self {
         let app: Self = glib::Object::builder()
             .property("application-id", application_id)

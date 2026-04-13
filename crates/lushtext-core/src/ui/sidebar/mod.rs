@@ -33,6 +33,7 @@ pub enum WorkspaceSidebarWidthPreset {
 impl WorkspaceSidebarWidthPreset {
     pub const DEFAULT: Self = Self::Comfy;
 
+    #[must_use]
     pub fn fraction(self) -> f64 {
         match self {
             Self::Small => 0.2,
@@ -41,6 +42,7 @@ impl WorkspaceSidebarWidthPreset {
         }
     }
 
+    #[must_use]
     pub fn from_fraction(fraction: f64) -> Self {
         let small_delta = (fraction - Self::Small.fraction()).abs();
         let comfy_delta = (fraction - Self::Comfy.fraction()).abs();
@@ -65,6 +67,7 @@ glib::wrapper! {
 }
 
 impl LushtextSidebar {
+    #[must_use]
     pub fn new() -> Self {
         Object::builder().build()
     }
@@ -153,6 +156,7 @@ impl LushtextSidebar {
 
     /// Collect all directory root paths from all workspaces.
     /// Used by the window to build the command palette's file index.
+    #[must_use]
     pub fn workspace_roots(&self) -> Vec<PathBuf> {
         use crate::model::workspace::WorkspaceEntry;
         self.imp()
@@ -330,7 +334,7 @@ impl LushtextSidebar {
         sections
             .iter()
             .find(|s| s.workspace_id() == *ws_id)
-            .map(|s| s.workspace_name())
+            .map(workspace_section::LushtextWorkspaceSection::workspace_name)
             .unwrap_or_default()
     }
 
@@ -585,9 +589,10 @@ impl LushtextSidebar {
 
 /// Extract a display name from a path's last component.
 fn folder_display_name(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "New Workspace".to_string())
+    path.file_name().map_or_else(
+        || "New Workspace".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 impl Default for LushtextSidebar {

@@ -134,15 +134,13 @@ pub fn load_text_file(path: &Path, cancel: &AtomicBool) -> Result<LoadResult, Lo
 /// **Threading:** Performs blocking I/O — call from a background thread.
 /// Returns `(bytes_written, mtime)`. The mtime is read from the freshly
 /// written file so callers can update their baseline without a main-thread stat().
-pub fn write_snapshot_to_path(
-    path: PathBuf,
-    text: String,
-) -> Result<(u64, Option<u64>), SaveError> {
+pub fn write_snapshot_to_path(path: &Path, text: &str) -> Result<(u64, Option<u64>), SaveError> {
     let tmp_name = format!(
         ".{}.tmp",
-        path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "untitled".to_string())
+        path.file_name().map_or_else(
+            || "untitled".to_string(),
+            |n| n.to_string_lossy().into_owned()
+        )
     );
     let tmp_path = path.with_file_name(&tmp_name);
     let file = std::fs::File::create(&tmp_path).map_err(|source| SaveError::WriteTemp {
@@ -167,15 +165,15 @@ pub fn write_snapshot_to_path(
             path: tmp_path.clone(),
             source,
         })?;
-    std::fs::rename(&tmp_path, &path).map_err(|source| {
+    std::fs::rename(&tmp_path, path).map_err(|source| {
         let _ = std::fs::remove_file(&tmp_path);
         SaveError::Finalize {
             from: tmp_path.clone(),
-            to: path.clone(),
+            to: path.to_path_buf(),
             source,
         }
     })?;
-    let mtime = std::fs::metadata(&path)
+    let mtime = std::fs::metadata(path)
         .ok()
         .and_then(|m| mtime_from_metadata(&m));
     Ok((text.len() as u64, mtime))
@@ -193,6 +191,7 @@ fn mtime_from_metadata(meta: &std::fs::Metadata) -> Option<u64> {
 /// Returns `None` if the file doesn't exist or metadata can't be read.
 ///
 /// **Threading:** Performs a blocking stat syscall.
+#[must_use]
 pub fn mtime_secs(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
         .ok()
@@ -200,6 +199,7 @@ pub fn mtime_secs(path: &Path) -> Option<u64> {
 }
 
 /// Current wall-clock time as seconds since the UNIX epoch.
+#[must_use]
 pub fn now_epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -246,7 +246,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("file.txt");
 
-        let (size, mtime) = write_snapshot_to_path(path.clone(), "saved".to_string()).unwrap();
+        let (size, mtime) = write_snapshot_to_path(&path, "saved").unwrap();
 
         assert_eq!(size, 5);
         assert!(mtime.is_some(), "mtime should be populated after write");

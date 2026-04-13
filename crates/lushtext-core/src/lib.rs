@@ -46,6 +46,7 @@ pub fn register_resources() {
 
 /// Entry point called from `main()`. Registers GResources, creates the application,
 /// and runs the GTK main loop.
+#[must_use]
 pub fn run() -> ExitCode {
     register_resources();
     init_schema_dir();

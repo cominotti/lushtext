@@ -32,6 +32,7 @@ glib::wrapper! {
 }
 
 impl LushtextWorkspaceSection {
+    #[must_use]
     pub fn new(workspace_id: WorkspaceId) -> Self {
         let obj: Self = Object::builder().build();
         *obj.imp().workspace_id.borrow_mut() = workspace_id;
@@ -42,10 +43,12 @@ impl LushtextWorkspaceSection {
         self.imp().header_label.set_label(name);
     }
 
+    #[must_use]
     pub fn workspace_name(&self) -> String {
         self.imp().header_label.label().to_string()
     }
 
+    #[must_use]
     pub fn workspace_id(&self) -> WorkspaceId {
         self.imp().workspace_id.borrow().clone()
     }
@@ -154,6 +157,7 @@ impl LushtextWorkspaceSection {
     }
 
     /// Returns true if this section has at least one root loaded.
+    #[must_use]
     pub fn has_roots(&self) -> bool {
         !self.imp().original_roots.borrow().is_empty()
     }
@@ -535,7 +539,7 @@ impl LushtextWorkspaceSection {
             .checked_sub(1)
             .and_then(|idx| store.item(idx))
             .and_then(|obj| obj.downcast::<FileTreeItem>().ok())
-            .filter(|existing| existing.is_placeholder())
+            .filter(super::file_tree_item::FileTreeItem::is_placeholder)
             .map_or(store.n_items(), |_| store.n_items() - 1);
 
         if insert_pos == store.n_items() {
@@ -643,9 +647,8 @@ impl LushtextWorkspaceSection {
             }
         }
 
-        let parent_dir = match target_path.parent() {
-            Some(p) => p,
-            None => return false,
+        let Some(parent_dir) = target_path.parent() else {
+            return false;
         };
 
         if let Some(store) = self.find_store_for_dir(parent_dir) {

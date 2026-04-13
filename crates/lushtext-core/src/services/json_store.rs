@@ -13,6 +13,7 @@ use std::path::Path;
 /// Respects `LUSHTEXT_DATA_DIR` env var for test isolation — widget tests
 /// set this to a temp directory so session/draft I/O doesn't touch the
 /// user's real data.
+#[must_use]
 pub fn data_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("LUSHTEXT_DATA_DIR") {
         return std::path::PathBuf::from(dir);

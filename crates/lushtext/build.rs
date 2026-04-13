@@ -61,7 +61,7 @@ fn main() {
         generated.push_str("    }\n}\n");
     }
 
-    generated.push_str("pub fn all_widget_tests() -> Vec<(&'static str, fn())> {\n");
+    generated.push_str("#[must_use]\npub fn all_widget_tests() -> Vec<(&'static str, fn())> {\n");
     generated.push_str("    let mut tests = Vec::new();\n");
     for module_name in module_names {
         generated.push_str(&format!(

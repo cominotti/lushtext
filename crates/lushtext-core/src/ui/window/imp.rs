@@ -582,7 +582,7 @@ impl WindowImpl for LushtextWindow {
         }
 
         let window_for_close = window.clone();
-        window.show_save_changes_dialog(modified, move |confirmed| {
+        window.show_save_changes_dialog(&modified, move |confirmed| {
             if confirmed {
                 window_for_close.imp().search_panel.close();
                 window_for_close.flush_dirty_drafts();

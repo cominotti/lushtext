@@ -247,7 +247,7 @@ fn test_command_palette_set_file_index() {
             store
                 .item(i)
                 .and_downcast_ref::<PaletteItem>()
-                .is_some_and(|item| item.is_file())
+                .is_some_and(PaletteItem::is_file)
         })
     });
 }
@@ -273,7 +273,7 @@ fn test_command_palette_search_filters_results() {
             store
                 .item(i)
                 .and_downcast_ref::<PaletteItem>()
-                .is_some_and(|item| item.is_file())
+                .is_some_and(PaletteItem::is_file)
         })
     });
 
@@ -283,14 +283,13 @@ fn test_command_palette_search_filters_results() {
                 .item(i)
                 .and_downcast_ref::<PaletteItem>()
                 .filter(|item| item.is_file())
-                .map(|item| item.display_name())
+                .map(PaletteItem::display_name)
         })
         .collect();
     assert!(file_items.contains(&"main.rs".to_string()));
     assert!(
         !file_items.contains(&"Cargo.toml".to_string()),
-        "Cargo.toml should not match 'main' query, got: {:?}",
-        file_items
+        "Cargo.toml should not match 'main' query, got: {file_items:?}"
     );
 }
 

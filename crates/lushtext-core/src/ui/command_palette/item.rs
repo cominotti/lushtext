@@ -54,6 +54,7 @@ const KIND_COMMAND: u8 = 1;
 
 impl PaletteItem {
     /// Create a palette item for a file search result.
+    #[must_use]
     pub fn new_file_raw(display_name: String, subtitle: String, file_path: PathBuf) -> Self {
         let obj: Self = glib::Object::builder().build();
         let imp = obj.imp();
@@ -80,6 +81,7 @@ impl PaletteItem {
     }
 
     /// Create a palette item from an indexed file.
+    #[must_use]
     pub fn from_indexed_file(file: &IndexedFile) -> Self {
         Self::new_file_raw(
             file.name.clone(),
@@ -89,30 +91,37 @@ impl PaletteItem {
     }
 
     /// Create a palette item from a command definition.
+    #[must_use]
     pub fn from_command_def(cmd: &CommandDef) -> Self {
         Self::new_command_raw(cmd.label, cmd.display_subtitle(), cmd.id)
     }
 
+    #[must_use]
     pub fn display_name(&self) -> String {
         self.imp().display_name.borrow().clone()
     }
 
+    #[must_use]
     pub fn subtitle(&self) -> String {
         self.imp().subtitle.borrow().clone()
     }
 
+    #[must_use]
     pub fn action_id(&self) -> String {
         self.imp().action_id.borrow().clone()
     }
 
+    #[must_use]
     pub fn file_path(&self) -> Option<PathBuf> {
         self.imp().file_path.borrow().clone()
     }
 
+    #[must_use]
     pub fn is_file(&self) -> bool {
         self.imp().kind.get() == KIND_FILE
     }
 
+    #[must_use]
     pub fn is_command(&self) -> bool {
         self.imp().kind.get() == KIND_COMMAND
     }

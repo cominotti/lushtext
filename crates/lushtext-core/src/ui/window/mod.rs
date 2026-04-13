@@ -43,6 +43,7 @@ const BUFFER_MEMORY_BUDGET: u64 = 256_000_000;
 
 /// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
 /// Unknown values fall back to `Default` (follow system).
+#[must_use]
 pub fn parse_color_scheme(value: &str) -> libadwaita::ColorScheme {
     match value {
         "force-light" => libadwaita::ColorScheme::ForceLight,
@@ -61,6 +62,7 @@ glib::wrapper! {
 }
 
 impl LushtextWindow {
+    #[must_use]
     pub fn new(app: &libadwaita::Application) -> Self {
         let window: Self = Object::builder().property("application", app).build();
         window.setup_actions();

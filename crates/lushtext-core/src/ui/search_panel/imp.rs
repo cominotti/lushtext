@@ -452,15 +452,15 @@ impl LushtextSearchPanel {
                 .and_then(|w| w.downcast::<gtk4::Label>().ok());
             let count_badge = file_label
                 .as_ref()
-                .and_then(|w| w.next_sibling())
+                .and_then(gtk4::prelude::WidgetExt::next_sibling)
                 .and_then(|w| w.downcast::<gtk4::Label>().ok());
             let line_num_label = count_badge
                 .as_ref()
-                .and_then(|w| w.next_sibling())
+                .and_then(gtk4::prelude::WidgetExt::next_sibling)
                 .and_then(|w| w.downcast::<gtk4::Label>().ok());
             let line_content_label = line_num_label
                 .as_ref()
-                .and_then(|w| w.next_sibling())
+                .and_then(gtk4::prelude::WidgetExt::next_sibling)
                 .and_then(|w| w.downcast::<gtk4::Label>().ok());
 
             if result_item.is_file_item() {

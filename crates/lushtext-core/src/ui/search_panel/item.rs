@@ -74,6 +74,7 @@ glib::wrapper! {
 
 impl SearchResultItem {
     /// Create a file header item (expandable group).
+    #[must_use]
     pub fn new_file(file_path: &str, display_path: &str, match_count: u32) -> Self {
         let obj: Self = glib::Object::builder().build();
         let inner = obj.imp();
@@ -90,6 +91,7 @@ impl SearchResultItem {
     /// `original_line_content` and `original_match_start`/`original_match_end`
     /// store the unclamped values for Replace All correctness on long lines.
     #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new_match(
         file_path: &str,
         line_number: u32,
@@ -116,46 +118,57 @@ impl SearchResultItem {
         obj
     }
 
+    #[must_use]
     pub fn is_file_item(&self) -> bool {
         self.imp().kind.get() == imp::SearchResultItem::KIND_FILE
     }
 
+    #[must_use]
     pub fn is_match_item(&self) -> bool {
         self.imp().kind.get() == imp::SearchResultItem::KIND_MATCH
     }
 
+    #[must_use]
     pub fn file_path(&self) -> String {
         self.imp().file_path.borrow().clone()
     }
 
+    #[must_use]
     pub fn display_path(&self) -> String {
         self.imp().display_path.borrow().clone()
     }
 
+    #[must_use]
     pub fn line_number(&self) -> u32 {
         self.imp().line_number.get()
     }
 
+    #[must_use]
     pub fn line_content(&self) -> String {
         self.imp().line_content.borrow().clone()
     }
 
+    #[must_use]
     pub fn match_start(&self) -> u32 {
         self.imp().match_start.get()
     }
 
+    #[must_use]
     pub fn match_end(&self) -> u32 {
         self.imp().match_end.get()
     }
 
+    #[must_use]
     pub fn original_line_content(&self) -> String {
         self.imp().original_line_content.borrow().clone()
     }
 
+    #[must_use]
     pub fn original_match_start(&self) -> u32 {
         self.imp().original_match_start.get()
     }
 
+    #[must_use]
     pub fn original_match_end(&self) -> u32 {
         self.imp().original_match_end.get()
     }

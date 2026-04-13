@@ -103,6 +103,7 @@ pub struct ReplaceResult {
 /// - **Literal mode** (`options.regex == false`): direct string replacement at `match_range`.
 /// - **Regex mode** (`options.regex == true`): re-compiles the query, expands backreferences
 ///   (`$1`, `$2`, etc.) via `regex::Regex::replace()`.
+#[must_use]
 pub fn generate_replacement_preview(
     matches: &[SearchMatch],
     query: &str,

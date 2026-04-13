@@ -17,6 +17,7 @@ use std::time::Duration;
 
 impl super::LushtextWindow {
     /// Snapshot current tab state into a `SessionData`.
+    #[must_use]
     pub fn collect_session(&self) -> SessionData {
         let tab_view = &self.imp().tab_view;
         let mut tabs = Vec::with_capacity(tab_view.n_pages() as usize);
@@ -166,7 +167,7 @@ impl super::LushtextWindow {
             |window, (manifest, session, preloaded)| {
                 *window.imp().draft_manifest.borrow_mut() = manifest;
                 *window.imp().preloaded_drafts.borrow_mut() = preloaded;
-                window.restore_tabs(session);
+                window.restore_tabs(&session);
                 window.schedule_orphan_cleanup();
             },
         );
@@ -174,7 +175,7 @@ impl super::LushtextWindow {
 
     /// Restore tabs from a loaded session. Opens file-backed tabs via
     /// `open_document` and creates untitled tabs with draft recovery.
-    fn restore_tabs(&self, session: SessionData) {
+    fn restore_tabs(&self, session: &SessionData) {
         if session.tabs.is_empty() {
             return;
         }

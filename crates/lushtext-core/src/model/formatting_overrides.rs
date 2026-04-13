@@ -23,6 +23,7 @@ pub struct FormattingOverrides {
 
 impl FormattingOverrides {
     /// True when no overrides are active (all fields are `None`).
+    #[must_use]
     pub fn is_empty(self) -> bool {
         self.tab_width.is_none() && self.insert_spaces.is_none() && self.indent_width.is_none()
     }

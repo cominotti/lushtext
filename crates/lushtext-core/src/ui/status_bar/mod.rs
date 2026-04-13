@@ -20,6 +20,7 @@ glib::wrapper! {
 }
 
 impl LushtextStatusBar {
+    #[must_use]
     pub fn new() -> Self {
         Object::builder().build()
     }
@@ -88,10 +89,10 @@ fn format_file_size(bytes: u64) -> String {
         if kb >= 999.95 {
             format!("{:.1} MB", b / MB)
         } else {
-            format!("{:.1} KB", kb)
+            format!("{kb:.1} KB")
         }
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 

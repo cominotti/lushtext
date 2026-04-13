@@ -13,6 +13,7 @@ glib::wrapper! {
 }
 
 impl LushtextPreferences {
+    #[must_use]
     pub fn new() -> Self {
         Object::builder().build()
     }

@@ -16,6 +16,9 @@ name = "widget"
 path = "tests/widget.rs"
 harness = false
 
+[lints]
+workspace = true
+
 [dependencies]
 lushtext-core      = { workspace = true }
 glib               = { workspace = true }
