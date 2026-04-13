@@ -281,6 +281,27 @@ impl LushtextWorkspaceSection {
         }
     }
 
+    /// Expands the root directories of this workspace section if they are not confirmed empty.
+    pub fn expand_roots(&self) {
+        if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
+            let mut roots = Vec::new();
+            for i in 0..tree_model.n_items() {
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
+                    if row.depth() == 0 && !row.is_expanded() {
+                        if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
+                            if item.is_empty() != Some(true) {
+                                roots.push(row);
+                            }
+                        }
+                    }
+                }
+            }
+            for row in roots {
+                row.set_expanded(true);
+            }
+        }
+    }
+
     fn select_and_scroll_to(&self, target_path: &Path) {
         if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
             for i in 0..tree_model.n_items() {

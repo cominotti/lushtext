@@ -132,6 +132,7 @@ impl ObjectImpl for LushtextWorkspaceSection {
         self.setup_factory();
         self.setup_file_context_menu();
         self.setup_header_context_menu();
+        self.setup_header_double_click();
 
         // Wire add-folder button
         let obj_weak = self.obj().downgrade();
@@ -591,6 +592,23 @@ impl LushtextWorkspaceSection {
         gesture.connect_pressed(move |_gesture, _n_press, x, y| {
             popover_ref.set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
             popover_ref.popup();
+        });
+
+        self.header_box.add_controller(gesture);
+    }
+
+    /// Set up double-click gesture on the workspace header to expand/collapse roots.
+    fn setup_header_double_click(&self) {
+        let obj = self.obj();
+        let gesture = gtk4::GestureClick::new();
+
+        let section_weak = obj.downgrade();
+        gesture.connect_released(move |_, n_press, _, _| {
+            if n_press == 2 {
+                if let Some(section) = section_weak.upgrade() {
+                    section.expand_roots();
+                }
+            }
         });
 
         self.header_box.add_controller(gesture);

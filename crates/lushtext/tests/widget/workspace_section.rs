@@ -466,3 +466,28 @@ fn test_has_roots_true_after_load() {
     section.load_roots(&[(dir.path().to_path_buf(), true)]);
     assert!(section.has_roots());
 }
+
+#[test]
+fn test_workspace_section_expand_roots() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+
+    let dir = tempfile::tempdir().unwrap();
+    // Must have at least one visible entry to not be detected as empty
+    std::fs::write(dir.path().join("file.txt"), "content").unwrap();
+    
+    section.load_roots(&[(dir.path().to_path_buf(), true)]);
+
+    let tree_model = section.imp().tree_model.borrow();
+    let tree_model = tree_model.as_ref().unwrap();
+    
+    // Wait for the peeking logic to finish if it's async (but it's sync in _load_roots)
+    let row = tree_model.item(0).and_downcast::<gtk4::TreeListRow>().unwrap();
+    
+    // Explicitly collapse to test expand_roots
+    row.set_expanded(false);
+    assert!(!row.is_expanded());
+
+    section.expand_roots();
+    assert!(row.is_expanded());
+}
