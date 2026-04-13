@@ -332,8 +332,14 @@ fn test_toggle_properties_action_state_syncs_with_split_view() {
 #[test]
 fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_int(keys::WINDOW_WIDTH, 1600)
+        .expect("set window width");
+    settings
+        .set_int(keys::WINDOW_HEIGHT, 900)
+        .expect("set window height");
     let window = test_window();
-    window.set_default_size(1600, 900);
     present_window(&window);
 
     wait_until(Duration::from_secs(2), || {
