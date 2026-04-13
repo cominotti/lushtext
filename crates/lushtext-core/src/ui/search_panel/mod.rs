@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use crate::model::content_search::{Replacement, SearchQuerySpec};
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::prelude::*;
 use gtk4::glib;
+use gtk4::prelude::*;
 
 glib::wrapper! {
     pub struct LushtextSearchPanel(ObjectSubclass<imp::LushtextSearchPanel>)

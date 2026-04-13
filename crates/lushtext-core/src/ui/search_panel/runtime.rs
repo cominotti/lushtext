@@ -17,9 +17,9 @@ use gtk4::{self, glib};
 use crate::model::content_search::{SearchEvent, SearchHistoryEntry};
 use crate::services::{content_search, json_store, search_history};
 
+use super::LushtextSearchPanel;
 use super::imp::make_display_path;
 use super::item::SearchResultItem;
-use super::LushtextSearchPanel;
 
 impl LushtextSearchPanel {
     /// Start a new search, cancelling any in-flight search first.
@@ -34,8 +34,7 @@ impl LushtextSearchPanel {
         }
 
         let preserve_feedback = !query.is_empty() && imp.results_feedback_revealer.reveals_child();
-        let preserve_results_body =
-            !query.is_empty() && imp.results_body_revealer.reveals_child();
+        let preserve_results_body = !query.is_empty() && imp.results_body_revealer.reveals_child();
         self.clear_results(preserve_feedback, preserve_results_body);
 
         if query.is_empty() {
@@ -258,13 +257,10 @@ fn append_match_result(
     let clamp_len = truncated_len.unwrap_or(content.len());
     let match_start =
         u32::try_from(search_match.match_range.start.min(clamp_len)).unwrap_or(u32::MAX);
-    let match_end =
-        u32::try_from(search_match.match_range.end.min(clamp_len)).unwrap_or(u32::MAX);
+    let match_end = u32::try_from(search_match.match_range.end.min(clamp_len)).unwrap_or(u32::MAX);
     let line_number = u32::try_from(search_match.line_number).unwrap_or(u32::MAX);
-    let original_match_start =
-        u32::try_from(search_match.match_range.start).unwrap_or(u32::MAX);
-    let original_match_end =
-        u32::try_from(search_match.match_range.end).unwrap_or(u32::MAX);
+    let original_match_start = u32::try_from(search_match.match_range.start).unwrap_or(u32::MAX);
+    let original_match_end = u32::try_from(search_match.match_range.end).unwrap_or(u32::MAX);
 
     let match_item = SearchResultItem::new_match(
         &search_match.path.display().to_string(),

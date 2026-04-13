@@ -14,7 +14,7 @@ use gtk4::{gio, glib};
 
 use super::super::file_tree_item::FileTreeItem;
 use super::imp::ItemLocation;
-use super::{tree_loading, LushtextWorkspaceSection};
+use super::{LushtextWorkspaceSection, tree_loading};
 
 impl LushtextWorkspaceSection {
     pub(super) fn save_expanded_paths(&self) {
@@ -263,7 +263,8 @@ impl LushtextWorkspaceSection {
                 {
                     root_paths.remove(removed.index);
                     removed.index
-                } else if let Some(position) = root_paths.iter().position(|path| path == target_path)
+                } else if let Some(position) =
+                    root_paths.iter().position(|path| path == target_path)
                 {
                     root_paths.remove(position);
                     position

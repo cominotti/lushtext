@@ -8,7 +8,7 @@ use gtk4::prelude::*;
 
 use crate::config::keys;
 
-use super::{imp, LushtextWindow};
+use super::{LushtextWindow, imp};
 
 impl LushtextWindow {
     pub(super) fn setup_actions(&self) {
@@ -171,7 +171,10 @@ impl LushtextWindow {
             ("win.toggle-sidebar", "F9"),
             ("win.toggle-preview-mode", "<Alt>p"),
             ("win.toggle-fullscreen", "F11"),
-            ("win.zoom-in", "<Control>equal|<Control>plus|<Control>KP_Add"),
+            (
+                "win.zoom-in",
+                "<Control>equal|<Control>plus|<Control>KP_Add",
+            ),
             ("win.zoom-out", "<Control>minus|<Control>KP_Subtract"),
             ("win.zoom-reset", "<Control>0|<Control>KP_0"),
         ];

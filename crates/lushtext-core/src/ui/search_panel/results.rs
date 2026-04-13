@@ -10,8 +10,8 @@ use gtk4::prelude::*;
 
 use crate::model::content_search::SearchMatch;
 
-use super::item::SearchResultItem;
 use super::LushtextSearchPanel;
+use super::item::SearchResultItem;
 
 impl LushtextSearchPanel {
     /// Whether the panel has any search results.

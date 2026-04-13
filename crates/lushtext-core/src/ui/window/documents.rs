@@ -5,15 +5,15 @@
 use std::path::Path;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::prelude::*;
 use gtk4::gio;
+use gtk4::prelude::*;
 use libadwaita::prelude::AnimationExt;
 
 use crate::config::keys;
 use crate::model::draft::DraftEntry;
+use crate::services::async_task;
 use crate::services::editorconfig;
 use crate::services::notifications::InlineActionNotification;
-use crate::services::async_task;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 
@@ -36,7 +36,10 @@ impl LushtextWindow {
             }
         }
 
-        self.imp().open_paths.borrow_mut().insert(path.to_path_buf());
+        self.imp()
+            .open_paths
+            .borrow_mut()
+            .insert(path.to_path_buf());
         let editor_page = LushtextEditorPage::new();
         self.wire_info_bar(&editor_page);
         editor_page.load_file_async(path);

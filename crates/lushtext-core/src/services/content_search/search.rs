@@ -430,7 +430,11 @@ mod tests {
 
         let events = search_collect("needle", &[root], &ContentSearchOptions::default());
         assert_ends_with_done(&events);
-        assert_eq!(count_matches(&events), 1, "gitignored file should be excluded");
+        assert_eq!(
+            count_matches(&events),
+            1,
+            "gitignored file should be excluded"
+        );
 
         let opts = ContentSearchOptions {
             gitignore: false,
@@ -604,7 +608,11 @@ mod tests {
         );
         assert_ends_with_done(&events);
 
-        assert_eq!(count_matches(&events), 2, "should find matches in both roots");
+        assert_eq!(
+            count_matches(&events),
+            2,
+            "should find matches in both roots"
+        );
     }
 
     #[test]

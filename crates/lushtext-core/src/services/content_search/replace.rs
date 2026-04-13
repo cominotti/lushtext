@@ -373,11 +373,20 @@ mod tests {
         assert!(result.skipped_paths.is_empty());
 
         let content_a = fs::read_to_string(&file_a).unwrap();
-        assert!(content_a.contains("goodbye"), "a.rs should have replacement");
-        assert!(!content_a.contains("hello"), "a.rs should not have original");
+        assert!(
+            content_a.contains("goodbye"),
+            "a.rs should have replacement"
+        );
+        assert!(
+            !content_a.contains("hello"),
+            "a.rs should not have original"
+        );
 
         let content_b = fs::read_to_string(&file_b).unwrap();
-        assert!(content_b.contains("goodbye"), "b.rs should have replacement");
+        assert!(
+            content_b.contains("goodbye"),
+            "b.rs should have replacement"
+        );
 
         assert_eq!(backup.len(), 2, "backup should contain both files");
     }
@@ -444,7 +453,10 @@ mod tests {
         assert_eq!(result.replaced_count, 2);
 
         let content = fs::read_to_string(&file).unwrap();
-        assert_eq!(content, "XY ZW\n", "both replacements should apply correctly");
+        assert_eq!(
+            content, "XY ZW\n",
+            "both replacements should apply correctly"
+        );
     }
 
     #[test]

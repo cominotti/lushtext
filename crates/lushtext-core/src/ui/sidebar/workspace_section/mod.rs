@@ -376,7 +376,6 @@ impl LushtextWorkspaceSection {
             }
         }
     }
-
 }
 
 /// Extract the file item at the given position and call the callback if it's a file.
