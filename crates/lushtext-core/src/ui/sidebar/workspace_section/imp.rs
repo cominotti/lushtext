@@ -603,10 +603,10 @@ impl LushtextWorkspaceSection {
         let gesture = gtk4::GestureClick::new();
 
         let section_weak = obj.downgrade();
-        gesture.connect_released(move |_, n_press, _, _| {
+        gesture.connect_pressed(move |_, n_press, _, _| {
             if n_press == 2 {
                 if let Some(section) = section_weak.upgrade() {
-                    section.expand_roots();
+                    section.toggle_roots();
                 }
             }
         });

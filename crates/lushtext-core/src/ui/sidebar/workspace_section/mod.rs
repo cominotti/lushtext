@@ -302,6 +302,34 @@ impl LushtextWorkspaceSection {
         }
     }
 
+    /// Toggles the expansion state of the root directories. If any root is collapsed, expands all.
+    /// Otherwise, collapses all.
+    pub fn toggle_roots(&self) {
+        if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
+            let mut roots = Vec::new();
+            let mut any_collapsed = false;
+            
+            for i in 0..tree_model.n_items() {
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
+                    if row.depth() == 0 {
+                        if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
+                            if item.is_dir() && !item.is_placeholder() && item.is_empty() != Some(true) {
+                                roots.push(row.clone());
+                                if !row.is_expanded() {
+                                    any_collapsed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            for row in roots {
+                row.set_expanded(any_collapsed);
+            }
+        }
+    }
+
     fn select_and_scroll_to(&self, target_path: &Path) {
         if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
             for i in 0..tree_model.n_items() {
@@ -887,10 +915,12 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
         && let Some(file_item) = tree_row
             .item()
             .and_then(|i| i.downcast::<FileTreeItem>().ok())
-        && !file_item.is_dir()
-        && let Some(ref path) = file_item.path()
     {
-        callback(path);
+        if file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true) {
+            tree_row.set_expanded(!tree_row.is_expanded());
+        } else if !file_item.is_dir() && let Some(ref path) = file_item.path() {
+            callback(path);
+        }
     }
 }
 

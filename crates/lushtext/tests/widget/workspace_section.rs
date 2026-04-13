@@ -468,7 +468,7 @@ fn test_has_roots_true_after_load() {
 }
 
 #[test]
-fn test_workspace_section_expand_roots() {
+fn test_workspace_section_toggle_roots() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
@@ -481,13 +481,16 @@ fn test_workspace_section_expand_roots() {
     let tree_model = section.imp().tree_model.borrow();
     let tree_model = tree_model.as_ref().unwrap();
     
-    // Wait for the peeking logic to finish if it's async (but it's sync in _load_roots)
     let row = tree_model.item(0).and_downcast::<gtk4::TreeListRow>().unwrap();
     
-    // Explicitly collapse to test expand_roots
-    row.set_expanded(false);
+    // Initial state is expanded (per _load_roots logic)
+    assert!(row.is_expanded());
+
+    // Toggle should collapse
+    section.toggle_roots();
     assert!(!row.is_expanded());
 
-    section.expand_roots();
+    // Toggle should expand
+    section.toggle_roots();
     assert!(row.is_expanded());
 }
