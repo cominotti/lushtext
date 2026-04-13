@@ -296,7 +296,13 @@ impl LushtextWorkspaceSection {
                     .and_downcast::<gtk4::Label>()
                     .expect("second child is Label");
 
-                let icon_name = if file_item.is_placeholder() {
+                let root_presentation = section_weak
+                    .upgrade()
+                    .and_then(|section| workspace_root_row_presentation(&section, &tree_row, &file_item));
+
+                let icon_name = if let Some((icon_name, _)) = root_presentation {
+                    icon_name
+                } else if file_item.is_placeholder() {
                     "dialog-information-symbolic"
                 } else if file_item.is_dir() {
                     "folder-symbolic"
@@ -305,13 +311,16 @@ impl LushtextWorkspaceSection {
                 };
                 icon.set_icon_name(Some(icon_name));
 
+                let display_name = root_presentation
+                    .map_or_else(|| file_item.name(), |(_, display_name)| display_name.to_string());
+
                 if file_item.is_empty() == Some(true) {
                     label.set_markup(&format!(
                         "{} <span alpha=\"60%\"><i>(Empty)</i></span>",
-                        glib::markup_escape_text(&file_item.name())
+                        glib::markup_escape_text(&display_name)
                     ));
                 } else {
-                    label.set_label(&file_item.name());
+                    label.set_label(&display_name);
                 }
 
                 if let Some(path) = file_item.path() {
@@ -619,6 +628,32 @@ impl LushtextWorkspaceSection {
 
         self.header_box.add_controller(gesture);
     }
+}
+
+/// Match Builder's "Files" root row only for the normal single-directory workspace root.
+fn workspace_root_row_presentation(
+    section: &super::LushtextWorkspaceSection,
+    tree_row: &gtk4::TreeListRow,
+    file_item: &FileTreeItem,
+) -> Option<(&'static str, &'static str)> {
+    if tree_row.depth() != 0 || !file_item.is_dir() || file_item.is_placeholder() {
+        return None;
+    }
+
+    if !section.imp().drilldown_stack.borrow().is_empty() {
+        return None;
+    }
+
+    let roots = section.imp().original_roots.borrow();
+    let [root] = roots.as_slice() else {
+        return None;
+    };
+
+    if !root.is_dir() || file_item.path().as_deref() != Some(root.path()) {
+        return None;
+    }
+
+    Some(("view-list-symbolic", "Files"))
 }
 
 /// Walk up the widget tree to find a `TreeExpander` ancestor.

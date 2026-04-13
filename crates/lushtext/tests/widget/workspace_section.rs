@@ -12,6 +12,73 @@ use lushtext_core::ui::sidebar::workspace_section::LushtextWorkspaceSection;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+fn flush_events() {
+    while glib::MainContext::default().iteration(false) {}
+}
+
+fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        flush_events();
+    }
+    panic!("condition was not met within {timeout:?}");
+}
+
+fn present_section_window(section: &LushtextWorkspaceSection) -> gtk4::ApplicationWindow {
+    let app = crate::common::test_application();
+    let window = gtk4::ApplicationWindow::builder()
+        .application(&app)
+        .default_width(320)
+        .default_height(420)
+        .build();
+    window.set_child(Some(section));
+    window.present();
+    flush_events();
+    window
+}
+
+fn realized_root_row_widgets(
+    section: &LushtextWorkspaceSection,
+) -> (gtk4::ApplicationWindow, gtk4::Image, gtk4::Label) {
+    let window = present_section_window(section);
+    wait_until(Duration::from_secs(2), || {
+        section.imp().file_tree_view.first_child().is_some()
+    });
+
+    let row_widget = section
+        .imp()
+        .file_tree_view
+        .first_child()
+        .expect("list view should realize the first row");
+    let overlay = row_widget
+        .first_child()
+        .and_downcast::<gtk4::Overlay>()
+        .expect("row child should be the factory overlay");
+    let expander = overlay
+        .child()
+        .and_downcast::<gtk4::TreeExpander>()
+        .expect("overlay child should be the tree expander");
+    let content_box = expander
+        .child()
+        .and_downcast::<gtk4::Box>()
+        .expect("tree expander child should be the content box");
+    let icon = content_box
+        .first_child()
+        .and_downcast::<gtk4::Image>()
+        .expect("content box should start with the row icon");
+    let label = icon
+        .next_sibling()
+        .and_downcast::<gtk4::Label>()
+        .expect("row icon should be followed by the row label");
+
+    (window, icon, label)
+}
 
 // --- Construction ---
 
@@ -73,6 +140,41 @@ fn test_workspace_section_header_button_carries_vertical_spacing() {
     assert_eq!(section.imp().add_folder_button.valign(), gtk4::Align::Center);
     assert_eq!(section.imp().add_folder_button.margin_top(), 6);
     assert_eq!(section.imp().add_folder_button.margin_bottom(), 6);
+}
+
+#[test]
+fn test_single_directory_root_row_matches_builder_files_presentation() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+    section.load_roots(&[WorkspaceEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+
+    let (_window, icon, label) = realized_root_row_widgets(&section);
+    assert_eq!(icon.icon_name().as_deref(), Some("view-list-symbolic"));
+    assert_eq!(label.label().as_str(), "Files");
+}
+
+#[test]
+fn test_drilldown_root_row_keeps_actual_folder_presentation() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(nested.join("lib.rs"), "pub fn demo() {}\n").unwrap();
+    section.load_roots(&[WorkspaceEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+    section.focus_folder(&nested);
+
+    let (_window, icon, label) = realized_root_row_widgets(&section);
+    assert_eq!(icon.icon_name().as_deref(), Some("folder-symbolic"));
+    assert_eq!(label.label().as_str(), "nested");
 }
 
 // --- Context menu ---
