@@ -102,12 +102,12 @@ impl LushtextSearchPanel {
 
     /// Restore search state from a saved search and trigger immediate search.
     pub fn restore_from_saved_search(&self, entry: &SavedSearch) {
-        self.restore_search_state(entry.query_spec());
+        self.restore_search_state(&entry.query_spec());
     }
 
     /// Restore search state from a history entry and trigger immediate search.
     pub fn restore_from_history(&self, entry: &SearchHistoryEntry) {
-        self.restore_search_state(entry.query_spec());
+        self.restore_search_state(&entry.query_spec());
     }
 
     /// Show the save search dialog. Builds a `SavedSearch` from the current
@@ -191,7 +191,7 @@ impl LushtextSearchPanel {
     }
 
     /// Restore widget state from one query spec and trigger a single direct search.
-    fn restore_search_state(&self, spec: SearchQuerySpec) {
+    fn restore_search_state(&self, spec: &SearchQuerySpec) {
         let imp = self.imp();
 
         imp.restoring_history.set(true);
