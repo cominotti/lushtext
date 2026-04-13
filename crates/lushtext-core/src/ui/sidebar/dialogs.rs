@@ -34,7 +34,7 @@ impl LushtextSidebar {
                 && let Some(path) = file.path()
                 && let Some(sidebar) = sidebar_weak.upgrade()
             {
-                sidebar.handle_new_workspace(path);
+                sidebar.handle_new_workspace(&path);
             }
         });
     }

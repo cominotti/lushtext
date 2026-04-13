@@ -250,7 +250,7 @@ impl LushtextWorkspaceSection {
     fn expanded_root_rows(&self) -> Vec<gtk4::TreeListRow> {
         self.root_rows()
             .into_iter()
-            .filter(|row| row.is_expanded())
+            .filter(gtk4::TreeListRow::is_expanded)
             .collect()
     }
 

@@ -6,7 +6,7 @@
 //! disk, building section widgets, persisting changes, and drill-down layout
 //! coordination across sections.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -85,6 +85,7 @@ impl LushtextSidebar {
 
         imp.syncing_workspace_filter.set(true);
         imp.workspace_filter_dropdown.set_model(Some(&model));
+        #[expect(clippy::cast_possible_truncation)] // selector length is far below u32::MAX
         imp.workspace_filter_dropdown
             .set_selected(selected_index as u32);
         imp.syncing_workspace_filter.set(false);
@@ -95,10 +96,11 @@ impl LushtextSidebar {
         let tooltip = if selected_index == 0 {
             "All workspaces".to_string()
         } else {
+            #[expect(clippy::cast_possible_truncation)] // selector length is far below u32::MAX
+            let selected_index = selected_index as u32;
             model
-                .string(selected_index as u32)
-                .map(|label| label.to_string())
-                .unwrap_or_else(|| "All workspaces".to_string())
+                .string(selected_index)
+                .map_or_else(|| "All workspaces".to_string(), |label| label.to_string())
         };
         imp.workspace_filter_dropdown
             .set_tooltip_text(Some(&tooltip));
@@ -198,10 +200,12 @@ impl LushtextSidebar {
     }
 
     /// Handle "New Workspace" creation after a folder is selected.
-    pub(super) fn handle_new_workspace(&self, path: PathBuf) {
+    pub(super) fn handle_new_workspace(&self, path: &Path) {
         let imp = self.imp();
-        let name = folder_display_name(&path);
-        let root_entry = WorkspaceEntry::Directory { path: path.clone() };
+        let name = folder_display_name(path);
+        let root_entry = WorkspaceEntry::Directory {
+            path: path.to_path_buf(),
+        };
 
         {
             let mut workspaces = imp.workspaces_file.borrow_mut();

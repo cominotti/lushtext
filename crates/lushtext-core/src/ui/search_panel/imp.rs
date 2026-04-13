@@ -380,7 +380,7 @@ impl LushtextSearchPanel {
                 }
                 let spec = panel.current_query_spec();
                 if !spec.query.is_empty() {
-                    panel.start_search(spec);
+                    panel.start_search(&spec);
                 }
             });
         }
@@ -426,7 +426,7 @@ impl LushtextSearchPanel {
                 }
                 let spec = panel.current_query_spec();
                 if !spec.query.is_empty() {
-                    panel.start_search(spec);
+                    panel.start_search(&spec);
                 }
             });
 
@@ -504,7 +504,7 @@ impl LushtextSearchPanel {
                 move |panel| {
                     let spec = panel.current_query_spec();
                     if !spec.query.is_empty() {
-                        panel.start_search(spec);
+                        panel.start_search(&spec);
                     }
                 },
             );
@@ -541,7 +541,7 @@ impl LushtextSearchPanel {
                 move |panel| {
                     let spec = panel.current_query_spec();
                     if !spec.query.is_empty() {
-                        panel.start_search(spec);
+                        panel.start_search(&spec);
                     }
                 },
             );

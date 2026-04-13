@@ -25,7 +25,7 @@ use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 impl LushtextSearchPanel {
     /// Start a new search from one immutable query snapshot, cancelling any
     /// in-flight worker first.
-    pub fn start_search(&self, spec: SearchQuerySpec) {
+    pub fn start_search(&self, spec: &SearchQuerySpec) {
         let imp = self.imp();
 
         if let Some(old_cancel) = imp.runtime.cancel_token.take() {

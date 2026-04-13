@@ -200,6 +200,6 @@ impl LushtextSearchPanel {
         imp.history_popover.popdown();
 
         imp.history.restoring_history.set(false);
-        self.start_search(spec.clone());
+        self.start_search(spec);
     }
 }

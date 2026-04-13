@@ -174,7 +174,7 @@ fn test_start_search_uses_passed_query_spec_instead_of_live_widget_state() {
 
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
     panel.set_query("absent");
-    panel.start_search(search_spec("needle"));
+    panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {
         !panel.imp().runtime.searching.get()
@@ -232,7 +232,7 @@ fn test_search_panel_clear_results_resets_state() {
     panel.imp().runtime.root_store.append(&file_item);
 
     // Trigger clear via start_search with empty query.
-    panel.start_search(search_spec(""));
+    panel.start_search(&search_spec(""));
 
     assert_eq!(panel.imp().runtime.total_matches.get(), 0);
     assert_eq!(panel.imp().runtime.total_files.get(), 0);
@@ -477,7 +477,7 @@ fn test_clear_results_removes_warning_class() {
     assert!(panel.imp().count_label.has_css_class("warning"));
 
     // Clear results should remove the warning class.
-    panel.start_search(search_spec(""));
+    panel.start_search(&search_spec(""));
     assert!(!panel.imp().count_label.has_css_class("warning"));
 }
 
@@ -547,7 +547,7 @@ fn test_current_match_index_resets_on_clear() {
         ));
 
     // Clear via empty search.
-    panel.start_search(search_spec(""));
+    panel.start_search(&search_spec(""));
 
     assert!(panel.imp().navigation.current_match_index.get().is_none());
     assert!(panel.imp().navigation.match_positions.borrow().is_empty());
@@ -780,7 +780,7 @@ fn test_clear_results_clears_undo_backup() {
     assert!(panel.imp().preview.undo_backup.borrow().is_some());
 
     // Starting a new search should clear any old undo state.
-    panel.start_search(search_spec(""));
+    panel.start_search(&search_spec(""));
     assert!(panel.imp().preview.undo_backup.borrow().is_none());
     assert!(
         !panel.imp().undo_button.property::<bool>("visible"),
@@ -1199,7 +1199,7 @@ fn test_search_panel_no_results_keeps_results_body_hidden() {
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
-    panel.start_search(search_spec("needle"));
+    panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {
         !panel.imp().runtime.searching.get()
@@ -1225,7 +1225,7 @@ fn test_search_panel_first_result_reveals_fixed_max_height_results_body() {
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
-    panel.start_search(search_spec("needle"));
+    panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {
         panel.imp().runtime.total_matches.get() > 0
@@ -1248,13 +1248,13 @@ fn test_search_panel_clearing_query_hides_results_revealers_after_results() {
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
-    panel.start_search(search_spec("needle"));
+    panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {
         panel.imp().runtime.total_matches.get() > 0
     });
 
-    panel.start_search(search_spec(""));
+    panel.start_search(&search_spec(""));
     flush_events();
 
     let imp = panel.imp();
@@ -1273,14 +1273,14 @@ fn test_search_panel_followup_search_keeps_results_body_open_until_new_outcome()
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
-    panel.start_search(search_spec("needle"));
+    panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {
         panel.imp().runtime.total_matches.get() > 0
     });
     assert!(panel.imp().results_body_revealer.reveals_child());
 
-    panel.start_search(search_spec("absent"));
+    panel.start_search(&search_spec("absent"));
 
     let imp = panel.imp();
     assert!(
