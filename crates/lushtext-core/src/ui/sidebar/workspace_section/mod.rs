@@ -53,10 +53,10 @@ impl LushtextWorkspaceSection {
         *self.imp().original_roots.borrow_mut() = roots.to_vec();
         self.imp().drilldown_stack.borrow_mut().clear();
         self.imp().drilldown_header_box.set_visible(false);
-        self._load_roots(roots);
+        self._load_roots(roots, false);
     }
 
-    fn _load_roots(&self, roots: &[(PathBuf, bool)]) {
+    fn _load_roots(&self, roots: &[(PathBuf, bool)], auto_expand: bool) {
         self.save_expanded_paths();
         self.clear_all_dir_state();
         self.reset_item_cache();
@@ -101,10 +101,12 @@ impl LushtextWorkspaceSection {
         *imp.tree_model.borrow_mut() = Some(tree_model.clone());
         self.update_button_state();
 
-        // Expand roots to save user from extra clicks, specially nice on drill-downs
-        for i in 0..tree_model.n_items() {
-            if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
-                row.set_expanded(true);
+        if auto_expand {
+            // Expand roots to save user from extra clicks, specially nice on drill-downs
+            for i in 0..tree_model.n_items() {
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
+                    row.set_expanded(true);
+                }
             }
         }
     }
@@ -154,7 +156,7 @@ impl LushtextWorkspaceSection {
         self.imp().drilldown_path_label.set_label(&path_str);
         self.imp().drilldown_path_label.set_tooltip_text(Some(&path_str));
 
-        self._load_roots(&[(dir_path.to_path_buf(), true)]);
+        self._load_roots(&[(dir_path.to_path_buf(), true)], true);
         self.notify_folder_focused();
     }
 
@@ -170,7 +172,7 @@ impl LushtextWorkspaceSection {
                 *self.imp().pending_selection.borrow_mut() = Some(target);
             }
             drop(stack);
-            self._load_roots(&[(parent_path, true)]);
+            self._load_roots(&[(parent_path, true)], true);
         } else {
             if let Some(target) = popped_path {
                 *self.imp().pending_selection.borrow_mut() = Some(target);
@@ -178,7 +180,7 @@ impl LushtextWorkspaceSection {
             drop(stack);
             self.imp().drilldown_header_box.set_visible(false);
             let original = self.imp().original_roots.borrow().clone();
-            self._load_roots(&original);
+            self._load_roots(&original, true);
         }
     }
 

@@ -483,14 +483,14 @@ fn test_workspace_section_toggle_roots() {
     
     let row = tree_model.item(0).and_downcast::<gtk4::TreeListRow>().unwrap();
     
-    // Initial state is expanded (per _load_roots logic)
-    assert!(row.is_expanded());
-
-    // Toggle should collapse
-    section.toggle_roots();
+    // Initial state is collapsed (new default behavior)
     assert!(!row.is_expanded());
 
     // Toggle should expand
     section.toggle_roots();
     assert!(row.is_expanded());
+
+    // Toggle should collapse
+    section.toggle_roots();
+    assert!(!row.is_expanded());
 }

@@ -320,7 +320,7 @@ impl LushtextWorkspaceSection {
                     expander.set_tooltip_text(None);
                 }
 
-                let show_focus = file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true);
+                let show_focus = file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true) && tree_row.depth() > 0;
                 if show_focus {
                     focus_btn.add_css_class("can-focus");
                     content_box.set_margin_end(36);
@@ -536,7 +536,7 @@ impl LushtextWorkspaceSection {
             imp.context_is_dir.set(file_item.is_dir());
             *imp.context_expander.borrow_mut() = Some(expander);
 
-            focus_folder_action_clone.set_enabled(file_item.is_dir() && !file_item.is_placeholder());
+            focus_folder_action_clone.set_enabled(file_item.is_dir() && !file_item.is_placeholder() && tree_row.depth() > 0);
 
             let popover = imp.context_menu.borrow().clone();
             if let Some(popover) = popover {
