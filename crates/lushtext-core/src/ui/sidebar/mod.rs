@@ -307,6 +307,14 @@ impl LushtextSidebar {
                 sidebar.show_unlist_workspace_dialog(ws_id);
             }
         });
+
+        // Folder focused (drill-down)
+        let sidebar_weak = self.downgrade();
+        section.connect_folder_focused(move |ws_id| {
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                sidebar.handle_folder_focused(ws_id);
+            }
+        });
     }
 
     // --- Helpers ---
@@ -335,6 +343,25 @@ impl LushtextSidebar {
     }
 
     // --- Workspace lifecycle ---
+
+    /// Handle drill-down focus on a folder: auto-collapse others and scroll into view.
+    fn handle_folder_focused(&self, focused_ws_id: &WorkspaceId) {
+        if self.imp().settings.boolean(crate::config::keys::WORKSPACE_AUTO_COLLAPSE) {
+            for section in self.imp().sections.borrow().iter() {
+                if section.workspace_id() != *focused_ws_id {
+                    section.collapse_roots();
+                }
+            }
+        }
+
+        // Scroll the focused section to the top
+        if let Some(section) = self.imp().sections.borrow().iter().find(|s| s.workspace_id() == *focused_ws_id) {
+            if let Some(point) = section.compute_point(&*self.imp().sections_box, &gtk4::graphene::Point::new(0.0, 0.0)) {
+                let adj = self.imp().outer_scrolled_window.vadjustment();
+                adj.set_value(point.y() as f64);
+            }
+        }
+    }
 
     /// Handle "New Workspace" creation after a folder is selected.
     fn handle_new_workspace(&self, path: PathBuf) {

@@ -108,7 +108,7 @@ fn populate_tree_store(entries: Vec<(PathBuf, bool)>, truncated: bool) -> gio::L
             let Some((entry_path, is_dir)) = pending.pop_front() else {
                 break;
             };
-            batch.push(FileTreeItem::new(entry_path, is_dir));
+            batch.push(FileTreeItem::new(entry_path, is_dir, None));
         }
         store.splice(store.n_items(), 0, &batch);
     }

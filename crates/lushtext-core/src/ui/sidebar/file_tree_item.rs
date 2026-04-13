@@ -31,6 +31,8 @@ mod imp {
         /// Flag set on freshly created items (New File/Folder) to trigger
         /// inline rename in `connect_bind`. Cleared after rename begins.
         pub pending_rename: Cell<bool>,
+        /// Whether the directory was confirmed empty during scan (peeking).
+        pub is_empty: Cell<Option<bool>>,
     }
 
     // ObjectSubclass registers this struct with GLib's runtime type system.
@@ -51,11 +53,12 @@ glib::wrapper! {
 }
 
 impl FileTreeItem {
-    pub fn new(path: PathBuf, is_dir: bool) -> Self {
+    pub fn new(path: PathBuf, is_dir: bool, is_empty: Option<bool>) -> Self {
         let obj: Self = glib::Object::builder().build();
         obj.imp().display_name.replace(display_name_for_path(&path));
         obj.imp().path.replace(Some(path));
         obj.imp().is_dir.set(is_dir);
+        obj.imp().is_empty.set(is_empty);
         obj
     }
 
@@ -84,6 +87,10 @@ impl FileTreeItem {
 
     pub fn is_dir(&self) -> bool {
         self.imp().is_dir.get()
+    }
+
+    pub fn is_empty(&self) -> Option<bool> {
+        self.imp().is_empty.get()
     }
 
     pub fn is_placeholder(&self) -> bool {

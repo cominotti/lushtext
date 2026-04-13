@@ -50,11 +50,24 @@ impl LushtextWorkspaceSection {
     /// Load root paths into the file tree. Builds the `TreeListModel`
     /// and child models asynchronously for responsive UI.
     pub fn load_roots(&self, roots: &[(PathBuf, bool)]) {
+        *self.imp().original_roots.borrow_mut() = roots.to_vec();
+        self.imp().drilldown_stack.borrow_mut().clear();
+        self.imp().drilldown_header_box.set_visible(false);
+        self._load_roots(roots, false);
+    }
+
+    fn _load_roots(&self, roots: &[(PathBuf, bool)], auto_expand: bool) {
+        self.save_expanded_paths();
         self.clear_all_dir_state();
         self.reset_item_cache();
         let root_store = gio::ListStore::new::<FileTreeItem>();
         for (root, is_dir) in roots {
-            let item = FileTreeItem::new(root.clone(), *is_dir);
+            let is_empty = if *is_dir {
+                Some(crate::services::file_tree::is_dir_empty(root))
+            } else {
+                None
+            };
+            let item = FileTreeItem::new(root.clone(), *is_dir, is_empty);
             let index = root_store.n_items() as usize;
             root_store.append(&item);
             self.cache_root_item(root.clone(), index);
@@ -71,33 +84,56 @@ impl LushtextWorkspaceSection {
         let section_weak = self.downgrade();
         let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, move |item| {
             let section = section_weak.upgrade()?;
-            item.downcast_ref::<FileTreeItem>()
-                .filter(|fi| fi.is_dir())
-                .and_then(|fi| fi.path())
-                .map(|p| section.build_children_model(&p).upcast::<gio::ListModel>())
+            let fi = item.downcast_ref::<FileTreeItem>()?;
+            if !fi.is_dir() {
+                return None;
+            }
+            if fi.is_empty() == Some(true) {
+                return None; // Folders known to be empty don't get child models, hiding the arrow natively.
+            }
+            fi.path().map(|p| section.build_children_model(&p).upcast::<gio::ListModel>())
         });
 
         let selection = gtk4::SingleSelection::new(Some(tree_model.clone()));
         let imp = self.imp();
         imp.file_tree_view.set_model(Some(&selection));
         *imp.root_store.borrow_mut() = Some(root_store);
-        *imp.tree_model.borrow_mut() = Some(tree_model);
+        *imp.tree_model.borrow_mut() = Some(tree_model.clone());
         self.update_button_state();
+
+        if auto_expand {
+            // Expand roots to save user from extra clicks, specially nice on drill-downs
+            for i in 0..tree_model.n_items() {
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
+                    row.set_expanded(true);
+                }
+            }
+        }
     }
 
     /// Add a single root path to an existing file tree.
     /// `is_dir` avoids a `stat(2)` call — callers already know the entry type.
     pub fn add_root(&self, path: &Path, is_dir: bool) {
-        let has_store = self.imp().root_store.borrow().is_some();
+        let has_store = !self.imp().original_roots.borrow().is_empty();
         if has_store {
-            let already_exists = self.imp().root_paths.borrow().iter().any(|p| p == path);
+            let already_exists = self.imp().original_roots.borrow().iter().any(|(p, _)| p == path);
             if !already_exists {
-                let store_ref = self.imp().root_store.borrow();
-                let root_store = store_ref.as_ref().unwrap();
-                let item = FileTreeItem::new(path.to_path_buf(), is_dir);
-                let index = root_store.n_items() as usize;
-                root_store.append(&item);
-                self.cache_root_item(path.to_path_buf(), index);
+                self.imp().original_roots.borrow_mut().push((path.to_path_buf(), is_dir));
+                // Only update the tree model if we are NOT drilled down
+                if self.imp().drilldown_stack.borrow().is_empty() {
+                    let store_ref = self.imp().root_store.borrow();
+                    if let Some(root_store) = store_ref.as_ref() {
+                        let is_empty = if is_dir {
+                            Some(crate::services::file_tree::is_dir_empty(path))
+                        } else {
+                            None
+                        };
+                        let item = FileTreeItem::new(path.to_path_buf(), is_dir, is_empty);
+                        let index = root_store.n_items() as usize;
+                        root_store.append(&item);
+                        self.cache_root_item(path.to_path_buf(), index);
+                    }
+                }
             }
         } else {
             self.load_roots(&[(path.to_path_buf(), is_dir)]);
@@ -107,11 +143,45 @@ impl LushtextWorkspaceSection {
 
     /// Returns true if this section has at least one root loaded.
     pub fn has_roots(&self) -> bool {
-        self.imp()
-            .root_store
-            .borrow()
-            .as_ref()
-            .is_some_and(|s| s.n_items() > 0)
+        !self.imp().original_roots.borrow().is_empty()
+    }
+
+    /// Focuses the workspace panel on a specific deep directory, allowing users
+    /// to navigate past the horizontal clipping limit.
+    pub fn focus_folder(&self, dir_path: &Path) {
+        self.imp().drilldown_stack.borrow_mut().push(dir_path.to_path_buf());
+        self.imp().drilldown_header_box.set_visible(true);
+        
+        let path_str = dir_path.to_string_lossy();
+        self.imp().drilldown_path_label.set_label(&path_str);
+        self.imp().drilldown_path_label.set_tooltip_text(Some(&path_str));
+
+        self._load_roots(&[(dir_path.to_path_buf(), true)], true);
+        self.notify_folder_focused();
+    }
+
+    /// Navigates one level up the drill-down stack. Restores original roots if empty.
+    pub fn navigate_back(&self) {
+        let mut stack = self.imp().drilldown_stack.borrow_mut();
+        let popped_path = stack.pop();
+        if let Some(parent_path) = stack.last().cloned() {
+            let path_str = parent_path.to_string_lossy();
+            self.imp().drilldown_path_label.set_label(&path_str);
+            self.imp().drilldown_path_label.set_tooltip_text(Some(&path_str));
+            if let Some(target) = popped_path {
+                *self.imp().pending_selection.borrow_mut() = Some(target);
+            }
+            drop(stack);
+            self._load_roots(&[(parent_path, true)], true);
+        } else {
+            if let Some(target) = popped_path {
+                *self.imp().pending_selection.borrow_mut() = Some(target);
+            }
+            drop(stack);
+            self.imp().drilldown_header_box.set_visible(false);
+            let original = self.imp().original_roots.borrow().clone();
+            self._load_roots(&original, true);
+        }
     }
 
     /// Update the add-folder button icon and tooltip based on whether roots exist.
@@ -162,6 +232,10 @@ impl LushtextWorkspaceSection {
         *self.imp().unlist_workspace_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_folder_focused<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
+        *self.imp().folder_focused_callback.borrow_mut() = Some(Box::new(f));
+    }
+
     // --- Callback notification helpers (called from imp.rs closures) ---
 
     pub fn notify_add_folder_requested(&self) {
@@ -182,6 +256,115 @@ impl LushtextWorkspaceSection {
         let ws_id = self.workspace_id();
         if let Some(ref cb) = *self.imp().unlist_workspace_callback.borrow() {
             cb(&ws_id);
+        }
+    }
+
+    pub fn notify_folder_focused(&self) {
+        let ws_id = self.workspace_id();
+        if let Some(ref cb) = *self.imp().folder_focused_callback.borrow() {
+            cb(&ws_id);
+        }
+    }
+
+    /// Collapses the root directories of this workspace section.
+    pub fn collapse_roots(&self) {
+        if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
+            let mut roots = Vec::new();
+            for i in 0..tree_model.n_items() {
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
+                    if row.depth() == 0 && row.is_expanded() {
+                        roots.push(row);
+                    }
+                }
+            }
+            for row in roots {
+                row.set_expanded(false);
+            }
+        }
+    }
+
+    /// Expands the root directories of this workspace section if they are not confirmed empty.
+    pub fn expand_roots(&self) {
+        if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
+            let mut roots = Vec::new();
+            for i in 0..tree_model.n_items() {
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
+                    if row.depth() == 0 && !row.is_expanded() {
+                        if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
+                            if item.is_empty() != Some(true) {
+                                roots.push(row);
+                            }
+                        }
+                    }
+                }
+            }
+            for row in roots {
+                row.set_expanded(true);
+            }
+        }
+    }
+
+    /// Toggles the expansion state of the root directories. If any root is collapsed, expands all.
+    /// Otherwise, collapses all.
+    pub fn toggle_roots(&self) {
+        if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
+            let mut roots = Vec::new();
+            let mut any_collapsed = false;
+            
+            for i in 0..tree_model.n_items() {
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
+                    if row.depth() == 0 {
+                        if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
+                            if item.is_dir() && !item.is_placeholder() && item.is_empty() != Some(true) {
+                                roots.push(row.clone());
+                                if !row.is_expanded() {
+                                    any_collapsed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            for row in roots {
+                row.set_expanded(any_collapsed);
+            }
+        }
+    }
+
+    fn select_and_scroll_to(&self, target_path: &Path) {
+        if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
+            for i in 0..tree_model.n_items() {
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
+                    if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
+                        if item.path().as_deref() == Some(target_path) {
+                            if let Some(selection) = self.imp().file_tree_view.model().and_downcast::<gtk4::SingleSelection>() {
+                                selection.set_selected(i);
+                                self.imp().file_tree_view.scroll_to(i, gtk4::ListScrollFlags::FOCUS, None);
+                            }
+                            self.imp().pending_selection.borrow_mut().take();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn save_expanded_paths(&self) {
+        if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
+            let mut expanded = self.imp().expanded_paths.borrow_mut();
+            for i in 0..tree_model.n_items() {
+                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>() {
+                    if row.is_expanded() {
+                        if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
+                            if let Some(path) = item.path() {
+                                expanded.insert(path);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -479,10 +662,12 @@ impl LushtextWorkspaceSection {
         }
 
         let section_weak = self.downgrade();
+        let lookahead_cap = gtk4::gio::Settings::new(crate::config::APP_ID)
+            .uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP) as usize;
         services::async_task::spawn_blocking_then(
             (store.clone(), path.clone(), Arc::clone(&cancel)),
             move || {
-                services::file_tree::scan_directory_bounded(&path, MAX_DIR_ENTRIES, Some(&cancel))
+                services::file_tree::scan_directory_bounded(&path, MAX_DIR_ENTRIES, lookahead_cap, Some(&cancel))
             },
             move |(store, path, cancel), scan| {
                 if scan.cancelled {
@@ -512,7 +697,7 @@ impl LushtextWorkspaceSection {
                 let remaining_budget = MAX_DIR_ENTRIES.saturating_sub(existing.len());
                 let mut new_entries = Vec::with_capacity(scan.entries.len().min(remaining_budget));
                 let mut truncated = scan.truncated;
-                for (entry_path, is_dir) in scan.entries {
+                for (entry_path, is_dir, is_empty) in scan.entries {
                     if existing.contains(&entry_path) {
                         continue;
                     }
@@ -520,7 +705,7 @@ impl LushtextWorkspaceSection {
                         truncated = true;
                         break;
                     }
-                    new_entries.push((entry_path, is_dir));
+                    new_entries.push((entry_path, is_dir, is_empty));
                 }
 
                 if truncated {
@@ -631,7 +816,7 @@ impl LushtextWorkspaceSection {
         store: gio::ListStore,
         dir_path: PathBuf,
         token: Arc<AtomicBool>,
-        entries: Vec<(PathBuf, bool)>,
+        entries: Vec<(PathBuf, bool, Option<bool>)>,
         truncated: bool,
     ) {
         let pending = std::rc::Rc::new(RefCell::new(VecDeque::from(entries)));
@@ -643,7 +828,7 @@ impl LushtextWorkspaceSection {
         store: gio::ListStore,
         dir_path: PathBuf,
         token: Arc<AtomicBool>,
-        pending: std::rc::Rc<RefCell<VecDeque<(PathBuf, bool)>>>,
+        pending: std::rc::Rc<RefCell<VecDeque<(PathBuf, bool, Option<bool>)>>>,
         truncated: bool,
     ) {
         if !self.child_scan_is_active(&dir_path, &token) {
@@ -654,10 +839,10 @@ impl LushtextWorkspaceSection {
         {
             let mut pending_entries = pending.borrow_mut();
             for _ in 0..CHILD_APPEND_BATCH_SIZE {
-                let Some((entry_path, is_dir)) = pending_entries.pop_front() else {
+                let Some((entry_path, is_dir, is_empty)) = pending_entries.pop_front() else {
                     break;
                 };
-                batch.push(FileTreeItem::new(entry_path, is_dir));
+                batch.push(FileTreeItem::new(entry_path, is_dir, is_empty));
             }
         }
 
@@ -669,10 +854,38 @@ impl LushtextWorkspaceSection {
                 .get(&dir_path)
                 .map_or(0, Vec::len);
             store.splice(store.n_items(), 0, &batch);
+            
+            let mut to_expand = Vec::new();
+            let mut to_select = None;
+            
             for (offset, item) in batch.iter().enumerate() {
                 if let Some(path) = item.path() {
-                    self.cache_child_item(&dir_path, path, start_index + offset);
+                    self.cache_child_item(&dir_path, path.clone(), start_index + offset);
+                    if self.imp().expanded_paths.borrow().contains(&path) {
+                        to_expand.push(path.clone());
+                    }
+                    if let Some(pending) = self.imp().pending_selection.borrow().as_ref() {
+                        if pending == &path {
+                            to_select = Some(path.clone());
+                        }
+                    }
                 }
+            }
+
+            if !to_expand.is_empty() || to_select.is_some() {
+                let section_weak = self.downgrade();
+                glib::timeout_add_local_once(Duration::from_millis(1), move || {
+                    if let Some(section) = section_weak.upgrade() {
+                        for path in to_expand {
+                            if let Some(row) = section.find_dir_row(&path) {
+                                row.set_expanded(true);
+                            }
+                        }
+                        if let Some(path) = to_select {
+                            section.select_and_scroll_to(&path);
+                        }
+                    }
+                });
             }
         }
 
@@ -704,10 +917,12 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
         && let Some(file_item) = tree_row
             .item()
             .and_then(|i| i.downcast::<FileTreeItem>().ok())
-        && !file_item.is_dir()
-        && let Some(ref path) = file_item.path()
     {
-        callback(path);
+        if file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true) {
+            tree_row.set_expanded(!tree_row.is_expanded());
+        } else if !file_item.is_dir() && let Some(ref path) = file_item.path() {
+            callback(path);
+        }
     }
 }
 

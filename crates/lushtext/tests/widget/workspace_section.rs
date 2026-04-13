@@ -54,10 +54,10 @@ fn test_workspace_section_header_label_does_not_ellipsize() {
 }
 
 #[test]
-fn test_workspace_section_inner_scroller_propagates_natural_width() {
+fn test_workspace_section_inner_scroller_does_not_propagate_natural_width() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
-    assert!(section.imp().inner_scrolled_window.propagates_natural_width());
+    assert!(!section.imp().inner_scrolled_window.propagates_natural_width());
 }
 
 // --- Context menu ---
@@ -86,8 +86,8 @@ fn test_remove_from_model_root_item() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let root_store = gio::ListStore::new::<FileTreeItem>();
-    root_store.append(&FileTreeItem::new(PathBuf::from("/tmp/test/a.txt"), false));
-    root_store.append(&FileTreeItem::new(PathBuf::from("/tmp/test/b.txt"), false));
+    root_store.append(&FileTreeItem::new(PathBuf::from("/tmp/test/a.txt"), false, None));
+    root_store.append(&FileTreeItem::new(PathBuf::from("/tmp/test/b.txt"), false, None));
     *section.imp().root_store.borrow_mut() = Some(root_store.clone());
 
     assert_eq!(root_store.n_items(), 2);
@@ -104,7 +104,7 @@ fn test_remove_from_model_nonexistent_is_noop() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let root_store = gio::ListStore::new::<FileTreeItem>();
-    root_store.append(&FileTreeItem::new(PathBuf::from("/tmp/test/a.txt"), false));
+    root_store.append(&FileTreeItem::new(PathBuf::from("/tmp/test/a.txt"), false, None));
     *section.imp().root_store.borrow_mut() = Some(root_store.clone());
 
     section.remove_from_model(std::path::Path::new("/tmp/test/does_not_exist.txt"));
@@ -117,19 +117,21 @@ fn test_remove_from_model_child_item() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let root_store = gio::ListStore::new::<FileTreeItem>();
-    let dir_item = FileTreeItem::new(PathBuf::from("/tmp/test/src"), true);
+    let dir_item = FileTreeItem::new(PathBuf::from("/tmp/test/src"), true, None);
     root_store.append(&dir_item);
     *section.imp().root_store.borrow_mut() = Some(root_store.clone());
 
     let child_store = gio::ListStore::new::<FileTreeItem>();
     child_store.append(&FileTreeItem::new(
-        PathBuf::from("/tmp/test/src/main.rs"),
-        false,
-    ));
+PathBuf::from("/tmp/test/src/main.rs"),
+false,
+None
+));
     child_store.append(&FileTreeItem::new(
-        PathBuf::from("/tmp/test/src/lib.rs"),
-        false,
-    ));
+PathBuf::from("/tmp/test/src/lib.rs"),
+false,
+None
+));
 
     let child_store_c = child_store.clone();
     let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, move |item| {
@@ -307,14 +309,14 @@ fn test_unlist_workspace_callback_fires() {
 #[test]
 fn test_file_tree_item_pending_rename_default_false() {
     ensure_gtk_init();
-    let item = FileTreeItem::new(PathBuf::from("/tmp/test.txt"), false);
+    let item = FileTreeItem::new(PathBuf::from("/tmp/test.txt"), false, None);
     assert!(!item.is_pending_rename());
 }
 
 #[test]
 fn test_file_tree_item_pending_rename_set_and_clear() {
     ensure_gtk_init();
-    let item = FileTreeItem::new(PathBuf::from("/tmp/test.txt"), false);
+    let item = FileTreeItem::new(PathBuf::from("/tmp/test.txt"), false, None);
     item.set_pending_rename(true);
     assert!(item.is_pending_rename());
     item.set_pending_rename(false);
@@ -463,4 +465,32 @@ fn test_has_roots_true_after_load() {
     let dir = tempfile::tempdir().unwrap();
     section.load_roots(&[(dir.path().to_path_buf(), true)]);
     assert!(section.has_roots());
+}
+
+#[test]
+fn test_workspace_section_toggle_roots() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+
+    let dir = tempfile::tempdir().unwrap();
+    // Must have at least one visible entry to not be detected as empty
+    std::fs::write(dir.path().join("file.txt"), "content").unwrap();
+    
+    section.load_roots(&[(dir.path().to_path_buf(), true)]);
+
+    let tree_model = section.imp().tree_model.borrow();
+    let tree_model = tree_model.as_ref().unwrap();
+    
+    let row = tree_model.item(0).and_downcast::<gtk4::TreeListRow>().unwrap();
+    
+    // Initial state is collapsed (new default behavior)
+    assert!(!row.is_expanded());
+
+    // Toggle should expand
+    section.toggle_roots();
+    assert!(row.is_expanded());
+
+    // Toggle should collapse
+    section.toggle_roots();
+    assert!(!row.is_expanded());
 }

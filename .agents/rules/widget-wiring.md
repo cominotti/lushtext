@@ -109,6 +109,8 @@ Every wired signal must have a widget test that asserts the expected state chang
 
 **`is_visible()` in widget tests:** `WidgetExt::is_visible()` checks the entire parent chain — it returns `false` for any widget inside an unrealized/unpresented window (which is the case in all widget tests). To check a widget's own visibility property, use `widget.property::<bool>("visible")` instead.
 
+**GTK4 Window Resizing in Tests:** `set_default_size` does not shrink a window that has already been presented. If a test needs to verify layout behavior at multiple widths (e.g., breakpoint collapse), instantiate separate windows at each target size or instantiate narrow from the start.
+
 **`spawn_blocking_then` results in tests:** Tests that depend on results from `spawn_blocking_then` (e.g., command palette search results, file index rebuilds) must wait for the background thread to complete before asserting. `flush_events()` alone is insufficient — it only drains what's already on the main loop, but the background thread may not have posted its `idle_add_once` callback yet. Use `spin_until(|| predicate())` to poll the main loop until results arrive. Without this, tests are flaky under parallel execution (nextest) because thread scheduling varies.
 
 **Timed animations in the custom widget harness:** Presented-window tests do not reliably advance `AdwTimedAnimation` frame clocks under the `crates/lushtext/tests/widget.rs` subprocess harness. Do not write tests that wait for the real animation duration to elapse. If the assertion depends on the settled post-animation state, expose a narrow test-only immediate-completion path keyed off `LUSHTEXT_WIDGET_CHILD`, or assert a state transition that does not depend on frame-clock progress.

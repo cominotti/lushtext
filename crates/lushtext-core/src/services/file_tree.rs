@@ -15,8 +15,8 @@ use unicase::UniCase;
 /// Result of a bounded directory scan.
 #[derive(Debug, Default)]
 pub struct DirectoryScan {
-    /// Sorted entries: directories first, then alphabetical (case-insensitive).
-    pub entries: Vec<(PathBuf, bool)>,
+    /// Sorted entries: path, is_dir, and is_empty (Some(true) if empty, Some(false) if not, None if skipped).
+    pub entries: Vec<(PathBuf, bool, Option<bool>)>,
     /// True if the directory had more entries than `max_entries`.
     pub truncated: bool,
     /// True if the cancellation token was set during scanning.
@@ -27,6 +27,7 @@ pub struct DirectoryScan {
 struct SortedEntry {
     path: PathBuf,
     is_dir: bool,
+    is_empty: Option<bool>,
 }
 
 impl Ord for SortedEntry {
@@ -46,8 +47,23 @@ impl PartialOrd for SortedEntry {
 
 /// Scan a directory and return sorted entries (directories first, then alphabetical).
 /// Skips hidden files (starting with `.`).
-pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
-    scan_directory_bounded(dir_path, usize::MAX, None).entries
+pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool, Option<bool>)> {
+    scan_directory_bounded(dir_path, usize::MAX, 1000, None).entries
+}
+
+/// Peek into a directory to see if it contains any visible (non-hidden) entries.
+pub fn is_dir_empty(path: &Path) -> bool {
+    if let Ok(mut rd) = std::fs::read_dir(path) {
+        !rd.any(|e| {
+            if let Ok(e) = e {
+                e.file_name().as_encoded_bytes().first() != Some(&b'.')
+            } else {
+                false
+            }
+        })
+    } else {
+        false // Assume not empty on error to allow user to try expanding it
+    }
 }
 
 /// Scan a directory while bounding memory and allowing cooperative cancellation.
@@ -57,6 +73,7 @@ pub fn scan_directory(dir_path: &Path) -> Vec<(PathBuf, bool)> {
 pub fn scan_directory_bounded(
     dir_path: &Path,
     max_entries: usize,
+    lookahead_cap: usize,
     cancel: Option<&AtomicBool>,
 ) -> DirectoryScan {
     let read_dir = match std::fs::read_dir(dir_path) {
@@ -69,6 +86,8 @@ pub fn scan_directory_bounded(
 
     let mut heap = BinaryHeap::with_capacity(max_entries.saturating_add(1).min(256));
     let mut truncated = false;
+    let mut dirs_checked = 0;
+    
     for entry in read_dir.flatten() {
         if cancel.is_some_and(|flag| flag.load(AtomicOrdering::Acquire)) {
             return DirectoryScan {
@@ -84,7 +103,15 @@ pub fn scan_directory_bounded(
             continue;
         };
 
-        heap.push(SortedEntry { path, is_dir });
+        let mut is_empty = None;
+        if is_dir {
+            if dirs_checked < lookahead_cap {
+                dirs_checked += 1;
+                is_empty = Some(is_dir_empty(&path));
+            }
+        }
+
+        heap.push(SortedEntry { path, is_dir, is_empty });
         if heap.len() > max_entries {
             heap.pop();
             truncated = true;
@@ -114,10 +141,10 @@ fn classify_entry(entry: DirEntry) -> Option<(PathBuf, bool)> {
     }
 }
 
-fn drain_sorted_entries(heap: BinaryHeap<SortedEntry>) -> Vec<(PathBuf, bool)> {
+fn drain_sorted_entries(heap: BinaryHeap<SortedEntry>) -> Vec<(PathBuf, bool, Option<bool>)> {
     heap.into_sorted_vec()
         .into_iter()
-        .map(|entry| (entry.path, entry.is_dir))
+        .map(|entry| (entry.path, entry.is_dir, entry.is_empty))
         .collect()
 }
 
@@ -146,10 +173,10 @@ mod tests {
     use tempfile::TempDir;
 
     /// Helper: extract file names from scan results.
-    fn names(entries: &[(PathBuf, bool)]) -> Vec<String> {
+    fn names(entries: &[(PathBuf, bool, Option<bool>)]) -> Vec<String> {
         entries
             .iter()
-            .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|(p, _, _)| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect()
     }
 
@@ -310,7 +337,7 @@ mod tests {
             }
         }
 
-        let scan = scan_directory_bounded(dir.path(), 3, None);
+        let scan = scan_directory_bounded(dir.path(), 3, 1000, None);
         assert!(scan.truncated);
         assert!(!scan.cancelled);
         assert_eq!(names(&scan.entries), vec!["docs", "src", "alpha.txt"]);
@@ -322,7 +349,7 @@ mod tests {
         std::fs::write(dir.path().join("visible.txt"), "").unwrap();
         let cancel = AtomicBool::new(true);
 
-        let scan = scan_directory_bounded(dir.path(), 10, Some(&cancel));
+        let scan = scan_directory_bounded(dir.path(), 10, 1000, Some(&cancel));
         assert!(scan.cancelled);
         assert!(scan.entries.is_empty());
     }

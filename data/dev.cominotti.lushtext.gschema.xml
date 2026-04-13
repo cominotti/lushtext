@@ -144,5 +144,16 @@
       <summary>Search Gitignore</summary>
       <description>Whether workspace content search respects .gitignore patterns</description>
     </key>
+    <key name="workspace-auto-collapse" type="b">
+      <default>true</default>
+      <summary>Auto-Collapse Workspaces</summary>
+      <description>Automatically collapse other workspaces when focusing a folder</description>
+    </key>
+    <key name="workspace-empty-folder-lookahead-cap" type="u">
+      <default>1000</default>
+      <summary>Empty Folder Lookahead Cap</summary>
+      <description>Maximum number of subdirectories to check for emptiness per scan</description>
+      <range min="100" max="10000"/>
+    </key>
   </schema>
 </schemalist>

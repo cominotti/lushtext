@@ -63,7 +63,7 @@ impl super::LushtextWorkspaceSection {
                     row.set_expanded(true);
                 }
 
-                let new_item = FileTreeItem::new(temp_path, is_dir);
+                let new_item = FileTreeItem::new(temp_path, is_dir, None);
                 new_item.set_pending_rename(true);
                 section.imp().is_new_item.set(true);
 
@@ -243,8 +243,15 @@ impl super::LushtextWorkspaceSection {
                             }
                             file_item.set_path(new_path.clone());
                             section.rename_cached_item(&old_path, &new_path);
+                            if file_item.is_empty() == Some(true) {
+                                label.set_markup(&format!(
+                                    "{} <span alpha=\"60%\"><i>(Empty)</i></span>",
+                                    glib::markup_escape_text(&new_name_owned)
+                                ));
+                            } else {
+                                label.set_label(&new_name_owned);
+                            }
                         }
-                        label.set_label(&new_name_owned);
                         imp.is_new_item.set(false);
 
                         if is_new

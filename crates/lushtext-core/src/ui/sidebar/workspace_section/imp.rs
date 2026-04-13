@@ -44,12 +44,27 @@ pub struct LushtextWorkspaceSection {
     #[template_child]
     pub add_folder_button: TemplateChild<gtk4::Button>,
     #[template_child]
+    pub drilldown_header_box: TemplateChild<gtk4::Box>,
+    #[template_child]
+    pub drilldown_back_button: TemplateChild<gtk4::Button>,
+    #[template_child]
+    pub drilldown_path_label: TemplateChild<gtk4::Label>,
+    #[template_child]
     pub inner_scrolled_window: TemplateChild<gtk4::ScrolledWindow>,
     #[template_child]
     pub file_tree_view: TemplateChild<gtk4::ListView>,
 
     /// Unique ID for this workspace (matches `WorkspaceConfig.id`).
     pub workspace_id: RefCell<WorkspaceId>,
+
+    /// Stack of paths for deep-nesting drill-down navigation.
+    pub drilldown_stack: RefCell<Vec<PathBuf>>,
+    /// Original workspace roots to restore when exiting drill-down.
+    pub original_roots: RefCell<Vec<(PathBuf, bool)>>,
+    /// Remember expanded paths across drill-downs to restore tree state.
+    pub expanded_paths: RefCell<std::collections::HashSet<PathBuf>>,
+    /// Path to select and scroll to once it loads (used after navigating back).
+    pub pending_selection: RefCell<Option<PathBuf>>,
 
     /// Popover for the right-click context menu on file rows.
     pub context_menu: RefCell<Option<gtk4::PopoverMenu>>,
@@ -93,6 +108,7 @@ pub struct LushtextWorkspaceSection {
     pub add_folder_callback: RefCell<Option<WorkspaceCallback>>,
     pub rename_workspace_callback: RefCell<Option<WorkspaceCallback>>,
     pub unlist_workspace_callback: RefCell<Option<WorkspaceCallback>>,
+    pub folder_focused_callback: RefCell<Option<WorkspaceCallback>>,
 }
 
 #[glib::object_subclass]
@@ -116,12 +132,21 @@ impl ObjectImpl for LushtextWorkspaceSection {
         self.setup_factory();
         self.setup_file_context_menu();
         self.setup_header_context_menu();
+        self.setup_header_double_click();
 
         // Wire add-folder button
         let obj_weak = self.obj().downgrade();
         self.add_folder_button.connect_clicked(move |_| {
             if let Some(section) = obj_weak.upgrade() {
                 section.notify_add_folder_requested();
+            }
+        });
+
+        // Wire drilldown back button
+        let obj_weak = self.obj().downgrade();
+        self.drilldown_back_button.connect_clicked(move |_| {
+            if let Some(section) = obj_weak.upgrade() {
+                section.navigate_back();
             }
         });
     }
@@ -154,6 +179,8 @@ impl LushtextWorkspaceSection {
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("item is ListItem");
 
+            let overlay = gtk4::Overlay::new();
+
             let expander = gtk4::TreeExpander::new();
             let content_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
             content_box.set_halign(gtk4::Align::Start);
@@ -163,14 +190,60 @@ impl LushtextWorkspaceSection {
 
             let label = gtk4::Label::new(None);
             label.set_xalign(0.0);
-            label.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
             label.set_wrap(false);
+            label.set_hexpand(true);
+
+            let focus_btn = gtk4::Button::from_icon_name("go-next-symbolic");
+            focus_btn.set_valign(gtk4::Align::Center);
+            focus_btn.set_halign(gtk4::Align::End);
+            focus_btn.add_css_class("flat");
+            focus_btn.add_css_class("circular");
+            focus_btn.set_tooltip_text(Some("Focus Folder"));
+            focus_btn.set_margin_end(6);
+            focus_btn.set_visible(false);
+
+            let list_item_clone = list_item.clone();
+            let overlay_clone = overlay.clone();
+            focus_btn.connect_clicked(move |_| {
+                if let Some(tree_row) = list_item_clone.item().and_downcast::<gtk4::TreeListRow>() {
+                    if let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() {
+                        if let Some(path) = file_item.path() {
+                            // Find the WorkspaceSection by walking up the widget tree
+                            let mut current: Option<gtk4::Widget> = Some(overlay_clone.clone().upcast::<gtk4::Widget>());
+                            while let Some(w) = current {
+                                if let Some(section) = w.downcast_ref::<super::LushtextWorkspaceSection>() {
+                                    section.focus_folder(&path);
+                                    break;
+                                }
+                                current = w.parent();
+                            }
+                        }
+                    }
+                }
+            });
 
             content_box.append(&icon);
             content_box.append(&label);
             expander.set_child(Some(&content_box));
 
-            list_item.set_child(Some(&expander));
+            overlay.set_child(Some(&expander));
+            overlay.add_overlay(&focus_btn);
+
+            let motion = gtk4::EventControllerMotion::new();
+            let btn_enter = focus_btn.clone();
+            motion.connect_enter(move |_, _, _| {
+                if btn_enter.has_css_class("can-focus") {
+                    btn_enter.set_visible(true);
+                }
+            });
+            let btn_leave = focus_btn.clone();
+            motion.connect_leave(move |_| {
+                btn_leave.set_visible(false);
+            });
+            overlay.add_controller(motion);
+
+            list_item.set_child(Some(&overlay));
         });
 
         let section_weak = self.obj().downgrade();
@@ -184,12 +257,28 @@ impl LushtextWorkspaceSection {
                 .and_downcast::<gtk4::TreeListRow>()
                 .expect("item is TreeListRow");
 
-            let expander = list_item
+            let overlay = list_item
+                .child()
+                .and_downcast::<gtk4::Overlay>()
+                .expect("child is Overlay");
+
+            let expander = overlay
                 .child()
                 .and_downcast::<gtk4::TreeExpander>()
-                .expect("child is TreeExpander");
+                .expect("overlay child is TreeExpander");
 
             expander.set_list_row(Some(&tree_row));
+
+            let mut focus_btn_opt = None;
+            let mut current = overlay.first_child();
+            while let Some(child) = current {
+                if child.downcast_ref::<gtk4::Button>().is_some() {
+                    focus_btn_opt = child.downcast::<gtk4::Button>().ok();
+                    break;
+                }
+                current = child.next_sibling();
+            }
+            let focus_btn = focus_btn_opt.expect("focus_btn missing");
 
             if let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() {
                 let content_box = expander
@@ -215,7 +304,31 @@ impl LushtextWorkspaceSection {
                     "text-x-generic-symbolic"
                 };
                 icon.set_icon_name(Some(icon_name));
-                label.set_label(&file_item.name());
+
+                if file_item.is_empty() == Some(true) {
+                    label.set_markup(&format!(
+                        "{} <span alpha=\"60%\"><i>(Empty)</i></span>",
+                        glib::markup_escape_text(&file_item.name())
+                    ));
+                } else {
+                    label.set_label(&file_item.name());
+                }
+
+                if let Some(path) = file_item.path() {
+                    expander.set_tooltip_text(Some(&path.to_string_lossy()));
+                } else {
+                    expander.set_tooltip_text(None);
+                }
+
+                let show_focus = file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true) && tree_row.depth() > 0;
+                if show_focus {
+                    focus_btn.add_css_class("can-focus");
+                    content_box.set_margin_end(36);
+                } else {
+                    focus_btn.remove_css_class("can-focus");
+                    content_box.set_margin_end(0);
+                    focus_btn.set_visible(false);
+                }
 
                 if file_item.is_dir()
                     && !file_item.is_placeholder()
@@ -231,10 +344,12 @@ impl LushtextWorkspaceSection {
 
                 // GTK recycles ListItem widgets: a row previously used for
                 // inline rename may still have a GtkEntry appended.
-                if let Some(sibling) = label.next_sibling()
-                    && sibling.downcast_ref::<gtk4::Entry>().is_some()
-                {
-                    content_box.remove(&sibling);
+                let mut child = label.next_sibling();
+                while let Some(sibling) = child {
+                    child = sibling.next_sibling();
+                    if sibling.downcast_ref::<gtk4::Entry>().is_some() {
+                        content_box.remove(&sibling);
+                    }
                 }
                 label.set_visible(true);
 
@@ -310,6 +425,10 @@ impl LushtextWorkspaceSection {
 
         let menu = gio::Menu::new();
 
+        let nav_section = gio::Menu::new();
+        nav_section.append(Some("Focus Folder"), Some("section.focus-folder"));
+        menu.append_section(None, &nav_section);
+
         let create_section = gio::Menu::new();
         create_section.append(Some("New File"), Some("section.new-file"));
         create_section.append(Some("New Folder"), Some("section.new-dir"));
@@ -330,6 +449,19 @@ impl LushtextWorkspaceSection {
         // reference them as "section.new-file", "section.rename", etc.
         // GTK resolves these by walking up the widget tree for the prefix.
         let action_group = gio::SimpleActionGroup::new();
+
+        let focus_folder_action = gio::SimpleAction::new("focus-folder", None);
+        let section_weak = obj.downgrade();
+        focus_folder_action.connect_activate(move |_, _| {
+            if let Some(section) = section_weak.upgrade() {
+                if let Some(path) = section.imp().context_path.borrow().clone() {
+                    if section.imp().context_is_dir.get() {
+                        section.focus_folder(&path);
+                    }
+                }
+            }
+        });
+        action_group.add_action(&focus_folder_action);
 
         let new_file_action = gio::SimpleAction::new("new-file", None);
         let section_weak = obj.downgrade();
@@ -374,6 +506,7 @@ impl LushtextWorkspaceSection {
         gesture.set_button(3);
 
         let section_weak = obj.downgrade();
+        let focus_folder_action_clone = focus_folder_action.clone();
         gesture.connect_pressed(move |gesture, _n_press, x, y| {
             let Some(section) = section_weak.upgrade() else {
                 return;
@@ -402,6 +535,8 @@ impl LushtextWorkspaceSection {
             *imp.context_path.borrow_mut() = Some(path);
             imp.context_is_dir.set(file_item.is_dir());
             *imp.context_expander.borrow_mut() = Some(expander);
+
+            focus_folder_action_clone.set_enabled(file_item.is_dir() && !file_item.is_placeholder() && tree_row.depth() > 0);
 
             let popover = imp.context_menu.borrow().clone();
             if let Some(popover) = popover {
@@ -457,6 +592,23 @@ impl LushtextWorkspaceSection {
         gesture.connect_pressed(move |_gesture, _n_press, x, y| {
             popover_ref.set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
             popover_ref.popup();
+        });
+
+        self.header_box.add_controller(gesture);
+    }
+
+    /// Set up double-click gesture on the workspace header to expand/collapse roots.
+    fn setup_header_double_click(&self) {
+        let obj = self.obj();
+        let gesture = gtk4::GestureClick::new();
+
+        let section_weak = obj.downgrade();
+        gesture.connect_pressed(move |_, n_press, _, _| {
+            if n_press == 2 {
+                if let Some(section) = section_weak.upgrade() {
+                    section.toggle_roots();
+                }
+            }
         });
 
         self.header_box.add_controller(gesture);
