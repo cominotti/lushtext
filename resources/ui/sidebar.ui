@@ -14,7 +14,9 @@
         <property name="orientation">horizontal</property>
         <property name="height-request">54</property>
         <property name="spacing">6</property>
-        <property name="margin-start">12</property>
+        <!-- Match the left inset of navigation-sidebar root rows so the selector
+             aligns with the workspace tree chrome instead of the section headers. -->
+        <property name="margin-start">6</property>
         <property name="margin-end">6</property>
 
         <child>

@@ -59,6 +59,13 @@ fn test_sidebar_new_workspace_button_exists() {
 }
 
 #[test]
+fn test_sidebar_selector_row_uses_workspace_tree_left_inset() {
+    ensure_gtk_init();
+    let sidebar = LushtextSidebar::new();
+    assert_eq!(sidebar.imp().new_workspace_box.margin_start(), 6);
+}
+
+#[test]
 fn test_sidebar_new_workspace_button_carries_vertical_spacing() {
     ensure_gtk_init();
     let sidebar = LushtextSidebar::new();
