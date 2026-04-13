@@ -3,7 +3,8 @@
 //! Widget tests for LushText GTK4 UI components.
 //!
 //! These tests require a display server. For headless environments, use
-//! `mutter --headless` — see `.github/workflows/ci.yml` for the full invocation.
+//! `mutter --headless` with a monitor large enough for wide split-view tests —
+//! see `.github/workflows/ci.yml` for the full invocation.
 //! They verify widget construction, property behavior, and signal wiring.
 //!
 //! GTK widgets must remain on one stable thread for the lifetime of the test

@@ -63,7 +63,7 @@ Prefer `mutter --headless` over `xvfb-run` for GTK4 and Libadwaita tests:
 export XDG_RUNTIME_DIR="$(mktemp -d)"
 export GDK_BACKEND=wayland
 dbus-run-session -- \
-  mutter --headless --wayland --no-x11 --virtual-monitor 1024x768 -- \
+  mutter --headless --wayland --no-x11 --virtual-monitor 2560x1600 -- \
     cargo test --test widget
 ```
 

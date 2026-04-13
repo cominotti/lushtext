@@ -68,5 +68,5 @@ jobs:
           export GDK_BACKEND=wayland
           trap 'rm -rf "$XDG_RUNTIME_DIR"' EXIT
           dbus-run-session -- \
-            mutter --headless --wayland --no-x11 --virtual-monitor 1024x768 -- \
+            mutter --headless --wayland --no-x11 --virtual-monitor 2560x1600 -- \
               cargo test -p lushtext --test widget
