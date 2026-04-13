@@ -336,6 +336,11 @@ fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     window.set_default_size(1600, 900);
     present_window(&window);
 
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().workspace_split_view.is_collapsed()
+            && !window.imp().properties_split_view.is_collapsed()
+    });
+
     assert!(!window.imp().workspace_split_view.is_collapsed());
     assert!(!window.imp().properties_split_view.is_collapsed());
 
