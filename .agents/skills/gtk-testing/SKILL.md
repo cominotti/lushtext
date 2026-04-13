@@ -40,7 +40,7 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 
 - `crates/lushtext/tests/widget.rs` is a custom single-threaded harness. GTK widgets stay on one stable thread, and each test runs in its own child process.
 - `build.rs` generates the widget registry from `crates/lushtext/tests/widget/*.rs`.
-- `make test` may use `cargo nextest` for lib and integration tests, but widget tests still run through `cargo test --test widget`.
+- `make test` may use `cargo nextest` for non-widget tests across the workspace, but widget tests still run through `scripts/run-widget-tests.sh`, which owns the native and headless `cargo test --test widget` paths.
 - The widget harness supports `--list --format terse`, which matters for CI and nextest-style discovery.
 
 ## Default Workflow
@@ -57,7 +57,9 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 
 ## Headless GTK Runs
 
-Prefer `mutter --headless` over `xvfb-run` for GTK4 and Libadwaita tests:
+Prefer `make test-widget-headless` or `scripts/run-widget-tests.sh --headless` over hand-copying the mutter command. The shared runner owns the CI path, including retries for transient compositor failures.
+
+The underlying headless invocation is:
 
 ```bash
 export XDG_RUNTIME_DIR="$(mktemp -d)"

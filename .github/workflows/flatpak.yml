@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: flatpak-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   flatpak:
     name: Flatpak Build
@@ -23,4 +27,4 @@ jobs:
         with:
           manifest-path: build-aux/dev.cominotti.lushtext.Flatpak.json
           bundle: lushtext.flatpak
-          cache-key: flatpak-builder-${{ github.sha }}
+          cache-key: flatpak-builder-gnome-49-${{ hashFiles('build-aux/dev.cominotti.lushtext.Flatpak.json', 'build-aux/cargo-sources.json', 'Cargo.lock', 'meson.build', 'meson_options.txt', 'build-aux/cargo.sh', 'data/meson.build', 'resources/meson.build') }}

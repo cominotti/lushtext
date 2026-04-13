@@ -155,7 +155,8 @@ make run         # Debug build + run
 make test        # All tests (unit + integration + widget)
 make test-unit   # Unit tests only
 make test-int    # Integration tests only
-make test-widget # Widget tests only (requires display server)
+make test-widget # Widget tests with shared native/headless runner
+make test-widget-headless # Widget tests with the CI mutter/dbus path
 make check       # clippy + fmt check
 make pre-commit  # repo pre-commit gate (fmt + clippy)
 make install-git-hooks
@@ -184,13 +185,13 @@ Replicated from invowk-rust:
 - `[profile.release] lto = "thin", strip = true, codegen-units = 1`
 - **rust-lld linker** — default on x86_64-linux since Rust 1.90, ~10x faster than BFD, zero configuration
 - **cargo-hakari** workspace-hack for unified dependency features
-- **cargo-nextest** auto-detected for parallel unit/integration execution; widget tests still use `cargo test --test widget` because the custom harness is not nextest-compatible
+- **cargo-nextest** auto-detected for parallel non-widget execution across the workspace; `make test` drives widget coverage through the shared headless runner for deterministic CI parity, while `make test-widget` keeps the native/auto path available for local debugging.
 
 ## Testing
 
 - Unit tests: `#[cfg(test)]` modules across models, services, and selected GTK-free UI helper modules
 - Integration tests: `crates/lushtext/tests/integration.rs` with `#[path]` split binary pattern
-- Widget tests: `crates/lushtext/tests/widget.rs` uses a custom single-threaded harness so GTK tests stay on one stable thread for the life of the process; run it via `cargo test --test widget` / `make test-widget`, not nextest. Presented widget tests do not reliably advance `AdwTimedAnimation` frame clocks, so animation-dependent assertions should use deterministic end-state checks or a narrow `LUSHTEXT_WIDGET_CHILD` immediate-completion path.
+- Widget tests: `crates/lushtext/tests/widget.rs` uses a custom single-threaded harness so GTK tests stay on one stable thread for the life of the process; run it via `scripts/run-widget-tests.sh`, `make test-widget`, or `make test-widget-headless`, not nextest. Presented widget tests do not reliably advance `AdwTimedAnimation` frame clocks, so animation-dependent assertions should use deterministic end-state checks or a narrow `LUSHTEXT_WIDGET_CHILD` immediate-completion path.
 - `TestContext` struct: isolated tempdir with simulated XDG data directory
 - Non-widget tests exercise models, services, and GTK-free helper code with no display server required; widget tests cover real GTK flows and require a display server plus the custom harness
 

@@ -7,11 +7,12 @@ globs: "{Cargo.toml,Makefile,.cargo/**,.config/**,build.rs,meson.build,meson_opt
 
 ## Dev Builds
 
-Use `make` targets for development. The Makefile auto-detects nextest for lib/integration tests, but widget tests must run through `cargo test --test widget` because their custom harness is not nextest-compatible.
+Use `make` targets for development. The Makefile auto-detects nextest for non-widget tests across the workspace, while full-suite widget coverage in `make test` flows through the shared headless `scripts/run-widget-tests.sh` path so local verification matches CI. `make test-widget` still uses the same runner in auto/native mode for interactive debugging.
 
 ```
 make run        # build + launch the app
 make test       # all tests
+make test-widget-headless # CI-style mutter/dbus widget run
 make check      # clippy + fmt
 make pre-commit # repo pre-commit gate (fmt + clippy)
 make install-git-hooks
@@ -28,7 +29,7 @@ These patterns are replicated from invowk-rust and must be maintained:
 1. **Profiles** in workspace `Cargo.toml` — do not change without benchmarking.
 2. **rust-lld** — default linker on x86_64-linux since Rust 1.90 (~10x faster than BFD, zero config). No manual linker override needed.
 3. **cargo-hakari** — run `cargo hakari generate` after any dependency change.
-4. **.config/nextest.toml** — configure test parallelism here.
+4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here.
 5. **`rust-version`** — consider adding `rust-version = "1.94.1"` to `[workspace.package]` in root `Cargo.toml` so `cargo check` surfaces MSRV violations early. Currently enforced only via `rust-toolchain.toml`.
 
 ## Adding Dependencies
@@ -76,7 +77,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 - All benchmarked code is GTK-free — no display server needed for `cargo bench`
 - `[profile.bench]` in workspace `Cargo.toml`: `opt-level = 3`, `lto = "thin"`, `codegen-units = 1` (no strip — criterion needs symbols)
 - `FileIndex::from(Vec<IndexedFile>)` enables synthetic index construction for benchmarks
-- Report script: `scripts/bench-report.sh` — parses Criterion JSON from `target/criterion/`, generates markdown. Requires `jq`.
+- Report script: `scripts/bench-report.sh` — clears stale Criterion `new/` results before each run, fails closed if `cargo bench` fails, then parses fresh JSON into markdown. Requires `jq`.
 - Report output: `docs/benchmarks/<timestamp>.md`
 - Makefile targets: `bench`, `bench-report`, `bench-report-full`, `bench-baseline`, `bench-compare`
 - Baseline workflow: `make bench-baseline` saves as "main", `make bench-compare` diffs against it
@@ -95,8 +96,8 @@ Meson wraps Cargo for installed and Flatpak builds:
 
 All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but `gtk4-rs 0.11` requires GTK >= 4.20 (GNOME 49).
 
-- `.github/workflows/ci.yml` — Cargo check/clippy/test + benchmark compile-check in `fedora:43` container (GNOME 49, GTK 4.20). Widget tests run under `mutter --headless` (Wayland) — the same pattern GNOME GTK CI uses. Wayland's client-side rendering avoids the X11 resource exhaustion that occurs with many nextest process connect/disconnect cycles.
-- `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-49` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io)
+- `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, and `Bench Compile` jobs in `fedora:43` containers (GNOME 49, GTK 4.20). Widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses.
+- `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-49` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
 - `.github/workflows/release-benchmark.yml` — full benchmark run + markdown report uploaded as release asset on `v*` tags, same `fedora:43` container
 
 **When bumping gtk-rs version:** update the Fedora version in ci.yml and release-benchmark.yml, and the GNOME tag in flatpak.yml and the Flatpak manifest, to match the new minimum GTK requirement.

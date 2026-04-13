@@ -61,6 +61,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 mkdir -p "$OUT_DIR"
 
+clean_previous_results() {
+    if [[ ! -d "$CRITERION_DIR" ]]; then
+        return
+    fi
+
+    if [[ -n "$BASELINE" ]]; then
+        find "$CRITERION_DIR" -type d -name new -prune -exec rm -rf {} +
+        return
+    fi
+
+    rm -rf "$CRITERION_DIR"
+}
+
 # ─── Step 1: Run benchmarks ────────────────────────────────────────────
 
 echo "Running Criterion benchmarks (mode: $MODE)..."
@@ -76,14 +89,8 @@ if [[ -n "$BASELINE" ]]; then
     criterion_args+=(--baseline "$BASELINE")
 fi
 
-set +e
-cargo bench "${bench_args[@]}" -- "${criterion_args[@]}" 2>&1 | tee /dev/stderr
-bench_exit=$?
-set -e
-
-if [[ "$bench_exit" -ne 0 ]]; then
-    echo "Warning: cargo bench exited with code $bench_exit." >&2
-fi
+clean_previous_results
+cargo bench "${bench_args[@]}" -- "${criterion_args[@]}"
 
 # ─── Step 2: Parse Criterion JSON output ───────────────────────────────
 

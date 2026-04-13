@@ -9,33 +9,35 @@
 #   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
 #   make test-int    - Integration tests only
+#   make test-widget - Widget tests with shared native/headless runner
+#   make test-widget-headless - Widget tests under mutter --headless
 #   make check       - clippy + fmt check
 #   make pre-commit  - repo pre-commit gate (fmt + clippy)
 #   make install-git-hooks - configure this repo to use .githooks/
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run test test-unit test-int test-widget \
+.PHONY: build build-debug run test test-unit test-int test-widget test-widget-headless \
        check-fmt check-clippy check pre-commit install-git-hooks clean help \
        meson-build flatpak cargo-sources \
        bench bench-report bench-report-full bench-baseline bench-compare
 
 .DEFAULT_GOAL := help
 
-# Test runner: prefer cargo-nextest for lib/integration tests. Widget tests use
-# a custom harness and must run via cargo test.
+# Test runner: prefer cargo-nextest for non-widget tests. Widget tests always
+# go through the shared runner so native and headless execution stay aligned.
 HAS_NEXTEST := $(shell command -v cargo-nextest 2>/dev/null && echo 1)
 ifdef HAS_NEXTEST
-CARGO_TEST        = cargo nextest run
-CARGO_TEST_UNIT   = cargo nextest run --lib
-CARGO_TEST_INT    = cargo nextest run --test integration
-RUN_WIDGET_WITH_NEXTEST = 1
+CARGO_TEST_NON_WIDGET = cargo nextest run --workspace
+CARGO_TEST_UNIT       = cargo nextest run --workspace --lib
+CARGO_TEST_INT        = cargo nextest run --workspace --test integration
 else
-CARGO_TEST        = cargo test
-CARGO_TEST_UNIT   = cargo test --lib
-CARGO_TEST_INT    = cargo test --test integration
+CARGO_TEST_NON_WIDGET = cargo test --workspace --lib --bins --test integration
+CARGO_TEST_UNIT       = cargo test --workspace --lib
+CARGO_TEST_INT        = cargo test --workspace --test integration
 endif
-CARGO_TEST_WIDGET = cargo test --test widget
+CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh
+CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 1
 
 # Build the project (release, optimized)
 build:
@@ -55,10 +57,8 @@ run: build-debug
 # Run all tests
 test:
 	@echo "Running all tests..."
-	$(CARGO_TEST)
-ifdef RUN_WIDGET_WITH_NEXTEST
-	$(CARGO_TEST_WIDGET)
-endif
+	$(CARGO_TEST_NON_WIDGET)
+	$(CARGO_TEST_WIDGET_HEADLESS)
 
 # Unit tests only (fast, no I/O)
 test-unit:
@@ -70,10 +70,15 @@ test-int:
 	@echo "Running integration tests..."
 	$(CARGO_TEST_INT)
 
-# Widget tests (require display server; use mutter --headless for headless environments)
+# Widget tests (auto-detect display; fall back to mutter --headless when available)
 test-widget:
 	@echo "Running widget tests..."
 	$(CARGO_TEST_WIDGET)
+
+# Widget tests with the same headless setup used in CI
+test-widget-headless:
+	@echo "Running widget tests under mutter --headless..."
+	$(CARGO_TEST_WIDGET_HEADLESS)
 
 BENCH_REPORT_OUT_DIR ?= docs/benchmarks
 
@@ -110,7 +115,7 @@ check-fmt:
 # Clippy gate matching CI
 check-clippy:
 	@echo "Running clippy..."
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings
 
 # Repo pre-commit gate
 pre-commit: check-fmt check-clippy
@@ -158,10 +163,11 @@ help:
 	@echo "  run          Debug build and run"
 	@echo ""
 	@echo "Test targets:"
-	@echo "  test         All tests (unit + integration)"
+	@echo "  test         All tests (unit + integration + widget)"
 	@echo "  test-unit    Unit tests only (fast)"
 	@echo "  test-int     Integration tests only"
-	@echo "  test-widget  Widget tests (needs display; mutter --headless for headless)"
+	@echo "  test-widget  Widget tests (auto-detect display; falls back to headless)"
+	@echo "  test-widget-headless Widget tests with the CI headless setup"
 	@echo "  pre-commit   Repo pre-commit gate (fmt + clippy)"
 	@echo "  install-git-hooks Configure this repo to use .githooks/"
 	@echo ""

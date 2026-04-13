@@ -56,6 +56,8 @@ jobs:
         uses: dtolnay/rust-toolchain@1.94.1
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-43
 
       - name: Run benchmarks and generate report
         env:

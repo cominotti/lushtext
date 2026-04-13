@@ -4,8 +4,5 @@
 [profile.default]
 slow-timeout = { period = "30s", terminate-after = 4 }
 
-# Widget tests require a display server (mutter headless in CI, native display
-# locally). One retry guards against transient compositor failures.
-[[profile.default.overrides]]
-filter = 'binary_id(lushtext::widget)'
-retries = 1
+# Widget retries are owned by scripts/run-widget-tests.sh because the custom
+# GTK harness still runs outside nextest.

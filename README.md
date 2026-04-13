@@ -69,7 +69,7 @@ make install-git-hooks
 
 LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hooks` once per checkout to configure `core.hooksPath`; after that, each commit runs the same rustfmt + Clippy gate locally before Git creates the commit.
 
-The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel unit/integration execution (optional). Widget tests always run via `cargo test --test widget` because their custom harness is not nextest-compatible. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
+The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel non-widget execution (optional), but it always runs widget tests explicitly through the shared `scripts/run-widget-tests.sh` runner so `make test` still means the full suite. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 
 Critical rule: pre-existing blockers discovered while implementing or verifying a change must be fixed in the same work stream rather than worked around, deferred, or called out as "pre-existing". No exceptions.
 
@@ -159,12 +159,13 @@ lushtext-core/src/
 make test        # All tests
 make test-unit   # Unit tests only
 make test-int    # Integration tests only
-make test-widget # Widget tests (requires display server)
+make test-widget # Widget tests with shared native/headless runner
+make test-widget-headless # Widget tests with the CI mutter/dbus setup
 ```
 
-Widget tests require a display server. Use `mutter --headless` for headless environments — see `.github/workflows/ci.yml` for the full invocation.
+Widget tests require a display server. `make test` and `make test-widget-headless` use the CI-style `mutter --headless` path for deterministic full-suite runs. `make test-widget` uses `scripts/run-widget-tests.sh`, which runs against the current display session when one is available and otherwise falls back to headless mode if the required tools are installed.
 
-GTK widget tests run through the custom harness in [`crates/lushtext/tests/widget.rs`](./crates/lushtext/tests/widget.rs), which executes each widget test in its own process so GTK objects stay on a real main thread and test state cannot leak across cases. Because that binary is not libtest/nextest-compatible, `make test-widget` intentionally uses `cargo test --test widget`.
+GTK widget tests run through the custom harness in [`crates/lushtext/tests/widget.rs`](./crates/lushtext/tests/widget.rs), which executes each widget test in its own process so GTK objects stay on a real main thread and test state cannot leak across cases. Because that binary is not owned by nextest, the shared runner keeps the native and headless `cargo test --test widget` paths aligned in one place.
 
 ## Benchmarks
 

@@ -207,7 +207,7 @@ fn make_session_data(n_tabs: usize) -> SessionData {
             .map(|i| SessionTab {
                 path: Some(PathBuf::from(format!("/home/user/project/src/file_{i}.rs"))),
                 draft_id: None,
-                cursor_line: (i as u32) % 500,
+                cursor_line: u32::try_from(i % 500).expect("benchmark fixture tab index fits"),
                 cursor_col: 0,
                 scroll_line: 0,
             })
@@ -254,15 +254,15 @@ fn bench_file_index_search(c: &mut Criterion) {
         let index = make_synthetic_index(size);
 
         group.bench_with_input(BenchmarkId::new("query_match", size), &index, |b, idx| {
-            b.iter(|| idx.search(black_box("file_42"), 50))
+            b.iter(|| idx.search(black_box("file_42"), 50));
         });
 
         group.bench_with_input(BenchmarkId::new("empty_query", size), &index, |b, idx| {
-            b.iter(|| idx.search(black_box(""), 50))
+            b.iter(|| idx.search(black_box(""), 50));
         });
 
         group.bench_with_input(BenchmarkId::new("no_match", size), &index, |b, idx| {
-            b.iter(|| idx.search(black_box("zzzzz"), 50))
+            b.iter(|| idx.search(black_box("zzzzz"), 50));
         });
     }
     group.finish();
@@ -299,7 +299,7 @@ fn bench_search_all(c: &mut Criterion) {
                 SearchMode::All => "all",
             };
             group.bench_with_input(BenchmarkId::new(label, size), &index, |b, idx| {
-                b.iter(|| palette::search_all(black_box(idx), black_box("file_42"), mode, 50))
+                b.iter(|| palette::search_all(black_box(idx), black_box("file_42"), mode, 50));
             });
         }
     }
@@ -666,7 +666,7 @@ fn bench_file_size_classify(c: &mut Criterion) {
 
     for &(label, size) in sizes {
         group.bench_with_input(BenchmarkId::new("size", label), &size, |b, &s| {
-            b.iter(|| FileSizeCheck::classify(black_box(s)))
+            b.iter(|| FileSizeCheck::classify(black_box(s)));
         });
     }
     group.finish();
@@ -810,7 +810,7 @@ fn bench_content_search(c: &mut Criterion) {
                 None,
             );
             // Drain to avoid backpressure stalls.
-            for _ in rx.iter() {}
+            for _ in &rx {}
         });
     });
 
@@ -832,7 +832,7 @@ fn bench_content_search(c: &mut Criterion) {
                 None,
                 None,
             );
-            for _ in rx.iter() {}
+            for _ in &rx {}
         });
     });
 
@@ -866,7 +866,7 @@ fn bench_content_search(c: &mut Criterion) {
                 None,
                 None,
             );
-            for _ in rx.iter() {}
+            for _ in &rx {}
         });
     });
 
@@ -904,7 +904,7 @@ fn bench_content_search(c: &mut Criterion) {
                 None,
                 None,
             );
-            for _ in rx.iter() {}
+            for _ in &rx {}
         });
     });
 

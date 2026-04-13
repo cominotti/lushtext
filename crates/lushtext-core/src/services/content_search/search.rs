@@ -321,7 +321,7 @@ mod tests {
 
         let handle = std::thread::spawn(move || {
             let mut count = 0;
-            for event in rx.iter() {
+            for event in &rx {
                 if matches!(event, SearchEvent::Match(_)) {
                     count += 1;
                     if count >= 5 {
