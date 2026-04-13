@@ -5,6 +5,8 @@
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile};
+use lushtext_core::services::{json_store, workspace_manager};
 use lushtext_core::ui::sidebar::LushtextSidebar;
 use lushtext_core::ui::window::LushtextWindow;
 use std::time::{Duration, Instant};
@@ -25,13 +27,21 @@ fn test_sidebar_new() {
 }
 
 #[test]
-fn test_sidebar_new_workspace_label() {
+fn test_sidebar_workspace_filter_defaults_to_all_workspaces() {
     ensure_gtk_init();
     let sidebar = LushtextSidebar::new();
+    let model = sidebar
+        .imp()
+        .workspace_filter_dropdown
+        .model()
+        .and_downcast::<gtk4::StringList>()
+        .expect("workspace filter should use a StringList model");
+    assert_eq!(model.n_items(), 1);
     assert_eq!(
-        sidebar.imp().new_workspace_label.label().as_str(),
-        "New Workspace"
+        model.string(0).expect("All workspaces option should exist").as_str(),
+        "All workspaces"
     );
+    assert_eq!(sidebar.imp().workspace_filter_dropdown.selected(), 0);
 }
 
 #[test]
@@ -46,6 +56,51 @@ fn test_sidebar_new_workspace_button_exists() {
     ensure_gtk_init();
     let sidebar = LushtextSidebar::new();
     let _button = &sidebar.imp().new_workspace_button;
+}
+
+#[test]
+fn test_workspace_filter_can_show_only_one_workspace() {
+    ensure_gtk_init();
+    seed_restored_workspaces();
+
+    let window = test_window();
+    present_window(&window);
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().sidebar.imp().sections.borrow().len() == 3
+    });
+
+    let dropdown = &window.imp().sidebar.imp().workspace_filter_dropdown;
+    let model = dropdown
+        .model()
+        .and_downcast::<gtk4::StringList>()
+        .expect("workspace filter should use a StringList model");
+    assert_eq!(model.n_items(), 4);
+    assert_eq!(
+        model.string(0).expect("All workspaces option should exist").as_str(),
+        "All workspaces"
+    );
+    assert_eq!(model.string(1).expect("first workspace option should exist").as_str(), "one");
+    assert_eq!(model.string(2).expect("second workspace option should exist").as_str(), "two");
+    assert_eq!(model.string(3).expect("third workspace option should exist").as_str(), "three");
+
+    dropdown.set_selected(2);
+    flush_events();
+
+    {
+        let sections = window.imp().sidebar.imp().sections.borrow();
+        assert!(!sections[0].property::<bool>("visible"));
+        assert!(sections[1].property::<bool>("visible"));
+        assert!(!sections[2].property::<bool>("visible"));
+    }
+
+    dropdown.set_selected(0);
+    flush_events();
+
+    {
+        let sections = window.imp().sidebar.imp().sections.borrow();
+        assert!(sections.iter().all(|section| section.property::<bool>("visible")));
+    }
 }
 
 #[test]
@@ -129,6 +184,25 @@ fn test_sidebar_new_workspace_affordance_matches_document_restored_warning_heigh
         "workspace size footer should match the same fixed row height contract (footer={footer_height}, expected={WARNING_BAR_ROW_HEIGHT})",
     );
     assert_eq!(footer_height, sidebar_height);
+}
+
+fn seed_restored_workspaces() -> tempfile::TempDir {
+    ensure_gtk_init();
+    let roots_dir = tempfile::tempdir().expect("workspace roots tempdir");
+    let mut workspaces = WorkspacesFile::default();
+
+    for (idx, name) in ["one", "two", "three"].into_iter().enumerate() {
+        let path = roots_dir.path().join(name);
+        std::fs::create_dir_all(&path).expect("create workspace root");
+        workspaces.workspaces.push(WorkspaceConfig {
+            id: WorkspaceId::new(format!("ws-{idx}")),
+            name: name.to_string(),
+            entries: vec![WorkspaceEntry::Directory { path }],
+        });
+    }
+
+    workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save workspaces.json");
+    roots_dir
 }
 
 // --- Window integration: tab path updates (moved from old sidebar.rs) ---

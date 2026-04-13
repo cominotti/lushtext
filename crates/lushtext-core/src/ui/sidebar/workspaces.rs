@@ -50,6 +50,73 @@ impl LushtextSidebar {
         }
 
         *imp.workspaces_file.borrow_mut() = workspaces_file;
+        self.refresh_workspace_filter_dropdown();
+        self.apply_workspace_filter_visibility();
+    }
+
+    /// Refresh the top-row workspace selector from the current in-memory state.
+    pub(super) fn refresh_workspace_filter_dropdown(&self) {
+        let imp = self.imp();
+        let workspaces = imp.workspaces_file.borrow();
+
+        let mut options = Vec::with_capacity(workspaces.workspaces.len() + 1);
+        let model = gtk4::StringList::new(&[]);
+        model.append("All workspaces");
+        options.push(None);
+
+        for workspace in &workspaces.workspaces {
+            model.append(&workspace.name);
+            options.push(Some(workspace.id.clone()));
+        }
+
+        let selected_filter = imp.selected_workspace_filter.borrow().clone();
+        let selected_index = selected_filter
+            .as_ref()
+            .and_then(|selected_id| {
+                options
+                    .iter()
+                    .position(|candidate| candidate.as_ref() == Some(selected_id))
+            })
+            .unwrap_or(0);
+
+        drop(workspaces);
+
+        imp.syncing_workspace_filter.set(true);
+        imp.workspace_filter_dropdown.set_model(Some(&model));
+        imp.workspace_filter_dropdown
+            .set_selected(selected_index as u32);
+        imp.syncing_workspace_filter.set(false);
+
+        *imp.workspace_filter_options.borrow_mut() = options.clone();
+        *imp.selected_workspace_filter.borrow_mut() = options[selected_index].clone();
+
+        let tooltip = if selected_index == 0 {
+            "All workspaces".to_string()
+        } else {
+            model
+                .string(selected_index as u32)
+                .map(|label| label.to_string())
+                .unwrap_or_else(|| "All workspaces".to_string())
+        };
+        imp.workspace_filter_dropdown
+            .set_tooltip_text(Some(&tooltip));
+    }
+
+    /// Show either every workspace section or only the selected one.
+    pub(super) fn apply_workspace_filter_visibility(&self) {
+        let selected_filter = self.imp().selected_workspace_filter.borrow().clone();
+        for section in self.imp().sections.borrow().iter() {
+            let visible = selected_filter
+                .as_ref()
+                .is_none_or(|workspace_id| section.workspace_id() == *workspace_id);
+            section.set_visible(visible);
+        }
+    }
+
+    /// Rebuild all sidebar sections from the current in-memory workspace file.
+    pub(super) fn rebuild_sections_from_state(&self) {
+        let current = self.imp().workspaces_file.borrow().clone();
+        self.build_sections_from_file(current);
     }
 
     /// Create a single workspace section, load its roots, and wire callbacks.
@@ -70,29 +137,16 @@ impl LushtextSidebar {
         section
     }
 
-    /// Look up the display name of a workspace section by ID.
+    /// Look up the display name of a workspace by ID from the persisted sidebar state.
     pub(super) fn workspace_name_for_id(&self, workspace_id: &WorkspaceId) -> String {
-        let sections = self.imp().sections.borrow();
-        sections
+        self.imp()
+            .workspaces_file
+            .borrow()
+            .workspaces
             .iter()
-            .find(|section| section.workspace_id() == *workspace_id)
-            .map(WorkspaceSection::workspace_name)
+            .find(|workspace| workspace.id == *workspace_id)
+            .map(|workspace| workspace.name.clone())
             .unwrap_or_default()
-    }
-
-    /// Apply a function to the section matching the given workspace ID.
-    pub(super) fn with_section(
-        &self,
-        workspace_id: &WorkspaceId,
-        f: impl FnOnce(&WorkspaceSection),
-    ) {
-        let sections = self.imp().sections.borrow();
-        if let Some(section) = sections
-            .iter()
-            .find(|section| section.workspace_id() == *workspace_id)
-        {
-            f(section);
-        }
     }
 
     /// Handle drill-down focus on a folder: auto-collapse others and scroll into view.
@@ -131,17 +185,13 @@ impl LushtextSidebar {
         let name = folder_display_name(&path);
         let root_entry = WorkspaceEntry::Directory { path: path.clone() };
 
-        let workspace_id = {
+        {
             let mut workspaces = imp.workspaces_file.borrow_mut();
             let workspace_id = workspaces.add_workspace(&name);
             workspaces.add_entry(&workspace_id, root_entry.clone());
-            workspace_id
-        };
+        }
         self.persist();
-
-        let section = self.create_section(workspace_id, &name, &[root_entry]);
-        imp.sections_box.append(&section);
-        imp.sections.borrow_mut().push(section);
+        self.rebuild_sections_from_state();
         self.notify_workspace_changed();
     }
 

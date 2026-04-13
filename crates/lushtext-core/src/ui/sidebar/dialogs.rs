@@ -76,11 +76,7 @@ impl LushtextSidebar {
                     &name,
                 );
                 sidebar.persist();
-
-                sidebar.with_section(&workspace_id, |section| {
-                    section.load_roots(&[WorkspaceEntry::Directory { path }]);
-                    section.set_workspace_name(&name);
-                });
+                sidebar.rebuild_sections_from_state();
                 sidebar.notify_workspace_changed();
             }
         });
@@ -126,9 +122,7 @@ impl LushtextSidebar {
                     .borrow_mut()
                     .rename_workspace(&workspace_id, new_name);
                 sidebar.persist();
-                sidebar.with_section(&workspace_id, |section| {
-                    section.set_workspace_name(new_name);
-                });
+                sidebar.rebuild_sections_from_state();
             }
         });
 
@@ -159,21 +153,13 @@ impl LushtextSidebar {
                 return;
             }
             if let Some(sidebar) = sidebar_weak.upgrade() {
-                let imp = sidebar.imp();
-                imp.workspaces_file
+                sidebar
+                    .imp()
+                    .workspaces_file
                     .borrow_mut()
                     .remove_workspace(&workspace_id);
                 sidebar.persist();
-
-                let mut sections = imp.sections.borrow_mut();
-                if let Some(idx) = sections
-                    .iter()
-                    .position(|section| section.workspace_id() == workspace_id)
-                {
-                    let section = sections.remove(idx);
-                    imp.sections_box.remove(&section);
-                }
-                drop(sections);
+                sidebar.rebuild_sections_from_state();
                 sidebar.notify_workspace_changed();
             }
         });

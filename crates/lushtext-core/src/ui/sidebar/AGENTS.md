@@ -10,7 +10,7 @@ This folder owns the multi-workspace sidebar adapter and its workspace-section s
 
 ## Local Contracts
 
-- The top "New Workspace" affordance and bottom width-preset footer are fixed rows outside the scroller. Do not let them scroll away.
+- The top workspace-selector row and bottom width-preset footer are fixed rows outside the scroller. Do not let them scroll away.
 - Width presets are total-window targets: `Small=20%`, `Comfy=30%`, `Large=40%`. Do not reinterpret them as local paned fractions.
 - Preserve the no-horizontal-scrollbar contract. Prefer tooltips, focused roots, or explicit drill-down behavior over widening the sidebar or clipping silently.
 - Keep workspace-section async tree loading off the main thread and preserve deduplication/placeholder behavior for large directories.

@@ -2,10 +2,10 @@
 
 //! Private implementation for the multi-workspace sidebar.
 //!
-//! Manages workspace sections, the fixed "New Workspace" affordance, and
+//! Manages workspace sections, the fixed workspace selector row, and
 //! debounced persistence of workspace state to disk.
 
-use crate::model::workspace::WorkspacesFile;
+use crate::model::workspace::{WorkspaceId, WorkspacesFile};
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
@@ -30,9 +30,9 @@ pub struct LushtextSidebar {
     #[template_child]
     pub new_workspace_box: TemplateChild<gtk4::Box>,
     #[template_child]
-    pub new_workspace_button: TemplateChild<gtk4::Button>,
+    pub workspace_filter_dropdown: TemplateChild<gtk4::DropDown>,
     #[template_child]
-    pub new_workspace_label: TemplateChild<gtk4::Label>,
+    pub new_workspace_button: TemplateChild<gtk4::Button>,
     #[template_child]
     pub workspace_size_box: TemplateChild<gtk4::Box>,
     #[template_child]
@@ -47,6 +47,12 @@ pub struct LushtextSidebar {
     pub workspaces_file: RefCell<WorkspacesFile>,
     /// Live workspace section widgets in display order.
     pub sections: RefCell<Vec<LushtextWorkspaceSection>>,
+    /// Visible filter selection in the top selector row. `None` means all workspaces.
+    pub selected_workspace_filter: RefCell<Option<WorkspaceId>>,
+    /// Maps dropdown positions to workspace IDs. Position 0 is always `None`.
+    pub workspace_filter_options: RefCell<Vec<Option<WorkspaceId>>>,
+    /// Guard to suppress selector callbacks while the dropdown is being rebuilt.
+    pub syncing_workspace_filter: Cell<bool>,
 
     /// Callback for file double-click activation, forwarded to the window.
     pub file_activated_callback: RefCell<Option<FileCallback>>,
@@ -75,14 +81,17 @@ impl Default for LushtextSidebar {
             outer_scrolled_window: TemplateChild::default(),
             sections_box: TemplateChild::default(),
             new_workspace_box: TemplateChild::default(),
+            workspace_filter_dropdown: TemplateChild::default(),
             new_workspace_button: TemplateChild::default(),
-            new_workspace_label: TemplateChild::default(),
             workspace_size_box: TemplateChild::default(),
             small_width_button: TemplateChild::default(),
             comfy_width_button: TemplateChild::default(),
             large_width_button: TemplateChild::default(),
             workspaces_file: RefCell::default(),
             sections: RefCell::default(),
+            selected_workspace_filter: RefCell::default(),
+            workspace_filter_options: RefCell::default(),
+            syncing_workspace_filter: Cell::default(),
             file_activated_callback: RefCell::default(),
             rename_callback: RefCell::default(),
             delete_callback: RefCell::default(),
@@ -118,6 +127,28 @@ impl ObjectImpl for LushtextSidebar {
     fn constructed(&self) {
         self.parent_constructed();
 
+        // Wire the fixed workspace selector row at the top of the sidebar.
+        let sidebar_weak = self.obj().downgrade();
+        self.workspace_filter_dropdown
+            .connect_selected_notify(move |dropdown| {
+                let Some(sidebar) = sidebar_weak.upgrade() else {
+                    return;
+                };
+                if sidebar.imp().syncing_workspace_filter.get() {
+                    return;
+                }
+                let index = dropdown.selected() as usize;
+                let filter = sidebar
+                    .imp()
+                    .workspace_filter_options
+                    .borrow()
+                    .get(index)
+                    .cloned()
+                    .unwrap_or(None);
+                *sidebar.imp().selected_workspace_filter.borrow_mut() = filter;
+                sidebar.apply_workspace_filter_visibility();
+            });
+
         // Wire the fixed "New Workspace" button at the top of the sidebar.
         let sidebar_weak = self.obj().downgrade();
         self.new_workspace_button.connect_clicked(move |_| {
@@ -139,6 +170,7 @@ impl ObjectImpl for LushtextSidebar {
             });
         }
 
+        self.obj().refresh_workspace_filter_dropdown();
         self.obj()
             .set_width_preset(WorkspaceSidebarWidthPreset::DEFAULT);
     }

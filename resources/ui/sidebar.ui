@@ -18,13 +18,9 @@
         <property name="margin-end">6</property>
 
         <child>
-          <object class="GtkLabel" id="new_workspace_label">
-            <property name="label">New Workspace</property>
+          <object class="GtkDropDown" id="workspace_filter_dropdown">
             <property name="hexpand">true</property>
-            <property name="xalign">0</property>
-            <style>
-              <class name="dim-label"/>
-            </style>
+            <property name="valign">center</property>
           </object>
         </child>
         <child>
