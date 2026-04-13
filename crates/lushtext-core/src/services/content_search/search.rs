@@ -393,10 +393,15 @@ mod tests {
         let mut perms = fs::metadata(&unreadable).unwrap().permissions();
         perms.set_mode(0o000);
         fs::set_permissions(&unreadable, perms).unwrap();
-        assert!(
-            fs::File::open(&unreadable).is_err(),
-            "test requires an unreadable file"
-        );
+        if fs::File::open(&unreadable).is_ok() {
+            // Some environments (notably privileged CI containers) can still
+            // read a 0o000 file, so this fixture cannot prove the unreadable
+            // path there. Restore permissions and skip the assertion-only test.
+            let mut restore = fs::metadata(&unreadable).unwrap().permissions();
+            restore.set_mode(0o644);
+            fs::set_permissions(&unreadable, restore).unwrap();
+            return;
+        }
 
         let events = search_collect("needle", &[root], &ContentSearchOptions::default());
 
