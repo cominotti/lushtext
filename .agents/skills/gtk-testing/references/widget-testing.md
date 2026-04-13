@@ -88,6 +88,18 @@ If the question becomes "what does GTK consider visible, mapped, realized, or ac
 - [../../gtk4-libadwaita-internals/references/lifecycle-and-ownership.md](../../gtk4-libadwaita-internals/references/lifecycle-and-ownership.md)
 - [../../gtk4-libadwaita-internals/references/geometry-measurement-and-allocation.md](../../gtk4-libadwaita-internals/references/geometry-measurement-and-allocation.md)
 
+## Fixed Row Chrome Regressions
+
+When a bug is really "the hover pill or active highlight of this button no longer fits inside its fixed row", prefer a property-level widget regression over screenshot-only verification.
+
+Good assertions for this class of bug:
+
+- the row still keeps its expected fixed height
+- the button uses `valign == gtk4::Align::Center`
+- the button carries the expected `margin_top` and `margin_bottom`
+
+This is especially important for flat icon buttons living beside a dropdown or label in a fixed top row. If the bug is the button chrome itself, do not lock in a wrong fix by asserting extra margin on the list or scroller below.
+
 ## Animations and Frame Clocks
 
 The custom harness does not guarantee that spinning the GLib main loop advances `AdwTimedAnimation` the way a live desktop session does.

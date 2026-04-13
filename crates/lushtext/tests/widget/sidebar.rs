@@ -59,6 +59,27 @@ fn test_sidebar_new_workspace_button_exists() {
 }
 
 #[test]
+fn test_sidebar_new_workspace_button_carries_vertical_spacing() {
+    ensure_gtk_init();
+    let sidebar = LushtextSidebar::new();
+    assert_eq!(sidebar.imp().new_workspace_button.valign(), gtk4::Align::Center);
+    assert_eq!(sidebar.imp().new_workspace_button.margin_top(), 6);
+    assert_eq!(sidebar.imp().new_workspace_button.margin_bottom(), 6);
+}
+
+#[test]
+fn test_sidebar_workspace_list_revealer_uses_crossfade() {
+    ensure_gtk_init();
+    let sidebar = LushtextSidebar::new();
+    assert_eq!(
+        sidebar.imp().workspace_list_revealer.transition_type(),
+        gtk4::RevealerTransitionType::Crossfade,
+    );
+    assert_eq!(sidebar.imp().workspace_list_revealer.transition_duration(), 250);
+    assert!(sidebar.imp().workspace_list_revealer.reveals_child());
+}
+
+#[test]
 fn test_workspace_filter_can_show_only_one_workspace() {
     ensure_gtk_init();
     seed_restored_workspaces();
@@ -86,21 +107,29 @@ fn test_workspace_filter_can_show_only_one_workspace() {
 
     dropdown.set_selected(2);
     flush_events();
+    assert!(!window.imp().sidebar.imp().workspace_list_revealer.reveals_child());
 
-    {
-        let sections = window.imp().sidebar.imp().sections.borrow();
-        assert!(!sections[0].property::<bool>("visible"));
-        assert!(sections[1].property::<bool>("visible"));
-        assert!(!sections[2].property::<bool>("visible"));
-    }
+    wait_until(Duration::from_secs(3), || {
+        let sidebar = window.imp().sidebar.imp();
+        let revealer = &sidebar.workspace_list_revealer;
+        let sections = sidebar.sections.borrow();
+        revealer.reveals_child()
+            && revealer.is_child_revealed()
+            && !sections[0].property::<bool>("visible")
+            && sections[1].property::<bool>("visible")
+            && !sections[2].property::<bool>("visible")
+    });
 
     dropdown.set_selected(0);
     flush_events();
-
-    {
-        let sections = window.imp().sidebar.imp().sections.borrow();
-        assert!(sections.iter().all(|section| section.property::<bool>("visible")));
-    }
+    wait_until(Duration::from_secs(3), || {
+        let sidebar = window.imp().sidebar.imp();
+        let revealer = &sidebar.workspace_list_revealer;
+        let sections = sidebar.sections.borrow();
+        revealer.reveals_child()
+            && revealer.is_child_revealed()
+            && sections.iter().all(|section| section.property::<bool>("visible"))
+    });
 }
 
 #[test]
@@ -114,11 +143,15 @@ fn test_new_workspace_affordance_stays_above_sections_scroll_area() {
     let separator_after_top = first
         .next_sibling()
         .expect("separator follows the new-workspace box");
-    let scroller = separator_after_top
+    let revealer = separator_after_top
         .next_sibling()
+        .and_downcast::<gtk4::Revealer>()
+        .expect("workspace list revealer sits between the fixed top and bottom rows");
+    let scroller = revealer
+        .child()
         .and_downcast::<gtk4::ScrolledWindow>()
-        .expect("workspace scroller sits between the fixed top and bottom rows");
-    let separator_before_footer = scroller
+        .expect("workspace scroller should be the revealer child");
+    let separator_before_footer = revealer
         .next_sibling()
         .expect("separator precedes the footer row");
     let footer = separator_before_footer
@@ -129,6 +162,10 @@ fn test_new_workspace_affordance_stays_above_sections_scroll_area() {
     assert!(first.is::<gtk4::Box>());
     assert_eq!(first.as_ptr(), sidebar.imp().new_workspace_button.parent().unwrap().as_ptr());
     assert!(separator_after_top.is::<gtk4::Separator>());
+    assert_eq!(
+        revealer.as_ptr(),
+        sidebar.imp().workspace_list_revealer.as_ptr()
+    );
     assert_eq!(scroller.as_ptr(), sidebar.imp().outer_scrolled_window.as_ptr());
     assert!(separator_before_footer.is::<gtk4::Separator>());
     assert_eq!(footer.as_ptr(), sidebar.imp().workspace_size_box.as_ptr());

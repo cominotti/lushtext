@@ -27,6 +27,11 @@
           <object class="GtkButton" id="new_workspace_button">
             <property name="icon-name">folder-new-symbolic</property>
             <property name="tooltip-text" translatable="yes">New Workspace</property>
+            <!-- Keep the hover pill inside the fixed selector row instead of bleeding
+                 past the drop-down's top or bottom bounds. -->
+            <property name="valign">center</property>
+            <property name="margin-top">6</property>
+            <property name="margin-bottom">6</property>
             <style>
               <class name="flat"/>
             </style>
@@ -39,16 +44,23 @@
       <object class="GtkSeparator"/>
     </child>
 
-    <!-- Scrollable area for all workspace sections -->
     <child>
-      <object class="GtkScrolledWindow" id="outer_scrolled_window">
-        <property name="vexpand">true</property>
-        <property name="propagate-natural-width">false</property>
-        <property name="hscrollbar-policy">never</property>
+      <object class="GtkRevealer" id="workspace_list_revealer">
+        <property name="reveal-child">true</property>
+        <property name="transition-type">crossfade</property>
+        <property name="transition-duration">250</property>
         <child>
-          <object class="GtkBox" id="sections_box">
-            <property name="orientation">vertical</property>
-            <!-- Workspace sections appended programmatically -->
+          <!-- Scrollable area for all workspace sections -->
+          <object class="GtkScrolledWindow" id="outer_scrolled_window">
+            <property name="vexpand">true</property>
+            <property name="propagate-natural-width">false</property>
+            <property name="hscrollbar-policy">never</property>
+            <child>
+              <object class="GtkBox" id="sections_box">
+                <property name="orientation">vertical</property>
+                <!-- Workspace sections appended programmatically -->
+              </object>
+            </child>
           </object>
         </child>
       </object>

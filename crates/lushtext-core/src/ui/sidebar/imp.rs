@@ -32,6 +32,8 @@ pub struct LushtextSidebar {
     #[template_child]
     pub workspace_filter_dropdown: TemplateChild<gtk4::DropDown>,
     #[template_child]
+    pub workspace_list_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
     pub new_workspace_button: TemplateChild<gtk4::Button>,
     #[template_child]
     pub workspace_size_box: TemplateChild<gtk4::Box>,
@@ -53,6 +55,10 @@ pub struct LushtextSidebar {
     pub workspace_filter_options: RefCell<Vec<Option<WorkspaceId>>>,
     /// Guard to suppress selector callbacks while the dropdown is being rebuilt.
     pub syncing_workspace_filter: Cell<bool>,
+    /// Filter currently applied to the visible workspace list.
+    pub applied_workspace_filter: RefCell<Option<WorkspaceId>>,
+    /// Guard tracking the fade-out/fade-in sequence for selector changes.
+    pub workspace_filter_animation_active: Cell<bool>,
 
     /// Callback for file double-click activation, forwarded to the window.
     pub file_activated_callback: RefCell<Option<FileCallback>>,
@@ -82,6 +88,7 @@ impl Default for LushtextSidebar {
             sections_box: TemplateChild::default(),
             new_workspace_box: TemplateChild::default(),
             workspace_filter_dropdown: TemplateChild::default(),
+            workspace_list_revealer: TemplateChild::default(),
             new_workspace_button: TemplateChild::default(),
             workspace_size_box: TemplateChild::default(),
             small_width_button: TemplateChild::default(),
@@ -92,6 +99,8 @@ impl Default for LushtextSidebar {
             selected_workspace_filter: RefCell::default(),
             workspace_filter_options: RefCell::default(),
             syncing_workspace_filter: Cell::default(),
+            applied_workspace_filter: RefCell::default(),
+            workspace_filter_animation_active: Cell::default(),
             file_activated_callback: RefCell::default(),
             rename_callback: RefCell::default(),
             delete_callback: RefCell::default(),
@@ -145,8 +154,38 @@ impl ObjectImpl for LushtextSidebar {
                     .get(index)
                     .cloned()
                     .unwrap_or(None);
+                let current_filter = sidebar.imp().selected_workspace_filter.borrow().clone();
+                if current_filter == filter {
+                    return;
+                }
                 *sidebar.imp().selected_workspace_filter.borrow_mut() = filter;
-                sidebar.apply_workspace_filter_visibility();
+                sidebar.animate_workspace_filter_change();
+            });
+
+        let sidebar_weak = self.obj().downgrade();
+        self.workspace_list_revealer
+            .connect_child_revealed_notify(move |revealer| {
+                let Some(sidebar) = sidebar_weak.upgrade() else {
+                    return;
+                };
+                if !sidebar.imp().workspace_filter_animation_active.get() {
+                    return;
+                }
+
+                if !revealer.reveals_child() && !revealer.is_child_revealed() {
+                    sidebar.apply_workspace_filter_visibility();
+                    revealer.set_reveal_child(true);
+                    return;
+                }
+
+                if revealer.reveals_child() && revealer.is_child_revealed() {
+                    sidebar.imp().workspace_filter_animation_active.set(false);
+                    if sidebar.imp().applied_workspace_filter.borrow().clone()
+                        != sidebar.imp().selected_workspace_filter.borrow().clone()
+                    {
+                        sidebar.animate_workspace_filter_change();
+                    }
+                }
             });
 
         // Wire the fixed "New Workspace" button at the top of the sidebar.

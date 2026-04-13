@@ -50,6 +50,8 @@ impl LushtextSidebar {
         }
 
         *imp.workspaces_file.borrow_mut() = workspaces_file;
+        imp.workspace_filter_animation_active.set(false);
+        imp.workspace_list_revealer.set_reveal_child(true);
         self.refresh_workspace_filter_dropdown();
         self.apply_workspace_filter_visibility();
     }
@@ -111,6 +113,22 @@ impl LushtextSidebar {
                 .is_none_or(|workspace_id| section.workspace_id() == *workspace_id);
             section.set_visible(visible);
         }
+        *self.imp().applied_workspace_filter.borrow_mut() = selected_filter;
+    }
+
+    /// Fade the scrollable workspace list out, swap the filter, then fade it back in.
+    pub(super) fn animate_workspace_filter_change(&self) {
+        let imp = self.imp();
+        if imp.workspace_filter_animation_active.get()
+            || imp.sections.borrow().is_empty()
+            || imp.applied_workspace_filter.borrow().clone()
+                == imp.selected_workspace_filter.borrow().clone()
+        {
+            return;
+        }
+
+        imp.workspace_filter_animation_active.set(true);
+        imp.workspace_list_revealer.set_reveal_child(false);
     }
 
     /// Rebuild all sidebar sections from the current in-memory workspace file.

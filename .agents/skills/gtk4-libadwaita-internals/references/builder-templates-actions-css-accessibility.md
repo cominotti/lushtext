@@ -102,6 +102,18 @@ The `GtkRevealer` docs make an especially important point:
 
 So if a hidden panel still influences geometry, inspect the wrapper's CSS and allocation, not only the child visibility.
 
+### Fixed-Height Rows And Flat Icon Button Hover Bounds
+
+In fixed-height header or selector rows, a flat icon button's hover or active highlight is still drawn from the button widget's own allocation and margins. If the button sits directly inside the row with no vertical constraint, the highlight can look like it bleeds past an adjacent dropdown, label, or other centered control even when the row height itself is correct.
+
+For this class of bug, fix the button widget itself instead of pushing sibling content away:
+
+- keep the button `valign="center"`
+- add explicit `margin-top` and `margin-bottom` on the button
+- do not fake the spacing by adding top margin to the list or scroller below when the visible problem is the button's own hover pill
+
+This matters in Builder XML as much as in code-built widgets. The row can keep the same `height-request` while the button gets its own breathing room inside that row.
+
 ## Accessibility Contracts That Affect Debugging
 
 Accessibility is not an afterthought when debugging widget behavior.
