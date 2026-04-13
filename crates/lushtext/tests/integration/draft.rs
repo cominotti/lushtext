@@ -69,8 +69,8 @@ fn manifest_persist_and_restore() {
     let entry = DraftEntry {
         draft_id: "abc123".into(),
         original_path: Some(PathBuf::from("/project/main.rs")),
-        original_mtime_secs: Some(1700000000),
-        saved_at_secs: 1700000030,
+        original_mtime_secs: Some(1_700_000_000),
+        saved_at_secs: 1_700_000_030,
     };
 
     let mut manifest = DraftManifest::default();

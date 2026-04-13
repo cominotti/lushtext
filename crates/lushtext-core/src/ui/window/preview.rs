@@ -179,16 +179,20 @@ impl LushtextWindow {
         let (from, to) = if show {
             let target_pos = paned_width - imp.saved_preview_pos.get();
             preview.set_visible(true);
-            (paned.position() as f64, target_pos.max(1) as f64)
+            (f64::from(paned.position()), f64::from(target_pos.max(1)))
         } else {
             imp.saved_preview_pos.set(paned_width - paned.position());
             // Animate to full width minus 1px (preview shrinks to nothing).
-            (paned.position() as f64, (paned_width - 1).max(1) as f64)
+            (
+                f64::from(paned.position()),
+                f64::from((paned_width - 1).max(1)),
+            )
         };
 
         let paned_weak = paned.downgrade();
         let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
             if let Some(p) = paned_weak.upgrade() {
+                #[expect(clippy::cast_possible_truncation)] // animation value fits in i32
                 p.set_position(value as i32);
             }
         });
@@ -245,15 +249,16 @@ impl LushtextWindow {
 
         let (from, to) = if enter {
             imp.markdown_preview.set_visible(true);
-            (paned_width as f64, 1.0)
+            (f64::from(paned_width), 1.0)
         } else {
             imp.editor_box.set_visible(true);
-            (paned.position() as f64, paned_width as f64)
+            (f64::from(paned.position()), f64::from(paned_width))
         };
 
         let paned_weak = paned.downgrade();
         let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
             if let Some(p) = paned_weak.upgrade() {
+                #[expect(clippy::cast_possible_truncation)] // animation value fits in i32
                 p.set_position(value as i32);
             }
         });

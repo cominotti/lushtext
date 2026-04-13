@@ -111,7 +111,7 @@ fn test_command_palette_new() {
 #[test]
 fn test_command_palette_default() {
     ensure_gtk_init();
-    let _palette: LushtextCommandPalette = Default::default();
+    let _palette: LushtextCommandPalette = LushtextCommandPalette::default();
 }
 
 #[test]

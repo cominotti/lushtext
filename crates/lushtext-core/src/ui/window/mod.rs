@@ -541,25 +541,22 @@ impl LushtextWindow {
 
     fn refresh_header_bar_with(&self, editor: Option<&LushtextEditorPage>) {
         let title_widget = &self.imp().title_widget;
-        match editor {
-            Some(editor) => {
-                let name = editor.title();
-                let title = if editor.is_modified() {
-                    format!("• {name}")
-                } else {
-                    name
-                };
-                title_widget.set_title(&title);
-                let subtitle = editor
-                    .file_path()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default();
-                title_widget.set_subtitle(&subtitle);
-            }
-            None => {
-                title_widget.set_title("LushText");
-                title_widget.set_subtitle("");
-            }
+        if let Some(editor) = editor {
+            let name = editor.title();
+            let title = if editor.is_modified() {
+                format!("• {name}")
+            } else {
+                name
+            };
+            title_widget.set_title(&title);
+            let subtitle = editor
+                .file_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            title_widget.set_subtitle(&subtitle);
+        } else {
+            title_widget.set_title("LushText");
+            title_widget.set_subtitle("");
         }
     }
 
@@ -913,7 +910,7 @@ impl LushtextWindow {
     /// the active editor successfully owns focus again.
     pub(super) fn restore_focus_after_breakpoint_collapse(&self) {
         let window_weak = self.downgrade();
-        let attempts = std::rc::Rc::new(std::cell::Cell::new(0_u8));
+        let attempts = std::rc::Rc::new(std::cell::Cell::new(0u8));
         let attempts_clone = attempts.clone();
 
         glib::timeout_add_local(Duration::from_millis(30), move || {

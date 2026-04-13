@@ -166,7 +166,7 @@ fn assert_workspace_sidebar_width_locked(window: &LushtextWindow, expected_fract
         let (default_width, _) = window.default_size();
         default_width
     };
-    let expected_width = width as f64 * expected_fraction;
+    let expected_width = f64::from(width) * expected_fraction;
     let split = &window.imp().workspace_split_view;
     assert!(
         (split.min_sidebar_width() - expected_width).abs() < 1.0,
@@ -748,9 +748,12 @@ fn test_preview_pane_toggle_starts_nontrivial_animation() {
     activate_action(&window, "toggle-preview-pane");
 
     let animation = preview_animation(&window);
+    #[expect(clippy::cast_possible_truncation)] // animation paned position fits in i32
+    let from = animation.value_from() as i32;
+    #[expect(clippy::cast_possible_truncation)] // paned position fits in i32
+    let to = animation.value_to() as i32;
     assert_ne!(
-        animation.value_from() as i32,
-        animation.value_to() as i32,
+        from, to,
         "preview pane toggle should start a real paned animation, not jump directly to the endpoint",
     );
     assert_eq!(animation.state(), libadwaita::AnimationState::Playing);
@@ -770,9 +773,12 @@ fn test_preview_mode_toggle_starts_nontrivial_animation() {
     activate_action(&window, "toggle-preview-mode");
 
     let animation = preview_animation(&window);
+    #[expect(clippy::cast_possible_truncation)] // animation paned position fits in i32
+    let from = animation.value_from() as i32;
+    #[expect(clippy::cast_possible_truncation)] // paned position fits in i32
+    let to = animation.value_to() as i32;
     assert_ne!(
-        animation.value_from() as i32,
-        animation.value_to() as i32,
+        from, to,
         "preview-only mode should animate the paned instead of snapping immediately",
     );
     assert_eq!(animation.state(), libadwaita::AnimationState::Playing);

@@ -726,6 +726,7 @@ fn properties_breakpoint_condition(window: &super::LushtextWindow) -> String {
 
 /// Compute the total window width below which the properties pane should
 /// overlay instead of consuming layout width in the quarter-width shell.
+#[expect(clippy::cast_possible_truncation)] // window width fits in i32
 fn properties_breakpoint_max_width_sp(workspace_fraction: f64) -> i32 {
     let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
     let fraction_guard = dual_sidebar_window_width_for_center(center_target, workspace_fraction);
@@ -766,12 +767,13 @@ fn desired_workspace_fraction(window: &super::LushtextWindow) -> f64 {
 }
 
 fn workspace_sidebar_target_width_sp(window_width: i32, workspace_fraction: f64) -> f64 {
-    (window_width.max(1) as f64 * workspace_fraction).max(WORKSPACE_SIDEBAR_MIN_WIDTH_SP)
+    (f64::from(window_width.max(1)) * workspace_fraction).max(WORKSPACE_SIDEBAR_MIN_WIDTH_SP)
 }
 
 fn sync_workspace_sidebar_width_constraints(window: &super::LushtextWindow, window_width: i32) {
     let target_width =
         workspace_sidebar_target_width_sp(window_width, desired_workspace_fraction(window));
+    #[expect(clippy::cast_possible_truncation)] // sidebar width fits in i32
     let target_width_request = target_width.round() as i32;
     let split = &window.imp().workspace_split_view;
     if (split.min_sidebar_width() - target_width).abs() > f64::EPSILON {
@@ -798,7 +800,7 @@ fn effective_properties_fraction(window: &super::LushtextWindow, window_width: i
     if workspace_sidebar_consumes_width(window) {
         let workspace_fraction = desired_workspace_fraction(window);
         let remaining_fraction = (1.0 - workspace_fraction).max(f64::EPSILON);
-        let inner_width = (window_width.max(1) as f64 * remaining_fraction).max(1.0);
+        let inner_width = (f64::from(window_width.max(1)) * remaining_fraction).max(1.0);
         let lower = (PROPERTIES_SIDEBAR_MIN_WIDTH_SP / inner_width).min(1.0);
         (total_fraction / remaining_fraction).max(lower).min(1.0)
     } else {
@@ -889,7 +891,7 @@ fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
 }
 
 fn fixed_fraction(window_width: i32, min_width_sp: f64, target_fraction: f64) -> f64 {
-    let width = window_width.max(1) as f64;
+    let width = f64::from(window_width.max(1));
     let lower = (min_width_sp / width).min(1.0);
     target_fraction.max(lower).min(1.0)
 }

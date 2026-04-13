@@ -544,6 +544,7 @@ impl LushtextWorkspaceSection {
 
             let popover = imp.context_menu.borrow().clone();
             if let Some(popover) = popover {
+                #[expect(clippy::cast_possible_truncation)] // click coords fit in i32
                 popover.set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
                 popover.popup();
             }
@@ -594,6 +595,7 @@ impl LushtextWorkspaceSection {
 
         let popover_ref = popover.clone();
         gesture.connect_pressed(move |_gesture, _n_press, x, y| {
+            #[expect(clippy::cast_possible_truncation)] // click coords fit in i32
             popover_ref.set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
             popover_ref.popup();
         });

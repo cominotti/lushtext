@@ -19,7 +19,7 @@ fn test_new() {
 #[test]
 fn test_default_equals_new() {
     ensure_gtk_init();
-    let _bar: LushtextStatusBar = Default::default();
+    let _bar: LushtextStatusBar = LushtextStatusBar::default();
 }
 
 #[test]

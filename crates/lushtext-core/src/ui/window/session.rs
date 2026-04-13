@@ -18,6 +18,7 @@ use std::time::Duration;
 impl super::LushtextWindow {
     /// Snapshot current tab state into a `SessionData`.
     #[must_use]
+    #[expect(clippy::cast_sign_loss)] // GTK tab indices (i32) are non-negative
     pub fn collect_session(&self) -> SessionData {
         let tab_view = &self.imp().tab_view;
         let mut tabs = Vec::with_capacity(tab_view.n_pages() as usize);
@@ -183,28 +184,21 @@ impl super::LushtextWindow {
         self.imp().restoring_session.set(true);
 
         for tab in &session.tabs {
-            match &tab.path {
-                Some(path) => {
-                    self.open_document(path);
-                    // Find the just-opened editor and set restore position.
-                    if let Some(editor) = self.active_editor() {
-                        editor.set_restore_position(
-                            tab.cursor_line,
-                            tab.cursor_col,
-                            tab.scroll_line,
-                        );
-                    }
+            if let Some(path) = &tab.path {
+                self.open_document(path);
+                // Find the just-opened editor and set restore position.
+                if let Some(editor) = self.active_editor() {
+                    editor.set_restore_position(tab.cursor_line, tab.cursor_col, tab.scroll_line);
                 }
-                None => {
-                    self.new_tab();
-                    // For untitled tabs, override the draft ID and trigger
-                    // draft content recovery.
-                    if let Some(editor) = self.active_editor()
-                        && let Some(ref draft_id) = tab.draft_id
-                    {
-                        editor.set_draft_id(draft_id.clone());
-                        self.check_draft_by_id(&editor, draft_id);
-                    }
+            } else {
+                self.new_tab();
+                // For untitled tabs, override the draft ID and trigger
+                // draft content recovery.
+                if let Some(editor) = self.active_editor()
+                    && let Some(ref draft_id) = tab.draft_id
+                {
+                    editor.set_draft_id(draft_id.clone());
+                    self.check_draft_by_id(&editor, draft_id);
                 }
             }
         }
@@ -213,7 +207,9 @@ impl super::LushtextWindow {
         // were opened before this restore (they take priority).
         if !had_tabs_before && let Some(idx) = session.active_tab_index {
             let tab_view = &self.imp().tab_view;
+            #[expect(clippy::cast_sign_loss)] // n_pages() is non-negative
             let idx = idx.min(tab_view.n_pages().saturating_sub(1) as usize);
+            #[expect(clippy::cast_possible_truncation)] // tab index ≪ i32::MAX
             let page = tab_view.nth_page(idx as i32);
             tab_view.set_selected_page(&page);
         }

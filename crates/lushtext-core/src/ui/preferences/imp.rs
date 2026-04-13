@@ -154,6 +154,7 @@ impl LushtextPreferences {
         self.style_scheme_row.set_model(Some(&model));
 
         let current = self.settings.string(keys::STYLE_SCHEME);
+        #[expect(clippy::cast_possible_truncation)] // scheme list ≪ u32::MAX
         let selected_pos = scheme_ids
             .iter()
             .position(|id| id == current.as_str())

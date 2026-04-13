@@ -375,7 +375,7 @@ impl LushtextSidebar {
             )
         {
             let adj = self.imp().outer_scrolled_window.vadjustment();
-            adj.set_value(point.y() as f64);
+            adj.set_value(f64::from(point.y()));
         }
     }
 

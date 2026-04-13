@@ -465,7 +465,7 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<u32> {
     );
     let mut buf = Vec::new();
     let haystack = Utf32Str::new(candidate, &mut buf);
-    atom.score(haystack, &mut matcher).map(|s| s as u32)
+    atom.score(haystack, &mut matcher).map(u32::from)
 }
 
 /// Generic search helper: filter + score items using nucleo, sort by score
@@ -512,7 +512,7 @@ where
             atom.score(haystack, &mut matcher)
                 .map(|score| ScoredResult {
                     item: wrap(item),
-                    score: score as u32,
+                    score: u32::from(score),
                 })
         })
         .collect();

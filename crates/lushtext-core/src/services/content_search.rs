@@ -338,6 +338,7 @@ pub fn apply_replacements(
         // replacements on the same line share the same original_line).
         let mut file_stale = false;
         for r in &file_replacements {
+            #[expect(clippy::cast_possible_truncation)] // line_number is u32, fits in usize
             let line_idx = r.line_number.saturating_sub(1) as usize;
             if line_idx < lines.len() && lines[line_idx] != r.original_line {
                 errors.push(format!(
@@ -356,6 +357,7 @@ pub fn apply_replacements(
 
         let mut file_replaced = 0usize;
         for r in &file_replacements {
+            #[expect(clippy::cast_possible_truncation)] // line_number is u32, fits in usize
             let line_idx = r.line_number.saturating_sub(1) as usize;
             if line_idx < lines.len() {
                 let line = &mut lines[line_idx];
@@ -457,7 +459,7 @@ pub fn undo_replacements(
 fn atomic_write(path: &Path, content: &[u8]) -> anyhow::Result<()> {
     use std::io::Write;
 
-    let parent = path.parent().unwrap_or(Path::new("."));
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())

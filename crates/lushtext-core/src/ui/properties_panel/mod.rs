@@ -36,42 +36,39 @@ impl LushtextPropertiesPanel {
     pub fn set_active_editor(&self, editor: Option<&LushtextEditorPage>) {
         let settings = &self.imp().settings;
 
-        match editor {
-            Some(editor) => {
-                if let Some(path) = editor.file_path() {
-                    self.imp()
-                        .path_row
-                        .set_subtitle(&path.display().to_string());
-                    self.imp().encoding_row.set_subtitle("UTF-8");
-                } else {
-                    self.imp().path_row.set_subtitle("Untitled document");
-                    self.imp().encoding_row.set_subtitle("Not available");
-                }
+        if let Some(editor) = editor {
+            if let Some(path) = editor.file_path() {
                 self.imp()
-                    .file_size_row
-                    .set_subtitle(&format_file_size(editor.file_size()));
-
-                let formatting_source = if editor.file_path().is_none() {
-                    "Not available for untitled tabs"
-                } else if !settings.boolean(keys::USE_EDITORCONFIG) {
-                    "Preferences defaults"
-                } else if editor.formatting_overrides().is_empty() {
-                    "Preferences defaults (no EditorConfig override)"
-                } else {
-                    "EditorConfig override active"
-                };
-                self.imp()
-                    .formatting_source_row
-                    .set_subtitle(formatting_source);
-            }
-            None => {
-                self.imp().path_row.set_subtitle("No document selected");
+                    .path_row
+                    .set_subtitle(&path.display().to_string());
+                self.imp().encoding_row.set_subtitle("UTF-8");
+            } else {
+                self.imp().path_row.set_subtitle("Untitled document");
                 self.imp().encoding_row.set_subtitle("Not available");
-                self.imp().file_size_row.set_subtitle("Not available");
-                self.imp()
-                    .formatting_source_row
-                    .set_subtitle("Not available");
             }
+            self.imp()
+                .file_size_row
+                .set_subtitle(&format_file_size(editor.file_size()));
+
+            let formatting_source = if editor.file_path().is_none() {
+                "Not available for untitled tabs"
+            } else if !settings.boolean(keys::USE_EDITORCONFIG) {
+                "Preferences defaults"
+            } else if editor.formatting_overrides().is_empty() {
+                "Preferences defaults (no EditorConfig override)"
+            } else {
+                "EditorConfig override active"
+            };
+            self.imp()
+                .formatting_source_row
+                .set_subtitle(formatting_source);
+        } else {
+            self.imp().path_row.set_subtitle("No document selected");
+            self.imp().encoding_row.set_subtitle("Not available");
+            self.imp().file_size_row.set_subtitle("Not available");
+            self.imp()
+                .formatting_source_row
+                .set_subtitle("Not available");
         }
     }
 }

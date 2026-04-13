@@ -17,7 +17,7 @@ fn test_new() {
 #[test]
 fn test_default_equals_new() {
     ensure_gtk_init();
-    let _bar: LushtextSearchBar = Default::default();
+    let _bar: LushtextSearchBar = LushtextSearchBar::default();
 }
 
 // --- Match count display ---

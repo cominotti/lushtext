@@ -865,7 +865,7 @@ impl LushtextSearchPanel {
                         // Append to the flat navigation index for F4/Shift+F4.
                         imp.match_positions.borrow_mut().push((path, line_number));
                     }
-                    Ok(SearchEvent::Done) => {
+                    Ok(SearchEvent::Done) | Err(crossbeam_channel::TryRecvError::Disconnected) => {
                         done = true;
                         break;
                     }
@@ -884,10 +884,6 @@ impl LushtextSearchPanel {
                         imp.error_label.set_visible(true);
                     }
                     Err(crossbeam_channel::TryRecvError::Empty) => break,
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        done = true;
-                        break;
-                    }
                 }
             }
 

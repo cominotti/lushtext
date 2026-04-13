@@ -540,7 +540,7 @@ impl LushtextWorkspaceSection {
             .and_then(|idx| store.item(idx))
             .and_then(|obj| obj.downcast::<FileTreeItem>().ok())
             .filter(super::file_tree_item::FileTreeItem::is_placeholder)
-            .map_or(store.n_items(), |_| store.n_items() - 1);
+            .map_or_else(|| store.n_items(), |_| store.n_items() - 1);
 
         if insert_pos == store.n_items() {
             store.append(item);
@@ -616,20 +616,22 @@ impl LushtextWorkspaceSection {
         self.clear_dir_state(target_path);
 
         if let Some(location) = self.remove_cached_item(target_path) {
+            #[expect(clippy::cast_possible_truncation)] // list store ≪ u32::MAX
+            let idx = location.index as u32;
             match location.parent_dir.as_deref() {
                 None => {
                     if let Some(ref root_store) = *imp.root_store.borrow()
-                        && (location.index as u32) < root_store.n_items()
+                        && idx < root_store.n_items()
                     {
-                        root_store.remove(location.index as u32);
+                        root_store.remove(idx);
                         return true;
                     }
                 }
                 Some(parent_dir) => {
                     if let Some(store) = self.find_store_for_dir(parent_dir)
-                        && (location.index as u32) < store.n_items()
+                        && idx < store.n_items()
                     {
-                        store.remove(location.index as u32);
+                        store.remove(idx);
                         return true;
                     }
                 }

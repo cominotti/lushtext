@@ -139,10 +139,10 @@ fn apply_font_css(provider: &gtk4::CssProvider, settings: &gio::Settings) {
     let family = desc.family().unwrap_or_else(|| "Monospace".into());
     // Pango stores font sizes in 1/1024 pt (PANGO_SCALE); divide to get CSS-compatible points.
     let base_pt = {
-        let raw = desc.size() as f64 / pango::SCALE as f64;
+        let raw = f64::from(desc.size()) / f64::from(pango::SCALE);
         if raw > 0.0 { raw } else { 11.0 }
     };
-    let zoomed_pt = base_pt * zoom as f64 / 100.0;
+    let zoomed_pt = base_pt * f64::from(zoom) / 100.0;
 
     let css = format!(".monospace {{ font-family: \"{family}\"; font-size: {zoomed_pt:.1}pt; }}");
     provider.load_from_string(&css);

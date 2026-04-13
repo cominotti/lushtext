@@ -16,7 +16,7 @@ fn test_new() {
 #[test]
 fn test_default_equals_new() {
     ensure_gtk_init();
-    let _prefs: LushtextPreferences = Default::default();
+    let _prefs: LushtextPreferences = LushtextPreferences::default();
 }
 
 // --- GSettings binding tests ---

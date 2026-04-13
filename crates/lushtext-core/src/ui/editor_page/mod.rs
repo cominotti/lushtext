@@ -466,6 +466,7 @@ impl LushtextEditorPage {
 
     /// Read the current cursor position as (line, column).
     #[must_use]
+    #[expect(clippy::cast_sign_loss)] // GTK line/offset are non-negative i32
     pub fn cursor_position(&self) -> (u32, u32) {
         let buffer = self.buffer();
         let iter = buffer.iter_at_mark(&buffer.get_insert());
@@ -474,6 +475,7 @@ impl LushtextEditorPage {
 
     /// Read the line number at the top of the visible scroll area.
     #[must_use]
+    #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation)] // GTK i32/f64 → u32
     pub fn visible_top_line(&self) -> u32 {
         let view = self.source_view();
         let Some(vadj) = view.vadjustment() else {

@@ -64,7 +64,9 @@ pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
         if !resolved_tab_width {
             match props.tab_width {
                 EditorConfigProperty::Value(w) => {
-                    result.tab_width = Some((w as u32).clamp(1, 12));
+                    #[expect(clippy::cast_possible_truncation)] // clamped to 1..=12
+                    let w = (w as u32).clamp(1, 12);
+                    result.tab_width = Some(w);
                     resolved_tab_width = true;
                 }
                 EditorConfigProperty::Unset => {
@@ -95,7 +97,9 @@ pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
         if !resolved_indent_width {
             match props.indent_size {
                 EditorConfigProperty::Value(s) => {
-                    result.indent_width = Some((s as i32).clamp(1, 12));
+                    #[expect(clippy::cast_possible_truncation)] // indent_size ≤ 12
+                    let s = (s as i32).clamp(1, 12);
+                    result.indent_width = Some(s);
                     resolved_indent_width = true;
                 }
                 EditorConfigProperty::Unset => {

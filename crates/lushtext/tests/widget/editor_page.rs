@@ -177,7 +177,7 @@ fn test_show_search_reveals_search_bar() {
 fn test_default_equals_new() {
     ensure_gtk_init();
     // Verify Default impl works (it delegates to new())
-    let _page: LushtextEditorPage = Default::default();
+    let _page: LushtextEditorPage = LushtextEditorPage::default();
 }
 
 // --- Search bar integration ---

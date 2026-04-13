@@ -30,5 +30,5 @@ fn test_handles_open_flag() {
 #[test]
 fn test_default_equals_new() {
     ensure_gtk_init();
-    let _app: LushtextApplication = Default::default();
+    let _app: LushtextApplication = LushtextApplication::default();
 }

@@ -904,6 +904,7 @@ impl LushtextSearchPanel {
             let Some(panel) = panel_weak.upgrade() else {
                 return;
             };
+            #[expect(clippy::cast_sign_loss)] // GtkListBoxRow index is non-negative
             let idx = row.index() as usize;
             let entry = {
                 let entries = panel.imp().history_entries.borrow();
@@ -921,6 +922,7 @@ impl LushtextSearchPanel {
                 let Some(panel) = panel_weak.upgrade() else {
                     return;
                 };
+                #[expect(clippy::cast_sign_loss)] // GtkListBoxRow index is non-negative
                 let idx = row.index() as usize;
                 let entry = {
                     let entries = panel.imp().saved_searches.borrow();
@@ -997,8 +999,10 @@ fn render_preview_markup(
 
     // Line 2: replaced with the replacement region in accent bold.
     // The replacement occupies [start..start+new_len] in the replaced line.
+    #[expect(clippy::cast_possible_wrap)] // string lengths ≪ isize::MAX
     let new_len =
         replaced.len() as isize - original.len() as isize + (end as isize - start as isize);
+    #[expect(clippy::cast_sign_loss)] // result is clamped non-negative via max()
     let new_end = (start as isize + new_len).max(start as isize) as usize;
     let new_end = replaced.ceil_char_boundary(new_end.min(replaced.len()));
     let new_start = replaced.floor_char_boundary(start.min(replaced.len()));
