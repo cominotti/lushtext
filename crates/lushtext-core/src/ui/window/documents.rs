@@ -48,7 +48,7 @@ impl LushtextWindow {
         self.assign_draft_id(&editor_page);
 
         if let Some(draft_id) = editor_page.draft_id() {
-            let mut manifest = self.imp().draft_manifest.borrow_mut();
+            let mut manifest = self.imp().drafts.manifest.borrow_mut();
             if manifest.find_by_id(&draft_id).is_none() {
                 manifest.upsert(DraftEntry {
                     draft_id,
@@ -62,7 +62,7 @@ impl LushtextWindow {
         let window_weak = self.downgrade();
         let path_for_draft = path.to_path_buf();
         let editor_weak = editor_page.downgrade();
-        *editor_page.imp().load_completed_callback.borrow_mut() = Some(Box::new(move || {
+        *editor_page.imp().draft.load_completed_callback.borrow_mut() = Some(Box::new(move || {
             if let Some(window) = window_weak.upgrade()
                 && let Some(editor) = editor_weak.upgrade()
             {

@@ -18,24 +18,24 @@ use super::LushtextSearchPanel;
 impl LushtextSearchPanel {
     /// Store loaded search history entries.
     pub fn set_search_history(&self, entries: Vec<SearchHistoryEntry>) {
-        self.imp().history_entries.replace(entries);
+        self.imp().history.history_entries.replace(entries);
     }
 
     /// Clone the current search history entries.
     #[must_use]
     pub fn search_history(&self) -> Vec<SearchHistoryEntry> {
-        self.imp().history_entries.borrow().clone()
+        self.imp().history.history_entries.borrow().clone()
     }
 
     /// Store saved search entries loaded from disk.
     pub fn set_saved_searches(&self, entries: Vec<SavedSearch>) {
-        self.imp().saved_searches.replace(entries);
+        self.imp().history.saved_searches.replace(entries);
     }
 
     /// Clone the current saved search entries.
     #[must_use]
     pub fn saved_searches(&self) -> Vec<SavedSearch> {
-        self.imp().saved_searches.borrow().clone()
+        self.imp().history.saved_searches.borrow().clone()
     }
 
     /// Populate both sections of the dropdown popover.
@@ -49,8 +49,8 @@ impl LushtextSearchPanel {
             imp.history_list.remove(&child);
         }
 
-        let saved = imp.saved_searches.borrow();
-        let history = imp.history_entries.borrow();
+        let saved = imp.history.saved_searches.borrow();
+        let history = imp.history.history_entries.borrow();
         let has_saved = !saved.is_empty();
         let has_history = !history.is_empty();
 
@@ -63,7 +63,7 @@ impl LushtextSearchPanel {
             let row = libadwaita::ActionRow::new();
             row.set_title(&glib::markup_escape_text(&entry.name));
 
-            let subtitle = build_saved_toggle_summary(entry);
+            let subtitle = entry.row_subtitle();
             if !subtitle.is_empty() {
                 row.set_subtitle(&subtitle);
             }
@@ -84,14 +84,9 @@ impl LushtextSearchPanel {
         for entry in history.iter() {
             let row = libadwaita::ActionRow::new();
 
-            let title = if entry.query.len() > 60 {
-                format!("{}…", &entry.query[..entry.query.floor_char_boundary(60)])
-            } else {
-                entry.query.clone()
-            };
-            row.set_title(&glib::markup_escape_text(&title));
+            row.set_title(&glib::markup_escape_text(&entry.display_query(60)));
 
-            let subtitle = build_toggle_summary(entry);
+            let subtitle = entry.toggle_summary();
             if !subtitle.is_empty() {
                 row.set_subtitle(&subtitle);
             }
@@ -150,11 +145,11 @@ impl LushtextSearchPanel {
                 let display_name = name.clone();
                 let entry = SavedSearch::from_spec(name, panel.current_query_spec());
 
-                saved_searches::add(&mut panel.imp().saved_searches.borrow_mut(), entry);
-                if let Some(ref cb) = *panel.imp().message_callback.borrow() {
+                saved_searches::add(&mut panel.imp().history.saved_searches.borrow_mut(), entry);
+                if let Some(ref cb) = *panel.imp().callbacks.message_callback.borrow() {
                     cb(&format!("Search saved as '{display_name}'"));
                 }
-                let entries_clone = panel.imp().saved_searches.borrow().clone();
+                let entries_clone = panel.imp().history.saved_searches.borrow().clone();
 
                 let data_dir = json_store::data_dir();
                 crate::services::async_task::spawn_blocking_then(
@@ -173,8 +168,8 @@ impl LushtextSearchPanel {
     /// Remove a saved search by index and persist.
     fn remove_saved_search(&self, index: usize) {
         let imp = self.imp();
-        saved_searches::remove(&mut imp.saved_searches.borrow_mut(), index);
-        let entries_clone = imp.saved_searches.borrow().clone();
+        saved_searches::remove(&mut imp.history.saved_searches.borrow_mut(), index);
+        let entries_clone = imp.history.saved_searches.borrow().clone();
 
         let data_dir = json_store::data_dir();
         crate::services::async_task::spawn_blocking_then(
@@ -194,7 +189,7 @@ impl LushtextSearchPanel {
     fn restore_search_state(&self, spec: &SearchQuerySpec) {
         let imp = self.imp();
 
-        imp.restoring_history.set(true);
+        imp.history.restoring_history.set(true);
         imp.search_entry.set_text(&spec.query);
         imp.case_toggle.set_active(spec.options.case_sensitive);
         imp.regex_toggle.set_active(spec.options.regex);
@@ -204,68 +199,7 @@ impl LushtextSearchPanel {
             .set_text(spec.options.glob.as_deref().unwrap_or(""));
         imp.history_popover.popdown();
 
-        imp.restoring_history.set(false);
-        self.start_search(&spec.query);
+        imp.history.restoring_history.set(false);
+        self.start_search(spec.clone());
     }
-}
-
-/// Build a compact toggle summary string for a history entry subtitle.
-fn build_toggle_summary(entry: &SearchHistoryEntry) -> String {
-    build_summary_parts(
-        entry.case_sensitive,
-        entry.regex,
-        entry.whole_word,
-        entry.gitignore,
-        entry.glob.as_deref(),
-    )
-}
-
-/// Build a compact toggle summary string for a saved search subtitle.
-fn build_saved_toggle_summary(entry: &SavedSearch) -> String {
-    let toggles = build_summary_parts(
-        entry.case_sensitive,
-        entry.regex,
-        entry.whole_word,
-        entry.gitignore,
-        entry.glob.as_deref(),
-    );
-    let query = if entry.query.len() > 40 {
-        format!("{}…", &entry.query[..entry.query.floor_char_boundary(40)])
-    } else {
-        entry.query.clone()
-    };
-    if toggles.is_empty() {
-        query
-    } else {
-        format!("{query}  {toggles}")
-    }
-}
-
-/// Common helper to build toggle summary parts.
-fn build_summary_parts(
-    case_sensitive: bool,
-    regex: bool,
-    whole_word: bool,
-    gitignore: bool,
-    glob: Option<&str>,
-) -> String {
-    let mut parts = Vec::new();
-    if case_sensitive {
-        parts.push("Aa".to_string());
-    }
-    if regex {
-        parts.push(".*".to_string());
-    }
-    if whole_word {
-        parts.push("W".to_string());
-    }
-    if !gitignore {
-        parts.push("no .gitignore".to_string());
-    }
-    if let Some(glob) = glob
-        && !glob.is_empty()
-    {
-        parts.push(glob.to_string());
-    }
-    parts.join("  ")
 }

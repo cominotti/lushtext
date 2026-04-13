@@ -555,7 +555,8 @@ fn test_flush_dirty_drafts_skips_close_discarded_editors() {
 
     window
         .imp()
-        .close_discard_draft_ids
+        .drafts
+        .close_discard_ids
         .borrow_mut()
         .insert(draft_id.clone());
     window.flush_dirty_drafts();
@@ -566,7 +567,7 @@ fn test_flush_dirty_drafts_skips_close_discarded_editors() {
         "discarded drafts must not be recreated during close flush",
     );
     assert!(
-        window.imp().close_discard_draft_ids.borrow().is_empty(),
+        window.imp().drafts.close_discard_ids.borrow().is_empty(),
         "close discard state should be cleared after the flush",
     );
 }

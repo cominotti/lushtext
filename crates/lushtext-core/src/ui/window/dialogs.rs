@@ -366,14 +366,14 @@ impl super::LushtextWindow {
     }
 
     fn stage_close_discard_drafts(&self, editors: &[LushtextEditorPage]) {
-        let mut discarded_ids = self.imp().close_discard_draft_ids.borrow_mut();
+        let mut discarded_ids = self.imp().drafts.close_discard_ids.borrow_mut();
         discarded_ids.extend(editors.iter().filter_map(LushtextEditorPage::draft_id));
         drop(discarded_ids);
         self.cleanup_drafts_for_editors(editors);
     }
 
     pub(crate) fn clear_close_discard_drafts(&self) {
-        self.imp().close_discard_draft_ids.borrow_mut().clear();
+        self.imp().drafts.close_discard_ids.borrow_mut().clear();
     }
 
     /// Delete drafts for the given editors. Handles both path-backed files

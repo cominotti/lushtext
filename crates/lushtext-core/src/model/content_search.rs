@@ -49,6 +49,50 @@ impl Default for ContentSearchOptions {
     }
 }
 
+impl ContentSearchOptions {
+    /// Build one search-options value object from the current toggle state.
+    #[must_use]
+    pub fn new(
+        case_sensitive: bool,
+        regex: bool,
+        whole_word: bool,
+        gitignore: bool,
+        glob: Option<String>,
+    ) -> Self {
+        Self {
+            case_sensitive,
+            regex,
+            whole_word,
+            gitignore,
+            glob,
+        }
+    }
+
+    /// Build the compact toggle summary used by history and saved-search rows.
+    #[must_use]
+    pub fn toggle_summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.case_sensitive {
+            parts.push("Aa".to_string());
+        }
+        if self.regex {
+            parts.push(".*".to_string());
+        }
+        if self.whole_word {
+            parts.push("W".to_string());
+        }
+        if !self.gitignore {
+            parts.push("no .gitignore".to_string());
+        }
+        if let Some(glob) = self.glob.as_deref()
+            && !glob.is_empty()
+        {
+            parts.push(glob.to_string());
+        }
+        parts.join("  ")
+    }
+}
+
 /// Shared search query state used across runtime search, history, and saved searches.
 ///
 /// This stays in the domain layer so GTK adapters can pass around one value
@@ -59,6 +103,7 @@ pub struct SearchQuerySpec {
     /// Free-form search text entered by the user.
     pub query: String,
     /// Toggle and filter state that changes how the query is interpreted.
+    #[serde(flatten)]
     pub options: ContentSearchOptions,
 }
 
@@ -69,6 +114,19 @@ impl SearchQuerySpec {
         Self {
             query: query.into(),
             options,
+        }
+    }
+
+    /// Truncate the query for compact list-row display without losing Unicode boundaries.
+    #[must_use]
+    pub fn display_query(&self, max_chars: usize) -> String {
+        if self.query.len() > max_chars {
+            format!(
+                "{}…",
+                &self.query[..self.query.floor_char_boundary(max_chars)]
+            )
+        } else {
+            self.query.clone()
         }
     }
 }
@@ -193,43 +251,36 @@ pub fn generate_replacement_preview(
 
 /// A single entry in the search history, capturing query text and all toggle
 /// states at the time of search. Persisted to `search-history.json`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchHistoryEntry {
-    pub query: String,
-    pub case_sensitive: bool,
-    pub regex: bool,
-    pub whole_word: bool,
-    pub gitignore: bool,
-    pub glob: Option<String>,
+    /// Flattened so persisted JSON keeps the existing `query` + toggle fields.
+    #[serde(flatten)]
+    pub spec: SearchQuerySpec,
 }
 
 impl SearchHistoryEntry {
     /// Convert a persisted history record into the shared query-spec shape.
     #[must_use]
     pub fn query_spec(&self) -> SearchQuerySpec {
-        SearchQuerySpec::new(
-            self.query.clone(),
-            ContentSearchOptions {
-                case_sensitive: self.case_sensitive,
-                regex: self.regex,
-                whole_word: self.whole_word,
-                gitignore: self.gitignore,
-                glob: self.glob.clone(),
-            },
-        )
+        self.spec.clone()
     }
 
     /// Create a history record from the shared query-spec value object.
     #[must_use]
     pub fn from_spec(spec: SearchQuerySpec) -> Self {
-        Self {
-            query: spec.query,
-            case_sensitive: spec.options.case_sensitive,
-            regex: spec.options.regex,
-            whole_word: spec.options.whole_word,
-            gitignore: spec.options.gitignore,
-            glob: spec.options.glob,
-        }
+        Self { spec }
+    }
+
+    /// Build the compact subtitle shown for a recent-search row.
+    #[must_use]
+    pub fn toggle_summary(&self) -> String {
+        self.spec.options.toggle_summary()
+    }
+
+    /// Truncated query text suitable for recent-search rows.
+    #[must_use]
+    pub fn display_query(&self, max_chars: usize) -> String {
+        self.spec.display_query(max_chars)
     }
 }
 
@@ -237,31 +288,19 @@ impl SearchHistoryEntry {
 ///
 /// Unlike `SearchHistoryEntry` (capped at 20, auto-managed), saved searches
 /// are user-created and persist until explicitly deleted.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedSearch {
     pub name: String,
-    pub query: String,
-    pub case_sensitive: bool,
-    pub regex: bool,
-    pub whole_word: bool,
-    pub gitignore: bool,
-    pub glob: Option<String>,
+    /// Flattened so saved-search JSON remains compatible with older builds.
+    #[serde(flatten)]
+    pub spec: SearchQuerySpec,
 }
 
 impl SavedSearch {
     /// Convert a saved search into the shared runtime query-spec shape.
     #[must_use]
     pub fn query_spec(&self) -> SearchQuerySpec {
-        SearchQuerySpec::new(
-            self.query.clone(),
-            ContentSearchOptions {
-                case_sensitive: self.case_sensitive,
-                regex: self.regex,
-                whole_word: self.whole_word,
-                gitignore: self.gitignore,
-                glob: self.glob.clone(),
-            },
-        )
+        self.spec.clone()
     }
 
     /// Build a named saved search from the shared query-spec value object.
@@ -269,12 +308,80 @@ impl SavedSearch {
     pub fn from_spec(name: impl Into<String>, spec: SearchQuerySpec) -> Self {
         Self {
             name: name.into(),
-            query: spec.query,
-            case_sensitive: spec.options.case_sensitive,
-            regex: spec.options.regex,
-            whole_word: spec.options.whole_word,
-            gitignore: spec.options.gitignore,
-            glob: spec.options.glob,
+            spec,
         }
+    }
+
+    /// Build the saved-search subtitle: compact query plus toggle state when needed.
+    #[must_use]
+    pub fn row_subtitle(&self) -> String {
+        let toggles = self.spec.options.toggle_summary();
+        let query = self.spec.display_query(40);
+        if toggles.is_empty() {
+            query
+        } else {
+            format!("{query}  {toggles}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_history_json_remains_flat() {
+        let entry = SearchHistoryEntry::from_spec(SearchQuerySpec::new(
+            "needle",
+            ContentSearchOptions::new(true, false, true, false, Some("*.rs".to_string())),
+        ));
+
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["query"], "needle");
+        assert_eq!(json["case_sensitive"], true);
+        assert_eq!(json["whole_word"], true);
+        assert_eq!(json["gitignore"], false);
+        assert_eq!(json["glob"], "*.rs");
+        assert!(json.get("spec").is_none());
+        assert!(json.get("options").is_none());
+    }
+
+    #[test]
+    fn search_history_json_backwards_compatibility() {
+        let json = serde_json::json!({
+            "query": "needle",
+            "case_sensitive": true,
+            "regex": false,
+            "whole_word": true,
+            "gitignore": false,
+            "glob": "*.rs"
+        });
+
+        let entry: SearchHistoryEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(entry.spec.query, "needle");
+        assert!(entry.spec.options.case_sensitive);
+        assert!(entry.spec.options.whole_word);
+        assert!(!entry.spec.options.gitignore);
+        assert_eq!(entry.spec.options.glob.as_deref(), Some("*.rs"));
+    }
+
+    #[test]
+    fn saved_search_json_remains_flat() {
+        let entry = SavedSearch::from_spec(
+            "Rust files",
+            SearchQuerySpec::new(
+                "needle",
+                ContentSearchOptions::new(true, true, false, true, Some("*.rs".to_string())),
+            ),
+        );
+
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["name"], "Rust files");
+        assert_eq!(json["query"], "needle");
+        assert_eq!(json["case_sensitive"], true);
+        assert_eq!(json["regex"], true);
+        assert_eq!(json["glob"], "*.rs");
+        assert!(json.get("spec").is_none());
+        assert!(json.get("options").is_none());
     }
 }

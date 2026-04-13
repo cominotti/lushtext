@@ -29,9 +29,14 @@ impl LushtextSearchPanel {
 
     /// Store undo backup after a successful replace.
     pub fn set_undo_backup(&self, backup: &HashMap<PathBuf, Vec<u8>>) {
-        let generation = self.imp().undo_backup_generation.get().wrapping_add(1);
-        self.imp().undo_backup_generation.set(generation);
-        self.imp().undo_backup.replace(Some(backup.clone()));
+        let generation = self
+            .imp()
+            .preview
+            .undo_backup_generation
+            .get()
+            .wrapping_add(1);
+        self.imp().preview.undo_backup_generation.set(generation);
+        self.imp().preview.undo_backup.replace(Some(backup.clone()));
 
         let data_dir = json_store::data_dir();
         if let Err(e) = search_backup::save(&data_dir, backup) {
@@ -46,9 +51,14 @@ impl LushtextSearchPanel {
 
     /// Clear undo backup and hide the undo button.
     pub(crate) fn clear_undo_backup(&self) {
-        let generation = self.imp().undo_backup_generation.get().wrapping_add(1);
-        self.imp().undo_backup_generation.set(generation);
-        self.imp().undo_backup.replace(None);
+        let generation = self
+            .imp()
+            .preview
+            .undo_backup_generation
+            .get()
+            .wrapping_add(1);
+        self.imp().preview.undo_backup_generation.set(generation);
+        self.imp().preview.undo_backup.replace(None);
         self.hide_undo_button();
 
         let data_dir = json_store::data_dir();
@@ -74,7 +84,7 @@ impl LushtextSearchPanel {
     /// Whether the panel is in preview mode.
     #[must_use]
     pub fn is_preview_mode(&self) -> bool {
-        self.imp().preview_mode.get()
+        self.imp().preview.preview_mode.get()
     }
 
     /// Enter preview mode: generate replacement previews and switch the results
@@ -96,11 +106,11 @@ impl LushtextSearchPanel {
         );
 
         let all_indices: std::collections::HashSet<usize> = (0..previews.len()).collect();
-        imp.checked_indices.replace(all_indices);
-        imp.preview_replacements.replace(previews);
-        imp.preview_mode.set(true);
+        imp.preview.checked_indices.replace(all_indices);
+        imp.preview.preview_replacements.replace(previews);
+        imp.preview.preview_mode.set(true);
 
-        let total = imp.preview_replacements.borrow().len();
+        let total = imp.preview.preview_replacements.borrow().len();
         imp.replace_all_button
             .set_label(&format!("Replace {total} of {total}"));
         imp.replace_all_button.set_sensitive(total > 0);
@@ -111,9 +121,9 @@ impl LushtextSearchPanel {
     /// Exit preview mode: clear preview state and restore normal result display.
     pub fn exit_preview_mode(&self) {
         let imp = self.imp();
-        imp.preview_mode.set(false);
-        imp.preview_replacements.borrow_mut().clear();
-        imp.checked_indices.borrow_mut().clear();
+        imp.preview.preview_mode.set(false);
+        imp.preview.preview_replacements.borrow_mut().clear();
+        imp.preview.checked_indices.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
         self.update_replace_button_sensitivity();
         self.refresh_results_display();
@@ -122,13 +132,13 @@ impl LushtextSearchPanel {
     /// Update the "Replace All" / "Confirm Replace" button sensitivity.
     pub fn update_replace_button_sensitivity(&self) {
         let imp = self.imp();
-        if imp.preview_mode.get() {
+        if imp.preview.preview_mode.get() {
             imp.replace_all_button
-                .set_sensitive(!imp.checked_indices.borrow().is_empty());
+                .set_sensitive(!imp.preview.checked_indices.borrow().is_empty());
         } else {
             // Empty replacement text is allowed (deletes matches).
             imp.replace_all_button
-                .set_sensitive(imp.total_matches.get() > 0);
+                .set_sensitive(imp.runtime.total_matches.get() > 0);
         }
     }
 }

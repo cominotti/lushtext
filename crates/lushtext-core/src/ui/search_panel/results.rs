@@ -10,60 +10,65 @@ use gtk4::prelude::*;
 
 use crate::model::content_search::SearchMatch;
 
-use super::LushtextSearchPanel;
 use super::item::SearchResultItem;
+use super::{LushtextSearchPanel, SearchMatchLocation};
 
 impl LushtextSearchPanel {
     /// Whether the panel has any search results.
     #[must_use]
     pub fn has_results(&self) -> bool {
-        self.imp().total_matches.get() > 0
+        self.imp().runtime.total_matches.get() > 0
     }
 
     /// Navigate to the next match (F4). Wraps around at the end.
     pub fn navigate_next_match(&self) {
         let imp = self.imp();
-        let positions = imp.match_positions.borrow();
+        let positions = imp.navigation.match_positions.borrow();
         let len = positions.len();
         if len == 0 {
             return;
         }
 
-        let next = imp.current_match_index.get().map_or(0, |i| (i + 1) % len);
-        imp.current_match_index.set(Some(next));
+        let next = imp
+            .navigation
+            .current_match_index
+            .get()
+            .map_or(0, |i| (i + 1) % len);
+        imp.navigation.current_match_index.set(Some(next));
 
-        let (path, line) = positions[next].clone();
+        let SearchMatchLocation { path, line_number } = positions[next].clone();
         drop(positions);
 
         self.select_match_in_results(next);
 
-        if let Some(ref cb) = *imp.navigate_callback.borrow() {
-            cb(&path, line);
+        if let Some(ref cb) = *imp.callbacks.navigate_callback.borrow() {
+            cb(&path, line_number);
         }
     }
 
     /// Navigate to the previous match (Shift+F4). Wraps around at the beginning.
     pub fn navigate_prev_match(&self) {
         let imp = self.imp();
-        let positions = imp.match_positions.borrow();
+        let positions = imp.navigation.match_positions.borrow();
         let len = positions.len();
         if len == 0 {
             return;
         }
 
         let prev = imp
+            .navigation
             .current_match_index
             .get()
             .map_or(len - 1, |i| if i == 0 { len - 1 } else { i - 1 });
-        imp.current_match_index.set(Some(prev));
+        imp.navigation.current_match_index.set(Some(prev));
 
-        let (path, line) = positions[prev].clone();
+        let SearchMatchLocation { path, line_number } = positions[prev].clone();
         drop(positions);
 
         self.select_match_in_results(prev);
 
-        if let Some(ref cb) = *imp.navigate_callback.borrow() {
-            cb(&path, line);
+        if let Some(ref cb) = *imp.callbacks.navigate_callback.borrow() {
+            cb(&path, line_number);
         }
     }
 
@@ -110,12 +115,12 @@ impl LushtextSearchPanel {
     /// works from the service-layer data rather than the shortened display text.
     pub(super) fn collect_search_matches(&self) -> Vec<SearchMatch> {
         let imp = self.imp();
-        let groups = imp.file_groups.borrow();
+        let groups = imp.runtime.file_groups.borrow();
         let mut matches = Vec::new();
 
-        for (path, (_, child_store)) in groups.iter() {
-            for i in 0..child_store.n_items() {
-                if let Some(item) = child_store.item(i).and_downcast::<SearchResultItem>()
+        for (path, group) in groups.iter() {
+            for i in 0..group.child_store.n_items() {
+                if let Some(item) = group.child_store.item(i).and_downcast::<SearchResultItem>()
                     && item.is_match_item()
                 {
                     matches.push(SearchMatch {
@@ -144,12 +149,12 @@ impl LushtextSearchPanel {
     /// in the `SingleSelection` model, and scroll to make it visible.
     fn select_match_in_results(&self, match_index: usize) {
         let imp = self.imp();
-        let positions = imp.match_positions.borrow();
-        let Some((target_path, target_line)) = positions.get(match_index) else {
+        let positions = imp.navigation.match_positions.borrow();
+        let Some(target) = positions.get(match_index) else {
             return;
         };
-        let target_path_str = target_path.display().to_string();
-        let target_line = *target_line;
+        let target_path_str = target.path.display().to_string();
+        let target_line = target.line_number;
         drop(positions);
 
         let Some(model) = imp.results_list.model() else {

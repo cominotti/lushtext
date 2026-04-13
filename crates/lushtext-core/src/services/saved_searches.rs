@@ -48,15 +48,13 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_saved(name: &str, query: &str) -> SavedSearch {
-        SavedSearch {
-            name: name.to_string(),
-            query: query.to_string(),
-            case_sensitive: false,
-            regex: false,
-            whole_word: false,
-            gitignore: true,
-            glob: None,
-        }
+        SavedSearch::from_spec(
+            name.to_string(),
+            crate::model::content_search::SearchQuerySpec::new(
+                query.to_string(),
+                crate::model::content_search::ContentSearchOptions::default(),
+            ),
+        )
     }
 
     #[test]
@@ -99,15 +97,19 @@ mod tests {
     fn test_save_and_load_roundtrip() {
         let dir = TempDir::new().unwrap();
         let entries = vec![
-            SavedSearch {
-                name: "Rust files".to_string(),
-                query: "fn main".to_string(),
-                case_sensitive: true,
-                regex: false,
-                whole_word: true,
-                gitignore: false,
-                glob: Some("*.rs".to_string()),
-            },
+            SavedSearch::from_spec(
+                "Rust files".to_string(),
+                crate::model::content_search::SearchQuerySpec::new(
+                    "fn main".to_string(),
+                    crate::model::content_search::ContentSearchOptions::new(
+                        true,
+                        false,
+                        true,
+                        false,
+                        Some("*.rs".to_string()),
+                    ),
+                ),
+            ),
             make_saved("TODOs", "TODO"),
         ];
         save(dir.path(), &entries).unwrap();

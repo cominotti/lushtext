@@ -6,16 +6,18 @@ use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::content_search::{
-    ContentSearchOptions, ReplaceResult, Replacement, SavedSearch, SearchEvent, SearchMatch,
-    generate_replacement_preview,
+    ContentSearchOptions, ReplaceResult, Replacement, SavedSearch, SearchEvent, SearchHistoryEntry,
+    SearchMatch, SearchQuerySpec, generate_replacement_preview,
 };
-use lushtext_core::services::{json_store, search_backup};
 use lushtext_core::services::notifications::{
     NotificationBus, NotificationOwner, NotificationPayload, NotificationSeverity,
     NotificationSurface, StatusMessage,
 };
-use lushtext_core::ui::search_panel::LushtextSearchPanel;
+use lushtext_core::services::{json_store, search_backup};
 use lushtext_core::ui::search_panel::item::SearchResultItem;
+use lushtext_core::ui::search_panel::{
+    LushtextSearchPanel, SearchFileGroup, SearchMatchLocation, SearchProgressUpdate,
+};
 use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
 use std::time::{Duration, Instant};
@@ -39,6 +41,37 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
         }
     }
     assert!(predicate(), "timed out waiting for widget state");
+}
+
+fn make_history_entry(
+    query: &str,
+    case_sensitive: bool,
+    regex: bool,
+    whole_word: bool,
+    gitignore: bool,
+    glob: Option<&str>,
+) -> SearchHistoryEntry {
+    SearchHistoryEntry::from_spec(SearchQuerySpec::new(
+        query.to_string(),
+        ContentSearchOptions::new(
+            case_sensitive,
+            regex,
+            whole_word,
+            gitignore,
+            glob.map(ToString::to_string),
+        ),
+    ))
+}
+
+fn make_saved_search(name: &str, query: &str) -> SavedSearch {
+    SavedSearch::from_spec(
+        name.to_string(),
+        SearchQuerySpec::new(query.to_string(), ContentSearchOptions::default()),
+    )
+}
+
+fn search_spec(query: &str) -> SearchQuerySpec {
+    SearchQuerySpec::new(query.to_string(), ContentSearchOptions::default())
 }
 
 /// Create a window attached to a test application (not registered with D-Bus).
@@ -129,7 +162,26 @@ fn test_search_panel_set_workspace_roots() {
         std::path::PathBuf::from("/project/root2"),
     ];
     panel.set_workspace_roots(roots.clone());
-    assert_eq!(*panel.imp().workspace_roots.borrow(), roots);
+    assert_eq!(*panel.imp().runtime.workspace_roots.borrow(), roots);
+}
+
+#[test]
+fn test_start_search_uses_passed_query_spec_instead_of_live_widget_state() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "needle here\n").unwrap();
+
+    panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
+    panel.set_query("absent");
+    panel.start_search(search_spec("needle"));
+
+    wait_until(Duration::from_secs(2), || {
+        !panel.imp().runtime.searching.get()
+    });
+
+    assert_eq!(panel.query(), "absent");
+    assert_eq!(panel.imp().runtime.total_matches.get(), 1);
 }
 
 #[test]
@@ -142,7 +194,14 @@ fn test_search_panel_connect_close_requested() {
         called_clone.set(true);
     });
     // Callback is stored.
-    assert!(panel.imp().close_requested_callback.borrow().is_some());
+    assert!(
+        panel
+            .imp()
+            .callbacks
+            .close_requested_callback
+            .borrow()
+            .is_some()
+    );
 }
 
 #[test]
@@ -155,7 +214,7 @@ fn test_search_panel_connect_open_file() {
         called_clone.set(true);
     });
     // Callback is stored.
-    assert!(panel.imp().open_file_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.open_file_callback.borrow().is_some());
 }
 
 #[test]
@@ -164,22 +223,22 @@ fn test_search_panel_clear_results_resets_state() {
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
 
     // Simulate some state.
-    panel.imp().total_matches.set(42);
-    panel.imp().total_files.set(5);
-    panel.imp().result_capped.set(true);
+    panel.imp().runtime.total_matches.set(42);
+    panel.imp().runtime.total_files.set(5);
+    panel.imp().runtime.result_capped.set(true);
 
     // Add a file group to root_store.
     let file_item = SearchResultItem::new_file("/test.rs", "test.rs", 3);
-    panel.imp().root_store.append(&file_item);
+    panel.imp().runtime.root_store.append(&file_item);
 
     // Trigger clear via start_search with empty query.
-    panel.start_search("");
+    panel.start_search(search_spec(""));
 
-    assert_eq!(panel.imp().total_matches.get(), 0);
-    assert_eq!(panel.imp().total_files.get(), 0);
-    assert!(!panel.imp().result_capped.get());
-    assert_eq!(panel.imp().root_store.n_items(), 0);
-    assert!(panel.imp().file_groups.borrow().is_empty());
+    assert_eq!(panel.imp().runtime.total_matches.get(), 0);
+    assert_eq!(panel.imp().runtime.total_files.get(), 0);
+    assert!(!panel.imp().runtime.result_capped.get());
+    assert_eq!(panel.imp().runtime.root_store.n_items(), 0);
+    assert!(panel.imp().runtime.file_groups.borrow().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +477,7 @@ fn test_clear_results_removes_warning_class() {
     assert!(panel.imp().count_label.has_css_class("warning"));
 
     // Clear results should remove the warning class.
-    panel.start_search("");
+    panel.start_search(search_spec(""));
     assert!(!panel.imp().count_label.has_css_class("warning"));
 }
 
@@ -444,7 +503,7 @@ fn test_navigate_next_match_empty_is_noop() {
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     // With no matches, navigate_next_match should not panic or change state.
     panel.navigate_next_match();
-    assert!(panel.imp().current_match_index.get().is_none());
+    assert!(panel.imp().navigation.current_match_index.get().is_none());
 }
 
 #[test]
@@ -452,7 +511,7 @@ fn test_navigate_prev_match_empty_is_noop() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.navigate_prev_match();
-    assert!(panel.imp().current_match_index.get().is_none());
+    assert!(panel.imp().navigation.current_match_index.get().is_none());
 }
 
 #[test]
@@ -467,7 +526,7 @@ fn test_has_results_true_after_matches() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     // Simulate matches arriving (set internal state directly).
-    panel.imp().total_matches.set(5);
+    panel.imp().runtime.total_matches.set(5);
     assert!(panel.has_results());
 }
 
@@ -476,18 +535,22 @@ fn test_current_match_index_resets_on_clear() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     // Simulate some navigation state.
-    panel.imp().current_match_index.set(Some(3));
+    panel.imp().navigation.current_match_index.set(Some(3));
     panel
         .imp()
+        .navigation
         .match_positions
         .borrow_mut()
-        .push((std::path::PathBuf::from("/test.rs"), 10));
+        .push(SearchMatchLocation::new(
+            std::path::PathBuf::from("/test.rs"),
+            10,
+        ));
 
     // Clear via empty search.
-    panel.start_search("");
+    panel.start_search(search_spec(""));
 
-    assert!(panel.imp().current_match_index.get().is_none());
-    assert!(panel.imp().match_positions.borrow().is_empty());
+    assert!(panel.imp().navigation.current_match_index.get().is_none());
+    assert!(panel.imp().navigation.match_positions.borrow().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -584,15 +647,20 @@ fn test_connect_navigate_callback_stored() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.connect_navigate_to_match(|_path, _line| {});
-    assert!(panel.imp().navigate_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.navigate_callback.borrow().is_some());
 }
 
 #[test]
 fn test_connect_search_progress_callback_stored() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    panel.connect_search_progress(|_files, _done| {});
-    assert!(panel.imp().progress_callback.borrow().is_some());
+    panel.connect_search_progress(|update| {
+        assert!(matches!(
+            update,
+            SearchProgressUpdate::Progress { .. } | SearchProgressUpdate::Done { .. }
+        ));
+    });
+    assert!(panel.imp().callbacks.progress_callback.borrow().is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -648,12 +716,12 @@ fn test_enter_preview_mode_sets_flag() {
     );
     let child_store = gtk4::gio::ListStore::new::<SearchResultItem>();
     child_store.append(&match_item);
-    panel.imp().root_store.append(&file_item);
-    panel.imp().file_groups.borrow_mut().insert(
+    panel.imp().runtime.root_store.append(&file_item);
+    panel.imp().runtime.file_groups.borrow_mut().insert(
         std::path::PathBuf::from("/test.rs"),
-        (file_item, child_store),
+        SearchFileGroup::new(file_item, child_store),
     );
-    panel.imp().total_matches.set(1);
+    panel.imp().runtime.total_matches.set(1);
 
     panel.enter_preview_mode("goodbye");
     assert!(panel.is_preview_mode());
@@ -678,20 +746,20 @@ fn test_exit_preview_mode_clears_state() {
     );
     let child_store = gtk4::gio::ListStore::new::<SearchResultItem>();
     child_store.append(&match_item);
-    panel.imp().root_store.append(&file_item);
-    panel.imp().file_groups.borrow_mut().insert(
+    panel.imp().runtime.root_store.append(&file_item);
+    panel.imp().runtime.file_groups.borrow_mut().insert(
         std::path::PathBuf::from("/test.rs"),
-        (file_item, child_store),
+        SearchFileGroup::new(file_item, child_store),
     );
-    panel.imp().total_matches.set(1);
+    panel.imp().runtime.total_matches.set(1);
 
     panel.enter_preview_mode("goodbye");
     assert!(panel.is_preview_mode());
 
     panel.exit_preview_mode();
     assert!(!panel.is_preview_mode());
-    assert!(panel.imp().preview_replacements.borrow().is_empty());
-    assert!(panel.imp().checked_indices.borrow().is_empty());
+    assert!(panel.imp().preview.preview_replacements.borrow().is_empty());
+    assert!(panel.imp().preview.checked_indices.borrow().is_empty());
 }
 
 #[test]
@@ -709,11 +777,11 @@ fn test_clear_results_clears_undo_backup() {
     );
     panel.set_undo_backup(&backup);
     panel.show_undo_button();
-    assert!(panel.imp().undo_backup.borrow().is_some());
+    assert!(panel.imp().preview.undo_backup.borrow().is_some());
 
     // Starting a new search should clear any old undo state.
-    panel.start_search("");
-    assert!(panel.imp().undo_backup.borrow().is_none());
+    panel.start_search(search_spec(""));
+    assert!(panel.imp().preview.undo_backup.borrow().is_none());
     assert!(
         !panel.imp().undo_button.property::<bool>("visible"),
         "undo_button should hide after clear"
@@ -737,8 +805,10 @@ fn test_search_panel_discards_stale_persisted_undo_backup_on_construction() {
     search_backup::save(&data_dir, &backup).unwrap();
 
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    wait_until(Duration::from_secs(2), || search_backup::load(&data_dir).unwrap().is_empty());
-    assert!(panel.imp().undo_backup.borrow().is_none());
+    wait_until(Duration::from_secs(2), || {
+        search_backup::load(&data_dir).unwrap().is_empty()
+    });
+    assert!(panel.imp().preview.undo_backup.borrow().is_none());
     assert!(
         !panel.imp().undo_button.property::<bool>("visible"),
         "undo button should stay hidden when stale persisted backup is discarded"
@@ -826,7 +896,7 @@ fn test_connect_replace_all_callback_stored() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.connect_replace_all(|_replacements| {});
-    assert!(panel.imp().replace_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.replace_callback.borrow().is_some());
 }
 
 #[test]
@@ -834,7 +904,7 @@ fn test_connect_undo_all_callback_stored() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.connect_undo_all(|_backup| {});
-    assert!(panel.imp().undo_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.undo_callback.borrow().is_some());
 }
 
 #[test]
@@ -861,7 +931,7 @@ fn test_search_navigation_actions_enabled_lifecycle() {
     assert!(!next.is_enabled(), "disabled: no results yet");
 
     // 4. Simulate results arriving (set internal state directly).
-    window.imp().search_panel.imp().total_matches.set(5);
+    window.imp().search_panel.imp().runtime.total_matches.set(5);
     window.update_search_navigation_actions();
     assert!(next.is_enabled(), "enabled: tabs + panel visible + results");
 
@@ -894,42 +964,21 @@ fn test_set_search_history_stores_entries() {
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
 
     let entries = vec![
-        lushtext_core::model::content_search::SearchHistoryEntry {
-            query: "hello".to_string(),
-            case_sensitive: false,
-            regex: false,
-            whole_word: false,
-            gitignore: true,
-            glob: None,
-        },
-        lushtext_core::model::content_search::SearchHistoryEntry {
-            query: "world".to_string(),
-            case_sensitive: true,
-            regex: true,
-            whole_word: false,
-            gitignore: false,
-            glob: Some("*.rs".to_string()),
-        },
+        make_history_entry("hello", false, false, false, true, None),
+        make_history_entry("world", true, true, false, false, Some("*.rs")),
     ];
     panel.set_search_history(entries.clone());
     let retrieved = panel.search_history();
     assert_eq!(retrieved.len(), 2);
-    assert_eq!(retrieved[0].query, "hello");
-    assert_eq!(retrieved[1].query, "world");
+    assert_eq!(retrieved[0].spec.query, "hello");
+    assert_eq!(retrieved[1].spec.query, "world");
 }
 
 #[test]
 fn test_restore_from_history_sets_search_entry_text() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let entry = lushtext_core::model::content_search::SearchHistoryEntry {
-        query: "restored query".to_string(),
-        case_sensitive: false,
-        regex: false,
-        whole_word: false,
-        gitignore: true,
-        glob: None,
-    };
+    let entry = make_history_entry("restored query", false, false, false, true, None);
     panel.restore_from_history(&entry);
     assert_eq!(panel.query(), "restored query");
 }
@@ -938,14 +987,7 @@ fn test_restore_from_history_sets_search_entry_text() {
 fn test_restore_from_history_sets_toggle_states() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let entry = lushtext_core::model::content_search::SearchHistoryEntry {
-        query: "test".to_string(),
-        case_sensitive: true,
-        regex: true,
-        whole_word: true,
-        gitignore: false,
-        glob: Some("*.toml".to_string()),
-    };
+    let entry = make_history_entry("test", true, true, true, false, Some("*.toml"));
     panel.restore_from_history(&entry);
 
     assert!(panel.imp().case_toggle.is_active());
@@ -958,14 +1000,7 @@ fn test_restore_from_history_sets_toggle_states() {
 fn test_restore_from_history_sets_glob_entry() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let entry = lushtext_core::model::content_search::SearchHistoryEntry {
-        query: "test".to_string(),
-        case_sensitive: false,
-        regex: false,
-        whole_word: false,
-        gitignore: true,
-        glob: Some("*.rs".to_string()),
-    };
+    let entry = make_history_entry("test", false, false, false, true, Some("*.rs"));
     panel.restore_from_history(&entry);
     assert_eq!(panel.imp().glob_entry.text().as_str(), "*.rs");
 }
@@ -979,14 +1014,7 @@ fn test_restore_from_history_with_glob_none_clears_glob_entry() {
     assert_eq!(panel.imp().glob_entry.text().as_str(), "*.md");
 
     // Restore with glob: None should clear it.
-    let entry = lushtext_core::model::content_search::SearchHistoryEntry {
-        query: "test".to_string(),
-        case_sensitive: false,
-        regex: false,
-        whole_word: false,
-        gitignore: true,
-        glob: None,
-    };
+    let entry = make_history_entry("test", false, false, false, true, None);
     panel.restore_from_history(&entry);
     assert!(panel.imp().glob_entry.text().is_empty());
 }
@@ -995,14 +1023,7 @@ fn test_restore_from_history_with_glob_none_clears_glob_entry() {
 fn test_search_history_entry_serialization_roundtrip() {
     // Pure data test — no GTK needed, but ensure_gtk_init doesn't hurt.
     ensure_gtk_init();
-    let entry = lushtext_core::model::content_search::SearchHistoryEntry {
-        query: "test query".to_string(),
-        case_sensitive: true,
-        regex: false,
-        whole_word: true,
-        gitignore: false,
-        glob: Some("*.rs".to_string()),
-    };
+    let entry = make_history_entry("test query", true, false, true, false, Some("*.rs"));
     let json = serde_json::to_string(&entry).unwrap();
     let deserialized: lushtext_core::model::content_search::SearchHistoryEntry =
         serde_json::from_str(&json).unwrap();
@@ -1012,18 +1033,6 @@ fn test_search_history_entry_serialization_roundtrip() {
 // ---------------------------------------------------------------------------
 // Story 3.2: Saved Searches & Panel State Persistence
 // ---------------------------------------------------------------------------
-
-fn make_saved_search(name: &str, query: &str) -> SavedSearch {
-    SavedSearch {
-        name: name.to_string(),
-        query: query.to_string(),
-        case_sensitive: false,
-        regex: false,
-        whole_word: false,
-        gitignore: true,
-        glob: None,
-    }
-}
 
 #[test]
 fn test_save_button_exists_and_starts_invisible() {
@@ -1058,15 +1067,13 @@ fn test_restore_from_saved_search_sets_query() {
     let window = test_window();
     let panel = &window.imp().search_panel;
 
-    let entry = SavedSearch {
-        name: "Test".to_string(),
-        query: "fn main".to_string(),
-        case_sensitive: true,
-        regex: true,
-        whole_word: false,
-        gitignore: false,
-        glob: Some("*.rs".to_string()),
-    };
+    let entry = SavedSearch::from_spec(
+        "Test",
+        SearchQuerySpec::new(
+            "fn main",
+            ContentSearchOptions::new(true, true, false, false, Some("*.rs".to_string())),
+        ),
+    );
     panel.restore_from_saved_search(&entry);
 
     assert_eq!(panel.imp().search_entry.text(), "fn main");
@@ -1120,15 +1127,13 @@ fn test_remove_saved_search_updates_state() {
 #[test]
 fn test_saved_search_serialization_roundtrip() {
     ensure_gtk_init();
-    let entry = SavedSearch {
-        name: "My Search".to_string(),
-        query: "fn main".to_string(),
-        case_sensitive: true,
-        regex: false,
-        whole_word: true,
-        gitignore: false,
-        glob: Some("*.rs".to_string()),
-    };
+    let entry = SavedSearch::from_spec(
+        "My Search",
+        SearchQuerySpec::new(
+            "fn main",
+            ContentSearchOptions::new(true, false, true, false, Some("*.rs".to_string())),
+        ),
+    );
     let json = serde_json::to_string(&entry).unwrap();
     let deserialized: SavedSearch = serde_json::from_str(&json).unwrap();
     assert_eq!(entry, deserialized);
@@ -1194,14 +1199,16 @@ fn test_search_panel_no_results_keeps_results_body_hidden() {
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
-    panel.start_search("needle");
+    panel.start_search(search_spec("needle"));
 
-    wait_until(Duration::from_secs(2), || !panel.imp().searching.get());
+    wait_until(Duration::from_secs(2), || {
+        !panel.imp().runtime.searching.get()
+    });
 
     let imp = panel.imp();
     assert!(imp.results_feedback_revealer.reveals_child());
     assert!(!imp.results_body_revealer.reveals_child());
-    assert_eq!(imp.total_matches.get(), 0);
+    assert_eq!(imp.runtime.total_matches.get(), 0);
     assert_eq!(imp.count_label.text().as_str(), "No results found");
 }
 
@@ -1218,14 +1225,16 @@ fn test_search_panel_first_result_reveals_fixed_max_height_results_body() {
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
-    panel.start_search("needle");
+    panel.start_search(search_spec("needle"));
 
-    wait_until(Duration::from_secs(2), || panel.imp().total_matches.get() > 0);
+    wait_until(Duration::from_secs(2), || {
+        panel.imp().runtime.total_matches.get() > 0
+    });
 
     let imp = panel.imp();
     assert!(imp.results_feedback_revealer.reveals_child());
     assert!(imp.results_body_revealer.reveals_child());
-    assert!(imp.total_matches.get() >= 1);
+    assert!(imp.runtime.total_matches.get() >= 1);
     assert_eq!(imp.results_scroll.max_content_height(), 240);
     assert_eq!(imp.results_scroll.height_request(), 240);
 }
@@ -1239,17 +1248,19 @@ fn test_search_panel_clearing_query_hides_results_revealers_after_results() {
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
-    panel.start_search("needle");
+    panel.start_search(search_spec("needle"));
 
-    wait_until(Duration::from_secs(2), || panel.imp().total_matches.get() > 0);
+    wait_until(Duration::from_secs(2), || {
+        panel.imp().runtime.total_matches.get() > 0
+    });
 
-    panel.start_search("");
+    panel.start_search(search_spec(""));
     flush_events();
 
     let imp = panel.imp();
     assert!(!imp.results_feedback_revealer.reveals_child());
     assert!(!imp.results_body_revealer.reveals_child());
-    assert_eq!(imp.total_matches.get(), 0);
+    assert_eq!(imp.runtime.total_matches.get(), 0);
     assert!(imp.count_label.text().is_empty());
 }
 
@@ -1262,12 +1273,14 @@ fn test_search_panel_followup_search_keeps_results_body_open_until_new_outcome()
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
-    panel.start_search("needle");
+    panel.start_search(search_spec("needle"));
 
-    wait_until(Duration::from_secs(2), || panel.imp().total_matches.get() > 0);
+    wait_until(Duration::from_secs(2), || {
+        panel.imp().runtime.total_matches.get() > 0
+    });
     assert!(panel.imp().results_body_revealer.reveals_child());
 
-    panel.start_search("absent");
+    panel.start_search(search_spec("absent"));
 
     let imp = panel.imp();
     assert!(
@@ -1279,7 +1292,9 @@ fn test_search_panel_followup_search_keeps_results_body_open_until_new_outcome()
         "follow-up search should keep the results body open until the new search resolves",
     );
 
-    wait_until(Duration::from_secs(2), || !panel.imp().searching.get());
+    wait_until(Duration::from_secs(2), || {
+        !panel.imp().runtime.searching.get()
+    });
 
     assert!(imp.results_feedback_revealer.reveals_child());
     assert!(!imp.results_body_revealer.reveals_child());

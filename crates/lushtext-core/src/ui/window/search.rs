@@ -13,6 +13,7 @@ use crate::services::notifications::{
 };
 use crate::services::{async_task, content_search, json_store, saved_searches, search_history};
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::search_panel::SearchProgressUpdate;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -77,29 +78,30 @@ pub fn setup_search_panel(window: &LushtextWindow) {
 
     {
         let window_weak = window.downgrade();
-        imp.search_panel
-            .connect_search_progress(move |files_searched, is_done| {
-                let Some(window) = window_weak.upgrade() else {
-                    return;
-                };
+        imp.search_panel.connect_search_progress(move |update| {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
 
-                if is_done {
+            match update {
+                SearchProgressUpdate::Done { .. } => {
                     window.finish_search_progress_tracking();
                     window.update_search_navigation_actions();
-                    return;
                 }
+                SearchProgressUpdate::Progress { files_searched } => {
+                    // Only show progress after the 500ms delay has elapsed
+                    // and while the search panel is still visible.
+                    if !window.imp().search_progress.visible.get()
+                        || !window.imp().search_panel_revealer.reveals_child()
+                    {
+                        return;
+                    }
 
-                // Only show progress after the 500ms delay has elapsed
-                // and while the search panel is still visible.
-                if !window.imp().search_progress.visible.get()
-                    || !window.imp().search_panel_revealer.reveals_child()
-                {
-                    return;
+                    let message = format_search_progress_message(files_searched);
+                    window.update_search_progress_message(&message);
                 }
-
-                let message = format_search_progress_message(files_searched);
-                window.update_search_progress_message(&message);
-            });
+            }
+        });
     }
 
     // --- Close request: hide panel + restore focus ---
@@ -386,7 +388,7 @@ impl LushtextWindow {
             };
             let imp = window.imp();
             if imp.search_progress.generation.get() != generation
-                || !imp.search_panel.imp().searching.get()
+                || !imp.search_panel.imp().runtime.searching.get()
                 || !imp.search_panel_revealer.reveals_child()
             {
                 return;
@@ -426,7 +428,7 @@ impl LushtextWindow {
                 return glib::ControlFlow::Break;
             };
             let imp = window.imp();
-            if !imp.search_panel.imp().searching.get() {
+            if !imp.search_panel.imp().runtime.searching.get() {
                 window.finish_search_progress_tracking();
                 return glib::ControlFlow::Break;
             }
@@ -501,7 +503,7 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
                     .ok()
                     .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs());
-                editor.imp().last_known_mtime.set(mtime);
+                editor.imp().monitor.last_known_mtime.set(mtime);
             }
             editor.load_file_async(&path);
         }

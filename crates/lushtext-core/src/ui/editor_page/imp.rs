@@ -25,6 +25,59 @@ use std::sync::atomic::AtomicBool;
 /// memory changes. The `u64` argument is the new estimated byte count.
 type MemoryChangedCallback = Box<dyn Fn(u64)>;
 type NotificationCallback = Box<dyn Fn(InlineActionNotification)>;
+type LoadCompletedCallback = Box<dyn FnOnce()>;
+
+/// Signal handlers connected to application-global preference/theme objects.
+#[derive(Default)]
+pub struct PreferenceBindingState {
+    /// Handler ID for `StyleManager::connect_dark_notify`. Disconnected in `Drop`
+    /// to prevent stale closures keeping the buffer alive after tab close.
+    pub dark_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `word-wrap` change. Disconnected in `Drop`.
+    pub word_wrap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `style-scheme` change. Disconnected in `Drop`.
+    pub style_scheme_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `tab-width` change. Disconnected in `Drop`.
+    pub tab_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `insert-spaces` change. Disconnected in `Drop`.
+    pub insert_spaces_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+}
+
+/// File-monitor state for external change detection.
+#[derive(Default)]
+pub struct MonitorState {
+    /// File monitor for detecting external modifications. Created on file load,
+    /// cancelled on tab close.
+    pub file_monitor: RefCell<Option<gio::FileMonitor>>,
+    /// Generation counter for debouncing file monitor events (500ms).
+    pub monitor_generation: Cell<u32>,
+    /// File mtime (seconds since epoch) at last load or save.
+    pub last_known_mtime: Cell<Option<u64>>,
+}
+
+/// Draft-recovery state scoped to one editor tab.
+#[derive(Default)]
+pub struct DraftState {
+    /// Whether the buffer has been modified since the last draft save.
+    pub draft_dirty: Cell<bool>,
+    /// Stable draft identifier for this tab across autosave cycles.
+    pub draft_id: RefCell<Option<String>>,
+    /// Whether this tab is currently showing draft-restored content.
+    pub draft_restored: Cell<bool>,
+    /// One-shot callback fired after the first successful file load.
+    pub load_completed_callback: RefCell<Option<LoadCompletedCallback>>,
+}
+
+/// Deferred cursor and scroll restoration applied after async file load.
+#[derive(Default)]
+pub struct RestoreState {
+    /// Deferred cursor line to apply after async file load completes.
+    pub cursor_line: Cell<Option<u32>>,
+    /// Deferred cursor column to apply after async file load completes.
+    pub cursor_col: Cell<Option<u32>>,
+    /// Deferred scroll-to line to apply after async file load completes.
+    pub scroll_line: Cell<Option<u32>>,
+}
 
 // CompositeTemplate loads the UI layout from a compiled XML file (bundled
 // as a GResource at build time). Each #[template_child] field is auto-bound
@@ -63,17 +116,8 @@ pub struct LushtextEditorPage {
     pub cancel_token: Arc<AtomicBool>,
     /// Application-wide GSettings instance for editor preference bindings.
     pub settings: gio::Settings,
-    /// Handler ID for `StyleManager::connect_dark_notify`. Disconnected in `Drop`
-    /// to prevent stale closures keeping the buffer alive after tab close.
-    pub dark_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `word-wrap` change. Disconnected in `Drop`.
-    pub word_wrap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `style-scheme` change. Disconnected in `Drop`.
-    pub style_scheme_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `tab-width` change. Disconnected in `Drop`.
-    pub tab_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `insert-spaces` change. Disconnected in `Drop`.
-    pub insert_spaces_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Grouped signal-handler IDs for application-global settings/theme wiring.
+    pub preference_bindings: PreferenceBindingState,
     /// Per-file formatting overrides from EditorConfig. Empty for untitled tabs
     /// or files without a matching `.editorconfig`.
     pub formatting_overrides: Cell<FormattingOverrides>,
@@ -85,34 +129,12 @@ pub struct LushtextEditorPage {
     pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
     /// Callback invoked when the editor needs to surface an inline notification.
     pub notification_callback: RefCell<Option<NotificationCallback>>,
-    /// File monitor for detecting external modifications. Created on file load,
-    /// cancelled on tab close.
-    pub file_monitor: RefCell<Option<gio::FileMonitor>>,
-    /// Generation counter for debouncing file monitor events (500ms).
-    /// Incremented on each monitor event; stale timer callbacks no-op.
-    pub monitor_generation: Cell<u32>,
-    /// File mtime (seconds since epoch) at last load or save. Compared with
-    /// current mtime to distinguish real changes from noise.
-    pub last_known_mtime: Cell<Option<u64>>,
-    /// Whether the buffer has been modified since the last draft save.
-    /// Checked by the global autosave timer to decide which tabs need drafting.
-    pub draft_dirty: Cell<bool>,
-    /// Draft ID for this tab. For path-backed files this is a hash of the path;
-    /// for untitled tabs it's a generated unique ID. Stable across the tab's lifetime.
-    pub draft_id: RefCell<Option<String>>,
-    /// Whether this tab is currently showing draft-restored content.
-    pub draft_restored: Cell<bool>,
-    /// One-shot callback fired after the first successful file load.
-    /// Used by the window to defer draft recovery until file content is
-    /// ready, avoiding the race where `load_file_async` overwrites draft
-    /// content. Consumed on first call (FnOnce).
-    pub load_completed_callback: RefCell<Option<Box<dyn FnOnce()>>>,
-    /// Deferred cursor line to apply after async file load completes.
-    pub restore_cursor_line: Cell<Option<u32>>,
-    /// Deferred cursor column to apply after async file load completes.
-    pub restore_cursor_col: Cell<Option<u32>>,
-    /// Deferred scroll-to line to apply after async file load completes.
-    pub restore_scroll_line: Cell<Option<u32>>,
+    /// External file-monitor state.
+    pub monitor: MonitorState,
+    /// Draft lifecycle state.
+    pub draft: DraftState,
+    /// Deferred cursor/scroll restoration state.
+    pub restore: RestoreState,
 }
 
 impl Default for LushtextEditorPage {
@@ -129,26 +151,15 @@ impl Default for LushtextEditorPage {
             evicted: Cell::new(false),
             cancel_token: Arc::new(AtomicBool::new(false)),
             settings: gio::Settings::new(crate::config::APP_ID),
-            dark_handler_id: RefCell::new(None),
-            word_wrap_handler_id: RefCell::new(None),
-            style_scheme_handler_id: RefCell::new(None),
-            tab_width_handler_id: RefCell::new(None),
-            insert_spaces_handler_id: RefCell::new(None),
+            preference_bindings: PreferenceBindingState::default(),
             formatting_overrides: Cell::new(FormattingOverrides::default()),
             modified_handler_id: RefCell::new(None),
             buffer_changed_handler_id: RefCell::new(None),
             memory_changed_callback: RefCell::default(),
             notification_callback: RefCell::default(),
-            file_monitor: RefCell::new(None),
-            monitor_generation: Cell::new(0),
-            last_known_mtime: Cell::new(None),
-            draft_dirty: Cell::new(false),
-            draft_id: RefCell::new(None),
-            draft_restored: Cell::new(false),
-            load_completed_callback: RefCell::default(),
-            restore_cursor_line: Cell::new(None),
-            restore_cursor_col: Cell::new(None),
-            restore_scroll_line: Cell::new(None),
+            monitor: MonitorState::default(),
+            draft: DraftState::default(),
+            restore: RestoreState::default(),
         }
     }
 }
@@ -192,7 +203,7 @@ impl ObjectImpl for LushtextEditorPage {
             buffer.disconnect(handler_id);
         }
         // Cancel file monitor to stop receiving events for this tab.
-        if let Some(monitor) = self.file_monitor.take() {
+        if let Some(monitor) = self.monitor.file_monitor.take() {
             monitor.cancel();
         }
     }
@@ -237,8 +248,14 @@ impl ObjectImpl for LushtextEditorPage {
         // and only falls back to GSettings when no override is active.
         apply_formatting_settings(&self.source_view, settings, FormattingOverrides::default());
         for (key, handler_field) in [
-            (keys::TAB_WIDTH, &self.tab_width_handler_id),
-            (keys::INSERT_SPACES, &self.insert_spaces_handler_id),
+            (
+                keys::TAB_WIDTH,
+                &self.preference_bindings.tab_width_handler_id,
+            ),
+            (
+                keys::INSERT_SPACES,
+                &self.preference_bindings.insert_spaces_handler_id,
+            ),
         ] {
             let editor_weak = self.obj().downgrade();
             let id = settings.connect_changed(Some(key), move |_, _| {
@@ -261,7 +278,9 @@ impl ObjectImpl for LushtextEditorPage {
         let id = settings.connect_changed(Some(keys::WORD_WRAP), move |s, _| {
             apply_word_wrap(&view, s);
         });
-        self.word_wrap_handler_id.replace(Some(id));
+        self.preference_bindings
+            .word_wrap_handler_id
+            .replace(Some(id));
 
         apply_color_scheme(&buffer, settings);
         {
@@ -270,7 +289,9 @@ impl ObjectImpl for LushtextEditorPage {
             let id = settings.connect_changed(Some(keys::STYLE_SCHEME), move |_, _| {
                 apply_color_scheme(&buf, &s);
             });
-            self.style_scheme_handler_id.replace(Some(id));
+            self.preference_bindings
+                .style_scheme_handler_id
+                .replace(Some(id));
         }
         {
             let buf = buffer.downgrade();
@@ -281,7 +302,9 @@ impl ObjectImpl for LushtextEditorPage {
                     apply_color_scheme(&buf, &s);
                 }
             });
-            self.dark_handler_id.replace(Some(handler_id));
+            self.preference_bindings
+                .dark_handler_id
+                .replace(Some(handler_id));
         }
 
         // Search bar close: hide_search restores cursor and detaches the
@@ -304,19 +327,19 @@ impl BoxImpl for LushtextEditorPage {}
 // access template children, so Rust's Drop is safe for them.
 impl Drop for LushtextEditorPage {
     fn drop(&mut self) {
-        if let Some(handler_id) = self.dark_handler_id.take() {
+        if let Some(handler_id) = self.preference_bindings.dark_handler_id.take() {
             libadwaita::StyleManager::default().disconnect(handler_id);
         }
-        if let Some(handler_id) = self.word_wrap_handler_id.take() {
+        if let Some(handler_id) = self.preference_bindings.word_wrap_handler_id.take() {
             self.settings.disconnect(handler_id);
         }
-        if let Some(handler_id) = self.style_scheme_handler_id.take() {
+        if let Some(handler_id) = self.preference_bindings.style_scheme_handler_id.take() {
             self.settings.disconnect(handler_id);
         }
-        if let Some(handler_id) = self.tab_width_handler_id.take() {
+        if let Some(handler_id) = self.preference_bindings.tab_width_handler_id.take() {
             self.settings.disconnect(handler_id);
         }
-        if let Some(handler_id) = self.insert_spaces_handler_id.take() {
+        if let Some(handler_id) = self.preference_bindings.insert_spaces_handler_id.take() {
             self.settings.disconnect(handler_id);
         }
     }

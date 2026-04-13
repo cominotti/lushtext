@@ -60,6 +60,32 @@ pub struct SearchProgressState {
     pub visible: Cell<bool>,
 }
 
+/// Session-persistence state for the main window shell.
+#[derive(Default)]
+pub struct SessionState {
+    /// Generation counter for debouncing session saves (500ms).
+    pub save_generation: Cell<u32>,
+    /// Guard flag while restoring session state from disk.
+    pub restoring: Cell<bool>,
+}
+
+/// Draft lifecycle state owned by the main window shell.
+#[derive(Default)]
+pub struct DraftState {
+    /// Source ID for the global autosave timer. Removed on dispose.
+    pub autosave_source_id: RefCell<Option<glib::SourceId>>,
+    /// In-memory draft manifest kept in sync with disk.
+    pub manifest: RefCell<DraftManifest>,
+    /// Draft content preloaded during session restore (draft_id -> text).
+    pub preloaded: RefCell<HashMap<String, String>>,
+    /// Monotonic counter for generating unique IDs for untitled tab drafts.
+    pub next_tab_id: Cell<u64>,
+    /// Draft IDs explicitly discarded during an in-progress close flow.
+    /// These must not be re-written by `flush_dirty_drafts()` right before the
+    /// window is destroyed.
+    pub close_discard_ids: RefCell<HashSet<String>>,
+}
+
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
 pub struct LushtextWindow {
@@ -134,22 +160,10 @@ pub struct LushtextWindow {
     pub open_paths: RefCell<HashSet<PathBuf>>,
     /// Editor-memory accounting used by the eviction helpers.
     pub editor_memory: EditorMemoryState,
-    /// Source ID for the global autosave timer. Removed on dispose.
-    pub autosave_source_id: RefCell<Option<glib::SourceId>>,
-    /// In-memory draft manifest kept in sync with disk.
-    pub draft_manifest: RefCell<DraftManifest>,
-    /// Draft content preloaded during session restore (draft_id -> text).
-    pub preloaded_drafts: RefCell<HashMap<String, String>>,
-    /// Monotonic counter for generating unique IDs for untitled tab drafts.
-    pub next_tab_id: Cell<u64>,
-    /// Draft IDs explicitly discarded during an in-progress close flow.
-    /// These must not be re-written by `flush_dirty_drafts()` right before the
-    /// window is destroyed.
-    pub close_discard_draft_ids: RefCell<HashSet<String>>,
-    /// Generation counter for debouncing session saves (500ms).
-    pub session_save_generation: Cell<u32>,
-    /// Guard flag while restoring session state from disk.
-    pub restoring_session: Cell<bool>,
+    /// Session save/restore state.
+    pub session: SessionState,
+    /// Draft persistence and autosave state.
+    pub drafts: DraftState,
     /// Focus widget saved before the search panel steals focus.
     pub search_saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     /// Window-scoped notification bus + store.
@@ -201,13 +215,8 @@ impl Default for LushtextWindow {
             saved_focus: RefCell::new(None),
             open_paths: RefCell::new(HashSet::new()),
             editor_memory: EditorMemoryState::default(),
-            autosave_source_id: RefCell::new(None),
-            draft_manifest: RefCell::new(DraftManifest::default()),
-            preloaded_drafts: RefCell::new(HashMap::new()),
-            next_tab_id: Cell::new(0),
-            close_discard_draft_ids: RefCell::new(HashSet::new()),
-            session_save_generation: Cell::new(0),
-            restoring_session: Cell::new(false),
+            session: SessionState::default(),
+            drafts: DraftState::default(),
             search_saved_focus: RefCell::new(None),
             notification_bus: NotificationBus::default(),
             notification_sweep_source_id: RefCell::new(None),
@@ -551,7 +560,7 @@ impl ObjectImpl for LushtextWindow {
     }
 
     fn dispose(&self) {
-        if let Some(source_id) = self.autosave_source_id.take() {
+        if let Some(source_id) = self.drafts.autosave_source_id.take() {
             source_id.remove();
         }
         if let Some(source_id) = self.notification_sweep_source_id.take() {

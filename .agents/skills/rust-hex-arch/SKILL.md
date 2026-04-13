@@ -1,305 +1,388 @@
 ---
 name: rust-hex-arch
-description: "Evaluate Rust code changes against Hexagonal Architecture, CQS, and DDD principles adapted for GTK4/Libadwaita desktop applications. Auto-invoked on any .rs file changes in the LushText codebase. Pragmatically assesses domain model purity, service/UI layer boundaries, CQS compliance, dependency direction, GObject subclassing patterns, and module structure. Use whenever Rust files are created, modified, or refactored — or when the user discusses architecture, module organization, separation of concerns, layer boundaries, where code should live, or how to structure a new feature. Also trigger when reviewing code, creating pull requests, or when any agent modifies .rs files."
+description: "Evaluate Rust code changes and architecture discussions against Hexagonal Architecture, CQS, DDD, and clean-code principles for GTK4/Libadwaita desktop applications. Use whenever Rust files are created, modified, reviewed, or refactored, or when the user asks how to modularize code, separate concerns, improve maintainability, choose between helper extraction vs new types, decide where code should live, or reason about domain purity, service boundaries, adapter splits, command/query boundaries, preview/apply splits, value objects, grouped state structs, or workflow-oriented module structure."
 ---
 
-Evaluate Rust code changes against Hexagonal Architecture, Command-Query Separation (CQS), and Domain-Driven Design (DDD). The goal is to guide the codebase toward better architecture gradually — the current structure already follows hex arch naturally, so the focus is on maintaining and deepening that alignment as features grow. Prioritize correctness, then simplicity, then testability, then maintainability.
+Evaluate Rust code changes against Hexagonal Architecture, Command-Query Separation (CQS), Domain-Driven Design (DDD), and clean-code principles adapted for GTK4/Libadwaita desktop applications.
 
-Assume developers may not know these patterns in a Rust/GTK4 context. When using a term from the Concept Glossary (at the end of this document), include a one-line explanation the first time it appears in the report. When genuinely ambiguous tradeoffs exist, present options with a strong recommendation. When the right answer is clear, state it directly.
+The goal is to preserve and deepen architectural intent, not to preserve any one recent refactor, helper name, or file layout. Recommend durable principles first, then concrete changes that fit the current code.
+
+Prioritize: correctness, simplicity, cohesion, testability, maintainability.
+
+Assume developers may not know these patterns in a Rust/GTK4 context. When using a term from the Concept Glossary, include a one-line explanation the first time it appears in the report. When tradeoffs are genuinely ambiguous, present options with a strong recommendation. When the right answer is clear, state it directly.
+
+Use `references/port-patterns.md` when deciding whether a trait is justified. Use `references/gtk-boundaries.md` when the boundary between GObject adapter code and business logic is unclear.
+
+## CQS From First Principles
+
+Treat Command-Query Separation as a caller-facing contract, not a naming game.
+
+Start every review by asking:
+- Is the caller trying to **learn** something or **make** something happen?
+- What observable state can differ after the call: domain state, persisted files, GTK widgets, notifications, undo state, or any cache callers depend on?
+- If the caller ignores the return value, is the call still meaningful? If yes, it is usually command-shaped.
+- If the caller runs the function twice, memoizes it, or reorders it, does the behavior stay sane? Queries usually tolerate that better than commands.
+
+Classify by observable behavior:
+- **Query**: answers a question and returns data. It may allocate, parse, sort, validate, or build a new immutable value, but it does not change pre-existing observable state.
+- **Command**: changes observable state or performs a side effect. It may mutate an aggregate, persist to disk, update GTK state, enqueue notifications, or advance workflow state.
+- **Mixed shape**: both mutates and returns a rich post-mutation snapshot, presentation model, or decision bundle. This is the main CQS smell to flag.
+
+Do not over-flag implementation detail:
+- Mutating locals, builders, or freshly-created values is not a CQS violation if no pre-existing observable state changes.
+- `with_*`, `normalized`, `sorted`, or similar methods that return a new value are query-shaped even if they rearrange internal data before returning.
+- Tracing, debug counters, or private memoization are only worth flagging when they change caller-visible semantics, ordering guarantees, or failure behavior.
+
+### Command Return-Shape Rules
+
+Commands may return narrow outcomes when the caller genuinely needs them to continue the workflow.
+
+Usually good:
+- `Result<()>`
+- `Result<bool>` or a small enum when the point is "did anything change?"
+- `Result<Id>` or a newly-created domain value when creation is the command's purpose
+- `Result<Outcome>` where `Outcome` is a small command summary such as counts, an undo token, or a next-step handle
+
+Usually suspicious:
+- returning the full mutated aggregate so the caller can immediately inspect it
+- returning GTK-facing models or presentation bundles from a service command
+- returning both "what changed" and "what should the UI render next" from one mutation
+- commands whose main return payload exists because the code has no clean follow-up query
+
+When in doubt, prefer one of these splits:
+- **preview/apply** when the same function both calculates and mutates
+- **query/command** when the caller first needs facts, then chooses an action
+- **pure transition + persistence** when one step computes the next domain state and another step writes it out
+- **command + follow-up query** when the caller wants a fresh read model after the mutation
+
+## Review Posture
+
+- Review for principles, not snapshots. Preserve architectural outcomes like "separate two workflows" or "replace repeated field shaping with a value object", not exact filenames from prior changes.
+- Recommend the smallest coherent change that improves the code.
+- Name the boundary or principle first, then explain the concrete effect on this codebase.
+- Use exact file moves only when the current diff makes the destination obvious. Otherwise recommend the separation and describe the target responsibility.
+- Favor code that is easy to navigate under pressure. A newcomer should be able to tell what a module owns, why a type exists, and where to add the next change.
 
 ## Pragmatism Guardrails
 
-These principles override pattern-matching instinct. When in doubt, favor the simpler option:
+These principles override pattern-matching instinct. When in doubt, favor the simpler option.
 
-1. **GObject subclassing IS your adapter pattern.** Every `mod.rs` + `imp.rs` widget pair is a driving adapter. The `glib::wrapper!` macro defines the public interface, `imp.rs` holds the private implementation. Adding another abstraction layer between the UI and services is noise.
+1. **GObject subclassing IS the adapter pattern.** Every `mod.rs` + `imp.rs` widget pair is already a driving adapter. Adding another abstraction layer between GTK widgets and services is usually noise.
 
-2. **Free functions are simpler than trait objects for single-implementation services.** `workspace_manager::load(path)` is clearer than `dyn WorkspaceStore`. Only introduce a trait when there are multiple implementations, when testability demands a seam that does not exist (e.g., replacing real file I/O in tests), or when the abstraction genuinely clarifies the domain. See `references/port-patterns.md` for the decision matrix.
+2. **Free functions are the default service boundary.** `workspace_manager::load(path)` is usually clearer than `dyn WorkspaceStore`. Only introduce a trait when multiple implementations, mock seams, or a named domain boundary justify it. See `references/port-patterns.md`.
 
-3. **`RefCell<T>` interior mutability in `imp` structs is the standard pattern.** GObject's single-ownership model requires interior mutability for runtime state. `RefCell<Option<PathBuf>>` for a file path, `RefCell<Vec<T>>` for a collection — these are the GTK4-rs convention, not a code smell.
+3. **`RefCell<T>` and `Cell<T>` in `imp` structs are normal.** GObject methods take `&self`; interior mutability is the standard GTK4-rs pattern, not a smell by itself.
 
-4. **GtkSourceView, AdwTabView, and TreeListModel are natural ports.** These GTK4 widgets provide well-designed contracts for text editing, tab management, and hierarchical data display. Wrapping them in custom abstractions adds indirection without benefit. See the Natural Ports table in Step 3.
+4. **GtkSourceView, AdwTabView, TreeListModel, and ListStore are natural ports.** They already provide strong framework contracts. Do not recommend wrapping them just to satisfy an abstract architecture diagram.
 
-5. **`spawn_blocking_then` IS your async adapter.** This project uses raw `std::thread::spawn` + `glib::idle_add_once` with `ThreadGuard` for safe thread crossing. Do not recommend adding Tokio, async-std, or any async runtime for I/O tasks. The GLib main loop IS the event loop. The only reason to introduce an async runtime would be if the app needed to manage many concurrent network connections (it does not).
+5. **`spawn_blocking_then` is the async adapter.** The GLib main loop is the event loop. Do not recommend Tokio or another async runtime for ordinary editor I/O.
 
-6. **Signal closures are adapter glue, not business logic.** A signal handler that translates a `GtkListView::activate` signal into a `window.open_document(path)` call is adapter code. Keep closures thin — they should delegate to service functions or widget methods, not contain conditional business logic. If a closure exceeds ~5 lines of non-delegation code, the logic probably belongs in a service function.
+6. **Signal closures are adapter glue, not business logic.** Thin closures that delegate immediately are good. If a closure grows beyond a few non-delegation lines, the logic likely belongs in a widget method, helper module, or service.
 
-7. **A crate boundary is stronger than a module boundary.** The two-crate workspace (`lushtext` binary + `lushtext-core` library) already enforces the primary boundary. Module-level `pub` visibility is sufficient for internal layering. Do not recommend splitting into more crates (like separate `domain`/`ports`/`adapters` crates) unless the project grows to 10k+ lines in `lushtext-core`.
+7. **A crate boundary is stronger than a module boundary.** The existing two-crate workspace already enforces the major separation. Do not recommend more crates unless scale clearly demands it.
 
-8. **Not every function needs a port trait.** A function signature IS a contract. `pub fn load(data_dir: &Path) -> Result<WorkspacesFile>` defines the port implicitly. Only extract a `trait` when the benefit is concrete and immediate: multiple implementations, mock injection for testing, or the abstraction genuinely names a domain concept that free functions obscure.
+8. **Not every contract needs a trait.** A function signature is already a port. Do not invent traits for single implementations with no testing or runtime polymorphism need.
 
-9. **Domain types in `model/` must have zero GTK/GLib dependencies.** This is non-negotiable. The `model/` module contains pure Rust types with `serde` derives. If a type needs a GObject wrapper (like `FileTreeItem`), that wrapper belongs in the UI layer, not in `model/`. The domain types are the core that everything else depends on — they must remain portable and testable without a display server.
+9. **Domain types in `model/` must stay framework-free.** No GTK, GLib, gio, sourceview, or UI/service imports.
 
-10. **`gio::ListStore` and other GLib collection types belong in the UI layer, not services.** Services should return standard Rust types (`Vec<T>`, `HashMap<K,V>`). The conversion to GLib types (`gio::ListStore`, `glib::BoxedAnyObject`) should happen at the adapter boundary — in the UI code that consumes the service result.
+10. **GLib collections belong in the UI layer.** Services should return `Vec`, `HashMap`, enums, and domain structs. Convert to `gio::ListStore` or similar at the adapter boundary.
 
-11. **Large driving adapters should split by workflow before adding more abstraction.** If one widget starts mixing unrelated flows (for example: actions, notifications, focus restoration, persistence, search runtime), keep the widget type as the adapter and extract sibling modules like `actions.rs`, `documents.rs`, `history.rs`, or `runtime.rs`. Splitting the file is usually better than inventing a new service or trait.
+11. **Split large driving adapters by workflow before adding abstraction.** If one widget mixes unrelated flows, extract sibling modules by workflow. Prefer `search.rs`, `drafts.rs`, `runtime.rs`, `dialogs.rs`, or similar over new service traits.
 
-12. **Repeated value-object shaping belongs in `model/`.** If UI or services rebuild the same bundle of fields in 2+ places (for example query text + search toggles + glob), extract a small domain value object plus conversion helpers instead of repeating field-by-field assembly.
+12. **Repeated value shaping belongs in the domain.** If UI or services rebuild the same field bundle in multiple places, extract a value object in `model/`.
 
-13. **Large `imp` structs may group related state into plain Rust helper structs.** Grouping fields like search-progress timers or editor-memory accounting is still normal GTK adapter state, not an architecture smell, when it makes the implementation easier to navigate.
+13. **Large `imp` structs may group related state into plain Rust helper structs.** Grouping fields by workflow is normal adapter hygiene when it improves navigation.
 
-## Target Module Structure
+14. **Prefer named structs and enums over anonymous tuples and parallel booleans when semantics matter.** If the reader has to remember what `(bool, bool)` means or which `Cell<u32>` pairs move together, the code wants a named type.
 
-Feature-first with layer separation within `lushtext-core/src/`. The structure below reflects the current layout plus the target direction for new features:
+15. **Prefer ubiquitous language over technical bucket names.** If the domain says draft, workspace, session, replacement preview, or formatting override, use those words instead of generic names like `data`, `manager`, `helper`, or `state2`.
 
+16. **Keep one level of abstraction per function.** A function should not bounce between raw widget manipulation, domain decisions, persistence details, and message formatting without clear internal phase boundaries.
+
+17. **Keep one dominant reason to change per module.** A module can coordinate multiple steps in one workflow, but should not own several unrelated workflows at once.
+
+18. **Preserve principles, not exact refactors.** A recommendation like "separate draft lifecycle from session persistence" is durable. A recommendation like "create `drafts.rs` and `session_persistence.rs`" is only appropriate when the current diff makes that the clearest concrete move.
+
+## Clean Code / DDD Heuristics
+
+Use these heuristics proactively when reviewing modularization and maintainability:
+
+### Prefer Value Objects for Repeated Bundles
+
+If the same cluster of fields is assembled in 2+ places, extract a **Value Object** — an identity-free type compared by value — into `model/`.
+
+Examples:
+- query text + toggles + glob
+- preview counts + selected indices
+- cursor line + column + scroll line
+- file path + display name + kind
+
+### Prefer Named Types Over Primitive Bags
+
+Recommend a named struct, enum, or newtype when code shows:
+- tuples with positional meaning
+- several related booleans that define one mode
+- `String`/`PathBuf`/`usize` values whose role is ambiguous across signatures
+- repeated `HashMap<K, V>` or `Vec<(A, B)>` shaping with implicit semantics
+
+### Move Invariants Toward the Domain
+
+If several services or adapters enforce the same invariant, recommend moving that rule onto the domain type or into a small domain policy.
+
+Good triggers:
+- ensuring exactly one active thing
+- deduplicating entries
+- retaining valid tabs
+- normalizing names or options
+- validating state transitions
+
+Do not force behavior into the domain when the rule is purely UI orchestration, lifecycle timing, or toolkit-specific.
+
+### Make CQS Pressure Concrete
+
+Apply CQS based on caller confusion, not doctrine:
+- If the caller has to read a return value to understand a mutation it just requested, the API may be doing two jobs.
+- If the caller wants to know "what would happen?" before deciding, recommend a preview/query instead of a command that mutates and reports.
+- If the same function both decides and executes, check whether that coupling is essential or just convenient.
+- If a command returns a broad struct only so downstream code can avoid a second read, prefer a follow-up query unless the outcome must be atomic.
+
+Useful refactor directions:
+- `build_*_preview(...) -> Preview` and `apply_*(preview) -> Outcome`
+- `next_state(...) -> DomainType` and `save_state(...) -> Result<()>`
+- `active_workspace(...) -> Option<WorkspaceId>` and `set_active_workspace(...) -> Result<()>`
+- `collect_matches(...) -> Vec<_>` and `replace_matches(...) -> ReplaceOutcome`
+
+### Keep Cross-Context Coordination Out of Domain Types
+
+When two **Bounded Contexts** — separate areas where one domain model applies — interact, coordination usually belongs in an application service or UI adapter, not in one domain type trying to own both worlds.
+
+Examples:
+- session restore coordinating with draft recovery
+- search results coordinating with editor navigation
+- sidebar mutations coordinating with command-palette indexing
+
+### Prefer Policies and Specifications for Repeated Decisions
+
+If one business rule appears across multiple call sites, recommend a small domain or service helper that names the rule.
+
+Examples:
+- "can this row be expanded?"
+- "should this file be skipped?"
+- "is this tab eligible for eviction?"
+- "is this replacement safe to apply?"
+
+Do not invent an extra layer for trivial one-off predicates.
+
+### Watch for Temporal Coupling
+
+Temporal coupling means code only works because steps happen in the right order. If a function depends on "first do A, then B, then C" with subtle state between them, recommend:
+- a named helper type representing that workflow state
+- a smaller function split by phase
+- comments that explain the ordering constraint when it must remain inline
+
+### Prefer Workflow Splits Over Utility Dumps
+
+If a module is large, split by workflow or responsibility, not by arbitrary "utils" buckets.
+
+Prefer:
+- `history.rs`, `runtime.rs`, `replace.rs`
+- `drafts.rs`, `session_persistence.rs`
+- `dialogs.rs`, `workspaces.rs`
+
+Avoid:
+- `helpers.rs`
+- `misc.rs`
+- `common.rs`
+
+unless the code is genuinely shared and cohesive.
+
+### Avoid Boolean Blindness
+
+If an API takes booleans whose meaning is hard to remember, recommend:
+- an enum
+- a named options struct
+- a domain value object
+
+Example:
+- `load_roots(roots, true)` is weaker than `load_roots(roots, AutoExpand::Yes)` or a named helper method when the flag carries workflow meaning.
+
+## Architectural Shape
+
+The exact file tree is illustrative, not mandatory. Review against this shape of responsibilities:
+
+```text
+model/     pure domain types, invariants, value objects, aggregate helpers
+services/  application logic and driven adapters, no GTK types
+ui/        driving adapters, GTK widgets, signal glue, widget orchestration
+app/lib/config  framework glue
 ```
-crates/lushtext-core/src/
-├── app.rs                       # Framework Glue: AdwApplication subclass, app-level actions
-├── config.rs                    # Framework Glue: compile-time constants (APP_ID, VERSION)
-├── lib.rs                       # Framework Glue: GResource registration, CSS loading, run()
-├── model/                       # Domain: pure Rust types, serde derives, zero GTK deps
-│   ├── workspace.rs             #   WorkspaceId, WorkspaceEntry, WorkspaceConfig, WorkspacesFile
-│   ├── document.rs              #   DocumentId
-│   └── session.rs               #   SessionTab, SessionData
-├── services/                    # Application + Driven Adapters
-│   ├── async_task.rs            #   Infrastructure: spawn_blocking_then utility
-│   ├── content_search/          #   Application: streaming search + replace/undo flows
-│   ├── json_store.rs            #   Driven Adapter: JSON file persistence
-│   ├── workspace_manager.rs     #   Application: workspace CRUD operations
-│   ├── session_service.rs       #   Application: session save/restore
-│   └── file_tree.rs             #   Application: directory scanning logic (plain Rust results)
-└── ui/                          # Driving Adapters: GTK4/Libadwaita widgets
-    ├── window/                  #   Main window: shell API + sibling modules per workflow
-    ├── editor_page/             #   GtkSourceView wrapper: file loading, editing, search
-    ├── sidebar/                 #   File tree: ListView + TreeListModel + TreeExpander
-    │   └── file_tree_item.rs    #   GObject data wrapper for tree entries
-    ├── search_panel/            #   Workspace search widget split into runtime/history/results
-    ├── search_bar/              #   Find/replace widget
-    └── preferences/             #   AdwPreferencesDialog
-```
 
-### Bounded Context Mapping
+The recommendation target is almost always one of these outcomes:
+- preserve dependency direction
+- separate bounded contexts
+- split adapter workflows
+- extract a value object or named state bundle
+- reduce primitive obsession
+- move repeated invariants closer to the domain
 
-Each bounded context corresponds to a coherent domain area:
+Do not treat the current folder names or recent refactor filenames as canonical law.
 
-| Bounded Context | Domain (`model/`) | Application (`services/`) | UI (`ui/`) |
-|----------------|-------------------|--------------------------|------------|
-| **Workspace** | `WorkspaceId`, `WorkspaceEntry`, `WorkspaceConfig`, `WorkspacesFile` | `workspace_manager` | `sidebar` (workspace display), `preferences` (workspace settings) |
-| **Session** | `SessionTab`, `SessionData` | `session_service` | `window` (tab state capture/restore) |
-| **Editing** | `DocumentId` | _(GtkSourceView is the natural port)_ | `editor_page`, `search_bar` |
-| **File Browsing** | _(implicit: paths)_ | `file_tree` (scan logic) | `sidebar` (tree display), `file_tree_item` |
+### Bounded Context Orientation
+
+Use bounded contexts as a review lens. In LushText, common contexts include:
+
+| Bounded Context | Typical Domain Concepts | Typical Application Logic | Typical UI Surface |
+|----------------|-------------------------|---------------------------|--------------------|
+| Workspace | Workspace id, roots, names, entries | CRUD, persistence, file-list coordination | sidebar, preferences |
+| Session | open tabs, active tab, restore positions | save/restore, filtering missing tabs | window shell |
+| Drafts | draft id, manifest entries, recovery state | autosave, cleanup, restore | window + editor page |
+| Editing | formatting overrides, cursor state | file load/save, editorconfig resolution | editor page, search bar |
+| Search | query spec, matches, replacements, saved searches | search, replace, history persistence | search panel, window actions |
+
+The rule is not "one file per bounded context". The rule is "do not mix unrelated contexts without a good reason, and make the coordination boundary obvious when you must."
 
 ## Dependency Direction Rules
 
-Dependencies must point inward: **UI → Services → Model**. Never the reverse.
+Dependencies point inward: `ui/` -> `services/` -> `model/`.
 
-```
-  ┌─────────────────────────────────────────┐
-  │            ui/ (Driving Adapters)        │
-  │  Depends on: services/, model/, GTK4    │
-  └──────────────────┬──────────────────────┘
-                     │ calls
-  ┌──────────────────▼──────────────────────┐
-  │          services/ (Application)         │
-  │  Depends on: model/, std, serde, anyhow │
-  │  Must NOT depend on: ui/, GTK4, GLib    │
-  └──────────────────┬──────────────────────┘
-                     │ uses
-  ┌──────────────────▼──────────────────────┐
-  │           model/ (Domain)                │
-  │  Depends on: std, serde ONLY            │
-  │  Must NOT depend on: services/, ui/,    │
-  │    GTK4, GLib, gio, any I/O crate       │
-  └─────────────────────────────────────────┘
+```text
+ui/        depends on services/, model/, GTK4/Libadwaita
+services/  depends on model/, std, serde, anyhow, pure support crates
+model/     depends on std, serde, and other non-UI pure-Rust crates only
 ```
 
-**Exception for driven adapters**: Service modules that perform I/O (like `json_store.rs`) inherently depend on `std::fs`. This is acceptable — they ARE the driven adapters. The key rule is that they must not depend on GTK/GLib types or on the `ui/` module.
+Exceptions:
+- driven adapters in `services/` may depend on `std::fs`, `serde_json`, etc.
+- `async_task.rs` may depend on `gtk4::glib` because it is infrastructure glue for thread hopping
 
-**`async_task.rs` exception**: This module imports `gtk4::glib` because its entire purpose is bridging background threads with the GLib main loop. It is infrastructure glue, not application logic.
+[FLAG] anything that reverses this dependency direction.
 
-## Severity Levels
-
-- **[FLAG]** — Architectural violation that will cause real problems (dependency direction wrong, business logic in signal closures, domain types with GTK deps). Recommend fixing in the current change.
-- **[RECOMMEND]** — Meaningful improvement. When genuinely ambiguous, includes a tradeoff discussion. Developer decides.
-- **[CONSIDER]** — Minor observation. Current approach is acceptable. Brief mention, no action required.
-- **[GOOD]** — Existing pattern that already follows Hex Arch/CQS/DDD well. Reinforces good habits and teaches by example. Include when code genuinely follows the patterns — do not fabricate praise.
+## Review Workflow
 
 ## Step 0: Identify Changed Files and Classify by Zone
 
-Determine which files changed using git (try `git diff --name-only`, then `--cached`, then `HEAD~1`, then `git status --porcelain`). Filter to `.rs` files in `crates/lushtext-core/src/`. Skip deleted files, test modules (`#[cfg(test)]`), and generated code.
+Determine changed files using git (`git diff --name-only`, `--cached`, `HEAD~1`, or `git status --porcelain`). Filter to `.rs` files in `crates/lushtext-core/src/`. Skip deleted files, generated code, and `#[cfg(test)]` modules.
 
-**Classify each file into a zone** based on its module path and responsibilities:
+Classify each file by primary responsibility:
 
 | Zone | Path Pattern | Characteristics | Scrutiny |
 |------|-------------|-----------------|----------|
-| **Domain** | `model/*.rs` | Pure Rust types, serde derives, no I/O, no GTK | Full |
-| **Application** | `services/*.rs` (logic) | Business rules, data transformations, orchestration. No GTK, no GLib. | Full |
-| **Driven Adapter** | `services/*.rs` (I/O) | File I/O, JSON persistence. Uses `std::fs`, `serde_json`. No GTK. | Moderate |
-| **Driving Adapter** | `ui/**/*.rs` | GTK4 widgets, signal handlers, template bindings. Delegates to services. | Light |
-| **Framework Glue** | `app.rs`, `lib.rs`, `config.rs` | Application lifecycle, GResource init, CSS loading, app-wide actions | Minimal |
+| Domain | `model/*.rs` | Pure Rust types, no GTK, no I/O | Full |
+| Application | `services/*.rs` logic | Business rules, orchestration, transformations | Full |
+| Driven Adapter | `services/*.rs` I/O | File or JSON I/O, persistence, infrastructure access | Moderate |
+| Driving Adapter | `ui/**/*.rs` | GTK widgets, signal wiring, presentation orchestration | Light |
+| Framework Glue | `app.rs`, `lib.rs`, `config.rs` | lifecycle, registration, constants | Minimal |
 
-For files that span zones (e.g., a service that imports GTK types), classify by primary responsibility and flag the zone-crossing code for extraction.
+State the zone and why at the top of each file review.
 
-State the zone classification and reasoning at the top of each file's review.
+## Step 1: Domain Review (`model/`) — Full Scrutiny
 
-## Step 1: Domain Zone Review (`model/`) — Full Scrutiny
+Check:
+- dependency purity
+- type design and naming
+- invariants and constructors
+- value-object extraction opportunities
+- aggregate responsibilities
+- whether methods are clearly command-shaped or query-shaped
+- whether pure transitions want `with_*`, `next_*`, or other value-returning APIs
+- whether command methods return only narrow outcomes instead of broad read models
+- repeated business rules that belong on the type
+- primitive obsession that wants a named type
 
-### 1a. Type Design
+[FLAG]:
+- GTK or service imports
+- domain logic scattered outside the domain in multiple places
+- ambiguous primitive bags across many signatures
+- command/query hybrids on aggregates that mutate and then hand back broad post-state data
 
-Domain types should be data-focused Rust structs with `#[derive(Serialize, Deserialize, Debug, Clone)]`. They should:
-- Use newtypes for identity (`WorkspaceId(String)`, `DocumentId(PathBuf)`) rather than bare primitives when the type appears in 3+ signatures or could be confused with another.
-- Use enums for variants (`WorkspaceEntry::Directory` vs `WorkspaceEntry::File`) — Rust enums are the natural encoding for DDD value objects with behavior variants.
-- Implement validation in constructors or `TryFrom` when invariants exist.
+[GOOD]:
+- pure value objects
+- aggregate helpers enforcing invariants
+- clear newtypes and enums
 
-**Do NOT flag**: Simple wrapper structs without validation — not every ID needs constructor validation.
+## Step 2: Application Review (`services/`) — Full Scrutiny
 
-### 1b. Domain Model Richness
+Check:
+- free-function service design by default
+- CQS compliance from the caller's point of view
+- no GTK dependencies
+- plain Rust inputs/outputs
+- orchestration across bounded contexts
+- whether repeated decision logic wants a named policy/specification helper
+- whether parameter/result tuples want named structs
 
-- **Rich model (good)**: Business rules live on the type. `WorkspacesFile` could have an `active_workspace()` method that enforces the "always has an active workspace" invariant.
-- **Anemic model (flag when behavior belongs to the type)**: If multiple service functions perform the same transformation on a domain type's fields, that logic belongs as a method on the type.
-- **Do NOT flag**: DTOs that are intentionally data-only (e.g., `SessionTab` whose fields are just cursor positions).
+[FLAG]:
+- GTK/GLib types in application services
+- services constructing widget-facing models
+- services that both perform a mutation and return a rich query result when that should be split
+- query-like names on functions that persist, notify, or otherwise mutate state
 
-### 1c. CQS on Domain Types
+[RECOMMEND]:
+- extract a named command/result object
+- move repeated invariants toward the domain
+- split mixed workflows inside one large service file
+- split preview/apply or query/command phases when one function both answers and acts
 
-- **`&self` methods** should be queries: return data, no mutation. Good: `fn active_workspace(&self) -> Option<&WorkspaceConfig>`.
-- **`&mut self` methods** should be commands: mutate state, return `()` or `Result<()>`. Good: `fn add_entry(&mut self, entry: WorkspaceEntry)`.
-- Flag methods that take `&mut self` AND return meaningful data (beyond `Result<()>`).
+## Step 3: Driving Adapter Review (`ui/`) — Light Scrutiny
 
-### 1d. Dependency Purity
+Check:
+- thin signal handlers
+- `mod.rs` as small public API
+- `imp.rs` limited to template/state/signal glue
+- large adapter splits by workflow
+- grouped state structs inside `imp` when state clusters move together
+- natural ports used directly, not wrapped gratuitously
+- query-like widget helpers do not hide durable business-state changes
 
-Domain types must NOT import:
-- `gtk4::*`, `libadwaita::*`, `glib::*`, `gio::*`, `sourceview5::*`
-- `std::fs`, `std::net`, or any I/O
-- Anything from `crate::ui` or `crate::services`
+[FLAG]:
+- business logic living in signal closures
+- application logic buried in `imp.rs`
+- services pulled upward into GTK-only helpers because it was convenient
 
-Domain types MAY import: `serde`, `std::path::{Path, PathBuf}` (paths are data, not I/O), `std::collections::*`, `anyhow`/`thiserror` for error types.
+[RECOMMEND]:
+- split a large widget by workflow
+- replace tuples and scattered `Cell`s with named helper structs
+- move repeated adapter-only predicates into widget-local helper modules
 
-## Step 2: Application Zone Review (`services/` logic) — Full Scrutiny
+## Step 4: Driven Adapter Review (`services/` I/O) — Moderate Scrutiny
 
-### 2a. Service Function Design
+Check:
+- I/O isolation behind clear function boundaries
+- atomic or otherwise deliberate persistence patterns
+- no upward dependency on `ui`
+- whether a trait is actually justified per `references/port-patterns.md`
+- whether read helpers and write helpers stay distinct unless one atomic workflow truly needs both
 
-Service functions should be stateless free functions (no `struct` with `impl`). They take their dependencies as parameters: paths, config values, or domain types. This makes them trivially testable — pass a temp directory path instead of a real one.
+## Step 5: Framework Glue Review — Minimal Scrutiny
 
-```rust
-// Good: free function, takes path parameter
-pub fn load(data_dir: &Path) -> Result<WorkspacesFile>
+Only check that `app.rs`, `lib.rs`, and `config.rs` do not accumulate business rules.
 
-// Avoid: struct with state (unless managing a connection pool or cache)
-pub struct WorkspaceManager { data_dir: PathBuf }
-impl WorkspaceManager { pub fn load(&self) -> Result<WorkspacesFile> }
-```
+## Step 6: Module and Recommendation Quality Review
 
-**Exception**: A struct is justified when it manages a long-lived resource (connection, cache, channel) or when multiple operations share expensive initialization.
+Recommendations must be principle-first.
 
-### 2b. CQS Compliance
+Good:
+- "Separate draft lifecycle from session snapshot persistence; the current module mixes two workflows."
+- "Extract a query value object because UI and services rebuild the same fields."
+- "Group these `Cell`/`RefCell` fields into one named state bundle because they move together."
+- "Split `preview_replacements` from `apply_replacements`; the current function both computes impact and mutates files."
+- "Keep `set_active_workspace` command-shaped and move the read model into a follow-up query."
 
-- **Queries** return `T` or `Result<T>` and do not write to disk, mutate shared state, or produce side effects (logging is acceptable).
-- **Commands** return `()` or `Result<()>` and perform a mutation (write file, update state).
-- Flag functions that save data AND return the loaded result in the same call — split into `save()` then `load()`.
-- **Do NOT flag**: `active_workspace()` which creates a default workspace if none exists — this is a domain rule (ensure-exists), not a CQS violation.
+Bad:
+- "Create `drafts.rs` because that was done before."
+- "Use helper struct `SearchRuntimeState` because that exact name exists elsewhere."
+- "Mirror the current module tree."
+- "Return the full updated aggregate from the command so callers do not need a second function."
 
-### 2c. No GTK Dependencies
+Mention exact file moves only when the current diff makes them clearly appropriate.
 
-Application-layer services must NOT import `gtk4`, `libadwaita`, `glib`, `gio`, or `sourceview5`. They must not construct GObject types (`gio::ListStore`, `glib::Object`, any `glib::wrapper!` type).
-
-**Historical pitfall to watch for**: services sometimes grow GTK return types for convenience during feature work. If a service starts constructing `gio::ListStore`, `TreeListModel`, or any widget-facing object, move that construction back into the UI layer and keep the service returning plain Rust data (as `file_tree.rs` does today).
-
-### 2d. Error Handling
-
-Services return `anyhow::Result`. They should NOT panic, unwrap without justification, or silently swallow errors. Use `tracing::warn!` or `tracing::error!` for recoverable failures (like a missing directory), and propagate `Result` for failures the caller must handle.
-
-## Step 3: Driving Adapter Zone Review (`ui/`) — Light Scrutiny
-
-### 3a. Thin Signal Handlers
-
-Signal closures should translate UI events into service calls or widget method calls. They should NOT contain:
-- Business logic (conditional rules, data transformations, validation beyond basic null-checks)
-- Direct file I/O (use `spawn_blocking_then` via the service layer)
-- Multi-step orchestration (extract to a method on the widget's `mod.rs`)
-
-**Good pattern** — signal handler delegates immediately:
-```rust
-self.sidebar.connect_file_activated(move |path| {
-    window.open_document(path);
-});
-```
-
-**Flag** — business logic in a signal closure:
-```rust
-self.sidebar.connect_file_activated(move |path| {
-    if path.extension().map_or(false, |e| e == "md") {
-        // ... 15 lines of markdown-specific logic
-    }
-});
-```
-
-### 3b. Natural Ports
-
-These GTK4 types serve as hexagonal ports — well-designed contracts that the UI layer depends on. Do NOT recommend wrapping them:
-
-| GTK4 Type | Hex Arch Role | Why It's a Natural Port |
-|-----------|---------------|------------------------|
-| `sourceview5::Buffer` | **Editing Port** | Owns document text, undo/redo, syntax highlighting. The domain's text-editing contract. |
-| `sourceview5::View` | **Display Port** | Renders the buffer with line numbers, margins, word wrap. |
-| `libadwaita::TabView` | **Tab Management Port** | Manages tab lifecycle, ordering, drag-and-drop. |
-| `gtk4::TreeListModel` | **Hierarchical Data Port** | Lazy tree expansion with `create_model_func` callback. |
-| `gio::ListStore` | **Observable Collection** | Signals `items-changed` for reactive UI updates. |
-| `libadwaita::StyleManager` | **Theme Port** | `is_dark()` + `connect_dark_notify()` for theme reactivity. |
-
-### 3c. No Business Logic in `imp.rs`
-
-The `imp.rs` file should contain only: `ObjectSubclass` trait implementations, `CompositeTemplate` bindings, `constructed()` for signal wiring, and property definitions. Business decisions belong in `mod.rs` methods (which delegate to services) or in the service layer.
-
-### 3d. `mod.rs` as Public API
-
-The widget's `mod.rs` defines its public API — the methods other widgets call. This is the widget's "port" from the perspective of other UI code. Keep the API small and intention-revealing:
-```rust
-// Good: clear intent
-impl LushtextWindow {
-    pub fn open_document(&self, path: &Path) { ... }
-    pub fn new_tab(&self) { ... }
-    pub fn save_current(&self) { ... }
-}
-```
-
-If `mod.rs` starts mixing multiple workflows, extract sibling modules and leave `mod.rs` as the small facade that defines the widget's public surface.
-
-## Step 4: Driven Adapter Zone Review (`services/` I/O) — Moderate Scrutiny
-
-### 4a. I/O Isolation
-
-Driven adapters (`json_store.rs`, the I/O parts of `file_tree.rs`) should isolate I/O behind a clean function boundary. The caller passes a path; the function does the I/O and returns a domain type.
-
-```rust
-// Good: clean boundary — takes path, returns domain type
-pub fn load(data_dir: &Path) -> Result<WorkspacesFile>
-
-// Less good: I/O scattered inline in application logic
-let contents = std::fs::read_to_string(&path)?;
-let data: WorkspacesFile = serde_json::from_str(&contents)?;
-```
-
-### 4b. Port Trait Decision
-
-Read `references/port-patterns.md` for the full decision matrix. The short version:
-
-| Situation | Pattern | Example |
-|-----------|---------|---------|
-| Single implementation, simple I/O | Free function | `json_store::load::<T>(path)` |
-| Need to mock in tests | Trait parameter | `fn process(store: &impl WorkspaceStore)` |
-| Multiple implementations | Trait object | `Box<dyn FileScanner>` for local vs remote |
-| Cross-cutting infrastructure | Utility function | `async_task::spawn_blocking_then` |
-
-### 4c. No Upward Dependencies
-
-Driven adapters must NOT import from `crate::ui`. They may import from `crate::model` (they return domain types) and from `std::fs`, `serde_json`, etc. (they perform I/O).
-
-## Step 5: Framework Glue Zone Review — Minimal Scrutiny
-
-Only check: `app.rs`, `lib.rs`, and `config.rs` must not contain business rules. Application-level actions (`quit`, `about`, `preferences`) are routing, not domain logic. CSS loading, GResource registration, and `tracing` setup are infrastructure.
-
-## Step 6: Module Structure Review
-
-**For files IN the current diff** that are not in their target module: recommend moving to the correct layer as a [RECOMMEND] or [CONSIDER].
-
-**For NEW files**: Guide to the correct module path directly. Ask: "Does this type need GTK? → `ui/`. Does it need I/O? → `services/`. Is it pure data? → `model/`."
-
-**Do NOT recommend moves for files NOT in the current diff.**
-
-**Shared code rule**: If a utility in `services/` is only used by one UI widget, it may actually be UI-layer code misplaced in services. If it doesn't need I/O, it can live in the widget's module.
+Do not recommend moving untouched files unless there is a high-severity boundary violation.
 
 ## Step 7: Produce the Report
 
-```
+Use this structure:
+
+```markdown
 ## Hex Arch / CQS / DDD Review
 
 ### Summary
@@ -308,72 +391,81 @@ Only check: `app.rs`, `lib.rs`, and `config.rs` must not contain business rules.
 - Findings: N (X flag, Y recommend, Z consider, W good)
 
 ### File: path/to/file.rs
-**Zone**: Application
+**Zone**: Driving Adapter
+**Why**: GTK widget orchestration and signal handling.
 
-#### [GOOD] Clean service function design
-`workspace_manager::load` is a free function taking `&Path`, returning `Result<WorkspacesFile>`.
-Pure application logic with no GTK dependencies. Easily testable with a temp directory.
+#### [GOOD] Workflow-oriented split preserves adapter clarity
+The widget stays the adapter, but search runtime and history flows are separated into sibling modules.
+This preserves the same architectural boundary while improving navigation.
 
-#### [FLAG] Upward dependency on UI layer
-`file_tree.rs` imports `crate::ui::sidebar::file_tree_item::FileTreeItem` — a GObject
-wrapper from the driving adapter zone. This couples the service layer to the UI.
-**Fix**: Move `build_root_model` and `build_children_model` (the functions that construct
-`gio::ListStore`) to the sidebar UI module. Keep `scan_directory` in services — it returns
-`Vec<(PathBuf, bool)>` which is a clean, framework-free result.
+#### [RECOMMEND] Replace repeated field shaping with a value object
+This file and one service rebuild the same query-plus-options bundle.
+**Principle**: repeated value shaping belongs in the domain.
+**Fix**: extract or reuse one domain value object and make both call sites convert through it.
 
-#### [RECOMMEND] Extract domain method (with tradeoff)
-`session_service::filter_existing_tabs` mutates `SessionData` in place. This validation
-logic could live as `SessionData::retain_existing_tabs(&mut self)` — making the domain type
-richer and the service thinner.
-| Criteria | Keep in service | Move to domain type |
-|----------|----------------|-------------------|
-| Testability | Same | Same (both easy) |
-| Cohesion | Logic near I/O | Logic near data |
-| **Recommendation** | **Fine for now** | **Better as domain grows** |
+#### [RECOMMEND] Separate two bounded contexts in one module
+This module mixes session persistence and draft recovery.
+**Principle**: keep cross-context coordination explicit and keep modules cohesive.
+**Fix**: split by workflow or introduce named helper structs that make the two flows obvious. Exact filenames are secondary.
+
+#### [RECOMMEND] Split preview from apply for a CQS-clean workflow
+This function calculates replacement impact and mutates files in one pass.
+**Principle**: if the caller needs to inspect consequences before deciding, that wants a query or preview first, then a command.
+**Fix**: return a preview/query object from one function and keep file mutation in a separate apply command or explicit second step.
+
+#### [FLAG] Upward dependency on GTK in application logic
+This service constructs `gio::ListStore`.
+**Fix**: return plain Rust data from the service and construct GTK models in the UI adapter.
 ```
+
+Explain why each finding matters. Present findings as a thinking partner, not a linter.
 
 ## Comment Quality Cross-Check
 
-After completing the architectural review, verify that new and modified code follows the `rust-comments` skill for:
-
-- Module-level `//!` docs explaining architectural role and layer placement
-- `///` docs on all public types and functions, including threading model and side effects
-- GTK/GLib concepts explained at first use in each file (consult `rust-comments/references/gtk-concepts.md`)
-- Inline comments on non-obvious decisions, especially layer boundary crossings and architectural trade-offs
-- `imp` struct fields documented with purpose and lifecycle
-
-This is especially important for domain types in `model/` (invariants must be documented) and service functions (threading model and CQS classification should be clear from the doc comments).
+After the architectural review, verify that new and modified code also follows the `rust-comments` skill:
+- module-level `//!` docs explain architectural role
+- public types/functions have `///` docs with side effects and threading model when relevant
+- GTK/GLib concepts are explained at first use
+- `imp` struct fields are documented with purpose and lifecycle
+- inline comments explain non-obvious ordering constraints and boundary crossings
 
 ## What NOT to Flag
 
-- `RefCell<T>` or `Cell<T>` in `imp.rs` — standard GObject interior mutability
-- `#[derive(CompositeTemplate)]`, `#[template_child]` — framework metadata, not coupling
-- `glib::wrapper!` macro invocations — the GObject type system bridge
-- `ensure_type()` calls in `class_init()` — required for template parsing
-- `connect_*_local()` closures that are ≤5 lines and only delegate
-- `tracing::info!` / `tracing::warn!` in services — observability is not a side effect for CQS
-- Test modules (`#[cfg(test)]`) — different rules apply
-- `config.rs` constants — compile-time configuration is framework glue
-- `PathBuf` in domain types — paths are data, not I/O
+- `RefCell<T>` or `Cell<T>` in `imp.rs`
+- `#[derive(CompositeTemplate)]`, `#[template_child]`, `glib::wrapper!`
+- `ensure_type()` calls in `class_init()`
+- short delegating `connect_*_local()` closures
+- `tracing::*` in services
+- test modules
+- `config.rs` constants
+- `PathBuf` in domain types
+- grouped helper structs inside `imp.rs`
+- exact filename differences that still preserve the same principle
 
 ## Concept Glossary
 
 | Term | Explanation |
 |------|------------|
-| **Hexagonal Architecture** | Business logic has zero dependencies on frameworks or I/O — external access goes through ports implemented by adapters. In Rust/GTK4: `model/` depends on nothing; `services/` depends on `model/`; `ui/` depends on both. |
-| **Port** | A boundary contract. In Rust: either a function signature (implicit port) or a `trait` definition (explicit port). Driving ports are called by adapters to enter the application. Driven ports are called by the application to reach infrastructure. |
-| **Driving Adapter** | Inbound adapter — translates external events into application calls. In GTK4: the `ui/` widgets that handle user input and call service functions. |
-| **Driven Adapter** | Outbound adapter — implements infrastructure access. In this project: `json_store.rs` (file persistence), `file_tree.rs::scan_directory` (directory listing). |
-| **Natural Port** | A framework type that serves as a well-designed contract without needing a custom wrapper. GtkSourceView's `Buffer` is a natural port for text editing — it provides undo/redo, syntax highlighting, and modification tracking. |
-| **Value Object** | Immutable, identity-free, equality by value. In Rust: a `struct` or `enum` with `#[derive(PartialEq, Eq, Clone)]`. Examples: `WorkspaceEntry`, `SessionTab`. |
-| **Entity** | Object with unique identity. Two entities with same data but different IDs are different. Example: `WorkspaceConfig` (identified by `WorkspaceId`). |
-| **Aggregate** | Cluster of domain objects treated as a unit. The aggregate root controls access. Example: `WorkspacesFile` is the aggregate root — you modify workspaces through it, not directly. |
-| **CQS** | Every function either changes state (command, returns `()`) or returns data (query, no side effects) — never both. Applied to service functions and domain type methods. |
-| **Bounded Context** | A boundary within which a domain model applies. In LushText: Workspace, Session, Editing, File Browsing are separate contexts. |
-| **Dependency Direction** | Dependencies point inward: `ui/` → `services/` → `model/`. The domain never imports infrastructure or UI code. |
-| **Interior Mutability** | Rust pattern using `RefCell<T>` or `Cell<T>` to mutate data behind a shared reference. Required in GObject `imp` structs because GTK holds shared references to widgets. |
-| **Framework Glue** | Code that wires the application together: `AdwApplication` setup, GResource registration, CSS loading, app-level actions. Contains no business logic. |
+| **Hexagonal Architecture** | Business logic stays independent of frameworks and I/O. In Rust/GTK4 this usually means `model/` pure, `services/` GTK-free, `ui/` framework-facing. |
+| **Port** | A boundary contract. In Rust this can be a function signature or a trait, depending on the level of indirection actually needed. |
+| **Driving Adapter** | Inbound adapter that translates UI or external events into application calls. In GTK4 this is usually a widget module. |
+| **Driven Adapter** | Outbound adapter that reaches infrastructure like files, JSON, or external systems. |
+| **Natural Port** | A framework type whose contract is already strong enough that wrapping it adds no value. |
+| **Value Object** | Identity-free data compared by value. Good for repeated field bundles and option sets. |
+| **Entity** | Data with stable identity even when other fields change. |
+| **Aggregate** | A cluster of domain objects treated as one consistency boundary. |
+| **CQS** | Separate "tell" from "ask": a command changes observable state, a query returns information. Small command acknowledgements are fine; rich post-mutation read models are the smell. |
+| **Bounded Context** | A coherent part of the domain with its own vocabulary and model. |
+| **Ubiquitous Language** | The shared domain vocabulary used consistently in types, functions, and module names. |
+| **Temporal Coupling** | Logic that only works because operations happen in a specific order. If important, make that order explicit. |
+| **Interior Mutability** | Rust pattern using `RefCell<T>` or `Cell<T>` to mutate data through `&self`, required frequently in GObject adapters. |
+| **Framework Glue** | Lifecycle, registration, CSS/resources, and other setup code with no business rules. |
 
 ## Tone
 
-Present findings as a thinking partner, not a linter. Explain the "why" behind each finding — architecture rules exist to enable testability, maintainability, and team scalability. Acknowledge what works before suggesting improvements. Draft concrete code when recommending changes. When reviewing existing code (not just new changes), focus [GOOD] findings on patterns worth reinforcing and [RECOMMEND] on the highest-value improvements.
+Be direct, pragmatic, and principle-first.
+- Reinforce what is already working.
+- Recommend the smallest coherent improvement.
+- Explain the why behind architecture advice.
+- Prefer durable guidance over copying prior refactors.
+- When calling out a CQS problem, explain the caller confusion or temporal coupling it creates.

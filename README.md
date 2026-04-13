@@ -114,6 +114,7 @@ Two-crate Cargo workspace:
 lushtext-core/src/
   app.rs             Application entry (AdwApplication subclass)
   config.rs          Compile-time constants
+  lib.rs             Resource registration, CSS loading, and app bootstrap
   model/             Domain types (no GTK deps)
     workspace.rs     Workspace persistence model
     session.rs       Tab session model
@@ -122,11 +123,11 @@ lushtext-core/src/
     content_search.rs  Content search types (SearchMatch, SearchEvent, etc.)
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
-    content_search.rs  Parallel workspace grep (ignore + grep-searcher)
+    content_search/  Parallel workspace grep plus replace/undo helpers
+    palette/         Command registry, SIMD fuzzy search, and file indexing
     editor_io.rs     Text file load/save helpers and mtimes
     editorconfig.rs  .editorconfig resolution
     notifications.rs Window-scoped status and inline notification store
-    palette.rs       SIMD fuzzy search + file indexing
     file_tree.rs     Directory scanning
     draft_service.rs Draft autosave
     search_backup.rs Replace All undo backup persistence for the active session
@@ -136,11 +137,11 @@ lushtext-core/src/
     workspace_manager.rs  Workspace CRUD
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
-    window/          Main window shell plus dialogs, search, session, print, and zoom wiring
-    editor_page/     GtkSourceView tab
-    sidebar/         Multi-workspace file tree, including per-section async child-tree loading
+    window/          Main window shell plus actions, documents, drafts, search, preview, session persistence, print, and zoom wiring
+    editor_page/     GtkSourceView tab plus load/save, monitor, and in-tab search helpers
+    sidebar/         Multi-workspace file tree, dialogs, callbacks, and per-section async child-tree loading
     properties_panel/ Right-side metadata + formatting controls
-    search_panel/    Ctrl+Shift+F workspace content search
+    search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows
     command_palette/ Ctrl+P fuzzy search
     search_bar/      Find/replace
     status_bar/      Bottom bar

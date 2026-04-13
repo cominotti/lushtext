@@ -1,0 +1,178 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Built-in command registry and unified command-palette search entry points.
+//!
+//! This slice owns static command definitions and the merge logic that combines
+//! command results with file-index matches.
+
+use crate::model::palette::{
+    CommandCategory, CommandDef, ScoredResult, SearchMode, SearchResultItem,
+};
+
+use super::fuzzy::search_items;
+use super::index::FileIndex;
+
+/// All built-in commands available in the palette.
+#[must_use]
+pub fn all_commands() -> &'static [CommandDef] {
+    static COMMANDS: &[CommandDef] = &[
+        CommandDef {
+            id: "win.new-tab",
+            label: "New File",
+            category: CommandCategory::File,
+            shortcut: Some("Ctrl+T"),
+        },
+        CommandDef {
+            id: "win.open-file",
+            label: "Open File",
+            category: CommandCategory::File,
+            shortcut: Some("Ctrl+O"),
+        },
+        CommandDef {
+            id: "win.open-folder",
+            label: "Open Folder",
+            category: CommandCategory::File,
+            shortcut: None,
+        },
+        CommandDef {
+            id: "win.save",
+            label: "Save",
+            category: CommandCategory::File,
+            shortcut: Some("Ctrl+S"),
+        },
+        CommandDef {
+            id: "win.save-as",
+            label: "Save As",
+            category: CommandCategory::File,
+            shortcut: Some("Ctrl+Shift+S"),
+        },
+        CommandDef {
+            id: "win.print",
+            label: "Print",
+            category: CommandCategory::File,
+            shortcut: Some("Ctrl+P"),
+        },
+        CommandDef {
+            id: "win.begin-search",
+            label: "Find and Replace",
+            category: CommandCategory::Edit,
+            shortcut: Some("Ctrl+F"),
+        },
+        CommandDef {
+            id: "win.close-tab",
+            label: "Close Tab",
+            category: CommandCategory::Edit,
+            shortcut: Some("Ctrl+W"),
+        },
+        CommandDef {
+            id: "win.toggle-sidebar",
+            label: "Toggle Sidebar",
+            category: CommandCategory::View,
+            shortcut: Some("F9"),
+        },
+        CommandDef {
+            id: "win.toggle-fullscreen",
+            label: "Fullscreen",
+            category: CommandCategory::View,
+            shortcut: Some("F11"),
+        },
+        CommandDef {
+            id: "win.zoom-in",
+            label: "Zoom In",
+            category: CommandCategory::View,
+            shortcut: Some("Ctrl+="),
+        },
+        CommandDef {
+            id: "win.zoom-out",
+            label: "Zoom Out",
+            category: CommandCategory::View,
+            shortcut: Some("Ctrl+-"),
+        },
+        CommandDef {
+            id: "win.zoom-reset",
+            label: "Reset Zoom",
+            category: CommandCategory::View,
+            shortcut: Some("Ctrl+0"),
+        },
+        CommandDef {
+            id: "win.show-help-overlay",
+            label: "Keyboard Shortcuts",
+            category: CommandCategory::View,
+            shortcut: None,
+        },
+        CommandDef {
+            id: "app.preferences",
+            label: "Preferences",
+            category: CommandCategory::App,
+            shortcut: None,
+        },
+        CommandDef {
+            id: "app.about",
+            label: "About LushText",
+            category: CommandCategory::App,
+            shortcut: None,
+        },
+        CommandDef {
+            id: "app.quit",
+            label: "Quit",
+            category: CommandCategory::App,
+            shortcut: Some("Ctrl+Q"),
+        },
+    ];
+    COMMANDS
+}
+
+/// Search the command registry with a fuzzy query.
+pub fn search_commands(query: &str, max: usize) -> Vec<ScoredResult<'static>> {
+    search_items(
+        all_commands().iter(),
+        |command| command.label,
+        SearchResultItem::Command,
+        query,
+        max,
+    )
+}
+
+/// Search both files and commands according to the given mode.
+#[must_use]
+pub fn search_all<'a>(
+    index: &'a FileIndex,
+    query: &str,
+    mode: SearchMode,
+    max: usize,
+) -> Vec<ScoredResult<'a>> {
+    match mode {
+        SearchMode::Files => index.search(query, max),
+        SearchMode::Commands => search_commands(query, max),
+        SearchMode::All => {
+            let files = index.search(query, max);
+            let commands = search_commands(query, max);
+            merge_sorted(files, commands, max)
+        }
+    }
+}
+
+fn merge_sorted<'a>(
+    a: Vec<ScoredResult<'a>>,
+    b: Vec<ScoredResult<'a>>,
+    max: usize,
+) -> Vec<ScoredResult<'a>> {
+    let mut result = Vec::with_capacity(max.min(a.len() + b.len()));
+    let mut a = a.into_iter().peekable();
+    let mut b = b.into_iter().peekable();
+    while result.len() < max {
+        match (a.peek(), b.peek()) {
+            (Some(x), Some(y)) => {
+                if x.score >= y.score {
+                    result.push(a.next().unwrap());
+                } else {
+                    result.push(b.next().unwrap());
+                }
+            }
+            (Some(_), None) => result.push(a.next().unwrap()),
+            (None, Some(_)) => result.push(b.next().unwrap()),
+            (None, None) => break,
+        }
+    }
+    result
+}

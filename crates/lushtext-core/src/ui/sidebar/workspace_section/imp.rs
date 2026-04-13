@@ -7,7 +7,7 @@
 //! to the parent sidebar.
 
 use super::super::file_tree_item::FileTreeItem;
-use crate::model::workspace::WorkspaceId;
+use crate::model::workspace::{WorkspaceEntry, WorkspaceId};
 use gtk4::gio;
 use gtk4::gio::prelude::ListModelExt;
 use gtk4::prelude::*;
@@ -59,8 +59,8 @@ pub struct LushtextWorkspaceSection {
 
     /// Stack of paths for deep-nesting drill-down navigation.
     pub drilldown_stack: RefCell<Vec<PathBuf>>,
-    /// Original workspace roots to restore when exiting drill-down.
-    pub original_roots: RefCell<Vec<(PathBuf, bool)>>,
+    /// Original workspace entries to restore when exiting drill-down.
+    pub original_roots: RefCell<Vec<WorkspaceEntry>>,
     /// Remember expanded paths across drill-downs to restore tree state.
     pub expanded_paths: RefCell<std::collections::HashSet<PathBuf>>,
     /// Path to select and scroll to once it loads (used after navigating back).

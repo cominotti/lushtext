@@ -48,55 +48,51 @@ src/
 │   └── formatting_overrides.rs  # FormattingOverrides — per-file EditorConfig overrides
 ├── services/           # Business logic
 │   ├── async_task.rs   # spawn_blocking_then, MAX_CONCURRENT_SPAWNS, concurrency guard
-│   ├── json_store.rs   # Generic JSON load/save + data_dir()
-│   ├── workspace_manager.rs
-│   ├── session_service.rs
-│   ├── file_tree.rs    # Directory scanning (pure I/O, bounded/cancellable helpers for sidebar)
-│   ├── file_limits.rs  # File size thresholds for graceful degradation
-│   ├── palette.rs      # Fuzzy matching (nucleo SIMD), file indexing, command registry
+│   ├── content_search/ # Workspace-wide grep: streaming search + replace/undo helpers
+│   ├── palette/        # Command registry, fuzzy matching, and file indexing
 │   ├── draft_service.rs # Draft persistence: save/load/delete draft files and manifest
-│   ├── content_search/   # Workspace-wide grep: streaming search + replace/undo helpers
 │   ├── editor_io.rs    # Text file load/save helpers, mtimes, close-flush timestamps
+│   ├── editorconfig.rs # .editorconfig file discovery and parsing (pure I/O, no GTK)
+│   ├── file_limits.rs  # File size thresholds for graceful degradation
+│   ├── file_tree.rs    # Directory scanning (pure I/O, bounded/cancellable helpers for sidebar)
+│   ├── json_store.rs   # Generic JSON load/save + data_dir()
 │   ├── notifications.rs # Window-scoped status and inline notification store
+│   ├── saved_searches.rs # Named saved search persistence: load/save/add/remove (permanent)
 │   ├── search_backup.rs # Replace All undo backup persistence within the current session
 │   ├── search_history.rs # Search history persistence: load/save/dedup (capped at 20)
-│   ├── saved_searches.rs # Named saved search persistence: load/save/add/remove (permanent)
-│   └── editorconfig.rs  # .editorconfig file discovery and parsing (pure I/O, no GTK)
+│   ├── session_service.rs
+│   └── workspace_manager.rs
 ├── benches/
 │   └── benchmarks.rs   # Criterion benchmarks for all performance-sensitive services
-└── ui/                 # GTK4/Libadwaita widgets (each has mod.rs + imp.rs)
-    ├── window/          # Main window: HeaderBar, TabBar, split-view shell, Stack, StatusBar
-    │   ├── actions.rs   # Window actions, shortcuts, and split-view toggles
-    │   ├── dialogs.rs   # File dialogs plus save/discard close-flow coordination
-    │   ├── documents.rs # Document lifecycle, header/status refresh, EditorConfig routing
-    │   ├── focus_indexing.rs # Focus restoration, editor memory, command-palette indexing
-    │   ├── notifications.rs # Window-scoped notification rendering/publication
-    │   ├── preview.rs   # Markdown preview pane: side-by-side + Alt+P toggle modes
-    │   ├── print.rs     # GtkSourceView print action wiring
-    │   ├── search.rs    # Search panel integration: Ctrl+Shift+F, workspace root forwarding, F4 navigation, progress
-    │   ├── session.rs   # Session persistence, draft autosave, and restore wiring
-    │   └── zoom.rs      # Zoom controls and window actions
-    ├── editor_page/     # GtkSourceView + search bar revealer
-    ├── sidebar/         # Multi-workspace sidebar orchestrator
-    │   ├── file_tree_item.rs       # GObject wrapper for tree entries
-    │   └── workspace_section/      # Per-workspace section widget (header + file tree)
-    │       ├── tree_index.rs       # Path/index caches and live row/store lookup helpers
-    │       └── tree_loading.rs     # Async child-scan and ListStore population helpers
+└── ui/                 # GTK4/Libadwaita widgets (each folder keeps mod.rs + imp.rs)
+    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, search, preview, print, session persistence, and zoom
+    ├── editor_page/     # Per-tab editor adapter plus load/save, monitor, and in-tab search helpers
+    ├── sidebar/         # Multi-workspace sidebar orchestrator plus dialogs, callbacks, and per-workspace sections
+    ├── search_panel/    # Workspace-wide content search panel plus history, list factory, replace, results, and runtime flows
+    ├── command_palette/ # Ctrl+P fuzzy search: files + commands
     ├── properties_panel/ # Right-side document metadata + formatting controls
     ├── markdown_preview/ # Read-only Markdown preview (pulldown-cmark → TextTags)
     ├── info_bar/        # Contextual warning/error bars (GtkInfoBar) above editor
-    ├── command_palette/  # Ctrl+P fuzzy search: files + commands
-    │   └── item.rs      # PaletteItem GObject wrapper for ListStore
-    ├── search_panel/    # Ctrl+Shift+F workspace-wide content search panel
-    │   ├── history.rs   # Saved-search + recent-history UI/persistence wiring
-    │   ├── replace.rs   # Replace-preview + undo state
-    │   ├── results.rs   # Result rendering and F4/Shift+F4 navigation
-    │   └── runtime.rs   # Streaming search execution + GTK polling loop
-    │   └── item.rs      # SearchResultItem GObject wrapper for result ListStore
     ├── search_bar/      # Find/replace widget
     ├── status_bar/      # Bottom bar: feedback messages + file metadata
     └── preferences/     # AdwPreferencesDialog
 ```
+
+## Nested AGENTS.md Files
+
+Use nested `AGENTS.md` files only when a subtree has stable local contracts that would otherwise make this root file churn constantly.
+
+Current nested files:
+
+- `crates/lushtext-core/AGENTS.md` — crate-level layering and ownership for core app logic
+- `crates/lushtext/AGENTS.md` — binary crate and test-harness boundaries
+- `crates/lushtext-core/src/ui/AGENTS.md` — common GTK driving-adapter rules
+- `crates/lushtext-core/src/ui/window/AGENTS.md` — shell/window workflow contracts
+- `crates/lushtext-core/src/ui/sidebar/AGENTS.md` — workspace sidebar and section contracts
+- `crates/lushtext-core/src/ui/editor_page/AGENTS.md` — per-tab editor, save/load, monitor, and draft-sensitive rules
+- `crates/lushtext-core/src/ui/search_panel/AGENTS.md` — workspace search/replace panel contracts
+
+If you add another nested `AGENTS.md`, keep it local, non-duplicative, and worth its maintenance cost. Update this list in the same change.
 
 ### Key Design Decisions
 

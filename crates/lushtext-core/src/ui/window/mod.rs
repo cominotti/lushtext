@@ -9,13 +9,14 @@
 mod actions;
 mod dialogs;
 mod documents;
+mod drafts;
 mod focus_indexing;
 mod imp;
 mod notifications;
 mod preview;
 mod print;
 mod search;
-mod session;
+mod session_persistence;
 mod zoom;
 
 use crate::config::keys;

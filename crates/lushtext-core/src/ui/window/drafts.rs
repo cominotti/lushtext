@@ -1,109 +1,46 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Session persistence and draft management for the main window.
+//! Draft persistence, recovery, and autosave flows for the main window.
 //!
-//! Extracted from `mod.rs` to keep the main window responsibilities split into
-//! smaller, easier-to-navigate modules. All methods are `impl super::LushtextWindow`.
+//! This slice owns the data-safety-sensitive draft lifecycle: close-time flush,
+//! crash recovery, autosave, and manifest maintenance. Session-only tab-state
+//! capture lives separately in `session_persistence.rs`.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::model::draft::DraftEntry;
-use crate::model::session::{SessionData, SessionTab};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use crate::services::{async_task, draft_service, editor_io, json_store, session_service};
+use crate::services::{async_task, draft_service, editor_io, json_store};
 use crate::ui::editor_page::LushtextEditorPage;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use std::path::Path;
-use std::time::Duration;
+
+/// Snapshot of one dirty editor at the moment an autosave tick starts.
+///
+/// The background thread receives owned text and path data so it never has to
+/// touch GTK objects off the main thread.
+struct DirtyDraftSnapshot {
+    draft_id: String,
+    text: String,
+    original_path: Option<PathBuf>,
+}
+
+/// Result of one autosave batch after background I/O finishes.
+struct DraftAutosaveResult {
+    manifest: Option<crate::model::draft::DraftManifest>,
+    failed_ids: Vec<String>,
+}
 
 impl super::LushtextWindow {
-    /// Snapshot current tab state into a `SessionData`.
-    #[must_use]
-    #[expect(clippy::cast_sign_loss)] // GTK tab indices (i32) are non-negative
-    pub fn collect_session(&self) -> SessionData {
-        let tab_view = &self.imp().tab_view;
-        let mut tabs = Vec::with_capacity(tab_view.n_pages() as usize);
-
-        let selected = tab_view.selected_page();
-        let mut active_tab_index = None;
-
-        for i in 0..tab_view.n_pages() {
-            let page = tab_view.nth_page(i);
-            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                let (cursor_line, cursor_col) = editor.cursor_position();
-                let path = editor.file_path();
-                let draft_id = if path.is_none() {
-                    editor.draft_id()
-                } else {
-                    None
-                };
-                tabs.push(SessionTab {
-                    path,
-                    draft_id,
-                    cursor_line,
-                    cursor_col,
-                    scroll_line: editor.visible_top_line(),
-                });
-                if selected.as_ref() == Some(&page) {
-                    active_tab_index = Some(i as usize);
-                }
-            }
-        }
-
-        SessionData {
-            tabs,
-            active_tab_index,
-        }
-    }
-
-    /// Save session with a 500ms debounce. No-op during session restore.
-    pub fn save_session_debounced(&self) {
-        if self.imp().restoring_session.get() {
-            return;
-        }
-        let generation = self.imp().session_save_generation.get().wrapping_add(1);
-        self.imp().session_save_generation.set(generation);
-
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(500), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            if window.imp().session_save_generation.get() != generation {
-                return;
-            }
-            let session = window.collect_session();
-            let data_dir = json_store::data_dir();
-            async_task::spawn_blocking_then(
-                (),
-                move || {
-                    if let Err(e) = session_service::save(&data_dir, &session) {
-                        tracing::error!("Failed to save session: {e}");
-                    }
-                },
-                |(), ()| {},
-            );
-        });
-    }
-
-    /// Synchronous session save for the close_request path.
-    /// Session JSON is tiny so this completes in <1ms.
-    pub fn save_session_sync(&self) {
-        let session = self.collect_session();
-        let data_dir = json_store::data_dir();
-        if let Err(e) = session_service::save(&data_dir, &session) {
-            tracing::error!("Failed to save session on close: {e}");
-        }
-    }
-
-    /// Write all dirty drafts synchronously. Called on window close so that
-    /// unsaved buffer content survives even if the autosave timer hadn't
-    /// fired yet (its 5-second interval can miss very short editing sessions).
+    /// Write all dirty drafts synchronously during window close.
     pub fn flush_dirty_drafts(&self) {
         let tab_view = &self.imp().tab_view;
         let data_dir = json_store::data_dir();
         let now = editor_io::now_epoch_secs();
         let mut manifest_updates = Vec::new();
-        let discarded_draft_ids = self.imp().close_discard_draft_ids.borrow().clone();
+        let discarded_draft_ids = self.imp().drafts.close_discard_ids.borrow().clone();
 
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
@@ -131,7 +68,7 @@ impl super::LushtextWindow {
             let original_path = editor.file_path();
             let mtime = original_path
                 .as_ref()
-                .and_then(|p| editor_io::mtime_secs(p));
+                .and_then(|path| editor_io::mtime_secs(path));
             manifest_updates.push(DraftEntry {
                 draft_id,
                 original_path,
@@ -153,78 +90,12 @@ impl super::LushtextWindow {
         self.clear_close_discard_drafts();
     }
 
-    // --- Session restore + draft persistence ---
-
-    /// Load draft manifest, session, and pre-read draft content in one
-    /// background task, then restore tabs. Batch-reading drafts here
-    /// eliminates a per-tab `spawn_blocking_then` round-trip during
-    /// restore (check_draft_on_open can apply content immediately).
-    /// Orphan cleanup is deferred to avoid blocking the critical path.
-    pub fn load_session_and_drafts(&self) {
-        let data_dir = json_store::data_dir();
-        async_task::spawn_blocking_then(
-            self.clone(),
-            move || draft_service::load_restore_state(&data_dir),
-            |window, (manifest, session, preloaded)| {
-                *window.imp().draft_manifest.borrow_mut() = manifest;
-                *window.imp().preloaded_drafts.borrow_mut() = preloaded;
-                window.restore_tabs(&session);
-                window.schedule_orphan_cleanup();
-            },
-        );
-    }
-
-    /// Restore tabs from a loaded session. Opens file-backed tabs via
-    /// `open_document` and creates untitled tabs with draft recovery.
-    fn restore_tabs(&self, session: &SessionData) {
-        if session.tabs.is_empty() {
-            return;
-        }
-        let had_tabs_before = self.imp().tab_view.n_pages() > 0;
-        self.imp().restoring_session.set(true);
-
-        for tab in &session.tabs {
-            if let Some(path) = &tab.path {
-                self.open_document(path);
-                // Find the just-opened editor and set restore position.
-                if let Some(editor) = self.active_editor() {
-                    editor.set_restore_position(tab.cursor_line, tab.cursor_col, tab.scroll_line);
-                }
-            } else {
-                self.new_tab();
-                // For untitled tabs, override the draft ID and trigger
-                // draft content recovery.
-                if let Some(editor) = self.active_editor()
-                    && let Some(ref draft_id) = tab.draft_id
-                {
-                    editor.set_draft_id(draft_id.clone());
-                    self.check_draft_by_id(&editor, draft_id);
-                }
-            }
-        }
-
-        // Restore the active tab selection — but only if no CLI files
-        // were opened before this restore (they take priority).
-        if !had_tabs_before && let Some(idx) = session.active_tab_index {
-            let tab_view = &self.imp().tab_view;
-            #[expect(clippy::cast_sign_loss)] // n_pages() is non-negative
-            let idx = idx.min(tab_view.n_pages().saturating_sub(1) as usize);
-            #[expect(clippy::cast_possible_truncation)] // tab index ≪ i32::MAX
-            let page = tab_view.nth_page(idx as i32);
-            tab_view.set_selected_page(&page);
-        }
-
-        self.imp().restoring_session.set(false);
-        self.update_content_stack();
-        self.refresh_status_bar();
-    }
-
-    /// Load draft content for an untitled tab by draft ID. Uses pre-loaded
-    /// content when available (session restore), falls back to background read.
+    /// Load draft content for an untitled tab by draft ID.
     pub fn check_draft_by_id(&self, editor: &LushtextEditorPage, draft_id: &str) {
         let entry = self
             .imp()
-            .draft_manifest
+            .drafts
+            .manifest
             .borrow()
             .find_by_id(draft_id)
             .cloned();
@@ -233,13 +104,11 @@ impl super::LushtextWindow {
             return;
         };
 
-        // Try pre-loaded content first.
-        if let Some(draft_content) = self.imp().preloaded_drafts.borrow_mut().remove(draft_id) {
+        if let Some(draft_content) = self.imp().drafts.preloaded.borrow_mut().remove(draft_id) {
             Self::apply_draft(editor, &draft_content);
             return;
         }
 
-        // Fallback: read draft from disk.
         let data_dir = json_store::data_dir();
         let draft_id = draft_id.to_string();
         let editor_weak = editor.downgrade();
@@ -255,7 +124,7 @@ impl super::LushtextWindow {
                     Ok(Some(draft_content)) => {
                         Self::apply_draft(&editor, &draft_content);
                     }
-                    Ok(None) => {} // No draft on disk — normal.
+                    Ok(None) => {}
                     Err(e) => {
                         tracing::error!("Failed to read draft from disk: {e}");
                     }
@@ -264,8 +133,7 @@ impl super::LushtextWindow {
         );
     }
 
-    /// Apply draft content to an editor buffer and show the info bar.
-    /// Shared by `check_draft_on_open` and `check_draft_by_id`.
+    /// Apply restored draft content to the editor buffer and show the infobar action.
     fn apply_draft(editor: &LushtextEditorPage, content: &str) {
         let buffer = editor.buffer();
         buffer.begin_irreversible_action();
@@ -295,65 +163,54 @@ impl super::LushtextWindow {
         });
     }
 
-    /// Deferred orphan cleanup — runs after session restore to avoid blocking
-    /// the critical path. Removes stale draft entries and orphaned files.
-    ///
-    /// Uses a merge-back pattern instead of wholesale manifest replacement:
-    /// the background thread reports which draft IDs were removed, and the
-    /// main thread applies only those removals to the live manifest. This
-    /// prevents the cleanup from overwriting concurrent manifest mutations
-    /// (e.g., autosave adding a new entry during the race window). The disk
-    /// manifest is not saved here — the next autosave tick persists it.
-    fn schedule_orphan_cleanup(&self) {
+    /// Deferred orphan cleanup — runs after restore so startup stays responsive.
+    pub(super) fn schedule_orphan_cleanup(&self) {
         let window_weak = self.downgrade();
         glib::timeout_add_local_once(Duration::from_secs(2), move || {
             let Some(window) = window_weak.upgrade() else {
                 return;
             };
-            // Clear any unconsumed preloaded drafts. By T+2s all file load
-            // callbacks from session restore have fired; stragglers are from
-            // tabs whose file load failed (load_completed_callback never ran).
-            window.imp().preloaded_drafts.borrow_mut().clear();
+            window.imp().drafts.preloaded.borrow_mut().clear();
 
             let data_dir = json_store::data_dir();
-            let manifest = window.imp().draft_manifest.borrow().clone();
-            let ids_before: Vec<String> =
-                manifest.drafts.iter().map(|e| e.draft_id.clone()).collect();
+            let manifest = window.imp().drafts.manifest.borrow().clone();
+            let ids_before: Vec<String> = manifest
+                .drafts
+                .iter()
+                .map(|entry| entry.draft_id.clone())
+                .collect();
 
             async_task::spawn_blocking_then(
                 window,
                 move || {
                     let mut manifest = manifest;
                     let _ = draft_service::cleanup_orphans(&data_dir, &mut manifest);
-                    // Compute which IDs were removed by cleanup.
-                    let ids_after: std::collections::HashSet<&str> = manifest
+                    let ids_after: HashSet<&str> = manifest
                         .drafts
                         .iter()
-                        .map(|e| e.draft_id.as_str())
+                        .map(|entry| entry.draft_id.as_str())
                         .collect();
-                    let removed: Vec<String> = ids_before
+                    ids_before
                         .into_iter()
                         .filter(|id| !ids_after.contains(id.as_str()))
-                        .collect();
-                    removed
+                        .collect::<Vec<_>>()
                 },
                 |window, removed_ids| {
                     if !removed_ids.is_empty() {
                         window
                             .imp()
-                            .draft_manifest
+                            .drafts
+                            .manifest
                             .borrow_mut()
                             .drafts
-                            .retain(|e| !removed_ids.contains(&e.draft_id));
+                            .retain(|entry| !removed_ids.contains(&entry.draft_id));
                     }
                 },
             );
         });
     }
 
-    /// Start the global 5-second autosave timer. Iterates all tabs on each
-    /// tick and writes drafts for modified buffers that changed since the
-    /// last draft write.
+    /// Start the global 5-second autosave timer.
     pub fn start_autosave_timer(&self) {
         let window_weak = self.downgrade();
         let source_id = glib::timeout_add_local(Duration::from_secs(5), move || {
@@ -363,14 +220,13 @@ impl super::LushtextWindow {
             window.autosave_tick();
             glib::ControlFlow::Continue
         });
-        *self.imp().autosave_source_id.borrow_mut() = Some(source_id);
+        *self.imp().drafts.autosave_source_id.borrow_mut() = Some(source_id);
     }
 
     /// Single autosave tick: collect dirty tabs and write drafts.
     fn autosave_tick(&self) {
         let tab_view = &self.imp().tab_view;
-        // Collect draft_id, text, and optional path (for mtime read on background thread).
-        let mut dirty_tabs: Vec<(String, String, Option<std::path::PathBuf>)> = Vec::new();
+        let mut dirty_tabs = Vec::new();
 
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
@@ -388,7 +244,11 @@ impl super::LushtextWindow {
             let text = buffer
                 .text(&buffer.start_iter(), &buffer.end_iter(), true)
                 .to_string();
-            dirty_tabs.push((draft_id, text, editor.file_path()));
+            dirty_tabs.push(DirtyDraftSnapshot {
+                draft_id,
+                text,
+                original_path: editor.file_path(),
+            });
             editor.set_draft_dirty(false);
         }
 
@@ -396,7 +256,7 @@ impl super::LushtextWindow {
             return;
         }
 
-        let manifest = self.imp().draft_manifest.borrow().clone();
+        let manifest = self.imp().drafts.manifest.borrow().clone();
         let data_dir = json_store::data_dir();
         let window_weak = self.downgrade();
 
@@ -407,22 +267,26 @@ impl super::LushtextWindow {
                 let mut manifest_updates = Vec::new();
                 let mut failed_ids = Vec::new();
 
-                for (draft_id, text, path) in &dirty_tabs {
-                    if let Err(e) = draft_service::write_draft(&data_dir, draft_id, text) {
-                        tracing::warn!("Failed to write draft {draft_id}: {e}");
-                        failed_ids.push(draft_id.clone());
+                for draft in &dirty_tabs {
+                    if let Err(e) =
+                        draft_service::write_draft(&data_dir, &draft.draft_id, &draft.text)
+                    {
+                        tracing::warn!("Failed to write draft {}: {e}", draft.draft_id);
+                        failed_ids.push(draft.draft_id.clone());
                         continue;
                     }
-                    // Read mtime on background thread to avoid blocking GTK main thread
-                    // (stat syscall can be slow on NFS/FUSE mounts).
-                    let mtime = path.as_deref().and_then(editor_io::mtime_secs);
+                    let mtime = draft
+                        .original_path
+                        .as_deref()
+                        .and_then(editor_io::mtime_secs);
                     manifest_updates.push(DraftEntry {
-                        draft_id: draft_id.clone(),
-                        original_path: path.clone(),
+                        draft_id: draft.draft_id.clone(),
+                        original_path: draft.original_path.clone(),
                         original_mtime_secs: mtime,
                         saved_at_secs: now,
                     });
                 }
+
                 let manifest = if manifest_updates.is_empty() {
                     Some(manifest)
                 } else {
@@ -435,21 +299,25 @@ impl super::LushtextWindow {
                         Err(e) => {
                             tracing::warn!("Failed to save draft manifest: {e}");
                             failed_ids
-                                .extend(dirty_tabs.iter().map(|(draft_id, _, _)| draft_id.clone()));
+                                .extend(dirty_tabs.iter().map(|draft| draft.draft_id.clone()));
                             None
                         }
                     }
                 };
-                (manifest, failed_ids)
+
+                DraftAutosaveResult {
+                    manifest,
+                    failed_ids,
+                }
             },
-            move |(), (manifest, failed_ids)| {
+            move |(), result| {
                 if let Some(window) = window_weak.upgrade() {
-                    if let Some(manifest) = manifest {
-                        *window.imp().draft_manifest.borrow_mut() = manifest;
+                    if let Some(manifest) = result.manifest {
+                        *window.imp().drafts.manifest.borrow_mut() = manifest;
                     }
-                    if !failed_ids.is_empty() {
+                    if !result.failed_ids.is_empty() {
                         let tab_view = &window.imp().tab_view;
-                        for failed_id in failed_ids {
+                        for failed_id in result.failed_ids {
                             for i in 0..tab_view.n_pages() {
                                 let page = tab_view.nth_page(i);
                                 let child = page.child();
@@ -466,13 +334,12 @@ impl super::LushtextWindow {
         );
     }
 
-    /// Check if a draft exists for the given path. If pre-loaded content is
-    /// available (from session restore), applies it immediately without a
-    /// background thread hop. Otherwise falls back to background read.
+    /// Check whether a file-backed editor has restored draft content available.
     pub fn check_draft_on_open(&self, editor: &LushtextEditorPage, path: &Path) {
         let draft_entry = self
             .imp()
-            .draft_manifest
+            .drafts
+            .manifest
             .borrow()
             .find_by_path(path)
             .cloned();
@@ -481,10 +348,10 @@ impl super::LushtextWindow {
             return;
         };
 
-        // Try pre-loaded content first (avoids a spawn_blocking_then round-trip).
         if let Some(draft_content) = self
             .imp()
-            .preloaded_drafts
+            .drafts
+            .preloaded
             .borrow_mut()
             .remove(&entry.draft_id)
         {
@@ -492,7 +359,6 @@ impl super::LushtextWindow {
             return;
         }
 
-        // Fallback: read draft from disk (for files opened after session restore).
         let data_dir = json_store::data_dir();
         let draft_id = entry.draft_id.clone();
         let editor_weak = editor.downgrade();
@@ -508,7 +374,7 @@ impl super::LushtextWindow {
                     Ok(Some(draft_content)) => {
                         Self::apply_draft(&editor, &draft_content);
                     }
-                    Ok(None) => {} // No draft on disk — normal.
+                    Ok(None) => {}
                     Err(e) => {
                         tracing::error!("Failed to read draft for open file: {e}");
                     }
@@ -517,23 +383,24 @@ impl super::LushtextWindow {
         );
     }
 
-    /// Delete the draft for a given file path. Removes the in-memory manifest
-    /// entry immediately; background file deletion is batched by `flush_draft_deletions`.
+    /// Delete the draft for a given file path.
     pub fn delete_draft_for_path(&self, path: &Path) {
         let draft_id = {
-            let manifest = self.imp().draft_manifest.borrow();
-            manifest.find_by_path(path).map(|e| e.draft_id.clone())
+            let manifest = self.imp().drafts.manifest.borrow();
+            manifest
+                .find_by_path(path)
+                .map(|entry| entry.draft_id.clone())
         };
         if let Some(draft_id) = draft_id {
             self.delete_draft_by_id(&draft_id);
         }
     }
 
-    /// Delete a draft by its ID. Removes the in-memory manifest entry
-    /// immediately and schedules background file deletion.
+    /// Delete a draft by its ID and persist the manifest update.
     pub fn delete_draft_by_id(&self, draft_id: &str) {
         self.imp()
-            .draft_manifest
+            .drafts
+            .manifest
             .borrow_mut()
             .remove_by_id(draft_id);
 
@@ -554,7 +421,7 @@ impl super::LushtextWindow {
                 if let Some(window) = window_weak.upgrade() {
                     match result {
                         Ok(manifest) => {
-                            *window.imp().draft_manifest.borrow_mut() = manifest;
+                            *window.imp().drafts.manifest.borrow_mut() = manifest;
                         }
                         Err(e) => {
                             tracing::warn!("Failed to save manifest after draft deletion: {e}");
@@ -565,14 +432,13 @@ impl super::LushtextWindow {
         );
     }
 
-    /// Allocate a draft ID for a new editor page. For path-backed files,
-    /// uses a deterministic hash. For untitled tabs, uses a monotonic counter.
+    /// Allocate a draft ID for a new editor page.
     pub fn assign_draft_id(&self, editor: &LushtextEditorPage) {
         let id = if let Some(ref path) = editor.file_path() {
             draft_service::draft_id_for_path(path)
         } else {
-            let counter = self.imp().next_tab_id.get();
-            self.imp().next_tab_id.set(counter.wrapping_add(1));
+            let counter = self.imp().drafts.next_tab_id.get();
+            self.imp().drafts.next_tab_id.set(counter.wrapping_add(1));
             draft_service::draft_id_for_untitled(counter)
         };
         editor.set_draft_id(id);

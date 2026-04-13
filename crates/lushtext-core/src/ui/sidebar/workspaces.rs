@@ -1,0 +1,211 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Workspace loading, persistence, and section orchestration for the sidebar.
+//!
+//! This slice keeps the non-dialog workspace lifecycle together: loading from
+//! disk, building section widgets, persisting changes, and drill-down layout
+//! coordination across sections.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::glib;
+use gtk4::prelude::*;
+
+use crate::model::workspace::{WorkspaceEntry, WorkspaceId, WorkspacesFile};
+use crate::services::{async_task, json_store, workspace_manager};
+
+use super::{LushtextSidebar, WorkspaceSection};
+
+impl LushtextSidebar {
+    /// Load workspaces from disk and build sections.
+    pub fn load_workspaces(&self) {
+        let data_dir = json_store::data_dir();
+        async_task::spawn_blocking_then(
+            self.clone(),
+            move || workspace_manager::load(&data_dir).unwrap_or_default(),
+            |sidebar, workspaces_file| {
+                sidebar.build_sections_from_file(workspaces_file);
+                sidebar.notify_workspace_changed();
+            },
+        );
+    }
+
+    /// Build workspace sections from a loaded `WorkspacesFile`.
+    pub(super) fn build_sections_from_file(&self, workspaces_file: WorkspacesFile) {
+        let imp = self.imp();
+
+        let old_sections = imp.sections.borrow().clone();
+        for section in &old_sections {
+            imp.sections_box.remove(section);
+        }
+        imp.sections.borrow_mut().clear();
+
+        for workspace in &workspaces_file.workspaces {
+            let section =
+                self.create_section(workspace.id.clone(), &workspace.name, &workspace.entries);
+            imp.sections_box.append(&section);
+            imp.sections.borrow_mut().push(section);
+        }
+
+        *imp.workspaces_file.borrow_mut() = workspaces_file;
+    }
+
+    /// Create a single workspace section, load its roots, and wire callbacks.
+    pub(super) fn create_section(
+        &self,
+        workspace_id: WorkspaceId,
+        name: &str,
+        roots: &[WorkspaceEntry],
+    ) -> WorkspaceSection {
+        let section = WorkspaceSection::new(workspace_id);
+        section.set_workspace_name(name);
+
+        if !roots.is_empty() {
+            section.load_roots(roots);
+        }
+
+        self.wire_section_callbacks(&section);
+        section
+    }
+
+    /// Look up the display name of a workspace section by ID.
+    pub(super) fn workspace_name_for_id(&self, workspace_id: &WorkspaceId) -> String {
+        let sections = self.imp().sections.borrow();
+        sections
+            .iter()
+            .find(|section| section.workspace_id() == *workspace_id)
+            .map(WorkspaceSection::workspace_name)
+            .unwrap_or_default()
+    }
+
+    /// Apply a function to the section matching the given workspace ID.
+    pub(super) fn with_section(
+        &self,
+        workspace_id: &WorkspaceId,
+        f: impl FnOnce(&WorkspaceSection),
+    ) {
+        let sections = self.imp().sections.borrow();
+        if let Some(section) = sections
+            .iter()
+            .find(|section| section.workspace_id() == *workspace_id)
+        {
+            f(section);
+        }
+    }
+
+    /// Handle drill-down focus on a folder: auto-collapse others and scroll into view.
+    pub(super) fn handle_folder_focused(&self, focused_workspace_id: &WorkspaceId) {
+        if self
+            .imp()
+            .settings
+            .boolean(crate::config::keys::WORKSPACE_AUTO_COLLAPSE)
+        {
+            for section in self.imp().sections.borrow().iter() {
+                if section.workspace_id() != *focused_workspace_id {
+                    section.collapse_roots();
+                }
+            }
+        }
+
+        if let Some(section) = self
+            .imp()
+            .sections
+            .borrow()
+            .iter()
+            .find(|section| section.workspace_id() == *focused_workspace_id)
+            && let Some(point) = section.compute_point(
+                &*self.imp().sections_box,
+                &gtk4::graphene::Point::new(0.0, 0.0),
+            )
+        {
+            let adjustment = self.imp().outer_scrolled_window.vadjustment();
+            adjustment.set_value(f64::from(point.y()));
+        }
+    }
+
+    /// Handle "New Workspace" creation after a folder is selected.
+    pub(super) fn handle_new_workspace(&self, path: PathBuf) {
+        let imp = self.imp();
+        let name = folder_display_name(&path);
+        let root_entry = WorkspaceEntry::Directory { path: path.clone() };
+
+        let workspace_id = {
+            let mut workspaces = imp.workspaces_file.borrow_mut();
+            let workspace_id = workspaces.add_workspace(&name);
+            workspaces.add_entry(&workspace_id, root_entry.clone());
+            workspace_id
+        };
+        self.persist();
+
+        let section = self.create_section(workspace_id, &name, &[root_entry]);
+        imp.sections_box.append(&section);
+        imp.sections.borrow_mut().push(section);
+        self.notify_workspace_changed();
+    }
+
+    /// Notify the window that workspace structure changed.
+    pub(super) fn notify_workspace_changed(&self) {
+        if let Some(ref callback) = *self.imp().workspace_changed_callback.borrow() {
+            callback();
+        }
+    }
+
+    /// Save the current workspace state to disk on a background thread.
+    pub(super) fn persist(&self) {
+        let imp = self.imp();
+        imp.persist_dirty.set(true);
+        if imp.persist_inflight.get() {
+            return;
+        }
+
+        let generation = imp.persist_generation.get().wrapping_add(1);
+        imp.persist_generation.set(generation);
+
+        let sidebar_weak = self.downgrade();
+        glib::timeout_add_local_once(
+            Duration::from_millis(super::PERSIST_DEBOUNCE_MS),
+            move || {
+                let Some(sidebar) = sidebar_weak.upgrade() else {
+                    return;
+                };
+                let imp = sidebar.imp();
+                if imp.persist_inflight.get()
+                    || imp.persist_generation.get() != generation
+                    || !imp.persist_dirty.get()
+                {
+                    return;
+                }
+
+                let data_dir = json_store::data_dir();
+                let workspaces_file = imp.workspaces_file.borrow().clone();
+                imp.persist_inflight.set(true);
+                imp.persist_dirty.set(false);
+
+                async_task::spawn_blocking_then(
+                    sidebar.clone(),
+                    move || workspace_manager::save(&data_dir, &workspaces_file),
+                    |sidebar, result| {
+                        let imp = sidebar.imp();
+                        imp.persist_inflight.set(false);
+                        if let Err(error) = result {
+                            tracing::error!("Failed to save workspaces: {error}");
+                        }
+                        if imp.persist_dirty.get() {
+                            sidebar.persist();
+                        }
+                    },
+                );
+            },
+        );
+    }
+}
+
+/// Extract a display name from a path's last component.
+pub(super) fn folder_display_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || "New Workspace".to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}

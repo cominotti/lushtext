@@ -50,14 +50,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_entry(query: &str) -> SearchHistoryEntry {
-        SearchHistoryEntry {
-            query: query.to_string(),
-            case_sensitive: false,
-            regex: false,
-            whole_word: false,
-            gitignore: true,
-            glob: None,
-        }
+        SearchHistoryEntry::from_spec(crate::model::content_search::SearchQuerySpec::new(
+            query.to_string(),
+            crate::model::content_search::ContentSearchOptions::default(),
+        ))
     }
 
     #[test]
@@ -65,8 +61,8 @@ mod tests {
         let mut entries = vec![make_entry("old")];
         add_entry(&mut entries, make_entry("new"));
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].query, "new");
-        assert_eq!(entries[1].query, "old");
+        assert_eq!(entries[0].spec.query, "new");
+        assert_eq!(entries[1].spec.query, "old");
     }
 
     #[test]
@@ -76,9 +72,9 @@ mod tests {
 
         add_entry(&mut entries, make_entry("query-new"));
         assert_eq!(entries.len(), 20);
-        assert_eq!(entries[0].query, "query-new");
+        assert_eq!(entries[0].spec.query, "query-new");
         // The oldest entry (query-19) should be removed.
-        assert!(entries.iter().all(|e| e.query != "query-19"));
+        assert!(entries.iter().all(|e| e.spec.query != "query-19"));
     }
 
     #[test]
@@ -91,20 +87,20 @@ mod tests {
         // Re-add "second" — should move to top, not duplicate.
         add_entry(&mut entries, make_entry("second"));
         assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].query, "second");
-        assert_eq!(entries[1].query, "first");
-        assert_eq!(entries[2].query, "third");
+        assert_eq!(entries[0].spec.query, "second");
+        assert_eq!(entries[1].spec.query, "first");
+        assert_eq!(entries[2].spec.query, "third");
     }
 
     #[test]
     fn test_add_entry_different_settings_not_dedup() {
         let mut entries = vec![make_entry("query")];
         let mut different = make_entry("query");
-        different.case_sensitive = true; // Different setting — not a duplicate.
+        different.spec.options.case_sensitive = true; // Different setting — not a duplicate.
         add_entry(&mut entries, different);
         assert_eq!(entries.len(), 2);
-        assert!(entries[0].case_sensitive);
-        assert!(!entries[1].case_sensitive);
+        assert!(entries[0].spec.options.case_sensitive);
+        assert!(!entries[1].spec.options.case_sensitive);
     }
 
     #[test]
@@ -118,14 +114,16 @@ mod tests {
     fn test_save_and_load_roundtrip() {
         let dir = TempDir::new().unwrap();
         let entries = vec![
-            SearchHistoryEntry {
-                query: "hello".to_string(),
-                case_sensitive: true,
-                regex: false,
-                whole_word: true,
-                gitignore: false,
-                glob: Some("*.rs".to_string()),
-            },
+            SearchHistoryEntry::from_spec(crate::model::content_search::SearchQuerySpec::new(
+                "hello".to_string(),
+                crate::model::content_search::ContentSearchOptions::new(
+                    true,
+                    false,
+                    true,
+                    false,
+                    Some("*.rs".to_string()),
+                ),
+            )),
             make_entry("world"),
         ];
         save(dir.path(), &entries).unwrap();

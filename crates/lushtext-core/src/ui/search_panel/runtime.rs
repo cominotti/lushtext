@@ -14,35 +14,39 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{self, glib};
 
-use crate::model::content_search::{SearchEvent, SearchHistoryEntry};
+use crate::model::content_search::{SearchEvent, SearchHistoryEntry, SearchQuerySpec};
 use crate::services::{content_search, json_store, search_history};
 
 use super::LushtextSearchPanel;
 use super::imp::make_display_path;
 use super::item::SearchResultItem;
+use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 
 impl LushtextSearchPanel {
-    /// Start a new search, cancelling any in-flight search first.
-    pub fn start_search(&self, query: &str) {
+    /// Start a new search from one immutable query snapshot, cancelling any
+    /// in-flight worker first.
+    pub fn start_search(&self, spec: SearchQuerySpec) {
         let imp = self.imp();
 
-        if let Some(old_cancel) = imp.cancel_token.take() {
+        if let Some(old_cancel) = imp.runtime.cancel_token.take() {
             old_cancel.store(true, Ordering::Relaxed);
-            if let Some(ref cb) = *imp.progress_callback.borrow() {
-                cb(0, true);
+            if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
+                cb(SearchProgressUpdate::Done { files_searched: 0 });
             }
         }
 
-        let preserve_feedback = !query.is_empty() && imp.results_feedback_revealer.reveals_child();
-        let preserve_results_body = !query.is_empty() && imp.results_body_revealer.reveals_child();
+        let preserve_feedback =
+            !spec.query.is_empty() && imp.results_feedback_revealer.reveals_child();
+        let preserve_results_body =
+            !spec.query.is_empty() && imp.results_body_revealer.reveals_child();
         self.clear_results(preserve_feedback, preserve_results_body);
 
-        if query.is_empty() {
+        if spec.query.is_empty() {
             imp.count_label.set_text("");
             return;
         }
 
-        let roots = imp.workspace_roots.borrow().clone();
+        let roots = imp.runtime.workspace_roots.borrow().clone();
         if roots.is_empty() {
             imp.count_label.set_text("No workspace roots");
             self.reveal_results_feedback();
@@ -53,23 +57,23 @@ impl LushtextSearchPanel {
         let cancel = Arc::new(AtomicBool::new(false));
         let progress_counter = Arc::new(AtomicUsize::new(0));
         let worker_finished = Arc::new(AtomicBool::new(false));
-        imp.cancel_token.replace(Some(cancel.clone()));
-        imp.searching.set(true);
-        imp.result_capped.set(false);
+        imp.runtime.cancel_token.replace(Some(cancel.clone()));
+        imp.runtime.searching.set(true);
+        imp.runtime.result_capped.set(false);
 
         let timer_cancel = cancel.clone();
         imp.error_label.set_visible(false);
 
-        let mut search_spec = self.current_query_spec();
-        search_spec.query = query.to_string();
+        let history_spec = spec.clone();
+        let worker_spec = spec.clone();
         let worker_progress_counter = Arc::clone(&progress_counter);
         let worker_finished_for_search = Arc::clone(&worker_finished);
         std::thread::spawn(move || {
             let root_refs: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
             content_search::search(
-                &search_spec.query,
+                &worker_spec.query,
                 &root_refs,
-                &search_spec.options,
+                &worker_spec.options,
                 tx,
                 cancel,
                 Some(worker_progress_counter),
@@ -91,7 +95,7 @@ impl LushtextSearchPanel {
             let imp = panel.imp();
             let mut done = false;
             let mut items_this_tick = 0;
-            let workspace_roots = imp.workspace_roots.borrow().clone();
+            let workspace_roots = imp.runtime.workspace_roots.borrow().clone();
 
             const MAX_EVENTS_PER_TICK: usize = 250;
 
@@ -109,7 +113,7 @@ impl LushtextSearchPanel {
                         break;
                     }
                     Ok(SearchEvent::ResultCap) => {
-                        imp.result_capped.set(true);
+                        imp.runtime.result_capped.set(true);
                         imp.count_label
                             .set_text("10,000+ results (truncated) \u{2014} narrow your search");
                         imp.count_label.add_css_class("warning");
@@ -125,43 +129,49 @@ impl LushtextSearchPanel {
             }
 
             let files_visited = progress_counter.load(Ordering::Relaxed);
-            if !completion_notified && files_visited > imp.last_progress_count.get() {
-                imp.last_progress_count.set(files_visited);
-                if let Some(ref cb) = *imp.progress_callback.borrow() {
-                    cb(files_visited, false);
+            if !completion_notified && files_visited > imp.runtime.last_progress_count.get() {
+                imp.runtime.last_progress_count.set(files_visited);
+                if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
+                    cb(SearchProgressUpdate::Progress {
+                        files_searched: files_visited,
+                    });
                 }
             }
 
             if worker_finished.load(Ordering::Relaxed) && !completion_notified {
                 completion_notified = true;
-                imp.searching.set(false);
-                if files_visited > imp.last_progress_count.get() {
-                    imp.last_progress_count.set(files_visited);
+                imp.runtime.searching.set(false);
+                if files_visited > imp.runtime.last_progress_count.get() {
+                    imp.runtime.last_progress_count.set(files_visited);
                 }
-                if let Some(ref cb) = *imp.progress_callback.borrow() {
-                    cb(imp.last_progress_count.get(), true);
+                if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
+                    cb(SearchProgressUpdate::Done {
+                        files_searched: imp.runtime.last_progress_count.get(),
+                    });
                 }
             }
 
-            let total = imp.total_matches.get();
-            let files = imp.total_files.get();
-            if total > 0 && !imp.result_capped.get() {
+            let total = imp.runtime.total_matches.get();
+            let files = imp.runtime.total_files.get();
+            if total > 0 && !imp.runtime.result_capped.get() {
                 imp.count_label
                     .set_text(&format!("{total} results in {files} files"));
-            } else if !completion_notified && imp.searching.get() && total == 0 {
+            } else if !completion_notified && imp.runtime.searching.get() && total == 0 {
                 imp.count_label.set_text("Searching\u{2026}");
             }
 
             if done {
                 if !completion_notified {
                     completion_notified = true;
-                    imp.searching.set(false);
+                    imp.runtime.searching.set(false);
                     let files_visited = progress_counter.load(Ordering::Relaxed);
-                    if files_visited > imp.last_progress_count.get() {
-                        imp.last_progress_count.set(files_visited);
+                    if files_visited > imp.runtime.last_progress_count.get() {
+                        imp.runtime.last_progress_count.set(files_visited);
                     }
-                    if let Some(ref cb) = *imp.progress_callback.borrow() {
-                        cb(imp.last_progress_count.get(), true);
+                    if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
+                        cb(SearchProgressUpdate::Done {
+                            files_searched: imp.runtime.last_progress_count.get(),
+                        });
                     }
                 }
                 if total == 0 {
@@ -170,12 +180,12 @@ impl LushtextSearchPanel {
                 }
                 panel.update_replace_button_sensitivity();
 
-                if total > 0 && !imp.preview_mode.get() {
+                if total > 0 && !imp.preview.preview_mode.get() {
                     imp.save_button.set_visible(true);
                 }
 
                 if total > 0 {
-                    persist_search_history(&panel);
+                    persist_search_history(&panel, &history_spec);
                 }
 
                 return glib::ControlFlow::Break;
@@ -195,23 +205,23 @@ impl LushtextSearchPanel {
         } else {
             self.hide_results_feedback();
         }
-        imp.root_store.remove_all();
-        imp.file_groups.borrow_mut().clear();
-        imp.total_matches.set(0);
-        imp.total_files.set(0);
-        imp.result_capped.set(false);
-        imp.match_positions.borrow_mut().clear();
-        imp.current_match_index.set(None);
-        imp.last_progress_count.set(0);
+        imp.runtime.root_store.remove_all();
+        imp.runtime.file_groups.borrow_mut().clear();
+        imp.runtime.total_matches.set(0);
+        imp.runtime.total_files.set(0);
+        imp.runtime.result_capped.set(false);
+        imp.navigation.match_positions.borrow_mut().clear();
+        imp.navigation.current_match_index.set(None);
+        imp.runtime.last_progress_count.set(0);
         imp.count_label.set_text("");
         imp.count_label.remove_css_class("warning");
         imp.save_button.set_visible(false);
         imp.error_label.set_visible(false);
         imp.error_label.set_text("");
         imp.error_label.remove_css_class("error");
-        imp.preview_mode.set(false);
-        imp.preview_replacements.borrow_mut().clear();
-        imp.checked_indices.borrow_mut().clear();
+        imp.preview.preview_mode.set(false);
+        imp.preview.preview_replacements.borrow_mut().clear();
+        imp.preview.checked_indices.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
         self.clear_undo_backup();
         self.update_replace_button_sensitivity();
@@ -228,18 +238,19 @@ fn append_match_result(
     let path = search_match.path.clone();
     let display = make_display_path(&path, workspace_roots);
 
-    let mut groups = imp.file_groups.borrow_mut();
+    let mut groups = imp.runtime.file_groups.borrow_mut();
     let is_new_file = !groups.contains_key(&path);
-    let (file_item, child_store) = groups.entry(path.clone()).or_insert_with(|| {
-        let item = SearchResultItem::new_file(&path.display().to_string(), &display, 0);
-        let store = gtk4::gio::ListStore::new::<SearchResultItem>();
-        (item, store)
+    let group = groups.entry(path.clone()).or_insert_with(|| {
+        SearchFileGroup::new(
+            SearchResultItem::new_file(&path.display().to_string(), &display, 0),
+            gtk4::gio::ListStore::new::<SearchResultItem>(),
+        )
     });
 
     // Clone before dropping the borrow — append() and set_match_count() emit
     // GLib signals that can re-enter the file-groups map.
-    let file_item = file_item.clone();
-    let child_store = child_store.clone();
+    let file_item = group.header_item.clone();
+    let child_store = group.child_store.clone();
     drop(groups);
 
     let original_line_content = search_match.line_content.clone();
@@ -277,8 +288,10 @@ fn append_match_result(
     file_item.set_match_count(file_item.match_count() + 1);
 
     if is_new_file {
-        imp.root_store.append(&file_item);
-        imp.total_files.set(imp.total_files.get() + 1);
+        imp.runtime.root_store.append(&file_item);
+        imp.runtime
+            .total_files
+            .set(imp.runtime.total_files.get() + 1);
 
         if let Some(model) = imp.results_list.model() {
             for i in (0..model.n_items()).rev() {
@@ -294,22 +307,29 @@ fn append_match_result(
         }
     }
 
-    if imp.total_matches.get() == 0 {
+    if imp.runtime.total_matches.get() == 0 {
         panel.reveal_results_body();
     }
-    imp.total_matches.set(imp.total_matches.get() + 1);
-    imp.match_positions.borrow_mut().push((path, line_number));
+    imp.runtime
+        .total_matches
+        .set(imp.runtime.total_matches.get() + 1);
+    imp.navigation
+        .match_positions
+        .borrow_mut()
+        .push(SearchMatchLocation::new(path, line_number));
 }
 
 /// Persist the latest successful query into the recent-history file.
-fn persist_search_history(panel: &LushtextSearchPanel) {
-    let query_spec = panel.current_query_spec();
+fn persist_search_history(panel: &LushtextSearchPanel, query_spec: &SearchQuerySpec) {
     if query_spec.query.is_empty() {
         return;
     }
 
-    let mut entries = panel.imp().history_entries.borrow_mut();
-    search_history::add_entry(&mut entries, SearchHistoryEntry::from_spec(query_spec));
+    let mut entries = panel.imp().history.history_entries.borrow_mut();
+    search_history::add_entry(
+        &mut entries,
+        SearchHistoryEntry::from_spec(query_spec.clone()),
+    );
     let entries_clone = entries.clone();
     drop(entries);
 
