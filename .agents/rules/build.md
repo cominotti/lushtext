@@ -13,9 +13,13 @@ Use `make` targets for development. The Makefile auto-detects nextest for lib/in
 make run        # build + launch the app
 make test       # all tests
 make check      # clippy + fmt
+make pre-commit # repo pre-commit gate (fmt + clippy)
+make install-git-hooks
 ```
 
 Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-linux for fast linking.
+
+The repo-managed Git hooks live under `.githooks/`. Install them with `make install-git-hooks`, which sets `core.hooksPath` for this checkout. The pre-commit hook runs `make pre-commit`, which must stay aligned with the formatting and Clippy gates enforced in CI.
 
 ## Compilation Speed
 

@@ -157,6 +157,8 @@ make test-unit   # Unit tests only
 make test-int    # Integration tests only
 make test-widget # Widget tests only (requires display server)
 make check       # clippy + fmt check
+make pre-commit  # repo pre-commit gate (fmt + clippy)
+make install-git-hooks
 make clean       # Remove build artifacts
 
 # Benchmarks

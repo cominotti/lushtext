@@ -10,10 +10,13 @@
 #   make test-unit   - Unit tests only (fast)
 #   make test-int    - Integration tests only
 #   make check       - clippy + fmt check
+#   make pre-commit  - repo pre-commit gate (fmt + clippy)
+#   make install-git-hooks - configure this repo to use .githooks/
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run test test-unit test-int test-widget check clean help \
+.PHONY: build build-debug run test test-unit test-int test-widget \
+       check-fmt check-clippy check pre-commit install-git-hooks clean help \
        meson-build flatpak cargo-sources \
        bench bench-report bench-report-full bench-baseline bench-compare
 
@@ -99,12 +102,28 @@ bench-compare:
 	@echo "Comparing against baseline..."
 	cargo bench -p lushtext-core --bench benchmarks -- --baseline main
 
-# Lint + format check
-check:
-	@echo "Running clippy..."
-	cargo clippy --all-targets -- -D warnings
+# Formatting check
+check-fmt:
 	@echo "Checking formatting..."
 	cargo fmt --all -- --check
+
+# Clippy gate matching CI
+check-clippy:
+	@echo "Running clippy..."
+	cargo clippy --all-targets -- -D warnings
+
+# Repo pre-commit gate
+pre-commit: check-fmt check-clippy
+
+# Lint + format check
+check: pre-commit
+
+# Install repo-managed Git hooks
+install-git-hooks:
+	@echo "Configuring core.hooksPath to use .githooks..."
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit
+	@echo "Git hooks installed."
 
 # Clean all build artifacts
 clean:
@@ -143,6 +162,8 @@ help:
 	@echo "  test-unit    Unit tests only (fast)"
 	@echo "  test-int     Integration tests only"
 	@echo "  test-widget  Widget tests (needs display; mutter --headless for headless)"
+	@echo "  pre-commit   Repo pre-commit gate (fmt + clippy)"
+	@echo "  install-git-hooks Configure this repo to use .githooks/"
 	@echo ""
 	@echo "Benchmark targets:"
 	@echo "  bench            Run Criterion benchmarks"
@@ -157,6 +178,8 @@ help:
 	@echo "  cargo-sources   Regenerate cargo-sources.json"
 	@echo ""
 	@echo "Other targets:"
+	@echo "  check-fmt    rustfmt --check"
+	@echo "  check-clippy clippy -D warnings"
 	@echo "  check        Clippy + format check"
 	@echo "  clean        Remove build artifacts"
 	@echo "  help         Show this help message"

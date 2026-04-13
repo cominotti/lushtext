@@ -34,3 +34,4 @@ Default branch is `main`. Do not use `master`.
 - Never force-push to `main`.
 - Create new commits rather than amending, unless explicitly asked.
 - Stage specific files by name, not `git add -A` or `git add .`.
+- Repo-managed hooks live in `.githooks/`; install them for the current checkout with `make install-git-hooks`.

@@ -63,7 +63,11 @@ make build-debug # Debug build
 make run         # Debug build + run
 make test        # All tests (unit + integration + widget)
 make check       # clippy + fmt check
+make pre-commit  # repo pre-commit gate (fmt + clippy)
+make install-git-hooks
 ```
+
+LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hooks` once per checkout to configure `core.hooksPath`; after that, each commit runs the same rustfmt + Clippy gate locally before Git creates the commit.
 
 The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel unit/integration execution (optional). Widget tests always run via `cargo test --test widget` because their custom harness is not nextest-compatible. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 
