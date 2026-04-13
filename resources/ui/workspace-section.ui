@@ -33,6 +33,11 @@
           <object class="GtkButton" id="add_folder_button">
             <property name="icon-name">folder-new-symbolic</property>
             <property name="tooltip-text" translatable="yes">Add Folder to Workspace</property>
+            <!-- Keep the hover pill inside the header row with matching top/bottom breathing room
+                 instead of pushing the file tree farther away below. -->
+            <property name="valign">center</property>
+            <property name="margin-top">6</property>
+            <property name="margin-bottom">6</property>
             <style>
               <class name="flat"/>
             </style>

@@ -65,6 +65,16 @@ fn test_workspace_section_inner_scroller_does_not_propagate_natural_width() {
     );
 }
 
+#[test]
+fn test_workspace_section_header_button_carries_vertical_spacing() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+    assert_eq!(section.imp().inner_scrolled_window.margin_top(), 0);
+    assert_eq!(section.imp().add_folder_button.valign(), gtk4::Align::Center);
+    assert_eq!(section.imp().add_folder_button.margin_top(), 6);
+    assert_eq!(section.imp().add_folder_button.margin_bottom(), 6);
+}
+
 // --- Context menu ---
 
 #[test]
