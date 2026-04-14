@@ -78,6 +78,7 @@ impl LushtextWindow {
         let page = tab_view.append(&editor_page);
         page.set_title(&editor_page.title());
         self.wire_modified_indicator(&page, &editor_page);
+        self.configure_tab_page(&page);
         self.track_editor_memory(&editor_page);
 
         tab_view.set_selected_page(&page);
@@ -168,6 +169,7 @@ impl LushtextWindow {
         page.set_title("Untitled");
         self.wire_modified_indicator(&page, &editor_page);
         self.wire_info_bar(&editor_page);
+        self.configure_tab_page(&page);
         self.track_editor_memory(&editor_page);
         self.imp().tab_view.set_selected_page(&page);
         self.update_content_stack();

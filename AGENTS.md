@@ -72,7 +72,7 @@ src/
 ├── benches/
 │   └── benchmarks.rs   # Criterion benchmarks for all performance-sensitive services
 └── ui/                 # GTK4/Libadwaita widgets (each folder keeps mod.rs + imp.rs)
-    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, notes, search, preview, print, session persistence, and zoom
+    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, notes, search, preview, print, session persistence, tab management, and zoom
     ├── editor_page/     # Per-tab editor adapter plus minimap, overscroll, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
     ├── sidebar/         # Multi-workspace sidebar orchestrator plus dialogs, callbacks, and per-workspace sections
     ├── search_panel/    # Workspace-wide content search panel plus history, list factory, replace, results, and runtime flows

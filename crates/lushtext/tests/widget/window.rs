@@ -8,18 +8,21 @@
 
 use crate::common::{emit_key_pressed_on_focus, ensure_gtk_init};
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
+use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use libadwaita::prelude::{ActionRowExt, AnimationExt};
+use libadwaita::prelude::{ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AnimationExt};
 use lushtext_core::config::keys;
 use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
+use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
 };
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::{
-    annotation_service, bookmark_service, draft_service, json_store, workspace_manager,
+    annotation_service, bookmark_service, draft_service, json_store, session_service,
+    workspace_manager,
 };
 use lushtext_core::ui::editor_page::{LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError};
 use lushtext_core::ui::window::LushtextWindow;
@@ -161,6 +164,40 @@ fn assert_tab_count(window: &LushtextWindow, expected: i32) {
     );
 }
 
+fn tab_pages(window: &LushtextWindow) -> Vec<libadwaita::TabPage> {
+    (0..window.imp().tab_view.n_pages())
+        .map(|index| window.imp().tab_view.nth_page(index))
+        .collect()
+}
+
+fn tab_titles(window: &LushtextWindow) -> Vec<String> {
+    tab_pages(window)
+        .into_iter()
+        .map(|page| page.title().to_string())
+        .collect()
+}
+
+fn find_tab_page_by_title(window: &LushtextWindow, title: &str) -> libadwaita::TabPage {
+    tab_pages(window)
+        .into_iter()
+        .find(|page| page.title().as_str() == title)
+        .unwrap_or_else(|| panic!("tab '{title}' not found"))
+}
+
+fn prepare_tab_context_menu(window: &LushtextWindow, page: &libadwaita::TabPage) {
+    window
+        .imp()
+        .tab_view
+        .emit_by_name::<()>("setup-menu", &[page]);
+    flush_events();
+}
+
+fn visible_alert_dialog(window: &LushtextWindow) -> Option<libadwaita::AlertDialog> {
+    window
+        .visible_dialog()
+        .and_then(|dialog| dialog.downcast::<libadwaita::AlertDialog>().ok())
+}
+
 fn workspace_sidebar_visible(window: &LushtextWindow) -> bool {
     window.imp().workspace_split_view.shows_sidebar()
 }
@@ -256,6 +293,19 @@ fn seed_peek_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
     });
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save peek workspaces");
     (root_dir, alpha, beta)
+}
+
+fn seed_named_tab_files(names: &[&str]) -> (tempfile::TempDir, Vec<PathBuf>) {
+    let dir = tempfile::tempdir().expect("named tab tempdir");
+    let paths = names
+        .iter()
+        .map(|name| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!("content for {name}\n")).expect("write tab fixture");
+            path
+        })
+        .collect();
+    (dir, paths)
 }
 
 #[test]
@@ -1171,6 +1221,165 @@ fn test_primary_menu_button_exists() {
     ensure_gtk_init();
     let window = test_window();
     assert!(window.imp().primary_menu_button.popover().is_some());
+}
+
+#[test]
+fn test_tab_context_menu_targets_background_tab_for_move_action() {
+    ensure_gtk_init();
+    let (_dir, files) = seed_named_tab_files(&["a.txt", "b.txt", "c.txt"]);
+    let window = test_window();
+    present_window(&window);
+
+    for path in &files {
+        window.open_document(path);
+    }
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 3);
+
+    let selected_before = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("selected tab before move");
+    let first_page = find_tab_page_by_title(&window, "a.txt");
+    prepare_tab_context_menu(&window, &first_page);
+
+    assert!(!action_enabled(&window, "move-tab-left"));
+    assert!(action_enabled(&window, "move-tab-right"));
+
+    activate_action(&window, "move-tab-right");
+    wait_until(Duration::from_secs(2), || {
+        tab_titles(&window) == vec!["b.txt", "a.txt", "c.txt"]
+    });
+
+    let selected_after = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("selected tab after move");
+    assert_eq!(
+        selected_before.as_ptr(),
+        selected_after.as_ptr(),
+        "moving a background tab should not retarget selection",
+    );
+
+    let last_page = find_tab_page_by_title(&window, "c.txt");
+    prepare_tab_context_menu(&window, &last_page);
+    assert!(!action_enabled(&window, "move-tab-right"));
+}
+
+#[test]
+fn test_bulk_close_context_action_uses_one_confirmation_before_closing() {
+    ensure_gtk_init();
+    let (_dir, files) = seed_named_tab_files(&["a.txt", "b.txt", "c.txt"]);
+    let window = test_window();
+    present_window(&window);
+
+    for path in &files {
+        window.open_document(path);
+    }
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 3);
+
+    let modified_page = find_tab_page_by_title(&window, "b.txt");
+    let modified_editor = modified_page
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("modified editor page");
+    wait_until(Duration::from_secs(2), || modified_editor.file_size().is_some());
+    modified_editor.buffer().set_text("modified");
+    modified_editor.buffer().set_modified(true);
+    flush_events();
+
+    let target = find_tab_page_by_title(&window, "a.txt");
+    prepare_tab_context_menu(&window, &target);
+    activate_action(&window, "close-other-tabs");
+
+    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_some());
+    assert_tab_count(&window, 3);
+
+    let dialog = visible_alert_dialog(&window).expect("bulk close confirmation");
+    dialog.emit_by_name::<()>("response", &[&"discard"]);
+    dialog.force_close();
+    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+
+    assert_eq!(tab_titles(&window), vec!["a.txt"]);
+}
+
+#[test]
+fn test_pin_action_updates_indicator_icon() {
+    ensure_gtk_init();
+    let (_dir, files) = seed_named_tab_files(&["pin-me.txt"]);
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&files[0]);
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+
+    let page = find_tab_page_by_title(&window, "pin-me.txt");
+    prepare_tab_context_menu(&window, &page);
+    activate_action(&window, "toggle-tab-pinned");
+    wait_until(Duration::from_secs(2), || page.is_pinned());
+    assert!(page.indicator_icon().is_some());
+
+    prepare_tab_context_menu(&window, &page);
+    activate_action(&window, "toggle-tab-pinned");
+    wait_until(Duration::from_secs(2), || !page.is_pinned());
+    assert!(page.indicator_icon().is_none());
+}
+
+#[test]
+fn test_session_restore_keeps_pinned_tabs_ahead_of_unpinned_tabs() {
+    ensure_gtk_init();
+    let (_dir, files) = seed_named_tab_files(&["alpha.txt", "beta.txt", "gamma.txt"]);
+    let session = SessionData {
+        tabs: vec![
+            SessionTab {
+                path: Some(files[0].clone()),
+                draft_id: None,
+                cursor_line: 1,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: true,
+            },
+            SessionTab {
+                path: Some(files[1].clone()),
+                draft_id: None,
+                cursor_line: 2,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: true,
+            },
+            SessionTab {
+                path: Some(files[2].clone()),
+                draft_id: None,
+                cursor_line: 3,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            },
+        ],
+        active_tab_index: Some(2),
+    };
+    session_service::save(&json_store::data_dir(), &session).expect("save session");
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 3);
+
+    assert_eq!(tab_titles(&window), vec!["alpha.txt", "beta.txt", "gamma.txt"]);
+    let pages = tab_pages(&window);
+    assert!(pages[0].is_pinned());
+    assert!(pages[1].is_pinned());
+    assert!(!pages[2].is_pinned());
+    assert_eq!(
+        window
+            .imp()
+            .tab_view
+            .selected_page()
+            .expect("restored selected page")
+            .title()
+            .as_str(),
+        "gamma.txt"
+    );
 }
 
 #[test]

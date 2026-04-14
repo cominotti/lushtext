@@ -5,7 +5,7 @@ This folder owns the top-level application shell adapter.
 ## Responsibilities
 
 - Keep `mod.rs` as the small public facade for `LushtextWindow`.
-- Keep workflow-specific logic in sibling modules such as `actions`, `documents`, `drafts`, `focus_indexing`, `notes`, `notifications`, `preview`, `print`, `search`, `session_persistence`, and `zoom`.
+- Keep workflow-specific logic in sibling modules such as `actions`, `documents`, `drafts`, `focus_indexing`, `notes`, `notifications`, `preview`, `print`, `search`, `session_persistence`, `tabs`, and `zoom`.
 - Keep `imp.rs` focused on template children, state, and setup glue rather than long workflow implementations.
 
 ## Local Contracts

@@ -54,6 +54,7 @@ impl super::LushtextWindow {
                     cursor_line,
                     cursor_col,
                     scroll_line: editor.visible_top_line(),
+                    pinned: page.is_pinned(),
                 });
                 if selected.as_ref() == Some(&page) {
                     active_tab_index = Some(i as usize);
@@ -141,16 +142,26 @@ impl super::LushtextWindow {
         for tab in &session.tabs {
             if let Some(path) = &tab.path {
                 self.open_document(path);
-                if let Some(editor) = self.active_editor() {
-                    editor.set_restore_position(tab.cursor_line, tab.cursor_col, tab.scroll_line);
+                if let Some(page) = self.imp().tab_view.selected_page() {
+                    self.restore_tab_pinned_state(&page, tab.pinned);
+                    if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                        editor.set_restore_position(
+                            tab.cursor_line,
+                            tab.cursor_col,
+                            tab.scroll_line,
+                        );
+                    }
                 }
             } else {
                 self.new_tab();
-                if let Some(editor) = self.active_editor()
-                    && let Some(ref draft_id) = tab.draft_id
-                {
-                    editor.set_draft_id(draft_id.clone());
-                    self.check_draft_by_id(&editor, draft_id);
+                if let Some(page) = self.imp().tab_view.selected_page() {
+                    self.restore_tab_pinned_state(&page, tab.pinned);
+                    if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+                        && let Some(ref draft_id) = tab.draft_id
+                    {
+                        editor.set_draft_id(draft_id.clone());
+                        self.check_draft_by_id(editor, draft_id);
+                    }
                 }
             }
         }

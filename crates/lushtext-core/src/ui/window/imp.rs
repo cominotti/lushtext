@@ -86,6 +86,35 @@ pub struct DraftState {
     pub close_discard_ids: RefCell<HashSet<String>>,
 }
 
+/// Tab-strip menu and close-authorization state owned by the window shell.
+pub struct TabManagementState {
+    /// Shared `GMenu` model reused for the Adwaita tab context menu.
+    pub context_menu: gio::Menu,
+    /// The tab page whose context menu is currently being prepared or shown.
+    pub target_page: RefCell<Option<glib::WeakRef<libadwaita::TabPage>>>,
+    /// Pages already confirmed through the combined bulk-close dialog.
+    ///
+    /// The `connect_close_page` signal checks this set so a bulk close can
+    /// reuse the existing close machinery without spawning one dialog per tab.
+    pub preconfirmed_close_pages: RefCell<HashSet<usize>>,
+    /// Tracks which tab pages already have pinned-state signal wiring attached.
+    ///
+    /// Pages can be created during session restore before the explicit tab
+    /// workflow setup runs, so this guard prevents duplicate signal hookups.
+    pub configured_pages: RefCell<HashSet<usize>>,
+}
+
+impl Default for TabManagementState {
+    fn default() -> Self {
+        Self {
+            context_menu: gio::Menu::new(),
+            target_page: RefCell::new(None),
+            preconfirmed_close_pages: RefCell::new(HashSet::new()),
+            configured_pages: RefCell::new(HashSet::new()),
+        }
+    }
+}
+
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
 pub struct LushtextWindow {
@@ -164,6 +193,8 @@ pub struct LushtextWindow {
     pub session: SessionState,
     /// Draft persistence and autosave state.
     pub drafts: DraftState,
+    /// Tab-menu targeting, pinned-page wiring, and bulk-close authorization.
+    pub tab_management: TabManagementState,
     /// Focus widget saved before the search panel steals focus.
     pub search_saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     /// Window-scoped notification bus + store.
@@ -217,6 +248,7 @@ impl Default for LushtextWindow {
             editor_memory: EditorMemoryState::default(),
             session: SessionState::default(),
             drafts: DraftState::default(),
+            tab_management: TabManagementState::default(),
             search_saved_focus: RefCell::new(None),
             notification_bus: NotificationBus::default(),
             notification_sweep_source_id: RefCell::new(None),
@@ -524,6 +556,13 @@ impl ObjectImpl for LushtextWindow {
 
         let window_weak = obj.downgrade();
         self.tab_view.connect_close_page(move |tab_view, page| {
+            if let Some(window) = window_weak.upgrade()
+                && window.consume_preconfirmed_tab_close(page)
+            {
+                tab_view.close_page_finish(page, true);
+                return glib::Propagation::Stop;
+            }
+
             let child = page.child();
             let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
                 tab_view.close_page_finish(page, true);
@@ -549,6 +588,7 @@ impl ObjectImpl for LushtextWindow {
         let window_weak = obj.downgrade();
         self.tab_view.connect_page_detached(move |_, page, _| {
             if let Some(window) = window_weak.upgrade() {
+                window.forget_tab_page(page);
                 if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
                     if let Some(ref path) = editor.file_path() {
                         window.imp().open_paths.borrow_mut().remove(path.as_path());

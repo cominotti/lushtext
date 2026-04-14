@@ -56,6 +56,7 @@ mod tests {
             cursor_line,
             cursor_col: 0,
             scroll_line: 0,
+            pinned: false,
         }
     }
 
@@ -67,6 +68,7 @@ mod tests {
             cursor_line: 0,
             cursor_col: 0,
             scroll_line: 0,
+            pinned: false,
         }
     }
 
@@ -88,6 +90,7 @@ mod tests {
                 cursor_line: 10,
                 cursor_col: 5,
                 scroll_line: 8,
+                pinned: true,
             }],
             active_tab_index: Some(0),
         };
@@ -98,6 +101,7 @@ mod tests {
         assert_eq!(loaded.tabs.len(), 1);
         assert_eq!(loaded.tabs[0].cursor_line, 10);
         assert_eq!(loaded.active_tab_index, Some(0));
+        assert!(loaded.tabs[0].pinned);
     }
 
     #[test]

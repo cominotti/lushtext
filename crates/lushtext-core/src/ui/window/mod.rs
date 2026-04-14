@@ -18,6 +18,7 @@ mod preview;
 mod print;
 mod search;
 mod session_persistence;
+mod tabs;
 mod zoom;
 
 use crate::config::keys;
@@ -55,6 +56,7 @@ impl LushtextWindow {
     pub fn new(app: &libadwaita::Application) -> Self {
         let window: Self = Object::builder().property("application", app).build();
         window.setup_actions();
+        window.setup_tab_management();
         window.setup_fullscreen();
         window.setup_theme_selector();
         preview::setup_preview_actions(&window);

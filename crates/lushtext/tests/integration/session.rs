@@ -16,6 +16,7 @@ fn tab(path: impl Into<std::path::PathBuf>, cursor_line: u32) -> SessionTab {
         cursor_line,
         cursor_col: 0,
         scroll_line: 0,
+        pinned: false,
     }
 }
 
@@ -32,6 +33,7 @@ fn tab_with_position(
         cursor_line,
         cursor_col,
         scroll_line,
+        pinned: false,
     }
 }
 
@@ -43,6 +45,7 @@ fn untitled(draft_id: &str) -> SessionTab {
         cursor_line: 0,
         cursor_col: 0,
         scroll_line: 0,
+        pinned: false,
     }
 }
 
@@ -374,6 +377,46 @@ fn test_many_tabs_roundtrip() {
     assert_eq!(loaded.tabs[25].cursor_line, 25);
     assert_eq!(loaded.tabs[25].cursor_col, 50);
     assert_eq!(loaded.tabs[25].scroll_line, 75);
+}
+
+#[test]
+fn test_session_roundtrip_preserves_pinned_segment_state() {
+    let ctx = TestContext::new();
+
+    let pinned_file = ctx.write_file("pinned.rs", "fn pinned() {}");
+    let regular_file = ctx.write_file("regular.rs", "fn regular() {}");
+
+    let session = SessionData {
+        tabs: vec![
+            SessionTab {
+                path: Some(pinned_file.clone()),
+                draft_id: None,
+                cursor_line: 1,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: true,
+            },
+            SessionTab {
+                path: Some(regular_file.clone()),
+                draft_id: None,
+                cursor_line: 2,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            },
+        ],
+        active_tab_index: Some(1),
+    };
+
+    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
+    let loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
+
+    assert_eq!(loaded.tabs.len(), 2);
+    assert_eq!(loaded.tabs[0].path, Some(pinned_file));
+    assert!(loaded.tabs[0].pinned);
+    assert_eq!(loaded.tabs[1].path, Some(regular_file));
+    assert!(!loaded.tabs[1].pinned);
+    assert_eq!(loaded.active_tab_index, Some(1));
 }
 
 #[test]

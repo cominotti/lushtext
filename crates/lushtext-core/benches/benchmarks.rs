@@ -168,6 +168,7 @@ fn make_draft_fixtures(
             cursor_line: 0,
             cursor_col: 0,
             scroll_line: 0,
+            pinned: false,
         });
     }
 
@@ -214,6 +215,7 @@ fn make_session_data(n_tabs: usize) -> SessionData {
                 cursor_line: u32::try_from(i % 500).expect("benchmark fixture tab index fits"),
                 cursor_col: 0,
                 scroll_line: 0,
+                pinned: false,
             })
             .collect(),
         active_tab_index: Some(0),

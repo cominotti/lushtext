@@ -24,6 +24,12 @@ pub struct SessionTab {
     pub cursor_line: u32,
     pub cursor_col: u32,
     pub scroll_line: u32,
+    /// Whether this tab belongs to the pinned leading segment.
+    ///
+    /// Older session files omit this field, so serde defaults it to `false`
+    /// during deserialization for backward-compatible restore behavior.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// Full session state for the application.
@@ -89,6 +95,7 @@ mod tests {
             cursor_line,
             cursor_col: 0,
             scroll_line: 0,
+            pinned: false,
         }
     }
 
@@ -100,6 +107,7 @@ mod tests {
             cursor_line: 0,
             cursor_col: 0,
             scroll_line: 0,
+            pinned: false,
         }
     }
 
@@ -173,6 +181,7 @@ mod tests {
             cursor_line: 42,
             cursor_col: 15,
             scroll_line: 30,
+            pinned: true,
         };
         let json = serde_json::to_string(&tab).expect("expected operation to succeed");
         let deserialized: SessionTab =
@@ -181,6 +190,7 @@ mod tests {
         assert_eq!(deserialized.cursor_line, tab.cursor_line);
         assert_eq!(deserialized.cursor_col, tab.cursor_col);
         assert_eq!(deserialized.scroll_line, tab.scroll_line);
+        assert!(deserialized.pinned);
     }
 
     #[test]
@@ -192,6 +202,7 @@ mod tests {
                 cursor_line: 10,
                 cursor_col: 5,
                 scroll_line: 8,
+                pinned: true,
             }],
             active_tab_index: Some(0),
         };
@@ -201,6 +212,7 @@ mod tests {
         assert_eq!(deserialized.tabs.len(), 1);
         assert_eq!(deserialized.tabs[0].path, Some(PathBuf::from("/a.rs")));
         assert_eq!(deserialized.active_tab_index, Some(0));
+        assert!(deserialized.tabs[0].pinned);
     }
 
     #[test]
@@ -249,6 +261,7 @@ mod tests {
             serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(deserialized.path, None);
         assert_eq!(deserialized.draft_id, Some("untitled-42".to_string()));
+        assert!(!deserialized.pinned);
     }
 
     #[test]
@@ -257,6 +270,18 @@ mod tests {
         let json = serde_json::to_string(&tab).expect("expected operation to succeed");
         // draft_id should not appear in serialized form when None
         assert!(!json.contains("draft_id"));
+        assert!(json.contains("\"pinned\":false"));
+    }
+
+    #[test]
+    fn test_older_session_json_defaults_pinned_false() {
+        let deserialized: SessionTab = serde_json::from_str(
+            r#"{"path":"/tmp/example.rs","cursor_line":1,"cursor_col":2,"scroll_line":3}"#,
+        )
+        .expect("expected operation to succeed");
+
+        assert_eq!(deserialized.path, Some(PathBuf::from("/tmp/example.rs")));
+        assert!(!deserialized.pinned);
     }
 
     #[test]
