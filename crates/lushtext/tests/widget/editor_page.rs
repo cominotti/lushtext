@@ -2,7 +2,8 @@
 
 //! Tests for the LushtextEditorPage widget.
 
-use crate::common::ensure_gtk_init;
+use crate::common::{ensure_gtk_init, present_window, test_application, wait_until};
+use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
@@ -22,6 +23,55 @@ fn button_label(button: &gtk4::Button) -> gtk4::Label {
 
 fn flush_events() {
     while glib::MainContext::default().iteration(false) {}
+}
+
+fn minimap_controller_types(widget: &impl IsA<gtk4::Widget>) -> Vec<String> {
+    let controllers = widget.observe_controllers();
+    let mut types = Vec::new();
+    for index in 0..controllers.n_items() {
+        let controller = controllers
+            .item(index)
+            .expect("controller should still exist");
+        types.push(controller.type_().name().to_string());
+    }
+    types.sort();
+    types
+}
+
+fn baseline_source_map_for_view(view: &sourceview5::View) -> sourceview5::Map {
+    let map = sourceview5::Map::new();
+    map.set_view(view);
+    map.set_editable(false);
+    map.set_cursor_visible(false);
+    map.set_can_focus(false);
+    map.set_wrap_mode(gtk4::WrapMode::None);
+    map.set_show_line_numbers(false);
+    map.set_show_line_marks(false);
+    map.set_highlight_current_line(false);
+    map.set_monospace(true);
+    map.set_left_margin(0);
+    map.set_right_margin(0);
+    map.set_overflow(gtk4::Overflow::Visible);
+    map.add_css_class("monospace");
+    map.add_css_class("minimap-view");
+    map.set_hexpand(true);
+    map.set_vexpand(true);
+    map
+}
+
+fn present_editor_page(page: &LushtextEditorPage) -> gtk4::ApplicationWindow {
+    let app = test_application();
+    let window = gtk4::ApplicationWindow::builder()
+        .application(&app)
+        .default_width(1000)
+        .default_height(800)
+        .child(page)
+        .build();
+    present_window(&window);
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.source_view().is_mapped() && page.source_view().visible_rect().height() > 0
+    });
+    window
 }
 
 #[test]
@@ -181,7 +231,7 @@ fn test_show_search_reveals_search_bar() {
 }
 
 #[test]
-fn test_minimap_source_map_matches_gnome_geometry_contract() {
+fn test_minimap_source_map_matches_upstream_geometry_contract() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
     let source_map = page
@@ -192,12 +242,82 @@ fn test_minimap_source_map_matches_gnome_geometry_contract() {
         .as_ref()
         .cloned()
         .expect("source map should be created during construction");
+    let baseline_map = baseline_source_map_for_view(page.source_view());
 
-    assert_eq!(source_map.top_margin(), 5);
-    assert_eq!(source_map.bottom_margin(), 5);
-    assert_eq!(source_map.left_margin(), 0);
-    assert_eq!(source_map.right_margin(), 0);
-    assert_eq!(source_map.overflow(), gtk4::Overflow::Visible);
+    assert_eq!(source_map.top_margin(), baseline_map.top_margin());
+    assert_eq!(source_map.bottom_margin(), baseline_map.bottom_margin());
+    assert_eq!(source_map.left_margin(), baseline_map.left_margin());
+    assert_eq!(source_map.right_margin(), baseline_map.right_margin());
+    assert_eq!(source_map.overflow(), baseline_map.overflow());
+    assert!(!source_map.can_focus());
+}
+
+#[test]
+fn test_minimap_source_map_keeps_native_navigation_controller_set() {
+    ensure_gtk_init();
+
+    let page = LushtextEditorPage::new();
+    let source_map = page
+        .imp()
+        .minimap
+        .source_map
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("source map should be created during construction");
+
+    let baseline_view = sourceview5::View::new();
+    let baseline_map = baseline_source_map_for_view(&baseline_view);
+
+    assert_eq!(
+        minimap_controller_types(&source_map),
+        minimap_controller_types(&baseline_map),
+        "the editor minimap should not add app-owned click/drag controller overrides on top of GtkSourceMap"
+    );
+}
+
+#[test]
+fn test_editor_page_adds_dynamic_eof_overscroll_after_allocation() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present_editor_page(&page);
+
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.source_view().bottom_margin() > 6
+    });
+
+    let visible_rect = page.source_view().visible_rect();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "The test mirrors the production overscroll rounding from a GTK-provided i32 visible height"
+    )]
+    let expected_margin = ((f64::from(visible_rect.height()) * 0.75).round() as i32).max(6);
+
+    assert_eq!(page.source_view().bottom_margin(), expected_margin);
+}
+
+#[test]
+fn test_minimap_source_map_inherits_dynamic_eof_tail_geometry() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present_editor_page(&page);
+
+    let source_map = page
+        .imp()
+        .minimap
+        .source_map
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("source map should be created during construction");
+
+    wait_until(std::time::Duration::from_secs(2), || {
+        source_map.bottom_margin() > 6
+    });
+
+    let baseline_map = baseline_source_map_for_view(page.source_view());
+    assert_eq!(source_map.bottom_margin(), baseline_map.bottom_margin());
+    assert!(source_map.bottom_margin() > 6);
 }
 
 #[test]

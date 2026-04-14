@@ -3,10 +3,10 @@
 //! Editor minimap workflow for one tab.
 //!
 //! This module stays in the GTK driving-adapter layer because it wires
-//! `GtkSourceMap`, buffer signals, scroll adjustments, and gesture input
-//! directly to the editor widget tree. The logic is still kept in its own
-//! workflow file so `mod.rs` and `imp.rs` do not become a mixed pile of
-//! unrelated editor concerns.
+//! `GtkSourceMap`, buffer signals, and scroll adjustments directly to the
+//! editor widget tree. The logic is still kept in its own workflow file so
+//! `mod.rs` and `imp.rs` do not become a mixed pile of unrelated editor
+//! concerns.
 
 use std::time::Duration;
 
@@ -124,8 +124,6 @@ impl LushtextEditorPage {
         source_map.set_show_line_marks(false);
         source_map.set_highlight_current_line(false);
         source_map.set_monospace(true);
-        source_map.set_top_margin(5);
-        source_map.set_bottom_margin(5);
         source_map.set_left_margin(0);
         source_map.set_right_margin(0);
         source_map.set_overflow(gtk4::Overflow::Visible);
@@ -149,42 +147,6 @@ impl LushtextEditorPage {
                     draw_marker_strip(&editor, cr, width, height);
                 }
             });
-        }
-
-        {
-            let editor_weak = self.downgrade();
-            let map = source_map.clone();
-            let gesture = gtk4::GestureClick::new();
-            gesture.connect_pressed(move |gesture, _, _x, y| {
-                gesture.set_state(gtk4::EventSequenceState::Claimed);
-                if let Some(editor) = editor_weak.upgrade() {
-                    scroll_editor_from_minimap(&editor, y, f64::from(map.height()));
-                }
-            });
-            source_map.add_controller(gesture);
-        }
-        {
-            let editor_weak = self.downgrade();
-            let map = source_map.clone();
-            let gesture = gtk4::GestureDrag::new();
-            gesture.connect_drag_begin(move |gesture, _x, y| {
-                gesture.set_state(gtk4::EventSequenceState::Claimed);
-                if let Some(editor) = editor_weak.upgrade() {
-                    scroll_editor_from_minimap(&editor, y, f64::from(map.height()));
-                }
-            });
-
-            let editor_weak = self.downgrade();
-            let map = source_map.clone();
-            gesture.connect_drag_update(move |gesture, _dx, dy| {
-                let Some((_, start_y)) = gesture.start_point() else {
-                    return;
-                };
-                if let Some(editor) = editor_weak.upgrade() {
-                    scroll_editor_from_minimap(&editor, start_y + dy, f64::from(map.height()));
-                }
-            });
-            source_map.add_controller(gesture);
         }
 
         imp.minimap_overlay.add_css_class("minimap-shell");
@@ -601,29 +563,6 @@ fn marker_rgba(kind: MinimapMarkerKind, dark: bool) -> (f64, f64, f64, f64) {
     }
 }
 
-fn scroll_editor_from_minimap(editor: &LushtextEditorPage, y: f64, height: f64) {
-    let total_lines = document_line_count(editor);
-    let target_line = target_line_for_position(total_lines, y, height);
-    let mut iter = iter_at_line_or_last(&editor.buffer(), target_line);
-    editor
-        .source_view()
-        .scroll_to_iter(&mut iter, 0.0, true, 0.0, 0.5);
-    editor.buffer().place_cursor(&iter);
-    editor.source_view().grab_focus();
-}
-
-fn target_line_for_position(total_lines: u32, y: f64, height: f64) -> u32 {
-    if total_lines <= 1 || height <= 0.0 {
-        return 0;
-    }
-
-    let clamped = y.clamp(0.0, height);
-    let normalized = clamped / height;
-    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let line = (normalized * f64::from(total_lines)).floor() as u32;
-    line.min(total_lines.saturating_sub(1))
-}
-
 fn iter_at_line_or_last(buffer: &sourceview5::Buffer, line: u32) -> gtk4::TextIter {
     i32::try_from(line)
         .ok()
@@ -658,14 +597,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn test_target_line_for_position_clamps_to_document_bounds() {
-        assert_eq!(target_line_for_position(100, -5.0, 200.0), 0);
-        assert_eq!(target_line_for_position(100, 0.0, 200.0), 0);
-        assert_eq!(target_line_for_position(100, 100.0, 200.0), 50);
-        assert_eq!(target_line_for_position(100, 400.0, 200.0), 99);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # line-bookmarks Specification
 
 ## Purpose
-TBD - created by archiving change bookmarks-annotations. Update Purpose after archive.
+Let users persist lightweight, non-text bookmarks on saved files so they can label important lines, revisit them quickly, and keep them stable across restarts and in-app renames.
 ## Requirements
 ### Requirement: Users can toggle bookmarks on file-backed lines
 The system SHALL allow users to add or remove a bookmark on the active line of a file-backed document without modifying the document text. The system MUST block bookmark creation for documents that do not yet have a stable file path.
@@ -57,4 +57,3 @@ The system SHALL restore bookmarks when a bookmarked file is reopened in a later
 - **WHEN** the user saves a bookmarked document to a new file path with Save As
 - **THEN** the newly saved file opens without copied bookmarks by default
 - **AND** the original file keeps its existing bookmark set
-

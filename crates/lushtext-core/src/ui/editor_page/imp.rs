@@ -34,6 +34,14 @@ type LoadCompletedCallback = Box<dyn FnOnce()>;
 type FileLoadedCallback = Box<dyn Fn()>;
 type NotesChangedCallback = Box<dyn Fn()>;
 
+/// Coalesced end-of-document overscroll updates for one editor tab.
+#[derive(Default)]
+pub struct OverscrollState {
+    /// Generation counter used to collapse bursts of GTK allocations into one
+    /// idle overscroll recomputation after the layout settles.
+    pub update_generation: Cell<u32>,
+}
+
 /// Signal handlers connected to application-global preference/theme objects.
 #[derive(Default)]
 pub struct PreferenceBindingState {
@@ -251,6 +259,8 @@ pub struct LushtextEditorPage {
     pub load: LoadState,
     /// Deferred cursor/scroll restoration state.
     pub restore: RestoreState,
+    /// Dynamic editor overscroll scheduling state.
+    pub overscroll: OverscrollState,
     /// Live bookmark mark projection and persistence state.
     pub bookmarks: BookmarkState,
     /// Live annotation range projection and persistence state.
@@ -285,6 +295,7 @@ impl Default for LushtextEditorPage {
             draft: DraftState::default(),
             load: LoadState::default(),
             restore: RestoreState::default(),
+            overscroll: OverscrollState::default(),
             bookmarks: BookmarkState::default(),
             annotations: AnnotationState::default(),
             minimap: MinimapState::default(),
@@ -541,11 +552,28 @@ impl ObjectImpl for LushtextEditorPage {
             }
         });
 
+        {
+            let editor_weak = self.obj().downgrade();
+            self.source_view.connect_map(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.schedule_dynamic_overscroll_update();
+                }
+            });
+        }
+
         self.obj().setup_minimap();
     }
 }
 
-impl WidgetImpl for LushtextEditorPage {}
+impl WidgetImpl for LushtextEditorPage {
+    fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+        self.parent_size_allocate(width, height, baseline);
+
+        // Recompute the EOF overscroll after GTK has allocated the text view so
+        // `visible_rect()` reflects the real viewport height for this frame.
+        self.obj().schedule_dynamic_overscroll_update();
+    }
+}
 impl BoxImpl for LushtextEditorPage {}
 
 // Disconnect signal handlers from application-global objects (Settings,

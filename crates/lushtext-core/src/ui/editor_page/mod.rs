@@ -12,6 +12,7 @@ mod imp;
 mod load_save;
 mod minimap;
 mod monitor;
+mod overscroll;
 mod search;
 
 use crate::model::annotation::{AnnotationId, AnnotationRecord, AnnotationStyle};

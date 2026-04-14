@@ -1,7 +1,7 @@
 # sidecar-annotations Specification
 
 ## Purpose
-TBD - created by archiving change bookmarks-annotations. Update Purpose after archive.
+Let users attach persistent sidecar annotations to saved-file line ranges without modifying the source file bytes, while keeping those notes editable, restorable, and exportable.
 ## Requirements
 ### Requirement: Users can create and manage sidecar annotations on saved files
 The system SHALL allow users to create, edit, and delete annotations on one or more lines of a file-backed document without modifying the underlying file text. Each annotation MUST store user-entered note text and a presentation style that can be shown consistently in annotation UI.
@@ -54,4 +54,3 @@ The system SHALL export annotations for the current workspace into a markdown do
 - **WHEN** the user runs the export-annotations workflow for the current workspace
 - **THEN** the system creates a markdown document containing the workspace's annotations grouped by file path
 - **AND** each exported annotation includes its line range, saved note text, and surrounding context
-

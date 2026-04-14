@@ -1,7 +1,7 @@
 # markdown-preview-tables Specification
 
 ## Purpose
-TBD - created by archiving change render-markdown-tables. Update Purpose after archive.
+Render Markdown table syntax in the native preview as readable table blocks that preserve headers, column structure, and alignment cues within the surrounding document flow.
 ## Requirements
 ### Requirement: Markdown preview renders table blocks
 The system SHALL render Markdown table syntax in the Markdown preview pane as a readable table block instead of omitting the table structure. Table header rows MUST remain visually distinct from body rows.
@@ -28,4 +28,3 @@ The system SHALL preserve each table cell's text content and MUST render columns
 - **WHEN** the user previews a Markdown table that declares left-, center-, and right-aligned columns
 - **THEN** the preview pads the rendered cells so those alignment cues remain visible in their respective columns
 - **AND** the table stays readable without collapsing all columns to the same left alignment
-
