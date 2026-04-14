@@ -7,9 +7,9 @@
 
 use std::path::Path;
 
-use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::{gio, glib};
 
 use crate::model::workspace::WorkspaceEntry;
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
@@ -25,7 +25,7 @@ impl LushtextWorkspaceSection {
         self.load_root_model(roots, false);
     }
 
-    fn load_root_model(&self, roots: &[WorkspaceEntry], auto_expand: bool) {
+    pub(super) fn load_root_model(&self, roots: &[WorkspaceEntry], auto_expand: bool) {
         self.dismiss_peek_for_rebuild();
         self.save_expanded_paths();
         super::tree_loading::clear_all_dir_state(self);
@@ -65,12 +65,8 @@ impl LushtextWorkspaceSection {
         *imp.root_store.borrow_mut() = Some(root_store);
         *imp.tree_model.borrow_mut() = Some(tree_model.clone());
         self.update_button_state();
-
-        if auto_expand {
-            for row in self.root_rows() {
-                row.set_expanded(true);
-            }
-        }
+        self.restore_root_model_state(auto_expand);
+        self.restart_workspace_watch();
     }
 
     /// Add a single root path to an existing file tree.
@@ -178,6 +174,7 @@ impl LushtextWorkspaceSection {
         for row in self.expanded_root_rows() {
             row.set_expanded(false);
         }
+        self.restart_workspace_watch();
     }
 
     /// Expands the root directories of this workspace section if they are not confirmed empty.
@@ -185,6 +182,7 @@ impl LushtextWorkspaceSection {
         for row in self.collapsed_non_empty_root_rows() {
             row.set_expanded(true);
         }
+        self.restart_workspace_watch();
     }
 
     /// Toggle the expansion state of the root directories as one group.
@@ -194,6 +192,7 @@ impl LushtextWorkspaceSection {
         for row in rows {
             row.set_expanded(any_collapsed);
         }
+        self.restart_workspace_watch();
     }
 
     /// Select and scroll to a path after its row exists in the flattened tree model.
@@ -225,6 +224,7 @@ impl LushtextWorkspaceSection {
     /// Update the add-folder button icon and tooltip based on whether roots exist.
     fn update_button_state(&self) {
         let button = &self.imp().add_folder_button;
+        self.imp().refresh_button.set_sensitive(self.has_roots());
         if self.has_roots() {
             button.set_icon_name("folder-open-symbolic");
             button.set_tooltip_text(Some("Replace Workspace Root"));
@@ -279,5 +279,31 @@ impl LushtextWorkspaceSection {
                     })
             })
             .collect()
+    }
+
+    fn restore_root_model_state(&self, auto_expand: bool) {
+        let section_weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(section) = section_weak.upgrade() else {
+                return;
+            };
+
+            for row in section.root_rows() {
+                let should_expand = auto_expand
+                    || row
+                        .item()
+                        .and_downcast::<FileTreeItem>()
+                        .and_then(|item| item.path())
+                        .is_some_and(|path| section.imp().expanded_paths.borrow().contains(&path));
+                if should_expand {
+                    row.set_expanded(true);
+                }
+            }
+
+            let pending_selection = section.imp().pending_selection.borrow().clone();
+            if let Some(target_path) = pending_selection {
+                section.select_and_scroll_to(&target_path);
+            }
+        });
     }
 }

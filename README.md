@@ -6,6 +6,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 
 - **Dual sidebars** -- persistent left workspace tree plus optional right properties panel for document metadata and editor formatting controls
 - **Workspaces** -- named collections of root directories, persisted across sessions
+- **Workspace auto-refresh** -- external file and folder changes refresh the sidebar's currently materialized root rows and expanded directories automatically, with access-noise filtering plus in-place subtree reconciliation to avoid visible flashing, and a per-section `Refresh` button for deterministic broader reloads
 - **File peek** -- press `Space` on a selected sidebar file to inspect a bounded read-only preview in a floating card with the absolute file path, then `Enter` or `Open` to promote it into a real tab
 - **Focus Folder** -- re-root a workspace section into a deep subfolder so the sidebar can drill into nested trees without wasting width on clipped ancestors
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)
@@ -266,6 +267,7 @@ lushtext-core/src/
     saved_searches.rs  Named saved search persistence
     session_service.rs  Session load/save
     workspace_manager.rs  Workspace CRUD
+    workspace_watch.rs  Materialized-scope filesystem watch service for sidebar auto-refresh
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
     window/          Main window shell plus actions, documents, drafts, notes, search, preview, session persistence, print, and zoom wiring

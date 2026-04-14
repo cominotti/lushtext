@@ -11,6 +11,8 @@ use std::path::Path;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::ObjectExt;
 
+use crate::services::notifications::NotificationSeverity;
+
 use super::{LushtextSidebar, WorkspaceSection};
 
 impl LushtextSidebar {
@@ -41,6 +43,13 @@ impl LushtextSidebar {
         section.connect_file_created(move |path| {
             if let Some(sidebar) = sidebar_weak.upgrade() {
                 sidebar.emit_file_created(path);
+            }
+        });
+
+        let sidebar_weak = self.downgrade();
+        section.connect_message(move |text, severity| {
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                sidebar.emit_message(text, severity);
             }
         });
 
@@ -104,6 +113,12 @@ impl LushtextSidebar {
     fn emit_file_created(&self, path: &Path) {
         if let Some(ref callback) = *self.imp().create_callback.borrow() {
             callback(path);
+        }
+    }
+
+    fn emit_message(&self, text: &str, severity: NotificationSeverity) {
+        if let Some(ref callback) = *self.imp().message_callback.borrow() {
+            callback(text, severity);
         }
     }
 }

@@ -6,6 +6,7 @@
 //! debounced persistence of workspace state to disk.
 
 use crate::model::workspace::{WorkspaceId, WorkspacesFile};
+use crate::services::notifications::NotificationSeverity;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
@@ -15,6 +16,7 @@ use std::path::Path;
 use super::{WorkspaceSidebarWidthPreset, workspace_section::LushtextWorkspaceSection};
 
 type FileCallback = Box<dyn Fn(&Path)>;
+type MessageCallback = Box<dyn Fn(&str, NotificationSeverity)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
 type WidthPresetCallback = Box<dyn Fn(WorkspaceSidebarWidthPreset)>;
 
@@ -65,6 +67,8 @@ pub struct LushtextSidebar {
     pub rename_callback: RefCell<Option<RenameCallback>>,
     pub delete_callback: RefCell<Option<FileCallback>>,
     pub create_callback: RefCell<Option<FileCallback>>,
+    /// Callback forwarding workspace-section status messages to the window.
+    pub message_callback: RefCell<Option<MessageCallback>>,
     /// Callback notifying the window that workspace structure changed.
     pub workspace_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
     /// Callback notifying the window that the width preset changed.
@@ -105,6 +109,7 @@ impl Default for LushtextSidebar {
             rename_callback: RefCell::default(),
             delete_callback: RefCell::default(),
             create_callback: RefCell::default(),
+            message_callback: RefCell::default(),
             workspace_changed_callback: RefCell::default(),
             width_preset_callback: RefCell::default(),
             syncing_width_preset: Cell::default(),

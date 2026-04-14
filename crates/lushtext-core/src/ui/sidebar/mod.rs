@@ -20,6 +20,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
 use crate::model::workspace::WorkspaceEntry;
+use crate::services::notifications::NotificationSeverity;
 
 pub use file_tree_item::FileTreeItem;
 pub use workspace_section::LushtextWorkspaceSection as WorkspaceSection;
@@ -99,6 +100,10 @@ impl LushtextSidebar {
 
     pub fn connect_file_created<F: Fn(&Path) + 'static>(&self, f: F) {
         *self.imp().create_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_message<F: Fn(&str, NotificationSeverity) + 'static>(&self, f: F) {
+        *self.imp().message_callback.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_workspace_changed<F: Fn() + 'static>(&self, f: F) {

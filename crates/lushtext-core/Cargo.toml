@@ -25,6 +25,7 @@ anyhow      = { workspace = true }
 thiserror   = { workspace = true }
 dirs        = { workspace = true }
 libc        = { workspace = true }
+notify-debouncer-full = { workspace = true }
 tracing        = { workspace = true }
 nucleo-matcher = { workspace = true }
 simdutf8       = { workspace = true }

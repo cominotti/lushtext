@@ -13,7 +13,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use std::cell::RefCell;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -24,6 +24,16 @@ use super::super::file_tree_item::FileTreeItem;
 
 /// Queue of child entries waiting to be appended on future main-loop ticks.
 type PendingEntries = Rc<RefCell<VecDeque<DirectoryEntry>>>;
+
+/// One row shape in a child `ListStore`, used to reconcile a refreshed scan
+/// without clearing and re-adding the whole subtree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ChildRowState {
+    path: Option<PathBuf>,
+    is_dir: bool,
+    is_empty: Option<bool>,
+    placeholder_label: Option<String>,
+}
 
 /// Maximum directory entries before truncation. A single `gio::ListStore`
 /// with >10k items causes slow model diff updates in `GtkListView`.
@@ -39,6 +49,20 @@ pub(super) fn build_children_model(
     dir_path: &Path,
 ) -> gio::ListStore {
     let store = gio::ListStore::new::<FileTreeItem>();
+    // Expanding a directory materializes a new visible scope, so restart the
+    // scoped watcher set now that this directory participates in auto-refresh.
+    section.restart_workspace_watch();
+    populate_child_store(section, dir_path, &store);
+    store
+}
+
+/// Reuse an existing child store when a refresh only needs to reload one subtree.
+pub(super) fn populate_child_store(
+    section: &LushtextWorkspaceSection,
+    dir_path: &Path,
+    store: &gio::ListStore,
+) {
+    let store = store.clone();
     let path = dir_path.to_path_buf();
     let cancel = Arc::new(AtomicBool::new(false));
     section
@@ -86,38 +110,9 @@ pub(super) fn build_children_model(
                 return;
             }
 
-            let mut existing = HashSet::with_capacity(store.n_items() as usize);
-            for i in 0..store.n_items() {
-                if let Some(fi) = store.item(i).and_downcast::<FileTreeItem>()
-                    && let Some(existing_path) = fi.path()
-                {
-                    existing.insert(existing_path);
-                }
-            }
-
-            let remaining_budget = MAX_DIR_ENTRIES.saturating_sub(existing.len());
-            let mut new_entries = Vec::with_capacity(scan.entries.len().min(remaining_budget));
-            let mut truncated = scan.truncated;
-            for entry in scan.entries {
-                if existing.contains(&entry.path) {
-                    continue;
-                }
-                if new_entries.len() >= remaining_budget {
-                    truncated = true;
-                    break;
-                }
-                new_entries.push(entry);
-            }
-
-            if truncated {
-                tracing::warn!("Directory truncated to {MAX_DIR_ENTRIES} entries");
-            }
-
-            append_child_batches(&section, store, path, cancel, new_entries, truncated);
+            apply_scanned_children(&section, store, path, cancel, scan.entries, scan.truncated);
         },
     );
-
-    store
 }
 
 /// Drop cached rows, child stores, and in-flight scans for one directory subtree.
@@ -323,4 +318,136 @@ fn append_next_child_batch(
 
 fn truncated_directory_label() -> String {
     format!("{MAX_DIR_ENTRIES}+ items - showing first {MAX_DIR_ENTRIES}")
+}
+
+fn apply_scanned_children(
+    section: &LushtextWorkspaceSection,
+    store: gio::ListStore,
+    dir_path: PathBuf,
+    token: Arc<AtomicBool>,
+    entries: Vec<DirectoryEntry>,
+    truncated: bool,
+) {
+    if truncated {
+        tracing::warn!("Directory truncated to {MAX_DIR_ENTRIES} entries");
+    }
+
+    if store.n_items() == 0 {
+        append_child_batches(section, store, dir_path, token, entries, truncated);
+        return;
+    }
+
+    reconcile_child_store(section, &store, &dir_path, &token, entries, truncated);
+}
+
+fn reconcile_child_store(
+    section: &LushtextWorkspaceSection,
+    store: &gio::ListStore,
+    dir_path: &Path,
+    token: &Arc<AtomicBool>,
+    entries: Vec<DirectoryEntry>,
+    truncated: bool,
+) {
+    let current = snapshot_child_rows(store);
+    let desired = desired_child_rows(entries, truncated);
+
+    if current != desired {
+        let prefix = common_prefix_len(&current, &desired);
+        let suffix = common_suffix_len(&current[prefix..], &desired[prefix..]);
+        let removed = current.len().saturating_sub(prefix + suffix);
+        let replacement = build_child_items(&desired[prefix..desired.len().saturating_sub(suffix)]);
+        #[expect(clippy::cast_possible_truncation)] // list store sizes are far below u32::MAX
+        store.splice(prefix as u32, removed as u32, &replacement);
+    }
+
+    section.recache_child_store(dir_path, store);
+    schedule_child_state_restore(section);
+    finish_child_scan(section, dir_path, token);
+}
+
+fn snapshot_child_rows(store: &gio::ListStore) -> Vec<ChildRowState> {
+    let mut rows = Vec::with_capacity(store.n_items() as usize);
+    for index in 0..store.n_items() {
+        if let Some(item) = store.item(index).and_downcast::<FileTreeItem>() {
+            rows.push(ChildRowState {
+                path: item.path(),
+                is_dir: item.is_dir(),
+                is_empty: item.is_empty(),
+                placeholder_label: item.is_placeholder().then(|| item.name()),
+            });
+        }
+    }
+    rows
+}
+
+fn desired_child_rows(entries: Vec<DirectoryEntry>, truncated: bool) -> Vec<ChildRowState> {
+    let mut rows = entries
+        .into_iter()
+        .map(|entry| ChildRowState {
+            path: Some(entry.path),
+            is_dir: entry.is_dir,
+            is_empty: entry.is_empty,
+            placeholder_label: None,
+        })
+        .collect::<Vec<_>>();
+
+    if truncated {
+        rows.push(ChildRowState {
+            path: None,
+            is_dir: false,
+            is_empty: None,
+            placeholder_label: Some(truncated_directory_label()),
+        });
+    }
+
+    rows
+}
+
+fn build_child_items(rows: &[ChildRowState]) -> Vec<FileTreeItem> {
+    rows.iter()
+        .map(|row| match (&row.path, &row.placeholder_label) {
+            (Some(path), _) => FileTreeItem::new(path.clone(), row.is_dir, row.is_empty),
+            (None, Some(label)) => FileTreeItem::new_placeholder(label.clone()),
+            (None, None) => FileTreeItem::new_placeholder(String::new()),
+        })
+        .collect()
+}
+
+fn common_prefix_len(current: &[ChildRowState], desired: &[ChildRowState]) -> usize {
+    current
+        .iter()
+        .zip(desired.iter())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn common_suffix_len(current: &[ChildRowState], desired: &[ChildRowState]) -> usize {
+    current
+        .iter()
+        .rev()
+        .zip(desired.iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn schedule_child_state_restore(section: &LushtextWorkspaceSection) {
+    let expanded_paths = section.imp().expanded_paths.borrow().clone();
+    let pending_selection = section.imp().pending_selection.borrow().clone();
+    if expanded_paths.is_empty() && pending_selection.is_none() {
+        return;
+    }
+
+    let section_weak = section.downgrade();
+    glib::timeout_add_local_once(Duration::from_millis(1), move || {
+        if let Some(section) = section_weak.upgrade() {
+            for path in expanded_paths {
+                if let Some(row) = section.find_dir_row(&path) {
+                    row.set_expanded(true);
+                }
+            }
+            if let Some(path) = pending_selection {
+                section.select_and_scroll_to(&path);
+            }
+        }
+    });
 }

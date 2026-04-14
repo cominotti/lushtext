@@ -30,6 +30,19 @@
           </object>
         </child>
         <child>
+          <object class="GtkButton" id="refresh_button">
+            <property name="icon-name">view-refresh-symbolic</property>
+            <property name="tooltip-text" translatable="yes">Refresh Workspace</property>
+            <property name="sensitive">false</property>
+            <property name="valign">center</property>
+            <property name="margin-top">6</property>
+            <property name="margin-bottom">6</property>
+            <style>
+              <class name="flat"/>
+            </style>
+          </object>
+        </child>
+        <child>
           <object class="GtkButton" id="add_folder_button">
             <property name="icon-name">folder-new-symbolic</property>
             <property name="tooltip-text" translatable="yes">Add Folder to Workspace</property>

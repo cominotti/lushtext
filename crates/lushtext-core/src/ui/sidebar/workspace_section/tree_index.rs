@@ -20,6 +20,10 @@ impl LushtextWorkspaceSection {
     pub(super) fn save_expanded_paths(&self) {
         if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
             let mut expanded = self.imp().expanded_paths.borrow_mut();
+            // Snapshot the current expanded state rather than accumulating a
+            // historical union. Otherwise a refresh can re-expand rows the user
+            // has since collapsed.
+            expanded.clear();
             for i in 0..tree_model.n_items() {
                 if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
                     && row.is_expanded()
@@ -71,6 +75,24 @@ impl LushtextWorkspaceSection {
                 index: insert_at,
             },
         );
+    }
+
+    /// Rebuild the direct-child cache for one directory from the current
+    /// `ListStore` contents after a refresh splice.
+    pub(super) fn recache_child_store(&self, parent_dir: &Path, store: &gio::ListStore) {
+        self.imp().child_paths.borrow_mut().remove(parent_dir);
+        self.imp()
+            .item_locations
+            .borrow_mut()
+            .retain(|_, location| location.parent_dir.as_deref() != Some(parent_dir));
+
+        for index in 0..store.n_items() {
+            if let Some(item) = store.item(index).and_downcast::<FileTreeItem>()
+                && let Some(path) = item.path()
+            {
+                self.cache_child_item(parent_dir, path, index as usize);
+            }
+        }
     }
 
     pub(super) fn rename_cached_item(&self, old_path: &Path, new_path: &Path) {

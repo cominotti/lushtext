@@ -8,9 +8,11 @@
 mod actions;
 mod imp;
 mod peek;
+mod refresh;
 mod roots;
 mod tree_index;
 mod tree_loading;
+mod watch;
 
 use std::path::Path;
 
@@ -20,6 +22,7 @@ use gtk4::prelude::*;
 
 use super::file_tree_item::FileTreeItem;
 use crate::model::workspace::WorkspaceId;
+use crate::services::notifications::NotificationSeverity;
 
 glib::wrapper! {
     pub struct LushtextWorkspaceSection(ObjectSubclass<imp::LushtextWorkspaceSection>)
@@ -67,6 +70,11 @@ impl LushtextWorkspaceSection {
 
     pub fn connect_file_created<F: Fn(&Path) + 'static>(&self, f: F) {
         *self.imp().create_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Store the callback used for lightweight window-owned status messages.
+    pub fn connect_message<F: Fn(&str, NotificationSeverity) + 'static>(&self, f: F) {
+        *self.imp().message_callback.borrow_mut() = Some(Box::new(f));
     }
 
     /// Store the callback used when peek promotion should open a real tab.
@@ -123,6 +131,12 @@ impl LushtextWorkspaceSection {
             callback(path);
         }
     }
+
+    fn emit_message(&self, text: &str, severity: NotificationSeverity) {
+        if let Some(ref callback) = *self.imp().message_callback.borrow() {
+            callback(text, severity);
+        }
+    }
 }
 
 /// Extract the file item at the given position and call the callback if it's a file.
@@ -138,6 +152,12 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
     {
         if file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true) {
             tree_row.set_expanded(!tree_row.is_expanded());
+            if let Some(section) = list_view
+                .ancestor(LushtextWorkspaceSection::static_type())
+                .and_downcast::<LushtextWorkspaceSection>()
+            {
+                section.restart_workspace_watch();
+            }
         } else if !file_item.is_dir()
             && let Some(ref path) = file_item.path()
         {

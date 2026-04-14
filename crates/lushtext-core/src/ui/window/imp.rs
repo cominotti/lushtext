@@ -464,6 +464,13 @@ impl ObjectImpl for LushtextWindow {
         });
 
         let window_weak = obj.downgrade();
+        self.sidebar.connect_message(move |text, severity| {
+            if let Some(window) = window_weak.upgrade() {
+                window.publish_status_message(text, severity);
+            }
+        });
+
+        let window_weak = obj.downgrade();
         self.command_palette.connect_item_activated(move |item| {
             let Some(window) = window_weak.upgrade() else {
                 return;

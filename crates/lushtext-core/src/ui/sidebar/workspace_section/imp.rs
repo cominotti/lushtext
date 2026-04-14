@@ -9,18 +9,21 @@
 use super::super::file_tree_item::FileTreeItem;
 use crate::model::workspace::{WorkspaceEntry, WorkspaceId};
 use crate::services::file_peek::PeekRequestToken;
+use crate::services::notifications::NotificationSeverity;
+use crate::services::workspace_watch::WorkspaceWatcher;
 use gtk4::gio;
 use gtk4::gio::prelude::ListModelExt;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 type FileCallback = Box<dyn Fn(&Path)>;
+type MessageCallback = Box<dyn Fn(&str, NotificationSeverity)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
 type WorkspaceCallback = Box<dyn Fn(&WorkspaceId)>;
 
@@ -69,6 +72,34 @@ pub struct PeekSessionState {
     pub open_allowed: Cell<bool>,
 }
 
+/// Debounced refresh state for one workspace section.
+#[derive(Default)]
+pub struct RefreshRuntimeState {
+    /// Generation counter used to drop stale debounce callbacks.
+    pub generation: Cell<u32>,
+    /// Paths accumulated since the last refresh run.
+    pub pending_paths: RefCell<HashSet<PathBuf>>,
+    /// Whether the next refresh must rebuild the whole current section view.
+    pub pending_full_reload: Cell<bool>,
+}
+
+/// Live filesystem-watch wiring for one workspace section.
+#[derive(Default)]
+pub struct WatchRuntimeState {
+    /// Recursive backend watcher for the current visible roots, if active.
+    pub watcher: RefCell<Option<WorkspaceWatcher>>,
+    /// Generation counter dropping stale deferred watcher startups after roots
+    /// or drill-down scope change again before the scheduled start runs.
+    pub start_generation: Cell<u32>,
+    /// Pending deferred startup source so startup/dispose can cancel it.
+    pub start_source_id: RefCell<Option<glib::SourceId>>,
+    /// GTK main-loop source that polls the watcher receiver without blocking.
+    pub poll_source_id: RefCell<Option<glib::SourceId>>,
+    /// Last watcher error shown to the user so repeated backend failures do not
+    /// spam the status bar every poll tick.
+    pub last_reported_error: RefCell<Option<String>>,
+}
+
 // CompositeTemplate loads the UI layout from a compiled XML file.
 // GObject methods always take &self; Cell/RefCell provide interior mutability.
 #[derive(Default, CompositeTemplate)]
@@ -78,6 +109,8 @@ pub struct LushtextWorkspaceSection {
     pub header_box: TemplateChild<gtk4::Box>,
     #[template_child]
     pub header_label: TemplateChild<gtk4::Label>,
+    #[template_child]
+    pub refresh_button: TemplateChild<gtk4::Button>,
     #[template_child]
     pub add_folder_button: TemplateChild<gtk4::Button>,
     #[template_child]
@@ -139,6 +172,10 @@ pub struct LushtextWorkspaceSection {
     pub peek_widgets: PeekWidgets,
     /// Active peek target, generation, and focus-return contract.
     pub peek_session: PeekSessionState,
+    /// Debounced refresh request state for manual and automatic reloads.
+    pub refresh_runtime: RefreshRuntimeState,
+    /// Recursive watcher plus GTK-side poll source for automatic refresh.
+    pub watch_runtime: WatchRuntimeState,
 
     // File operation callbacks (forwarded to sidebar → window)
     pub rename_callback: RefCell<Option<RenameCallback>>,
@@ -146,6 +183,8 @@ pub struct LushtextWorkspaceSection {
     pub create_callback: RefCell<Option<FileCallback>>,
     /// Callback used when a peek should be promoted into the normal open flow.
     pub peek_promote_callback: RefCell<Option<FileCallback>>,
+    /// Callback used for lightweight status-bar messages owned by the window.
+    pub message_callback: RefCell<Option<MessageCallback>>,
 
     // Workspace-level callbacks (handled by sidebar)
     pub add_folder_callback: RefCell<Option<WorkspaceCallback>>,
@@ -178,6 +217,15 @@ impl ObjectImpl for LushtextWorkspaceSection {
         self.setup_header_double_click();
         self.obj().setup_peek();
 
+        // Wire the manual refresh button. It uses the same refresh controller
+        // as the filesystem watcher so manual and automatic updates stay in sync.
+        let obj_weak = self.obj().downgrade();
+        self.refresh_button.connect_clicked(move |_| {
+            if let Some(section) = obj_weak.upgrade() {
+                section.request_manual_refresh();
+            }
+        });
+
         // Wire add-folder button
         let obj_weak = self.obj().downgrade();
         self.add_folder_button.connect_clicked(move |_| {
@@ -196,6 +244,8 @@ impl ObjectImpl for LushtextWorkspaceSection {
     }
 
     fn dispose(&self) {
+        self.obj().stop_workspace_watch();
+
         if let Some(popover) = self.context_menu.borrow_mut().take() {
             popover.unparent();
         }
@@ -396,6 +446,31 @@ impl LushtextWorkspaceSection {
                     && let Some(section) = section_weak.upgrade()
                     && let Some(path) = file_item.path()
                 {
+                    // Tree rows persist longer than recycled list-item widgets, so
+                    // install the expansion watcher once per row and let row
+                    // lifetime own the signal. This keeps auto-refresh scoped to
+                    // the directories the user has actually expanded.
+                    let has_expanded_hook =
+                        // SAFETY: we only store and read a simple marker flag
+                        // under this private key on this row object.
+                        unsafe { tree_row.data::<bool>("workspace-watch-expanded-hook") }
+                            .is_some();
+                    if !has_expanded_hook {
+                        let section_weak = section.downgrade();
+                        tree_row.connect_notify_local(Some("expanded"), move |_, _| {
+                            let section_weak = section_weak.clone();
+                            glib::idle_add_local_once(move || {
+                                if let Some(section) = section_weak.upgrade() {
+                                    section.restart_workspace_watch();
+                                }
+                            });
+                        });
+                        // SAFETY: this private marker is cleared with the row
+                        // object itself; no external code reads it.
+                        unsafe {
+                            tree_row.set_data("workspace-watch-expanded-hook", true);
+                        }
+                    }
                     section
                         .imp()
                         .dir_rows
@@ -667,8 +742,9 @@ impl LushtextWorkspaceSection {
         let gesture = gtk4::GestureClick::new();
 
         let section_weak = obj.downgrade();
-        gesture.connect_pressed(move |_, n_press, _, _| {
+        gesture.connect_pressed(move |gesture, n_press, x, y| {
             if n_press == 2
+                && click_target_is_header_background(gesture, x, y)
                 && let Some(section) = section_weak.upgrade()
             {
                 section.toggle_roots();
@@ -677,6 +753,16 @@ impl LushtextWorkspaceSection {
 
         self.header_box.add_controller(gesture);
     }
+}
+
+fn click_target_is_header_background(gesture: &gtk4::GestureClick, x: f64, y: f64) -> bool {
+    let Some(widget) = gesture.widget() else {
+        return false;
+    };
+    let Some(target) = widget.pick(x, y, gtk4::PickFlags::DEFAULT) else {
+        return true;
+    };
+    target.ancestor(gtk4::Button::static_type()).is_none()
 }
 
 /// Match Builder's "Files" root row only for the normal single-directory workspace root.

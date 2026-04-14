@@ -148,6 +148,39 @@ fn select_path(section: &LushtextWorkspaceSection, target_path: &Path) {
     panic!("path {} was not found in the tree model", target_path.display());
 }
 
+fn tree_contains_path(section: &LushtextWorkspaceSection, target_path: &Path) -> bool {
+    let Some(tree_model) = section.imp().tree_model.borrow().as_ref().cloned() else {
+        return false;
+    };
+
+    for index in 0..tree_model.n_items() {
+        if let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()
+            && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+            && item.path().as_deref() == Some(target_path)
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn row_for_path(
+    section: &LushtextWorkspaceSection,
+    target_path: &Path,
+) -> Option<gtk4::TreeListRow> {
+    let tree_model = section.imp().tree_model.borrow().as_ref()?.clone();
+    for index in 0..tree_model.n_items() {
+        if let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()
+            && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+            && item.path().as_deref() == Some(target_path)
+        {
+            return Some(row);
+        }
+    }
+    None
+}
+
 fn selected_path(section: &LushtextWorkspaceSection) -> Option<PathBuf> {
     section
         .imp()
@@ -264,9 +297,33 @@ fn test_workspace_section_header_button_carries_vertical_spacing() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
     assert_eq!(section.imp().inner_scrolled_window.margin_top(), 0);
+    assert_eq!(section.imp().refresh_button.valign(), gtk4::Align::Center);
+    assert_eq!(section.imp().refresh_button.margin_top(), 6);
+    assert_eq!(section.imp().refresh_button.margin_bottom(), 6);
     assert_eq!(section.imp().add_folder_button.valign(), gtk4::Align::Center);
     assert_eq!(section.imp().add_folder_button.margin_top(), 6);
     assert_eq!(section.imp().add_folder_button.margin_bottom(), 6);
+}
+
+#[test]
+fn test_workspace_section_refresh_button_sits_left_of_replace_root_button() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+
+    let second_child = section
+        .imp()
+        .header_box
+        .first_child()
+        .and_then(|child| child.next_sibling())
+        .and_downcast::<gtk4::Button>()
+        .expect("second header child should be the refresh button");
+    let third_child = second_child
+        .next_sibling()
+        .and_downcast::<gtk4::Button>()
+        .expect("third header child should be the replace-root button");
+
+    assert_eq!(second_child.as_ptr(), section.imp().refresh_button.as_ptr());
+    assert_eq!(third_child.as_ptr(), section.imp().add_folder_button.as_ptr());
 }
 
 #[test]
@@ -648,6 +705,10 @@ fn test_add_root_appends_multiple() {
 fn test_button_shows_add_icon_when_no_roots() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+    assert!(
+        !section.imp().refresh_button.is_sensitive(),
+        "refresh should stay disabled until the section has roots"
+    );
     assert_eq!(
         section
             .imp()
@@ -678,6 +739,10 @@ fn test_button_switches_to_replace_icon_after_load_roots() {
         path: dir.path().to_path_buf(),
     }]);
 
+    assert!(
+        section.imp().refresh_button.is_sensitive(),
+        "refresh should become available once the section has roots"
+    );
     assert_eq!(
         section
             .imp()
@@ -706,6 +771,7 @@ fn test_button_switches_to_replace_icon_after_add_root() {
     let dir = tempfile::tempdir().unwrap();
     section.add_root(dir.path(), true);
 
+    assert!(section.imp().refresh_button.is_sensitive());
     assert_eq!(
         section
             .imp()
@@ -734,6 +800,100 @@ fn test_has_roots_true_after_load() {
         path: dir.path().to_path_buf(),
     }]);
     assert!(section.has_roots());
+}
+
+#[test]
+fn test_manual_refresh_keeps_selection_and_expansion() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let existing = nested.join("alpha.txt");
+    std::fs::write(&existing, "alpha").unwrap();
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("refresh-ws"));
+    section.load_roots(&[WorkspaceEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+
+    let _window = present_section_window(&section);
+    section.expand_roots();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &nested));
+    row_for_path(&section, &nested)
+        .expect("nested directory should exist")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &existing));
+    select_path(&section, &existing);
+
+    let created = nested.join("beta.txt");
+    std::fs::write(&created, "beta").unwrap();
+    section.imp().refresh_button.emit_clicked();
+
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &created) && selected_path(&section) == Some(existing.clone())
+    });
+    assert_eq!(selected_path(&section), Some(existing.clone()));
+    assert!(
+        row_for_path(&section, &nested)
+            .expect("nested directory should still exist")
+            .is_expanded(),
+        "expanded directories should stay expanded after refresh"
+    );
+}
+
+#[test]
+fn test_refresh_updates_tree_after_external_rename() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let original = nested.join("before.txt");
+    std::fs::write(&original, "before").unwrap();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("refresh-flow-ws"));
+    section.load_roots(&[WorkspaceEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+
+    let _window = present_section_window(&section);
+    section.expand_roots();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &nested));
+    row_for_path(&section, &nested)
+        .expect("nested directory should exist")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &original));
+
+    let renamed = nested.join("renamed.txt");
+    std::fs::rename(&original, &renamed).unwrap();
+    section.imp().refresh_button.emit_clicked();
+    wait_until(Duration::from_secs(5), || {
+        !tree_contains_path(&section, &original) && tree_contains_path(&section, &renamed)
+    });
+}
+
+#[test]
+fn test_refresh_updates_tree_after_external_delete() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let deleted = nested.join("delete-me.txt");
+    std::fs::write(&deleted, "delete").unwrap();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("refresh-delete-ws"));
+    section.load_roots(&[WorkspaceEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+
+    let _window = present_section_window(&section);
+    section.expand_roots();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &nested));
+    row_for_path(&section, &nested)
+        .expect("nested directory should exist")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &deleted));
+
+    std::fs::remove_file(&deleted).unwrap();
+    section.imp().refresh_button.emit_clicked();
+    wait_until(Duration::from_secs(5), || !tree_contains_path(&section, &deleted));
 }
 
 #[test]
@@ -767,6 +927,56 @@ fn test_workspace_section_toggle_roots() {
     // Toggle should collapse
     section.toggle_roots();
     assert!(!row.is_expanded());
+}
+
+#[test]
+fn test_manual_refresh_keeps_collapsed_root_collapsed() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("file.txt"), "content").unwrap();
+
+    section.load_roots(&[WorkspaceEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+
+    let _window = present_section_window(&section);
+    {
+        let tree_model = section.imp().tree_model.borrow();
+        let tree_model = tree_model.as_ref().unwrap();
+        let row = tree_model
+            .item(0)
+            .and_downcast::<gtk4::TreeListRow>()
+            .unwrap();
+
+        row.set_expanded(true);
+        row.set_expanded(false);
+        assert!(!row.is_expanded(), "root should start collapsed before refresh");
+    }
+
+    section.imp().refresh_button.emit_clicked();
+    wait_until(Duration::from_secs(2), || {
+        section
+            .imp()
+            .tree_model
+            .borrow()
+            .as_ref()
+            .and_then(|tree_model| tree_model.item(0))
+            .and_downcast::<gtk4::TreeListRow>()
+            .is_some_and(|row| !row.is_expanded())
+    });
+
+    let tree_model = section.imp().tree_model.borrow();
+    let tree_model = tree_model.as_ref().unwrap();
+    let row = tree_model
+        .item(0)
+        .and_downcast::<gtk4::TreeListRow>()
+        .unwrap();
+    assert!(
+        !row.is_expanded(),
+        "manual refresh should not re-expand a root the user collapsed"
+    );
 }
 
 #[test]
