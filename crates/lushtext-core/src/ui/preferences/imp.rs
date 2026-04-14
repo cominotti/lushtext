@@ -36,6 +36,10 @@ pub struct LushtextPreferences {
     #[template_child]
     pub highlight_line_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
+    pub bookmark_gutter_row: TemplateChild<libadwaita::SwitchRow>,
+    #[template_child]
+    pub annotation_highlights_row: TemplateChild<libadwaita::SwitchRow>,
+    #[template_child]
     pub workspace_auto_collapse_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
     pub workspace_empty_folder_lookahead_cap_row: TemplateChild<libadwaita::SpinRow>,
@@ -56,6 +60,8 @@ impl Default for LushtextPreferences {
             insert_spaces_row: TemplateChild::default(),
             show_line_numbers_row: TemplateChild::default(),
             highlight_line_row: TemplateChild::default(),
+            bookmark_gutter_row: TemplateChild::default(),
+            annotation_highlights_row: TemplateChild::default(),
             workspace_auto_collapse_row: TemplateChild::default(),
             workspace_empty_folder_lookahead_cap_row: TemplateChild::default(),
             settings: gio::Settings::new(crate::config::APP_ID),
@@ -100,6 +106,18 @@ impl ObjectImpl for LushtextPreferences {
         s.bind(
             keys::HIGHLIGHT_CURRENT_LINE,
             &*self.highlight_line_row,
+            "active",
+        )
+        .build();
+        s.bind(
+            keys::BOOKMARK_GUTTER_VISIBLE,
+            &*self.bookmark_gutter_row,
+            "active",
+        )
+        .build();
+        s.bind(
+            keys::ANNOTATION_HIGHLIGHTS_VISIBLE,
+            &*self.annotation_highlights_row,
             "active",
         )
         .build();

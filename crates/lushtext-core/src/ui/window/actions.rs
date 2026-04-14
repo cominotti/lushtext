@@ -7,6 +7,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 
 use crate::config::keys;
+use crate::ui::editor_page::BookmarkNavigationDirection;
 
 use super::{LushtextWindow, imp};
 
@@ -77,6 +78,37 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| {
                     window.imp().search_panel.navigate_prev_match();
                 })
+                .build(),
+            gio::ActionEntry::builder("toggle-bookmark")
+                .activate(|window: &Self, _, _| window.toggle_bookmark())
+                .build(),
+            gio::ActionEntry::builder("edit-bookmark-label")
+                .activate(|window: &Self, _, _| window.edit_bookmark_label())
+                .build(),
+            gio::ActionEntry::builder("next-bookmark")
+                .activate(|window: &Self, _, _| {
+                    window.navigate_bookmark_action(BookmarkNavigationDirection::Next);
+                })
+                .build(),
+            gio::ActionEntry::builder("prev-bookmark")
+                .activate(|window: &Self, _, _| {
+                    window.navigate_bookmark_action(BookmarkNavigationDirection::Previous);
+                })
+                .build(),
+            gio::ActionEntry::builder("show-bookmarks")
+                .activate(|window: &Self, _, _| window.show_bookmarks_dialog())
+                .build(),
+            gio::ActionEntry::builder("add-annotation")
+                .activate(|window: &Self, _, _| window.add_annotation())
+                .build(),
+            gio::ActionEntry::builder("edit-annotation")
+                .activate(|window: &Self, _, _| window.edit_annotation())
+                .build(),
+            gio::ActionEntry::builder("show-annotations")
+                .activate(|window: &Self, _, _| window.show_annotations_dialog())
+                .build(),
+            gio::ActionEntry::builder("export-annotations")
+                .activate(|window: &Self, _, _| window.export_annotations())
                 .build(),
         ]);
 
@@ -168,6 +200,15 @@ impl LushtextWindow {
             ("win.toggle-search-panel", "<Control><Shift>f"),
             ("win.search-next-match", "F4"),
             ("win.search-prev-match", "<Shift>F4"),
+            ("win.toggle-bookmark", "<Control>F2"),
+            ("win.edit-bookmark-label", "<Control><Alt>F2"),
+            ("win.next-bookmark", "F2"),
+            ("win.prev-bookmark", "<Shift>F2"),
+            ("win.show-bookmarks", "<Control><Alt>b"),
+            ("win.add-annotation", "<Control><Alt>n"),
+            ("win.edit-annotation", "<Control><Alt>m"),
+            ("win.show-annotations", "<Control><Alt>a"),
+            ("win.export-annotations", "<Control><Alt><Shift>a"),
             ("win.toggle-sidebar", "F9"),
             ("win.toggle-preview-mode", "<Alt>p"),
             ("win.toggle-fullscreen", "F11"),

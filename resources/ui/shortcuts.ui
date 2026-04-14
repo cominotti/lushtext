@@ -98,6 +98,54 @@
             </child>
           </object>
         </child>
+
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title" translatable="yes">Notes</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Toggle Bookmark</property>
+                <property name="accelerator">&lt;Control&gt;F2</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Next Bookmark</property>
+                <property name="accelerator">F2</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Previous Bookmark</property>
+                <property name="accelerator">&lt;Shift&gt;F2</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Browse Bookmarks</property>
+                <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;b</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Add Annotation</property>
+                <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;n</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Browse Annotations</property>
+                <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;a</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Export Annotations</property>
+                <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;&lt;Shift&gt;a</property>
+              </object>
+            </child>
+          </object>
+        </child>
       </object>
     </child>
   </object>

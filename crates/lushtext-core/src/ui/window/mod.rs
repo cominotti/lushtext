@@ -12,6 +12,7 @@ mod documents;
 mod drafts;
 mod focus_indexing;
 mod imp;
+mod notes;
 mod notifications;
 mod preview;
 mod print;

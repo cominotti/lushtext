@@ -12,11 +12,14 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{ActionRowExt, AnimationExt};
 use lushtext_core::config::keys;
+use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
 };
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use lushtext_core::services::{draft_service, json_store, workspace_manager};
+use lushtext_core::services::{
+    annotation_service, bookmark_service, draft_service, json_store, workspace_manager,
+};
 use lushtext_core::ui::editor_page::{LushtextEditorPage, SaveError};
 use lushtext_core::ui::window::LushtextWindow;
 use std::path::{Path, PathBuf};
@@ -234,6 +237,50 @@ fn seed_peek_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
     });
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save peek workspaces");
     (root_dir, alpha, beta)
+}
+
+#[test]
+fn test_open_document_restores_bookmarks_and_annotations() {
+    let tempdir = tempfile::tempdir().expect("notes tempdir");
+    let file_path = tempdir.path().join("src/main.rs");
+    std::fs::create_dir_all(file_path.parent().unwrap()).expect("create file parent");
+    std::fs::write(&file_path, "one\ntwo\nthree\nfour\n").expect("write source file");
+
+    let window = test_window();
+    let data_dir = json_store::data_dir();
+
+    bookmark_service::save_for_path(
+        &data_dir,
+        &file_path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            1,
+            Some("bookmark".to_string()),
+        )],
+    )
+    .expect("save bookmarks");
+    annotation_service::save_for_path(
+        &data_dir,
+        &file_path,
+        &[AnnotationRecord::new(
+            2,
+            2,
+            "restore annotation".to_string(),
+            AnnotationStyle::Question,
+        )],
+    )
+    .expect("save annotations");
+
+    present_window(&window);
+    window.open_document(&file_path);
+
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).bookmark_records().len() == 1
+            && active_editor(&window).annotation_records().len() == 1
+    });
+
+    let editor = active_editor(&window);
+    assert_eq!(editor.bookmark_records()[0].label.as_deref(), Some("bookmark"));
+    assert_eq!(editor.annotation_records()[0].note_text, "restore annotation");
 }
 
 fn select_sidebar_path(section: &lushtext_core::ui::sidebar::WorkspaceSection, path: &Path) {

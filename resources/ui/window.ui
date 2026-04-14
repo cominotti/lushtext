@@ -211,6 +211,36 @@
     </section>
     <section>
       <item>
+        <attribute name="label" translatable="yes">Toggle _Bookmark</attribute>
+        <attribute name="action">win.toggle-bookmark</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">Edit Bookmark _Label…</attribute>
+        <attribute name="action">win.edit-bookmark-label</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">Browse _Bookmarks…</attribute>
+        <attribute name="action">win.show-bookmarks</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">Add _Annotation…</attribute>
+        <attribute name="action">win.add-annotation</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">Edit Annotation…</attribute>
+        <attribute name="action">win.edit-annotation</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">Browse Annotations…</attribute>
+        <attribute name="action">win.show-annotations</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">Export Annotations…</attribute>
+        <attribute name="action">win.export-annotations</attribute>
+      </item>
+    </section>
+    <section>
+      <item>
         <attribute name="label" translatable="yes">_Fullscreen</attribute>
         <attribute name="action">win.fullscreen</attribute>
         <attribute name="hidden-when">action-disabled</attribute>

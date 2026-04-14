@@ -9,6 +9,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **File peek** -- press `Space` on a selected sidebar file to inspect a bounded read-only preview in a floating card with the absolute file path, then `Enter` or `Open` to promote it into a real tab
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)
 - **EditorConfig support** -- per-file formatting overrides from `.editorconfig` files (`indent_style`, `tab_width`, `indent_size`); toggle in Preferences
+- **Bookmarks and annotations** -- saved-file bookmark gutter marks with labels and F2 navigation, plus sidecar line-range annotations with searchable workspace browse/export workflows
 - **Session persistence** -- tabs, cursor positions, and scroll offsets restored on restart
 - **Draft recovery** -- unsaved changes auto-saved to disk and recovered after crash
 - **Print** -- native GTK print dialog with syntax highlighting and editor settings preserved
@@ -106,6 +107,40 @@ The feature can be toggled in **Preferences > Use EditorConfig** (enabled by def
 
 `end_of_line`, `charset`, `trim_trailing_whitespace`, `insert_final_newline`, and `max_line_length` are not yet supported. See `docs/next/editorconfig-future.md` for details and implementation priorities.
 
+## Bookmarks and Annotations
+
+LushText includes non-destructive per-file notes for saved documents:
+
+- **Bookmarks** live in the GtkSourceView gutter, can carry an optional label, and support next/previous navigation with `F2` / `Shift+F2`.
+- **Annotations** store note text plus a presentation style for one or more lines without modifying the file on disk.
+- **Browse and export** flows operate on the currently selected workspace scope, so the bookmark browser, annotation browser, and markdown export stay aligned with the sidebar filter.
+
+### Shortcuts
+
+| Workflow | Shortcut |
+|----------|----------|
+| Toggle bookmark | `Ctrl+F2` |
+| Edit bookmark label | `Ctrl+Alt+F2` |
+| Next / previous bookmark | `F2` / `Shift+F2` |
+| Browse bookmarks | `Ctrl+Alt+B` |
+| Add annotation | `Ctrl+Alt+N` |
+| Edit annotation at cursor | `Ctrl+Alt+M` |
+| Browse annotations | `Ctrl+Alt+A` |
+| Export annotations | `Ctrl+Alt+Shift+A` |
+
+### Persistence rules
+
+- Bookmarks and annotations require a **saved file path**. Untitled tabs show feedback instead of creating note state.
+- Sidecars live under `$XDG_DATA_HOME/lushtext/bookmarks/` and `$XDG_DATA_HOME/lushtext/annotations/`.
+- **Save As** creates a new note identity and does not copy the old file's bookmarks or annotations by default.
+- **Sidebar rename inside LushText** migrates sidecars to the new path automatically.
+
+### First-release limitations
+
+- Path-based identity does not automatically follow **external** filesystem moves or copies performed outside LushText.
+- Annotation indicators are currently **highlight-based**, not clickable gutter popovers or inline rendered note blocks.
+- Annotation export is **markdown only** in the first release.
+
 ## Architecture
 
 Two-crate Cargo workspace:
@@ -125,9 +160,14 @@ lushtext-core/src/
     session.rs       Tab session model
     palette.rs       Command palette types
     draft.rs         Draft persistence metadata
+    bookmark.rs      Bookmark sidecar model
+    annotation.rs    Annotation sidecar model and styles
     content_search.rs  Content search types (SearchMatch, SearchEvent, etc.)
+    sidecar_identity.rs  Canonical-path sidecar identity helpers
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
+    bookmark_service.rs  Bookmark sidecar load/save/move/list helpers
+    annotation_service.rs  Annotation sidecar load/save/move/export helpers
     content_search/  Parallel workspace grep plus replace/undo helpers
     palette/         Command registry, SIMD fuzzy search, and file indexing
     editor_io.rs     Text file load/save helpers and mtimes
@@ -143,8 +183,8 @@ lushtext-core/src/
     workspace_manager.rs  Workspace CRUD
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
-    window/          Main window shell plus actions, documents, drafts, search, preview, session persistence, print, and zoom wiring
-    editor_page/     GtkSourceView tab plus load/save, monitor, and in-tab search helpers
+    window/          Main window shell plus actions, documents, drafts, notes, search, preview, session persistence, print, and zoom wiring
+    editor_page/     GtkSourceView tab plus bookmark/annotation projection, load/save, monitor, and in-tab search helpers
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows

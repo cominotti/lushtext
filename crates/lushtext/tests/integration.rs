@@ -24,3 +24,6 @@ mod draft;
 
 #[path = "integration/editorconfig.rs"]
 mod editorconfig;
+
+#[path = "integration/notes.rs"]
+mod notes;

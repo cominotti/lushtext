@@ -96,6 +96,7 @@ impl super::LushtextWindow {
                 editor.set_file_path(path);
                 self.assign_draft_id(editor);
                 self.resolve_editorconfig_for_editor(editor, path);
+                self.reset_notes_after_save_as(editor, path);
                 if let Some(old) = old_path {
                     self.delete_draft_for_path(old);
                 } else if let Some(draft_id) = old_draft_id {

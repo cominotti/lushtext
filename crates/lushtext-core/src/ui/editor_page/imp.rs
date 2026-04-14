@@ -7,6 +7,8 @@
 //! GSettings bindings keep all editor pages in sync with user preferences.
 
 use crate::config::keys;
+use crate::model::annotation::{AnnotationId, AnnotationRecord};
+use crate::model::bookmark::BookmarkRecord;
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::InlineActionNotification;
@@ -26,6 +28,8 @@ use std::sync::atomic::AtomicBool;
 type MemoryChangedCallback = Box<dyn Fn(u64)>;
 type NotificationCallback = Box<dyn Fn(InlineActionNotification)>;
 type LoadCompletedCallback = Box<dyn FnOnce()>;
+type FileLoadedCallback = Box<dyn Fn()>;
+type NotesChangedCallback = Box<dyn Fn()>;
 
 /// Signal handlers connected to application-global preference/theme objects.
 #[derive(Default)]
@@ -41,6 +45,8 @@ pub struct PreferenceBindingState {
     pub tab_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `insert-spaces` change. Disconnected in `Drop`.
     pub insert_spaces_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `annotation-highlights-visible`. Disconnected in `Drop`.
+    pub annotation_visibility_handler_id: RefCell<Option<glib::SignalHandlerId>>,
 }
 
 /// File-monitor state for external change detection.
@@ -64,8 +70,15 @@ pub struct DraftState {
     pub draft_id: RefCell<Option<String>>,
     /// Whether this tab is currently showing draft-restored content.
     pub draft_restored: Cell<bool>,
+}
+
+/// File-load lifecycle callbacks that need to survive repeated reloads.
+#[derive(Default)]
+pub struct LoadState {
     /// One-shot callback fired after the first successful file load.
     pub load_completed_callback: RefCell<Option<LoadCompletedCallback>>,
+    /// Recurring callback fired after every successful file load or reload.
+    pub file_loaded_callback: RefCell<Option<FileLoadedCallback>>,
 }
 
 /// Deferred cursor and scroll restoration applied after async file load.
@@ -77,6 +90,65 @@ pub struct RestoreState {
     pub cursor_col: Cell<Option<u32>>,
     /// Deferred scroll-to line to apply after async file load completes.
     pub scroll_line: Cell<Option<u32>>,
+}
+
+/// Debounced persistence state shared by bookmark and annotation projections.
+#[derive(Default)]
+pub struct NotesPersistenceState {
+    /// Generation counter used to debounce background sidecar saves.
+    pub save_generation: Cell<u32>,
+    /// Guard preventing overlapping saves for the same note projection.
+    pub save_inflight: Cell<bool>,
+    /// Dirty flag set while a save is already in flight.
+    pub save_dirty: Cell<bool>,
+}
+
+/// One live bookmark projected into a `GtkSourceMark`.
+#[derive(Clone)]
+pub struct LiveBookmark {
+    /// Current persisted bookmark fields mirrored from the sidecar model.
+    pub record: BookmarkRecord,
+    /// Source-view mark that moves with the buffer while the file is open.
+    pub mark: sourceview5::Mark,
+}
+
+/// Live bookmark projection state scoped to one editor tab.
+#[derive(Default)]
+pub struct BookmarkState {
+    /// Current bookmark marks projected into the source buffer.
+    pub entries: RefCell<Vec<LiveBookmark>>,
+    /// Callback invoked when bookmark state changes and should be persisted.
+    pub changed_callback: RefCell<Option<NotesChangedCallback>>,
+    /// Debounced sidecar persistence state for bookmark saves.
+    pub persistence: NotesPersistenceState,
+}
+
+/// One live annotation projected into range anchors and a text tag.
+#[derive(Clone)]
+pub struct LiveAnnotation {
+    /// Current persisted annotation fields mirrored from the sidecar model.
+    pub record: AnnotationRecord,
+    /// Start anchor with right gravity so inserts at the boundary land before the range.
+    pub start_mark: gtk4::TextMark,
+    /// Exclusive end anchor with left gravity so inserts at the boundary stay outside.
+    pub end_mark: gtk4::TextMark,
+    /// Stable tag name used to keep the highlight tied to this annotation ID.
+    pub tag_name: String,
+}
+
+/// Live annotation projection state scoped to one editor tab.
+#[derive(Default)]
+pub struct AnnotationState {
+    /// Current annotation range anchors projected into the buffer.
+    pub entries: RefCell<Vec<LiveAnnotation>>,
+    /// Callback invoked when annotation state changes and should be persisted.
+    pub changed_callback: RefCell<Option<NotesChangedCallback>>,
+    /// Pending annotation ID that should reopen once the file load completes.
+    pub pending_focus_id: RefCell<Option<AnnotationId>>,
+    /// Whether annotations have been loaded for the current file content.
+    pub loaded: Cell<bool>,
+    /// Debounced sidecar persistence state for annotation saves.
+    pub persistence: NotesPersistenceState,
 }
 
 // CompositeTemplate loads the UI layout from a compiled XML file (bundled
@@ -125,6 +197,8 @@ pub struct LushtextEditorPage {
     pub modified_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for the buffer's `changed` signal (preview refresh). Disconnected in dispose.
     pub buffer_changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for the buffer's `end-user-action` signal. Disconnected in dispose.
+    pub end_user_action_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Callback invoked when estimated buffer memory changes (load, save, evict).
     pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
     /// Callback invoked when the editor needs to surface an inline notification.
@@ -133,8 +207,14 @@ pub struct LushtextEditorPage {
     pub monitor: MonitorState,
     /// Draft lifecycle state.
     pub draft: DraftState,
+    /// File-load lifecycle callbacks.
+    pub load: LoadState,
     /// Deferred cursor/scroll restoration state.
     pub restore: RestoreState,
+    /// Live bookmark mark projection and persistence state.
+    pub bookmarks: BookmarkState,
+    /// Live annotation range projection and persistence state.
+    pub annotations: AnnotationState,
 }
 
 impl Default for LushtextEditorPage {
@@ -155,11 +235,15 @@ impl Default for LushtextEditorPage {
             formatting_overrides: Cell::new(FormattingOverrides::default()),
             modified_handler_id: RefCell::new(None),
             buffer_changed_handler_id: RefCell::new(None),
+            end_user_action_handler_id: RefCell::new(None),
             memory_changed_callback: RefCell::default(),
             notification_callback: RefCell::default(),
             monitor: MonitorState::default(),
             draft: DraftState::default(),
+            load: LoadState::default(),
             restore: RestoreState::default(),
+            bookmarks: BookmarkState::default(),
+            annotations: AnnotationState::default(),
         }
     }
 }
@@ -202,6 +286,9 @@ impl ObjectImpl for LushtextEditorPage {
         if let Some(handler_id) = self.buffer_changed_handler_id.take() {
             buffer.disconnect(handler_id);
         }
+        if let Some(handler_id) = self.end_user_action_handler_id.take() {
+            buffer.disconnect(handler_id);
+        }
         // Cancel file monitor to stop receiving events for this tab.
         if let Some(monitor) = self.monitor.file_monitor.take() {
             monitor.cancel();
@@ -231,6 +318,14 @@ impl ObjectImpl for LushtextEditorPage {
                 keys::SHOW_LINE_NUMBERS,
                 &*self.source_view,
                 "show-line-numbers",
+            )
+            .flags(gio::SettingsBindFlags::GET)
+            .build();
+        settings
+            .bind(
+                keys::BOOKMARK_GUTTER_VISIBLE,
+                &*self.source_view,
+                "show-line-marks",
             )
             .flags(gio::SettingsBindFlags::GET)
             .build();
@@ -295,16 +390,55 @@ impl ObjectImpl for LushtextEditorPage {
         }
         {
             let buf = buffer.downgrade();
+            let editor_weak = self.obj().downgrade();
             let s = settings.clone();
             let style_manager = libadwaita::StyleManager::default();
             let handler_id = style_manager.connect_dark_notify(move |_| {
                 if let Some(buf) = buf.upgrade() {
                     apply_color_scheme(&buf, &s);
                 }
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.refresh_annotation_highlights();
+                }
             });
             self.preference_bindings
                 .dark_handler_id
                 .replace(Some(handler_id));
+        }
+
+        {
+            let editor_weak = self.obj().downgrade();
+            let id =
+                settings.connect_changed(Some(keys::ANNOTATION_HIGHLIGHTS_VISIBLE), move |s, _| {
+                    if let Some(editor) = editor_weak.upgrade() {
+                        editor.set_annotation_highlights_visible(
+                            s.boolean(keys::ANNOTATION_HIGHLIGHTS_VISIBLE),
+                        );
+                    }
+                });
+            self.preference_bindings
+                .annotation_visibility_handler_id
+                .replace(Some(id));
+        }
+
+        self.obj().setup_bookmark_projection();
+        self.obj().set_annotation_highlights_visible(
+            settings.boolean(keys::ANNOTATION_HIGHLIGHTS_VISIBLE),
+        );
+
+        {
+            let editor_weak = self.obj().downgrade();
+            let handler_id = buffer.connect_end_user_action(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    if editor.reconcile_bookmarks_after_edit() {
+                        editor.emit_bookmarks_changed();
+                    }
+                    if editor.reconcile_annotations_after_edit() {
+                        editor.emit_annotations_changed();
+                    }
+                }
+            });
+            self.end_user_action_handler_id.replace(Some(handler_id));
         }
 
         // Search bar close: hide_search restores cursor and detaches the
@@ -340,6 +474,13 @@ impl Drop for LushtextEditorPage {
             self.settings.disconnect(handler_id);
         }
         if let Some(handler_id) = self.preference_bindings.insert_spaces_handler_id.take() {
+            self.settings.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self
+            .preference_bindings
+            .annotation_visibility_handler_id
+            .take()
+        {
             self.settings.disconnect(handler_id);
         }
     }

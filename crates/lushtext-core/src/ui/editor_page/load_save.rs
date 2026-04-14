@@ -62,7 +62,11 @@ impl LushtextEditorPage {
                     editor.notify_estimated_memory_changed();
                     editor.imp().monitor.last_known_mtime.set(loaded.mtime);
                     editor.clear_inline_notification();
-                    if let Some(callback) = editor.imp().draft.load_completed_callback.take() {
+                    if let Some(callback) = editor.imp().load.load_completed_callback.take() {
+                        callback();
+                    }
+                    if let Some(callback) = editor.imp().load.file_loaded_callback.borrow().as_ref()
+                    {
                         callback();
                     }
                 }

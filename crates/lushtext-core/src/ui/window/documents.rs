@@ -45,6 +45,7 @@ impl LushtextWindow {
             .insert(path.to_path_buf());
         let editor_page = LushtextEditorPage::new();
         self.wire_info_bar(&editor_page);
+        self.wire_note_callbacks(&editor_page);
         editor_page.load_file_async(path);
         editor_page.start_file_monitor();
         self.resolve_editorconfig_for_editor(&editor_page, path);
@@ -65,7 +66,7 @@ impl LushtextWindow {
         let window_weak = self.downgrade();
         let path_for_draft = path.to_path_buf();
         let editor_weak = editor_page.downgrade();
-        *editor_page.imp().draft.load_completed_callback.borrow_mut() = Some(Box::new(move || {
+        *editor_page.imp().load.load_completed_callback.borrow_mut() = Some(Box::new(move || {
             if let Some(window) = window_weak.upgrade()
                 && let Some(editor) = editor_weak.upgrade()
             {
@@ -312,6 +313,12 @@ impl LushtextWindow {
             "begin-replace",
             "next-match",
             "prev-match",
+            "toggle-bookmark",
+            "edit-bookmark-label",
+            "next-bookmark",
+            "prev-bookmark",
+            "add-annotation",
+            "edit-annotation",
             "save",
             "save-as",
             "close-tab",

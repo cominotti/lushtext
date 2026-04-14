@@ -8,7 +8,9 @@
 //! file size policy, bounded file peek snapshots, fuzzy search, and the
 //! background task concurrency guard.
 
+pub mod annotation_service;
 pub mod async_task;
+pub mod bookmark_service;
 pub mod content_search;
 pub mod draft_service;
 pub mod editor_io;

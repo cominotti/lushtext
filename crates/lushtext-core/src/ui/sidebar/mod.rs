@@ -133,6 +133,31 @@ impl LushtextSidebar {
             .collect()
     }
 
+    /// Collect the currently selected workspace scope paths.
+    ///
+    /// Directories are returned as directory roots and file entries are returned
+    /// as exact file paths, so window-level note workflows can stay aligned
+    /// with the active workspace filter instead of inferring scope elsewhere.
+    #[must_use]
+    pub fn filtered_workspace_scope_paths(&self) -> Vec<PathBuf> {
+        let selected_filter = self.imp().selected_workspace_filter.borrow().clone();
+        self.imp()
+            .workspaces_file
+            .borrow()
+            .workspaces
+            .iter()
+            .filter(|workspace| {
+                selected_filter
+                    .as_ref()
+                    .is_none_or(|workspace_id| workspace.id == *workspace_id)
+            })
+            .flat_map(|workspace| workspace.entries.iter())
+            .map(|entry| match entry {
+                WorkspaceEntry::Directory { path } | WorkspaceEntry::File { path } => path.clone(),
+            })
+            .collect()
+    }
+
     fn select_width_preset(&self, preset: WorkspaceSidebarWidthPreset) {
         self.apply_width_preset_selection(preset, true);
     }

@@ -29,6 +29,16 @@
       <default>true</default>
       <summary>Highlight Current Line</summary>
     </key>
+    <key name="bookmark-gutter-visible" type="b">
+      <default>true</default>
+      <summary>Show Bookmark Gutter</summary>
+      <description>Whether bookmark indicators appear in the source view gutter</description>
+    </key>
+    <key name="annotation-highlights-visible" type="b">
+      <default>true</default>
+      <summary>Show Annotation Highlights</summary>
+      <description>Whether annotated line ranges are highlighted in the editor</description>
+    </key>
 
     <!-- Appearance -->
     <key name="color-scheme" type="s">

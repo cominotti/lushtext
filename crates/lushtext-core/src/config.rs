@@ -14,6 +14,8 @@ pub mod keys {
     pub const WORD_WRAP: &str = "word-wrap";
     pub const SHOW_LINE_NUMBERS: &str = "show-line-numbers";
     pub const HIGHLIGHT_CURRENT_LINE: &str = "highlight-current-line";
+    pub const BOOKMARK_GUTTER_VISIBLE: &str = "bookmark-gutter-visible";
+    pub const ANNOTATION_HIGHLIGHTS_VISIBLE: &str = "annotation-highlights-visible";
     pub const TAB_WIDTH: &str = "tab-width";
     pub const INSERT_SPACES: &str = "insert-spaces-instead-of-tabs";
     pub const USE_EDITORCONFIG: &str = "use-editorconfig";

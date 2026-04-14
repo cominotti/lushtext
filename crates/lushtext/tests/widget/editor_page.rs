@@ -5,8 +5,11 @@
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use lushtext_core::ui::editor_page::LushtextEditorPage;
+use lushtext_core::ui::editor_page::{
+    BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
+};
 use sourceview5::prelude::*;
 
 fn button_label(button: &gtk4::Button) -> gtk4::Label {
@@ -15,6 +18,10 @@ fn button_label(button: &gtk4::Button) -> gtk4::Label {
         .expect("button child")
         .downcast::<gtk4::Label>()
         .expect("button label")
+}
+
+fn flush_events() {
+    while glib::MainContext::default().iteration(false) {}
 }
 
 #[test]
@@ -178,6 +185,107 @@ fn test_default_equals_new() {
     ensure_gtk_init();
     // Verify Default impl works (it delegates to new())
     let _page: LushtextEditorPage = LushtextEditorPage::default();
+}
+
+#[test]
+fn test_bookmark_toggle_and_navigation() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+    buffer.set_text("one\ntwo\nthree\nfour\nfive\n");
+
+    let line_two = buffer.iter_at_line(1).unwrap();
+    buffer.place_cursor(&line_two);
+    assert_eq!(
+        page.toggle_bookmark_at_cursor(),
+        BookmarkToggleState::Added(1)
+    );
+
+    let line_five = buffer.iter_at_line(4).unwrap();
+    buffer.place_cursor(&line_five);
+    assert_eq!(
+        page.toggle_bookmark_at_cursor(),
+        BookmarkToggleState::Added(4)
+    );
+
+    assert_eq!(
+        page.bookmark_records()
+            .into_iter()
+            .map(|bookmark| bookmark.line)
+            .collect::<Vec<_>>(),
+        vec![1, 4]
+    );
+
+    let line_one = buffer.iter_at_line(0).unwrap();
+    buffer.place_cursor(&line_one);
+    let jumped = page
+        .navigate_bookmark(BookmarkNavigationDirection::Next)
+        .unwrap();
+    assert_eq!(jumped.line, 1);
+    assert_eq!(page.cursor_position().0, 1);
+
+    let wrapped = page
+        .navigate_bookmark(BookmarkNavigationDirection::Previous)
+        .unwrap();
+    assert_eq!(wrapped.line, 4);
+    assert_eq!(page.cursor_position().0, 4);
+}
+
+#[test]
+fn test_load_annotations_restores_current_annotation() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+    buffer.set_text("one\ntwo\nthree\nfour\n");
+
+    let annotation =
+        AnnotationRecord::new(1, 2, "remember this".to_string(), AnnotationStyle::Warning);
+    page.load_annotations(&[annotation.clone()]);
+
+    let line_three = buffer.iter_at_line(2).unwrap();
+    buffer.place_cursor(&line_three);
+
+    let restored = page.current_annotation().unwrap();
+    assert_eq!(restored.id, annotation.id);
+    assert_eq!(restored.note_text, "remember this");
+    assert_eq!(restored.style, AnnotationStyle::Warning);
+    assert_eq!(restored.start_line, 1);
+    assert_eq!(restored.end_line, 2);
+}
+
+#[test]
+fn test_annotation_range_tracks_user_edits_and_removes_deleted_ranges() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+    buffer.set_text("one\ntwo\nthree\nfour\n");
+
+    page.load_annotations(&[AnnotationRecord::new(
+        1,
+        2,
+        "track me".to_string(),
+        AnnotationStyle::Todo,
+    )]);
+
+    let mut insert_at_start = buffer.start_iter();
+    buffer.begin_user_action();
+    buffer.insert(&mut insert_at_start, "zero\n");
+    buffer.end_user_action();
+    flush_events();
+
+    let shifted = page.annotation_records();
+    assert_eq!(shifted.len(), 1);
+    assert_eq!(shifted[0].start_line, 2);
+    assert_eq!(shifted[0].end_line, 3);
+
+    let mut delete_start = buffer.iter_at_line(2).unwrap();
+    let mut delete_end = buffer.iter_at_line(4).unwrap();
+    buffer.begin_user_action();
+    buffer.delete(&mut delete_start, &mut delete_end);
+    buffer.end_user_action();
+    flush_events();
+
+    assert!(page.annotation_records().is_empty());
 }
 
 // --- Search bar integration ---
