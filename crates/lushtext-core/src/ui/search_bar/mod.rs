@@ -88,6 +88,23 @@ impl LushtextSearchBar {
         self.imp().replace_entry_revealer.reveals_child()
     }
 
+    /// Register a callback fired when the active search state changes.
+    ///
+    /// This is used by the editor minimap so it can follow query text,
+    /// search-option toggles, and attach or detach transitions without
+    /// reaching through unrelated widget internals.
+    pub fn connect_search_state_changed<F: Fn() + Clone + 'static>(&self, f: F) {
+        *self.imp().search_state_changed_callback.borrow_mut() = Some(Box::new(f.clone()));
+        let f2 = f.clone();
+        self.search_entry().connect_stop_search(move |_| f2());
+    }
+
+    /// Return the active `SearchContext`, if the search bar is currently attached.
+    #[must_use]
+    pub fn search_context(&self) -> Option<sourceview5::SearchContext> {
+        self.imp().search_context.borrow().clone()
+    }
+
     // ─── Attach / Detach ──────────────────────────────────────────────
 
     /// Attach this search bar to a buffer and view, creating a fresh
@@ -134,6 +151,7 @@ impl LushtextSearchBar {
         imp.view_ref.replace(Some(weak_view));
         imp.occurrences_handler_id.replace(Some(handler_id));
         imp.navigated.set(false);
+        self.emit_search_state_changed();
     }
 
     /// Detach from the current buffer, disabling highlighting and clearing state.
@@ -157,6 +175,7 @@ impl LushtextSearchBar {
         // Clear UI state.
         self.set_match_count(0, 0);
         self.search_entry().remove_css_class("error");
+        self.emit_search_state_changed();
     }
 
     // ─── Navigation ───────────────────────────────────────────────────
@@ -274,6 +293,12 @@ impl LushtextSearchBar {
             entry.add_css_class("error");
         } else {
             entry.remove_css_class("error");
+        }
+    }
+
+    pub(crate) fn emit_search_state_changed(&self) {
+        if let Some(callback) = self.imp().search_state_changed_callback.borrow().as_ref() {
+            callback();
         }
     }
 

@@ -6,6 +6,7 @@ use crate::common::ensure_gtk_init;
 use gio::prelude::*;
 use lushtext_core::app::LushtextApplication;
 use lushtext_core::config;
+use sourceview5::StyleSchemeManager;
 
 #[test]
 fn test_new() {
@@ -31,4 +32,22 @@ fn test_handles_open_flag() {
 fn test_default_equals_new() {
     ensure_gtk_init();
     let _app: LushtextApplication = LushtextApplication::default();
+}
+
+#[test]
+fn test_startup_registers_bundled_sourceview_scheme_path() {
+    ensure_gtk_init();
+    let app = LushtextApplication::new();
+    app.register(gio::Cancellable::NONE)
+        .expect("test application registration");
+    app.emit_by_name::<()>("startup", &[]);
+
+    let manager = StyleSchemeManager::default();
+    let expected = "resource:///dev/cominotti/lushtext/gtksourceview/styles";
+    assert!(
+        manager.search_path().iter().any(|path| path.as_str() == expected),
+        "expected bundled sourceview style search path {expected} to be registered"
+    );
+    assert!(manager.scheme("Adwaita").is_some());
+    assert!(manager.scheme("Adwaita-dark").is_some());
 }

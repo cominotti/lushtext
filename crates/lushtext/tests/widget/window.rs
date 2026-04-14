@@ -16,11 +16,12 @@ use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
 };
+use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::{
     annotation_service, bookmark_service, draft_service, json_store, workspace_manager,
 };
-use lushtext_core::ui::editor_page::{LushtextEditorPage, SaveError};
+use lushtext_core::ui::editor_page::{LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError};
 use lushtext_core::ui::window::LushtextWindow;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -197,6 +198,20 @@ fn workspace_sidebar_comfy_selected(window: &LushtextWindow) -> bool {
     window.imp().sidebar.imp().comfy_width_button.is_active()
 }
 
+fn write_long_document(editor: &LushtextEditorPage, line_count: usize, needle_every: usize) {
+    let mut text = String::new();
+    for line in 0..line_count {
+        let marker = if needle_every != 0 && line % needle_every == 0 {
+            " needle"
+        } else {
+            ""
+        };
+        text.push_str(&format!("line {line:04}{marker}\n"));
+    }
+    editor.buffer().set_text(&text);
+    flush_events();
+}
+
 fn properties_total_fraction(window: &LushtextWindow) -> f64 {
     let properties_fraction = window.imp().properties_split_view.sidebar_width_fraction();
     if workspace_sidebar_visible(window) && !window.imp().workspace_split_view.is_collapsed() {
@@ -204,6 +219,10 @@ fn properties_total_fraction(window: &LushtextWindow) -> f64 {
     } else {
         properties_fraction
     }
+}
+
+fn minimap_setting(window: &LushtextWindow) -> bool {
+    window.imp().settings.boolean(keys::SHOW_MINIMAP)
 }
 
 fn preview_animation(window: &LushtextWindow) -> libadwaita::TimedAnimation {
@@ -527,6 +546,121 @@ fn test_toggle_properties_action_state_syncs_with_split_view() {
 }
 
 #[test]
+fn test_toggle_minimap_updates_setting_and_action_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    let action = window
+        .lookup_action("toggle-minimap")
+        .unwrap()
+        .downcast::<gio::SimpleAction>()
+        .unwrap();
+
+    assert!(!minimap_setting(&window));
+    assert!(!action.state().unwrap().get::<bool>().unwrap());
+
+    activate_action(&window, "toggle-minimap");
+
+    assert!(minimap_setting(&window));
+    assert!(action.state().unwrap().get::<bool>().unwrap());
+}
+
+#[test]
+fn test_toggle_minimap_action_state_tracks_external_setting_changes() {
+    ensure_gtk_init();
+    let window = test_window();
+    let action = window
+        .lookup_action("toggle-minimap")
+        .unwrap()
+        .downcast::<gio::SimpleAction>()
+        .unwrap();
+
+    window
+        .imp()
+        .settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("set show-minimap");
+    flush_events();
+
+    assert!(action.state().unwrap().get::<bool>().unwrap());
+}
+
+#[test]
+fn test_minimap_visibility_restores_from_setting_for_long_document() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    write_long_document(&editor, 500, 0);
+
+    wait_until(Duration::from_secs(2), || editor.is_minimap_visible());
+    assert_eq!(editor.minimap_availability(), MinimapAvailability::Visible);
+}
+
+#[test]
+fn test_minimap_stays_visible_when_document_fits_viewport() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.buffer().set_text("short\nbuffer\n");
+    flush_events();
+    wait_until(Duration::from_secs(2), || editor.minimap_availability() == MinimapAvailability::Visible);
+
+    assert!(editor.is_minimap_visible());
+    assert_eq!(editor.minimap_availability(), MinimapAvailability::Visible);
+}
+
+#[test]
+fn test_large_document_disables_minimap_and_surfaces_feedback() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.imp().size_check.set(FileSizeCheck::DisableSyntax);
+    window
+        .imp()
+        .settings
+        .set_boolean(keys::SHOW_MINIMAP, false)
+        .expect("disable minimap");
+    window
+        .imp()
+        .settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("re-enable minimap");
+    flush_events();
+
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_availability() == MinimapAvailability::TooLarge
+    });
+
+    assert!(!editor.is_minimap_visible());
+    let status = window
+        .imp()
+        .notification_bus
+        .status_bar_view()
+        .expect("minimap warning status message");
+    assert_eq!(status.text, "Minimap unavailable for this large document");
+}
+
+#[test]
 fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     ensure_gtk_init();
     let settings = gio::Settings::new(lushtext_core::config::APP_ID);
@@ -586,6 +720,97 @@ fn test_sidebar_footer_buttons_update_workspace_fraction_and_settings() {
     assert!(window.imp().sidebar.imp().small_width_button.is_active());
     assert!(!window.imp().sidebar.imp().large_width_button.is_active());
     assert_workspace_sidebar_width_locked(&window, 0.2);
+}
+
+#[test]
+fn test_bookmark_markers_follow_toggle_state() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    write_long_document(&editor, 400, 0);
+
+    wait_until(Duration::from_secs(2), || editor.is_minimap_visible());
+
+    let line = editor.buffer().iter_at_line(120).expect("line 120");
+    editor.buffer().place_cursor(&line);
+    let _ = editor.toggle_bookmark_at_cursor();
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::Bookmark) == 1
+    });
+
+    let _ = editor.toggle_bookmark_at_cursor();
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::Bookmark) == 0
+    });
+}
+
+#[test]
+fn test_search_markers_clear_when_search_closes() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    write_long_document(&editor, 320, 5);
+
+    wait_until(Duration::from_secs(2), || editor.is_minimap_visible());
+
+    editor.show_search();
+    editor.search_bar().search_entry().set_text("needle");
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::Search) > 0
+    });
+
+    editor.hide_search();
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::Search) == 0
+    });
+}
+
+#[test]
+fn test_modified_markers_clear_after_save() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let temp = tempfile::NamedTempFile::new().expect("temp file");
+    let path = temp.path().to_path_buf();
+
+    editor.set_file_path(&path);
+    write_long_document(&editor, 300, 0);
+
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::Modified) > 0
+    });
+
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_clone = done.clone();
+    editor.save_file_async(move |result| {
+        result.expect("save should succeed");
+        done_clone.set(true);
+    });
+    wait_until(Duration::from_secs(2), || done.get());
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::Modified) == 0
+    });
 }
 
 #[test]

@@ -109,6 +109,7 @@ pub(super) fn load_bookmarks(editor: &LushtextEditorPage, bookmarks: &[BookmarkR
             .then_with(|| left.record.id.0.cmp(&right.record.id.0))
     });
     *editor.imp().bookmarks.entries.borrow_mut() = live_entries;
+    editor.schedule_minimap_refresh();
 }
 
 /// Remove all live bookmark marks for the current file identity.
@@ -120,6 +121,7 @@ pub(super) fn clear_bookmarks(editor: &LushtextEditorPage) {
         Some(BOOKMARK_MARK_CATEGORY),
     );
     editor.imp().bookmarks.entries.borrow_mut().clear();
+    editor.schedule_minimap_refresh();
 }
 
 /// Toggle the bookmark on the active cursor line.
@@ -223,6 +225,7 @@ pub(super) fn emit_bookmarks_changed(editor: &LushtextEditorPage) {
     if let Some(callback) = editor.imp().bookmarks.changed_callback.borrow().as_ref() {
         callback();
     }
+    editor.schedule_minimap_refresh();
 }
 
 /// Reconcile persisted bookmark lines after the user edits the buffer.

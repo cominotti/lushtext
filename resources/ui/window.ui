@@ -208,6 +208,10 @@
         <attribute name="label" translatable="yes">_Find and Replace…</attribute>
         <attribute name="action">win.begin-search</attribute>
       </item>
+      <item>
+        <attribute name="label" translatable="yes">Toggle _Minimap</attribute>
+        <attribute name="action">win.toggle-minimap</attribute>
+      </item>
     </section>
     <section>
       <item>

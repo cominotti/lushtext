@@ -63,6 +63,11 @@ pub struct LushtextSearchBar {
     /// Closure called when the search bar should be hidden. Set by the
     /// EditorPage when wiring the bar; fires on close button and Escape.
     pub close_callback: RefCell<Option<Box<dyn Fn()>>>,
+    /// Callback fired when any search state affecting live highlights changes.
+    ///
+    /// The minimap uses this to refresh its search markers when the query,
+    /// toggles, or attach/detach lifecycle changes.
+    pub search_state_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 #[glib::object_subclass]
@@ -138,9 +143,13 @@ impl LushtextSearchBar {
         for name in ["regex", "case-sensitive", "whole-word"] {
             let action = gtk4::gio::SimpleAction::new_stateful(name, None, &false.to_variant());
             let action_clone = action.clone();
+            let bar_weak = self.obj().downgrade();
             action.connect_activate(move |_, _| {
                 let current: bool = action_clone.state().and_then(|v| v.get()).unwrap_or(false);
                 action_clone.set_state(&(!current).to_variant());
+                if let Some(bar) = bar_weak.upgrade() {
+                    bar.emit_search_state_changed();
+                }
             });
             group.add_action(&action);
         }
@@ -182,6 +191,7 @@ impl LushtextSearchBar {
                 }
             }
             bar.update_match_info();
+            bar.emit_search_state_changed();
         });
 
         // Enter/Shift+Enter on the search entry for match navigation.

@@ -75,6 +75,21 @@ pub fn init_schema_dir() {
     }
 }
 
+/// Prepend the app-bundled GtkSourceView style-scheme resources so the shipped
+/// default schemes remain stable even when the host system lacks or changes the
+/// platform-provided `map-overlay` definitions.
+pub fn register_sourceview_style_schemes() {
+    let manager = sourceview5::StyleSchemeManager::default();
+    let resource_path = "resource:///dev/cominotti/lushtext/gtksourceview/styles";
+    if !manager
+        .search_path()
+        .iter()
+        .any(|path| path.as_str() == resource_path)
+    {
+        manager.prepend_search_path(resource_path);
+    }
+}
+
 /// Load the application CSS and set up the font customization provider.
 /// Must be called after GTK is initialized (i.e. during startup).
 pub(crate) fn load_css() {

@@ -3,7 +3,7 @@
 //! Private implementation for the editor page widget.
 //!
 //! Each tab in the editor is an `EditorPage` containing a GtkSourceView,
-//! a search bar, and per-tab state (file path, size, eviction status).
+//! a minimap, a search bar, and per-tab state (file path, size, eviction status).
 //! GSettings bindings keep all editor pages in sync with user preferences.
 
 use crate::config::keys;
@@ -19,9 +19,12 @@ use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+
+use super::minimap::{MinimapAvailability, MinimapMarker};
 
 /// Callback for notifying the window when this editor's estimated buffer
 /// memory changes. The `u64` argument is the new estimated byte count.
@@ -47,6 +50,10 @@ pub struct PreferenceBindingState {
     pub insert_spaces_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `annotation-highlights-visible`. Disconnected in `Drop`.
     pub annotation_visibility_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `show-minimap`. Disconnected in `Drop`.
+    pub show_minimap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `minimap-width`. Disconnected in `Drop`.
+    pub minimap_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
 }
 
 /// File-monitor state for external change detection.
@@ -151,6 +158,37 @@ pub struct AnnotationState {
     pub persistence: NotesPersistenceState,
 }
 
+/// Minimap widgets, marker state, and signal lifetimes for one editor tab.
+#[derive(Default)]
+pub struct MinimapState {
+    /// Programmatically created `GtkSourceMap` bound to the main source view.
+    pub source_map: RefCell<Option<sourceview5::Map>>,
+    /// Narrow drawing layer that paints semantic markers over the map edge.
+    pub marker_strip: RefCell<Option<gtk4::DrawingArea>>,
+    /// Last computed render model for the semantic marker strip.
+    pub markers: RefCell<Vec<MinimapMarker>>,
+    /// Source marks that keep modified-since-save lines aligned with later edits.
+    pub modified_marks: RefCell<Vec<sourceview5::Mark>>,
+    /// Current availability state for the minimap on this tab.
+    pub availability: Cell<MinimapAvailability>,
+    /// Generation counter for coalescing expensive marker refresh work.
+    pub refresh_generation: Cell<u32>,
+    /// Prevents programmatic loads and evictions from being recorded as user edits.
+    pub tracking_suspended: Cell<bool>,
+    /// Tracks which lines already own a modified marker for O(1) de-duplication.
+    pub modified_lines_cache: RefCell<BTreeSet<u32>>,
+    /// One-shot guard so the "too large for minimap" message does not spam on each edit.
+    pub too_large_feedback_shown: Cell<bool>,
+    /// Handler ID for the buffer's `insert-text` signal. Disconnected in dispose.
+    pub insert_text_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for the buffer's `delete-range` signal. Disconnected in dispose.
+    pub delete_range_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for the buffer's `modified-changed` signal used by minimap state. Disconnected in dispose.
+    pub modified_changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for the buffer's `changed` signal used by minimap refresh. Disconnected in dispose.
+    pub changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+}
+
 // CompositeTemplate loads the UI layout from a compiled XML file (bundled
 // as a GResource at build time). Each #[template_child] field is auto-bound
 // to the widget with the matching `id` attribute in the XML.
@@ -164,6 +202,8 @@ pub struct AnnotationState {
 pub struct LushtextEditorPage {
     #[template_child]
     pub info_bar: TemplateChild<LushtextInfoBar>,
+    #[template_child]
+    pub minimap_overlay: TemplateChild<gtk4::Overlay>,
     #[template_child]
     pub source_view: TemplateChild<sourceview5::View>,
     #[template_child]
@@ -215,12 +255,15 @@ pub struct LushtextEditorPage {
     pub bookmarks: BookmarkState,
     /// Live annotation range projection and persistence state.
     pub annotations: AnnotationState,
+    /// Minimap widget state, marker projections, and refresh bookkeeping.
+    pub minimap: MinimapState,
 }
 
 impl Default for LushtextEditorPage {
     fn default() -> Self {
         Self {
             info_bar: TemplateChild::default(),
+            minimap_overlay: TemplateChild::default(),
             source_view: TemplateChild::default(),
             scrolled_window: TemplateChild::default(),
             search_revealer: TemplateChild::default(),
@@ -244,6 +287,7 @@ impl Default for LushtextEditorPage {
             restore: RestoreState::default(),
             bookmarks: BookmarkState::default(),
             annotations: AnnotationState::default(),
+            minimap: MinimapState::default(),
         }
     }
 }
@@ -289,6 +333,23 @@ impl ObjectImpl for LushtextEditorPage {
         if let Some(handler_id) = self.end_user_action_handler_id.take() {
             buffer.disconnect(handler_id);
         }
+        if let Some(handler_id) = self.minimap.insert_text_handler_id.take() {
+            buffer.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.minimap.delete_range_handler_id.take() {
+            buffer.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.minimap.modified_changed_handler_id.take() {
+            buffer.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.minimap.changed_handler_id.take() {
+            buffer.disconnect(handler_id);
+        }
+        self.minimap.source_map.borrow_mut().take();
+        self.minimap.marker_strip.borrow_mut().take();
+        self.minimap.modified_marks.borrow_mut().clear();
+        self.minimap.modified_lines_cache.borrow_mut().clear();
+        self.minimap.markers.borrow_mut().clear();
         // Cancel file monitor to stop receiving events for this tab.
         if let Some(monitor) = self.monitor.file_monitor.take() {
             monitor.cancel();
@@ -370,8 +431,12 @@ impl ObjectImpl for LushtextEditorPage {
         // Store the handler ID so we can disconnect in Drop.
         apply_word_wrap(&self.source_view, settings);
         let view = self.source_view.clone();
+        let editor_weak: glib::WeakRef<super::LushtextEditorPage> = self.obj().downgrade();
         let id = settings.connect_changed(Some(keys::WORD_WRAP), move |s, _| {
             apply_word_wrap(&view, s);
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.schedule_minimap_refresh();
+            }
         });
         self.preference_bindings
             .word_wrap_handler_id
@@ -399,6 +464,7 @@ impl ObjectImpl for LushtextEditorPage {
                 }
                 if let Some(editor) = editor_weak.upgrade() {
                     editor.refresh_annotation_highlights();
+                    editor.queue_minimap_draw();
                 }
             });
             self.preference_bindings
@@ -420,6 +486,29 @@ impl ObjectImpl for LushtextEditorPage {
                 .annotation_visibility_handler_id
                 .replace(Some(id));
         }
+        {
+            let editor_weak = self.obj().downgrade();
+            let id = settings.connect_changed(Some(keys::SHOW_MINIMAP), move |_, _| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.refresh_minimap();
+                }
+            });
+            self.preference_bindings
+                .show_minimap_handler_id
+                .replace(Some(id));
+        }
+        {
+            let editor_weak = self.obj().downgrade();
+            let id = settings.connect_changed(Some(keys::MINIMAP_WIDTH), move |_, _| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.apply_minimap_width_from_settings();
+                    editor.schedule_minimap_refresh();
+                }
+            });
+            self.preference_bindings
+                .minimap_width_handler_id
+                .replace(Some(id));
+        }
 
         self.obj().setup_bookmark_projection();
         self.obj().set_annotation_highlights_visible(
@@ -436,6 +525,7 @@ impl ObjectImpl for LushtextEditorPage {
                     if editor.reconcile_annotations_after_edit() {
                         editor.emit_annotations_changed();
                     }
+                    editor.schedule_minimap_refresh();
                 }
             });
             self.end_user_action_handler_id.replace(Some(handler_id));
@@ -450,6 +540,8 @@ impl ObjectImpl for LushtextEditorPage {
                 editor.hide_search();
             }
         });
+
+        self.obj().setup_minimap();
     }
 }
 
@@ -481,6 +573,12 @@ impl Drop for LushtextEditorPage {
             .annotation_visibility_handler_id
             .take()
         {
+            self.settings.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.preference_bindings.show_minimap_handler_id.take() {
+            self.settings.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.preference_bindings.minimap_width_handler_id.take() {
             self.settings.disconnect(handler_id);
         }
     }

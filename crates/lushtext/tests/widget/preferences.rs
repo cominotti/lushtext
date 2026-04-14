@@ -51,6 +51,15 @@ fn test_highlight_line_row_bound_to_settings() {
 }
 
 #[test]
+fn test_show_minimap_row_bound_to_settings() {
+    ensure_gtk_init();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    assert!(!imp.show_minimap_row.is_active());
+}
+
+#[test]
 fn test_insert_spaces_row_bound_to_settings() {
     ensure_gtk_init();
     let prefs = LushtextPreferences::new();

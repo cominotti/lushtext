@@ -12,6 +12,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)
 - **EditorConfig support** -- per-file formatting overrides from `.editorconfig` files (`indent_style`, `tab_width`, `indent_size`); toggle in Preferences
 - **Bookmarks and annotations** -- saved-file bookmark gutter marks with labels and F2 navigation, plus sidecar line-range annotations with searchable workspace browse/export workflows
+- **Minimap** -- toggleable right-edge document overview with semantic markers for bookmarks, active in-tab search matches, modified-since-save regions, and long-line warnings on supported files
 - **Session persistence** -- tabs, cursor positions, and scroll offsets restored on restart
 - **Draft recovery** -- unsaved changes auto-saved to disk and recovered after crash
 - **Print** -- native GTK print dialog with syntax highlighting and editor settings preserved
@@ -271,7 +272,7 @@ lushtext-core/src/
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
     window/          Main window shell plus actions, documents, drafts, notes, search, preview, session persistence, print, and zoom wiring
-    editor_page/     GtkSourceView tab plus bookmark/annotation projection, load/save, monitor, and in-tab search helpers
+    editor_page/     GtkSourceView tab plus minimap, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows

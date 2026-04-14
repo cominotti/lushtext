@@ -30,6 +30,7 @@ mod imp {
         fn startup(&self) {
             self.parent_startup();
             crate::load_css();
+            crate::register_sourceview_style_schemes();
 
             // Apply persisted color scheme before any window is created so
             // the first paint uses the correct theme.

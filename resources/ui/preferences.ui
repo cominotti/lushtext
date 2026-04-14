@@ -99,6 +99,14 @@
             </child>
 
             <child>
+              <object class="AdwSwitchRow" id="show_minimap_row">
+                <property name="title" translatable="yes">Show Minimap</property>
+                <property name="subtitle" translatable="yes">Display a document overview on supported editor pages</property>
+                <property name="active">false</property>
+              </object>
+            </child>
+
+            <child>
               <object class="AdwSwitchRow" id="bookmark_gutter_row">
                 <property name="title" translatable="yes">Show Bookmark Gutter</property>
                 <property name="subtitle" translatable="yes">Display bookmark indicators in the editor gutter</property>

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Editor page widget — one tab's content: GtkSourceView + search bar.
+//! Editor page widget — one tab's content: GtkSourceView, minimap, and search bar.
 //!
 //! The public wrapper type and its small facade stay here, while file I/O,
 //! search-bar choreography, and external file monitoring live in dedicated
@@ -10,6 +10,7 @@ mod annotations;
 mod bookmarks;
 mod imp;
 mod load_save;
+mod minimap;
 mod monitor;
 mod search;
 
@@ -25,6 +26,7 @@ use gtk4::prelude::*;
 pub use crate::services::editor_io::SaveError;
 pub use annotations::AnnotationEditSelection;
 pub use bookmarks::{BookmarkNavigationDirection, BookmarkToggleState};
+pub use minimap::{MinimapAvailability, MinimapMarkerKind};
 
 glib::wrapper! {
     pub struct LushtextEditorPage(ObjectSubclass<imp::LushtextEditorPage>)
@@ -89,10 +91,14 @@ impl LushtextEditorPage {
     pub fn evict(&self) {
         self.imp().evicted.set(true);
         let buffer = self.buffer();
+        self.set_minimap_tracking_suspended(true);
         buffer.begin_irreversible_action();
         buffer.set_text("");
         buffer.end_irreversible_action();
         buffer.set_modified(false);
+        self.set_minimap_tracking_suspended(false);
+        self.clear_modified_line_marks();
+        self.refresh_minimap();
         self.notify_estimated_memory_changed();
     }
 

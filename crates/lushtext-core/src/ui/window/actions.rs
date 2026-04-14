@@ -140,6 +140,7 @@ impl LushtextWindow {
                 imp.properties_sidebar_visible.set(visible);
             },
         );
+        self.register_boolean_setting_toggle_action("toggle-minimap", keys::SHOW_MINIMAP);
     }
 
     fn register_split_view_toggle_action(
@@ -181,6 +182,44 @@ impl LushtextWindow {
         });
     }
 
+    fn register_boolean_setting_toggle_action(
+        &self,
+        action_name: &'static str,
+        settings_key: &'static str,
+    ) {
+        let initial = self.imp().settings.boolean(settings_key);
+        let action = gio::SimpleAction::new_stateful(action_name, None, &initial.to_variant());
+
+        {
+            let settings = self.imp().settings.clone();
+            action.connect_activate(move |action, _| {
+                let current = action
+                    .state()
+                    .and_then(|state| state.get::<bool>())
+                    .unwrap_or(false);
+                action.change_state(&(!current).to_variant());
+            });
+            action.connect_change_state(move |action, state| {
+                let Some(state) = state else { return };
+                let Some(enabled) = state.get::<bool>() else {
+                    tracing::error!("{action_name}: expected bool state");
+                    return;
+                };
+                action.set_state(&enabled.to_variant());
+                let _ = settings.set_boolean(settings_key, enabled);
+            });
+        }
+
+        let action_clone = action.clone();
+        self.imp()
+            .settings
+            .connect_changed(Some(settings_key), move |s, _| {
+                action_clone.set_state(&s.boolean(settings_key).to_variant());
+            });
+
+        self.add_action(&action);
+    }
+
     pub(super) fn setup_shortcuts(&self) {
         let controller = gtk4::ShortcutController::new();
         controller.set_scope(gtk4::ShortcutScope::Managed);
@@ -197,6 +236,7 @@ impl LushtextWindow {
             ("win.close-tab", "<Control>w"),
             ("win.print", "<Control>p"),
             ("win.toggle-command-palette", "<Control><Shift>p"),
+            ("win.toggle-minimap", "<Control><Shift>m"),
             ("win.toggle-search-panel", "<Control><Shift>f"),
             ("win.search-next-match", "F4"),
             ("win.search-prev-match", "<Shift>F4"),

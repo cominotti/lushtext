@@ -120,6 +120,40 @@
   min-height: 1px;
 }
 
+/* Minimap: slim overview map with a dedicated semantic marker edge */
+.minimap-shell {
+  border-left: 1px solid alpha(@borders, 0.35);
+  margin-left: 6px;
+  padding-left: 13px;
+  padding-right: 13px;
+}
+
+.minimap-shell textview.GtkSourceMap,
+.minimap-view {
+  background: transparent;
+  font-size: 1.75pt;
+  line-height: 5px;
+  margin: 0;
+  padding: 0;
+}
+
+.minimap-shell textview.GtkSourceMap slider,
+.minimap-view slider {
+  background-color: alpha(@accent_bg_color, 0.28);
+  border: 1px solid alpha(@accent_color, 0.72);
+  border-radius: 6px;
+  box-shadow: none;
+  margin-left: -13px;
+  margin-right: -13px;
+  padding-left: 13px;
+  padding-right: 13px;
+}
+
+.minimap-marker-strip {
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
 /* Markdown preview tables: lightweight native grid styling */
 .markdown-table-cell,
 .markdown-table-header-cell {

@@ -181,6 +181,26 @@ fn test_show_search_reveals_search_bar() {
 }
 
 #[test]
+fn test_minimap_source_map_matches_gnome_geometry_contract() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let source_map = page
+        .imp()
+        .minimap
+        .source_map
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("source map should be created during construction");
+
+    assert_eq!(source_map.top_margin(), 5);
+    assert_eq!(source_map.bottom_margin(), 5);
+    assert_eq!(source_map.left_margin(), 0);
+    assert_eq!(source_map.right_margin(), 0);
+    assert_eq!(source_map.overflow(), gtk4::Overflow::Visible);
+}
+
+#[test]
 fn test_default_equals_new() {
     ensure_gtk_init();
     // Verify Default impl works (it delegates to new())

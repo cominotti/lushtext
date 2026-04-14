@@ -136,10 +136,17 @@ impl super::LushtextWindow {
     /// Apply restored draft content to the editor buffer and show the infobar action.
     fn apply_draft(editor: &LushtextEditorPage, content: &str) {
         let buffer = editor.buffer();
+        editor.set_minimap_tracking_suspended(true);
         buffer.begin_irreversible_action();
         buffer.set_text(content);
         buffer.end_irreversible_action();
+        editor.set_minimap_tracking_suspended(false);
         buffer.set_modified(true);
+        if editor.file_path().is_some() {
+            editor.mark_entire_buffer_modified();
+        } else {
+            editor.schedule_minimap_refresh();
+        }
         let has_backing_file = editor.file_path().is_some();
         editor.set_draft_restored(true);
         editor.emit_inline_notification(InlineActionNotification {

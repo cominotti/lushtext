@@ -57,11 +57,15 @@ impl LushtextEditorPage {
                     editor.imp().file_size.set(Some(loaded.size));
                     editor.imp().size_check.set(loaded.size_check);
                     editor.imp().evicted.set(false);
+                    editor.set_minimap_tracking_suspended(true);
                     editor.apply_loaded_content(&loaded.content, loaded.size_check);
+                    editor.set_minimap_tracking_suspended(false);
+                    editor.clear_modified_line_marks();
                     editor.apply_restore_position();
                     editor.notify_estimated_memory_changed();
                     editor.imp().monitor.last_known_mtime.set(loaded.mtime);
                     editor.clear_inline_notification();
+                    editor.refresh_minimap();
                     if let Some(callback) = editor.imp().load.load_completed_callback.take() {
                         callback();
                     }
@@ -123,6 +127,7 @@ impl LushtextEditorPage {
         if self.imp().size_check.get().syntax_enabled() {
             self.reapply_language();
         }
+        self.schedule_minimap_refresh();
     }
 
     /// Detect and apply syntax language from the current file path.
@@ -258,6 +263,8 @@ impl LushtextEditorPage {
                         editor.imp().size_check.set(FileSizeCheck::classify(size));
                         editor.notify_estimated_memory_changed();
                         editor.imp().monitor.last_known_mtime.set(mtime);
+                        editor.clear_modified_line_marks();
+                        editor.refresh_minimap();
                         callback(Ok(()));
                     }
                     Err(error) => {

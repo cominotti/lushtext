@@ -435,11 +435,19 @@ impl LushtextWindow {
     }
 
     /// Get the currently active editor page, if any.
-    pub(super) fn active_editor(&self) -> Option<LushtextEditorPage> {
+    pub(crate) fn active_editor(&self) -> Option<LushtextEditorPage> {
         self.imp()
             .tab_view
             .selected_page()
             .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok())
+    }
+
+    /// Whether `editor` is the tab currently selected in the window shell.
+    #[must_use]
+    pub(crate) fn is_active_editor(&self, editor: &LushtextEditorPage) -> bool {
+        self.active_editor()
+            .as_ref()
+            .is_some_and(|active| active.as_ptr() == editor.as_ptr())
     }
 
     /// Update the file path and title for any tab matching `old_path`.

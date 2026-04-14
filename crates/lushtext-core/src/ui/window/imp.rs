@@ -516,6 +516,9 @@ impl ObjectImpl for LushtextWindow {
                     window.maybe_evict_background_tabs();
                     window.save_session_debounced();
                     window.refresh_preview();
+                    if let Some(editor) = window.active_editor() {
+                        editor.refresh_minimap();
+                    }
                 }
             });
 

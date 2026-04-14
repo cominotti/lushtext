@@ -29,6 +29,17 @@
       <default>true</default>
       <summary>Highlight Current Line</summary>
     </key>
+    <key name="show-minimap" type="b">
+      <default>false</default>
+      <summary>Show Minimap</summary>
+      <description>Whether an editor minimap appears on supported documents.</description>
+    </key>
+    <key name="minimap-width" type="i">
+      <default>90</default>
+      <summary>Minimap Width</summary>
+      <description>Preferred minimap width in pixels for supported editor pages.</description>
+      <range min="64" max="160"/>
+    </key>
     <key name="bookmark-gutter-visible" type="b">
       <default>true</default>
       <summary>Show Bookmark Gutter</summary>

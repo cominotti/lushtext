@@ -19,4 +19,8 @@
     <!-- Styling -->
     <file compressed="true">style/style.css</file>
   </gresource>
+  <gresource prefix="/dev/cominotti/lushtext/gtksourceview">
+    <file compressed="true">gtksourceview/styles/Adwaita.xml</file>
+    <file compressed="true">gtksourceview/styles/Adwaita-dark.xml</file>
+  </gresource>
 </gresources>

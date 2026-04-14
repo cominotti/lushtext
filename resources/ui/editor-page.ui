@@ -15,25 +15,41 @@
       <object class="GtkOverlay" id="overlay">
         <property name="vexpand">true</property>
 
-        <!-- Main editor -->
+        <!-- Main editor body -->
         <property name="child">
-          <object class="GtkScrolledWindow" id="scrolled_window">
-            <property name="vexpand">true</property>
+          <object class="GtkBox" id="editor_body">
+            <property name="orientation">horizontal</property>
             <property name="hexpand">true</property>
-            <property name="child">
-              <object class="GtkSourceView" id="source_view">
-                <property name="auto-indent">true</property>
-                <property name="smart-backspace">true</property>
-                <property name="monospace">true</property>
-                <property name="top-margin">6</property>
-                <property name="bottom-margin">6</property>
-                <property name="left-margin">12</property>
-                <property name="right-margin">12</property>
-                <!-- show-line-numbers, highlight-current-line, tab-width,
-                     insert-spaces-instead-of-tabs, and wrap-mode are set
-                     via GSettings bindings in constructed() -->
+            <property name="vexpand">true</property>
+
+            <child>
+              <object class="GtkScrolledWindow" id="scrolled_window">
+                <property name="vexpand">true</property>
+                <property name="hexpand">true</property>
+                <property name="child">
+                  <object class="GtkSourceView" id="source_view">
+                    <property name="auto-indent">true</property>
+                    <property name="smart-backspace">true</property>
+                    <property name="monospace">true</property>
+                    <property name="top-margin">6</property>
+                    <property name="bottom-margin">6</property>
+                    <property name="left-margin">12</property>
+                    <property name="right-margin">12</property>
+                    <!-- show-line-numbers, highlight-current-line, tab-width,
+                         insert-spaces-instead-of-tabs, and wrap-mode are set
+                         via GSettings bindings in constructed() -->
+                  </object>
+                </property>
               </object>
-            </property>
+            </child>
+
+            <child>
+              <object class="GtkOverlay" id="minimap_overlay">
+                <property name="visible">false</property>
+                <property name="hexpand">false</property>
+                <property name="vexpand">true</property>
+              </object>
+            </child>
           </object>
         </property>
       </object>
