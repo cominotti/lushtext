@@ -83,7 +83,7 @@ pub(super) fn clear_annotations(editor: &LushtextEditorPage) {
 #[must_use]
 pub(super) fn create_annotation_from_selection(
     editor: &LushtextEditorPage,
-    note_text: String,
+    note_text: &str,
     style: AnnotationStyle,
 ) -> AnnotationRecord {
     let (start_line, end_line) = selected_line_range(editor);
@@ -112,7 +112,7 @@ pub(super) fn create_annotation_from_selection(
 pub(super) fn update_annotation(
     editor: &LushtextEditorPage,
     annotation_id: &AnnotationId,
-    note_text: String,
+    note_text: &str,
     style: AnnotationStyle,
 ) -> Option<AnnotationRecord> {
     let mut entries = editor.imp().annotations.entries.borrow_mut();

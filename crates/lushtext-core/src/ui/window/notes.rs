@@ -301,7 +301,7 @@ impl LushtextWindow {
             );
             return;
         };
-        self.present_annotation_editor(&editor, Some(annotation));
+        self.present_annotation_editor(&editor, Some(&annotation));
     }
 
     /// Browse workspace annotations in a searchable dialog.
@@ -407,7 +407,7 @@ impl LushtextWindow {
         };
 
         editor.set_pending_annotation_focus(None);
-        self.present_annotation_editor(editor, Some(annotation));
+        self.present_annotation_editor(editor, Some(&annotation));
     }
 
     /// Debounce bookmark persistence so one burst of edits produces one sidecar write.
@@ -578,7 +578,7 @@ impl LushtextWindow {
         let dialog = build_browser_dialog("Bookmarks");
         let content = browser_content_box(&dialog);
         let search_entry = gtk4::SearchEntry::new();
-        search_entry.set_placeholder_text(Some(&format!("Search {}…", WORKSPACE_SCOPE_TITLE)));
+        search_entry.set_placeholder_text(Some(&format!("Search {WORKSPACE_SCOPE_TITLE}…")));
         content.append(&search_entry);
 
         let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -621,7 +621,7 @@ impl LushtextWindow {
         let dialog = build_browser_dialog("Annotations");
         let content = browser_content_box(&dialog);
         let search_entry = gtk4::SearchEntry::new();
-        search_entry.set_placeholder_text(Some(&format!("Search {}…", WORKSPACE_SCOPE_TITLE)));
+        search_entry.set_placeholder_text(Some(&format!("Search {WORKSPACE_SCOPE_TITLE}…")));
         content.append(&search_entry);
 
         let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -660,9 +660,9 @@ impl LushtextWindow {
     fn present_annotation_editor(
         &self,
         editor: &LushtextEditorPage,
-        existing: Option<AnnotationRecord>,
+        existing: Option<&AnnotationRecord>,
     ) {
-        let selection = existing.clone().map_or_else(
+        let selection = existing.cloned().map_or_else(
             || editor.annotation_edit_selection(),
             AnnotationEditSelection::Existing,
         );
@@ -678,13 +678,8 @@ impl LushtextWindow {
                 end_line,
             } => format!(
                 "Add a note for {}.",
-                AnnotationRecord::new(
-                    *start_line,
-                    *end_line,
-                    String::new(),
-                    AnnotationStyle::Note,
-                )
-                .line_range_label()
+                AnnotationRecord::new(*start_line, *end_line, "", AnnotationStyle::Note,)
+                    .line_range_label()
             ),
         };
 
@@ -721,10 +716,7 @@ impl LushtextWindow {
 
         let style_dropdown = gtk4::DropDown::from_strings(&["Note", "Todo", "Warning", "Question"]);
         style_dropdown.set_selected(annotation_style_index(
-            existing
-                .as_ref()
-                .map(|annotation| annotation.style)
-                .unwrap_or(AnnotationStyle::Note),
+            existing.map_or(AnnotationStyle::Note, |annotation| annotation.style),
         ));
         content.append(&style_dropdown);
 
@@ -735,7 +727,7 @@ impl LushtextWindow {
         let note_view = gtk4::TextView::new();
         note_view.set_wrap_mode(gtk4::WrapMode::WordChar);
         note_view.set_vexpand(true);
-        if let Some(annotation) = existing.as_ref() {
+        if let Some(annotation) = existing {
             note_view.buffer().set_text(&annotation.note_text);
         }
         let note_scroll = gtk4::ScrolledWindow::builder()
@@ -748,7 +740,7 @@ impl LushtextWindow {
 
         let window = self.clone();
         let editor = editor.clone();
-        let existing = existing.clone();
+        let existing = existing.cloned();
         dialog.choose(Some(self), gio::Cancellable::NONE, move |response| {
             if response == RESPONSE_DELETE {
                 if let Some(annotation) = existing.as_ref()
@@ -773,13 +765,13 @@ impl LushtextWindow {
                 let style = annotation_style_from_index(style_dropdown.selected());
                 if let Some(annotation) = existing.as_ref() {
                     if editor
-                        .update_annotation(&annotation.id, note_text, style)
+                        .update_annotation(&annotation.id, &note_text, style)
                         .is_some()
                     {
                         window.publish_status_message("Annotation updated", MessageKind::Info);
                     }
                 } else {
-                    let _ = editor.create_annotation_from_selection(note_text, style);
+                    let _ = editor.create_annotation_from_selection(&note_text, style);
                     window.publish_status_message("Annotation added", MessageKind::Info);
                 }
             }

@@ -75,7 +75,7 @@ pub struct AnnotationRecord {
 impl AnnotationRecord {
     /// Create a new annotation for an inclusive line range.
     #[must_use]
-    pub fn new(start_line: u32, end_line: u32, note_text: String, style: AnnotationStyle) -> Self {
+    pub fn new(start_line: u32, end_line: u32, note_text: &str, style: AnnotationStyle) -> Self {
         let now = now_epoch_secs();
         Self {
             id: AnnotationId::new(),
@@ -89,7 +89,7 @@ impl AnnotationRecord {
     }
 
     /// Update the stored note body and style in one command-shaped mutation.
-    pub fn update_content(&mut self, note_text: String, style: AnnotationStyle) {
+    pub fn update_content(&mut self, note_text: &str, style: AnnotationStyle) {
         self.note_text = normalize_note_text(note_text);
         self.style = style;
         self.updated_at_secs = now_epoch_secs();
@@ -153,7 +153,7 @@ impl AnnotationDocument {
     }
 }
 
-fn normalize_note_text(note_text: String) -> String {
+fn normalize_note_text(note_text: &str) -> String {
     note_text.trim().to_string()
 }
 
@@ -177,22 +177,22 @@ mod tests {
 
     #[test]
     fn new_annotation_clamps_end_line() {
-        let annotation = AnnotationRecord::new(8, 4, "note".to_string(), AnnotationStyle::Note);
+        let annotation = AnnotationRecord::new(8, 4, "note", AnnotationStyle::Note);
         assert_eq!(annotation.start_line, 8);
         assert_eq!(annotation.end_line, 8);
     }
 
     #[test]
     fn update_content_trims_note_text() {
-        let mut annotation = AnnotationRecord::new(0, 0, "x".to_string(), AnnotationStyle::Note);
-        annotation.update_content("  refined note  ".to_string(), AnnotationStyle::Todo);
+        let mut annotation = AnnotationRecord::new(0, 0, "x", AnnotationStyle::Note);
+        annotation.update_content("  refined note  ", AnnotationStyle::Todo);
         assert_eq!(annotation.note_text, "refined note");
         assert_eq!(annotation.style, AnnotationStyle::Todo);
     }
 
     #[test]
     fn line_range_label_uses_one_based_lines() {
-        let annotation = AnnotationRecord::new(3, 5, "note".to_string(), AnnotationStyle::Note);
+        let annotation = AnnotationRecord::new(3, 5, "note", AnnotationStyle::Note);
         assert_eq!(annotation.line_range_label(), "Lines 4-6");
     }
 }

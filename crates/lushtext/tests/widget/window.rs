@@ -264,7 +264,7 @@ fn test_open_document_restores_bookmarks_and_annotations() {
         &[AnnotationRecord::new(
             2,
             2,
-            "restore annotation".to_string(),
+            "restore annotation",
             AnnotationStyle::Question,
         )],
     )

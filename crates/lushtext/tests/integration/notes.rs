@@ -48,7 +48,7 @@ fn note_sidecars_follow_in_app_rename_migration() {
         &[AnnotationRecord::new(
             0,
             0,
-            "carry this annotation".to_string(),
+            "carry this annotation",
             AnnotationStyle::Warning,
         )],
     )
@@ -87,7 +87,7 @@ fn annotation_export_groups_by_file_and_includes_excerpt() {
         &[AnnotationRecord::new(
             1,
             4,
-            "Explain this block".to_string(),
+            "Explain this block",
             AnnotationStyle::Todo,
         )],
     )

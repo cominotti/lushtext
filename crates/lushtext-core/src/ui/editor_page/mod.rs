@@ -281,7 +281,7 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn create_annotation_from_selection(
         &self,
-        note_text: String,
+        note_text: &str,
         style: AnnotationStyle,
     ) -> AnnotationRecord {
         annotations::create_annotation_from_selection(self, note_text, style)
@@ -292,7 +292,7 @@ impl LushtextEditorPage {
     pub fn update_annotation(
         &self,
         annotation_id: &AnnotationId,
-        note_text: String,
+        note_text: &str,
         style: AnnotationStyle,
     ) -> Option<AnnotationRecord> {
         annotations::update_annotation(self, annotation_id, note_text, style)

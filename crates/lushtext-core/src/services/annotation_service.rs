@@ -292,10 +292,10 @@ fn excerpt_for_annotation(path: &Path, start_line: u32, end_line: u32) -> Option
         return None;
     }
 
-    let end = usize::try_from(end_line)
-        .ok()
-        .map(|end| end.min(lines.len().saturating_sub(1)))
-        .unwrap_or_else(|| lines.len().saturating_sub(1));
+    let end = usize::try_from(end_line).ok().map_or_else(
+        || lines.len().saturating_sub(1),
+        |end| end.min(lines.len().saturating_sub(1)),
+    );
     let cap_end = start
         .saturating_add(EXPORT_EXCERPT_LINE_CAP.saturating_sub(1))
         .min(end);
@@ -403,8 +403,8 @@ mod tests {
         write_file(&file_path, "fn main() {}\n");
 
         let annotations = vec![
-            AnnotationRecord::new(1, 3, "Refactor this".to_string(), AnnotationStyle::Todo),
-            AnnotationRecord::new(5, 5, "Why?".to_string(), AnnotationStyle::Question),
+            AnnotationRecord::new(1, 3, "Refactor this", AnnotationStyle::Todo),
+            AnnotationRecord::new(5, 5, "Why?", AnnotationStyle::Question),
         ];
 
         save_for_path(dir.path(), &file_path, &annotations).unwrap();
@@ -428,7 +428,7 @@ mod tests {
             &[AnnotationRecord::new(
                 2,
                 4,
-                "Keep this note".to_string(),
+                "Keep this note",
                 AnnotationStyle::Warning,
             )],
         )
@@ -458,7 +458,7 @@ mod tests {
             &[AnnotationRecord::new(
                 1,
                 4,
-                "Explain this block".to_string(),
+                "Explain this block",
                 AnnotationStyle::Note,
             )],
         )

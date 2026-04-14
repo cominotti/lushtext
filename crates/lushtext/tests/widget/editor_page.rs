@@ -238,9 +238,8 @@ fn test_load_annotations_restores_current_annotation() {
     let buffer = page.buffer();
     buffer.set_text("one\ntwo\nthree\nfour\n");
 
-    let annotation =
-        AnnotationRecord::new(1, 2, "remember this".to_string(), AnnotationStyle::Warning);
-    page.load_annotations(&[annotation.clone()]);
+    let annotation = AnnotationRecord::new(1, 2, "remember this", AnnotationStyle::Warning);
+    page.load_annotations(std::slice::from_ref(&annotation));
 
     let line_three = buffer.iter_at_line(2).unwrap();
     buffer.place_cursor(&line_three);
@@ -263,7 +262,7 @@ fn test_annotation_range_tracks_user_edits_and_removes_deleted_ranges() {
     page.load_annotations(&[AnnotationRecord::new(
         1,
         2,
-        "track me".to_string(),
+        "track me",
         AnnotationStyle::Todo,
     )]);
 
