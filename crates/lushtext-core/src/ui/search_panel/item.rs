@@ -90,7 +90,10 @@ impl SearchResultItem {
     /// `match_start`/`match_end` are clamped to the truncated display content.
     /// `original_line_content` and `original_match_start`/`original_match_end`
     /// store the unclamped values for Replace All correctness on long lines.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Search result rows need both display-clamped and original match coordinates to keep Replace All correct on truncated lines"
+    )]
     #[must_use]
     pub fn new_match(
         file_path: &str,

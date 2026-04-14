@@ -186,12 +186,18 @@ impl LushtextCommandPalette {
                 .and_downcast::<PaletteItem>()
                 .expect("PaletteItem");
 
-            let row = list_item.child().and_downcast::<gtk4::Box>().unwrap();
-            let name_label = row.first_child().and_downcast::<gtk4::Label>().unwrap();
+            let row = list_item
+                .child()
+                .and_downcast::<gtk4::Box>()
+                .expect("palette row child should be the layout box");
+            let name_label = row
+                .first_child()
+                .and_downcast::<gtk4::Label>()
+                .expect("palette row should start with the title label");
             let subtitle_label = name_label
                 .next_sibling()
                 .and_downcast::<gtk4::Label>()
-                .unwrap();
+                .expect("palette row title should be followed by the subtitle label");
 
             name_label.set_label(&item.display_name());
             subtitle_label.set_label(&item.subtitle());

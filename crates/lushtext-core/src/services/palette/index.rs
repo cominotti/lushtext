@@ -38,7 +38,7 @@ impl FileIndex {
         Self::rebuild_with_hint(roots, 10_000)
     }
 
-    /// Like [`rebuild`], but uses `capacity_hint` for the initial `Vec` allocation.
+    /// Like [`Self::rebuild`], but uses `capacity_hint` for the initial `Vec` allocation.
     pub fn rebuild_with_hint(roots: &[PathBuf], capacity_hint: usize) -> Self {
         let mut files = Vec::with_capacity(capacity_hint.max(64));
         let mut visited = HashSet::new();

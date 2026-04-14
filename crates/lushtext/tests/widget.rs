@@ -18,7 +18,29 @@ use std::process::ExitCode;
 
 include!(concat!(env!("OUT_DIR"), "/widget_test_registry.rs"));
 
+fn configure_widget_test_environment() {
+    // Widget tests need deterministic process-wide backends before any GTK
+    // initialization path runs.
+    //
+    // - `NO_AT_BRIDGE=1` disables the accessibility bus, which is absent in
+    //   the headless mutter session and otherwise emits AT-SPI warnings.
+    // - `GDK_DEBUG=no-portals` and `GTK_USE_PORTAL=0` keep GTK from starting
+    //   xdg-desktop-portal just to discover headless settings.
+    // - `GSK_RENDERER=gl` keeps GTK on the OpenGL renderer path so Mesa's
+    //   test-only Vulkan warning never pollutes widget-test output.
+    // SAFETY: the widget harness sets these variables before any test code
+    // initializes GTK, and they stay local to the per-test child process.
+    unsafe {
+        std::env::set_var("NO_AT_BRIDGE", "1");
+        std::env::set_var("GDK_DEBUG", "no-portals");
+        std::env::set_var("GTK_USE_PORTAL", "0");
+        std::env::set_var("GSK_RENDERER", "gl");
+    }
+}
+
 fn main() -> ExitCode {
+    configure_widget_test_environment();
+
     if let Ok(test_name) = std::env::var("LUSHTEXT_WIDGET_CHILD") {
         return run_single_test(&test_name);
     }

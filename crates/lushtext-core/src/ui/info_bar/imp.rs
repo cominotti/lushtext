@@ -26,7 +26,10 @@ type Callback = Box<dyn Fn()>;
 
 // GtkInfoBar is deprecated since GTK 4.10 but has no multi-button replacement.
 // GNOME Text Editor still uses GtkInfoBar in its latest code for the same reason.
-#[allow(deprecated)]
+#[expect(
+    deprecated,
+    reason = "GtkInfoBar still provides the only multi-action infobar pattern that matches GNOME Text Editor for this UI"
+)]
 type GtkInfoBar = gtk4::InfoBar;
 
 /// Allow a button's internal label to wrap so `GtkInfoBar` actions stay
@@ -112,7 +115,10 @@ impl ObjectSubclass for LushtextInfoBar {
 }
 
 impl ObjectImpl for LushtextInfoBar {
-    #[allow(deprecated)]
+    #[expect(
+        deprecated,
+        reason = "GtkInfoBar still provides the only multi-action infobar pattern that matches GNOME Text Editor for this UI"
+    )]
     fn constructed(&self) {
         self.parent_constructed();
 

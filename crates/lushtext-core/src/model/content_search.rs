@@ -336,7 +336,7 @@ mod tests {
             ContentSearchOptions::new(true, false, true, false, Some("*.rs".to_string())),
         ));
 
-        let json = serde_json::to_value(&entry).unwrap();
+        let json = serde_json::to_value(&entry).expect("expected operation to succeed");
         assert_eq!(json["query"], "needle");
         assert_eq!(json["case_sensitive"], true);
         assert_eq!(json["whole_word"], true);
@@ -357,7 +357,8 @@ mod tests {
             "glob": "*.rs"
         });
 
-        let entry: SearchHistoryEntry = serde_json::from_value(json).unwrap();
+        let entry: SearchHistoryEntry =
+            serde_json::from_value(json).expect("expected operation to succeed");
         assert_eq!(entry.spec.query, "needle");
         assert!(entry.spec.options.case_sensitive);
         assert!(entry.spec.options.whole_word);
@@ -375,7 +376,7 @@ mod tests {
             ),
         );
 
-        let json = serde_json::to_value(&entry).unwrap();
+        let json = serde_json::to_value(&entry).expect("expected operation to succeed");
         assert_eq!(json["name"], "Rust files");
         assert_eq!(json["query"], "needle");
         assert_eq!(json["case_sensitive"], true);

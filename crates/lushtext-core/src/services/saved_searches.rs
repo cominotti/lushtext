@@ -24,6 +24,10 @@ pub fn load(data_dir: &Path) -> Vec<SavedSearch> {
 }
 
 /// Save saved searches to disk via atomic write.
+///
+/// # Errors
+///
+/// Returns an error if the saved-search file cannot be serialized or written.
 pub fn save(data_dir: &Path, entries: &[SavedSearch]) -> anyhow::Result<()> {
     json_store::save(data_dir, SAVED_SEARCHES_FILE, &entries)
 }
@@ -88,14 +92,14 @@ mod tests {
 
     #[test]
     fn test_load_missing_file_returns_empty() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let entries = load(dir.path());
         assert!(entries.is_empty());
     }
 
     #[test]
     fn test_save_and_load_roundtrip() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let entries = vec![
             SavedSearch::from_spec(
                 "Rust files".to_string(),
@@ -112,7 +116,7 @@ mod tests {
             ),
             make_saved("TODOs", "TODO"),
         ];
-        save(dir.path(), &entries).unwrap();
+        save(dir.path(), &entries).expect("expected operation to succeed");
         let loaded = load(dir.path());
         assert_eq!(loaded, entries);
     }

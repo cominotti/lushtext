@@ -18,7 +18,7 @@ fn test_new() {
 fn test_app_id() {
     ensure_gtk_init();
     let app = LushtextApplication::new();
-    assert_eq!(app.application_id().unwrap().as_str(), config::APP_ID);
+    assert_eq!(app.application_id().expect("expected operation to succeed").as_str(), config::APP_ID);
 }
 
 #[test]

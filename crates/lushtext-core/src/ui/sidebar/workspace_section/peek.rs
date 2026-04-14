@@ -475,7 +475,10 @@ impl LushtextWorkspaceSection {
                 && expander.list_row().as_ref() == Some(&target_row)
                 && let Some(bounds) = row_widget.compute_bounds(&list_view)
             {
-                #[expect(clippy::cast_possible_truncation)] // widget geometry fits in i32
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "Popover anchor geometry comes from GTK allocation data that already lives in i32 widget coordinates"
+                )]
                 return Some(gdk::Rectangle::new(
                     bounds.x().round() as i32,
                     bounds.y().round() as i32,

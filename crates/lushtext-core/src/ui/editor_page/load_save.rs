@@ -190,7 +190,10 @@ impl LushtextEditorPage {
 
     /// Read the current cursor position as (line, column).
     #[must_use]
-    #[expect(clippy::cast_sign_loss)] // GTK line/offset are non-negative i32
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "GtkTextIter line and line_offset values are non-negative i32 coordinates"
+    )]
     pub fn cursor_position(&self) -> (u32, u32) {
         let buffer = self.buffer();
         let iter = buffer.iter_at_mark(&buffer.get_insert());
@@ -199,7 +202,11 @@ impl LushtextEditorPage {
 
     /// Read the line number at the top of the visible scroll area.
     #[must_use]
-    #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation)] // GTK i32/f64 -> u32
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "Cursor offsets and scroll positions are derived from non-negative GTK coordinates and persisted as u32 session data"
+    )]
     pub fn visible_top_line(&self) -> u32 {
         let view = self.source_view();
         let Some(vadj) = view.vadjustment() else {
@@ -277,7 +284,10 @@ impl LushtextEditorPage {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)] // GObject: reference-counted, pass-by-value is idiomatic
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "GtkSource buffers are ref-counted GObjects, so pass-by-value keeps the async snapshot helper idiomatic"
+)]
 fn snapshot_buffer_text_async<F: FnOnce(String) + 'static>(
     buffer: sourceview5::Buffer,
     callback: F,

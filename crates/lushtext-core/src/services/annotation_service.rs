@@ -62,6 +62,10 @@ pub fn annotations_dir(data_dir: &Path) -> PathBuf {
 }
 
 /// Resolve the stable identity for a saved document path.
+///
+/// # Errors
+///
+/// Returns an error if the path cannot be canonicalized.
 pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
     let display_path = path.to_path_buf();
     let canonical_path = path
@@ -74,6 +78,11 @@ pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity>
 }
 
 /// Load annotations for a saved file, returning an empty document if no sidecar exists yet.
+///
+/// # Errors
+///
+/// Returns an error if the document identity cannot be resolved, the sidecar
+/// cannot be read, or the stored JSON cannot be parsed.
 pub fn load_for_path(data_dir: &Path, path: &Path) -> Result<AnnotationDocument> {
     let identity = resolve_document_identity(path)?;
     load_for_identity(data_dir, identity)
@@ -96,6 +105,11 @@ fn load_for_identity(
 }
 
 /// Save annotations for a document path. Empty annotation sets delete the sidecar file.
+///
+/// # Errors
+///
+/// Returns an error if the document identity cannot be resolved or the sidecar
+/// cannot be written or deleted.
 pub fn save_for_path(
     data_dir: &Path,
     path: &Path,
@@ -113,6 +127,10 @@ pub fn save_for_path(
 }
 
 /// Save a fully shaped annotation document.
+///
+/// # Errors
+///
+/// Returns an error if the sidecar cannot be written or deleted.
 pub fn save_document(data_dir: &Path, mut document: AnnotationDocument) -> Result<()> {
     document.sort_stable();
 
@@ -128,6 +146,11 @@ pub fn save_document(data_dir: &Path, mut document: AnnotationDocument) -> Resul
 }
 
 /// Delete the annotation sidecar for a saved file path if it exists.
+///
+/// # Errors
+///
+/// Returns an error if the document identity cannot be resolved or an existing
+/// sidecar cannot be deleted.
 pub fn delete_for_path(data_dir: &Path, path: &Path) -> Result<()> {
     let identity = resolve_document_identity(path)?;
     delete_sidecar_file(data_dir, &identity)
@@ -149,6 +172,11 @@ fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> R
 /// Move annotation sidecars after an in-app rename of a file or directory tree.
 ///
 /// Returns the number of annotation documents that were rewritten.
+///
+/// # Errors
+///
+/// Returns an error if the sidecar directory cannot be scanned or a migrated
+/// document cannot be read, rewritten, or cleaned up.
 pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Result<usize> {
     let dir = annotations_dir(data_dir);
     if !dir.exists() {
@@ -187,6 +215,11 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
 }
 
 /// Collect all annotations under the current workspace roots for browse dialogs.
+///
+/// # Errors
+///
+/// Returns an error if the sidecar directory cannot be scanned or an
+/// annotation document cannot be read or parsed.
 pub fn list_workspace_annotations(
     data_dir: &Path,
     workspace_roots: &[PathBuf],
@@ -233,6 +266,10 @@ pub fn list_workspace_annotations(
 }
 
 /// Generate a markdown export grouped by file for the current workspace roots.
+///
+/// # Errors
+///
+/// Returns an error if workspace annotations cannot be listed.
 pub fn export_workspace_markdown(data_dir: &Path, workspace_roots: &[PathBuf]) -> Result<String> {
     let annotations = list_workspace_annotations(data_dir, workspace_roots)?;
     let mut grouped: BTreeMap<PathBuf, Vec<WorkspaceAnnotation>> = BTreeMap::new();
@@ -391,14 +428,14 @@ mod tests {
 
     fn write_file(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
+            std::fs::create_dir_all(parent).expect("expected operation to succeed");
         }
-        std::fs::write(path, contents).unwrap();
+        std::fs::write(path, contents).expect("expected operation to succeed");
     }
 
     #[test]
     fn save_and_load_roundtrip() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let file_path = dir.path().join("src/main.rs");
         write_file(&file_path, "fn main() {}\n");
 
@@ -407,8 +444,8 @@ mod tests {
             AnnotationRecord::new(5, 5, "Why?", AnnotationStyle::Question),
         ];
 
-        save_for_path(dir.path(), &file_path, &annotations).unwrap();
-        let loaded = load_for_path(dir.path(), &file_path).unwrap();
+        save_for_path(dir.path(), &file_path, &annotations).expect("expected operation to succeed");
+        let loaded = load_for_path(dir.path(), &file_path).expect("expected operation to succeed");
 
         assert_eq!(loaded.annotations.len(), 2);
         assert_eq!(loaded.annotations[0].start_line, 1);
@@ -417,7 +454,7 @@ mod tests {
 
     #[test]
     fn move_path_tree_rewrites_document_identity() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let old_file = dir.path().join("workspace/old.rs");
         let new_file = dir.path().join("workspace/new.rs");
         write_file(&old_file, "fn old() {}\n");
@@ -432,12 +469,12 @@ mod tests {
                 AnnotationStyle::Warning,
             )],
         )
-        .unwrap();
+        .expect("expected operation to succeed");
 
-        std::fs::rename(&old_file, &new_file).unwrap();
-        move_path_tree(dir.path(), &old_file, &new_file).unwrap();
+        std::fs::rename(&old_file, &new_file).expect("expected operation to succeed");
+        move_path_tree(dir.path(), &old_file, &new_file).expect("expected operation to succeed");
 
-        let loaded = load_for_path(dir.path(), &new_file).unwrap();
+        let loaded = load_for_path(dir.path(), &new_file).expect("expected operation to succeed");
         assert_eq!(loaded.identity.display_path, new_file);
         assert_eq!(loaded.annotations.len(), 1);
         assert_eq!(loaded.annotations[0].note_text, "Keep this note");
@@ -445,7 +482,7 @@ mod tests {
 
     #[test]
     fn export_workspace_markdown_groups_by_file_and_includes_excerpt() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let file_path = dir.path().join("workspace/src/lib.rs");
         write_file(
             &file_path,
@@ -462,10 +499,10 @@ mod tests {
                 AnnotationStyle::Note,
             )],
         )
-        .unwrap();
+        .expect("expected operation to succeed");
 
-        let markdown =
-            export_workspace_markdown(dir.path(), &[dir.path().join("workspace")]).unwrap();
+        let markdown = export_workspace_markdown(dir.path(), &[dir.path().join("workspace")])
+            .expect("expected operation to succeed");
 
         assert!(markdown.contains("# Workspace Annotations"));
         assert!(markdown.contains("## "));

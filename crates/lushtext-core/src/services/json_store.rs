@@ -24,6 +24,10 @@ pub fn data_dir() -> std::path::PathBuf {
 }
 
 /// Load a JSON file from `data_dir/filename`. Returns `None` if the file doesn't exist.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but cannot be read or parsed as JSON.
 pub fn load<T: DeserializeOwned + Default>(data_dir: &Path, filename: &str) -> Result<T> {
     let path = data_dir.join(filename);
     match std::fs::read(&path) {
@@ -37,6 +41,11 @@ pub fn load<T: DeserializeOwned + Default>(data_dir: &Path, filename: &str) -> R
 /// Save a value as pretty-printed JSON to `data_dir/filename`.
 /// Uses atomic write (write-to-temp + rename) to prevent corruption
 /// if the process exits mid-write.
+///
+/// # Errors
+///
+/// Returns an error if the parent directory cannot be created, the value cannot
+/// be serialized, or the temp file cannot be flushed, synced, or renamed.
 pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<()> {
     std::fs::create_dir_all(data_dir)
         .with_context(|| format!("failed to create {}", data_dir.display()))?;
@@ -77,78 +86,86 @@ mod tests {
 
     #[test]
     fn test_load_missing_file_returns_default() {
-        let dir = TempDir::new().unwrap();
-        let result: TestData = load(dir.path(), "missing.json").unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let result: TestData =
+            load(dir.path(), "missing.json").expect("expected operation to succeed");
         assert_eq!(result, TestData::default());
     }
 
     #[test]
     fn test_save_and_load_roundtrip() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let data = TestData {
             name: "test".into(),
             value: 42,
         };
-        save(dir.path(), "data.json", &data).unwrap();
-        let loaded: TestData = load(dir.path(), "data.json").unwrap();
+        save(dir.path(), "data.json", &data).expect("expected operation to succeed");
+        let loaded: TestData =
+            load(dir.path(), "data.json").expect("expected operation to succeed");
         assert_eq!(loaded, data);
     }
 
     #[test]
     fn test_load_malformed_json_returns_error() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("bad.json"), "not valid json {{{").unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::write(dir.path().join("bad.json"), "not valid json {{{")
+            .expect("expected operation to succeed");
         let result: Result<TestData> = load(dir.path(), "bad.json");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_save_creates_nested_directories() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let nested = dir.path().join("deeply/nested/dir");
         let data = TestData {
             name: "nested".into(),
             value: 1,
         };
-        save(&nested, "data.json", &data).unwrap();
-        let loaded: TestData = load(&nested, "data.json").unwrap();
+        save(&nested, "data.json", &data).expect("expected operation to succeed");
+        let loaded: TestData = load(&nested, "data.json").expect("expected operation to succeed");
         assert_eq!(loaded, data);
     }
 
     #[test]
     fn test_save_overwrites_existing_file() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let data1 = TestData {
             name: "first".into(),
             value: 1,
         };
-        save(dir.path(), "data.json", &data1).unwrap();
+        save(dir.path(), "data.json", &data1).expect("expected operation to succeed");
 
         let data2 = TestData {
             name: "second".into(),
             value: 2,
         };
-        save(dir.path(), "data.json", &data2).unwrap();
+        save(dir.path(), "data.json", &data2).expect("expected operation to succeed");
 
-        let loaded: TestData = load(dir.path(), "data.json").unwrap();
+        let loaded: TestData =
+            load(dir.path(), "data.json").expect("expected operation to succeed");
         assert_eq!(loaded, data2);
     }
 
     #[test]
     fn test_save_produces_pretty_printed_json() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let data = TestData {
             name: "pretty".into(),
             value: 99,
         };
-        save(dir.path(), "data.json", &data).unwrap();
-        let content = std::fs::read_to_string(dir.path().join("data.json")).unwrap();
+        save(dir.path(), "data.json", &data).expect("expected operation to succeed");
+        let content = std::fs::read_to_string(dir.path().join("data.json"))
+            .expect("expected operation to succeed");
         assert!(content.contains('\n'));
     }
 
     #[test]
     fn test_data_dir_ends_with_lushtext() {
         let dir = data_dir();
-        assert_eq!(dir.file_name().unwrap(), "lushtext");
+        assert_eq!(
+            dir.file_name().expect("expected operation to succeed"),
+            "lushtext"
+        );
     }
 }

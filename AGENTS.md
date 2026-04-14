@@ -229,7 +229,7 @@ Meson wraps Cargo for installed/Flatpak builds. `build-aux/cargo.sh` bridges Mes
 - **GResource dual-path**: Meson compiles and installs `.gresource` to `$(pkgdatadir)/`. `cargo.sh` exports `LUSHTEXT_PKGDATADIR` env var. `config.rs` reads it via `option_env!()`. `lib.rs` loads from installed path first, falls back to `include_bytes!` (dev).
 - **GSettings**: `data/meson.build` installs schema to system path. `gnome.post_install()` compiles schemas. `build.rs` skips schema compilation when `LUSHTEXT_PKGDATADIR` is set.
 - **Flatpak manifest**: `build-aux/dev.cominotti.lushtext.Flatpak.json` for local builds. `cargo-sources.json` (same dir) vendors all Cargo dependencies for offline builds.
-- **CI**: `.github/workflows/ci.yml` (Cargo check/test) and `.github/workflows/flatpak.yml` (Flatpak build).
+- **CI**: `.github/workflows/ci.yml` now covers rustfmt, Clippy, the rustdoc lint gate, non-widget tests, widget tests, benchmark compilation, and `cargo deny check advisories bans sources`; `.github/workflows/flatpak.yml` still owns Flatpak build validation.
 
 ## GTK Initialization Order
 

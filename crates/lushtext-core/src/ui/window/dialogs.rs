@@ -319,7 +319,10 @@ impl super::LushtextWindow {
             return;
         }
 
-        #[expect(clippy::cast_possible_truncation)] // tab count ≪ u32::MAX
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "The save-changes dialog only reflects the current tab set, which cannot approach u32::MAX entries"
+        )]
         let pending = Rc::new(std::cell::Cell::new(selected_file_backed.len() as u32));
         let any_failed = Rc::new(std::cell::Cell::new(false));
         let saved_editors: Rc<RefCell<Vec<LushtextEditorPage>>> = Rc::new(RefCell::new(Vec::new()));

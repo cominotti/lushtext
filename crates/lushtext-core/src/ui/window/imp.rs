@@ -758,7 +758,10 @@ fn properties_breakpoint_condition(window: &super::LushtextWindow) -> String {
 
 /// Compute the total window width below which the properties pane should
 /// overlay instead of consuming layout width in the quarter-width shell.
-#[expect(clippy::cast_possible_truncation)] // window width fits in i32
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Stored window geometry is clamped to GTK window dimensions before converting to i32"
+)]
 fn properties_breakpoint_max_width_sp(workspace_fraction: f64) -> i32 {
     let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
     let fraction_guard = dual_sidebar_window_width_for_center(center_target, workspace_fraction);
@@ -805,7 +808,10 @@ fn workspace_sidebar_target_width_sp(window_width: i32, workspace_fraction: f64)
 fn sync_workspace_sidebar_width_constraints(window: &super::LushtextWindow, window_width: i32) {
     let target_width =
         workspace_sidebar_target_width_sp(window_width, desired_workspace_fraction(window));
-    #[expect(clippy::cast_possible_truncation)] // sidebar width fits in i32
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "The sidebar target width is derived from the current split width and remains within i32 paned coordinates"
+    )]
     let target_width_request = target_width.round() as i32;
     let split = &window.imp().workspace_split_view;
     if (split.min_sidebar_width() - target_width).abs() > f64::EPSILON {

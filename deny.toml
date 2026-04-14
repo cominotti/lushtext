@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Keep dependency policy focused on supply-chain trust and maintainability.
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+unmaintained = "workspace"
+unsound = "all"
+yanked = "deny"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "simplest-path"
+skip-tree = [
+    { crate = "windows-sys", reason = "Target-specific foundational crate that can legitimately appear multiple times across transitive dependencies" },
+]
+
+[bans.workspace-dependencies]
+duplicates = "allow"
+include-path-dependencies = false
+unused = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

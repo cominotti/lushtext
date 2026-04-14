@@ -174,8 +174,9 @@ mod tests {
             cursor_col: 15,
             scroll_line: 30,
         };
-        let json = serde_json::to_string(&tab).unwrap();
-        let deserialized: SessionTab = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&tab).expect("expected operation to succeed");
+        let deserialized: SessionTab =
+            serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(deserialized.path, tab.path);
         assert_eq!(deserialized.cursor_line, tab.cursor_line);
         assert_eq!(deserialized.cursor_col, tab.cursor_col);
@@ -194,8 +195,9 @@ mod tests {
             }],
             active_tab_index: Some(0),
         };
-        let json = serde_json::to_string(&session).unwrap();
-        let deserialized: SessionData = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&session).expect("expected operation to succeed");
+        let deserialized: SessionData =
+            serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(deserialized.tabs.len(), 1);
         assert_eq!(deserialized.tabs[0].path, Some(PathBuf::from("/a.rs")));
         assert_eq!(deserialized.active_tab_index, Some(0));
@@ -240,10 +242,11 @@ mod tests {
     #[test]
     fn test_untitled_tab_draft_id_serialization() {
         let tab = untitled_tab("untitled-42");
-        let json = serde_json::to_string(&tab).unwrap();
+        let json = serde_json::to_string(&tab).expect("expected operation to succeed");
         assert!(json.contains("untitled-42"));
 
-        let deserialized: SessionTab = serde_json::from_str(&json).unwrap();
+        let deserialized: SessionTab =
+            serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(deserialized.path, None);
         assert_eq!(deserialized.draft_id, Some("untitled-42".to_string()));
     }
@@ -251,7 +254,7 @@ mod tests {
     #[test]
     fn test_draft_id_skipped_when_none() {
         let tab = tab("/a.rs", 1);
-        let json = serde_json::to_string(&tab).unwrap();
+        let json = serde_json::to_string(&tab).expect("expected operation to succeed");
         // draft_id should not appear in serialized form when None
         assert!(!json.contains("draft_id"));
     }

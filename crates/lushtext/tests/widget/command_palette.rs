@@ -139,7 +139,7 @@ fn test_command_palette_open_sets_placeholder() {
             .imp()
             .search_entry
             .placeholder_text()
-            .unwrap()
+            .expect("expected operation to succeed")
             .as_str(),
         SearchMode::All.placeholder(),
     );
@@ -158,7 +158,7 @@ fn test_command_palette_placeholder_changes_with_mode() {
     imp.set_mode(imp.mode.get().next());
     assert_eq!(palette.mode(), SearchMode::Files);
     assert_eq!(
-        imp.search_entry.placeholder_text().unwrap().as_str(),
+        imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
         SearchMode::Files.placeholder(),
     );
 
@@ -166,7 +166,7 @@ fn test_command_palette_placeholder_changes_with_mode() {
     imp.set_mode(imp.mode.get().next());
     assert_eq!(palette.mode(), SearchMode::Commands);
     assert_eq!(
-        imp.search_entry.placeholder_text().unwrap().as_str(),
+        imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
         SearchMode::Commands.placeholder(),
     );
 
@@ -174,7 +174,7 @@ fn test_command_palette_placeholder_changes_with_mode() {
     imp.set_mode(imp.mode.get().next());
     assert_eq!(palette.mode(), SearchMode::All);
     assert_eq!(
-        imp.search_entry.placeholder_text().unwrap().as_str(),
+        imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
         SearchMode::All.placeholder(),
     );
 }
@@ -232,9 +232,9 @@ fn test_command_palette_set_file_index() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
 
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("hello.rs"), "").unwrap();
-    std::fs::write(dir.path().join("world.txt"), "").unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("hello.rs"), "").expect("expected operation to succeed");
+    std::fs::write(dir.path().join("world.txt"), "").expect("expected operation to succeed");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     palette.set_file_index(index);
@@ -257,9 +257,9 @@ fn test_command_palette_search_filters_results() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
 
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("main.rs"), "").unwrap();
-    std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("main.rs"), "").expect("expected operation to succeed");
+    std::fs::write(dir.path().join("Cargo.toml"), "").expect("expected operation to succeed");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     palette.set_file_index(index);
@@ -604,7 +604,7 @@ fn test_all_commands_contains_fullscreen() {
         fullscreen.is_some(),
         "all_commands() should include Fullscreen"
     );
-    let cmd = fullscreen.unwrap();
+    let cmd = fullscreen.expect("expected operation to succeed");
     assert_eq!(cmd.label, "Fullscreen");
     assert_eq!(cmd.shortcut, Some("F11"));
     assert_eq!(cmd.category, CommandCategory::View);
@@ -616,7 +616,7 @@ fn test_all_commands_contains_zoom_in() {
     let commands = lushtext_core::services::palette::all_commands();
     let cmd = commands.iter().find(|c| c.id == "win.zoom-in");
     assert!(cmd.is_some(), "all_commands() should include Zoom In");
-    let cmd = cmd.unwrap();
+    let cmd = cmd.expect("expected operation to succeed");
     assert_eq!(cmd.label, "Zoom In");
     assert_eq!(cmd.shortcut, Some("Ctrl+="));
     assert_eq!(cmd.category, CommandCategory::View);
@@ -628,7 +628,7 @@ fn test_all_commands_contains_zoom_out() {
     let commands = lushtext_core::services::palette::all_commands();
     let cmd = commands.iter().find(|c| c.id == "win.zoom-out");
     assert!(cmd.is_some(), "all_commands() should include Zoom Out");
-    let cmd = cmd.unwrap();
+    let cmd = cmd.expect("expected operation to succeed");
     assert_eq!(cmd.label, "Zoom Out");
     assert_eq!(cmd.shortcut, Some("Ctrl+-"));
     assert_eq!(cmd.category, CommandCategory::View);
@@ -640,7 +640,7 @@ fn test_all_commands_contains_zoom_reset() {
     let commands = lushtext_core::services::palette::all_commands();
     let cmd = commands.iter().find(|c| c.id == "win.zoom-reset");
     assert!(cmd.is_some(), "all_commands() should include Reset Zoom");
-    let cmd = cmd.unwrap();
+    let cmd = cmd.expect("expected operation to succeed");
     assert_eq!(cmd.label, "Reset Zoom");
     assert_eq!(cmd.shortcut, Some("Ctrl+0"));
     assert_eq!(cmd.category, CommandCategory::View);

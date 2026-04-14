@@ -40,16 +40,16 @@ impl TestContext {
     pub fn write_file(&self, rel: &str, content: &str) -> PathBuf {
         let full = self.dir.path().join(rel);
         if let Some(p) = full.parent() {
-            std::fs::create_dir_all(p).unwrap();
+            std::fs::create_dir_all(p).expect("expected operation to succeed");
         }
-        std::fs::write(&full, content).unwrap();
+        std::fs::write(&full, content).expect("expected operation to succeed");
         full
     }
 
     /// Create a directory relative to context root.
     pub fn mkdir(&self, rel: &str) -> PathBuf {
         let full = self.dir.path().join(rel);
-        std::fs::create_dir_all(&full).unwrap();
+        std::fs::create_dir_all(&full).expect("expected operation to succeed");
         full
     }
 }

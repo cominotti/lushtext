@@ -7,6 +7,8 @@ MODE="auto"
 RETRIES=0
 MONITOR="2560x1600"
 TEST_ARGS=()
+BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|Gtk-CRITICAL \*\*: .*org\.a11y\.atspi\.Registry|Gdk-Message: .*Broken pipe$|rm: cannot remove '\''/tmp/.*/doc'\'': Is a directory$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$)'
+WIDGET_WARNING_REGEX='(warning:|WARNING|CRITICAL|Gdk-Message:|Broken pipe|cannot remove)'
 
 usage() {
     cat <<'EOF'
@@ -41,8 +43,60 @@ has_live_display() {
     [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]]
 }
 
+export_widget_test_env() {
+    export NO_AT_BRIDGE=1
+    export GDK_DEBUG=no-portals
+    export GTK_USE_PORTAL=0
+    export GSK_RENDERER=gl
+}
+
+emit_sanitized_widget_log() {
+    local log_file="$1"
+    local filtered_log
+    filtered_log="$(mktemp)"
+    if [[ -n "${BENIGN_WIDGET_NOISE_REGEX}" ]]; then
+        grep -Ev "$BENIGN_WIDGET_NOISE_REGEX" "$log_file" >"$filtered_log" || true
+    else
+        cp "$log_file" "$filtered_log"
+    fi
+    awk 'NF { print; blank = 0; next } !blank { print; blank = 1 }' "$filtered_log"
+    rm -f "$filtered_log"
+}
+
+check_for_unexpected_widget_warnings() {
+    local log_file="$1"
+    local unexpected
+    unexpected="$(grep -E "$WIDGET_WARNING_REGEX" "$log_file" | grep -Ev "$BENIGN_WIDGET_NOISE_REGEX" || true)"
+    if [[ -n "$unexpected" ]]; then
+        printf '%s\n' "$unexpected" >&2
+        echo "Error: unexpected warning output during widget tests." >&2
+        return 1
+    fi
+}
+
+run_with_widget_log() {
+    local log_file
+    log_file="$(mktemp)"
+    local status
+    if "$@" >"$log_file" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+
+    emit_sanitized_widget_log "$log_file"
+    if ! check_for_unexpected_widget_warnings "$log_file"; then
+        rm -f "$log_file"
+        return 1
+    fi
+
+    rm -f "$log_file"
+    return "$status"
+}
+
 run_native() {
-    cargo test -p lushtext --test widget -- "${TEST_ARGS[@]}"
+    export_widget_test_env
+    run_with_widget_log cargo test -p lushtext --test widget -- "${TEST_ARGS[@]}"
 }
 
 run_headless() {
@@ -51,14 +105,20 @@ run_headless() {
 
     local runtime_dir
     runtime_dir="$(mktemp -d)"
-    (
+    local status
+    if (
         export XDG_RUNTIME_DIR="$runtime_dir"
         export GDK_BACKEND=wayland
-        dbus-run-session -- \
+        export_widget_test_env
+        run_with_widget_log \
+            dbus-run-session -- \
             mutter --headless --wayland --no-x11 --virtual-monitor "$MONITOR" -- \
             cargo test -p lushtext --test widget -- "${TEST_ARGS[@]}"
-    )
-    local status=$?
+    ); then
+        status=0
+    else
+        status=$?
+    fi
     rm -rf "$runtime_dir"
     return "$status"
 }

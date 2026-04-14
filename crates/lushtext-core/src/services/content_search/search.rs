@@ -33,7 +33,10 @@ pub(super) const RESULT_CAP: usize = 10_000;
 ///
 /// The `tx` channel should be `bounded(1024)` in production to apply backpressure.
 /// Using `unbounded()` is acceptable in tests.
-#[allow(clippy::needless_pass_by_value)] // Intentional: cloned into parallel walker thread closures
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "The sender is cloned into parallel walker closures, so taking ownership keeps the thread boundary explicit"
+)]
 pub fn search(
     query: &str,
     roots: &[&Path],
@@ -275,12 +278,14 @@ mod tests {
 
     #[test]
     fn literal_search_finds_matches() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
-        fs::write(root.join("a.rs"), "fn hello() {}\nfn world() {}\n").unwrap();
-        fs::write(root.join("b.rs"), "fn hello_again() {}\n").unwrap();
-        fs::write(root.join("c.rs"), "no match here\n").unwrap();
+        fs::write(root.join("a.rs"), "fn hello() {}\nfn world() {}\n")
+            .expect("expected operation to succeed");
+        fs::write(root.join("b.rs"), "fn hello_again() {}\n")
+            .expect("expected operation to succeed");
+        fs::write(root.join("c.rs"), "no match here\n").expect("expected operation to succeed");
 
         let events = search_collect("hello", &[root], &ContentSearchOptions::default());
         assert_ends_with_done(&events);
@@ -308,11 +313,12 @@ mod tests {
 
     #[test]
     fn cancel_stops_search() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
         for i in 0..200 {
-            fs::write(root.join(format!("file_{i}.txt")), "needle\n".repeat(100)).unwrap();
+            fs::write(root.join(format!("file_{i}.txt")), "needle\n".repeat(100))
+                .expect("expected operation to succeed");
         }
 
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -345,7 +351,7 @@ mod tests {
             None,
         );
 
-        let count = handle.join().unwrap();
+        let count = handle.join().expect("expected operation to succeed");
         assert!(
             count < 20_000,
             "cancel should have stopped early, got {count} matches"
@@ -354,13 +360,14 @@ mod tests {
 
     #[test]
     fn binary_files_skipped() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
         let mut png_data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         png_data.extend_from_slice(b"needle somewhere in binary\x00\x00");
-        fs::write(root.join("image.png"), &png_data).unwrap();
-        fs::write(root.join("code.rs"), "let needle = 42;\n").unwrap();
+        fs::write(root.join("image.png"), &png_data).expect("expected operation to succeed");
+        fs::write(root.join("code.rs"), "let needle = 42;\n")
+            .expect("expected operation to succeed");
 
         let events = search_collect("needle", &[root], &ContentSearchOptions::default());
         assert_ends_with_done(&events);
@@ -382,32 +389,38 @@ mod tests {
     fn unreadable_file_does_not_abort_search() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
         let visible = root.join("visible.rs");
         let unreadable = root.join("secret.rs");
 
-        fs::write(&visible, "needle\n").unwrap();
-        fs::write(&unreadable, "needle\n").unwrap();
+        fs::write(&visible, "needle\n").expect("expected operation to succeed");
+        fs::write(&unreadable, "needle\n").expect("expected operation to succeed");
 
-        let mut perms = fs::metadata(&unreadable).unwrap().permissions();
+        let mut perms = fs::metadata(&unreadable)
+            .expect("expected operation to succeed")
+            .permissions();
         perms.set_mode(0o000);
-        fs::set_permissions(&unreadable, perms).unwrap();
+        fs::set_permissions(&unreadable, perms).expect("expected operation to succeed");
         if fs::File::open(&unreadable).is_ok() {
             // Some environments (notably privileged CI containers) can still
             // read a 0o000 file, so this fixture cannot prove the unreadable
             // path there. Restore permissions and skip the assertion-only test.
-            let mut restore = fs::metadata(&unreadable).unwrap().permissions();
+            let mut restore = fs::metadata(&unreadable)
+                .expect("expected operation to succeed")
+                .permissions();
             restore.set_mode(0o644);
-            fs::set_permissions(&unreadable, restore).unwrap();
+            fs::set_permissions(&unreadable, restore).expect("expected operation to succeed");
             return;
         }
 
         let events = search_collect("needle", &[root], &ContentSearchOptions::default());
 
-        let mut restore = fs::metadata(&unreadable).unwrap().permissions();
+        let mut restore = fs::metadata(&unreadable)
+            .expect("expected operation to succeed")
+            .permissions();
         restore.set_mode(0o644);
-        fs::set_permissions(&unreadable, restore).unwrap();
+        fs::set_permissions(&unreadable, restore).expect("expected operation to succeed");
 
         assert_ends_with_done(&events);
         let matches: Vec<_> = events
@@ -423,15 +436,16 @@ mod tests {
 
     #[test]
     fn gitignore_respected() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
-        fs::create_dir(root.join(".git")).unwrap();
-        fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        fs::create_dir(root.join(".git")).expect("expected operation to succeed");
+        fs::write(root.join(".gitignore"), "target/\n").expect("expected operation to succeed");
 
-        fs::create_dir(root.join("target")).unwrap();
-        fs::write(root.join("target/ignored.rs"), "needle\n").unwrap();
-        fs::write(root.join("visible.rs"), "needle\n").unwrap();
+        fs::create_dir(root.join("target")).expect("expected operation to succeed");
+        fs::write(root.join("target/ignored.rs"), "needle\n")
+            .expect("expected operation to succeed");
+        fs::write(root.join("visible.rs"), "needle\n").expect("expected operation to succeed");
 
         let events = search_collect("needle", &[root], &ContentSearchOptions::default());
         assert_ends_with_done(&events);
@@ -456,12 +470,13 @@ mod tests {
 
     #[test]
     fn result_cap_at_10000() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
         for i in 0..20 {
             let content = "needle\n".repeat(600);
-            fs::write(root.join(format!("big_{i}.txt")), content).unwrap();
+            fs::write(root.join(format!("big_{i}.txt")), content)
+                .expect("expected operation to succeed");
         }
 
         let events = search_collect("needle", &[root], &ContentSearchOptions::default());
@@ -480,14 +495,14 @@ mod tests {
 
     #[test]
     fn regex_search() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
         fs::write(
             root.join("code.rs"),
             "fn hello() {}\nlet x = 42;\nfn world() {}\n",
         )
-        .unwrap();
+        .expect("expected operation to succeed");
 
         let opts = ContentSearchOptions {
             regex: true,
@@ -516,10 +531,11 @@ mod tests {
 
     #[test]
     fn case_sensitive_search() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
-        fs::write(root.join("code.rs"), "Error happened\nerror happened\n").unwrap();
+        fs::write(root.join("code.rs"), "Error happened\nerror happened\n")
+            .expect("expected operation to succeed");
 
         let opts = ContentSearchOptions {
             case_sensitive: true,
@@ -542,14 +558,14 @@ mod tests {
 
     #[test]
     fn whole_word_search() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
         fs::write(
             root.join("code.rs"),
             "let port = 8080;\nlet report = true;\nlet export = false;\n",
         )
-        .unwrap();
+        .expect("expected operation to succeed");
 
         let opts = ContentSearchOptions {
             whole_word: true,
@@ -572,12 +588,12 @@ mod tests {
 
     #[test]
     fn glob_filter() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
-        fs::write(root.join("code.rs"), "needle\n").unwrap();
-        fs::write(root.join("notes.txt"), "needle\n").unwrap();
-        fs::write(root.join("data.json"), "needle\n").unwrap();
+        fs::write(root.join("code.rs"), "needle\n").expect("expected operation to succeed");
+        fs::write(root.join("notes.txt"), "needle\n").expect("expected operation to succeed");
+        fs::write(root.join("data.json"), "needle\n").expect("expected operation to succeed");
 
         let opts = ContentSearchOptions {
             glob: Some("*.rs".to_string()),
@@ -600,11 +616,11 @@ mod tests {
 
     #[test]
     fn multi_root_search() {
-        let dir1 = tempdir().unwrap();
-        let dir2 = tempdir().unwrap();
+        let dir1 = tempdir().expect("expected operation to succeed");
+        let dir2 = tempdir().expect("expected operation to succeed");
 
-        fs::write(dir1.path().join("a.rs"), "needle\n").unwrap();
-        fs::write(dir2.path().join("b.rs"), "needle\n").unwrap();
+        fs::write(dir1.path().join("a.rs"), "needle\n").expect("expected operation to succeed");
+        fs::write(dir2.path().join("b.rs"), "needle\n").expect("expected operation to succeed");
 
         let events = search_collect(
             "needle",
@@ -622,8 +638,9 @@ mod tests {
 
     #[test]
     fn empty_query_returns_done() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("a.rs"), "some content\n").unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
+        fs::write(dir.path().join("a.rs"), "some content\n")
+            .expect("expected operation to succeed");
 
         let events = search_collect("", &[dir.path()], &ContentSearchOptions::default());
 
@@ -633,11 +650,12 @@ mod tests {
 
     #[test]
     fn progress_events_emitted() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
         for i in 0..250 {
-            fs::write(root.join(format!("file_{i}.txt")), "content\n").unwrap();
+            fs::write(root.join(format!("file_{i}.txt")), "content\n")
+                .expect("expected operation to succeed");
         }
 
         let events = search_collect(
@@ -671,11 +689,12 @@ mod tests {
 
     #[test]
     fn progress_counter_tracks_all_visited_files() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
         for i in 0..250 {
-            fs::write(root.join(format!("file_{i}.txt")), "content\n").unwrap();
+            fs::write(root.join(format!("file_{i}.txt")), "content\n")
+                .expect("expected operation to succeed");
         }
 
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -705,11 +724,12 @@ mod tests {
 
     #[test]
     fn completion_flag_is_set_before_done_send_unblocks() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path().to_path_buf();
 
         for i in 0..100 {
-            fs::write(root.join(format!("file_{i}.txt")), "content\n").unwrap();
+            fs::write(root.join(format!("file_{i}.txt")), "content\n")
+                .expect("expected operation to succeed");
         }
 
         let (tx, rx) = crossbeam_channel::bounded(1);
@@ -747,13 +767,13 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, SearchEvent::Done))
         );
-        handle.join().unwrap();
+        handle.join().expect("expected operation to succeed");
     }
 
     #[test]
     fn invalid_regex_returns_error() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("a.rs"), "content\n").unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
+        fs::write(dir.path().join("a.rs"), "content\n").expect("expected operation to succeed");
 
         let opts = ContentSearchOptions {
             regex: true,

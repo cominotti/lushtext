@@ -187,8 +187,9 @@ mod tests {
         let manifest = DraftManifest {
             drafts: vec![entry("abc", Some("/a.rs")), entry("untitled-1", None)],
         };
-        let json = serde_json::to_string(&manifest).unwrap();
-        let deserialized: DraftManifest = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&manifest).expect("expected operation to succeed");
+        let deserialized: DraftManifest =
+            serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(deserialized, manifest);
     }
 

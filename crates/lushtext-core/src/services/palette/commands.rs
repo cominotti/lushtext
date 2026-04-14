@@ -218,13 +218,25 @@ fn merge_sorted<'a>(
         match (a.peek(), b.peek()) {
             (Some(x), Some(y)) => {
                 if x.score >= y.score {
-                    result.push(a.next().unwrap());
+                    result.push(
+                        a.next()
+                            .expect("peeked iterator entry should still be available"),
+                    );
                 } else {
-                    result.push(b.next().unwrap());
+                    result.push(
+                        b.next()
+                            .expect("peeked iterator entry should still be available"),
+                    );
                 }
             }
-            (Some(_), None) => result.push(a.next().unwrap()),
-            (None, Some(_)) => result.push(b.next().unwrap()),
+            (Some(_), None) => result.push(
+                a.next()
+                    .expect("peeked iterator entry should still be available"),
+            ),
+            (None, Some(_)) => result.push(
+                b.next()
+                    .expect("peeked iterator entry should still be available"),
+            ),
             (None, None) => break,
         }
     }

@@ -73,6 +73,11 @@ pub enum SaveError {
 /// before file read, and after file read for responsive tab close.
 ///
 /// **Threading:** Performs blocking I/O — call from a background thread.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be statted or read, is invalid UTF-8,
+/// exceeds the supported size limit, or the load is cancelled.
 pub fn load_text_file(path: &Path, cancel: &AtomicBool) -> Result<LoadResult, LoadError> {
     if cancel.load(Ordering::Acquire) {
         return Err(LoadError::Cancelled);
@@ -134,6 +139,11 @@ pub fn load_text_file(path: &Path, cancel: &AtomicBool) -> Result<LoadResult, Lo
 /// **Threading:** Performs blocking I/O — call from a background thread.
 /// Returns `(bytes_written, mtime)`. The mtime is read from the freshly
 /// written file so callers can update their baseline without a main-thread stat().
+///
+/// # Errors
+///
+/// Returns an error if the temp file cannot be created, written, flushed,
+/// synced, or renamed into place.
 pub fn write_snapshot_to_path(path: &Path, text: &str) -> Result<(u64, Option<u64>), SaveError> {
     let tmp_name = format!(
         ".{}.tmp",
@@ -215,11 +225,11 @@ mod tests {
 
     #[test]
     fn load_text_file_reads_utf8_and_classifies_size() {
-        let file = NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), "hello").unwrap();
+        let file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(file.path(), "hello").expect("expected operation to succeed");
 
         let cancel = AtomicBool::new(false);
-        let result = load_text_file(file.path(), &cancel).unwrap();
+        let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
 
         assert_eq!(result.content, "hello");
         assert_eq!(result.size, 5);
@@ -232,8 +242,8 @@ mod tests {
 
     #[test]
     fn load_text_file_honors_cancellation() {
-        let file = NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), "hello").unwrap();
+        let file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(file.path(), "hello").expect("expected operation to succeed");
 
         let cancel = AtomicBool::new(true);
         let result = load_text_file(file.path(), &cancel);
@@ -243,13 +253,17 @@ mod tests {
 
     #[test]
     fn write_snapshot_to_path_replaces_destination() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
 
-        let (size, mtime) = write_snapshot_to_path(&path, "saved").unwrap();
+        let (size, mtime) =
+            write_snapshot_to_path(&path, "saved").expect("expected operation to succeed");
 
         assert_eq!(size, 5);
         assert!(mtime.is_some(), "mtime should be populated after write");
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "saved");
+        assert_eq!(
+            std::fs::read_to_string(path).expect("expected operation to succeed"),
+            "saved"
+        );
     }
 }

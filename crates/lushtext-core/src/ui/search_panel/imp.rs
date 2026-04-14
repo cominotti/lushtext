@@ -596,7 +596,10 @@ impl LushtextSearchPanel {
             let Some(panel) = panel_weak.upgrade() else {
                 return;
             };
-            #[expect(clippy::cast_sign_loss)] // GtkListBoxRow index is non-negative
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "GtkListBoxRow indices are non-negative when a row exists"
+            )]
             let idx = row.index() as usize;
             let entry = {
                 let entries = panel.imp().history.history_entries.borrow();
@@ -614,7 +617,10 @@ impl LushtextSearchPanel {
                 let Some(panel) = panel_weak.upgrade() else {
                     return;
                 };
-                #[expect(clippy::cast_sign_loss)] // GtkListBoxRow index is non-negative
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "GtkListBoxRow indices are non-negative when a row exists"
+                )]
                 let idx = row.index() as usize;
                 let entry = {
                     let entries = panel.imp().history.saved_searches.borrow();

@@ -64,7 +64,10 @@ pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
         if !resolved_tab_width {
             match props.tab_width {
                 EditorConfigProperty::Value(w) => {
-                    #[expect(clippy::cast_possible_truncation)] // clamped to 1..=12
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "The value is clamped to the GtkSourceView tab-width range before converting to u32"
+                    )]
                     let w = (w as u32).clamp(1, 12);
                     result.tab_width = Some(w);
                     resolved_tab_width = true;
@@ -97,7 +100,10 @@ pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
         if !resolved_indent_width {
             match props.indent_size {
                 EditorConfigProperty::Value(s) => {
-                    #[expect(clippy::cast_possible_truncation)] // indent_size ≤ 12
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "EditorConfig indent sizes are clamped to the GtkSourceView-supported range before converting to u32"
+                    )]
                     let s = (s as i32).clamp(1, 12);
                     result.indent_width = Some(s);
                     resolved_indent_width = true;
@@ -128,20 +134,20 @@ mod tests {
 
     /// Create a `.editorconfig` file with the given content in `dir`.
     fn write_editorconfig(dir: &Path, content: &str) {
-        fs::write(dir.join(".editorconfig"), content).unwrap();
+        fs::write(dir.join(".editorconfig"), content).expect("expected operation to succeed");
     }
 
     /// Create a file at the given path (empty, just needs to exist for resolution).
     fn touch(path: &Path) {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
+            fs::create_dir_all(parent).expect("expected operation to succeed");
         }
-        fs::write(path, "").unwrap();
+        fs::write(path, "").expect("expected operation to succeed");
     }
 
     #[test]
     fn no_editorconfig_returns_default() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("expected operation to succeed");
         let file = tmp.path().join("src").join("main.rs");
         touch(&file);
 
@@ -151,7 +157,7 @@ mod tests {
 
     #[test]
     fn basic_indent_style_and_tab_width() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("expected operation to succeed");
         write_editorconfig(
             tmp.path(),
             "root = true\n\n[*]\nindent_style = space\ntab_width = 2\n",
@@ -167,7 +173,7 @@ mod tests {
 
     #[test]
     fn tab_indent_style() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("expected operation to succeed");
         write_editorconfig(
             tmp.path(),
             "root = true\n\n[*]\nindent_style = tab\ntab_width = 4\n",
@@ -182,7 +188,7 @@ mod tests {
 
     #[test]
     fn indent_size_maps_to_indent_width() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("expected operation to succeed");
         write_editorconfig(tmp.path(), "root = true\n\n[*]\nindent_size = 3\n");
         let file = tmp.path().join("test.py");
         touch(&file);
@@ -193,14 +199,14 @@ mod tests {
 
     #[test]
     fn root_stops_directory_walk() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("expected operation to succeed");
 
         // Parent .editorconfig with tab_width = 8
         write_editorconfig(tmp.path(), "[*]\ntab_width = 8\n");
 
         // Child .editorconfig with root = true, tab_width = 2
         let src = tmp.path().join("src");
-        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&src).expect("expected operation to succeed");
         write_editorconfig(&src, "root = true\n\n[*]\ntab_width = 2\n");
 
         let file = src.join("main.rs");
@@ -213,7 +219,7 @@ mod tests {
 
     #[test]
     fn closer_file_overrides_farther() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("expected operation to succeed");
 
         // Root .editorconfig: tab_width = 8, indent_style = tab
         write_editorconfig(
@@ -223,7 +229,7 @@ mod tests {
 
         // Nested .editorconfig: tab_width = 2 (overrides root)
         let src = tmp.path().join("src");
-        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&src).expect("expected operation to succeed");
         write_editorconfig(&src, "[*]\ntab_width = 2\n");
 
         let file = src.join("main.rs");
@@ -238,7 +244,7 @@ mod tests {
 
     #[test]
     fn section_matching_only_applies_to_matching_files() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("expected operation to succeed");
         write_editorconfig(
             tmp.path(),
             "root = true\n\n[*.py]\nindent_size = 4\ntab_width = 4\n\n[*.rs]\ntab_width = 2\n",
@@ -259,7 +265,7 @@ mod tests {
 
     #[test]
     fn tab_width_clamped_to_valid_range() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("expected operation to succeed");
         write_editorconfig(tmp.path(), "root = true\n\n[*]\ntab_width = 100\n");
         let file = tmp.path().join("test.txt");
         touch(&file);
@@ -270,7 +276,7 @@ mod tests {
 
     #[test]
     fn indent_size_clamped_to_valid_range() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("expected operation to succeed");
         write_editorconfig(tmp.path(), "root = true\n\n[*]\nindent_size = 0\n");
         let file = tmp.path().join("test.txt");
         touch(&file);
@@ -281,7 +287,7 @@ mod tests {
 
     #[test]
     fn no_matching_section_returns_default() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("expected operation to succeed");
         write_editorconfig(tmp.path(), "root = true\n\n[*.py]\ntab_width = 4\n");
         let file = tmp.path().join("main.rs");
         touch(&file);

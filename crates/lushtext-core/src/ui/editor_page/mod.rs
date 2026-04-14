@@ -42,6 +42,11 @@ impl LushtextEditorPage {
     }
 
     #[must_use]
+    ///
+    /// # Panics
+    ///
+    /// Panics if the template wiring ever swaps the editor buffer away from
+    /// the expected `sourceview5::Buffer` type.
     pub fn buffer(&self) -> sourceview5::Buffer {
         self.source_view()
             .buffer()

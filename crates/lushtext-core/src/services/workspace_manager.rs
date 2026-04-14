@@ -8,11 +8,19 @@ use anyhow::Result;
 use std::path::Path;
 
 /// Load workspaces from disk. Returns default (empty) if file doesn't exist.
+///
+/// # Errors
+///
+/// Returns an error if the workspace file exists but cannot be read or parsed.
 pub fn load(data_dir: &Path) -> Result<WorkspacesFile> {
     json_store::load(data_dir, "workspaces.json")
 }
 
 /// Save workspaces to disk.
+///
+/// # Errors
+///
+/// Returns an error if the workspace file cannot be serialized or written.
 pub fn save(data_dir: &Path, file: &WorkspacesFile) -> Result<()> {
     json_store::save(data_dir, "workspaces.json", file)
 }
@@ -25,15 +33,15 @@ mod tests {
 
     #[test]
     fn test_load_missing_file_returns_default() {
-        let dir = TempDir::new().unwrap();
-        let result = load(dir.path()).unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let result = load(dir.path()).expect("expected operation to succeed");
         assert!(result.workspaces.is_empty());
         assert!(result.active_workspace.is_none());
     }
 
     #[test]
     fn test_save_and_load_roundtrip() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let mut file = WorkspacesFile::default();
         let ws = WorkspaceConfig {
             id: WorkspaceId::new("test-id"),
@@ -50,8 +58,8 @@ mod tests {
         file.workspaces.push(ws);
         file.active_workspace = Some(WorkspaceId::new("test-id"));
 
-        save(dir.path(), &file).unwrap();
-        let loaded = load(dir.path()).unwrap();
+        save(dir.path(), &file).expect("expected operation to succeed");
+        let loaded = load(dir.path()).expect("expected operation to succeed");
 
         assert_eq!(loaded.workspaces.len(), 1);
         assert_eq!(loaded.workspaces[0].name, "my workspace");

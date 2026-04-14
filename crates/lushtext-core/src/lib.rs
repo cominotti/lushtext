@@ -20,6 +20,11 @@ use gtk4::gio;
 ///
 /// Installed/Flatpak builds: loads from the Meson-installed `.gresource` file.
 /// Dev builds: falls back to the `build.rs`-compiled bundle via `include_bytes!`.
+///
+/// # Panics
+///
+/// Panics if the installed `.gresource` file or embedded development resource
+/// bundle cannot be loaded, because that indicates a broken build or install.
 pub fn register_resources() {
     // Installed build: load from Meson-installed path (panic on failure — a
     // missing .gresource means a broken installation, not a reason to fall back)

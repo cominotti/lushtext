@@ -316,8 +316,8 @@ mod tests {
 
     #[test]
     fn load_snapshot_returns_text_preview_for_utf8_file() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), "alpha\nbeta\n").unwrap();
+        let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(file.path(), "alpha\nbeta\n").expect("expected operation to succeed");
 
         let display_path = file.path().display().to_string();
         let snapshot = load_snapshot(file.path(), display_path.clone());
@@ -327,7 +327,7 @@ mod tests {
             snapshot.display_name,
             file.path()
                 .file_name()
-                .unwrap()
+                .expect("expected operation to succeed")
                 .to_string_lossy()
                 .into_owned()
         );
@@ -340,12 +340,12 @@ mod tests {
 
     #[test]
     fn load_snapshot_marks_byte_truncation() {
-        let file = tempfile::NamedTempFile::new().unwrap();
+        let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
         let mut content = String::new();
         while content.len() <= PEEK_SAMPLE_BYTE_LIMIT.saturating_add(20) {
             content.push_str("abcdefghijklmnopqrstuvwxyz\n");
         }
-        std::fs::write(file.path(), content).unwrap();
+        std::fs::write(file.path(), content).expect("expected operation to succeed");
 
         let snapshot = load_snapshot(file.path(), "long.txt");
 
@@ -361,12 +361,12 @@ mod tests {
 
     #[test]
     fn load_snapshot_marks_line_truncation() {
-        let file = tempfile::NamedTempFile::new().unwrap();
+        let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
         let mut content = String::new();
         for line in 0..(PEEK_SAMPLE_LINE_LIMIT + 5) {
             content.push_str(&format!("line-{line}\n"));
         }
-        std::fs::write(file.path(), content).unwrap();
+        std::fs::write(file.path(), content).expect("expected operation to succeed");
 
         let snapshot = load_snapshot(file.path(), "lines.txt");
 
@@ -374,15 +374,19 @@ mod tests {
         assert!(snapshot.truncated);
         assert_eq!(snapshot.sample_line_count, PEEK_SAMPLE_LINE_LIMIT);
         assert_eq!(
-            snapshot.sample_text.unwrap().lines().count(),
+            snapshot
+                .sample_text
+                .expect("expected operation to succeed")
+                .lines()
+                .count(),
             PEEK_SAMPLE_LINE_LIMIT
         );
     }
 
     #[test]
     fn load_snapshot_rejects_invalid_utf8_as_unsupported() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), [0xff, 0xfe, 0xfd]).unwrap();
+        let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(file.path(), [0xff, 0xfe, 0xfd]).expect("expected operation to succeed");
 
         let snapshot = load_snapshot(file.path(), "binary.bin");
 
@@ -396,8 +400,8 @@ mod tests {
 
     #[test]
     fn load_snapshot_rejects_nul_bytes_as_unsupported() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), b"abc\0def").unwrap();
+        let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(file.path(), b"abc\0def").expect("expected operation to succeed");
 
         let snapshot = load_snapshot(file.path(), "nul.bin");
 
@@ -410,7 +414,7 @@ mod tests {
 
     #[test]
     fn load_snapshot_reports_unreadable_when_missing() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("expected operation to succeed");
         let path = dir.path().join("missing.txt");
 
         let snapshot = load_snapshot(&path, "missing.txt");
@@ -421,16 +425,18 @@ mod tests {
 
     #[test]
     fn load_snapshot_reports_too_large_without_reading_contents() {
-        let file = tempfile::NamedTempFile::new().unwrap();
+        let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
         let mut writer = std::fs::OpenOptions::new()
             .write(true)
             .open(file.path())
-            .unwrap();
-        writer.write_all(b"x").unwrap();
-        writer.flush().unwrap();
+            .expect("expected operation to succeed");
+        writer
+            .write_all(b"x")
+            .expect("expected operation to succeed");
+        writer.flush().expect("expected operation to succeed");
         writer
             .set_len(super::super::file_limits::REFUSE_TO_OPEN + 1)
-            .unwrap();
+            .expect("expected operation to succeed");
 
         let snapshot = load_snapshot(file.path(), "huge.txt");
 

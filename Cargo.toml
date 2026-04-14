@@ -84,6 +84,8 @@ needless_pass_by_value        = "deny"
 trivially_copy_pass_by_ref    = "deny"
 large_types_passed_by_value   = "deny"
 unused_self                   = "deny"
+allow_attributes              = "deny"
+allow_attributes_without_reason = "deny"
 
 # --- Edition 2024 idioms ---
 uninlined_format_args         = "deny"
@@ -124,6 +126,7 @@ cast_lossless                 = "deny"
 cast_possible_truncation      = "deny"
 cast_sign_loss                = "deny"
 checked_conversions           = "deny"
+unwrap_used                   = "deny"
 
 # --- Performance ---
 inefficient_to_string         = "deny"
@@ -139,6 +142,12 @@ separated_literal_suffix      = "deny"
 # --- Safety docs ---
 missing_safety_doc            = "deny"
 ptr_as_ptr                    = "deny"
+undocumented_unsafe_blocks    = "deny"
+missing_errors_doc            = "deny"
+missing_panics_doc            = "deny"
+dbg_macro                     = "deny"
+todo                          = "deny"
+unimplemented                 = "deny"
 
 [workspace.lints.rust]
 # Edition 2024 defaults we want to keep enforced

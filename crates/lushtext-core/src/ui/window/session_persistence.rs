@@ -27,7 +27,10 @@ struct LoadedRestoreState {
 impl super::LushtextWindow {
     /// Snapshot current tab state into one persisted `SessionData` value object.
     #[must_use]
-    #[expect(clippy::cast_sign_loss)] // GTK tab indices (i32) are non-negative
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "AdwTabView page indices are non-negative when a tab exists"
+    )]
     pub fn collect_session(&self) -> SessionData {
         let tab_view = &self.imp().tab_view;
         let mut tabs = Vec::with_capacity(tab_view.n_pages() as usize);
@@ -154,9 +157,15 @@ impl super::LushtextWindow {
 
         if !had_tabs_before && let Some(idx) = session.active_tab_index {
             let tab_view = &self.imp().tab_view;
-            #[expect(clippy::cast_sign_loss)] // n_pages() is non-negative
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "AdwTabView page counts are non-negative"
+            )]
             let idx = idx.min(tab_view.n_pages().saturating_sub(1) as usize);
-            #[expect(clippy::cast_possible_truncation)] // tab index is far below i32::MAX
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "Persisted tab indices come from the current tab set and stay well below i32::MAX"
+            )]
             let page = tab_view.nth_page(idx as i32);
             tab_view.set_selected_page(&page);
         }

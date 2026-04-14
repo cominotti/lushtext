@@ -167,7 +167,7 @@ fn test_new_workspace_affordance_stays_above_sections_scroll_area() {
         .expect("footer row is the last child");
 
     assert!(first.is::<gtk4::Box>());
-    assert_eq!(first.as_ptr(), sidebar.imp().new_workspace_button.parent().unwrap().as_ptr());
+    assert_eq!(first.as_ptr(), sidebar.imp().new_workspace_button.parent().expect("expected operation to succeed").as_ptr());
     assert!(separator_after_top.is::<gtk4::Separator>());
     assert_eq!(
         revealer.as_ptr(),
@@ -256,9 +256,9 @@ fn test_update_tab_path_exact_match() {
     ensure_gtk_init();
     let window = test_window();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let old_path = dir.path().join("old.rs");
-    std::fs::write(&old_path, "fn main() {}").unwrap();
+    std::fs::write(&old_path, "fn main() {}").expect("expected operation to succeed");
     window.open_document(&old_path);
 
     let new_path = dir.path().join("new.rs");
@@ -273,11 +273,11 @@ fn test_update_tab_path_directory_prefix_rewrite() {
     ensure_gtk_init();
     let window = test_window();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let old_dir = dir.path().join("old_dir");
-    std::fs::create_dir(&old_dir).unwrap();
+    std::fs::create_dir(&old_dir).expect("expected operation to succeed");
     let file_path = old_dir.join("file.rs");
-    std::fs::write(&file_path, "content").unwrap();
+    std::fs::write(&file_path, "content").expect("expected operation to succeed");
     window.open_document(&file_path);
 
     let new_dir = dir.path().join("new_dir");
@@ -289,8 +289,8 @@ fn test_update_tab_path_directory_prefix_rewrite() {
     let editor = page
         .child()
         .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
-        .unwrap();
-    assert_eq!(editor.file_path().unwrap(), new_dir.join("file.rs"));
+        .expect("expected operation to succeed");
+    assert_eq!(editor.file_path().expect("expected operation to succeed"), new_dir.join("file.rs"));
 }
 
 #[test]
@@ -298,9 +298,9 @@ fn test_update_tab_path_no_match_is_noop() {
     ensure_gtk_init();
     let window = test_window();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let file_path = dir.path().join("keep.rs");
-    std::fs::write(&file_path, "content").unwrap();
+    std::fs::write(&file_path, "content").expect("expected operation to succeed");
     window.open_document(&file_path);
 
     window.update_tab_path(
@@ -354,9 +354,9 @@ fn test_close_tab_for_path_exact() {
     ensure_gtk_init();
     let window = test_window();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let file_path = dir.path().join("doomed.rs");
-    std::fs::write(&file_path, "").unwrap();
+    std::fs::write(&file_path, "").expect("expected operation to succeed");
     window.open_document(&file_path);
     assert_tab_count(&window, 1);
 
@@ -370,15 +370,15 @@ fn test_close_tab_for_path_directory_closes_children() {
     ensure_gtk_init();
     let window = test_window();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let sub = dir.path().join("sub");
-    std::fs::create_dir(&sub).unwrap();
+    std::fs::create_dir(&sub).expect("expected operation to succeed");
     let f1 = sub.join("a.rs");
     let f2 = sub.join("b.rs");
     let f3 = dir.path().join("outside.rs");
-    std::fs::write(&f1, "").unwrap();
-    std::fs::write(&f2, "").unwrap();
-    std::fs::write(&f3, "").unwrap();
+    std::fs::write(&f1, "").expect("expected operation to succeed");
+    std::fs::write(&f2, "").expect("expected operation to succeed");
+    std::fs::write(&f3, "").expect("expected operation to succeed");
 
     window.open_document(&f1);
     window.open_document(&f2);
@@ -395,8 +395,8 @@ fn test_close_tab_for_path_directory_closes_children() {
         .nth_page(0)
         .child()
         .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
-        .unwrap();
-    assert_eq!(remaining.file_path().unwrap(), f3);
+        .expect("expected operation to succeed");
+    assert_eq!(remaining.file_path().expect("expected operation to succeed"), f3);
 }
 
 #[test]

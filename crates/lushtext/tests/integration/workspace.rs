@@ -13,7 +13,7 @@ fn test_full_workspace_lifecycle() {
     let ctx = TestContext::new();
 
     // Start with empty state
-    let mut file = workspace_manager::load(ctx.data_dir()).unwrap();
+    let mut file = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
     assert!(file.workspaces.is_empty());
 
     // Get active workspace (creates default)
@@ -41,8 +41,8 @@ fn test_full_workspace_lifecycle() {
     assert_eq!(file.workspaces[0].entries.len(), 2);
 
     // Save and reload
-    workspace_manager::save(ctx.data_dir(), &file).unwrap();
-    let reloaded = workspace_manager::load(ctx.data_dir()).unwrap();
+    workspace_manager::save(ctx.data_dir(), &file).expect("expected operation to succeed");
+    let reloaded = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
     assert_eq!(reloaded.workspaces[0].entries.len(), 2);
     assert_eq!(reloaded.active_workspace, Some(ws_id.clone()));
 
@@ -55,7 +55,7 @@ fn test_full_workspace_lifecycle() {
 #[test]
 fn test_multiple_workspaces() {
     let ctx = TestContext::new();
-    let mut file = workspace_manager::load(ctx.data_dir()).unwrap();
+    let mut file = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
 
     // Create default workspace
     let _ = file.active_workspace();
@@ -71,8 +71,8 @@ fn test_multiple_workspaces() {
     // Switch active
     file.active_workspace = Some(WorkspaceId::new("second"));
 
-    workspace_manager::save(ctx.data_dir(), &file).unwrap();
-    let reloaded = workspace_manager::load(ctx.data_dir()).unwrap();
+    workspace_manager::save(ctx.data_dir(), &file).expect("expected operation to succeed");
+    let reloaded = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(reloaded.workspaces.len(), 2);
     assert_eq!(reloaded.active_workspace, Some(WorkspaceId::new("second")));
@@ -92,8 +92,8 @@ fn test_add_workspace_persist_roundtrip() {
         },
     );
 
-    workspace_manager::save(ctx.data_dir(), &file).unwrap();
-    let reloaded = workspace_manager::load(ctx.data_dir()).unwrap();
+    workspace_manager::save(ctx.data_dir(), &file).expect("expected operation to succeed");
+    let reloaded = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(reloaded.workspaces.len(), 1);
     assert_eq!(reloaded.workspaces[0].name, "my project");
@@ -110,13 +110,13 @@ fn test_remove_workspace_persist_roundtrip() {
     let ws2 = file.add_workspace("second");
     file.active_workspace = Some(ws1.clone());
 
-    workspace_manager::save(ctx.data_dir(), &file).unwrap();
-    let mut file = workspace_manager::load(ctx.data_dir()).unwrap();
+    workspace_manager::save(ctx.data_dir(), &file).expect("expected operation to succeed");
+    let mut file = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
 
     file.remove_workspace(&ws1);
-    workspace_manager::save(ctx.data_dir(), &file).unwrap();
+    workspace_manager::save(ctx.data_dir(), &file).expect("expected operation to succeed");
 
-    let reloaded = workspace_manager::load(ctx.data_dir()).unwrap();
+    let reloaded = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
     assert_eq!(reloaded.workspaces.len(), 1);
     assert_eq!(reloaded.workspaces[0].name, "second");
     assert_eq!(reloaded.active_workspace, Some(ws2));
@@ -130,8 +130,8 @@ fn test_rename_workspace_persist_roundtrip() {
     let ws_id = file.add_workspace("original");
     file.rename_workspace(&ws_id, "renamed");
 
-    workspace_manager::save(ctx.data_dir(), &file).unwrap();
-    let reloaded = workspace_manager::load(ctx.data_dir()).unwrap();
+    workspace_manager::save(ctx.data_dir(), &file).expect("expected operation to succeed");
+    let reloaded = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(reloaded.workspaces[0].name, "renamed");
 }
@@ -160,8 +160,8 @@ fn test_multiple_workspaces_with_entries() {
         },
     );
 
-    workspace_manager::save(ctx.data_dir(), &file).unwrap();
-    let reloaded = workspace_manager::load(ctx.data_dir()).unwrap();
+    workspace_manager::save(ctx.data_dir(), &file).expect("expected operation to succeed");
+    let reloaded = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(reloaded.workspaces.len(), 2);
     assert_eq!(reloaded.workspaces[0].entries.len(), 1);

@@ -159,7 +159,7 @@ fn test_save_file_no_path_returns_error() {
     page.save_file_async(move |r| {
         *result_clone.borrow_mut() = Some(r);
     });
-    let result = result.borrow_mut().take().unwrap();
+    let result = result.borrow_mut().take().expect("expected operation to succeed");
     assert!(matches!(
         result,
         Err(lushtext_core::ui::editor_page::SaveError::NoPath)
@@ -173,7 +173,7 @@ fn test_save_file_writes_content() {
     let buffer = page.buffer();
 
     // Manually set the file path (simulating load_file_async without the async part)
-    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let tmp = tempfile::NamedTempFile::new().expect("expected operation to succeed");
     let path = tmp.path().to_path_buf();
 
     // Set path via the internal RefCell (load_file_async sets this synchronously)
@@ -186,13 +186,13 @@ fn test_save_file_writes_content() {
     let done = std::rc::Rc::new(std::cell::Cell::new(false));
     let done_clone = done.clone();
     page.save_file_async(move |r| {
-        r.unwrap();
+        r.expect("expected operation to succeed");
         done_clone.set(true);
     });
     while !done.get() {
         glib::MainContext::default().iteration(true);
     }
-    let saved = std::fs::read_to_string(&path).unwrap();
+    let saved = std::fs::read_to_string(&path).expect("expected operation to succeed");
     assert_eq!(saved, "saved content");
 
     // Buffer should no longer be modified after save
@@ -334,14 +334,14 @@ fn test_bookmark_toggle_and_navigation() {
     let buffer = page.buffer();
     buffer.set_text("one\ntwo\nthree\nfour\nfive\n");
 
-    let line_two = buffer.iter_at_line(1).unwrap();
+    let line_two = buffer.iter_at_line(1).expect("expected operation to succeed");
     buffer.place_cursor(&line_two);
     assert_eq!(
         page.toggle_bookmark_at_cursor(),
         BookmarkToggleState::Added(1)
     );
 
-    let line_five = buffer.iter_at_line(4).unwrap();
+    let line_five = buffer.iter_at_line(4).expect("expected operation to succeed");
     buffer.place_cursor(&line_five);
     assert_eq!(
         page.toggle_bookmark_at_cursor(),
@@ -356,17 +356,17 @@ fn test_bookmark_toggle_and_navigation() {
         vec![1, 4]
     );
 
-    let line_one = buffer.iter_at_line(0).unwrap();
+    let line_one = buffer.iter_at_line(0).expect("expected operation to succeed");
     buffer.place_cursor(&line_one);
     let jumped = page
         .navigate_bookmark(BookmarkNavigationDirection::Next)
-        .unwrap();
+        .expect("expected operation to succeed");
     assert_eq!(jumped.line, 1);
     assert_eq!(page.cursor_position().0, 1);
 
     let wrapped = page
         .navigate_bookmark(BookmarkNavigationDirection::Previous)
-        .unwrap();
+        .expect("expected operation to succeed");
     assert_eq!(wrapped.line, 4);
     assert_eq!(page.cursor_position().0, 4);
 }
@@ -381,10 +381,10 @@ fn test_load_annotations_restores_current_annotation() {
     let annotation = AnnotationRecord::new(1, 2, "remember this", AnnotationStyle::Warning);
     page.load_annotations(std::slice::from_ref(&annotation));
 
-    let line_three = buffer.iter_at_line(2).unwrap();
+    let line_three = buffer.iter_at_line(2).expect("expected operation to succeed");
     buffer.place_cursor(&line_three);
 
-    let restored = page.current_annotation().unwrap();
+    let restored = page.current_annotation().expect("expected operation to succeed");
     assert_eq!(restored.id, annotation.id);
     assert_eq!(restored.note_text, "remember this");
     assert_eq!(restored.style, AnnotationStyle::Warning);
@@ -417,8 +417,8 @@ fn test_annotation_range_tracks_user_edits_and_removes_deleted_ranges() {
     assert_eq!(shifted[0].start_line, 2);
     assert_eq!(shifted[0].end_line, 3);
 
-    let mut delete_start = buffer.iter_at_line(2).unwrap();
-    let mut delete_end = buffer.iter_at_line(4).unwrap();
+    let mut delete_start = buffer.iter_at_line(2).expect("expected operation to succeed");
+    let mut delete_end = buffer.iter_at_line(4).expect("expected operation to succeed");
     buffer.begin_user_action();
     buffer.delete(&mut delete_start, &mut delete_end);
     buffer.end_user_action();

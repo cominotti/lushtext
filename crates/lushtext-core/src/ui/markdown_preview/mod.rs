@@ -268,6 +268,11 @@ impl LushtextMarkdownPreview {
     /// Switches to content mode (text view visible, placeholder hidden).
     /// The rendering walks the `pulldown-cmark` event stream and maps text
     /// blocks to `GtkTextTag`s while buffering tables into anchored `GtkGrid`s.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parser reports the end of a buffered table while the
+    /// internal table accumulator is missing.
     pub fn render_markdown(&self, markdown: &str) {
         self.show_content_view();
         self.clear_rendered_state();

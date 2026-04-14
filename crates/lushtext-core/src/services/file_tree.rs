@@ -208,7 +208,7 @@ mod tests {
                 entry
                     .path
                     .file_name()
-                    .unwrap()
+                    .expect("expected operation to succeed")
                     .to_string_lossy()
                     .into_owned()
             })
@@ -217,17 +217,17 @@ mod tests {
 
     #[test]
     fn test_empty_directory() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let entries = scan_directory(dir.path());
         assert!(entries.is_empty());
     }
 
     #[test]
     fn test_hidden_files_skipped() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join(".hidden"), "").unwrap();
-        std::fs::write(dir.path().join(".gitignore"), "").unwrap();
-        std::fs::write(dir.path().join("visible.txt"), "").unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::write(dir.path().join(".hidden"), "").expect("expected operation to succeed");
+        std::fs::write(dir.path().join(".gitignore"), "").expect("expected operation to succeed");
+        std::fs::write(dir.path().join("visible.txt"), "").expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 1);
@@ -236,9 +236,9 @@ mod tests {
 
     #[test]
     fn test_hidden_directories_skipped() {
-        let dir = TempDir::new().unwrap();
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        std::fs::create_dir(dir.path().join("src")).unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join(".git")).expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join("src")).expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 1);
@@ -247,8 +247,9 @@ mod tests {
 
     #[test]
     fn test_files_marked_not_dir() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::write(dir.path().join("file.txt"), "hello")
+            .expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 1);
@@ -257,8 +258,8 @@ mod tests {
 
     #[test]
     fn test_directories_marked_as_dir() {
-        let dir = TempDir::new().unwrap();
-        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join("subdir")).expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 1);
@@ -267,10 +268,10 @@ mod tests {
 
     #[test]
     fn test_directories_sorted_before_files() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         // File sorts alphabetically before directory, but dirs should come first
-        std::fs::write(dir.path().join("aaa.txt"), "").unwrap();
-        std::fs::create_dir(dir.path().join("zzz_dir")).unwrap();
+        std::fs::write(dir.path().join("aaa.txt"), "").expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join("zzz_dir")).expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 2);
@@ -280,10 +281,10 @@ mod tests {
 
     #[test]
     fn test_alphabetical_case_insensitive_sort() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("Banana.txt"), "").unwrap();
-        std::fs::write(dir.path().join("apple.txt"), "").unwrap();
-        std::fs::write(dir.path().join("Cherry.txt"), "").unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::write(dir.path().join("Banana.txt"), "").expect("expected operation to succeed");
+        std::fs::write(dir.path().join("apple.txt"), "").expect("expected operation to succeed");
+        std::fs::write(dir.path().join("Cherry.txt"), "").expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         assert_eq!(
@@ -300,11 +301,11 @@ mod tests {
 
     #[test]
     fn test_mixed_entries_sorted_correctly() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("readme.md"), "").unwrap();
-        std::fs::create_dir(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
-        std::fs::create_dir(dir.path().join("docs")).unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::write(dir.path().join("readme.md"), "").expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join("src")).expect("expected operation to succeed");
+        std::fs::write(dir.path().join("Cargo.toml"), "").expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join("docs")).expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         assert_eq!(
@@ -315,10 +316,10 @@ mod tests {
 
     #[test]
     fn test_all_hidden_entries_produces_empty() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join(".gitignore"), "").unwrap();
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        std::fs::write(dir.path().join(".env"), "").unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::write(dir.path().join(".gitignore"), "").expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join(".git")).expect("expected operation to succeed");
+        std::fs::write(dir.path().join(".env"), "").expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         assert!(entries.is_empty());
@@ -326,8 +327,8 @@ mod tests {
 
     #[test]
     fn test_paths_are_absolute() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("file.txt"), "").unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::write(dir.path().join("file.txt"), "").expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         assert!(entries[0].path.is_absolute());
@@ -336,9 +337,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_broken_symlinks_skipped() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("real.txt"), "").unwrap();
-        std::os::unix::fs::symlink("/nonexistent/target", dir.path().join("broken")).unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::write(dir.path().join("real.txt"), "").expect("expected operation to succeed");
+        std::os::unix::fs::symlink("/nonexistent/target", dir.path().join("broken"))
+            .expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         let result_names = names(&entries);
@@ -348,10 +350,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_valid_symlinks_included() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let real = dir.path().join("real.txt");
-        std::fs::write(&real, "content").unwrap();
-        std::os::unix::fs::symlink(&real, dir.path().join("link.txt")).unwrap();
+        std::fs::write(&real, "content").expect("expected operation to succeed");
+        std::os::unix::fs::symlink(&real, dir.path().join("link.txt"))
+            .expect("expected operation to succeed");
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 2);
@@ -362,13 +365,13 @@ mod tests {
 
     #[test]
     fn test_bounded_scan_keeps_sorted_top_entries_and_marks_truncated() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         for name in ["zeta.txt", "alpha.txt", "docs", "src", "notes.md"] {
             let path = dir.path().join(name);
             if name.contains('.') {
-                std::fs::write(path, "").unwrap();
+                std::fs::write(path, "").expect("expected operation to succeed");
             } else {
-                std::fs::create_dir(path).unwrap();
+                std::fs::create_dir(path).expect("expected operation to succeed");
             }
         }
 
@@ -380,8 +383,8 @@ mod tests {
 
     #[test]
     fn test_bounded_scan_honors_cancel_token() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("visible.txt"), "").unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::write(dir.path().join("visible.txt"), "").expect("expected operation to succeed");
         let cancel = AtomicBool::new(true);
 
         let scan = scan_directory_bounded(dir.path(), 10, 1000, Some(&cancel));

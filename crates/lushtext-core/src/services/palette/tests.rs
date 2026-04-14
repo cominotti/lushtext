@@ -24,8 +24,8 @@ fn fuzzy_score_empty_query_matches_everything() {
 
 #[test]
 fn fuzzy_score_exact_match_beats_partial_match() {
-    let exact = fuzzy_score("main.rs", "main.rs").unwrap();
-    let partial = fuzzy_score("mn", "main.rs").unwrap();
+    let exact = fuzzy_score("main.rs", "main.rs").expect("expected operation to succeed");
+    let partial = fuzzy_score("mn", "main.rs").expect("expected operation to succeed");
     assert!(exact > partial);
 }
 
@@ -77,8 +77,8 @@ fn search_commands_zoom_finds_all_zoom_entries() {
 
 #[test]
 fn search_all_mixed_mode_includes_files_and_commands() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("save.rs"), "").unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("save.rs"), "").expect("expected operation to succeed");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let results = search_all(&index, "save", SearchMode::All, 50);
@@ -96,10 +96,10 @@ fn search_all_mixed_mode_includes_files_and_commands() {
 
 #[test]
 fn file_index_skips_hidden_files_and_directories() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("visible.txt"), "").unwrap();
-    std::fs::write(dir.path().join(".hidden"), "").unwrap();
-    std::fs::create_dir(dir.path().join("subdir")).unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("visible.txt"), "").expect("expected operation to succeed");
+    std::fs::write(dir.path().join(".hidden"), "").expect("expected operation to succeed");
+    std::fs::create_dir(dir.path().join("subdir")).expect("expected operation to succeed");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     assert_eq!(index.files().len(), 1);
@@ -108,10 +108,10 @@ fn file_index_skips_hidden_files_and_directories() {
 
 #[test]
 fn file_index_multiple_roots_collects_files_from_each_root() {
-    let dir1 = TempDir::new().unwrap();
-    let dir2 = TempDir::new().unwrap();
-    std::fs::write(dir1.path().join("a.rs"), "").unwrap();
-    std::fs::write(dir2.path().join("b.rs"), "").unwrap();
+    let dir1 = TempDir::new().expect("expected operation to succeed");
+    let dir2 = TempDir::new().expect("expected operation to succeed");
+    std::fs::write(dir1.path().join("a.rs"), "").expect("expected operation to succeed");
+    std::fs::write(dir2.path().join("b.rs"), "").expect("expected operation to succeed");
 
     let index = FileIndex::rebuild(&[dir1.path().to_path_buf(), dir2.path().to_path_buf()]);
     assert_eq!(index.files().len(), 2);
@@ -119,9 +119,10 @@ fn file_index_multiple_roots_collects_files_from_each_root() {
 
 #[test]
 fn file_index_search_respects_max() {
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
     for i in 0..20 {
-        std::fs::write(dir.path().join(format!("file{i}.rs")), "").unwrap();
+        std::fs::write(dir.path().join(format!("file{i}.rs")), "")
+            .expect("expected operation to succeed");
     }
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
@@ -131,9 +132,9 @@ fn file_index_search_respects_max() {
 
 #[test]
 fn file_index_workspace_root_is_shared_with_arc() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("a.rs"), "").unwrap();
-    std::fs::write(dir.path().join("b.rs"), "").unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("a.rs"), "").expect("expected operation to succeed");
+    std::fs::write(dir.path().join("b.rs"), "").expect("expected operation to succeed");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     assert!(Arc::ptr_eq(
@@ -144,10 +145,10 @@ fn file_index_workspace_root_is_shared_with_arc() {
 
 #[test]
 fn file_index_root_named_as_ignored_dir_is_still_scanned() {
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
     let root = dir.path().join("node_modules");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::write(root.join("index.js"), "").unwrap();
+    std::fs::create_dir(&root).expect("expected operation to succeed");
+    std::fs::write(root.join("index.js"), "").expect("expected operation to succeed");
 
     let index = FileIndex::rebuild(&[root]);
     assert!(file_names(&index).contains(&"index.js"));
@@ -155,13 +156,13 @@ fn file_index_root_named_as_ignored_dir_is_still_scanned() {
 
 #[test]
 fn file_index_skips_ignored_directories() {
-    let dir = TempDir::new().unwrap();
-    std::fs::create_dir(dir.path().join("src")).unwrap();
-    std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
+    std::fs::create_dir(dir.path().join("src")).expect("expected operation to succeed");
+    std::fs::write(dir.path().join("src/main.rs"), "").expect("expected operation to succeed");
     for ignored in super::index::IGNORED_INDEX_DIRS {
         let ignored_dir = dir.path().join(ignored);
-        std::fs::create_dir(&ignored_dir).unwrap();
-        std::fs::write(ignored_dir.join("ignored.txt"), "").unwrap();
+        std::fs::create_dir(&ignored_dir).expect("expected operation to succeed");
+        std::fs::write(ignored_dir.join("ignored.txt"), "").expect("expected operation to succeed");
     }
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
@@ -172,10 +173,11 @@ fn file_index_skips_ignored_directories() {
 #[cfg(unix)]
 #[test]
 fn file_index_symlink_escape_to_root_is_rejected() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("local.rs"), "").unwrap();
-    std::fs::create_dir(dir.path().join("escape")).unwrap();
-    std::os::unix::fs::symlink("/", dir.path().join("escape/root")).unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("local.rs"), "").expect("expected operation to succeed");
+    std::fs::create_dir(dir.path().join("escape")).expect("expected operation to succeed");
+    std::os::unix::fs::symlink("/", dir.path().join("escape/root"))
+        .expect("expected operation to succeed");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let names = file_names(&index);
@@ -190,10 +192,11 @@ fn file_index_symlink_escape_to_root_is_rejected() {
 #[cfg(unix)]
 #[test]
 fn file_index_symlink_cycle_does_not_duplicate_results() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("file.rs"), "").unwrap();
-    std::fs::create_dir(dir.path().join("sub")).unwrap();
-    std::os::unix::fs::symlink(dir.path(), dir.path().join("sub/loop")).unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("file.rs"), "").expect("expected operation to succeed");
+    std::fs::create_dir(dir.path().join("sub")).expect("expected operation to succeed");
+    std::os::unix::fs::symlink(dir.path(), dir.path().join("sub/loop"))
+        .expect("expected operation to succeed");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let names = file_names(&index);
@@ -208,9 +211,10 @@ fn max_indexed_files_constant_remains_100k() {
 
 #[test]
 fn empty_query_returns_all_results_up_to_cap() {
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
     for i in 0..100 {
-        std::fs::write(dir.path().join(format!("file{i}.rs")), "").unwrap();
+        std::fs::write(dir.path().join(format!("file{i}.rs")), "")
+            .expect("expected operation to succeed");
     }
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
@@ -220,14 +224,16 @@ fn empty_query_returns_all_results_up_to_cap() {
 
 #[test]
 fn workspace_root_for_returns_matching_root() {
-    let dir = TempDir::new().unwrap();
-    std::fs::create_dir(dir.path().join("src")).unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
+    std::fs::create_dir(dir.path().join("src")).expect("expected operation to succeed");
     let path = dir.path().join("src/lib.rs");
-    std::fs::write(&path, "").unwrap();
+    std::fs::write(&path, "").expect("expected operation to succeed");
 
     let root = dir.path().to_path_buf();
     let index = FileIndex::rebuild(std::slice::from_ref(&root));
-    let matched_root = index.workspace_root_for(&path).unwrap();
+    let matched_root = index
+        .workspace_root_for(&path)
+        .expect("expected operation to succeed");
     assert_eq!(*matched_root, root);
 }
 

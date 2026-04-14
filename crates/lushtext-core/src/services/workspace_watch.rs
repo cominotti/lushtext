@@ -118,6 +118,11 @@ pub struct WorkspaceWatcher {
 
 impl WorkspaceWatcher {
     /// Start watching the given roots with backend debouncing already enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the debouncer backend cannot be created or any root
+    /// cannot be registered with the watcher.
     pub fn start(targets: &[WorkspaceWatchTarget]) -> Result<Self, WorkspaceWatchError> {
         let (sender, receiver) = mpsc::channel();
         let mut debouncer = new_debouncer(Duration::from_millis(WATCH_DEBOUNCE_MS), None, sender)
@@ -237,15 +242,15 @@ mod tests {
 
     #[test]
     fn watching_directory_root_reports_created_file() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let watcher =
             WorkspaceWatcher::start(&[WorkspaceWatchTarget::directory(dir.path().to_path_buf())])
-                .unwrap();
+                .expect("expected operation to succeed");
 
         assert_eq!(watcher.watched_root_count(), 1);
 
         let created = dir.path().join("alpha.txt");
-        fs::write(&created, "alpha").unwrap();
+        fs::write(&created, "alpha").expect("expected operation to succeed");
 
         let poll = wait_for_poll(&watcher, Duration::from_secs(5))
             .expect("directory watcher should report the created file");
@@ -259,17 +264,17 @@ mod tests {
 
     #[test]
     fn watching_file_root_reports_file_rename() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let file_path = dir.path().join("root.txt");
-        fs::write(&file_path, "before").unwrap();
+        fs::write(&file_path, "before").expect("expected operation to succeed");
 
-        let watcher =
-            WorkspaceWatcher::start(&[WorkspaceWatchTarget::file(file_path.clone())]).unwrap();
+        let watcher = WorkspaceWatcher::start(&[WorkspaceWatchTarget::file(file_path.clone())])
+            .expect("expected operation to succeed");
 
         assert_eq!(watcher.watched_root_count(), 1);
 
         let renamed_path = dir.path().join("renamed.txt");
-        fs::rename(&file_path, &renamed_path).unwrap();
+        fs::rename(&file_path, &renamed_path).expect("expected operation to succeed");
 
         let poll = wait_for_poll(&watcher, Duration::from_secs(5))
             .expect("file watcher should report file rename");
@@ -288,7 +293,7 @@ mod tests {
 
     #[test]
     fn starting_with_missing_root_returns_error() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let missing = dir.path().join("missing");
 
         let error = WorkspaceWatcher::start(&[WorkspaceWatchTarget::directory(missing.clone())])

@@ -27,6 +27,10 @@ pub fn load(data_dir: &Path) -> Vec<SearchHistoryEntry> {
 }
 
 /// Save search history to disk via atomic write.
+///
+/// # Errors
+///
+/// Returns an error if the history file cannot be serialized or written.
 pub fn save(data_dir: &Path, entries: &[SearchHistoryEntry]) -> anyhow::Result<()> {
     json_store::save(data_dir, HISTORY_FILE, &entries)
 }
@@ -105,14 +109,14 @@ mod tests {
 
     #[test]
     fn test_load_missing_file_returns_empty() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let entries = load(dir.path());
         assert!(entries.is_empty());
     }
 
     #[test]
     fn test_save_and_load_roundtrip() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let entries = vec![
             SearchHistoryEntry::from_spec(crate::model::content_search::SearchQuerySpec::new(
                 "hello".to_string(),
@@ -126,7 +130,7 @@ mod tests {
             )),
             make_entry("world"),
         ];
-        save(dir.path(), &entries).unwrap();
+        save(dir.path(), &entries).expect("expected operation to succeed");
         let loaded = load(dir.path());
         assert_eq!(loaded, entries);
     }

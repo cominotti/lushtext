@@ -63,8 +63,8 @@ fn test_session_save_restore_roundtrip() {
         active_tab_index: Some(1),
     };
 
-    session_service::save(ctx.data_dir(), &session).unwrap();
-    let mut loaded = session_service::load(ctx.data_dir()).unwrap();
+    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
+    let mut loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(loaded.tabs.len(), 2);
     assert_eq!(loaded.tabs[1].cursor_line, 15);
@@ -91,8 +91,8 @@ fn test_session_filter_removes_deleted_files() {
         active_tab_index: Some(1), // deleted file was active
     };
 
-    session_service::save(ctx.data_dir(), &session).unwrap();
-    let mut loaded = session_service::load(ctx.data_dir()).unwrap();
+    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
+    let mut loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
 
     session_service::filter_existing_tabs(&mut loaded);
     assert_eq!(loaded.tabs.len(), 1);
@@ -117,8 +117,8 @@ fn test_session_with_untitled_tabs_roundtrip() {
         active_tab_index: Some(1),
     };
 
-    session_service::save(ctx.data_dir(), &session).unwrap();
-    let loaded = session_service::load(ctx.data_dir()).unwrap();
+    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
+    let loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(loaded.tabs.len(), 3);
     assert_eq!(loaded.tabs[0].path, Some(file1));
@@ -233,8 +233,8 @@ fn test_empty_session_roundtrip() {
     let ctx = TestContext::new();
 
     let session = SessionData::default();
-    session_service::save(ctx.data_dir(), &session).unwrap();
-    let loaded = session_service::load(ctx.data_dir()).unwrap();
+    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
+    let loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert!(loaded.tabs.is_empty());
     assert_eq!(loaded.active_tab_index, None);
@@ -243,7 +243,7 @@ fn test_empty_session_roundtrip() {
 #[test]
 fn test_load_nonexistent_returns_default() {
     let ctx = TestContext::new();
-    let session = session_service::load(ctx.data_dir()).unwrap();
+    let session = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
     assert!(session.tabs.is_empty());
     assert_eq!(session.active_tab_index, None);
 }
@@ -280,15 +280,15 @@ fn test_save_overwrites_previous_session() {
         tabs: vec![tab("/old.rs", 1)],
         active_tab_index: Some(0),
     };
-    session_service::save(ctx.data_dir(), &session1).unwrap();
+    session_service::save(ctx.data_dir(), &session1).expect("expected operation to succeed");
 
     let session2 = SessionData {
         tabs: vec![tab("/new.rs", 5), tab("/also.rs", 10)],
         active_tab_index: Some(1),
     };
-    session_service::save(ctx.data_dir(), &session2).unwrap();
+    session_service::save(ctx.data_dir(), &session2).expect("expected operation to succeed");
 
-    let loaded = session_service::load(ctx.data_dir()).unwrap();
+    let loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
     assert_eq!(loaded.tabs.len(), 2);
     assert_eq!(loaded.tabs[0].path, Some("/new.rs".into()));
     assert_eq!(loaded.active_tab_index, Some(1));
@@ -308,8 +308,8 @@ fn test_cursor_and_scroll_positions_persist() {
         active_tab_index: Some(0),
     };
 
-    session_service::save(ctx.data_dir(), &session).unwrap();
-    let loaded = session_service::load(ctx.data_dir()).unwrap();
+    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
+    let loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(loaded.tabs[0].cursor_line, 42);
     assert_eq!(loaded.tabs[0].cursor_col, 15);
@@ -366,8 +366,8 @@ fn test_many_tabs_roundtrip() {
         active_tab_index: Some(25),
     };
 
-    session_service::save(ctx.data_dir(), &session).unwrap();
-    let loaded = session_service::load(ctx.data_dir()).unwrap();
+    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
+    let loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(loaded.tabs.len(), 50);
     assert_eq!(loaded.active_tab_index, Some(25));
@@ -386,8 +386,8 @@ fn test_active_index_out_of_bounds_preserved_in_serialization() {
         active_tab_index: Some(99), // out of bounds
     };
 
-    session_service::save(ctx.data_dir(), &session).unwrap();
-    let loaded = session_service::load(ctx.data_dir()).unwrap();
+    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
+    let loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
     assert_eq!(loaded.active_tab_index, Some(99));
 }
 
@@ -398,7 +398,8 @@ fn test_startup_restore_load_preserves_temporarily_unavailable_file_tabs() {
     let missing_path = ctx.path().join("offline-share/notes.md");
     let real_file = ctx.write_file("local.txt", "local");
     let real_draft_id = draft_service::draft_id_for_path(&real_file);
-    draft_service::write_draft(ctx.data_dir(), &real_draft_id, "drafted local").unwrap();
+    draft_service::write_draft(ctx.data_dir(), &real_draft_id, "drafted local")
+        .expect("expected operation to succeed");
     draft_service::save_manifest(
         ctx.data_dir(),
         &DraftManifest {
@@ -410,13 +411,13 @@ fn test_startup_restore_load_preserves_temporarily_unavailable_file_tabs() {
             }],
         },
     )
-    .unwrap();
+    .expect("expected operation to succeed");
 
     let session = SessionData {
         tabs: vec![tab(missing_path.clone(), 5), tab(real_file.clone(), 1)],
         active_tab_index: Some(0),
     };
-    session_service::save(ctx.data_dir(), &session).unwrap();
+    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
 
     let (_manifest, restored_session, preloaded) =
         draft_service::load_restore_state(ctx.data_dir());

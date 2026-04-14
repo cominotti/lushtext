@@ -356,7 +356,10 @@ fn reconcile_child_store(
         let suffix = common_suffix_len(&current[prefix..], &desired[prefix..]);
         let removed = current.len().saturating_sub(prefix + suffix);
         let replacement = build_child_items(&desired[prefix..desired.len().saturating_sub(suffix)]);
-        #[expect(clippy::cast_possible_truncation)] // list store sizes are far below u32::MAX
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Directory child batches are capped well below u32::MAX before they reach the GTK list store"
+        )]
         store.splice(prefix as u32, removed as u32, &replacement);
     }
 

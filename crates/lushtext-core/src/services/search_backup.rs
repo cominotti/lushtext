@@ -26,6 +26,11 @@ struct ReplaceBackupDiskEntry {
 }
 
 /// Load the persisted Replace All undo backup from disk.
+///
+/// # Errors
+///
+/// Returns an error if the backup file exists but cannot be read, parsed, or
+/// converted back into UTF-8 file content.
 pub fn load(data_dir: &Path) -> Result<HashMap<PathBuf, Vec<u8>>> {
     let disk: ReplaceBackupDisk = json_store::load(data_dir, BACKUP_FILE)?;
     let mut backup = HashMap::with_capacity(disk.files.len());
@@ -36,6 +41,11 @@ pub fn load(data_dir: &Path) -> Result<HashMap<PathBuf, Vec<u8>>> {
 }
 
 /// Save the Replace All undo backup atomically.
+///
+/// # Errors
+///
+/// Returns an error if any backup entry is not valid UTF-8 or the backup file
+/// cannot be serialized or written.
 pub fn save(data_dir: &Path, backup: &HashMap<PathBuf, Vec<u8>>) -> Result<()> {
     let mut disk = ReplaceBackupDisk {
         files: Vec::with_capacity(backup.len()),
@@ -52,6 +62,10 @@ pub fn save(data_dir: &Path, backup: &HashMap<PathBuf, Vec<u8>>) -> Result<()> {
 }
 
 /// Delete the persisted Replace All undo backup, if it exists.
+///
+/// # Errors
+///
+/// Returns an error if an existing backup file cannot be deleted.
 pub fn delete(data_dir: &Path) -> Result<()> {
     let path = data_dir.join(BACKUP_FILE);
     match std::fs::remove_file(&path) {
@@ -72,17 +86,17 @@ mod tests {
 
     #[test]
     fn save_load_delete_roundtrip() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let mut backup = HashMap::new();
         backup.insert(PathBuf::from("/tmp/a.rs"), b"alpha".to_vec());
         backup.insert(PathBuf::from("/tmp/b.rs"), b"beta".to_vec());
 
-        save(dir.path(), &backup).unwrap();
-        let loaded = load(dir.path()).unwrap();
+        save(dir.path(), &backup).expect("expected operation to succeed");
+        let loaded = load(dir.path()).expect("expected operation to succeed");
         assert_eq!(loaded, backup);
 
-        delete(dir.path()).unwrap();
-        let after_delete = load(dir.path()).unwrap();
+        delete(dir.path()).expect("expected operation to succeed");
+        let after_delete = load(dir.path()).expect("expected operation to succeed");
         assert!(after_delete.is_empty());
     }
 }

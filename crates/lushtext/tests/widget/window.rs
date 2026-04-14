@@ -146,10 +146,10 @@ fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
         .imp()
         .tab_view
         .selected_page()
-        .unwrap()
+        .expect("expected operation to succeed")
         .child()
         .downcast::<LushtextEditorPage>()
-        .unwrap()
+        .expect("expected operation to succeed")
 }
 
 fn assert_tab_count(window: &LushtextWindow, expected: i32) {
@@ -262,7 +262,7 @@ fn seed_peek_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
 fn test_open_document_restores_bookmarks_and_annotations() {
     let tempdir = tempfile::tempdir().expect("notes tempdir");
     let file_path = tempdir.path().join("src/main.rs");
-    std::fs::create_dir_all(file_path.parent().unwrap()).expect("create file parent");
+    std::fs::create_dir_all(file_path.parent().expect("expected operation to succeed")).expect("create file parent");
     std::fs::write(&file_path, "one\ntwo\nthree\nfour\n").expect("write source file");
 
     let window = test_window();
@@ -505,14 +505,14 @@ fn test_toggle_sidebar_action_state_syncs_with_split_view() {
     let window = test_window();
     let action = window
         .lookup_action("toggle-sidebar")
-        .unwrap()
+        .expect("expected operation to succeed")
         .downcast::<gio::SimpleAction>()
-        .unwrap();
+        .expect("expected operation to succeed");
 
-    assert!(action.state().unwrap().get::<bool>().unwrap());
+    assert!(action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
     window.imp().workspace_split_view.set_show_sidebar(false);
     flush_events();
-    assert!(!action.state().unwrap().get::<bool>().unwrap());
+    assert!(!action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
 }
 
 #[test]
@@ -535,14 +535,14 @@ fn test_toggle_properties_action_state_syncs_with_split_view() {
     let window = test_window();
     let action = window
         .lookup_action("toggle-properties")
-        .unwrap()
+        .expect("expected operation to succeed")
         .downcast::<gio::SimpleAction>()
-        .unwrap();
+        .expect("expected operation to succeed");
 
-    assert!(!action.state().unwrap().get::<bool>().unwrap());
+    assert!(!action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
     window.imp().properties_split_view.set_show_sidebar(true);
     flush_events();
-    assert!(action.state().unwrap().get::<bool>().unwrap());
+    assert!(action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
 }
 
 #[test]
@@ -551,17 +551,17 @@ fn test_toggle_minimap_updates_setting_and_action_state() {
     let window = test_window();
     let action = window
         .lookup_action("toggle-minimap")
-        .unwrap()
+        .expect("expected operation to succeed")
         .downcast::<gio::SimpleAction>()
-        .unwrap();
+        .expect("expected operation to succeed");
 
     assert!(!minimap_setting(&window));
-    assert!(!action.state().unwrap().get::<bool>().unwrap());
+    assert!(!action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
 
     activate_action(&window, "toggle-minimap");
 
     assert!(minimap_setting(&window));
-    assert!(action.state().unwrap().get::<bool>().unwrap());
+    assert!(action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
 }
 
 #[test]
@@ -570,9 +570,9 @@ fn test_toggle_minimap_action_state_tracks_external_setting_changes() {
     let window = test_window();
     let action = window
         .lookup_action("toggle-minimap")
-        .unwrap()
+        .expect("expected operation to succeed")
         .downcast::<gio::SimpleAction>()
-        .unwrap();
+        .expect("expected operation to succeed");
 
     window
         .imp()
@@ -581,7 +581,7 @@ fn test_toggle_minimap_action_state_tracks_external_setting_changes() {
         .expect("set show-minimap");
     flush_events();
 
-    assert!(action.state().unwrap().get::<bool>().unwrap());
+    assert!(action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
 }
 
 #[test]
@@ -1183,9 +1183,15 @@ fn test_preview_pane_toggle_starts_nontrivial_animation() {
     activate_action(&window, "toggle-preview-pane");
 
     let animation = preview_animation(&window);
-    #[expect(clippy::cast_possible_truncation)] // animation paned position fits in i32
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "The Adw animation exposes f64 endpoints, but preview pane positions stay within i32 paned coordinates"
+    )]
     let from = animation.value_from() as i32;
-    #[expect(clippy::cast_possible_truncation)] // paned position fits in i32
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "The preview pane target position is always an i32 paned coordinate"
+    )]
     let to = animation.value_to() as i32;
     assert_ne!(
         from, to,
@@ -1208,9 +1214,15 @@ fn test_preview_mode_toggle_starts_nontrivial_animation() {
     activate_action(&window, "toggle-preview-mode");
 
     let animation = preview_animation(&window);
-    #[expect(clippy::cast_possible_truncation)] // animation paned position fits in i32
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "The Adw animation exposes f64 endpoints, but preview pane positions stay within i32 paned coordinates"
+    )]
     let from = animation.value_from() as i32;
-    #[expect(clippy::cast_possible_truncation)] // paned position fits in i32
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "The preview pane target position is always an i32 paned coordinate"
+    )]
     let to = animation.value_to() as i32;
     assert_ne!(
         from, to,

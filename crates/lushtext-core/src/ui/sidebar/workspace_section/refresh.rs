@@ -296,7 +296,10 @@ impl LushtextWorkspaceSection {
             let replacement = build_root_items(
                 &desired_roots[prefix..desired_roots.len().saturating_sub(suffix)],
             );
-            #[expect(clippy::cast_possible_truncation)] // root store is far below u32::MAX
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "The visible root-row store is bounded to realistic workspace sizes before converting to u32"
+            )]
             root_store.splice(prefix as u32, removed as u32, &replacement);
             self.recache_root_store(&root_store);
             self.restore_materialized_state();

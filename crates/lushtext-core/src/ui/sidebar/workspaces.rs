@@ -85,7 +85,10 @@ impl LushtextSidebar {
 
         imp.syncing_workspace_filter.set(true);
         imp.workspace_filter_dropdown.set_model(Some(&model));
-        #[expect(clippy::cast_possible_truncation)] // selector length is far below u32::MAX
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Workspace selector entries stay far below u32::MAX in practice"
+        )]
         imp.workspace_filter_dropdown
             .set_selected(selected_index as u32);
         imp.syncing_workspace_filter.set(false);
@@ -96,7 +99,10 @@ impl LushtextSidebar {
         let tooltip = if selected_index == 0 {
             "All workspaces".to_string()
         } else {
-            #[expect(clippy::cast_possible_truncation)] // selector length is far below u32::MAX
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "Workspace selector entries stay far below u32::MAX in practice"
+            )]
             let selected_index = selected_index as u32;
             model
                 .string(selected_index)

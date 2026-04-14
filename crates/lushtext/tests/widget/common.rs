@@ -26,7 +26,10 @@ static GTK_INIT: Once = Once::new();
 /// Requires a display server — use `mutter --headless` for headless environments.
 pub fn ensure_gtk_init() {
     GTK_INIT.call_once(|| {
-        // Use in-memory GSettings backend: starts with schema defaults, no persistence
+        // Widget tests run in one isolated process before GTK startup, so they
+        // can safely pin a memory-only GSettings backend for deterministic runs.
+        // SAFETY: widget tests set these process environment variables before
+        // GTK startup and before any background worker threads are spawned.
         unsafe { std::env::set_var("GSETTINGS_BACKEND", "memory") };
         // Isolate session/draft I/O from the user's real data directory.
         // PID-based naming prevents nextest's parallel test processes from
@@ -35,6 +38,8 @@ pub fn ensure_gtk_init() {
             std::env::temp_dir().join(format!("lushtext-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&test_data_dir);
         let _ = std::fs::create_dir_all(&test_data_dir);
+        // SAFETY: widget tests set these process environment variables before
+        // GTK startup and before any background worker threads are spawned.
         unsafe { std::env::set_var("LUSHTEXT_DATA_DIR", &test_data_dir) };
         lushtext_core::init_schema_dir();
         gtk4::init()

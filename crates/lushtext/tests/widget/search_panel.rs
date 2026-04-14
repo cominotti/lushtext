@@ -169,8 +169,8 @@ fn test_search_panel_set_workspace_roots() {
 fn test_start_search_uses_passed_query_spec_instead_of_live_widget_state() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("notes.txt"), "needle here\n").unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("notes.txt"), "needle here\n").expect("expected operation to succeed");
 
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
     panel.set_query("absent");
@@ -311,7 +311,7 @@ fn test_toggle_search_panel_action_exists_and_enabled() {
     let window = test_window();
     let action = window.lookup_action("toggle-search-panel");
     assert!(action.is_some(), "toggle-search-panel action must exist");
-    assert!(action.unwrap().is_enabled(), "action must be enabled");
+    assert!(action.expect("expected operation to succeed").is_enabled(), "action must be enabled");
 }
 
 #[test]
@@ -578,13 +578,13 @@ fn test_search_navigation_actions_start_disabled() {
     ensure_gtk_init();
     let window = test_window();
     // No tabs, no search panel visible, no results → actions should be disabled.
-    let next = window.lookup_action("search-next-match").unwrap();
+    let next = window.lookup_action("search-next-match").expect("expected operation to succeed");
     assert!(
         !next.is_enabled(),
         "search-next-match should start disabled"
     );
 
-    let prev = window.lookup_action("search-prev-match").unwrap();
+    let prev = window.lookup_action("search-prev-match").expect("expected operation to succeed");
     assert!(
         !prev.is_enabled(),
         "search-prev-match should start disabled"
@@ -786,7 +786,7 @@ fn test_clear_results_clears_undo_backup() {
         !panel.imp().undo_button.property::<bool>("visible"),
         "undo_button should hide after clear"
     );
-    assert!(search_backup::load(&data_dir).unwrap().is_empty());
+    assert!(search_backup::load(&data_dir).expect("expected operation to succeed").is_empty());
 
     let _ = search_backup::delete(&data_dir);
 }
@@ -802,11 +802,11 @@ fn test_search_panel_discards_stale_persisted_undo_backup_on_construction() {
         std::path::PathBuf::from("/persisted.rs"),
         b"persisted content".to_vec(),
     );
-    search_backup::save(&data_dir, &backup).unwrap();
+    search_backup::save(&data_dir, &backup).expect("expected operation to succeed");
 
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir).unwrap().is_empty()
+        search_backup::load(&data_dir).expect("expected operation to succeed").is_empty()
     });
     assert!(panel.imp().preview.undo_backup.borrow().is_none());
     assert!(
@@ -913,7 +913,7 @@ fn test_search_navigation_actions_enabled_lifecycle() {
     let window = test_window();
 
     // 1. Start: disabled (no tabs, no panel, no results).
-    let next = window.lookup_action("search-next-match").unwrap();
+    let next = window.lookup_action("search-next-match").expect("expected operation to succeed");
     assert!(!next.is_enabled(), "should start disabled");
 
     // 2. Open a tab — still disabled (panel not visible, no results).
@@ -1024,9 +1024,9 @@ fn test_search_history_entry_serialization_roundtrip() {
     // Pure data test — no GTK needed, but ensure_gtk_init doesn't hurt.
     ensure_gtk_init();
     let entry = make_history_entry("test query", true, false, true, false, Some("*.rs"));
-    let json = serde_json::to_string(&entry).unwrap();
+    let json = serde_json::to_string(&entry).expect("expected operation to succeed");
     let deserialized: lushtext_core::model::content_search::SearchHistoryEntry =
-        serde_json::from_str(&json).unwrap();
+        serde_json::from_str(&json).expect("expected operation to succeed");
     assert_eq!(entry, deserialized);
 }
 
@@ -1134,8 +1134,8 @@ fn test_saved_search_serialization_roundtrip() {
             ContentSearchOptions::new(true, false, true, false, Some("*.rs".to_string())),
         ),
     );
-    let json = serde_json::to_string(&entry).unwrap();
-    let deserialized: SavedSearch = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(&entry).expect("expected operation to succeed");
+    let deserialized: SavedSearch = serde_json::from_str(&json).expect("expected operation to succeed");
     assert_eq!(entry, deserialized);
 }
 
@@ -1194,8 +1194,8 @@ fn test_search_panel_results_revealers_start_hidden_and_match_panel_animation() 
 fn test_search_panel_no_results_keeps_results_body_hidden() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("notes.txt"), "completely unrelated text").unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("notes.txt"), "completely unrelated text").expect("expected operation to succeed");
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
@@ -1216,12 +1216,12 @@ fn test_search_panel_no_results_keeps_results_body_hidden() {
 fn test_search_panel_first_result_reveals_fixed_max_height_results_body() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     std::fs::write(
         dir.path().join("notes.txt"),
         "needle one\nneedle two\nneedle three\n",
     )
-    .unwrap();
+    .expect("expected operation to succeed");
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
@@ -1243,8 +1243,8 @@ fn test_search_panel_first_result_reveals_fixed_max_height_results_body() {
 fn test_search_panel_clearing_query_hides_results_revealers_after_results() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("notes.txt"), "needle once\n").unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("notes.txt"), "needle once\n").expect("expected operation to succeed");
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
@@ -1268,8 +1268,8 @@ fn test_search_panel_clearing_query_hides_results_revealers_after_results() {
 fn test_search_panel_followup_search_keeps_results_body_open_until_new_outcome() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("notes.txt"), "needle once\n").unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("notes.txt"), "needle once\n").expect("expected operation to succeed");
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);

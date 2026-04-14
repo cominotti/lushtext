@@ -51,6 +51,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Rustdoc lint gate
+        run: |
+          RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" \
+          cargo doc --workspace --no-deps
+
   non-widget-tests:
     name: Non-widget Tests
     runs-on: ubuntu-latest
@@ -150,3 +155,22 @@ jobs:
 
       - name: Compile-check benchmarks
         run: cargo bench -p lushtext-core --no-run
+
+  dependency-policy:
+    name: Dependency Policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+
+      - name: Check dependency policy
+        run: cargo deny check advisories bans sources

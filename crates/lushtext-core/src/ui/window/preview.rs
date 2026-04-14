@@ -192,7 +192,10 @@ impl LushtextWindow {
         let paned_weak = paned.downgrade();
         let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
             if let Some(p) = paned_weak.upgrade() {
-                #[expect(clippy::cast_possible_truncation)] // animation value fits in i32
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "Preview pane animation endpoints stay within i32 paned coordinates"
+                )]
                 p.set_position(value as i32);
             }
         });
@@ -258,7 +261,10 @@ impl LushtextWindow {
         let paned_weak = paned.downgrade();
         let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
             if let Some(p) = paned_weak.upgrade() {
-                #[expect(clippy::cast_possible_truncation)] // animation value fits in i32
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "Preview pane animation endpoints stay within i32 paned coordinates"
+                )]
                 p.set_position(value as i32);
             }
         });

@@ -14,11 +14,19 @@ use std::path::Path;
 const SESSION_FILENAME: &str = "session.json";
 
 /// Load the global session. Returns default (no tabs) if file doesn't exist.
+///
+/// # Errors
+///
+/// Returns an error if the session file exists but cannot be read or parsed.
 pub fn load(data_dir: &Path) -> Result<SessionData> {
     json_store::load(data_dir, SESSION_FILENAME)
 }
 
 /// Save the global session to disk.
+///
+/// # Errors
+///
+/// Returns an error if the session file cannot be serialized or written.
 pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
     json_store::save(data_dir, SESSION_FILENAME, session)
 }
@@ -64,15 +72,15 @@ mod tests {
 
     #[test]
     fn test_load_missing_returns_default() {
-        let dir = TempDir::new().unwrap();
-        let session = load(dir.path()).unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let session = load(dir.path()).expect("expected operation to succeed");
         assert!(session.tabs.is_empty());
         assert_eq!(session.active_tab_index, None);
     }
 
     #[test]
     fn test_save_and_load_roundtrip() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let session = SessionData {
             tabs: vec![SessionTab {
                 path: Some("/tmp/file.rs".into()),
@@ -84,8 +92,8 @@ mod tests {
             active_tab_index: Some(0),
         };
 
-        save(dir.path(), &session).unwrap();
-        let loaded = load(dir.path()).unwrap();
+        save(dir.path(), &session).expect("expected operation to succeed");
+        let loaded = load(dir.path()).expect("expected operation to succeed");
 
         assert_eq!(loaded.tabs.len(), 1);
         assert_eq!(loaded.tabs[0].cursor_line, 10);
@@ -94,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_save_and_load_with_untitled_tabs() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let session = SessionData {
             tabs: vec![
                 tab("/tmp/file.rs", 1),
@@ -104,8 +112,8 @@ mod tests {
             active_tab_index: Some(1),
         };
 
-        save(dir.path(), &session).unwrap();
-        let loaded = load(dir.path()).unwrap();
+        save(dir.path(), &session).expect("expected operation to succeed");
+        let loaded = load(dir.path()).expect("expected operation to succeed");
 
         assert_eq!(loaded.tabs.len(), 3);
         assert_eq!(loaded.tabs[0].path, Some("/tmp/file.rs".into()));
@@ -117,10 +125,10 @@ mod tests {
 
     #[test]
     fn test_filter_existing_tabs_removes_missing() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
 
         let real_file = dir.path().join("exists.txt");
-        std::fs::write(&real_file, "hello").unwrap();
+        std::fs::write(&real_file, "hello").expect("expected operation to succeed");
 
         let mut session = SessionData {
             tabs: vec![tab(real_file.clone(), 1), tab("/nonexistent/file.txt", 5)],
@@ -136,10 +144,10 @@ mod tests {
 
     #[test]
     fn test_filter_existing_tabs_preserves_untitled() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
 
         let real_file = dir.path().join("exists.txt");
-        std::fs::write(&real_file, "content").unwrap();
+        std::fs::write(&real_file, "content").expect("expected operation to succeed");
 
         let mut session = SessionData {
             tabs: vec![
@@ -160,12 +168,12 @@ mod tests {
 
     #[test]
     fn test_filter_existing_tabs_adjusts_active_index() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
 
         let file_a = dir.path().join("a.txt");
         let file_b = dir.path().join("b.txt");
-        std::fs::write(&file_a, "a").unwrap();
-        std::fs::write(&file_b, "b").unwrap();
+        std::fs::write(&file_a, "a").expect("expected operation to succeed");
+        std::fs::write(&file_b, "b").expect("expected operation to succeed");
 
         let mut session = SessionData {
             tabs: vec![
@@ -205,21 +213,21 @@ mod tests {
 
     #[test]
     fn test_save_overwrites_previous_session() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
 
         let session1 = SessionData {
             tabs: vec![tab("/old.rs", 1)],
             active_tab_index: Some(0),
         };
-        save(dir.path(), &session1).unwrap();
+        save(dir.path(), &session1).expect("expected operation to succeed");
 
         let session2 = SessionData {
             tabs: vec![tab("/new.rs", 5), tab("/also.rs", 10)],
             active_tab_index: Some(1),
         };
-        save(dir.path(), &session2).unwrap();
+        save(dir.path(), &session2).expect("expected operation to succeed");
 
-        let loaded = load(dir.path()).unwrap();
+        let loaded = load(dir.path()).expect("expected operation to succeed");
         assert_eq!(loaded.tabs.len(), 2);
         assert_eq!(loaded.tabs[0].path, Some("/new.rs".into()));
         assert_eq!(loaded.active_tab_index, Some(1));

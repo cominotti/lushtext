@@ -47,6 +47,10 @@ pub fn bookmarks_dir(data_dir: &Path) -> PathBuf {
 }
 
 /// Resolve the stable identity for a saved document path.
+///
+/// # Errors
+///
+/// Returns an error if the path cannot be canonicalized.
 pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
     let display_path = path.to_path_buf();
     let canonical_path = path
@@ -59,6 +63,11 @@ pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity>
 }
 
 /// Load bookmarks for a saved file, returning an empty document if no sidecar exists yet.
+///
+/// # Errors
+///
+/// Returns an error if the document identity cannot be resolved, the sidecar
+/// cannot be read, or the stored JSON cannot be parsed.
 pub fn load_for_path(data_dir: &Path, path: &Path) -> Result<BookmarkDocument> {
     let identity = resolve_document_identity(path)?;
     load_for_identity(data_dir, identity)
@@ -81,6 +90,11 @@ fn load_for_identity(
 }
 
 /// Save bookmarks for a document path. Empty bookmark sets delete the sidecar file.
+///
+/// # Errors
+///
+/// Returns an error if the document identity cannot be resolved or the sidecar
+/// cannot be written or deleted.
 pub fn save_for_path(
     data_dir: &Path,
     path: &Path,
@@ -98,6 +112,10 @@ pub fn save_for_path(
 }
 
 /// Save a fully shaped bookmark document.
+///
+/// # Errors
+///
+/// Returns an error if the sidecar cannot be written or deleted.
 pub fn save_document(data_dir: &Path, mut document: BookmarkDocument) -> Result<()> {
     document.sort_stable();
 
@@ -113,6 +131,11 @@ pub fn save_document(data_dir: &Path, mut document: BookmarkDocument) -> Result<
 }
 
 /// Delete the bookmark sidecar for a saved file path if it exists.
+///
+/// # Errors
+///
+/// Returns an error if the document identity cannot be resolved or an existing
+/// sidecar cannot be deleted.
 pub fn delete_for_path(data_dir: &Path, path: &Path) -> Result<()> {
     let identity = resolve_document_identity(path)?;
     delete_sidecar_file(data_dir, &identity)
@@ -134,6 +157,11 @@ fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> R
 /// Move bookmark sidecars after an in-app rename of a file or directory tree.
 ///
 /// Returns the number of bookmark documents that were rewritten.
+///
+/// # Errors
+///
+/// Returns an error if the sidecar directory cannot be scanned or a migrated
+/// document cannot be read, rewritten, or cleaned up.
 pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Result<usize> {
     let dir = bookmarks_dir(data_dir);
     if !dir.exists() {
@@ -172,6 +200,11 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
 }
 
 /// Collect all bookmarks under the current workspace roots for browse dialogs.
+///
+/// # Errors
+///
+/// Returns an error if the sidecar directory cannot be scanned or a bookmark
+/// document cannot be read or parsed.
 pub fn list_workspace_bookmarks(
     data_dir: &Path,
     workspace_roots: &[PathBuf],
@@ -302,14 +335,14 @@ mod tests {
 
     fn write_file(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
+            std::fs::create_dir_all(parent).expect("expected operation to succeed");
         }
-        std::fs::write(path, contents).unwrap();
+        std::fs::write(path, contents).expect("expected operation to succeed");
     }
 
     #[test]
     fn save_and_load_roundtrip() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let file_path = dir.path().join("src/main.rs");
         write_file(&file_path, "fn main() {}\n");
 
@@ -318,8 +351,8 @@ mod tests {
             BookmarkRecord::new(1, None),
         ];
 
-        save_for_path(dir.path(), &file_path, &bookmarks).unwrap();
-        let loaded = load_for_path(dir.path(), &file_path).unwrap();
+        save_for_path(dir.path(), &file_path, &bookmarks).expect("expected operation to succeed");
+        let loaded = load_for_path(dir.path(), &file_path).expect("expected operation to succeed");
 
         assert_eq!(loaded.bookmarks.len(), 2);
         assert_eq!(loaded.bookmarks[0].line, 1);
@@ -328,13 +361,13 @@ mod tests {
 
     #[test]
     fn empty_save_deletes_sidecar() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let file_path = dir.path().join("src/main.rs");
         write_file(&file_path, "fn main() {}\n");
 
-        let identity =
-            save_for_path(dir.path(), &file_path, &[BookmarkRecord::new(0, None)]).unwrap();
-        save_for_path(dir.path(), &file_path, &[]).unwrap();
+        let identity = save_for_path(dir.path(), &file_path, &[BookmarkRecord::new(0, None)])
+            .expect("expected operation to succeed");
+        save_for_path(dir.path(), &file_path, &[]).expect("expected operation to succeed");
 
         let sidecar_path = bookmarks_dir(dir.path()).join(format!("{}.json", identity.sidecar_id));
         assert!(!sidecar_path.exists());
@@ -342,7 +375,7 @@ mod tests {
 
     #[test]
     fn move_path_tree_rewrites_document_identity() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("expected operation to succeed");
         let old_file = dir.path().join("workspace/old.rs");
         let new_file = dir.path().join("workspace/new.rs");
         write_file(&old_file, "fn old() {}\n");
@@ -352,12 +385,12 @@ mod tests {
             &old_file,
             &[BookmarkRecord::new(2, Some("keep".to_string()))],
         )
-        .unwrap();
+        .expect("expected operation to succeed");
 
-        std::fs::rename(&old_file, &new_file).unwrap();
-        move_path_tree(dir.path(), &old_file, &new_file).unwrap();
+        std::fs::rename(&old_file, &new_file).expect("expected operation to succeed");
+        move_path_tree(dir.path(), &old_file, &new_file).expect("expected operation to succeed");
 
-        let loaded = load_for_path(dir.path(), &new_file).unwrap();
+        let loaded = load_for_path(dir.path(), &new_file).expect("expected operation to succeed");
         assert_eq!(loaded.identity.display_path, new_file);
         assert_eq!(loaded.bookmarks.len(), 1);
         assert_eq!(loaded.bookmarks[0].label.as_deref(), Some("keep"));

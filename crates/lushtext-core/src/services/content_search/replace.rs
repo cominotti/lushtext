@@ -26,6 +26,11 @@ use crate::model::content_search::{ReplaceResult, Replacement};
 ///
 /// `skip_paths` lists files that should NOT be replaced (e.g., open tabs with unsaved changes).
 /// Skipped files are excluded from the result count but included in `ReplaceResult::skipped_paths`.
+///
+/// # Errors
+///
+/// Returns an error if every candidate file fails to process or if the replace
+/// operation is cancelled and rollback cannot complete cleanly.
 pub fn apply_replacements(
     replacements: &[Replacement],
     skip_paths: &std::collections::HashSet<std::path::PathBuf>,
@@ -107,7 +112,10 @@ pub fn apply_replacements(
         // so stale search results skip the whole file instead of partially applying.
         let mut file_stale = false;
         for r in &file_replacements {
-            #[expect(clippy::cast_possible_truncation)] // line_number is u32-scale data in practice
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "Search result line numbers stay within usize indexing limits on supported editor workloads"
+            )]
             let line_idx = r.line_number.saturating_sub(1) as usize;
             if line_idx < lines.len() && lines[line_idx] != r.original_line {
                 errors.push(format!(
@@ -126,7 +134,10 @@ pub fn apply_replacements(
 
         let mut file_replaced = 0usize;
         for r in &file_replacements {
-            #[expect(clippy::cast_possible_truncation)] // line_number is u32-scale data in practice
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "Search result line numbers stay within usize indexing limits on supported editor workloads"
+            )]
             let line_idx = r.line_number.saturating_sub(1) as usize;
             if line_idx < lines.len() {
                 let line = &mut lines[line_idx];
@@ -190,6 +201,10 @@ pub fn apply_replacements(
 ///
 /// Writes each file atomically (temp file + rename). Continues on per-file errors
 /// so that partial undo is possible. Returns the count of files restored.
+///
+/// # Errors
+///
+/// Returns an error if every restore attempt fails.
 pub fn undo_replacements(
     backup: &std::collections::HashMap<std::path::PathBuf, Vec<u8>>,
 ) -> anyhow::Result<usize> {
@@ -293,6 +308,8 @@ impl ReplaceFileLock {
             .open(path)
             .map_err(|e| anyhow::anyhow!("failed to open {} for locking: {}", path.display(), e))?;
         let fd = file.as_raw_fd();
+        // SAFETY: `fd` comes from a live `File` we just opened, and `flock`
+        // only borrows that valid descriptor for the duration of the syscall.
         let result = unsafe { libc::flock(fd, libc::LOCK_EX) };
         if result != 0 {
             return Err(anyhow::anyhow!(
@@ -308,6 +325,8 @@ impl ReplaceFileLock {
 #[cfg(unix)]
 impl Drop for ReplaceFileLock {
     fn drop(&mut self) {
+        // SAFETY: the descriptor still belongs to `self.0`, and releasing the
+        // advisory lock is valid while that file handle remains open in `Drop`.
         let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
     }
 }
@@ -354,11 +373,12 @@ mod tests {
 
     #[test]
     fn test_apply_replacements_literal() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.rs");
         let file_b = dir.path().join("b.rs");
-        fs::write(&file_a, "let hello = 1;\nlet world = 2;\n").unwrap();
-        fs::write(&file_b, "fn hello() {}\n").unwrap();
+        fs::write(&file_a, "let hello = 1;\nlet world = 2;\n")
+            .expect("expected operation to succeed");
+        fs::write(&file_b, "fn hello() {}\n").expect("expected operation to succeed");
 
         let replacements = vec![
             make_replacement(&file_a, 1, "let hello = 1;", "goodbye", 4..9),
@@ -366,13 +386,14 @@ mod tests {
         ];
 
         let cancel = AtomicBool::new(false);
-        let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel).unwrap();
+        let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel)
+            .expect("expected operation to succeed");
 
         assert_eq!(result.replaced_count, 2);
         assert_eq!(result.files_affected, 2);
         assert!(result.skipped_paths.is_empty());
 
-        let content_a = fs::read_to_string(&file_a).unwrap();
+        let content_a = fs::read_to_string(&file_a).expect("expected operation to succeed");
         assert!(
             content_a.contains("goodbye"),
             "a.rs should have replacement"
@@ -382,7 +403,7 @@ mod tests {
             "a.rs should not have original"
         );
 
-        let content_b = fs::read_to_string(&file_b).unwrap();
+        let content_b = fs::read_to_string(&file_b).expect("expected operation to succeed");
         assert!(
             content_b.contains("goodbye"),
             "b.rs should have replacement"
@@ -393,10 +414,10 @@ mod tests {
 
     #[test]
     fn test_apply_replacements_preserves_backup() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
         let original = "let needle = 42;\n";
-        fs::write(&file, original).unwrap();
+        fs::write(&file, original).expect("expected operation to succeed");
 
         let replacements = vec![make_replacement(
             &file,
@@ -407,17 +428,18 @@ mod tests {
         )];
 
         let cancel = AtomicBool::new(false);
-        let (_, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel).unwrap();
+        let (_, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel)
+            .expect("expected operation to succeed");
 
         assert_eq!(backup[&file], original.as_bytes());
     }
 
     #[test]
     fn test_undo_replacements_restores_content() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
         let original = "let needle = 42;\n";
-        fs::write(&file, original).unwrap();
+        fs::write(&file, original).expect("expected operation to succeed");
 
         let replacements = vec![make_replacement(
             &file,
@@ -428,20 +450,28 @@ mod tests {
         )];
 
         let cancel = AtomicBool::new(false);
-        let (_, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel).unwrap();
+        let (_, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel)
+            .expect("expected operation to succeed");
 
-        assert!(fs::read_to_string(&file).unwrap().contains("haystack"));
+        assert!(
+            fs::read_to_string(&file)
+                .expect("expected operation to succeed")
+                .contains("haystack")
+        );
 
-        let restored = undo_replacements(&backup).unwrap();
+        let restored = undo_replacements(&backup).expect("expected operation to succeed");
         assert_eq!(restored, 1);
-        assert_eq!(fs::read_to_string(&file).unwrap(), original);
+        assert_eq!(
+            fs::read_to_string(&file).expect("expected operation to succeed"),
+            original
+        );
     }
 
     #[test]
     fn test_apply_replacements_reverse_order() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
-        fs::write(&file, "ab cd\n").unwrap();
+        fs::write(&file, "ab cd\n").expect("expected operation to succeed");
 
         let replacements = vec![
             make_replacement(&file, 1, "ab cd", "XY", 0..2),
@@ -449,10 +479,11 @@ mod tests {
         ];
 
         let cancel = AtomicBool::new(false);
-        let (result, _) = apply_replacements(&replacements, &HashSet::new(), &cancel).unwrap();
+        let (result, _) = apply_replacements(&replacements, &HashSet::new(), &cancel)
+            .expect("expected operation to succeed");
         assert_eq!(result.replaced_count, 2);
 
-        let content = fs::read_to_string(&file).unwrap();
+        let content = fs::read_to_string(&file).expect("expected operation to succeed");
         assert_eq!(
             content, "XY ZW\n",
             "both replacements should apply correctly"
@@ -461,11 +492,11 @@ mod tests {
 
     #[test]
     fn test_apply_replacements_cancel() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.txt");
         let file_b = dir.path().join("b.txt");
-        fs::write(&file_a, "needle\n").unwrap();
-        fs::write(&file_b, "needle\n").unwrap();
+        fs::write(&file_a, "needle\n").expect("expected operation to succeed");
+        fs::write(&file_b, "needle\n").expect("expected operation to succeed");
 
         let replacements = vec![
             make_replacement(&file_a, 1, "needle", "replaced", 0..6),
@@ -475,25 +506,31 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let result = apply_replacements(&replacements, &HashSet::new(), &cancel);
         assert!(result.is_err(), "cancelled replace should abort");
-        assert_eq!(fs::read_to_string(&file_a).unwrap(), "needle\n");
-        assert_eq!(fs::read_to_string(&file_b).unwrap(), "needle\n");
+        assert_eq!(
+            fs::read_to_string(&file_a).expect("expected operation to succeed"),
+            "needle\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&file_b).expect("expected operation to succeed"),
+            "needle\n"
+        );
     }
 
     #[test]
     #[cfg(unix)]
     fn test_apply_replacements_cancel_rolls_back_applied_files() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.txt");
         let file_b = dir.path().join("b.txt");
-        fs::write(&file_a, "needle\n").unwrap();
-        fs::write(&file_b, "needle\n").unwrap();
+        fs::write(&file_a, "needle\n").expect("expected operation to succeed");
+        fs::write(&file_b, "needle\n").expect("expected operation to succeed");
         let replacements = vec![
             make_replacement(&file_a, 1, "needle", "replaced", 0..6),
             make_replacement(&file_b, 1, "needle", "replaced", 0..6),
         ];
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let lock_b = ReplaceFileLock::acquire(&file_b).unwrap();
+        let lock_b = ReplaceFileLock::acquire(&file_b).expect("expected operation to succeed");
         let cancel_for_worker = cancel.clone();
         let worker = std::thread::spawn(move || {
             apply_replacements(&replacements, &HashSet::new(), cancel_for_worker.as_ref())
@@ -512,16 +549,22 @@ mod tests {
         }
         drop(lock_b);
 
-        let result = worker.join().unwrap();
+        let result = worker.join().expect("expected operation to succeed");
 
         assert!(result.is_err(), "cancelled replace should roll back");
-        assert_eq!(fs::read_to_string(&file_a).unwrap(), "needle\n");
-        assert_eq!(fs::read_to_string(&file_b).unwrap(), "needle\n");
+        assert_eq!(
+            fs::read_to_string(&file_a).expect("expected operation to succeed"),
+            "needle\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&file_b).expect("expected operation to succeed"),
+            "needle\n"
+        );
     }
 
     #[test]
     fn test_apply_replacements_nonexistent_file() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let missing_file = dir.path().join("does_not_exist.rs");
 
         let replacements = vec![make_replacement(
@@ -539,11 +582,11 @@ mod tests {
 
     #[test]
     fn test_apply_replacements_skip_paths() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.rs");
         let file_b = dir.path().join("b.rs");
-        fs::write(&file_a, "needle\n").unwrap();
-        fs::write(&file_b, "needle\n").unwrap();
+        fs::write(&file_a, "needle\n").expect("expected operation to succeed");
+        fs::write(&file_b, "needle\n").expect("expected operation to succeed");
 
         let replacements = vec![
             make_replacement(&file_a, 1, "needle", "replaced", 0..6),
@@ -554,7 +597,8 @@ mod tests {
         skip.insert(file_b.clone());
 
         let cancel = AtomicBool::new(false);
-        let (result, backup) = apply_replacements(&replacements, &skip, &cancel).unwrap();
+        let (result, backup) = apply_replacements(&replacements, &skip, &cancel)
+            .expect("expected operation to succeed");
 
         assert_eq!(result.replaced_count, 1, "only a.rs should be replaced");
         assert_eq!(result.files_affected, 1);
@@ -562,6 +606,9 @@ mod tests {
         assert_eq!(result.skipped_paths[0], file_b);
         assert!(backup.contains_key(&file_a));
         assert!(!backup.contains_key(&file_b));
-        assert_eq!(fs::read_to_string(&file_b).unwrap(), "needle\n");
+        assert_eq!(
+            fs::read_to_string(&file_b).expect("expected operation to succeed"),
+            "needle\n"
+        );
     }
 }

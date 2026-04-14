@@ -18,8 +18,10 @@ fn bookmark_sidecar_roundtrip_uses_saved_file_identity() {
         BookmarkRecord::new(0, None),
     ];
 
-    let identity = bookmark_service::save_for_path(ctx.data_dir(), &file_path, &bookmarks).unwrap();
-    let loaded = bookmark_service::load_for_path(ctx.data_dir(), &file_path).unwrap();
+    let identity = bookmark_service::save_for_path(ctx.data_dir(), &file_path, &bookmarks)
+        .expect("expected operation to succeed");
+    let loaded = bookmark_service::load_for_path(ctx.data_dir(), &file_path)
+        .expect("expected operation to succeed");
 
     let sidecar_path = bookmark_service::bookmarks_dir(ctx.data_dir())
         .join(format!("{}.json", identity.sidecar_id));
@@ -41,7 +43,7 @@ fn note_sidecars_follow_in_app_rename_migration() {
         &old_file,
         &[BookmarkRecord::new(1, Some("bookmark".to_string()))],
     )
-    .unwrap();
+    .expect("expected operation to succeed");
     annotation_service::save_for_path(
         ctx.data_dir(),
         &old_file,
@@ -52,14 +54,18 @@ fn note_sidecars_follow_in_app_rename_migration() {
             AnnotationStyle::Warning,
         )],
     )
-    .unwrap();
+    .expect("expected operation to succeed");
 
-    std::fs::rename(&old_file, &new_file).unwrap();
-    bookmark_service::move_path_tree(ctx.data_dir(), &old_file, &new_file).unwrap();
-    annotation_service::move_path_tree(ctx.data_dir(), &old_file, &new_file).unwrap();
+    std::fs::rename(&old_file, &new_file).expect("expected operation to succeed");
+    bookmark_service::move_path_tree(ctx.data_dir(), &old_file, &new_file)
+        .expect("expected operation to succeed");
+    annotation_service::move_path_tree(ctx.data_dir(), &old_file, &new_file)
+        .expect("expected operation to succeed");
 
-    let loaded_bookmarks = bookmark_service::load_for_path(ctx.data_dir(), &new_file).unwrap();
-    let loaded_annotations = annotation_service::load_for_path(ctx.data_dir(), &new_file).unwrap();
+    let loaded_bookmarks = bookmark_service::load_for_path(ctx.data_dir(), &new_file)
+        .expect("expected operation to succeed");
+    let loaded_annotations = annotation_service::load_for_path(ctx.data_dir(), &new_file)
+        .expect("expected operation to succeed");
 
     assert_eq!(loaded_bookmarks.bookmarks.len(), 1);
     assert_eq!(
@@ -91,13 +97,13 @@ fn annotation_export_groups_by_file_and_includes_excerpt() {
             AnnotationStyle::Todo,
         )],
     )
-    .unwrap();
+    .expect("expected operation to succeed");
 
     let markdown = annotation_service::export_workspace_markdown(
         ctx.data_dir(),
         &[ctx.path().join("workspace")],
     )
-    .unwrap();
+    .expect("expected operation to succeed");
 
     assert!(markdown.contains("# Workspace Annotations"));
     assert!(markdown.contains("## "));

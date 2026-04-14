@@ -13,7 +13,7 @@ fn names(entries: &[DirectoryEntry]) -> Vec<String> {
             entry
                 .path
                 .file_name()
-                .unwrap()
+                .expect("expected operation to succeed")
                 .to_string_lossy()
                 .to_string()
         })

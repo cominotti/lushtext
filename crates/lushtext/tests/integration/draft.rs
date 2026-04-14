@@ -46,17 +46,21 @@ fn draft_lifecycle_create_detect_delete() {
     let draft_content = "fn main() { println!(\"modified\"); }";
 
     // Create draft
-    draft_service::write_draft(ctx.data_dir(), &draft_id, draft_content).unwrap();
+    draft_service::write_draft(ctx.data_dir(), &draft_id, draft_content)
+        .expect("expected operation to succeed");
 
     // Detect draft
-    let read_back = draft_service::read_draft(ctx.data_dir(), &draft_id).unwrap();
+    let read_back = draft_service::read_draft(ctx.data_dir(), &draft_id)
+        .expect("expected operation to succeed");
     assert_eq!(read_back, Some(draft_content.to_string()));
 
     // Delete draft
-    draft_service::delete_draft_file(ctx.data_dir(), &draft_id).unwrap();
+    draft_service::delete_draft_file(ctx.data_dir(), &draft_id)
+        .expect("expected operation to succeed");
 
     // Verify deleted
-    let after_delete = draft_service::read_draft(ctx.data_dir(), &draft_id).unwrap();
+    let after_delete = draft_service::read_draft(ctx.data_dir(), &draft_id)
+        .expect("expected operation to succeed");
     assert_eq!(after_delete, None);
 }
 
@@ -76,8 +80,9 @@ fn manifest_persist_and_restore() {
     let mut manifest = DraftManifest::default();
     manifest.upsert(entry.clone());
 
-    draft_service::save_manifest(ctx.data_dir(), &manifest).unwrap();
-    let loaded = draft_service::load_manifest(ctx.data_dir()).unwrap();
+    draft_service::save_manifest(ctx.data_dir(), &manifest).expect("expected operation to succeed");
+    let loaded =
+        draft_service::load_manifest(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(loaded.drafts.len(), 1);
     assert_eq!(loaded.drafts[0], entry);
@@ -105,8 +110,9 @@ fn manifest_upsert_updates_existing() {
     };
     manifest.upsert(entry2.clone());
 
-    draft_service::save_manifest(ctx.data_dir(), &manifest).unwrap();
-    let loaded = draft_service::load_manifest(ctx.data_dir()).unwrap();
+    draft_service::save_manifest(ctx.data_dir(), &manifest).expect("expected operation to succeed");
+    let loaded =
+        draft_service::load_manifest(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(loaded.drafts.len(), 1);
     assert_eq!(loaded.drafts[0].saved_at_secs, 4000);
@@ -128,9 +134,11 @@ fn cleanup_removes_manifest_entries_without_draft_files() {
     };
 
     // Create the drafts directory but NOT the draft file
-    std::fs::create_dir_all(draft_service::drafts_dir(ctx.data_dir())).unwrap();
+    std::fs::create_dir_all(draft_service::drafts_dir(ctx.data_dir()))
+        .expect("expected operation to succeed");
 
-    let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest).unwrap();
+    let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest)
+        .expect("expected operation to succeed");
     assert_eq!(cleaned, 1);
     assert!(manifest.drafts.is_empty());
 }
@@ -140,15 +148,17 @@ fn cleanup_removes_draft_files_without_manifest_entries() {
     let ctx = TestContext::new();
 
     // Write a draft file with no manifest entry
-    draft_service::write_draft(ctx.data_dir(), "orphan", "stale content").unwrap();
+    draft_service::write_draft(ctx.data_dir(), "orphan", "stale content")
+        .expect("expected operation to succeed");
     let mut manifest = DraftManifest::default();
 
-    let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest).unwrap();
+    let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest)
+        .expect("expected operation to succeed");
     assert_eq!(cleaned, 1);
 
     // File should be gone
     assert_eq!(
-        draft_service::read_draft(ctx.data_dir(), "orphan").unwrap(),
+        draft_service::read_draft(ctx.data_dir(), "orphan").expect("expected operation to succeed"),
         None
     );
 }
@@ -158,7 +168,8 @@ fn cleanup_preserves_valid_drafts() {
     let ctx = TestContext::new();
 
     // Write draft file AND manifest entry
-    draft_service::write_draft(ctx.data_dir(), "valid", "content").unwrap();
+    draft_service::write_draft(ctx.data_dir(), "valid", "content")
+        .expect("expected operation to succeed");
     let mut manifest = DraftManifest {
         drafts: vec![DraftEntry {
             draft_id: "valid".into(),
@@ -168,11 +179,12 @@ fn cleanup_preserves_valid_drafts() {
         }],
     };
 
-    let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest).unwrap();
+    let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest)
+        .expect("expected operation to succeed");
     assert_eq!(cleaned, 0);
     assert_eq!(manifest.drafts.len(), 1);
     assert_eq!(
-        draft_service::read_draft(ctx.data_dir(), "valid").unwrap(),
+        draft_service::read_draft(ctx.data_dir(), "valid").expect("expected operation to succeed"),
         Some("content".into())
     );
 }
@@ -183,8 +195,10 @@ fn cleanup_preserves_valid_drafts() {
 fn write_draft_with_large_content() {
     let ctx = TestContext::new();
     let large_content = "a".repeat(1_000_000); // 1MB
-    draft_service::write_draft(ctx.data_dir(), "large", &large_content).unwrap();
-    let read_back = draft_service::read_draft(ctx.data_dir(), "large").unwrap();
+    draft_service::write_draft(ctx.data_dir(), "large", &large_content)
+        .expect("expected operation to succeed");
+    let read_back =
+        draft_service::read_draft(ctx.data_dir(), "large").expect("expected operation to succeed");
     assert_eq!(read_back.as_deref(), Some(large_content.as_str()));
 }
 
@@ -192,8 +206,10 @@ fn write_draft_with_large_content() {
 fn write_draft_with_unicode_content() {
     let ctx = TestContext::new();
     let content = "fn main() { println!(\"日本語\"); } // 🦀\n";
-    draft_service::write_draft(ctx.data_dir(), "unicode", content).unwrap();
-    let read_back = draft_service::read_draft(ctx.data_dir(), "unicode").unwrap();
+    draft_service::write_draft(ctx.data_dir(), "unicode", content)
+        .expect("expected operation to succeed");
+    let read_back = draft_service::read_draft(ctx.data_dir(), "unicode")
+        .expect("expected operation to succeed");
     assert_eq!(read_back, Some(content.to_string()));
 }
 
@@ -225,7 +241,7 @@ fn manifest_find_by_path_with_multiple_entries() {
     assert_eq!(
         manifest
             .find_by_path(std::path::Path::new("/b.rs"))
-            .unwrap()
+            .expect("expected operation to succeed")
             .draft_id,
         "id2"
     );
@@ -264,7 +280,8 @@ fn manifest_remove_by_path_leaves_others_intact() {
 fn delete_nonexistent_draft_is_ok() {
     let ctx = TestContext::new();
     // Should not error even without the drafts directory existing
-    draft_service::delete_draft_file(ctx.data_dir(), "does_not_exist").unwrap();
+    draft_service::delete_draft_file(ctx.data_dir(), "does_not_exist")
+        .expect("expected operation to succeed");
 }
 
 // --- Merge-back pattern for deferred orphan cleanup ---
@@ -289,7 +306,8 @@ fn cleanup_merge_back_preserves_concurrent_additions() {
         original_mtime_secs: None,
         saved_at_secs: 1000,
     };
-    draft_service::write_draft(ctx.data_dir(), "valid", "content").unwrap();
+    draft_service::write_draft(ctx.data_dir(), "valid", "content")
+        .expect("expected operation to succeed");
     // Don't create file for "orphan" — it will be cleaned up.
 
     // Snapshot (simulating the clone before background work).
@@ -299,7 +317,8 @@ fn cleanup_merge_back_preserves_concurrent_additions() {
     let ids_before: Vec<String> = snapshot.drafts.iter().map(|e| e.draft_id.clone()).collect();
 
     // Run cleanup on the snapshot (simulating background thread).
-    draft_service::cleanup_orphans(ctx.data_dir(), &mut snapshot).unwrap();
+    draft_service::cleanup_orphans(ctx.data_dir(), &mut snapshot)
+        .expect("expected operation to succeed");
 
     // Compute removed IDs.
     let ids_after: HashSet<&str> = snapshot
@@ -349,14 +368,16 @@ fn cleanup_merge_back_empty_removal_is_noop() {
         original_mtime_secs: None,
         saved_at_secs: 1000,
     };
-    draft_service::write_draft(ctx.data_dir(), "good", "content").unwrap();
+    draft_service::write_draft(ctx.data_dir(), "good", "content")
+        .expect("expected operation to succeed");
 
     let mut snapshot = DraftManifest {
         drafts: vec![entry.clone()],
     };
     let ids_before: Vec<String> = snapshot.drafts.iter().map(|e| e.draft_id.clone()).collect();
 
-    draft_service::cleanup_orphans(ctx.data_dir(), &mut snapshot).unwrap();
+    draft_service::cleanup_orphans(ctx.data_dir(), &mut snapshot)
+        .expect("expected operation to succeed");
 
     let ids_after: HashSet<&str> = snapshot
         .drafts
@@ -384,8 +405,10 @@ fn batch_preload_reads_matching_drafts() {
     let id_a = draft_service::draft_id_for_path(&path_a);
     let id_b = draft_service::draft_id_for_path(&path_b);
 
-    draft_service::write_draft(ctx.data_dir(), &id_a, "content_a").unwrap();
-    draft_service::write_draft(ctx.data_dir(), &id_b, "content_b").unwrap();
+    draft_service::write_draft(ctx.data_dir(), &id_a, "content_a")
+        .expect("expected operation to succeed");
+    draft_service::write_draft(ctx.data_dir(), &id_b, "content_b")
+        .expect("expected operation to succeed");
 
     let manifest = DraftManifest {
         drafts: vec![

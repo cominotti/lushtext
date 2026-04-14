@@ -227,7 +227,10 @@ impl LushtextWorkspaceSection {
         tree_loading::clear_dir_state(self, target_path);
 
         if let Some(location) = self.remove_cached_item(target_path) {
-            #[expect(clippy::cast_possible_truncation)] // list store ≪ u32::MAX
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "The sidebar child store is bounded to realistic directory sizes before converting to u32"
+            )]
             let idx = location.index as u32;
             match location.parent_dir.as_deref() {
                 None => {

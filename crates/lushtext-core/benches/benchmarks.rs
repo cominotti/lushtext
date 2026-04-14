@@ -70,27 +70,30 @@ fn make_synthetic_index(n: usize) -> FileIndex {
 
 /// Create a temp directory tree with the given number of files spread across subdirs.
 fn make_temp_dir_tree(file_count: usize) -> TempDir {
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
     let subdirs = ["src", "src/model", "src/services", "tests", "docs"];
     for subdir in &subdirs {
-        std::fs::create_dir_all(dir.path().join(subdir)).unwrap();
+        std::fs::create_dir_all(dir.path().join(subdir)).expect("expected operation to succeed");
     }
     for i in 0..file_count {
         let subdir = subdirs[i % subdirs.len()];
-        std::fs::write(dir.path().join(format!("{subdir}/file_{i}.rs")), "").unwrap();
+        std::fs::write(dir.path().join(format!("{subdir}/file_{i}.rs")), "")
+            .expect("expected operation to succeed");
     }
     dir
 }
 
 /// Create a flat temp directory with mixed files and subdirs for `scan_directory` benchmarks.
 fn make_flat_dir(entry_count: usize) -> TempDir {
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
     let n_dirs = entry_count / 2;
     for i in 0..n_dirs {
-        std::fs::create_dir(dir.path().join(format!("dir_{i}"))).unwrap();
+        std::fs::create_dir(dir.path().join(format!("dir_{i}")))
+            .expect("expected operation to succeed");
     }
     for i in 0..(entry_count - n_dirs) {
-        std::fs::write(dir.path().join(format!("file_{i}.rs")), "").unwrap();
+        std::fs::write(dir.path().join(format!("file_{i}.rs")), "")
+            .expect("expected operation to succeed");
     }
     dir
 }
@@ -150,15 +153,15 @@ fn make_draft_fixtures(
     n_drafts: usize,
     draft_size: usize,
 ) -> (TempDir, SessionData) {
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new().expect("expected operation to succeed");
 
     // Create real files for session tabs (filter_existing_tabs will stat them).
     let tab_dir = dir.path().join("project");
-    std::fs::create_dir_all(&tab_dir).unwrap();
+    std::fs::create_dir_all(&tab_dir).expect("expected operation to succeed");
     let mut tabs = Vec::with_capacity(n_tabs);
     for i in 0..n_tabs {
         let file_path = tab_dir.join(format!("file_{i}.rs"));
-        std::fs::write(&file_path, "fn main() {}").unwrap();
+        std::fs::write(&file_path, "fn main() {}").expect("expected operation to succeed");
         tabs.push(SessionTab {
             path: Some(file_path),
             draft_id: None,
@@ -174,7 +177,8 @@ fn make_draft_fixtures(
     for tab in tabs.iter().take(n_drafts) {
         if let Some(ref path) = tab.path {
             let draft_id = draft_service::draft_id_for_path(path);
-            draft_service::write_draft(dir.path(), &draft_id, &draft_content).unwrap();
+            draft_service::write_draft(dir.path(), &draft_id, &draft_content)
+                .expect("expected operation to succeed");
             manifest.upsert(DraftEntry {
                 draft_id,
                 original_path: Some(path.clone()),
@@ -183,7 +187,7 @@ fn make_draft_fixtures(
             });
         }
     }
-    draft_service::save_manifest(dir.path(), &manifest).unwrap();
+    draft_service::save_manifest(dir.path(), &manifest).expect("expected operation to succeed");
     session_service::save(
         dir.path(),
         &SessionData {
@@ -191,7 +195,7 @@ fn make_draft_fixtures(
             active_tab_index: Some(0),
         },
     )
-    .unwrap();
+    .expect("expected operation to succeed");
 
     let session = SessionData {
         tabs,
@@ -334,9 +338,10 @@ fn bench_json_persistence(c: &mut Criterion) {
     // Save benchmarks
     group.bench_function("save/small", |b| {
         b.iter_batched(
-            || TempDir::new().unwrap(),
+            || TempDir::new().expect("expected operation to succeed"),
             |dir| {
-                workspace_manager::save(dir.path(), black_box(&small)).unwrap();
+                workspace_manager::save(dir.path(), black_box(&small))
+                    .expect("expected operation to succeed");
                 dir // keep TempDir alive past timing
             },
             BatchSize::SmallInput,
@@ -345,9 +350,10 @@ fn bench_json_persistence(c: &mut Criterion) {
 
     group.bench_function("save/large", |b| {
         b.iter_batched(
-            || TempDir::new().unwrap(),
+            || TempDir::new().expect("expected operation to succeed"),
             |dir| {
-                workspace_manager::save(dir.path(), black_box(&large)).unwrap();
+                workspace_manager::save(dir.path(), black_box(&large))
+                    .expect("expected operation to succeed");
                 dir
             },
             BatchSize::SmallInput,
@@ -358,13 +364,13 @@ fn bench_json_persistence(c: &mut Criterion) {
     group.bench_function("load/small", |b| {
         b.iter_batched(
             || {
-                let dir = TempDir::new().unwrap();
-                workspace_manager::save(dir.path(), &small).unwrap();
+                let dir = TempDir::new().expect("expected operation to succeed");
+                workspace_manager::save(dir.path(), &small).expect("expected operation to succeed");
                 dir
             },
             |dir| {
-                let _: WorkspacesFile =
-                    json_store::load(black_box(dir.path()), "workspaces.json").unwrap();
+                let _: WorkspacesFile = json_store::load(black_box(dir.path()), "workspaces.json")
+                    .expect("expected operation to succeed");
             },
             BatchSize::SmallInput,
         );
@@ -373,13 +379,13 @@ fn bench_json_persistence(c: &mut Criterion) {
     group.bench_function("load/large", |b| {
         b.iter_batched(
             || {
-                let dir = TempDir::new().unwrap();
-                workspace_manager::save(dir.path(), &large).unwrap();
+                let dir = TempDir::new().expect("expected operation to succeed");
+                workspace_manager::save(dir.path(), &large).expect("expected operation to succeed");
                 dir
             },
             |dir| {
-                let _: WorkspacesFile =
-                    json_store::load(black_box(dir.path()), "workspaces.json").unwrap();
+                let _: WorkspacesFile = json_store::load(black_box(dir.path()), "workspaces.json")
+                    .expect("expected operation to succeed");
             },
             BatchSize::SmallInput,
         );
@@ -389,9 +395,10 @@ fn bench_json_persistence(c: &mut Criterion) {
     let session = make_session_data(50);
     group.bench_function("session_save/50_tabs", |b| {
         b.iter_batched(
-            || TempDir::new().unwrap(),
+            || TempDir::new().expect("expected operation to succeed"),
             |dir| {
-                json_store::save(dir.path(), "session-bench.json", black_box(&session)).unwrap();
+                json_store::save(dir.path(), "session-bench.json", black_box(&session))
+                    .expect("expected operation to succeed");
                 dir // keep TempDir alive past timing
             },
             BatchSize::SmallInput,
@@ -401,13 +408,14 @@ fn bench_json_persistence(c: &mut Criterion) {
     group.bench_function("session_load/50_tabs", |b| {
         b.iter_batched(
             || {
-                let dir = TempDir::new().unwrap();
-                json_store::save(dir.path(), "session-bench.json", &session).unwrap();
+                let dir = TempDir::new().expect("expected operation to succeed");
+                json_store::save(dir.path(), "session-bench.json", &session)
+                    .expect("expected operation to succeed");
                 dir
             },
             |dir| {
-                let _: SessionData =
-                    json_store::load(black_box(dir.path()), "session-bench.json").unwrap();
+                let _: SessionData = json_store::load(black_box(dir.path()), "session-bench.json")
+                    .expect("expected operation to succeed");
             },
             BatchSize::SmallInput,
         );
@@ -430,13 +438,14 @@ fn bench_utf8_validation(c: &mut Criterion) {
             |b| {
                 b.iter_batched(
                     || {
-                        let dir = TempDir::new().unwrap();
+                        let dir = TempDir::new().expect("expected operation to succeed");
                         let path = dir.path().join("bench.txt");
-                        std::fs::write(&path, &content).unwrap();
+                        std::fs::write(&path, &content).expect("expected operation to succeed");
                         (dir, path)
                     },
                     |(dir, path)| {
-                        let _s = std::fs::read_to_string(black_box(&path)).unwrap();
+                        let _s = std::fs::read_to_string(black_box(&path))
+                            .expect("expected operation to succeed");
                         dir // keep alive
                     },
                     BatchSize::SmallInput,
@@ -449,14 +458,16 @@ fn bench_utf8_validation(c: &mut Criterion) {
             |b| {
                 b.iter_batched(
                     || {
-                        let dir = TempDir::new().unwrap();
+                        let dir = TempDir::new().expect("expected operation to succeed");
                         let path = dir.path().join("bench.txt");
-                        std::fs::write(&path, &content).unwrap();
+                        std::fs::write(&path, &content).expect("expected operation to succeed");
                         (dir, path)
                     },
                     |(dir, path)| {
-                        let bytes = std::fs::read(black_box(&path)).unwrap();
-                        simdutf8::basic::from_utf8(&bytes).unwrap();
+                        let bytes =
+                            std::fs::read(black_box(&path)).expect("expected operation to succeed");
+                        simdutf8::basic::from_utf8(&bytes).expect("expected operation to succeed");
+                        // SAFETY: `simdutf8` just validated that `bytes` is well-formed UTF-8.
                         let _s = unsafe { String::from_utf8_unchecked(bytes) };
                         dir // keep alive
                     },
@@ -481,9 +492,9 @@ fn bench_editor_file_io(c: &mut Criterion) {
             |b| {
                 b.iter_batched(
                     || {
-                        let dir = TempDir::new().unwrap();
+                        let dir = TempDir::new().expect("expected operation to succeed");
                         let path = dir.path().join("bench.txt");
-                        std::fs::write(&path, &content).unwrap();
+                        std::fs::write(&path, &content).expect("expected operation to succeed");
                         (dir, path, AtomicBool::new(false))
                     },
                     |(dir, path, cancel)| {
@@ -491,7 +502,7 @@ fn bench_editor_file_io(c: &mut Criterion) {
                             black_box(path.as_path()),
                             black_box(&cancel),
                         )
-                        .unwrap();
+                        .expect("expected operation to succeed");
                         dir
                     },
                     BatchSize::SmallInput,
@@ -504,14 +515,14 @@ fn bench_editor_file_io(c: &mut Criterion) {
             |b| {
                 b.iter_batched(
                     || {
-                        let dir = TempDir::new().unwrap();
+                        let dir = TempDir::new().expect("expected operation to succeed");
                         let path = dir.path().join("bench.txt");
                         (dir, path, content.clone())
                     },
                     |(dir, path, text)| {
                         let _written =
                             editor_io::write_snapshot_to_path(black_box(&path), black_box(&text))
-                                .unwrap();
+                                .expect("expected operation to succeed");
                         dir
                     },
                     BatchSize::SmallInput,
@@ -726,13 +737,14 @@ fn bench_draft_restore(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("cleanup_orphans", label), |b| {
             b.iter_batched(
                 || {
-                    let dir = TempDir::new().unwrap();
+                    let dir = TempDir::new().expect("expected operation to succeed");
                     let mut manifest = DraftManifest::default();
 
                     // Valid entries (with draft files).
                     for i in 0..n_valid {
                         let id = format!("valid-{i}");
-                        draft_service::write_draft(dir.path(), &id, "content").unwrap();
+                        draft_service::write_draft(dir.path(), &id, "content")
+                            .expect("expected operation to succeed");
                         manifest.upsert(DraftEntry {
                             draft_id: id,
                             original_path: None,
@@ -750,7 +762,8 @@ fn bench_draft_restore(c: &mut Criterion) {
                         });
                     }
                     // Create the drafts directory for orphan files.
-                    std::fs::create_dir_all(draft_service::drafts_dir(dir.path())).unwrap();
+                    std::fs::create_dir_all(draft_service::drafts_dir(dir.path()))
+                        .expect("expected operation to succeed");
                     // Orphan draft files (no manifest entries).
                     for i in 0..n_orphan_files {
                         draft_service::write_draft(
@@ -758,7 +771,7 @@ fn bench_draft_restore(c: &mut Criterion) {
                             &format!("orphan-file-{i}"),
                             "stale",
                         )
-                        .unwrap();
+                        .expect("expected operation to succeed");
                     }
 
                     (dir, manifest)
@@ -780,19 +793,20 @@ fn bench_content_search(c: &mut Criterion) {
     group.sample_size(20);
 
     // --- Fixture: 10k files for literal & regex search ---
-    let search_dir = TempDir::new().unwrap();
+    let search_dir = TempDir::new().expect("expected operation to succeed");
     let search_root = search_dir.path();
     for i in 0..10_000 {
         let subdir = format!("dir_{}", i / 500);
         let dir_path = search_root.join(&subdir);
-        std::fs::create_dir_all(&dir_path).unwrap();
+        std::fs::create_dir_all(&dir_path).expect("expected operation to succeed");
         // Every 5th file contains the search target.
         let content = if i % 5 == 0 {
             format!("fn handler_{i}() {{ TODO: implement }}\nlet x = {i};\n")
         } else {
             format!("let value_{i} = {i};\nlet other = true;\n")
         };
-        std::fs::write(dir_path.join(format!("file_{i}.rs")), content).unwrap();
+        std::fs::write(dir_path.join(format!("file_{i}.rs")), content)
+            .expect("expected operation to succeed");
     }
 
     // 1. Literal search across 10k files.
@@ -837,7 +851,7 @@ fn bench_content_search(c: &mut Criterion) {
     });
 
     // --- Fixture: single large file (100k lines) ---
-    let large_dir = TempDir::new().unwrap();
+    let large_dir = TempDir::new().expect("expected operation to succeed");
     let large_root = large_dir.path();
     {
         // 100k lines, needle every 1000 lines.
@@ -849,7 +863,8 @@ fn bench_content_search(c: &mut Criterion) {
                 content.push_str(&format!("line {i}: normal content here\n"));
             }
         }
-        std::fs::write(large_root.join("huge.txt"), content).unwrap();
+        std::fs::write(large_root.join("huge.txt"), content)
+            .expect("expected operation to succeed");
     }
 
     // 3. Large file search (100k lines).
@@ -871,11 +886,12 @@ fn bench_content_search(c: &mut Criterion) {
     });
 
     // --- Fixture: gitignore filtering (10k files, half in ignored dirs) ---
-    let gitignore_dir = TempDir::new().unwrap();
+    let gitignore_dir = TempDir::new().expect("expected operation to succeed");
     let gitignore_root = gitignore_dir.path();
     {
-        std::fs::create_dir(gitignore_root.join(".git")).unwrap();
-        std::fs::write(gitignore_root.join(".gitignore"), "ignored_*/\n").unwrap();
+        std::fs::create_dir(gitignore_root.join(".git")).expect("expected operation to succeed");
+        std::fs::write(gitignore_root.join(".gitignore"), "ignored_*/\n")
+            .expect("expected operation to succeed");
         for i in 0..20 {
             let name = if i < 10 {
                 format!("ignored_{i}")
@@ -883,9 +899,10 @@ fn bench_content_search(c: &mut Criterion) {
                 format!("visible_{i}")
             };
             let dir_path = gitignore_root.join(&name);
-            std::fs::create_dir_all(&dir_path).unwrap();
+            std::fs::create_dir_all(&dir_path).expect("expected operation to succeed");
             for j in 0..500 {
-                std::fs::write(dir_path.join(format!("file_{j}.rs")), "fn needle() {}\n").unwrap();
+                std::fs::write(dir_path.join(format!("file_{j}.rs")), "fn needle() {}\n")
+                    .expect("expected operation to succeed");
             }
         }
     }

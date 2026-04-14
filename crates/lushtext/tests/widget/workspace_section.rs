@@ -78,16 +78,16 @@ struct PeekFixture {
 
 fn make_peek_fixture() -> PeekFixture {
     ensure_gtk_init();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let text_a = dir.path().join("alpha.rs");
     let text_b = dir.path().join("beta.rs");
     let binary = dir.path().join("binary.bin");
     let directory = dir.path().join("nested");
 
-    std::fs::write(&text_a, "fn alpha() {\n    println!(\"alpha\");\n}\n").unwrap();
-    std::fs::write(&text_b, "fn beta() {\n    println!(\"beta\");\n}\n").unwrap();
-    std::fs::write(&binary, [0xff, 0xfe, 0xfd]).unwrap();
-    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(&text_a, "fn alpha() {\n    println!(\"alpha\");\n}\n").expect("expected operation to succeed");
+    std::fs::write(&text_b, "fn beta() {\n    println!(\"beta\");\n}\n").expect("expected operation to succeed");
+    std::fs::write(&binary, [0xff, 0xfe, 0xfd]).expect("expected operation to succeed");
+    std::fs::create_dir_all(&directory).expect("expected operation to succeed");
 
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("peek-ws"));
     section.load_roots(&[
@@ -331,8 +331,8 @@ fn test_single_directory_root_row_matches_builder_files_presentation() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").expect("expected operation to succeed");
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
@@ -347,10 +347,10 @@ fn test_drilldown_root_row_keeps_actual_folder_presentation() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).unwrap();
-    std::fs::write(nested.join("lib.rs"), "pub fn demo() {}\n").unwrap();
+    std::fs::create_dir(&nested).expect("expected operation to succeed");
+    std::fs::write(nested.join("lib.rs"), "pub fn demo() {}\n").expect("expected operation to succeed");
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
@@ -375,7 +375,7 @@ fn test_workspace_section_context_menu_no_arrow() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
     let popover = section.imp().context_menu.borrow();
-    let popover = popover.as_ref().unwrap();
+    let popover = popover.as_ref().expect("expected operation to succeed");
     assert!(!popover.has_arrow());
 }
 
@@ -412,7 +412,7 @@ fn test_remove_from_model_root_item() {
     section.remove_from_model(std::path::Path::new("/tmp/test/a.txt"));
     assert_eq!(root_store.n_items(), 1);
 
-    let remaining = root_store.item(0).and_downcast::<FileTreeItem>().unwrap();
+    let remaining = root_store.item(0).and_downcast::<FileTreeItem>().expect("expected operation to succeed");
     assert_eq!(remaining.path(), Some(PathBuf::from("/tmp/test/b.txt")));
 }
 
@@ -474,7 +474,7 @@ fn test_remove_from_model_child_item() {
     section.remove_from_model(std::path::Path::new("/tmp/test/src/main.rs"));
     assert_eq!(child_store.n_items(), 1);
 
-    let remaining = child_store.item(0).and_downcast::<FileTreeItem>().unwrap();
+    let remaining = child_store.item(0).and_downcast::<FileTreeItem>().expect("expected operation to succeed");
     assert_eq!(
         remaining.path(),
         Some(PathBuf::from("/tmp/test/src/lib.rs"))
@@ -661,12 +661,12 @@ fn test_add_root_initializes_tree() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     section.add_root(dir.path(), true);
 
     assert!(section.imp().root_store.borrow().is_some());
     let root_store = section.imp().root_store.borrow();
-    let root_store = root_store.as_ref().unwrap();
+    let root_store = root_store.as_ref().expect("expected operation to succeed");
     assert_eq!(root_store.n_items(), 1);
 }
 
@@ -675,12 +675,12 @@ fn test_add_root_deduplicates() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     section.add_root(dir.path(), true);
     section.add_root(dir.path(), true); // duplicate
 
     let root_store = section.imp().root_store.borrow();
-    let root_store = root_store.as_ref().unwrap();
+    let root_store = root_store.as_ref().expect("expected operation to succeed");
     assert_eq!(root_store.n_items(), 1);
 }
 
@@ -689,13 +689,13 @@ fn test_add_root_appends_multiple() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let dir1 = tempfile::tempdir().unwrap();
-    let dir2 = tempfile::tempdir().unwrap();
+    let dir1 = tempfile::tempdir().expect("expected operation to succeed");
+    let dir2 = tempfile::tempdir().expect("expected operation to succeed");
     section.add_root(dir1.path(), true);
     section.add_root(dir2.path(), true);
 
     let root_store = section.imp().root_store.borrow();
-    let root_store = root_store.as_ref().unwrap();
+    let root_store = root_store.as_ref().expect("expected operation to succeed");
     assert_eq!(root_store.n_items(), 2);
 }
 
@@ -714,7 +714,7 @@ fn test_button_shows_add_icon_when_no_roots() {
             .imp()
             .add_folder_button
             .icon_name()
-            .unwrap()
+            .expect("expected operation to succeed")
             .as_str(),
         "folder-new-symbolic"
     );
@@ -723,7 +723,7 @@ fn test_button_shows_add_icon_when_no_roots() {
             .imp()
             .add_folder_button
             .tooltip_text()
-            .unwrap()
+            .expect("expected operation to succeed")
             .as_str(),
         "Add Folder to Workspace"
     );
@@ -734,7 +734,7 @@ fn test_button_switches_to_replace_icon_after_load_roots() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
@@ -748,7 +748,7 @@ fn test_button_switches_to_replace_icon_after_load_roots() {
             .imp()
             .add_folder_button
             .icon_name()
-            .unwrap()
+            .expect("expected operation to succeed")
             .as_str(),
         "folder-open-symbolic"
     );
@@ -757,7 +757,7 @@ fn test_button_switches_to_replace_icon_after_load_roots() {
             .imp()
             .add_folder_button
             .tooltip_text()
-            .unwrap()
+            .expect("expected operation to succeed")
             .as_str(),
         "Replace Workspace Root"
     );
@@ -768,7 +768,7 @@ fn test_button_switches_to_replace_icon_after_add_root() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     section.add_root(dir.path(), true);
 
     assert!(section.imp().refresh_button.is_sensitive());
@@ -777,7 +777,7 @@ fn test_button_switches_to_replace_icon_after_add_root() {
             .imp()
             .add_folder_button
             .icon_name()
-            .unwrap()
+            .expect("expected operation to succeed")
             .as_str(),
         "folder-open-symbolic"
     );
@@ -795,7 +795,7 @@ fn test_has_roots_true_after_load() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
@@ -805,11 +805,11 @@ fn test_has_roots_true_after_load() {
 #[test]
 fn test_manual_refresh_keeps_selection_and_expansion() {
     ensure_gtk_init();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).unwrap();
+    std::fs::create_dir(&nested).expect("expected operation to succeed");
     let existing = nested.join("alpha.txt");
-    std::fs::write(&existing, "alpha").unwrap();
+    std::fs::write(&existing, "alpha").expect("expected operation to succeed");
 
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("refresh-ws"));
     section.load_roots(&[WorkspaceEntry::Directory {
@@ -826,7 +826,7 @@ fn test_manual_refresh_keeps_selection_and_expansion() {
     select_path(&section, &existing);
 
     let created = nested.join("beta.txt");
-    std::fs::write(&created, "beta").unwrap();
+    std::fs::write(&created, "beta").expect("expected operation to succeed");
     section.imp().refresh_button.emit_clicked();
 
     wait_until(Duration::from_secs(5), || {
@@ -844,11 +844,11 @@ fn test_manual_refresh_keeps_selection_and_expansion() {
 #[test]
 fn test_refresh_updates_tree_after_external_rename() {
     ensure_gtk_init();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).unwrap();
+    std::fs::create_dir(&nested).expect("expected operation to succeed");
     let original = nested.join("before.txt");
-    std::fs::write(&original, "before").unwrap();
+    std::fs::write(&original, "before").expect("expected operation to succeed");
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("refresh-flow-ws"));
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
@@ -863,7 +863,7 @@ fn test_refresh_updates_tree_after_external_rename() {
     wait_until(Duration::from_secs(5), || tree_contains_path(&section, &original));
 
     let renamed = nested.join("renamed.txt");
-    std::fs::rename(&original, &renamed).unwrap();
+    std::fs::rename(&original, &renamed).expect("expected operation to succeed");
     section.imp().refresh_button.emit_clicked();
     wait_until(Duration::from_secs(5), || {
         !tree_contains_path(&section, &original) && tree_contains_path(&section, &renamed)
@@ -873,11 +873,11 @@ fn test_refresh_updates_tree_after_external_rename() {
 #[test]
 fn test_refresh_updates_tree_after_external_delete() {
     ensure_gtk_init();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).unwrap();
+    std::fs::create_dir(&nested).expect("expected operation to succeed");
     let deleted = nested.join("delete-me.txt");
-    std::fs::write(&deleted, "delete").unwrap();
+    std::fs::write(&deleted, "delete").expect("expected operation to succeed");
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("refresh-delete-ws"));
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
@@ -891,7 +891,7 @@ fn test_refresh_updates_tree_after_external_delete() {
         .set_expanded(true);
     wait_until(Duration::from_secs(5), || tree_contains_path(&section, &deleted));
 
-    std::fs::remove_file(&deleted).unwrap();
+    std::fs::remove_file(&deleted).expect("expected operation to succeed");
     section.imp().refresh_button.emit_clicked();
     wait_until(Duration::from_secs(5), || !tree_contains_path(&section, &deleted));
 }
@@ -901,21 +901,21 @@ fn test_workspace_section_toggle_roots() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     // Must have at least one visible entry to not be detected as empty
-    std::fs::write(dir.path().join("file.txt"), "content").unwrap();
+    std::fs::write(dir.path().join("file.txt"), "content").expect("expected operation to succeed");
 
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
 
     let tree_model = section.imp().tree_model.borrow();
-    let tree_model = tree_model.as_ref().unwrap();
+    let tree_model = tree_model.as_ref().expect("expected operation to succeed");
 
     let row = tree_model
         .item(0)
         .and_downcast::<gtk4::TreeListRow>()
-        .unwrap();
+        .expect("expected operation to succeed");
 
     // Initial state is collapsed (new default behavior)
     assert!(!row.is_expanded());
@@ -934,8 +934,8 @@ fn test_manual_refresh_keeps_collapsed_root_collapsed() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("file.txt"), "content").unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("file.txt"), "content").expect("expected operation to succeed");
 
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
@@ -944,11 +944,11 @@ fn test_manual_refresh_keeps_collapsed_root_collapsed() {
     let _window = present_section_window(&section);
     {
         let tree_model = section.imp().tree_model.borrow();
-        let tree_model = tree_model.as_ref().unwrap();
+        let tree_model = tree_model.as_ref().expect("expected operation to succeed");
         let row = tree_model
             .item(0)
             .and_downcast::<gtk4::TreeListRow>()
-            .unwrap();
+            .expect("expected operation to succeed");
 
         row.set_expanded(true);
         row.set_expanded(false);
@@ -968,11 +968,11 @@ fn test_manual_refresh_keeps_collapsed_root_collapsed() {
     });
 
     let tree_model = section.imp().tree_model.borrow();
-    let tree_model = tree_model.as_ref().unwrap();
+    let tree_model = tree_model.as_ref().expect("expected operation to succeed");
     let row = tree_model
         .item(0)
         .and_downcast::<gtk4::TreeListRow>()
-        .unwrap();
+        .expect("expected operation to succeed");
     assert!(
         !row.is_expanded(),
         "manual refresh should not re-expand a root the user collapsed"
@@ -982,11 +982,11 @@ fn test_manual_refresh_keeps_collapsed_root_collapsed() {
 #[test]
 fn test_manual_refresh_keeps_root_models_mounted() {
     ensure_gtk_init();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).unwrap();
+    std::fs::create_dir(&nested).expect("expected operation to succeed");
     let existing = nested.join("alpha.txt");
-    std::fs::write(&existing, "alpha").unwrap();
+    std::fs::write(&existing, "alpha").expect("expected operation to succeed");
 
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("manual-model-stability"));
     section.load_roots(&[WorkspaceEntry::Directory {
@@ -1017,7 +1017,7 @@ fn test_manual_refresh_keeps_root_models_mounted() {
         .as_ptr();
 
     let created = nested.join("beta.txt");
-    std::fs::write(&created, "beta").unwrap();
+    std::fs::write(&created, "beta").expect("expected operation to succeed");
     section.imp().refresh_button.emit_clicked();
 
     wait_until(Duration::from_secs(5), || tree_contains_path(&section, &created));

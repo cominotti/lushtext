@@ -201,7 +201,7 @@ fn test_sidebar_toggle_button_icon() {
         bar.imp()
             .sidebar_toggle_button
             .icon_name()
-            .unwrap()
+            .expect("expected operation to succeed")
             .as_str(),
         "sidebar-show-symbolic"
     );
@@ -218,7 +218,7 @@ fn test_sidebar_toggle_button_is_flat() {
 fn test_sidebar_toggle_button_has_tooltip() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    let tooltip = bar.imp().sidebar_toggle_button.tooltip_text().unwrap();
+    let tooltip = bar.imp().sidebar_toggle_button.tooltip_text().expect("expected operation to succeed");
     assert!(tooltip.contains("Sidebar"));
 }
 
@@ -230,7 +230,7 @@ fn test_sidebar_toggle_button_action_name() {
         bar.imp()
             .sidebar_toggle_button
             .action_name()
-            .unwrap()
+            .expect("expected operation to succeed")
             .as_str(),
         "win.toggle-sidebar"
     );
@@ -253,7 +253,7 @@ fn test_properties_toggle_button_icon() {
         bar.imp()
             .properties_toggle_button
             .icon_name()
-            .unwrap()
+            .expect("expected operation to succeed")
             .as_str(),
         "sidebar-show-right-symbolic"
     );
@@ -270,7 +270,7 @@ fn test_properties_toggle_button_is_flat() {
 fn test_properties_toggle_button_has_tooltip() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    let tooltip = bar.imp().properties_toggle_button.tooltip_text().unwrap();
+    let tooltip = bar.imp().properties_toggle_button.tooltip_text().expect("expected operation to succeed");
     assert!(tooltip.contains("Properties"));
 }
 
@@ -282,7 +282,7 @@ fn test_properties_toggle_button_action_name() {
         bar.imp()
             .properties_toggle_button
             .action_name()
-            .unwrap()
+            .expect("expected operation to succeed")
             .as_str(),
         "win.toggle-properties"
     );

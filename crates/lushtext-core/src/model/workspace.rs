@@ -143,7 +143,7 @@ fn generate_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock should not be earlier than the UNIX epoch")
         .as_nanos();
     format!("{:016x}-{:04x}", nanos, std::process::id())
 }
@@ -311,8 +311,9 @@ mod tests {
         let entry = WorkspaceEntry::Directory {
             path: "/tmp/project".into(),
         };
-        let json = serde_json::to_string(&entry).unwrap();
-        let deserialized: WorkspaceEntry = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&entry).expect("expected operation to succeed");
+        let deserialized: WorkspaceEntry =
+            serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(deserialized.path(), entry.path());
         assert!(matches!(deserialized, WorkspaceEntry::Directory { .. }));
     }
@@ -322,8 +323,9 @@ mod tests {
         let entry = WorkspaceEntry::File {
             path: "/tmp/notes.md".into(),
         };
-        let json = serde_json::to_string(&entry).unwrap();
-        let deserialized: WorkspaceEntry = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&entry).expect("expected operation to succeed");
+        let deserialized: WorkspaceEntry =
+            serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(deserialized.path(), entry.path());
         assert!(matches!(deserialized, WorkspaceEntry::File { .. }));
     }
@@ -342,8 +344,9 @@ mod tests {
                 },
             ],
         };
-        let json = serde_json::to_string(&config).unwrap();
-        let deserialized: WorkspaceConfig = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&config).expect("expected operation to succeed");
+        let deserialized: WorkspaceConfig =
+            serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(deserialized.id, config.id);
         assert_eq!(deserialized.name, config.name);
         assert_eq!(deserialized.entries.len(), 2);
