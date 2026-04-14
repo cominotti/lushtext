@@ -6,7 +6,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 
 - **Dual sidebars** -- persistent left workspace tree plus optional right properties panel for document metadata and editor formatting controls
 - **Workspaces** -- named collections of root directories, persisted across sessions
-- **Workspace auto-refresh** -- external file and folder changes refresh the sidebar's currently materialized root rows and expanded directories automatically, with access-noise filtering plus in-place subtree reconciliation to avoid visible flashing, and a per-section `Refresh` button for deterministic broader reloads
+- **Workspace auto-refresh** -- external file and folder changes refresh the sidebar's currently materialized root rows and expanded directories automatically, with access-noise filtering plus in-place reconciliation for both subtree and manual root refreshes to avoid visible flashing, and a per-section `Refresh` button for deterministic broader reloads
 - **File peek** -- press `Space` on a selected sidebar file to inspect a bounded read-only preview in a floating card with the absolute file path, then `Enter` or `Open` to promote it into a real tab
 - **Focus Folder** -- re-root a workspace section into a deep subfolder so the sidebar can drill into nested trees without wasting width on clipped ancestors
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)

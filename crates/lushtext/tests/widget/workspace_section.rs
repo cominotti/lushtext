@@ -980,6 +980,73 @@ fn test_manual_refresh_keeps_collapsed_root_collapsed() {
 }
 
 #[test]
+fn test_manual_refresh_keeps_root_models_mounted() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let existing = nested.join("alpha.txt");
+    std::fs::write(&existing, "alpha").unwrap();
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("manual-model-stability"));
+    section.load_roots(&[WorkspaceEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+
+    let _window = present_section_window(&section);
+    section.expand_roots();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &nested));
+    row_for_path(&section, &nested)
+        .expect("nested directory should exist")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &existing));
+
+    let root_store_ptr = section
+        .imp()
+        .root_store
+        .borrow()
+        .as_ref()
+        .expect("root store should exist")
+        .as_ptr();
+    let tree_model_ptr = section
+        .imp()
+        .tree_model
+        .borrow()
+        .as_ref()
+        .expect("tree model should exist")
+        .as_ptr();
+
+    let created = nested.join("beta.txt");
+    std::fs::write(&created, "beta").unwrap();
+    section.imp().refresh_button.emit_clicked();
+
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &created));
+
+    assert_eq!(
+        section
+            .imp()
+            .root_store
+            .borrow()
+            .as_ref()
+            .expect("root store should still exist")
+            .as_ptr(),
+        root_store_ptr,
+        "manual refresh should keep the existing root store mounted",
+    );
+    assert_eq!(
+        section
+            .imp()
+            .tree_model
+            .borrow()
+            .as_ref()
+            .expect("tree model should still exist")
+            .as_ptr(),
+        tree_model_ptr,
+        "manual refresh should keep the existing tree model mounted",
+    );
+}
+
+#[test]
 fn test_file_peek_space_opens_for_selected_file_and_keeps_sidebar_focus() {
     let fixture = make_peek_fixture();
     let window = present_section_window(&fixture.section);

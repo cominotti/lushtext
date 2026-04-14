@@ -93,6 +93,15 @@ Alternatives considered:
 - Rebuild the whole child store on every legitimate refresh: simpler, but violates the visual-stability requirement.
 - Full Myers-style diff for every directory refresh: theoretically minimal, but a prefix/suffix splice around the changed region is simpler and adequate for the sorted tree model here.
 
+### 8. Manual refresh should reconcile the materialized tree before falling back to full rebuild
+
+The same no-flicker bar now applies to manual refresh. That means pressing `Refresh` cannot default to rebuilding the whole `TreeListModel`, because replacing the root model is exactly what causes visible blinking in large expanded workspaces. Manual refresh should therefore reconcile the current root store in place, then refresh each expanded/materialized child store in place, and only fall back to a full root-model rebuild if the visible root-row set changed in a way that cannot be reconciled safely.
+
+Alternatives considered:
+- Keep manual refresh as a full rebuild while only auto-refresh is stable: violates the stricter UX contract.
+- Hide the rebuild behind a loading state or spinner: changes the presentation, but still produces visible disruption.
+- Always reconcile every possible collapsed descendant too: unnecessary work for hidden state and more likely to regress performance than improve UX.
+
 ## Risks / Trade-offs
 
 - [Filesystem watching adds a new dependency and backend-specific behavior] -> Keep the watcher behind a small service abstraction and add deterministic service-level tests for event coalescing.
@@ -102,6 +111,7 @@ Alternatives considered:
 - [Scoped watches may miss changes inside collapsed or not-yet-loaded descendants] -> Keep manual `Refresh` as the explicit fallback and refresh loaded scopes immediately when those directories are expanded.
 - [Watcher setup may still fail in some environments] -> Surface that failure to the user and keep the manual `Refresh` button always available.
 - [Incremental reconciliation can desynchronize caches if the store and path index drift] -> Rebuild the direct-child cache from the post-splice store contents after every subtree refresh.
+- [Manual refresh may still need a true rebuild when visible root rows change incompatibly] -> Treat full rebuild as a narrow fallback path, not the default, and preserve the in-place path whenever visible roots are still reconcilable.
 
 ## Migration Plan
 

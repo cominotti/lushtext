@@ -33,6 +33,13 @@ enum RefreshPlan {
     Directories(Vec<PathBuf>),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RootRowState {
+    path: PathBuf,
+    is_dir: bool,
+    is_empty: Option<bool>,
+}
+
 impl LushtextWorkspaceSection {
     /// Queue a whole-section refresh from the header button.
     pub(super) fn request_manual_refresh(&self) {
@@ -95,7 +102,7 @@ impl LushtextWorkspaceSection {
         self.snapshot_refresh_state();
 
         if pending_full {
-            self.reload_current_view();
+            self.refresh_materialized_view();
             return;
         }
 
@@ -141,22 +148,51 @@ impl LushtextWorkspaceSection {
         self.load_root_model(&roots, auto_expand);
     }
 
-    fn reload_directory(&self, dir_path: &Path) {
-        let Some(row) = self.find_dir_row(dir_path) else {
-            self.reload_current_view();
-            return;
-        };
-        if !row.is_expanded() {
+    fn refresh_materialized_view(&self) {
+        if !self.reconcile_root_store_in_place() {
             self.reload_current_view();
             return;
         }
-        let Some(store) = self.find_store_for_dir(dir_path) else {
+
+        let mut expanded_paths = self
+            .imp()
+            .expanded_paths
+            .borrow()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        expanded_paths.sort_by_key(|path| path.components().count());
+
+        for dir_path in expanded_paths {
+            if let Some(row) = self.find_dir_row(&dir_path)
+                && row.is_expanded()
+                && self.find_store_for_dir(&dir_path).is_some()
+            {
+                self.refresh_loaded_directory(&dir_path);
+            }
+        }
+    }
+
+    fn reload_directory(&self, dir_path: &Path) {
+        if !self.refresh_loaded_directory(dir_path) {
             self.reload_current_view();
-            return;
+        }
+    }
+
+    fn refresh_loaded_directory(&self, dir_path: &Path) -> bool {
+        let Some(row) = self.find_dir_row(dir_path) else {
+            return false;
+        };
+        if !row.is_expanded() {
+            return false;
+        }
+        let Some(store) = self.find_store_for_dir(dir_path) else {
+            return false;
         };
 
         super::tree_loading::clear_dir_state(self, dir_path);
         super::tree_loading::populate_child_store(self, dir_path, &store);
+        true
     }
 
     fn plan_refresh(&self, changed_paths: &HashSet<PathBuf>) -> RefreshPlan {
@@ -231,6 +267,66 @@ impl LushtextWorkspaceSection {
             self.imp().drilldown_header_box.set_visible(false);
         }
     }
+
+    fn reconcile_root_store_in_place(&self) -> bool {
+        let Some(root_store) = self.imp().root_store.borrow().as_ref().cloned() else {
+            return false;
+        };
+
+        let desired_roots = desired_root_rows(&self.current_visible_roots());
+        let current_roots = snapshot_root_rows(&root_store);
+        if current_roots != desired_roots {
+            let removed_paths = current_roots
+                .iter()
+                .filter(|current| {
+                    !desired_roots
+                        .iter()
+                        .any(|desired| desired.path == current.path)
+                })
+                .map(|row| row.path.clone())
+                .collect::<Vec<_>>();
+
+            for path in removed_paths {
+                super::tree_loading::clear_dir_state(self, &path);
+            }
+
+            let prefix = common_root_prefix_len(&current_roots, &desired_roots);
+            let suffix = common_root_suffix_len(&current_roots[prefix..], &desired_roots[prefix..]);
+            let removed = current_roots.len().saturating_sub(prefix + suffix);
+            let replacement = build_root_items(
+                &desired_roots[prefix..desired_roots.len().saturating_sub(suffix)],
+            );
+            #[expect(clippy::cast_possible_truncation)] // root store is far below u32::MAX
+            root_store.splice(prefix as u32, removed as u32, &replacement);
+            self.recache_root_store(&root_store);
+            self.restore_materialized_state();
+        }
+
+        true
+    }
+
+    fn restore_materialized_state(&self) {
+        let expanded_paths = self.imp().expanded_paths.borrow().clone();
+        let pending_selection = self.imp().pending_selection.borrow().clone();
+        if expanded_paths.is_empty() && pending_selection.is_none() {
+            return;
+        }
+
+        let section_weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(1), move || {
+            let Some(section) = section_weak.upgrade() else {
+                return;
+            };
+            for path in expanded_paths {
+                if let Some(row) = section.find_dir_row(&path) {
+                    row.set_expanded(true);
+                }
+            }
+            if let Some(path) = pending_selection {
+                section.select_and_scroll_to(&path);
+            }
+        });
+    }
 }
 
 fn minimize_refresh_directories(mut directories: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -247,4 +343,68 @@ fn minimize_refresh_directories(mut directories: Vec<PathBuf>) -> Vec<PathBuf> {
         unique.push(dir);
     }
     unique
+}
+
+fn snapshot_root_rows(store: &gtk4::gio::ListStore) -> Vec<RootRowState> {
+    let mut rows = Vec::with_capacity(store.n_items() as usize);
+    for index in 0..store.n_items() {
+        if let Some(item) = store.item(index).and_then(|obj| {
+            obj.downcast::<crate::ui::sidebar::file_tree_item::FileTreeItem>()
+                .ok()
+        }) && let Some(path) = item.path()
+        {
+            rows.push(RootRowState {
+                path,
+                is_dir: item.is_dir(),
+                is_empty: item.is_empty(),
+            });
+        }
+    }
+    rows
+}
+
+fn desired_root_rows(roots: &[WorkspaceEntry]) -> Vec<RootRowState> {
+    roots
+        .iter()
+        .map(|entry| RootRowState {
+            path: entry.path().to_path_buf(),
+            is_dir: entry.is_dir(),
+            is_empty: if entry.is_dir() {
+                Some(crate::services::file_tree::is_dir_empty(entry.path()))
+            } else {
+                None
+            },
+        })
+        .collect()
+}
+
+fn build_root_items(
+    rows: &[RootRowState],
+) -> Vec<crate::ui::sidebar::file_tree_item::FileTreeItem> {
+    rows.iter()
+        .map(|row| {
+            crate::ui::sidebar::file_tree_item::FileTreeItem::new(
+                row.path.clone(),
+                row.is_dir,
+                row.is_empty,
+            )
+        })
+        .collect()
+}
+
+fn common_root_prefix_len(current: &[RootRowState], desired: &[RootRowState]) -> usize {
+    current
+        .iter()
+        .zip(desired.iter())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn common_root_suffix_len(current: &[RootRowState], desired: &[RootRowState]) -> usize {
+    current
+        .iter()
+        .rev()
+        .zip(desired.iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count()
 }

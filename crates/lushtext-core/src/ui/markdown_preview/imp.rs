@@ -5,13 +5,15 @@
 //! Contains a read-only `GtkTextView` inside a `GtkScrolledWindow` for rendered
 //! Markdown output, and an `AdwStatusPage` placeholder for non-Markdown files.
 //! TextTags are created in `constructed()` and updated on dark/light mode changes
-//! via `StyleManager::connect_dark_notify()`.
+//! via `StyleManager::connect_dark_notify()`. Table blocks are embedded as
+//! anchored child widgets so the preview can stay GTK-native without replacing
+//! the surrounding text-buffer renderer.
 
 use glib::translate::IntoGlib;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib, pango};
 use libadwaita::prelude::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 /// Adwaita-matching accent color (blue) for headings and links.
 const ACCENT_LIGHT: &str = "#1c71d8";
@@ -56,6 +58,13 @@ pub struct LushtextMarkdownPreview {
 
     /// Whether we're currently showing the rendered content (true) or the placeholder (false).
     pub showing_content: Cell<bool>,
+    /// Anchored table grids currently embedded into the text view.
+    ///
+    /// `GtkTextChildAnchor` makes table rendering pleasantly native, but GTK
+    /// does not manage rerender cleanup for us at the application level. We
+    /// keep strong refs here so `render_markdown`, `clear`, and
+    /// `show_placeholder` can remove stale table widgets before rebuilding.
+    pub rendered_tables: RefCell<Vec<gtk4::Widget>>,
 }
 
 #[glib::object_subclass]

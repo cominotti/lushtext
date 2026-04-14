@@ -119,3 +119,23 @@
 .sidebar > separator {
   min-height: 1px;
 }
+
+/* Markdown preview tables: lightweight native grid styling */
+.markdown-table-cell,
+.markdown-table-header-cell {
+  min-width: 24px;
+  padding: 6px 8px;
+  border: 1px solid @borders;
+  border-radius: 6px;
+}
+
+.markdown-table-header-cell {
+  color: @accent_color;
+  background-color: @headerbar_bg_color;
+  font-weight: 700;
+}
+
+.markdown-table-header-separator {
+  margin-top: 2px;
+  margin-bottom: 4px;
+}

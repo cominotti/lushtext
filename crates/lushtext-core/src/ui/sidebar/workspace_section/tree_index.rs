@@ -58,6 +58,23 @@ impl LushtextWorkspaceSection {
         );
     }
 
+    /// Rebuild the root-item cache from the current root `ListStore` contents.
+    pub(super) fn recache_root_store(&self, store: &gio::ListStore) {
+        self.imp().root_paths.borrow_mut().clear();
+        self.imp()
+            .item_locations
+            .borrow_mut()
+            .retain(|_, location| location.parent_dir.is_some());
+
+        for index in 0..store.n_items() {
+            if let Some(item) = store.item(index).and_downcast::<FileTreeItem>()
+                && let Some(path) = item.path()
+            {
+                self.cache_root_item(path, index as usize);
+            }
+        }
+    }
+
     /// Cache a child row's parent directory and index for O(1) later lookup.
     pub(super) fn cache_child_item(&self, parent_dir: &Path, path: PathBuf, index: usize) {
         let imp = self.imp();

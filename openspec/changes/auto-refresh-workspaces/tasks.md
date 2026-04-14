@@ -12,6 +12,7 @@
 - [x] 2.4 Scope automatic watch targets to the currently materialized sidebar tree instead of recursively watching every descendant under broad configured roots.
 - [x] 2.5 Filter watcher noise so access-only and content-only events do not trigger sidebar refresh.
 - [x] 2.6 Reconcile refreshed child stores in place instead of clearing and repopulating them, so unchanged rows stay mounted.
+- [x] 2.7 Reconcile manual refresh at the root-store level in place, falling back to a full rebuild only when visible root rows change incompatibly.
 
 ## 3. State preservation and feedback
 
@@ -27,3 +28,4 @@
 - [x] 4.3 Regenerate dependency metadata if needed and update any relevant docs or architecture notes to describe automatic workspace refresh behavior.
 - [x] 4.4 Verify broad-root startup no longer fails immediately on unreadable deep descendants and that collapsed roots are not re-expanded by manual refresh.
 - [x] 4.5 Verify access-only watcher noise no longer triggers refresh and that subtree refreshes stay visually stable for create/remove/rename changes.
+- [x] 4.6 Verify manual refresh keeps the root tree model mounted and avoids subtree blanking in expanded workspaces.

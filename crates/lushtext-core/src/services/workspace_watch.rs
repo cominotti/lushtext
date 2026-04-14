@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn watching_file_root_reports_file_updates() {
+    fn watching_file_root_reports_file_rename() {
         let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("root.txt");
         fs::write(&file_path, "before").unwrap();
@@ -268,16 +268,22 @@ mod tests {
 
         assert_eq!(watcher.watched_root_count(), 1);
 
-        fs::write(&file_path, "after").unwrap();
+        let renamed_path = dir.path().join("renamed.txt");
+        fs::rename(&file_path, &renamed_path).unwrap();
 
         let poll = wait_for_poll(&watcher, Duration::from_secs(5))
-            .expect("file watcher should report file modifications");
-        assert_eq!(
-            poll,
-            WorkspaceWatchPoll::Update(WorkspaceWatchUpdate {
-                changed_paths: vec![file_path]
-            })
-        );
+            .expect("file watcher should report file rename");
+        match poll {
+            WorkspaceWatchPoll::Update(update) => {
+                assert!(
+                    update.changed_paths.contains(&file_path)
+                        || update.changed_paths.contains(&renamed_path)
+                );
+            }
+            other @ WorkspaceWatchPoll::Error(_) => {
+                panic!("expected update poll, got {other:?}");
+            }
+        }
     }
 
     #[test]

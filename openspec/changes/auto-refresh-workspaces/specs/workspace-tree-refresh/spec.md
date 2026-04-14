@@ -36,6 +36,19 @@ The system SHALL show a `Refresh` button in each workspace-section header immedi
 - **THEN** that workspace section reloads its tree from disk
 - **AND** newly added, removed, or renamed paths appear in the refreshed result
 
+### Requirement: Manual refresh remains visually stable
+The system SHALL keep manual refresh visually stable. Triggering the `Refresh` control MUST NOT blank, flash, collapse, or reconstruct unchanged visible rows in the workspace tree when the currently materialized scope can be reconciled in place.
+
+#### Scenario: Manual refresh keeps unchanged root rows mounted
+- **WHEN** the user triggers manual refresh for a workspace whose visible root rows still represent the same paths after the reload
+- **THEN** the workspace section keeps the existing root tree model mounted
+- **AND** unchanged visible rows remain visually stable while refreshed data is applied
+
+#### Scenario: Expanded workspace refresh avoids subtree blanking
+- **WHEN** the user triggers manual refresh while a workspace root or nested directory is expanded
+- **THEN** refreshed child rows appear without first blanking the existing subtree contents
+- **AND** the refresh preserves expansion and selection for unchanged paths
+
 ### Requirement: Refresh preserves section context when possible
 The system SHALL preserve the current drill-down scope, expanded rows, and selected row across a refresh whenever the corresponding paths still exist after the refreshed tree is applied.
 
