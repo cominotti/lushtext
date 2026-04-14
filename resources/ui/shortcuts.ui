@@ -110,6 +110,12 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Edit Bookmark Label</property>
+                <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;F2</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
                 <property name="title" translatable="yes">Next Bookmark</property>
                 <property name="accelerator">F2</property>
               </object>

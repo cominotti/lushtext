@@ -727,6 +727,13 @@ impl LushtextWindow {
         let note_view = gtk4::TextView::new();
         note_view.set_wrap_mode(gtk4::WrapMode::WordChar);
         note_view.set_vexpand(true);
+        // TextView margin properties act as inner padding for the editable
+        // document, so this gives the note body breathing room inside the box
+        // instead of just pushing the whole widget farther from neighboring rows.
+        note_view.set_left_margin(12);
+        note_view.set_right_margin(12);
+        note_view.set_top_margin(10);
+        note_view.set_bottom_margin(10);
         if let Some(annotation) = existing {
             note_view.buffer().set_text(&annotation.note_text);
         }

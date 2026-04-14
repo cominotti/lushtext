@@ -201,7 +201,7 @@ impl LushtextWindow {
             ("win.search-next-match", "F4"),
             ("win.search-prev-match", "<Shift>F4"),
             ("win.toggle-bookmark", "<Control>F2"),
-            ("win.edit-bookmark-label", "<Control><Alt>F2"),
+            ("win.edit-bookmark-label", "<Control><Shift>F2"),
             ("win.next-bookmark", "F2"),
             ("win.prev-bookmark", "<Shift>F2"),
             ("win.show-bookmarks", "<Control><Alt>b"),

@@ -7,6 +7,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Dual sidebars** -- persistent left workspace tree plus optional right properties panel for document metadata and editor formatting controls
 - **Workspaces** -- named collections of root directories, persisted across sessions
 - **File peek** -- press `Space` on a selected sidebar file to inspect a bounded read-only preview in a floating card with the absolute file path, then `Enter` or `Open` to promote it into a real tab
+- **Focus Folder** -- re-root a workspace section into a deep subfolder so the sidebar can drill into nested trees without wasting width on clipped ancestors
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)
 - **EditorConfig support** -- per-file formatting overrides from `.editorconfig` files (`indent_style`, `tab_width`, `indent_size`); toggle in Preferences
 - **Bookmarks and annotations** -- saved-file bookmark gutter marks with labels and F2 navigation, plus sidecar line-range annotations with searchable workspace browse/export workflows
@@ -120,13 +121,50 @@ LushText includes non-destructive per-file notes for saved documents:
 | Workflow | Shortcut |
 |----------|----------|
 | Toggle bookmark | `Ctrl+F2` |
-| Edit bookmark label | `Ctrl+Alt+F2` |
+| Edit bookmark label | `Ctrl+Shift+F2` |
 | Next / previous bookmark | `F2` / `Shift+F2` |
 | Browse bookmarks | `Ctrl+Alt+B` |
 | Add annotation | `Ctrl+Alt+N` |
 | Edit annotation at cursor | `Ctrl+Alt+M` |
 | Browse annotations | `Ctrl+Alt+A` |
 | Export annotations | `Ctrl+Alt+Shift+A` |
+
+### Manual test checklist
+
+Use this checklist to exercise the full shipped bookmark and annotation flow:
+
+1. Start the app with `make run`.
+2. Add a workspace folder and open a saved text file from the sidebar.
+3. Press `Ctrl+F2` on the current line.
+   Expected: a bookmark appears in the gutter and the file content does not change.
+4. Press `Ctrl+Shift+F2` on that bookmarked line and add a label.
+   Expected: the label saves and later appears in bookmark browse surfaces.
+5. Add a second bookmark on another line, then use `F2` and `Shift+F2`.
+   Expected: the cursor jumps forward and backward through bookmarks in the active file.
+6. Press `Ctrl+Alt+B`.
+   Expected: the bookmark browser opens for the current workspace scope, supports search, and clicking a row opens or focuses the bookmarked file and jumps to its line.
+7. Select one or more lines and press `Ctrl+Alt+N`.
+   Expected: the annotation dialog opens, lets you choose a style and note text, and saving it does not modify the file bytes.
+8. Move the cursor onto the annotated range and press `Ctrl+Alt+M`.
+   Expected: the existing annotation opens for editing, and Delete removes it cleanly.
+9. Press `Ctrl+Alt+A`.
+   Expected: the annotation browser opens for the current workspace scope, supports search, and clicking a row jumps to the file and reopens the annotation.
+10. Insert and delete lines above an annotation while the file stays open.
+    Expected: the annotation range follows the content; deleting the whole range removes the annotation.
+11. Toggle **Preferences > Show Bookmark Gutter**.
+    Expected: bookmark gutter indicators hide and reappear without losing stored bookmarks.
+12. Toggle **Preferences > Show Annotation Highlights**.
+    Expected: annotation highlighting hides and reappears without losing stored annotations.
+13. Close and reopen the file, then restart the app and open it again.
+    Expected: bookmarks and annotations restore automatically.
+14. Rename the file from the LushText sidebar.
+    Expected: reopening the renamed file keeps the same bookmarks and annotations.
+15. Use **Save As** to write the file to a new path.
+    Expected: the new file opens without copied bookmarks or annotations, while the original file keeps its existing notes.
+16. Press `Ctrl+Alt+Shift+A`.
+    Expected: the export dialog writes a markdown report grouped by file, including line ranges, note text, and source excerpts.
+17. Try steps 3 and 7 in an untitled tab.
+    Expected: LushText refuses to create bookmarks or annotations and shows clear feedback that a saved file is required.
 
 ### Persistence rules
 
@@ -140,6 +178,53 @@ LushText includes non-destructive per-file notes for saved documents:
 - Path-based identity does not automatically follow **external** filesystem moves or copies performed outside LushText.
 - Annotation indicators are currently **highlight-based**, not clickable gutter popovers or inline rendered note blocks.
 - Annotation export is **markdown only** in the first release.
+
+## Preview and Sidebar Helpers
+
+### Markdown preview
+
+LushText can render Markdown files in a read-only preview pane instead of just
+showing the raw source text.
+
+- `Alt+P` toggles **preview-only mode**, where the editor hides and the rendered
+  Markdown takes the full content area.
+- A separate side-by-side preview pane is also available through the existing
+  preview action surfaces, giving you editor text on the left and rendered
+  output on the right.
+- The renderer uses native GTK text styling for headings, emphasis, code,
+  links, lists, and blockquotes.
+- Non-Markdown files show a placeholder instead of trying to render arbitrary
+  text as Markdown.
+
+### Focus Folder
+
+When deep directory nesting makes a folder hard to browse comfortably in the
+workspace tree, the sidebar provides a **Focus Folder** action.
+
+- Open the context menu on a directory in the sidebar and choose **Focus Folder**.
+- The selected directory becomes the effective root for that workspace section,
+  so the tree can drill into that area without wasting width on all of its
+  ancestors.
+- If **Auto-Collapse Workspaces** is enabled, focusing a folder can collapse
+  other workspace sections to keep attention on the active subtree.
+- Folders detected as effectively empty are marked `(Empty)` and do not offer
+  the Focus Folder action.
+
+### File peek
+
+The sidebar includes a lightweight file peek flow for checking a file before
+opening a real editor tab.
+
+- Select a sidebar file row and press `Space` to open a bounded read-only
+  preview popover.
+- The preview shows the file name, absolute path, size, modified timestamp, and
+  a short text sample or an explicit unsupported/error state.
+- Pressing `Space` again on the same file, pressing `Escape`, clicking away, or
+  moving selection to a non-file row closes the preview.
+- Press `Enter` or use the **Open** button in the popover to promote the file
+  through the normal open-tab flow.
+- The preview is intentionally lightweight and does not create editor, draft,
+  monitor, or undo state.
 
 ## Architecture
 
