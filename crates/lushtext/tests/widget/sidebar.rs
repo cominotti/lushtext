@@ -338,6 +338,15 @@ fn present_window(window: &LushtextWindow) {
     flush_events();
 }
 
+fn assert_tab_count(window: &LushtextWindow, expected: i32) {
+    assert_eq!(
+        window.imp().tab_view.n_pages(),
+        expected,
+        "expected {expected} open tab(s), got {}",
+        window.imp().tab_view.n_pages()
+    );
+}
+
 // --- Window integration: close tabs ---
 
 #[test]
@@ -349,11 +358,11 @@ fn test_close_tab_for_path_exact() {
     let file_path = dir.path().join("doomed.rs");
     std::fs::write(&file_path, "").unwrap();
     window.open_document(&file_path);
-    assert_eq!(window.imp().tab_view.n_pages(), 1);
+    assert_tab_count(&window, 1);
 
     window.close_tab_for_path(&file_path);
     flush_events();
-    assert_eq!(window.imp().tab_view.n_pages(), 0);
+    assert_tab_count(&window, 0);
 }
 
 #[test]
@@ -374,11 +383,11 @@ fn test_close_tab_for_path_directory_closes_children() {
     window.open_document(&f1);
     window.open_document(&f2);
     window.open_document(&f3);
-    assert_eq!(window.imp().tab_view.n_pages(), 3);
+    assert_tab_count(&window, 3);
 
     window.close_tab_for_path(&sub);
     flush_events();
-    assert_eq!(window.imp().tab_view.n_pages(), 1);
+    assert_tab_count(&window, 1);
 
     let remaining = window
         .imp()
@@ -395,9 +404,9 @@ fn test_close_tab_for_path_nonexistent_is_noop() {
     ensure_gtk_init();
     let window = test_window();
     window.new_tab();
-    assert_eq!(window.imp().tab_view.n_pages(), 1);
+    assert_tab_count(&window, 1);
 
     window.close_tab_for_path(std::path::Path::new("/does/not/exist"));
     flush_events();
-    assert_eq!(window.imp().tab_view.n_pages(), 1);
+    assert_tab_count(&window, 1);
 }

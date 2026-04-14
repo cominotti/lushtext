@@ -5,7 +5,8 @@
 //! This layer sits between the domain model (`model/`) and the UI (`ui/`).
 //! All services are GTK-free and fully unit-testable. Includes workspace
 //! management, session persistence, file tree scanning, editor file I/O,
-//! file size policy, fuzzy search, and the background task concurrency guard.
+//! file size policy, bounded file peek snapshots, fuzzy search, and the
+//! background task concurrency guard.
 
 pub mod async_task;
 pub mod content_search;
@@ -13,6 +14,7 @@ pub mod draft_service;
 pub mod editor_io;
 pub mod editorconfig;
 pub mod file_limits;
+pub mod file_peek;
 pub mod file_tree;
 pub mod json_store;
 pub mod notifications;

@@ -26,6 +26,7 @@ impl LushtextWorkspaceSection {
     }
 
     fn load_root_model(&self, roots: &[WorkspaceEntry], auto_expand: bool) {
+        self.dismiss_peek_for_rebuild();
         self.save_expanded_paths();
         super::tree_loading::clear_all_dir_state(self);
         self.reset_item_cache();
@@ -58,6 +59,7 @@ impl LushtextWorkspaceSection {
         });
 
         let selection = gtk4::SingleSelection::new(Some(tree_model.clone()));
+        self.install_peek_selection_model(&selection);
         let imp = self.imp();
         imp.file_tree_view.set_model(Some(&selection));
         *imp.root_store.borrow_mut() = Some(root_store);

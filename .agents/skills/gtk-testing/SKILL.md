@@ -74,6 +74,7 @@ Use `make test-widget` locally when a display server is already available.
 ## Assertion Rules That Save Time
 
 - For parented widgets inside an unpresented window, prefer `widget.property::<bool>("visible")` when you need the widget's own visibility flag. `is_visible()` answers a different question and walks the parent chain.
+- For `GtkListView` keyboard shortcuts, do not assume the focused widget is the list itself. In real sessions focus usually sits on a realized row descendant, so synthetic key delivery should target the focused widget and, if needed, walk up its parent chain until it reaches the ancestor that owns the `EventControllerKey`. Emitting the key directly on the list view can produce false-green tests for shortcuts that do nothing in the live app.
 - Test behavior, not GTK implementation details. Avoid pixel assertions, CSS rendering expectations, or proving that GTK's own containers work.
 - Keep widget tests narrowly scoped. A real window is fine; an enormous end-to-end script is usually not.
 - If a failure only reproduces in a live desktop session with compositor or portal behavior, switch to `gtk-agentic-debugging`.

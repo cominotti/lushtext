@@ -2,7 +2,9 @@
 
 //! Tests for the LushtextWorkspaceSection widget.
 
-use crate::common::ensure_gtk_init;
+use crate::common::{
+    emit_key_pressed_on_focus, ensure_gtk_init, flush_events, present_window, wait_until,
+};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -10,25 +12,11 @@ use lushtext_core::model::workspace::{WorkspaceEntry, WorkspaceId};
 use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
 use lushtext_core::ui::sidebar::workspace_section::LushtextWorkspaceSection;
 use std::cell::Cell;
+use std::cell::RefCell;
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
-
-fn flush_events() {
-    while glib::MainContext::default().iteration(false) {}
-}
-
-fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if predicate() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-        flush_events();
-    }
-    panic!("condition was not met within {timeout:?}");
-}
+use std::time::Duration;
 
 fn present_section_window(section: &LushtextWorkspaceSection) -> gtk4::ApplicationWindow {
     let app = crate::common::test_application();
@@ -38,8 +26,7 @@ fn present_section_window(section: &LushtextWorkspaceSection) -> gtk4::Applicati
         .default_height(420)
         .build();
     window.set_child(Some(section));
-    window.present();
-    flush_events();
+    present_window(&window);
     window
 }
 
@@ -78,6 +65,146 @@ fn realized_root_row_widgets(
         .expect("row icon should be followed by the row label");
 
     (window, icon, label)
+}
+
+struct PeekFixture {
+    _dir: tempfile::TempDir,
+    section: LushtextWorkspaceSection,
+    text_a: PathBuf,
+    text_b: PathBuf,
+    binary: PathBuf,
+    directory: PathBuf,
+}
+
+fn make_peek_fixture() -> PeekFixture {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().unwrap();
+    let text_a = dir.path().join("alpha.rs");
+    let text_b = dir.path().join("beta.rs");
+    let binary = dir.path().join("binary.bin");
+    let directory = dir.path().join("nested");
+
+    std::fs::write(&text_a, "fn alpha() {\n    println!(\"alpha\");\n}\n").unwrap();
+    std::fs::write(&text_b, "fn beta() {\n    println!(\"beta\");\n}\n").unwrap();
+    std::fs::write(&binary, [0xff, 0xfe, 0xfd]).unwrap();
+    std::fs::create_dir_all(&directory).unwrap();
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("peek-ws"));
+    section.load_roots(&[
+        WorkspaceEntry::File {
+            path: text_a.clone(),
+        },
+        WorkspaceEntry::File {
+            path: text_b.clone(),
+        },
+        WorkspaceEntry::File {
+            path: binary.clone(),
+        },
+        WorkspaceEntry::Directory {
+            path: directory.clone(),
+        },
+    ]);
+
+    PeekFixture {
+        _dir: dir,
+        section,
+        text_a,
+        text_b,
+        binary,
+        directory,
+    }
+}
+
+fn select_path(section: &LushtextWorkspaceSection, target_path: &Path) {
+    let selection = section
+        .imp()
+        .file_tree_view
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+        .expect("file tree should use a SingleSelection");
+    let tree_model = section
+        .imp()
+        .tree_model
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("tree model should be loaded");
+
+    for index in 0..tree_model.n_items() {
+        if let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()
+            && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+            && item.path().as_deref() == Some(target_path)
+        {
+            selection.set_selected(index);
+            section
+                .imp()
+                .file_tree_view
+                .scroll_to(index, gtk4::ListScrollFlags::FOCUS, None);
+            flush_events();
+            return;
+        }
+    }
+
+    panic!("path {} was not found in the tree model", target_path.display());
+}
+
+fn selected_path(section: &LushtextWorkspaceSection) -> Option<PathBuf> {
+    section
+        .imp()
+        .file_tree_view
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+        .and_then(|selection| selection.selected_item())
+        .and_then(|row| row.downcast::<gtk4::TreeListRow>().ok())
+        .and_then(|row| row.item())
+        .and_then(|item| item.downcast::<FileTreeItem>().ok())
+        .and_then(|item| item.path())
+}
+
+fn peek_body_text(section: &LushtextWorkspaceSection) -> String {
+    let binding = section.imp().peek_widgets.text_buffer.borrow();
+    let buffer = binding.as_ref().expect("peek buffer should exist");
+    let (start, end) = buffer.bounds();
+    buffer.text(&start, &end, false).to_string()
+}
+
+fn peek_fallback_text(section: &LushtextWorkspaceSection) -> (String, String) {
+    let title = section
+        .imp()
+        .peek_widgets
+        .fallback_title_label
+        .borrow()
+        .as_ref()
+        .expect("fallback title should exist")
+        .label()
+        .to_string();
+    let body = section
+        .imp()
+        .peek_widgets
+        .fallback_body_label
+        .borrow()
+        .as_ref()
+        .expect("fallback body should exist")
+        .label()
+        .to_string();
+    (title, body)
+}
+
+fn tree_view(section: &LushtextWorkspaceSection) -> &gtk4::ListView {
+    &section.imp().file_tree_view
+}
+
+fn assert_tree_focus(window: &gtk4::ApplicationWindow, section: &LushtextWorkspaceSection) {
+    let focus = gtk4::prelude::GtkWindowExt::focus(window).expect("focused widget");
+    let target = tree_view(section).upcast_ref::<gtk4::Widget>();
+    let mut current = Some(focus);
+    while let Some(widget) = current {
+        if widget.as_ptr() == target.as_ptr() {
+            return;
+        }
+        current = widget.parent();
+    }
+    panic!("focus should remain inside the sidebar tree view");
 }
 
 // --- Construction ---
@@ -193,6 +320,15 @@ fn test_workspace_section_context_menu_no_arrow() {
     let popover = section.imp().context_menu.borrow();
     let popover = popover.as_ref().unwrap();
     assert!(!popover.has_arrow());
+}
+
+#[test]
+fn test_workspace_section_peek_popover_uses_horizontal_offset() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+    let binding = section.imp().peek_widgets.popover.borrow();
+    let popover = binding.as_ref().expect("peek popover should exist");
+    assert_eq!(popover.offset(), (15, 0));
 }
 
 // --- Model manipulation: remove_from_model ---
@@ -631,4 +767,217 @@ fn test_workspace_section_toggle_roots() {
     // Toggle should collapse
     section.toggle_roots();
     assert!(!row.is_expanded());
+}
+
+#[test]
+fn test_file_peek_space_opens_for_selected_file_and_keeps_sidebar_focus() {
+    let fixture = make_peek_fixture();
+    let window = present_section_window(&fixture.section);
+
+    select_path(&fixture.section, &fixture.text_a);
+    tree_view(&fixture.section).grab_focus();
+    flush_events();
+
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || {
+        fixture.section.peek_visible()
+            && fixture.section.peeked_path().as_deref() == Some(fixture.text_a.as_path())
+            && peek_body_text(&fixture.section).contains("alpha")
+    });
+
+    assert_tree_focus(&window, &fixture.section);
+}
+
+#[test]
+fn test_file_peek_selection_change_refreshes_preview_in_place() {
+    let fixture = make_peek_fixture();
+    let window = present_section_window(&fixture.section);
+
+    select_path(&fixture.section, &fixture.text_a);
+    tree_view(&fixture.section).grab_focus();
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || fixture.section.peek_visible());
+
+    select_path(&fixture.section, &fixture.text_b);
+    wait_until(Duration::from_secs(2), || {
+        fixture.section.peeked_path().as_deref() == Some(fixture.text_b.as_path())
+            && peek_body_text(&fixture.section).contains("beta")
+    });
+
+    assert_tree_focus(&window, &fixture.section);
+}
+
+#[test]
+fn test_file_peek_escape_dismisses_and_restores_sidebar_focus() {
+    let fixture = make_peek_fixture();
+    let window = present_section_window(&fixture.section);
+
+    select_path(&fixture.section, &fixture.text_a);
+    tree_view(&fixture.section).grab_focus();
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || fixture.section.peek_visible());
+
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::Escape);
+    wait_until(Duration::from_secs(2), || !fixture.section.peek_visible());
+
+    assert_tree_focus(&window, &fixture.section);
+}
+
+#[test]
+fn test_file_peek_repeated_space_dismisses_current_preview() {
+    let fixture = make_peek_fixture();
+    let window = present_section_window(&fixture.section);
+
+    select_path(&fixture.section, &fixture.text_a);
+    tree_view(&fixture.section).grab_focus();
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || fixture.section.peek_visible());
+
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || !fixture.section.peek_visible());
+
+    assert_tree_focus(&window, &fixture.section);
+}
+
+#[test]
+fn test_file_peek_click_away_close_restores_sidebar_focus() {
+    let fixture = make_peek_fixture();
+    let window = present_section_window(&fixture.section);
+
+    select_path(&fixture.section, &fixture.text_a);
+    tree_view(&fixture.section).grab_focus();
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || fixture.section.peek_visible());
+
+    fixture
+        .section
+        .imp()
+        .peek_widgets
+        .popover
+        .borrow()
+        .as_ref()
+        .expect("peek popover should exist")
+        .popdown();
+    wait_until(Duration::from_secs(2), || !fixture.section.peek_visible());
+
+    assert_tree_focus(&window, &fixture.section);
+}
+
+#[test]
+fn test_file_peek_enter_promotes_selected_file() {
+    let fixture = make_peek_fixture();
+    let window = present_section_window(&fixture.section);
+
+    let promoted_path = Rc::new(RefCell::new(None::<PathBuf>));
+    let promoted_path_clone = promoted_path.clone();
+    fixture.section.connect_peek_promoted(move |path| {
+        promoted_path_clone.replace(Some(path.to_path_buf()));
+    });
+
+    select_path(&fixture.section, &fixture.text_a);
+    tree_view(&fixture.section).grab_focus();
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || {
+        fixture.section.peek_visible()
+            && fixture
+                .section
+                .imp()
+                .peek_widgets
+                .open_button
+                .borrow()
+                .as_ref()
+                .is_some_and(gtk4::Button::is_sensitive)
+    });
+
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::Return);
+    wait_until(Duration::from_secs(2), || !fixture.section.peek_visible());
+
+    assert_eq!(promoted_path.take(), Some(fixture.text_a));
+}
+
+#[test]
+fn test_file_peek_open_button_promotes_selected_file() {
+    let fixture = make_peek_fixture();
+    let window = present_section_window(&fixture.section);
+
+    let promoted_path = Rc::new(RefCell::new(None::<PathBuf>));
+    let promoted_path_clone = promoted_path.clone();
+    fixture.section.connect_peek_promoted(move |path| {
+        promoted_path_clone.replace(Some(path.to_path_buf()));
+    });
+
+    select_path(&fixture.section, &fixture.text_b);
+    tree_view(&fixture.section).grab_focus();
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || {
+        fixture.section.peek_visible()
+            && fixture
+                .section
+                .imp()
+                .peek_widgets
+                .open_button
+                .borrow()
+                .as_ref()
+                .is_some_and(gtk4::Button::is_sensitive)
+    });
+
+    fixture
+        .section
+        .imp()
+        .peek_widgets
+        .open_button
+        .borrow()
+        .as_ref()
+        .expect("peek open button should exist")
+        .emit_clicked();
+    wait_until(Duration::from_secs(2), || !fixture.section.peek_visible());
+
+    assert_eq!(promoted_path.take(), Some(fixture.text_b));
+}
+
+#[test]
+fn test_file_peek_binary_fallback_disables_open() {
+    let fixture = make_peek_fixture();
+    let window = present_section_window(&fixture.section);
+
+    select_path(&fixture.section, &fixture.binary);
+    tree_view(&fixture.section).grab_focus();
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || {
+        fixture.section.peek_visible()
+            && fixture.section.peeked_path().as_deref() == Some(fixture.binary.as_path())
+            && !peek_fallback_text(&fixture.section).0.is_empty()
+    });
+
+    let (title, body) = peek_fallback_text(&fixture.section);
+    assert!(title.contains("Inline preview unavailable"));
+    assert!(body.contains("UTF-8 text"));
+    assert!(
+        !fixture
+            .section
+            .imp()
+            .peek_widgets
+            .open_button
+            .borrow()
+            .as_ref()
+            .expect("peek open button should exist")
+            .is_sensitive()
+    );
+}
+
+#[test]
+fn test_file_peek_selecting_directory_dismisses_preview() {
+    let fixture = make_peek_fixture();
+    let window = present_section_window(&fixture.section);
+
+    select_path(&fixture.section, &fixture.text_a);
+    tree_view(&fixture.section).grab_focus();
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || fixture.section.peek_visible());
+
+    select_path(&fixture.section, &fixture.directory);
+    wait_until(Duration::from_secs(2), || !fixture.section.peek_visible());
+
+    assert_eq!(selected_path(&fixture.section).as_deref(), Some(fixture.directory.as_path()));
+    assert_tree_focus(&window, &fixture.section);
 }

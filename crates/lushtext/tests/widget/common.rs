@@ -6,8 +6,12 @@
 //! must be registered before constructing widgets that use composite templates.
 //! Both operations are one-time setup via `std::sync::Once`.
 
-use gio::prelude::{ApplicationExt, Cast, ObjectExt};
+use gio::prelude::{ApplicationExt, Cast, ListModelExt, ObjectExt};
+use glib::prelude::IsA;
+use glib::prelude::ToValue;
+use gtk4::prelude::{GtkWindowExt, WidgetExt};
 use lushtext_core::config::APP_ID;
+use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
 
@@ -59,4 +63,76 @@ pub fn test_application() -> libadwaita::Application {
 pub fn test_window() -> lushtext_core::ui::window::LushtextWindow {
     let app = test_application();
     lushtext_core::ui::window::LushtextWindow::new(&app)
+}
+
+/// Run the GTK main loop until no immediate events remain.
+pub fn flush_events() {
+    while glib::MainContext::default().iteration(false) {}
+}
+
+/// Sleep briefly, then flush pending GTK work.
+pub fn flush_after_delay(delay: Duration) {
+    std::thread::sleep(delay);
+    flush_events();
+}
+
+/// Poll until the predicate becomes true or the timeout expires.
+pub fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        flush_after_delay(Duration::from_millis(20));
+    }
+    panic!("condition was not met within {timeout:?}");
+}
+
+/// Present a window and flush the initial realization work.
+pub fn present_window(window: &impl IsA<gtk4::Window>) {
+    window.present();
+    flush_events();
+}
+
+fn try_emit_key_pressed(widget: &gtk4::Widget, key: gtk4::gdk::Key) -> Option<glib::Propagation> {
+    let controllers = widget.observe_controllers();
+    for index in 0..controllers.n_items() {
+        if let Some(controller) = controllers
+            .item(index)
+            .and_then(|object| object.downcast::<gtk4::EventControllerKey>().ok())
+        {
+            let args: [&dyn ToValue; 3] = [
+                &key,
+                &0u32,
+                &gtk4::gdk::ModifierType::empty(),
+            ];
+            let stopped: bool =
+                glib::object::ObjectExt::emit_by_name(&controller, "key-pressed", &args);
+            return Some(if stopped {
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            });
+        }
+    }
+    None
+}
+
+/// Emit a synthetic key press on the window's currently focused widget.
+pub fn emit_key_pressed_on_focus(
+    window: &impl IsA<gtk4::Window>,
+    key: gtk4::gdk::Key,
+) -> glib::Propagation {
+    let focus = window
+        .as_ref()
+        .focus()
+        .expect("window should have a focused widget");
+    let mut current = Some(focus);
+    while let Some(widget) = current {
+        if let Some(result) = try_emit_key_pressed(&widget, key) {
+            return result;
+        }
+        current = widget.parent();
+    }
+    panic!("focused widget ancestry had no EventControllerKey");
 }

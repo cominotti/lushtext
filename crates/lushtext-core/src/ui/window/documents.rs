@@ -20,8 +20,11 @@ use crate::ui::status_bar::MessageKind;
 use super::LushtextWindow;
 
 impl LushtextWindow {
-    /// Open a file in a new tab, or focus existing tab if already open.
-    /// The tab appears immediately; file content loads asynchronously.
+    /// Open a file in a new tab, or focus the existing tab if already open.
+    ///
+    /// This remains the single authority for real document opening, so sidebar
+    /// double-click, `Enter`, Save As handoff, and file-peek promotion all
+    /// reuse the same duplicate-tab and editor-focus behavior.
     pub fn open_document(&self, path: &Path) {
         let tab_view = &self.imp().tab_view;
         if self.imp().open_paths.borrow().contains(path) {

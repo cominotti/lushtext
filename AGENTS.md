@@ -53,6 +53,7 @@ src/
 │   ├── draft_service.rs # Draft persistence: save/load/delete draft files and manifest
 │   ├── editor_io.rs    # Text file load/save helpers, mtimes, close-flush timestamps
 │   ├── editorconfig.rs # .editorconfig file discovery and parsing (pure I/O, no GTK)
+│   ├── file_peek.rs    # Bounded read-only snapshots for sidebar file peek
 │   ├── file_limits.rs  # File size thresholds for graceful degradation
 │   ├── file_tree.rs    # Directory scanning (pure I/O, bounded/cancellable helpers for sidebar)
 │   ├── json_store.rs   # Generic JSON load/save + data_dir()
@@ -105,6 +106,7 @@ If you add another nested `AGENTS.md`, keep it local, non-duplicative, and worth
 - **Workspace persistence**: `WorkspacesFile` (model) is loaded from `workspaces.json` via `workspace_manager::load()` on window construction. Sidebar mutations mark persistence dirty, debounce for 150ms, and save via `spawn_blocking_then`, with in-flight serialization so older snapshots cannot overwrite newer ones. `WorkspacesFile` derives `Clone` to enable cloning out of `RefCell` for background save work. The sidebar owns the `WorkspacesFile` state.
 - **File tree uses modern GTK4 model**: `GtkListView` + `GtkTreeListModel` + `GtkTreeExpander` (NOT the deprecated `GtkTreeView`). File tree labels use the `.monospace` CSS class, sharing the editor's font customization provider.
 - **File context menu**: Per-`WorkspaceSection`. Right-click on a file or directory shows a `GtkPopoverMenu` with New File, New Folder, Rename, and Delete actions. Uses `Widget::pick()` + ancestor traversal to find the `TreeExpander` → `TreeListRow` → `FileTreeItem`. Actions are in a `section` action group on each section widget.
+- **File peek**: Per-`WorkspaceSection`. Press `Space` on a selected sidebar file row to open a `GtkPopover` anchored beside that row without resizing the split layout. The popover renders file name, absolute file path, size, modified time, and either a bounded read-only text sample or an explicit fallback state. Peek stays read-only, updates in place as sidebar selection changes, dismisses on repeated `Space`, `Escape`, click-away, non-file selection, section rebuild, or workspace-filter hide, and promotes through the existing sidebar `file_activated` callback so `open_document()` remains the single duplicate-tab and editor-focus authority.
 - **Workspace header context menu**: Per-`WorkspaceSection`. Right-click on the workspace header shows a `GtkPopoverMenu` with Rename Workspace and Unlist Workspace. Rename shows an `AdwAlertDialog` with text entry. Unlist shows a confirmation dialog. Actions are in a `ws-header` action group.
 - **Inline rename**: Rename swaps the row's `GtkLabel` for a `GtkEntry` dynamically. Enter confirms (removes entry immediately, then `std::fs::rename` runs on a background thread via `spawn_blocking_then`; on success the `FileTreeItem` path and label are updated on the main thread), Escape and focus-out cancel. A guard (`entry.parent().is_none()`) prevents double-fire from focus-out after confirm/cancel removes the entry. The window is notified via `connect_file_renamed` callback for tab path updates.
 - **Delete with confirmation**: Delete shows an `AdwAlertDialog` with a destructive "Delete" response. On confirm, `std::fs::remove_file` or `std::fs::remove_dir_all` runs on a background thread via `spawn_blocking_then`; on success the item is removed from the parent `ListStore` and the window is notified via `connect_file_deleted` callback to close affected tabs. Directory operations use `Path::starts_with` for prefix matching (closing all tabs inside deleted/renamed directories).
@@ -249,3 +251,10 @@ Both `state` and `then` are wrapped in `glib::thread_guard::ThreadGuard` to safe
 If implementation or verification reveals a pre-existing blocker, fix it in the same work stream instead of deferring around it or treating it as out of scope.
 
 This rule is mandatory and has no exceptions.
+
+## Active Technologies
+- Rust 1.94.1 (Edition 2024) + GTK4 0.11, Libadwaita 0.9, GtkSourceView 5 0.11, gio/glib/pango 0.22, existing `spawn_blocking_then` background executor (001-file-peek)
+- Local workspace files for read-only snapshot reads; transient in-memory peek state only; no new XDG, draft, session, or GSettings persistence (001-file-peek)
+
+## Recent Changes
+- 001-file-peek: Added Rust 1.94.1 (Edition 2024) + GTK4 0.11, Libadwaita 0.9, GtkSourceView 5 0.11, gio/glib/pango 0.22, existing `spawn_blocking_then` background executor

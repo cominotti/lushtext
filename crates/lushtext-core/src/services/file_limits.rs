@@ -72,6 +72,16 @@ impl FileSizeCheck {
         )
     }
 
+    /// Whether the app's size policy still allows opening this file at all.
+    ///
+    /// Peek uses the same size gate as full document open so the temporary
+    /// preview never claims a file is openable when the normal workflow would
+    /// refuse it.
+    #[must_use]
+    pub fn open_allowed(self) -> bool {
+        self != Self::TooLarge
+    }
+
     /// Approximate GtkTextBuffer memory multiplier for eviction decisions.
     ///
     /// Undo history is the dominant extra overhead, so we use a higher
@@ -153,6 +163,15 @@ mod tests {
         assert!(FileSizeCheck::LargeFileToast.undo_enabled());
         assert!(FileSizeCheck::DisableSyntax.undo_enabled());
         assert!(!FileSizeCheck::DisableUndoAndSyntax.undo_enabled());
+    }
+
+    #[test]
+    fn test_open_allowed() {
+        assert!(FileSizeCheck::Normal.open_allowed());
+        assert!(FileSizeCheck::LargeFileToast.open_allowed());
+        assert!(FileSizeCheck::DisableSyntax.open_allowed());
+        assert!(FileSizeCheck::DisableUndoAndSyntax.open_allowed());
+        assert!(!FileSizeCheck::TooLarge.open_allowed());
     }
 
     #[test]

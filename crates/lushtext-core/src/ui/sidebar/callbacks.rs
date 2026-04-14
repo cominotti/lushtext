@@ -45,6 +45,16 @@ impl LushtextSidebar {
         });
 
         let sidebar_weak = self.downgrade();
+        section.connect_peek_promoted(move |path| {
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                // Peek promotion should behave exactly like normal row activation:
+                // reuse the existing sidebar -> window open path so duplicate-tab
+                // detection and editor focus remain centralized in the window shell.
+                sidebar.emit_file_activated(path);
+            }
+        });
+
+        let sidebar_weak = self.downgrade();
         section.connect_add_folder_requested(move |workspace_id| {
             if let Some(sidebar) = sidebar_weak.upgrade() {
                 sidebar.handle_add_folder(workspace_id);

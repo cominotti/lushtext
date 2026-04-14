@@ -8,6 +8,7 @@
 
 use super::super::file_tree_item::FileTreeItem;
 use crate::model::workspace::{WorkspaceEntry, WorkspaceId};
+use crate::services::file_peek::PeekRequestToken;
 use gtk4::gio;
 use gtk4::gio::prelude::ListModelExt;
 use gtk4::prelude::*;
@@ -30,6 +31,42 @@ type WorkspaceCallback = Box<dyn Fn(&WorkspaceId)>;
 pub struct ItemLocation {
     pub parent_dir: Option<PathBuf>,
     pub index: usize,
+}
+
+/// Runtime widget references for the section-owned peek popover.
+#[derive(Default)]
+pub struct PeekWidgets {
+    /// Floating preview card anchored beside the selected file row.
+    pub popover: RefCell<Option<gtk4::Popover>>,
+    /// Preview title showing the file name.
+    pub title_label: RefCell<Option<gtk4::Label>>,
+    /// Subtitle showing the absolute file path.
+    pub path_label: RefCell<Option<gtk4::Label>>,
+    /// Secondary metadata line with file size and modified time.
+    pub meta_label: RefCell<Option<gtk4::Label>>,
+    /// Stack switching between loading, text, and fallback states.
+    pub body_stack: RefCell<Option<gtk4::Stack>>,
+    /// Read-only buffer for the bounded text sample.
+    pub text_buffer: RefCell<Option<gtk4::TextBuffer>>,
+    /// Fallback headline for unsupported and error states.
+    pub fallback_title_label: RefCell<Option<gtk4::Label>>,
+    /// Explanatory fallback body copy.
+    pub fallback_body_label: RefCell<Option<gtk4::Label>>,
+    /// Footer button that promotes the previewed file into a real tab.
+    pub open_button: RefCell<Option<gtk4::Button>>,
+}
+
+/// Visible session state for the section-owned peek flow.
+#[derive(Default)]
+pub struct PeekSessionState {
+    /// Path currently bound to the popover, if any.
+    pub active_path: RefCell<Option<PathBuf>>,
+    /// Latest request token used to drop stale async completions.
+    pub active_generation: Cell<PeekRequestToken>,
+    /// Whether closing the popover should restore focus to the list view.
+    pub restore_focus_on_close: Cell<bool>,
+    /// Whether the current preview state allows normal open promotion.
+    pub open_allowed: Cell<bool>,
 }
 
 // CompositeTemplate loads the UI layout from a compiled XML file.
@@ -98,11 +135,17 @@ pub struct LushtextWorkspaceSection {
     pub child_paths: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
     /// O(1) path → (parent, index) lookup for fast model removal.
     pub item_locations: RefCell<HashMap<PathBuf, ItemLocation>>,
+    /// Widgets backing the section-owned file peek popover.
+    pub peek_widgets: PeekWidgets,
+    /// Active peek target, generation, and focus-return contract.
+    pub peek_session: PeekSessionState,
 
     // File operation callbacks (forwarded to sidebar → window)
     pub rename_callback: RefCell<Option<RenameCallback>>,
     pub delete_callback: RefCell<Option<FileCallback>>,
     pub create_callback: RefCell<Option<FileCallback>>,
+    /// Callback used when a peek should be promoted into the normal open flow.
+    pub peek_promote_callback: RefCell<Option<FileCallback>>,
 
     // Workspace-level callbacks (handled by sidebar)
     pub add_folder_callback: RefCell<Option<WorkspaceCallback>>,
@@ -133,6 +176,7 @@ impl ObjectImpl for LushtextWorkspaceSection {
         self.setup_file_context_menu();
         self.setup_header_context_menu();
         self.setup_header_double_click();
+        self.obj().setup_peek();
 
         // Wire add-folder button
         let obj_weak = self.obj().downgrade();
@@ -156,6 +200,9 @@ impl ObjectImpl for LushtextWorkspaceSection {
             popover.unparent();
         }
         if let Some(popover) = self.header_context_menu.borrow_mut().take() {
+            popover.unparent();
+        }
+        if let Some(popover) = self.peek_widgets.popover.borrow_mut().take() {
             popover.unparent();
         }
     }

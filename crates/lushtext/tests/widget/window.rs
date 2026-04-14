@@ -6,7 +6,7 @@
 //! behavior, a few critical shell affordances, and preview-pane regressions
 //! that still live in the window layer.
 
-use crate::common::ensure_gtk_init;
+use crate::common::{emit_key_pressed_on_focus, ensure_gtk_init};
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -19,6 +19,7 @@ use lushtext_core::services::notifications::{InlineActionNotification, InlineNot
 use lushtext_core::services::{draft_service, json_store, workspace_manager};
 use lushtext_core::ui::editor_page::{LushtextEditorPage, SaveError};
 use lushtext_core::ui::window::LushtextWindow;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 fn test_window() -> LushtextWindow {
@@ -147,6 +148,15 @@ fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
         .unwrap()
 }
 
+fn assert_tab_count(window: &LushtextWindow, expected: i32) {
+    assert_eq!(
+        window.imp().tab_view.n_pages(),
+        expected,
+        "expected {expected} open tab(s), got {}",
+        window.imp().tab_view.n_pages()
+    );
+}
+
 fn workspace_sidebar_visible(window: &LushtextWindow) -> bool {
     window.imp().workspace_split_view.shows_sidebar()
 }
@@ -203,6 +213,74 @@ fn preview_animation(window: &LushtextWindow) -> libadwaita::TimedAnimation {
         .expect("preview animation should be active")
 }
 
+fn seed_peek_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    ensure_gtk_init();
+    let root_dir = tempfile::tempdir().expect("peek workspace tempdir");
+    let alpha = root_dir.path().join("alpha.rs");
+    let beta = root_dir.path().join("beta.rs");
+    std::fs::write(&alpha, "fn alpha() {\n    println!(\"alpha\");\n}\n").expect("write alpha");
+    std::fs::write(&beta, "fn beta() {\n    println!(\"beta\");\n}\n").expect("write beta");
+
+    let mut workspaces = WorkspacesFile::default();
+    workspaces.workspaces.push(WorkspaceConfig {
+        id: WorkspaceId::new("peek-ws"),
+        name: "peek".to_string(),
+        entries: vec![
+            WorkspaceEntry::File {
+                path: alpha.clone(),
+            },
+            WorkspaceEntry::File { path: beta.clone() },
+        ],
+    });
+    workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save peek workspaces");
+    (root_dir, alpha, beta)
+}
+
+fn select_sidebar_path(section: &lushtext_core::ui::sidebar::WorkspaceSection, path: &Path) {
+    let selection = section
+        .imp()
+        .file_tree_view
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+        .expect("sidebar section should use SingleSelection");
+    let tree_model = section
+        .imp()
+        .tree_model
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("tree model should be loaded");
+
+    for index in 0..tree_model.n_items() {
+        if let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()
+            && let Some(item) = row.item().and_downcast::<lushtext_core::ui::sidebar::FileTreeItem>()
+            && item.path().as_deref() == Some(path)
+        {
+            selection.set_selected(index);
+            section
+                .imp()
+                .file_tree_view
+                .scroll_to(index, gtk4::ListScrollFlags::FOCUS, None);
+            flush_events();
+            return;
+        }
+    }
+
+    panic!("sidebar path {} was not found", path.display());
+}
+
+fn first_sidebar_section(window: &LushtextWindow) -> lushtext_core::ui::sidebar::WorkspaceSection {
+    window
+        .imp()
+        .sidebar
+        .imp()
+        .sections
+        .borrow()
+        .first()
+        .cloned()
+        .expect("sidebar should have at least one section")
+}
+
 #[test]
 fn test_window_restores_default_size() {
     ensure_gtk_init();
@@ -222,6 +300,78 @@ fn test_split_view_settings_defaults() {
     assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.3);
     assert!(!settings.boolean(keys::PROPERTIES_SIDEBAR_VISIBLE));
     assert_eq!(settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION), 0.25);
+}
+
+#[test]
+fn test_sidebar_peek_does_not_create_tab_until_promoted() {
+    let (_root_dir, alpha, _beta) = seed_peek_workspace();
+    let window = test_window();
+    present_window(&window);
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().sidebar.imp().sections.borrow().len() == 1
+    });
+
+    let section = first_sidebar_section(&window);
+    select_sidebar_path(&section, &alpha);
+    section.imp().file_tree_view.grab_focus();
+    assert_tab_count(&window, 0);
+
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || {
+        section.peek_visible()
+            && section
+                .imp()
+                .peek_widgets
+                .open_button
+                .borrow()
+                .as_ref()
+                .is_some_and(gtk4::Button::is_sensitive)
+    });
+    assert_tab_count(&window, 0);
+
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::Return);
+    wait_until(Duration::from_secs(2), || !section.peek_visible());
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+
+    assert_tab_count(&window, 1);
+    assert_eq!(active_editor(&window).file_path().as_deref(), Some(alpha.as_path()));
+}
+
+#[test]
+fn test_sidebar_peek_promotion_reuses_existing_tab() {
+    let (_root_dir, alpha, _beta) = seed_peek_workspace();
+    let window = test_window();
+    present_window(&window);
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().sidebar.imp().sections.borrow().len() == 1
+    });
+
+    window.open_document(&alpha);
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+
+    let section = first_sidebar_section(&window);
+    select_sidebar_path(&section, &alpha);
+    section.imp().file_tree_view.grab_focus();
+
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || {
+        section.peek_visible()
+            && section
+                .imp()
+                .peek_widgets
+                .open_button
+                .borrow()
+                .as_ref()
+                .is_some_and(gtk4::Button::is_sensitive)
+    });
+
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::Return);
+    wait_until(Duration::from_secs(2), || !section.peek_visible());
+
+    assert_tab_count(&window, 1);
+    assert_eq!(active_editor(&window).file_path().as_deref(), Some(alpha.as_path()));
 }
 
 #[test]

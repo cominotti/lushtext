@@ -6,6 +6,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 
 - **Dual sidebars** -- persistent left workspace tree plus optional right properties panel for document metadata and editor formatting controls
 - **Workspaces** -- named collections of root directories, persisted across sessions
+- **File peek** -- press `Space` on a selected sidebar file to inspect a bounded read-only preview in a floating card with the absolute file path, then `Enter` or `Open` to promote it into a real tab
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)
 - **EditorConfig support** -- per-file formatting overrides from `.editorconfig` files (`indent_style`, `tab_width`, `indent_size`); toggle in Preferences
 - **Session persistence** -- tabs, cursor positions, and scroll offsets restored on restart
@@ -131,6 +132,7 @@ lushtext-core/src/
     palette/         Command registry, SIMD fuzzy search, and file indexing
     editor_io.rs     Text file load/save helpers and mtimes
     editorconfig.rs  .editorconfig resolution
+    file_peek.rs     Bounded read-only snapshots for sidebar file peek
     notifications.rs Window-scoped status and inline notification store
     file_tree.rs     Directory scanning
     draft_service.rs Draft autosave
@@ -143,7 +145,7 @@ lushtext-core/src/
   ui/                GTK4/Libadwaita widgets
     window/          Main window shell plus actions, documents, drafts, search, preview, session persistence, print, and zoom wiring
     editor_page/     GtkSourceView tab plus load/save, monitor, and in-tab search helpers
-    sidebar/         Multi-workspace file tree, dialogs, callbacks, and per-section async child-tree loading
+    sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows
     command_palette/ Ctrl+P fuzzy search

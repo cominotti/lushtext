@@ -7,6 +7,7 @@
 
 mod actions;
 mod imp;
+mod peek;
 mod roots;
 mod tree_index;
 mod tree_loading;
@@ -68,6 +69,11 @@ impl LushtextWorkspaceSection {
         *self.imp().create_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Store the callback used when peek promotion should open a real tab.
+    pub fn connect_peek_promoted<F: Fn(&Path) + 'static>(&self, f: F) {
+        *self.imp().peek_promote_callback.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn connect_add_folder_requested<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
         *self.imp().add_folder_callback.borrow_mut() = Some(Box::new(f));
     }
@@ -109,6 +115,12 @@ impl LushtextWorkspaceSection {
         let workspace_id = self.workspace_id();
         if let Some(ref callback) = *self.imp().folder_focused_callback.borrow() {
             callback(&workspace_id);
+        }
+    }
+
+    pub(super) fn notify_peek_promoted(&self, path: &Path) {
+        if let Some(ref callback) = *self.imp().peek_promote_callback.borrow() {
+            callback(path);
         }
     }
 }
