@@ -24,7 +24,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Buffer eviction** -- background tabs evicted when total memory exceeds 256MB, transparently reloaded on focus
 - **Dark mode** -- automatic GtkSourceView scheme switching via Libadwaita StyleManager
 - **Customizable font** -- system monospace or custom font, applied via CSS provider
-- **Markdown preview** -- side-by-side or full-width preview pane with native TextTag rendering (headings, bold, italic, code, links, lists, blockquotes); Alt+P toggles full-width preview
+- **Markdown preview** -- side-by-side or full-width preview pane with native GTK rendering for headings, emphasis, code, links, ordered and unordered lists, task lists, blockquotes, GitHub alert callouts, footnotes, and Markdown tables; Alt+P toggles full-width preview
 - **File monitoring** -- detects external changes and offers reload
 
 ## Tech Stack
@@ -193,10 +193,14 @@ showing the raw source text.
 - A separate side-by-side preview pane is also available through the existing
   preview action surfaces, giving you editor text on the left and rendered
   output on the right.
-- The renderer uses native GTK text styling for headings, emphasis, code,
-  links, lists, and blockquotes.
+- The renderer uses native GTK styling and widgets for headings, emphasis,
+  code, links, ordered and unordered lists, task lists, blockquotes, GitHub
+  alert callouts, footnotes, and Markdown tables.
 - Non-Markdown files show a placeholder instead of trying to render arbitrary
   text as Markdown.
+- Canonical preview sample content lives under `samples/`. The file
+  `samples/markdown-test.md` is the canonical showcase for the Markdown preview
+  features LushText currently supports.
 
 ### Focus Folder
 
