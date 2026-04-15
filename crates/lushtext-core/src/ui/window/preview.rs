@@ -15,6 +15,7 @@
 
 use crate::config::keys;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::markdown_preview::MarkdownPreviewRenderContext;
 use gtk4::prelude::*;
 use libadwaita::prelude::AnimationExt;
 use sourceview5::prelude::*;
@@ -332,7 +333,11 @@ impl LushtextWindow {
             Some(editor) if is_markdown(&editor) => {
                 let buffer = editor.buffer();
                 let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-                preview.render_markdown(&text);
+                let context = MarkdownPreviewRenderContext::new(
+                    editor.file_path(),
+                    self.imp().sidebar.workspace_roots(),
+                );
+                preview.render_markdown_with_context(&text, &context);
             }
             Some(_) => {
                 preview.show_placeholder("Not a Markdown file");

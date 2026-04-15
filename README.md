@@ -194,8 +194,10 @@ showing the raw source text.
   preview action surfaces, giving you editor text on the left and rendered
   output on the right.
 - The renderer uses native GTK styling and widgets for headings, emphasis,
-  code, links, ordered and unordered lists, task lists, blockquotes, GitHub
-  alert callouts, footnotes, and Markdown tables.
+  code, activatable links, ordered and unordered lists, task lists, nested
+  list indentation, blockquotes, GitHub alert callouts, footnotes, Markdown
+  tables, and local Markdown images with explicit fallback states for
+  unsupported or unresolved image targets.
 - Non-Markdown files show a placeholder instead of trying to render arbitrary
   text as Markdown.
 - Canonical preview sample content lives under `samples/`. The file

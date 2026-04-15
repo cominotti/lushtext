@@ -1,8 +1,10 @@
 # Markdown Preview Feature Showcase
 
-This file is meant to exercise the Markdown preview paths that LushText currently supports in its GTK-native renderer.
+This file is meant to exercise the Markdown preview paths that LushText
+currently supports in its GTK-native renderer.
 
-It includes **bold**, *italic*, ~~strikethrough~~, inline `code`, and a normal [link to the Rust website](https://www.rust-lang.org/).
+It includes **bold**, *italic*, ~~strikethrough~~, inline `code`, and several
+different link and image cases that are useful for manual verification.
 
 ---
 
@@ -10,11 +12,25 @@ It includes **bold**, *italic*, ~~strikethrough~~, inline `code`, and a normal [
 
 ### Level 3 Heading
 
-Regular paragraph text under a subheading, with enough words to make spacing and wrapping easy to inspect in the preview.
+Regular paragraph text under a subheading, with enough words to make spacing
+and wrapping easy to inspect in the preview.
 
 #### Level 4 Heading
 
-Another paragraph with mixed inline formatting: **strong emphasis**, *lighter emphasis*, `inline snippets`, and ~~crossed-out text~~.
+Another paragraph with mixed inline formatting: **strong emphasis**, *lighter
+emphasis*, `inline snippets`, and ~~crossed-out text~~.
+
+---
+
+## Links
+
+These links should look clickable in preview and open through the desktop's
+default external handler when activated.
+
+- External link: [Rust website](https://www.rust-lang.org/)
+- External docs link inside prose: [GTK4 Rust bindings](https://gtk-rs.org/gtk4-rs/stable/latest/)
+- File-relative local link: [Open the full-color app icon](../data/icons/dev.cominotti.lushtext.svg)
+- Second file-relative local link: [Open the preview card sample](assets/preview-secondary.svg)
 
 ---
 
@@ -23,7 +39,7 @@ Another paragraph with mixed inline formatting: **strong emphasis**, *lighter em
 ### Unordered List
 
 - Native preview renderer
-- Styled headings and links
+- Clickable preview links
 - Read-only Markdown output
 
 ### Ordered List
@@ -32,12 +48,24 @@ Another paragraph with mixed inline formatting: **strong emphasis**, *lighter em
 2. Toggle the preview pane
 3. Compare source and rendered output
 
+### Nested Mixed Lists
+
+1. First ordered item
+   - Nested unordered child
+   - Another nested child with a [clickable link](https://example.com/)
+     1. Mixed ordered grandchild
+     2. Another grandchild
+2. Second ordered item
+   - Nested child after returning to the parent list
+
 ### Task List
 
 - [x] Tables render as native GTK widgets
 - [x] Alert callouts render without raw markers
 - [x] Footnotes render with numbered references
-- [ ] Images are still out of scope for this sample
+- [x] Preview links open externally
+- [x] Local Markdown images render natively
+- [x] Missing or remote images show explicit fallback states
 
 ---
 
@@ -66,7 +94,8 @@ Another paragraph with mixed inline formatting: **strong emphasis**, *lighter em
 
 ## Code
 
-Inline code like `cargo test -p lushtext-core markdown_preview --lib` should stay distinct from surrounding prose.
+Inline code like `cargo test -p lushtext-core markdown_preview --lib` should
+stay distinct from surrounding prose.
 
 ```rust
 fn main() {
@@ -75,6 +104,8 @@ fn main() {
         "alert callouts",
         "footnotes",
         "tables",
+        "preview links",
+        "local images",
     ];
 
     for feature in features {
@@ -87,13 +118,14 @@ fn main() {
 
 ## Tables
 
-Paragraph above the table so the preview can show surrounding flow before the native grid block.
+Paragraph above the table so the preview can show surrounding flow before the
+native grid block.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Headings | Ready | Styled with native text tags |
-| Links | Ready | Presentation-only for now |
-| Footnotes | Ready | Numbered in preview order |
+| Preview links | Ready | [Rust site](https://www.rust-lang.org/) should activate from a cell |
+| Local files | Ready | [Preview card sample](assets/preview-secondary.svg) uses a file-relative link |
 
 ### Alignment And Blank Cells
 
@@ -111,16 +143,43 @@ Paragraph above the table so the preview can show surrounding flow before the na
 | Italic | *Optional* | Softer emphasis |
 | Strike | ~~Deprecated~~ | No longer preferred |
 | Code | `cargo test` | Command snippet |
+| Link | [Docs](https://docs.rs/) | Should stay clickable in the rendered table |
 
-Paragraph below the table to verify that normal document flow resumes after the embedded GTK table widget.
+Paragraph below the table to verify that normal document flow resumes after the
+embedded GTK table widget.
+
+---
+
+## Images
+
+These image cases are useful for manual verification of the new native image
+and fallback paths.
+
+### File-Relative Local Image
+
+![File-relative app icon](../data/icons/dev.cominotti.lushtext.svg)
+
+### Second File-Relative Local Image
+
+![File-relative preview card sample](assets/preview-secondary.svg)
+
+### Missing Local Image Fallback
+
+![Missing image](missing-preview-image.png)
+
+### Remote Image Fallback
+
+![Remote image should stay unsupported](https://example.com/remote-preview-image.png)
 
 ---
 
 ## Footnotes
 
-Footnotes render inline markers in the preview,[^overview] and they can be referenced more than once in the same document.[^overview]
+Footnotes render inline markers in the preview,[^overview] and they can be
+referenced more than once in the same document.[^overview]
 
-You can also mix a second footnote into normal prose when checking numbering behavior.[^details]
+You can also mix a second footnote into normal prose when checking numbering
+behavior.[^details]
 
 [^overview]: This footnote includes **bold text**, a [link](https://docs.rs/), and inline `code`.
 

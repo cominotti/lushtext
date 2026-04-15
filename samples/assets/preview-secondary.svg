@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#ffe28a"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </radialGradient>
+    <linearGradient id="card" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f3f4f6"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="128" height="128" rx="24" fill="url(#bg)"/>
+  <circle cx="30" cy="36" r="12" fill="#fff7d6" opacity="0.92"/>
+  <circle cx="94" cy="30" r="8" fill="#fff7d6" opacity="0.7"/>
+  <path d="M0 104 C18 90 42 96 58 108 S98 126 128 102 L128 128 L0 128 Z" fill="#7c2d12" opacity="0.18"/>
+
+  <rect x="28" y="28" width="72" height="72" rx="16" fill="url(#card)" stroke="#d1d5db" stroke-width="2"/>
+  <rect x="42" y="42" width="32" height="7" rx="3.5" fill="#2563eb"/>
+  <rect x="42" y="56" width="42" height="6" rx="3" fill="#9ca3af"/>
+  <rect x="42" y="68" width="30" height="6" rx="3" fill="#d97706"/>
+  <rect x="42" y="80" width="38" height="6" rx="3" fill="#10b981"/>
+</svg>

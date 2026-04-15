@@ -3,9 +3,16 @@
 //! Tests for the LushtextMarkdownPreview widget.
 
 use crate::common::{ensure_gtk_init, present_window, test_application, wait_until};
+use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
-use gtk4::prelude::{GtkWindowExt, WidgetExt};
-use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
+use gtk4::prelude::*;
+use lushtext_core::ui::markdown_preview::{
+    LushtextMarkdownPreview, MarkdownPreviewRenderContext,
+};
+use std::cell::Cell;
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 #[test]
@@ -106,6 +113,25 @@ fn test_render_link_inserts_text() {
 }
 
 #[test]
+fn test_clickable_preview_link_activates_external_target() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+    let launched = Rc::new(RefCell::new(Vec::<String>::new()));
+    let launched_clone = launched.clone();
+    preview.connect_link_activated(move |uri| launched_clone.borrow_mut().push(uri.to_string()));
+
+    preview.render_markdown("[click here](https://example.com)");
+    emit_preview_click_for_text(&preview, "click here");
+
+    assert_eq!(
+        launched.borrow().as_slice(),
+        ["https://example.com"],
+        "Expected preview click to activate the rendered link target"
+    );
+}
+
+#[test]
 fn test_render_unordered_list_inserts_bullets() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
@@ -123,6 +149,19 @@ fn test_render_ordered_list_inserts_numbers() {
     let text = preview.buffer_text();
     assert!(text.contains("1."), "Expected ordered list number");
     assert!(text.contains("first"), "Expected list item text");
+}
+
+#[test]
+fn test_render_nested_list_uses_deeper_margin_tag() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("- parent\n  - child");
+
+    let child_tags = tags_for_rendered_text(&preview, "child");
+    assert!(
+        child_tags.iter().any(|name| name == "list-item-depth-2"),
+        "Expected nested list items to carry a deeper indentation tag"
+    );
 }
 
 #[test]
@@ -382,6 +421,107 @@ fn test_render_table_cell_markup_subset_uses_label_markup() {
 }
 
 #[test]
+fn test_render_table_cell_links_use_markup_and_activation() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+    let launched = Rc::new(RefCell::new(Vec::<String>::new()));
+    let launched_clone = launched.clone();
+    preview.connect_link_activated(move |uri| launched_clone.borrow_mut().push(uri.to_string()));
+
+    preview.render_markdown("| Docs |\n| --- |\n| [Open Guide](https://example.com/guide) |");
+    wait_until(Duration::from_secs(2), || {
+        find_label_with_text(&preview, "Open Guide").is_some()
+    });
+
+    let label = find_label_with_text(&preview, "Open Guide").expect("table link label");
+    assert!(label.uses_markup(), "Expected table links to use label markup");
+    assert!(
+        label
+            .label()
+            .contains("<a href=\"https://example.com/guide\">Open Guide</a>"),
+        "Expected table cell markup to preserve a launchable link"
+    );
+    let handled: bool = label.emit_by_name("activate-link", &[&"https://example.com/guide"]);
+    assert!(handled, "Expected table label activation to stop further handling");
+    assert_eq!(
+        launched.borrow().as_slice(),
+        ["https://example.com/guide"],
+        "Expected table-cell link activation to use the shared preview launcher"
+    );
+}
+
+#[test]
+fn test_render_markdown_renders_local_image_block() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repo root");
+    let context = MarkdownPreviewRenderContext::new(
+        Some(repo_root.join("samples/markdown-test.md")),
+        Vec::new(),
+    );
+    let inserted_paintable = Rc::new(Cell::new(false));
+    let inserted_paintable_clone = inserted_paintable.clone();
+    preview
+        .text_view()
+        .buffer()
+        .connect_insert_paintable(move |_, _, _| {
+            inserted_paintable_clone.set(true);
+        });
+
+    preview.render_markdown_with_context(
+        "![File-relative preview card sample](assets/preview-secondary.svg)",
+        &context,
+    );
+    wait_until(Duration::from_secs(2), || {
+        inserted_paintable.get()
+    });
+
+    assert!(
+        inserted_paintable.get(),
+        "Expected the preview buffer to insert a paintable for a resolved local image"
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback")
+            .is_empty(),
+        "Expected the tracked SVG sample asset to render instead of falling back"
+    );
+}
+
+#[test]
+fn test_render_markdown_shows_image_fallback_states() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+
+    preview.render_markdown(
+        "![Missing image](missing.png)\n\n![Remote image](https://example.com/remote.png)",
+    );
+    wait_until(Duration::from_secs(2), || {
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback").len() == 2
+    });
+
+    assert!(
+        find_label_with_text(&preview, "Image file not found").is_some(),
+        "Expected a missing local image fallback"
+    );
+    assert!(
+        find_label_with_text(&preview, "Remote images are not supported").is_some(),
+        "Expected a remote-image fallback title"
+    );
+    let fallback_cards =
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback");
+    assert!(
+        fallback_cards.iter().all(|card| card.width_request() >= 240),
+        "Expected fallback cards to reserve enough width for readable path text"
+    );
+}
+
+#[test]
 fn test_render_markdown_cleans_up_table_widgets_on_rerender() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
@@ -442,4 +582,50 @@ fn find_label_with_text(root: &impl IsA<gtk4::Widget>, text: &str) -> Option<gtk
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk4::Label>().ok())
         .find(|label| label.text() == text || label.label().contains(text))
+}
+
+fn emit_preview_click_for_text(preview: &LushtextMarkdownPreview, text: &str) {
+    let text_view = preview.text_view();
+    let offset = i32::try_from(
+        preview
+        .buffer_text()
+        .find(text)
+        .expect("rendered text should exist"),
+    )
+    .expect("rendered text offset should fit in i32");
+    let iter = text_view.buffer().iter_at_offset(offset);
+    let rect = text_view.iter_location(&iter);
+    let (x, y) = text_view.buffer_to_window_coords(
+        gtk4::TextWindowType::Widget,
+        rect.x() + 1,
+        rect.y() + 1,
+    );
+
+    let controllers = text_view.observe_controllers();
+    let gesture = (0..controllers.n_items())
+        .find_map(|index| {
+            controllers
+                .item(index)
+                .and_then(|object| object.downcast::<gtk4::GestureClick>().ok())
+        })
+        .expect("text view should have a click controller");
+    gesture.emit_by_name::<()>("pressed", &[&1i32, &f64::from(x), &f64::from(y)]);
+}
+
+fn tags_for_rendered_text(preview: &LushtextMarkdownPreview, text: &str) -> Vec<String> {
+    let text_view = preview.text_view();
+    let offset = i32::try_from(
+        preview
+        .buffer_text()
+        .find(text)
+        .expect("rendered text should exist"),
+    )
+    .expect("rendered text offset should fit in i32");
+    text_view
+        .buffer()
+        .iter_at_offset(offset)
+        .tags()
+        .into_iter()
+        .filter_map(|tag| tag.name().map(|name| name.to_string()))
+        .collect()
 }

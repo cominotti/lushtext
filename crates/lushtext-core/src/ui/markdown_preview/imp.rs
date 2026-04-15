@@ -5,9 +5,9 @@
 //! Contains a read-only `GtkTextView` inside a `GtkScrolledWindow` for rendered
 //! Markdown output, and an `AdwStatusPage` placeholder for non-Markdown files.
 //! TextTags are created in `constructed()` and updated on dark/light mode changes
-//! via `StyleManager::connect_dark_notify()`. Table blocks are embedded as
-//! anchored child widgets so the preview can stay GTK-native without replacing
-//! the surrounding text-buffer renderer.
+//! via `StyleManager::connect_dark_notify()`. Tables and local image blocks are
+//! embedded as anchored child widgets so the preview can stay GTK-native
+//! without replacing the surrounding text-buffer renderer.
 
 use glib::translate::IntoGlib;
 use gtk4::subclass::prelude::*;
@@ -49,6 +49,14 @@ const ALERT_TITLE_CAUTION_DARK: &str = "#ff7b63";
 
 /// Font scale factors for heading levels (h1=1.6x down to h6=1.05x).
 const HEADING_SCALES: [f64; 6] = [1.6, 1.4, 1.2, 1.1, 1.05, 1.0];
+/// Base left margin for top-level list items in the preview.
+const LIST_ITEM_BASE_MARGIN: i32 = 24;
+/// Extra indentation applied for each additional nested list level.
+const LIST_ITEM_DEPTH_STEP: i32 = 20;
+
+/// Stored override used by widget tests to observe link activation without
+/// launching an external desktop handler.
+type LinkActivationCallback = Box<dyn Fn(String)>;
 
 /// Tag names used in the TextBuffer. Keep in sync with `create_or_update_tags()`.
 pub(super) const TAG_BOLD: &str = "bold";
@@ -69,6 +77,21 @@ pub(super) const TAG_FOOTNOTE_DEF_LABEL: &str = "footnote-def-label";
 /// Returns a heading tag name for the given level (0-indexed).
 pub(super) fn heading_tag_name(level_idx: usize) -> String {
     format!("heading{}", level_idx + 1)
+}
+
+/// Returns the dynamic tag name used for one list nesting depth.
+pub(super) fn list_item_tag_name(depth: usize) -> String {
+    format!("list-item-depth-{depth}")
+}
+
+/// Return the left margin used for one list nesting depth.
+pub(super) fn list_item_left_margin(depth: usize) -> i32 {
+    let extra_depth = depth.saturating_sub(1);
+    let extra_margin = i32::try_from(extra_depth)
+        .ok()
+        .and_then(|depth| depth.checked_mul(LIST_ITEM_DEPTH_STEP))
+        .unwrap_or(i32::MAX - LIST_ITEM_BASE_MARGIN);
+    LIST_ITEM_BASE_MARGIN.saturating_add(extra_margin)
 }
 
 /// Return the tag name used for a typed alert callout title.
@@ -105,13 +128,22 @@ pub struct LushtextMarkdownPreview {
 
     /// Whether we're currently showing the rendered content (true) or the placeholder (false).
     pub showing_content: Cell<bool>,
-    /// Anchored table grids currently embedded into the text view.
+    /// Anchored widgets currently embedded into the text view.
     ///
-    /// `GtkTextChildAnchor` makes table rendering pleasantly native, but GTK
-    /// does not manage rerender cleanup for us at the application level. We
-    /// keep strong refs here so `render_markdown`, `clear`, and
-    /// `show_placeholder` can remove stale table widgets before rebuilding.
-    pub rendered_tables: RefCell<Vec<gtk4::Widget>>,
+    /// `GtkTextChildAnchor` makes tables and image blocks pleasantly native,
+    /// but GTK does not manage rerender cleanup for us at the application
+    /// level. We keep strong refs here so `render_markdown`, `clear`, and
+    /// `show_placeholder` can remove stale embeds before rebuilding.
+    pub(super) rendered_embeds: RefCell<Vec<gtk4::Widget>>,
+    /// Launchable link spans rendered directly into the text buffer.
+    ///
+    /// The preview rerenders whole documents, so this list is rebuilt from
+    /// scratch on every render and then reused by the click and hover
+    /// controllers for hit-testing.
+    pub(super) text_link_targets: RefCell<Vec<super::RenderedTextLink>>,
+    /// Optional override used by tests to capture preview link activations
+    /// without spawning an external desktop handler.
+    pub(super) link_activation_callback: RefCell<Option<LinkActivationCallback>>,
 }
 
 #[glib::object_subclass]
@@ -136,6 +168,7 @@ impl ObjectImpl for LushtextMarkdownPreview {
         // Create the initial tag table based on current theme.
         let is_dark = libadwaita::StyleManager::default().is_dark();
         create_or_update_tags(&self.text_view.buffer(), is_dark);
+        self.obj().setup_link_interaction();
 
         // Re-create tags when the dark/light mode changes so colors stay correct.
         let obj_weak = self.obj().downgrade();
@@ -226,9 +259,9 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     blockquote.set_pixels_above_lines(2);
     blockquote.set_pixels_below_lines(2);
 
-    // List items: left indent for bullet/number alignment.
+    // List items: top-level left indent for bullet/number alignment.
     let list_item = get_or_create(TAG_LIST_ITEM);
-    list_item.set_left_margin(24);
+    list_item.set_left_margin(LIST_ITEM_BASE_MARGIN);
 
     // Task list markers use a monospaced accent so checked and unchecked state
     // stays readable even when the surrounding item text uses proportional fonts.
@@ -303,4 +336,17 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     footnote_def_label.set_family(Some("Monospace"));
     footnote_def_label.set_foreground(Some(accent));
     footnote_def_label.set_weight(pango::Weight::Bold.into_glib());
+}
+
+/// Ensure the tag used for a given list nesting depth exists and return its name.
+pub(super) fn ensure_list_item_depth_tag(buffer: &gtk4::TextBuffer, depth: usize) -> String {
+    let name = list_item_tag_name(depth);
+    if buffer.tag_table().lookup(&name).is_some() {
+        return name;
+    }
+
+    let tag = gtk4::TextTag::new(Some(&name));
+    tag.set_left_margin(list_item_left_margin(depth));
+    buffer.tag_table().add(&tag);
+    name
 }
