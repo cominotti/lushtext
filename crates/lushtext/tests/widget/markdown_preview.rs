@@ -148,6 +148,63 @@ fn test_render_blockquote_inserts_text() {
 }
 
 #[test]
+fn test_render_task_list_uses_checkbox_markers() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("- [x] done\n- [ ] todo");
+    let text = preview.buffer_text();
+    assert!(text.contains("done"), "Expected checked task text");
+    assert!(text.contains("todo"), "Expected unchecked task text");
+    assert!(
+        text.contains('\u{2611}'),
+        "Expected checked task list marker in preview text"
+    );
+    assert!(
+        text.contains('\u{2610}'),
+        "Expected unchecked task list marker in preview text"
+    );
+    assert!(
+        !text.contains("[x]") && !text.contains("[ ]"),
+        "Expected task list preview to render task markers instead of raw source syntax"
+    );
+}
+
+#[test]
+fn test_render_gfm_callout_inserts_title_without_raw_marker() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("> [!NOTE]\n> Pay attention to `this`.");
+    let text = preview.buffer_text();
+    assert!(text.contains("Note"), "Expected callout title in preview text");
+    assert!(text.contains("Pay attention"), "Expected callout body text");
+    assert!(text.contains("this"), "Expected inline code text inside callout");
+    assert!(
+        !text.contains("[!NOTE]"),
+        "Expected callout preview to hide the raw alert marker"
+    );
+}
+
+#[test]
+fn test_render_footnote_reference_and_definition() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("hello[^1]\n\n[^1]: note");
+    let text = preview.buffer_text();
+    assert!(
+        text.contains("hello[1]"),
+        "Expected inline footnote reference marker in preview text"
+    );
+    assert!(
+        text.contains("[1] note"),
+        "Expected rendered footnote definition in preview text"
+    );
+    assert!(
+        !text.contains("[^1]"),
+        "Expected raw footnote syntax to be replaced in preview text"
+    );
+}
+
+#[test]
 fn test_heading_tag_exists_after_render() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();

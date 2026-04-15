@@ -19,10 +19,12 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::collections::HashMap;
 
 use imp::{
-    TAG_BLOCKQUOTE, TAG_BOLD, TAG_CODE, TAG_CODE_BLOCK, TAG_HRULE, TAG_ITALIC, TAG_LINK,
-    TAG_LIST_ITEM, TAG_STRIKETHROUGH, heading_tag_name,
+    TAG_ALERT_BODY, TAG_BLOCKQUOTE, TAG_BOLD, TAG_CODE, TAG_CODE_BLOCK, TAG_FOOTNOTE_DEF,
+    TAG_FOOTNOTE_DEF_LABEL, TAG_FOOTNOTE_REF, TAG_HRULE, TAG_ITALIC, TAG_LINK, TAG_LIST_ITEM,
+    TAG_STRIKETHROUGH, TAG_TASK_MARKER, alert_title, alert_title_tag_name, heading_tag_name,
 };
 
 glib::wrapper! {
@@ -281,7 +283,10 @@ impl LushtextMarkdownPreview {
         let buffer = imp.text_view.buffer();
         let mut options = Options::empty();
         options.insert(Options::ENABLE_TABLES);
+        options.insert(Options::ENABLE_TASKLISTS);
+        options.insert(Options::ENABLE_FOOTNOTES);
         options.insert(Options::ENABLE_STRIKETHROUGH);
+        options.insert(Options::ENABLE_GFM);
         let parser = Parser::new_ext(markdown, options);
         let mut iter = buffer.end_iter();
 
@@ -292,6 +297,9 @@ impl LushtextMarkdownPreview {
         // Track list nesting: None = not in a list, Some(None) = unordered,
         // Some(Some(n)) = ordered starting at n.
         let mut list_stack: Vec<Option<u64>> = Vec::new();
+        // List markers need one event of lookahead because task list state
+        // arrives after `Tag::Item`; delay insertion until real item content.
+        let mut pending_list_prefix: Option<String> = None;
 
         // Track whether we need a paragraph separator before the next block.
         let mut needs_block_separator = false;
@@ -299,6 +307,10 @@ impl LushtextMarkdownPreview {
         // Tables need one complete buffered pass before GTK can lay out rows and
         // columns correctly, so we accumulate them separately from text blocks.
         let mut active_table: Option<BufferedTableBuilder> = None;
+        // Footnote numbering stays local to the preview render so references and
+        // definitions can agree on a stable ordinal without a second parse pass.
+        let mut footnote_numbers: HashMap<String, usize> = HashMap::new();
+        let mut next_footnote_number = 1usize;
 
         for event in parser {
             if let Some(table) = &mut active_table {
@@ -313,6 +325,10 @@ impl LushtextMarkdownPreview {
                     other => table.push_event(other),
                 }
                 continue;
+            }
+
+            if pending_list_prefix.is_some() && should_flush_pending_list_prefix(&event) {
+                flush_pending_list_prefix(&buffer, &mut iter, &tag_stack, &mut pending_list_prefix);
             }
 
             match event {
@@ -338,11 +354,25 @@ impl LushtextMarkdownPreview {
                         }
                         needs_block_separator = false;
                     }
-                    Tag::BlockQuote(_) => {
+                    Tag::BlockQuote(kind) => {
                         if needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         }
-                        tag_stack.push(TAG_BLOCKQUOTE.to_string());
+                        if let Some(kind) = kind {
+                            let mut title_tags: Vec<&str> =
+                                tag_stack.iter().map(std::string::String::as_str).collect();
+                            title_tags.push(TAG_ALERT_BODY);
+                            title_tags.push(alert_title_tag_name(kind));
+                            insert_with_tags(
+                                &buffer,
+                                &mut iter,
+                                &format!("{}\n", alert_title(kind)),
+                                &title_tags,
+                            );
+                            tag_stack.push(TAG_ALERT_BODY.to_string());
+                        } else {
+                            tag_stack.push(TAG_BLOCKQUOTE.to_string());
+                        }
                         needs_block_separator = false;
                     }
                     Tag::CodeBlock(_kind) => {
@@ -360,16 +390,27 @@ impl LushtextMarkdownPreview {
                         needs_block_separator = false;
                     }
                     Tag::Item => {
-                        let prefix = match list_stack.last() {
+                        pending_list_prefix = Some(match list_stack.last() {
                             Some(Some(start)) => format!("{start}. "),
                             _ => "\u{2022} ".to_string(),
-                        };
-                        let tags: Vec<&str> =
-                            tag_stack.iter().map(std::string::String::as_str).collect();
-                        let mut all_tags = tags.clone();
-                        all_tags.push(TAG_LIST_ITEM);
-                        insert_with_tags(&buffer, &mut iter, &prefix, &all_tags);
+                        });
                         tag_stack.push(TAG_LIST_ITEM.to_string());
+                    }
+                    Tag::FootnoteDefinition(label) => {
+                        if needs_block_separator {
+                            buffer.insert(&mut iter, "\n");
+                        }
+                        tag_stack.push(TAG_FOOTNOTE_DEF.to_string());
+                        let number = footnote_number(
+                            &mut footnote_numbers,
+                            &mut next_footnote_number,
+                            label.as_ref(),
+                        );
+                        let mut tags: Vec<&str> =
+                            tag_stack.iter().map(std::string::String::as_str).collect();
+                        tags.push(TAG_FOOTNOTE_DEF_LABEL);
+                        insert_with_tags(&buffer, &mut iter, &format!("[{number}] "), &tags);
+                        needs_block_separator = false;
                     }
                     Tag::Emphasis => tag_stack.push(TAG_ITALIC.to_string()),
                     Tag::Strong => tag_stack.push(TAG_BOLD.to_string()),
@@ -388,7 +429,7 @@ impl LushtextMarkdownPreview {
                         buffer.insert(&mut iter, "\n");
                         needs_block_separator = true;
                     }
-                    TagEnd::BlockQuote(_) => {
+                    TagEnd::BlockQuote(_) | TagEnd::FootnoteDefinition => {
                         pop_tag(&mut tag_stack);
                         needs_block_separator = true;
                     }
@@ -404,6 +445,12 @@ impl LushtextMarkdownPreview {
                         needs_block_separator = true;
                     }
                     TagEnd::Item => {
+                        flush_pending_list_prefix(
+                            &buffer,
+                            &mut iter,
+                            &tag_stack,
+                            &mut pending_list_prefix,
+                        );
                         pop_tag(&mut tag_stack);
                         buffer.insert(&mut iter, "\n");
                         if let Some(Some(n)) = list_stack.last_mut() {
@@ -426,6 +473,26 @@ impl LushtextMarkdownPreview {
                     tags.push(TAG_CODE);
                     insert_with_tags(&buffer, &mut iter, &code, &tags);
                 }
+                Event::FootnoteReference(label) => {
+                    let number = footnote_number(
+                        &mut footnote_numbers,
+                        &mut next_footnote_number,
+                        label.as_ref(),
+                    );
+                    let mut tags: Vec<&str> =
+                        tag_stack.iter().map(std::string::String::as_str).collect();
+                    tags.push(TAG_FOOTNOTE_REF);
+                    insert_with_tags(&buffer, &mut iter, &format!("[{number}]"), &tags);
+                }
+                Event::TaskListMarker(checked) => {
+                    insert_task_list_marker(
+                        &buffer,
+                        &mut iter,
+                        &tag_stack,
+                        &mut pending_list_prefix,
+                        checked,
+                    );
+                }
                 Event::SoftBreak => {
                     buffer.insert(&mut iter, " ");
                 }
@@ -445,7 +512,7 @@ impl LushtextMarkdownPreview {
                     buffer.insert(&mut iter, "\n");
                     needs_block_separator = true;
                 }
-                // Skip HTML, math, footnotes — out of scope for native rendering.
+                // Skip HTML, math, images, and metadata — out of scope for native rendering.
                 _ => {}
             }
         }
@@ -573,6 +640,61 @@ fn insert_with_tags(
             buffer.apply_tag(&tag, &start, iter);
         }
     }
+}
+
+/// Return whether the current event should force any delayed list marker to be
+/// inserted before the renderer processes the event itself.
+fn should_flush_pending_list_prefix(event: &Event<'_>) -> bool {
+    !matches!(event, Event::TaskListMarker(_) | Event::End(TagEnd::Item))
+}
+
+/// Insert a delayed list marker using whatever formatting tags are active for
+/// the current list item.
+fn flush_pending_list_prefix(
+    buffer: &gtk4::TextBuffer,
+    iter: &mut gtk4::TextIter,
+    tag_stack: &[String],
+    pending_list_prefix: &mut Option<String>,
+) {
+    let Some(prefix) = pending_list_prefix.take() else {
+        return;
+    };
+
+    let tags: Vec<&str> = tag_stack.iter().map(std::string::String::as_str).collect();
+    insert_with_tags(buffer, iter, &prefix, &tags);
+}
+
+/// Insert the checked or unchecked marker for a task list item and clear the
+/// delayed default bullet/number prefix for that item.
+fn insert_task_list_marker(
+    buffer: &gtk4::TextBuffer,
+    iter: &mut gtk4::TextIter,
+    tag_stack: &[String],
+    pending_list_prefix: &mut Option<String>,
+    checked: bool,
+) {
+    pending_list_prefix.take();
+
+    let mut tags: Vec<&str> = tag_stack.iter().map(std::string::String::as_str).collect();
+    tags.push(TAG_TASK_MARKER);
+    let marker = if checked { "\u{2611} " } else { "\u{2610} " };
+    insert_with_tags(buffer, iter, marker, &tags);
+}
+
+/// Assign or look up the stable preview-local number for one footnote label.
+fn footnote_number(
+    footnote_numbers: &mut HashMap<String, usize>,
+    next_footnote_number: &mut usize,
+    label: &str,
+) -> usize {
+    if let Some(number) = footnote_numbers.get(label) {
+        return *number;
+    }
+
+    let number = *next_footnote_number;
+    *next_footnote_number += 1;
+    footnote_numbers.insert(label.to_string(), number);
+    number
 }
 
 /// Build the anchored `GtkGrid` used for one rendered Markdown table.
@@ -741,5 +863,25 @@ mod tests {
         assert!(table.rows[0].is_header);
         assert_eq!(table.rows[0].cells[0].markup, "Name");
         assert_eq!(table.rows[1].cells[1].markup, "two");
+    }
+
+    #[test]
+    fn test_footnote_number_reuses_existing_labels() {
+        let mut footnote_numbers = HashMap::new();
+        let mut next_footnote_number = 1;
+
+        assert_eq!(
+            footnote_number(&mut footnote_numbers, &mut next_footnote_number, "alpha"),
+            1
+        );
+        assert_eq!(
+            footnote_number(&mut footnote_numbers, &mut next_footnote_number, "beta"),
+            2
+        );
+        assert_eq!(
+            footnote_number(&mut footnote_numbers, &mut next_footnote_number, "alpha"),
+            1
+        );
+        assert_eq!(next_footnote_number, 3);
     }
 }

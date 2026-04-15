@@ -13,6 +13,7 @@ use glib::translate::IntoGlib;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib, pango};
 use libadwaita::prelude::*;
+use pulldown_cmark::BlockQuoteKind;
 use std::cell::{Cell, RefCell};
 
 /// Adwaita-matching accent color (blue) for headings and links.
@@ -27,6 +28,25 @@ const CODE_BG_DARK: &str = "#3d3846";
 const DIM_LIGHT: &str = "#5e5c64";
 const DIM_DARK: &str = "#9a9996";
 
+/// Accent-tinted background for read-only alert callouts in light mode.
+const ALERT_BG_LIGHT: &str = "#f3f7ff";
+/// Accent-tinted background for read-only alert callouts in dark mode.
+const ALERT_BG_DARK: &str = "#263548";
+
+/// Per-callout title colors for light mode so alert kinds stay visually distinct.
+const ALERT_TITLE_NOTE_LIGHT: &str = "#1c71d8";
+const ALERT_TITLE_TIP_LIGHT: &str = "#2b7a0b";
+const ALERT_TITLE_IMPORTANT_LIGHT: &str = "#9141ac";
+const ALERT_TITLE_WARNING_LIGHT: &str = "#c88800";
+const ALERT_TITLE_CAUTION_LIGHT: &str = "#c01c28";
+
+/// Per-callout title colors for dark mode so alert kinds stay visually distinct.
+const ALERT_TITLE_NOTE_DARK: &str = "#78aeed";
+const ALERT_TITLE_TIP_DARK: &str = "#57e389";
+const ALERT_TITLE_IMPORTANT_DARK: &str = "#dc8add";
+const ALERT_TITLE_WARNING_DARK: &str = "#f8e45c";
+const ALERT_TITLE_CAUTION_DARK: &str = "#ff7b63";
+
 /// Font scale factors for heading levels (h1=1.6x down to h6=1.05x).
 const HEADING_SCALES: [f64; 6] = [1.6, 1.4, 1.2, 1.1, 1.05, 1.0];
 
@@ -39,11 +59,38 @@ pub(super) const TAG_CODE_BLOCK: &str = "code-block";
 pub(super) const TAG_LINK: &str = "link";
 pub(super) const TAG_BLOCKQUOTE: &str = "blockquote";
 pub(super) const TAG_LIST_ITEM: &str = "list-item";
+pub(super) const TAG_TASK_MARKER: &str = "task-marker";
 pub(super) const TAG_HRULE: &str = "horizontal-rule";
+pub(super) const TAG_ALERT_BODY: &str = "alert-body";
+pub(super) const TAG_FOOTNOTE_REF: &str = "footnote-ref";
+pub(super) const TAG_FOOTNOTE_DEF: &str = "footnote-def";
+pub(super) const TAG_FOOTNOTE_DEF_LABEL: &str = "footnote-def-label";
 
 /// Returns a heading tag name for the given level (0-indexed).
 pub(super) fn heading_tag_name(level_idx: usize) -> String {
     format!("heading{}", level_idx + 1)
+}
+
+/// Return the tag name used for a typed alert callout title.
+pub(super) fn alert_title_tag_name(kind: BlockQuoteKind) -> &'static str {
+    match kind {
+        BlockQuoteKind::Note => "alert-title-note",
+        BlockQuoteKind::Tip => "alert-title-tip",
+        BlockQuoteKind::Important => "alert-title-important",
+        BlockQuoteKind::Warning => "alert-title-warning",
+        BlockQuoteKind::Caution => "alert-title-caution",
+    }
+}
+
+/// Return the user-facing title inserted at the start of a typed alert callout.
+pub(super) fn alert_title(kind: BlockQuoteKind) -> &'static str {
+    match kind {
+        BlockQuoteKind::Note => "Note",
+        BlockQuoteKind::Tip => "Tip",
+        BlockQuoteKind::Important => "Important",
+        BlockQuoteKind::Warning => "Warning",
+        BlockQuoteKind::Caution => "Caution",
+    }
 }
 
 #[derive(CompositeTemplate, Default)]
@@ -112,6 +159,11 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     let accent = if is_dark { ACCENT_DARK } else { ACCENT_LIGHT };
     let code_bg = if is_dark { CODE_BG_DARK } else { CODE_BG_LIGHT };
     let dim = if is_dark { DIM_DARK } else { DIM_LIGHT };
+    let alert_bg = if is_dark {
+        ALERT_BG_DARK
+    } else {
+        ALERT_BG_LIGHT
+    };
 
     let table = buffer.tag_table();
 
@@ -178,10 +230,77 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     let list_item = get_or_create(TAG_LIST_ITEM);
     list_item.set_left_margin(24);
 
+    // Task list markers use a monospaced accent so checked and unchecked state
+    // stays readable even when the surrounding item text uses proportional fonts.
+    let task_marker = get_or_create(TAG_TASK_MARKER);
+    task_marker.set_family(Some("Monospace"));
+    task_marker.set_foreground(Some(accent));
+    task_marker.set_weight(pango::Weight::Bold.into_glib());
+
     // Horizontal rule: centered dim text.
     let hrule = get_or_create(TAG_HRULE);
     hrule.set_foreground(Some(dim));
     hrule.set_justification(gtk4::Justification::Center);
     hrule.set_pixels_above_lines(8);
     hrule.set_pixels_below_lines(8);
+
+    // Alert callouts stay on the text-buffer path, so the body tag provides the
+    // native card-like spacing while per-kind title tags carry the alert identity.
+    let alert_body = get_or_create(TAG_ALERT_BODY);
+    alert_body.set_left_margin(24);
+    alert_body.set_right_margin(16);
+    alert_body.set_paragraph_background(Some(alert_bg));
+    alert_body.set_pixels_above_lines(4);
+    alert_body.set_pixels_below_lines(4);
+
+    for (kind, light, dark) in [
+        (
+            BlockQuoteKind::Note,
+            ALERT_TITLE_NOTE_LIGHT,
+            ALERT_TITLE_NOTE_DARK,
+        ),
+        (
+            BlockQuoteKind::Tip,
+            ALERT_TITLE_TIP_LIGHT,
+            ALERT_TITLE_TIP_DARK,
+        ),
+        (
+            BlockQuoteKind::Important,
+            ALERT_TITLE_IMPORTANT_LIGHT,
+            ALERT_TITLE_IMPORTANT_DARK,
+        ),
+        (
+            BlockQuoteKind::Warning,
+            ALERT_TITLE_WARNING_LIGHT,
+            ALERT_TITLE_WARNING_DARK,
+        ),
+        (
+            BlockQuoteKind::Caution,
+            ALERT_TITLE_CAUTION_LIGHT,
+            ALERT_TITLE_CAUTION_DARK,
+        ),
+    ] {
+        let tag = get_or_create(alert_title_tag_name(kind));
+        tag.set_foreground(Some(if is_dark { dark } else { light }));
+        tag.set_weight(pango::Weight::Bold.into_glib());
+        tag.set_scale(1.05);
+    }
+
+    // Footnote references stay inline while definitions are rendered as compact
+    // indented blocks to preserve the source document's flow in preview mode.
+    let footnote_ref = get_or_create(TAG_FOOTNOTE_REF);
+    footnote_ref.set_foreground(Some(accent));
+    footnote_ref.set_scale(0.85);
+    footnote_ref.set_weight(pango::Weight::Bold.into_glib());
+
+    let footnote_def = get_or_create(TAG_FOOTNOTE_DEF);
+    footnote_def.set_left_margin(32);
+    footnote_def.set_right_margin(16);
+    footnote_def.set_pixels_above_lines(2);
+    footnote_def.set_pixels_below_lines(2);
+
+    let footnote_def_label = get_or_create(TAG_FOOTNOTE_DEF_LABEL);
+    footnote_def_label.set_family(Some("Monospace"));
+    footnote_def_label.set_foreground(Some(accent));
+    footnote_def_label.set_weight(pango::Weight::Bold.into_glib());
 }
