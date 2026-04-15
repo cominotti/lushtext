@@ -29,9 +29,6 @@ LushtextWindow (AdwApplicationWindow)
 │   │               ├── GtkBox [header: label + add_folder_button]
 │   │               └── GtkScrolledWindow (inner, propagate-natural-height=true, propagate-natural-width=true)
 │   │                   └── GtkListView + TreeListModel
-│   │   ├── GtkSeparator
-│   │   └── GtkBox [workspace_size_box]
-│   │       └── GtkBox.linked [Small, Comfy, Large toggle buttons with percentage tooltips]
 │   └── [content] AdwOverlaySplitView [properties_split_view]
 │       ├── [content] GtkBox [content_box] (vertical)
 │       │   ├── GtkStack [content_stack] (vexpand)
@@ -69,12 +66,12 @@ LushtextWindow (AdwApplicationWindow)
 
 ## Multi-Workspace Sidebar
 
-- `LushtextSidebar` is an orchestrator: manages the fixed top "New Workspace" affordance, the fixed bottom width-preset footer, workspace sections, and persistence (`workspaces.json`).
+- `LushtextSidebar` is an orchestrator: manages the fixed top "New Workspace" affordance, workspace sections, and persistence (`workspaces.json`).
 - `LushtextWorkspaceSection` encapsulates per-workspace state: file tree, file context menu, header context menu.
 - **Inner ScrolledWindow pattern**: Each section wraps its `GtkListView` in `GtkScrolledWindow(propagate-natural-height=true, propagate-natural-width=false, vscrollbar-policy=never, hscrollbar-policy=never)`. `propagate-natural-width` MUST be `false` to prevent deep tree indentation from expanding the fixed-width sidebar container indefinitely. Labels inside the tree must use `EllipsizeMode::End` so their minimum width yields to the container constraint.
-- **Pinned top and bottom rows**: The "New Workspace" affordance sits above the outer ScrolledWindow and the width-preset footer sits below it; both stay fixed while only the middle workspace list scrolls.
+- **Pinned top row**: The "New Workspace" affordance sits above the outer ScrolledWindow and stays fixed while the workspace list scrolls.
 - **No horizontal sidebar scrollbar**: workspace headers and file-tree labels still avoid ellipsizing, but the left sidebar must not expose a horizontal scrollbar. Overflow is clipped by the viewport instead of enabling sideways scrolling.
-- **Width presets drive the shell**: The footer buttons use compact `Small`, `Comfy`, and `Large` labels so the controls do not become the sidebar's width floor, while tooltips carry the `20%`, `30%`, and `40%` total-window targets. The window layer owns the split-view math; the sidebar only emits preset selections and reflects the active preset state.
+- **Width presets drive the shell**: `Preferences > Workspace` exposes compact `Small`, `Comfy`, and `Large` options that keep their `20%`, `30%`, and `40%` identities while clamping the visible sidebar width to a comfortable desktop range. The window layer owns the split-view math; the sidebar does not expose a duplicate width control.
 - **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder, rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
 - **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation saves to disk via `workspace_manager::save()`.
 
@@ -141,9 +138,9 @@ Window geometry and split-view state are persisted via GSettings (not JSON sessi
 - Use nested `AdwOverlaySplitView`s for the window shell instead of an outer `GtkPaned`.
 - `workspace_split_view` owns the left workspace pane and stays bound to `win.toggle-sidebar` in the status bar.
 - `properties_split_view` owns the right properties pane and stays bound to `win.toggle-properties` in the status bar.
-- The left pane restores one of the sidebar footer presets (`20%`, `30%`, `40%`) whenever it is shown, while the right pane keeps its quarter-width target.
+- The left pane restores one of the Preferences-driven presets (`20%`, `30%`, `40%`) whenever it is shown, then clamps that preset to the active desktop width before deriving the effective split fraction, while the right pane keeps its quarter-width target.
 - Breakpoints collapse the properties pane before the workspace pane so medium-width windows keep the file tree visible longer.
-- The properties-pane breakpoint should be tuned from the currently active left preset when the workspace pane consumes width so the center editor width stays protected for restored-document infobars and other editor chrome.
+- The properties-pane breakpoint should be tuned from the workspace pane's effective visible width when the workspace pane consumes width so the center editor width stays protected for restored-document infobars and other editor chrome.
 - When a utility pane closes, return focus to the active editor rather than leaving focus stranded on a toggle button.
 
 ## Entry Width Symmetry in Toggle Layouts (CRITICAL)

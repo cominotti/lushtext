@@ -102,8 +102,8 @@
     </key>
     <key name="workspace-sidebar-width-fraction" type="d">
       <default>0.3</default>
-      <summary>Workspace sidebar width fraction</summary>
-      <description>Preferred fraction of the window width reserved for the workspace sidebar.</description>
+      <summary>Workspace sidebar width preset hint</summary>
+      <description>Stored preset hint fraction for the adaptive workspace sidebar width chosen in Preferences.</description>
     </key>
     <key name="properties-sidebar-visible" type="b">
       <default>false</default>

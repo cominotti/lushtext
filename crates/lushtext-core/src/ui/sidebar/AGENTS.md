@@ -4,14 +4,14 @@ This folder owns the multi-workspace sidebar adapter and its workspace-section s
 
 ## Responsibilities
 
-- Keep the top-level sidebar responsible for workspace orchestration, persistence, width presets, and callback forwarding.
+- Keep the top-level sidebar responsible for workspace orchestration, persistence, and callback forwarding.
 - Keep per-workspace header and tree behavior inside `workspace_section/`.
 - Keep dialog helpers and callback plumbing in sibling modules instead of re-inlining them into `mod.rs`.
 
 ## Local Contracts
 
-- The top workspace-selector row and bottom width-preset footer are fixed rows outside the scroller. Do not let them scroll away.
-- Width presets are total-window targets: `Small=20%`, `Comfy=30%`, `Large=40%`. Do not reinterpret them as local paned fractions.
+- The top workspace-selector row stays fixed outside the scroller. Do not let it scroll away.
+- Width presets are selected from `Preferences > Workspace` and keep their `Small=20%`, `Comfy=30%`, `Large=40%` identities while the window layer clamps their visible width on large displays. Do not reinterpret them as local paned fractions.
 - Preserve the no-horizontal-scrollbar contract. Prefer tooltips, focused roots, or explicit drill-down behavior over widening the sidebar or clipping silently.
 - Keep workspace-section async tree loading off the main thread and preserve deduplication/placeholder behavior for large directories.
 

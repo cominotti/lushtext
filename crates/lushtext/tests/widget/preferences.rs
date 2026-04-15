@@ -4,6 +4,7 @@
 
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use lushtext_core::config::{self, keys};
 use libadwaita::prelude::*;
 use lushtext_core::ui::preferences::LushtextPreferences;
 
@@ -113,4 +114,43 @@ fn test_color_scheme_row_populated() {
 
     // The combo row model should have been populated with available schemes
     assert!(imp.style_scheme_row.model().is_some());
+}
+
+#[test]
+fn test_workspace_sidebar_width_row_lists_all_presets() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(config::APP_ID);
+    settings
+        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.3)
+        .expect("set comfy preset");
+
+    let prefs = LushtextPreferences::new();
+    let model = prefs
+        .imp()
+        .workspace_sidebar_width_row
+        .model()
+        .and_downcast::<gtk4::StringList>()
+        .expect("workspace width row should use a StringList model");
+
+    assert_eq!(model.n_items(), 3);
+    assert_eq!(model.string(0).as_deref(), Some("Small"));
+    assert_eq!(model.string(1).as_deref(), Some("Comfy"));
+    assert_eq!(model.string(2).as_deref(), Some("Large"));
+    assert_eq!(prefs.imp().workspace_sidebar_width_row.selected(), 1);
+}
+
+#[test]
+fn test_workspace_sidebar_width_row_updates_setting() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(config::APP_ID);
+    settings
+        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.3)
+        .expect("set comfy preset");
+
+    let prefs = LushtextPreferences::new();
+    prefs.imp().workspace_sidebar_width_row.set_selected(2);
+
+    while glib::MainContext::default().iteration(false) {}
+
+    assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.4);
 }

@@ -133,6 +133,19 @@
 
         <child>
           <object class="AdwPreferencesGroup">
+            <property name="title" translatable="yes">Sidebar</property>
+
+            <child>
+              <object class="AdwComboRow" id="workspace_sidebar_width_row">
+                <property name="title" translatable="yes">Sidebar Width</property>
+                <property name="subtitle" translatable="yes">Choose how wide the workspace sidebar feels on desktop windows</property>
+              </object>
+            </child>
+          </object>
+        </child>
+
+        <child>
+          <object class="AdwPreferencesGroup">
             <property name="title" translatable="yes">Navigation</property>
 
             <child>

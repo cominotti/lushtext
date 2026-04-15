@@ -357,6 +357,19 @@ impl ObjectImpl for LushtextWindow {
 
         {
             let window_weak = obj.downgrade();
+            settings.connect_changed(Some(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), move |s, _| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                let preset = WorkspaceSidebarWidthPreset::from_fraction(
+                    s.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
+                );
+                set_workspace_sidebar_preset(&window, preset);
+            });
+        }
+
+        {
+            let window_weak = obj.downgrade();
             self.workspace_split_view.connect_notify_local(
                 Some("sidebar-width-fraction"),
                 move |split, _| {
@@ -364,19 +377,11 @@ impl ObjectImpl for LushtextWindow {
                         return;
                     };
                     let width = current_window_width(&window);
-                    let fixed = desired_workspace_fraction(&window);
+                    let fixed = effective_workspace_sidebar_fraction(&window, width);
                     if (fixed - split.sidebar_width_fraction()).abs() > f64::EPSILON {
                         split.set_sidebar_width_fraction(fixed);
                         return;
                     }
-                    let _ = window
-                        .imp()
-                        .settings
-                        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fixed);
-                    window
-                        .imp()
-                        .sidebar
-                        .set_width_preset(workspace_sidebar_preset(&window));
                     sync_properties_breakpoint(&window);
                     sync_properties_split_view(&window, width);
                 },
@@ -450,13 +455,6 @@ impl ObjectImpl for LushtextWindow {
         self.sidebar.connect_file_activated(move |path| {
             if let Some(window) = window_weak.upgrade() {
                 window.open_document(path);
-            }
-        });
-
-        let window_weak = obj.downgrade();
-        self.sidebar.connect_width_preset_selected(move |preset| {
-            if let Some(window) = window_weak.upgrade() {
-                set_workspace_sidebar_preset(&window, preset);
             }
         });
 
@@ -717,7 +715,7 @@ fn restore_workspace_split_view(window: &super::LushtextWindow) {
         .settings
         .boolean(keys::WORKSPACE_SIDEBAR_VISIBLE);
     let preset = workspace_sidebar_preset(window);
-    let fraction = preset.fraction();
+    let fraction = preset.effective_fraction(width);
     sync_workspace_sidebar_width_constraints(window, width);
     window
         .imp()
@@ -726,8 +724,7 @@ fn restore_workspace_split_view(window: &super::LushtextWindow) {
     let _ = window
         .imp()
         .settings
-        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fraction);
-    window.imp().sidebar.set_width_preset(preset);
+        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, preset.fraction());
     window.imp().workspace_split_view.set_show_sidebar(visible);
     window.imp().sidebar_visible.set(visible);
     sync_properties_breakpoint(window);
@@ -792,7 +789,7 @@ fn install_split_view_breakpoints(window: &super::LushtextWindow) {
 fn properties_breakpoint_condition(window: &super::LushtextWindow) -> String {
     format!(
         "max-width: {}sp",
-        properties_breakpoint_max_width_sp(properties_breakpoint_workspace_fraction(window))
+        properties_breakpoint_max_width_sp(properties_breakpoint_workspace_width_sp(window))
     )
 }
 
@@ -802,11 +799,10 @@ fn properties_breakpoint_condition(window: &super::LushtextWindow) -> String {
     clippy::cast_possible_truncation,
     reason = "Stored window geometry is clamped to GTK window dimensions before converting to i32"
 )]
-fn properties_breakpoint_max_width_sp(workspace_fraction: f64) -> i32 {
+fn properties_breakpoint_max_width_sp(workspace_width_sp: f64) -> i32 {
     let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
-    let fraction_guard = dual_sidebar_window_width_for_center(center_target, workspace_fraction);
-    let min_width_guard = (center_target + PROPERTIES_SIDEBAR_MIN_WIDTH_SP)
-        / (1.0 - workspace_fraction).max(f64::EPSILON);
+    let fraction_guard = dual_sidebar_window_width_for_center(center_target, workspace_width_sp);
+    let min_width_guard = center_target + workspace_width_sp + PROPERTIES_SIDEBAR_MIN_WIDTH_SP;
     fraction_guard.max(min_width_guard).ceil() as i32
 }
 
@@ -828,26 +824,27 @@ fn workspace_sidebar_preset(window: &super::LushtextWindow) -> WorkspaceSidebarW
     )
 }
 
-/// Convert a desired center-column width into the total window width needed to
-/// preserve that space while the selected left preset and the right pane are
-/// both consuming layout width.
-fn dual_sidebar_window_width_for_center(center_width_sp: f64, workspace_fraction: f64) -> f64 {
-    let remaining_fraction =
-        (1.0 - workspace_fraction - FIXED_PROPERTIES_SIDEBAR_FRACTION).max(f64::EPSILON);
-    center_width_sp / remaining_fraction
+/// Convert a desired center width plus a fixed workspace pane width into the
+/// total window width needed to keep the right pane at its quarter-width target.
+fn dual_sidebar_window_width_for_center(center_width_sp: f64, workspace_width_sp: f64) -> f64 {
+    (center_width_sp + workspace_width_sp)
+        / (1.0 - FIXED_PROPERTIES_SIDEBAR_FRACTION).max(f64::EPSILON)
 }
 
-fn desired_workspace_fraction(window: &super::LushtextWindow) -> f64 {
+fn desired_workspace_hint_fraction(window: &super::LushtextWindow) -> f64 {
     workspace_sidebar_preset(window).fraction()
 }
 
-fn workspace_sidebar_target_width_sp(window_width: i32, workspace_fraction: f64) -> f64 {
-    (f64::from(window_width.max(1)) * workspace_fraction).max(WORKSPACE_SIDEBAR_MIN_WIDTH_SP)
+fn effective_workspace_sidebar_width_sp(window: &super::LushtextWindow, window_width: i32) -> f64 {
+    workspace_sidebar_preset(window).clamped_width_sp(window_width)
+}
+
+fn effective_workspace_sidebar_fraction(window: &super::LushtextWindow, window_width: i32) -> f64 {
+    workspace_sidebar_preset(window).effective_fraction(window_width)
 }
 
 fn sync_workspace_sidebar_width_constraints(window: &super::LushtextWindow, window_width: i32) {
-    let target_width =
-        workspace_sidebar_target_width_sp(window_width, desired_workspace_fraction(window));
+    let target_width = effective_workspace_sidebar_width_sp(window, window_width);
     #[expect(
         clippy::cast_possible_truncation,
         reason = "The sidebar target width is derived from the current split width and remains within i32 paned coordinates"
@@ -876,9 +873,10 @@ fn desired_properties_fraction(window_width: i32) -> f64 {
 fn effective_properties_fraction(window: &super::LushtextWindow, window_width: i32) -> f64 {
     let total_fraction = desired_properties_fraction(window_width);
     if workspace_sidebar_consumes_width(window) {
-        let workspace_fraction = desired_workspace_fraction(window);
-        let remaining_fraction = (1.0 - workspace_fraction).max(f64::EPSILON);
-        let inner_width = (f64::from(window_width.max(1)) * remaining_fraction).max(1.0);
+        let total_width = f64::from(window_width.max(1));
+        let workspace_width = effective_workspace_sidebar_width_sp(window, window_width);
+        let remaining_fraction = (1.0 - workspace_width / total_width).max(f64::EPSILON);
+        let inner_width = (total_width - workspace_width).max(1.0);
         let lower = (PROPERTIES_SIDEBAR_MIN_WIDTH_SP / inner_width).min(1.0);
         (total_fraction / remaining_fraction).max(lower).min(1.0)
     } else {
@@ -886,9 +884,9 @@ fn effective_properties_fraction(window: &super::LushtextWindow, window_width: i
     }
 }
 
-fn properties_breakpoint_workspace_fraction(window: &super::LushtextWindow) -> f64 {
+fn properties_breakpoint_workspace_width_sp(window: &super::LushtextWindow) -> f64 {
     if workspace_sidebar_consumes_width(window) {
-        desired_workspace_fraction(window)
+        effective_workspace_sidebar_width_sp(window, current_window_width(window))
     } else {
         0.0
     }
@@ -917,7 +915,6 @@ fn set_workspace_sidebar_preset(
             .settings
             .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fraction);
     }
-    window.imp().sidebar.set_width_preset(preset);
     sync_split_view_widths(window, current_window_width(window));
 }
 
@@ -946,7 +943,7 @@ fn sync_properties_split_view(window: &super::LushtextWindow, window_width: i32)
 }
 
 fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
-    let workspace_fraction = desired_workspace_fraction(window);
+    let workspace_fraction = effective_workspace_sidebar_fraction(window, window_width);
     sync_workspace_sidebar_width_constraints(window, window_width);
     if (window.imp().workspace_split_view.sidebar_width_fraction() - workspace_fraction).abs()
         > f64::EPSILON
@@ -956,14 +953,10 @@ fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
             .workspace_split_view
             .set_sidebar_width_fraction(workspace_fraction);
     }
-    let _ = window
-        .imp()
-        .settings
-        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, workspace_fraction);
-    window
-        .imp()
-        .sidebar
-        .set_width_preset(workspace_sidebar_preset(window));
+    let _ = window.imp().settings.set_double(
+        keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION,
+        desired_workspace_hint_fraction(window),
+    );
     sync_properties_breakpoint(window);
     sync_properties_split_view(window, window_width);
 }
@@ -979,14 +972,13 @@ mod tests {
     use super::{
         DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP, WorkspaceSidebarWidthPreset,
         dual_sidebar_window_width_for_center, properties_breakpoint_max_width_sp,
-        workspace_sidebar_target_width_sp,
     };
 
     #[test]
     fn properties_breakpoint_width_accounts_for_workspace_preset() {
         assert_eq!(
-            properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Comfy.fraction()),
-            1449
+            properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Comfy.max_width_sp()),
+            1350
         );
         assert_eq!(properties_breakpoint_max_width_sp(0.0), 912);
     }
@@ -996,25 +988,34 @@ mod tests {
         let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
         let total_width = dual_sidebar_window_width_for_center(
             center_target,
-            WorkspaceSidebarWidthPreset::Large.fraction(),
+            WorkspaceSidebarWidthPreset::Large.max_width_sp(),
         );
-        let remaining_fraction = 1.0 - WorkspaceSidebarWidthPreset::Large.fraction() - 0.25;
-        assert!((total_width * remaining_fraction - center_target).abs() < 0.001);
+        assert!(
+            (total_width * 0.75
+                - WorkspaceSidebarWidthPreset::Large.max_width_sp()
+                - center_target)
+                .abs()
+                < 0.001
+        );
     }
 
     #[test]
-    fn workspace_sidebar_target_width_tracks_exact_total_window_fraction() {
+    fn workspace_sidebar_target_width_clamps_for_representative_window_sizes() {
         assert_eq!(
-            workspace_sidebar_target_width_sp(700, WorkspaceSidebarWidthPreset::Small.fraction()),
-            140.0
+            WorkspaceSidebarWidthPreset::Small.clamped_width_sp(900),
+            220.0
         );
         assert_eq!(
-            workspace_sidebar_target_width_sp(700, WorkspaceSidebarWidthPreset::Comfy.fraction()),
-            210.0
+            WorkspaceSidebarWidthPreset::Comfy.clamped_width_sp(1200),
+            360.0
         );
         assert_eq!(
-            workspace_sidebar_target_width_sp(700, WorkspaceSidebarWidthPreset::Large.fraction()),
-            280.0
+            WorkspaceSidebarWidthPreset::Large.clamped_width_sp(1400),
+            440.0
+        );
+        assert_eq!(
+            WorkspaceSidebarWidthPreset::Comfy.clamped_width_sp(2000),
+            360.0
         );
     }
 }

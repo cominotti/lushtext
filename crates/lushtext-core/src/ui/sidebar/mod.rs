@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::prelude::*;
 
 use crate::model::workspace::WorkspaceEntry;
 use crate::services::notifications::NotificationSeverity;
@@ -28,7 +27,7 @@ pub use workspace_section::LushtextWorkspaceSection as WorkspaceSection;
 /// Debounce interval for persisting workspace changes to disk (ms).
 pub(super) const PERSIST_DEBOUNCE_MS: u64 = 150;
 
-/// Supported fixed-width presets for the workspace sidebar footer controls.
+/// Supported named workspace sidebar presets used by Preferences and shell math.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceSidebarWidthPreset {
     Small,
@@ -38,9 +37,21 @@ pub enum WorkspaceSidebarWidthPreset {
 
 impl WorkspaceSidebarWidthPreset {
     pub const DEFAULT: Self = Self::Comfy;
+    pub const ALL: [Self; 3] = [Self::Small, Self::Comfy, Self::Large];
 
+    /// Return the user-visible label for the preset picker.
     #[must_use]
-    pub fn fraction(self) -> f64 {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Small",
+            Self::Comfy => "Comfy",
+            Self::Large => "Large",
+        }
+    }
+
+    /// Return the stored preset hint fraction used to identify the selected preset.
+    #[must_use]
+    pub const fn fraction(self) -> f64 {
         match self {
             Self::Small => 0.2,
             Self::Comfy => 0.3,
@@ -48,6 +59,7 @@ impl WorkspaceSidebarWidthPreset {
         }
     }
 
+    /// Map an arbitrary stored fraction back onto the nearest supported preset.
     #[must_use]
     pub fn from_fraction(fraction: f64) -> Self {
         let small_delta = (fraction - Self::Small.fraction()).abs();
@@ -62,6 +74,60 @@ impl WorkspaceSidebarWidthPreset {
         } else {
             Self::Large
         }
+    }
+
+    /// Convert the preset into a stable position for Adwaita combo rows.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::Small => 0,
+            Self::Comfy => 1,
+            Self::Large => 2,
+        }
+    }
+
+    /// Convert a combo-row selection back into a workspace width preset.
+    #[must_use]
+    pub const fn from_index(index: u32) -> Option<Self> {
+        match index {
+            0 => Some(Self::Small),
+            1 => Some(Self::Comfy),
+            2 => Some(Self::Large),
+            _ => None,
+        }
+    }
+
+    /// Lower bound for this preset once the sidebar is side-by-side on desktop widths.
+    #[must_use]
+    pub const fn min_width_sp(self) -> f64 {
+        match self {
+            Self::Small => 220.0,
+            Self::Comfy => 280.0,
+            Self::Large => 340.0,
+        }
+    }
+
+    /// Upper bound that keeps the sidebar comfortable on wide and ultrawide windows.
+    #[must_use]
+    pub const fn max_width_sp(self) -> f64 {
+        match self {
+            Self::Small => 280.0,
+            Self::Comfy => 360.0,
+            Self::Large => 440.0,
+        }
+    }
+
+    /// Convert the preset's hint fraction into a bounded visible width for the current window.
+    #[must_use]
+    pub fn clamped_width_sp(self, window_width: i32) -> f64 {
+        (f64::from(window_width.max(1)) * self.fraction())
+            .clamp(self.min_width_sp(), self.max_width_sp())
+    }
+
+    /// Return the effective split-view fraction after clamping this preset for the window width.
+    #[must_use]
+    pub fn effective_fraction(self, window_width: i32) -> f64 {
+        (self.clamped_width_sp(window_width) / f64::from(window_width.max(1))).min(1.0)
     }
 }
 
@@ -110,18 +176,6 @@ impl LushtextSidebar {
         *self.imp().workspace_changed_callback.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_width_preset_selected<F: Fn(WorkspaceSidebarWidthPreset) + 'static>(
-        &self,
-        f: F,
-    ) {
-        *self.imp().width_preset_callback.borrow_mut() = Some(Box::new(f));
-    }
-
-    /// Sync the footer toggle state without re-emitting the window callback.
-    pub fn set_width_preset(&self, preset: WorkspaceSidebarWidthPreset) {
-        self.apply_width_preset_selection(preset, false);
-    }
-
     /// Collect all directory root paths from all workspaces.
     #[must_use]
     pub fn workspace_roots(&self) -> Vec<PathBuf> {
@@ -161,30 +215,6 @@ impl LushtextSidebar {
                 WorkspaceEntry::Directory { path } | WorkspaceEntry::File { path } => path.clone(),
             })
             .collect()
-    }
-
-    fn select_width_preset(&self, preset: WorkspaceSidebarWidthPreset) {
-        self.apply_width_preset_selection(preset, true);
-    }
-
-    fn apply_width_preset_selection(&self, preset: WorkspaceSidebarWidthPreset, emit: bool) {
-        let imp = self.imp();
-        if imp.syncing_width_preset.get() {
-            return;
-        }
-
-        imp.syncing_width_preset.set(true);
-        imp.small_width_button
-            .set_active(matches!(preset, WorkspaceSidebarWidthPreset::Small));
-        imp.comfy_width_button
-            .set_active(matches!(preset, WorkspaceSidebarWidthPreset::Comfy));
-        imp.large_width_button
-            .set_active(matches!(preset, WorkspaceSidebarWidthPreset::Large));
-        imp.syncing_width_preset.set(false);
-
-        if emit && let Some(ref callback) = *imp.width_preset_callback.borrow() {
-            callback(preset);
-        }
     }
 }
 

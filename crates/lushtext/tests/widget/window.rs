@@ -11,7 +11,9 @@ use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
 use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use libadwaita::prelude::{ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AnimationExt};
+use libadwaita::prelude::{
+    ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AnimationExt, ComboRowExt,
+};
 use lushtext_core::config::keys;
 use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
 use lushtext_core::model::session::{SessionData, SessionTab};
@@ -25,6 +27,7 @@ use lushtext_core::services::{
     workspace_manager,
 };
 use lushtext_core::ui::editor_page::{LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError};
+use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::window::LushtextWindow;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -210,14 +213,16 @@ fn workspace_total_fraction(window: &LushtextWindow) -> f64 {
     window.imp().workspace_split_view.sidebar_width_fraction()
 }
 
-fn assert_workspace_sidebar_width_locked(window: &LushtextWindow, expected_fraction: f64) {
-    let width = if window.width() > 0 {
+fn current_window_width(window: &LushtextWindow) -> i32 {
+    if window.width() > 0 {
         window.width()
     } else {
         let (default_width, _) = window.default_size();
         default_width
-    };
-    let expected_width = f64::from(width) * expected_fraction;
+    }
+}
+
+fn assert_workspace_sidebar_width_locked(window: &LushtextWindow, expected_width: f64) {
     let split = &window.imp().workspace_split_view;
     assert!(
         (split.min_sidebar_width() - expected_width).abs() < 1.0,
@@ -229,10 +234,6 @@ fn assert_workspace_sidebar_width_locked(window: &LushtextWindow, expected_fract
         "expected max sidebar width near {expected_width}, got {}",
         split.max_sidebar_width()
     );
-}
-
-fn workspace_sidebar_comfy_selected(window: &LushtextWindow) -> bool {
-    window.imp().sidebar.imp().comfy_width_button.is_active()
 }
 
 fn write_long_document(editor: &LushtextEditorPage, line_count: usize, needle_every: usize) {
@@ -499,8 +500,7 @@ fn test_split_view_defaults_restore_on_window() {
     assert!(!properties_sidebar_visible(&window));
     assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
     assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
-    assert!(workspace_sidebar_comfy_selected(&window));
-    assert_workspace_sidebar_width_locked(&window, 0.3);
+    assert_workspace_sidebar_width_locked(&window, 360.0);
 }
 
 #[test]
@@ -513,7 +513,6 @@ fn test_saved_split_view_widths_snap_to_supported_workspace_presets() {
     assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
     assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.3);
     assert_eq!(settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION), 0.25);
-    assert!(workspace_sidebar_comfy_selected(&window));
 }
 
 #[test]
@@ -735,41 +734,91 @@ fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     assert!(properties_sidebar_visible(&window));
     assert!(!window.imp().workspace_split_view.is_collapsed());
     assert!(!window.imp().properties_split_view.is_collapsed());
-    assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
+    assert!((workspace_total_fraction(&window) - 360.0 / 2200.0).abs() < 0.001);
     assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
-    assert_workspace_sidebar_width_locked(&window, 0.3);
+    assert_workspace_sidebar_width_locked(&window, 360.0);
 }
 
 #[test]
-fn test_sidebar_footer_buttons_update_workspace_fraction_and_settings() {
+fn test_preferences_sidebar_width_row_updates_workspace_shell_immediately() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(1400, 900);
+    present_window(&window);
+    let prefs = LushtextPreferences::new();
+
+    prefs.imp().workspace_sidebar_width_row.set_selected(2);
+    wait_until(Duration::from_secs(2), || {
+        (workspace_total_fraction(&window) - 440.0 / 1400.0).abs() < 0.001
+    });
+
+    assert_eq!(
+        window.imp().settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
+        0.4
+    );
+    assert_workspace_sidebar_width_locked(&window, 440.0);
+
+    prefs.imp().workspace_sidebar_width_row.set_selected(0);
+    wait_until(Duration::from_secs(2), || {
+        (workspace_total_fraction(&window) - 280.0 / 1400.0).abs() < 0.001
+    });
+
+    assert_eq!(
+        window.imp().settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
+        0.2
+    );
+    assert_workspace_sidebar_width_locked(&window, 280.0);
+}
+
+#[test]
+fn test_workspace_sidebar_width_presets_clamp_across_representative_window_sizes() {
+    ensure_gtk_init();
+
+    for (window_width, stored_fraction, expected_width) in [
+        (900, 0.2, 220.0),
+        (1200, 0.3, 360.0),
+        (1400, 0.4, 440.0),
+        (2000, 0.3, 360.0),
+    ] {
+        let window = test_window_with_split_view_state(true, stored_fraction, false, 0.25);
+        window.set_default_size(window_width, 900);
+        present_window(&window);
+
+        assert!(
+            (workspace_total_fraction(&window) - expected_width / f64::from(current_window_width(&window)))
+                .abs()
+                < 0.001
+        );
+        assert_workspace_sidebar_width_locked(&window, expected_width);
+    }
+}
+
+#[test]
+fn test_workspace_sidebar_setting_recalculates_properties_breakpoint() {
     ensure_gtk_init();
     let window = test_window();
     window.set_default_size(1400, 900);
     present_window(&window);
 
-    window.imp().sidebar.imp().large_width_button.emit_clicked();
-    flush_events();
+    activate_action(&window, "toggle-properties");
+    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&window));
 
-    assert!((workspace_total_fraction(&window) - 0.4).abs() < 0.001);
-    assert_eq!(
-        window.imp().settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
-        0.4
+    assert!(
+        !window.imp().properties_split_view.is_collapsed(),
+        "Comfy should keep the properties pane side-by-side at 1400sp"
     );
-    assert!(window.imp().sidebar.imp().large_width_button.is_active());
-    assert!(!window.imp().sidebar.imp().comfy_width_button.is_active());
-    assert_workspace_sidebar_width_locked(&window, 0.4);
 
-    window.imp().sidebar.imp().small_width_button.emit_clicked();
-    flush_events();
+    window
+        .imp()
+        .settings
+        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.4)
+        .expect("set large preset");
+    wait_until(Duration::from_secs(2), || {
+        window.imp().properties_split_view.is_collapsed()
+    });
 
-    assert!((workspace_total_fraction(&window) - 0.2).abs() < 0.001);
-    assert_eq!(
-        window.imp().settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
-        0.2
-    );
-    assert!(window.imp().sidebar.imp().small_width_button.is_active());
-    assert!(!window.imp().sidebar.imp().large_width_button.is_active());
-    assert_workspace_sidebar_width_locked(&window, 0.2);
+    assert!(window.imp().properties_split_view.is_collapsed());
+    assert_workspace_sidebar_width_locked(&window, 440.0);
 }
 
 #[test]
@@ -867,11 +916,11 @@ fn test_modified_markers_clear_after_save() {
 fn test_properties_pane_collapses_before_workspace_pane() {
     ensure_gtk_init();
 
-    // At a narrow width (below the properties breakpoint of ~1449sp for a
-    // Comfy workspace), the properties pane should collapse to overlay while
+    // At a narrow width just below the adaptive Comfy breakpoint (~1350sp),
+    // the properties pane should collapse to overlay while
     // the workspace pane stays in layout.
     let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
-    window.set_default_size(1400, 900);
+    window.set_default_size(1300, 900);
     present_window(&window);
 
     // Properties requested visible, but collapsed by the breakpoint.

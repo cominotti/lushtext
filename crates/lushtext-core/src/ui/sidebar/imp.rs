@@ -2,8 +2,8 @@
 
 //! Private implementation for the multi-workspace sidebar.
 //!
-//! Manages workspace sections, the fixed workspace selector row, and
-//! debounced persistence of workspace state to disk.
+//! Manages workspace sections, the fixed workspace selector row, and debounced
+//! persistence of workspace state to disk.
 
 use crate::model::workspace::{WorkspaceId, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
@@ -13,12 +13,11 @@ use gtk4::{self, CompositeTemplate, glib};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 
-use super::{WorkspaceSidebarWidthPreset, workspace_section::LushtextWorkspaceSection};
+use super::workspace_section::LushtextWorkspaceSection;
 
 type FileCallback = Box<dyn Fn(&Path)>;
 type MessageCallback = Box<dyn Fn(&str, NotificationSeverity)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
-type WidthPresetCallback = Box<dyn Fn(WorkspaceSidebarWidthPreset)>;
 
 // CompositeTemplate loads the UI layout from a compiled XML file.
 // GObject methods always take &self; RefCell/Cell provide interior mutability.
@@ -37,14 +36,6 @@ pub struct LushtextSidebar {
     pub workspace_list_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
     pub new_workspace_button: TemplateChild<gtk4::Button>,
-    #[template_child]
-    pub workspace_size_box: TemplateChild<gtk4::Box>,
-    #[template_child]
-    pub small_width_button: TemplateChild<gtk4::ToggleButton>,
-    #[template_child]
-    pub comfy_width_button: TemplateChild<gtk4::ToggleButton>,
-    #[template_child]
-    pub large_width_button: TemplateChild<gtk4::ToggleButton>,
 
     /// Current in-memory workspace configuration. Cloned out of `RefCell`
     /// for background save operations.
@@ -71,10 +62,6 @@ pub struct LushtextSidebar {
     pub message_callback: RefCell<Option<MessageCallback>>,
     /// Callback notifying the window that workspace structure changed.
     pub workspace_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
-    /// Callback notifying the window that the width preset changed.
-    pub width_preset_callback: RefCell<Option<WidthPresetCallback>>,
-    /// Guard to suppress re-entrant button updates while syncing selection.
-    pub syncing_width_preset: Cell<bool>,
     /// Generation counter for debouncing workspace persistence (150ms).
     pub persist_generation: Cell<u32>,
     /// Guard preventing overlapping persistence writes to disk.
@@ -94,10 +81,6 @@ impl Default for LushtextSidebar {
             workspace_filter_dropdown: TemplateChild::default(),
             workspace_list_revealer: TemplateChild::default(),
             new_workspace_button: TemplateChild::default(),
-            workspace_size_box: TemplateChild::default(),
-            small_width_button: TemplateChild::default(),
-            comfy_width_button: TemplateChild::default(),
-            large_width_button: TemplateChild::default(),
             workspaces_file: RefCell::default(),
             sections: RefCell::default(),
             selected_workspace_filter: RefCell::default(),
@@ -111,8 +94,6 @@ impl Default for LushtextSidebar {
             create_callback: RefCell::default(),
             message_callback: RefCell::default(),
             workspace_changed_callback: RefCell::default(),
-            width_preset_callback: RefCell::default(),
-            syncing_width_preset: Cell::default(),
             persist_generation: Cell::default(),
             persist_inflight: Cell::default(),
             persist_dirty: Cell::default(),
@@ -201,22 +182,7 @@ impl ObjectImpl for LushtextSidebar {
             }
         });
 
-        for (button, preset) in [
-            (&self.small_width_button, WorkspaceSidebarWidthPreset::Small),
-            (&self.comfy_width_button, WorkspaceSidebarWidthPreset::Comfy),
-            (&self.large_width_button, WorkspaceSidebarWidthPreset::Large),
-        ] {
-            let sidebar_weak = self.obj().downgrade();
-            button.connect_clicked(move |_| {
-                if let Some(sidebar) = sidebar_weak.upgrade() {
-                    sidebar.select_width_preset(preset);
-                }
-            });
-        }
-
         self.obj().refresh_workspace_filter_dropdown();
-        self.obj()
-            .set_width_preset(WorkspaceSidebarWidthPreset::DEFAULT);
     }
 }
 

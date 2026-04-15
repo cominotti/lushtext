@@ -153,18 +153,11 @@ fn test_new_workspace_affordance_stays_above_sections_scroll_area() {
     let revealer = separator_after_top
         .next_sibling()
         .and_downcast::<gtk4::Revealer>()
-        .expect("workspace list revealer sits between the fixed top and bottom rows");
+        .expect("workspace list revealer sits below the fixed top row");
     let scroller = revealer
         .child()
         .and_downcast::<gtk4::ScrolledWindow>()
         .expect("workspace scroller should be the revealer child");
-    let separator_before_footer = revealer
-        .next_sibling()
-        .expect("separator precedes the footer row");
-    let footer = separator_before_footer
-        .next_sibling()
-        .and_downcast::<gtk4::Box>()
-        .expect("footer row is the last child");
 
     assert!(first.is::<gtk4::Box>());
     assert_eq!(first.as_ptr(), sidebar.imp().new_workspace_button.parent().expect("expected operation to succeed").as_ptr());
@@ -174,8 +167,7 @@ fn test_new_workspace_affordance_stays_above_sections_scroll_area() {
         sidebar.imp().workspace_list_revealer.as_ptr()
     );
     assert_eq!(scroller.as_ptr(), sidebar.imp().outer_scrolled_window.as_ptr());
-    assert!(separator_before_footer.is::<gtk4::Separator>());
-    assert_eq!(footer.as_ptr(), sidebar.imp().workspace_size_box.as_ptr());
+    assert!(revealer.next_sibling().is_none());
 }
 
 #[test]
@@ -187,19 +179,6 @@ fn test_sidebar_outer_scroller_disables_horizontal_scrollbar() {
         gtk4::PolicyType::Never
     );
     assert!(!sidebar.imp().outer_scrolled_window.propagates_natural_width());
-}
-
-#[test]
-fn test_sidebar_footer_buttons_exist_and_default_to_comfy() {
-    ensure_gtk_init();
-    let sidebar = LushtextSidebar::new();
-
-    assert_eq!(sidebar.imp().small_width_button.label().as_deref(), Some("Small"));
-    assert_eq!(sidebar.imp().comfy_width_button.label().as_deref(), Some("Comfy"));
-    assert_eq!(sidebar.imp().large_width_button.label().as_deref(), Some("Large"));
-    assert!(!sidebar.imp().small_width_button.is_active());
-    assert!(sidebar.imp().comfy_width_button.is_active());
-    assert!(!sidebar.imp().large_width_button.is_active());
 }
 
 #[test]
@@ -218,16 +197,24 @@ fn test_sidebar_new_workspace_affordance_matches_document_restored_warning_heigh
         sidebar_height, WARNING_BAR_ROW_HEIGHT,
         "new workspace affordance height should preserve the warning-bar sizing contract (sidebar={sidebar_height}, expected={WARNING_BAR_ROW_HEIGHT})",
     );
+}
 
-    wait_until(Duration::from_secs(2), || {
-        window.imp().sidebar.imp().workspace_size_box.height() > 0
-    });
-    let footer_height = window.imp().sidebar.imp().workspace_size_box.height();
-    assert_eq!(
-        footer_height, WARNING_BAR_ROW_HEIGHT,
-        "workspace size footer should match the same fixed row height contract (footer={footer_height}, expected={WARNING_BAR_ROW_HEIGHT})",
-    );
-    assert_eq!(footer_height, sidebar_height);
+#[test]
+fn test_sidebar_has_no_persistent_width_footer_controls() {
+    ensure_gtk_init();
+    let sidebar = LushtextSidebar::new();
+
+    let mut children = Vec::new();
+    let mut child = sidebar.first_child();
+    while let Some(widget) = child {
+        children.push(widget.clone());
+        child = widget.next_sibling();
+    }
+
+    assert_eq!(children.len(), 3);
+    assert!(children[0].is::<gtk4::Box>());
+    assert!(children[1].is::<gtk4::Separator>());
+    assert!(children[2].is::<gtk4::Revealer>());
 }
 
 fn seed_restored_workspaces() -> tempfile::TempDir {

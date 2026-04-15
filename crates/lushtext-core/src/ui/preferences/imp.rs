@@ -8,6 +8,7 @@
 //! GSettings string/bool keys.
 
 use crate::config::keys;
+use crate::ui::sidebar::WorkspaceSidebarWidthPreset;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
@@ -17,6 +18,8 @@ use libadwaita::subclass::prelude::*;
 pub struct LushtextPreferences {
     #[template_child]
     pub style_scheme_row: TemplateChild<libadwaita::ComboRow>,
+    #[template_child]
+    pub workspace_sidebar_width_row: TemplateChild<libadwaita::ComboRow>,
     #[template_child]
     pub use_system_font_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
@@ -53,6 +56,7 @@ impl Default for LushtextPreferences {
     fn default() -> Self {
         Self {
             style_scheme_row: TemplateChild::default(),
+            workspace_sidebar_width_row: TemplateChild::default(),
             editorconfig_row: TemplateChild::default(),
             use_system_font_row: TemplateChild::default(),
             custom_font_row: TemplateChild::default(),
@@ -150,11 +154,44 @@ impl ObjectImpl for LushtextPreferences {
             .build();
 
         self.setup_color_scheme_row();
+        self.setup_workspace_sidebar_width_row();
         self.setup_font_button();
     }
 }
 
 impl LushtextPreferences {
+    /// Keep the workspace width preference aligned with the three named shell presets
+    /// instead of exposing the raw GSettings backing value to users.
+    fn setup_workspace_sidebar_width_row(&self) {
+        let model = gtk4::StringList::new(&[]);
+        for preset in WorkspaceSidebarWidthPreset::ALL {
+            model.append(preset.label());
+        }
+
+        self.workspace_sidebar_width_row.set_model(Some(&model));
+
+        let current = WorkspaceSidebarWidthPreset::from_fraction(
+            self.settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
+        );
+        self.workspace_sidebar_width_row
+            .set_selected(current.index());
+
+        let settings = self.settings.clone();
+        self.workspace_sidebar_width_row
+            .connect_selected_notify(move |row| {
+                let Some(preset) = WorkspaceSidebarWidthPreset::from_index(row.selected()) else {
+                    return;
+                };
+                if (settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION) - preset.fraction())
+                    .abs()
+                    > f64::EPSILON
+                {
+                    let _ = settings
+                        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, preset.fraction());
+                }
+            });
+    }
+
     fn setup_color_scheme_row(&self) {
         let scheme_manager = sourceview5::StyleSchemeManager::default();
         let model = gtk4::StringList::new(&[]);
