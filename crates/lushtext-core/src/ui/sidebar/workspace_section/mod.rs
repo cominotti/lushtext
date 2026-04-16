@@ -72,6 +72,11 @@ impl LushtextWorkspaceSection {
         *self.imp().create_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Store the callback invoked when local history should open for one file row.
+    pub fn connect_local_history_requested<F: Fn(&Path) + 'static>(&self, f: F) {
+        *self.imp().local_history_callback.borrow_mut() = Some(Box::new(f));
+    }
+
     /// Store the callback used for lightweight window-owned status messages.
     pub fn connect_message<F: Fn(&str, NotificationSeverity) + 'static>(&self, f: F) {
         *self.imp().message_callback.borrow_mut() = Some(Box::new(f));
@@ -128,6 +133,12 @@ impl LushtextWorkspaceSection {
 
     pub(super) fn notify_peek_promoted(&self, path: &Path) {
         if let Some(ref callback) = *self.imp().peek_promote_callback.borrow() {
+            callback(path);
+        }
+    }
+
+    pub(super) fn notify_local_history_requested(&self, path: &Path) {
+        if let Some(ref callback) = *self.imp().local_history_callback.borrow() {
             callback(path);
         }
     }

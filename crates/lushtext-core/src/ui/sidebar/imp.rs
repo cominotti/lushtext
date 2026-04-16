@@ -55,6 +55,8 @@ pub struct LushtextSidebar {
 
     /// Callback for file double-click activation, forwarded to the window.
     pub file_activated_callback: RefCell<Option<FileCallback>>,
+    /// Callback for file-row local-history requests, forwarded to the window.
+    pub local_history_callback: RefCell<Option<FileCallback>>,
     pub rename_callback: RefCell<Option<RenameCallback>>,
     pub delete_callback: RefCell<Option<FileCallback>>,
     pub create_callback: RefCell<Option<FileCallback>>,
@@ -89,6 +91,7 @@ impl Default for LushtextSidebar {
             applied_workspace_filter: RefCell::default(),
             workspace_filter_animation_active: Cell::default(),
             file_activated_callback: RefCell::default(),
+            local_history_callback: RefCell::default(),
             rename_callback: RefCell::default(),
             delete_callback: RefCell::default(),
             create_callback: RefCell::default(),

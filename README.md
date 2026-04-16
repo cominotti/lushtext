@@ -13,6 +13,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)
 - **EditorConfig support** -- per-file formatting overrides from `.editorconfig` files (`indent_style`, `tab_width`, `indent_size`); toggle in Preferences
 - **Bookmarks and annotations** -- saved-file bookmark gutter marks with labels and F2 navigation, plus sidecar line-range annotations with searchable workspace browse/export workflows
+- **Local history** -- saved-file snapshot browser with automatic baseline, periodic, and save-boundary restore points, adaptive browse/preview UI, restore safety snapshots, and one-click undo of a restore
 - **Minimap** -- toggleable right-edge document overview with semantic markers for bookmarks, active in-tab search matches, modified-since-save regions, and long-line warnings on supported files
 - **Session persistence** -- tabs, pinned state, cursor positions, and scroll offsets restored on restart
 - **Draft recovery** -- unsaved changes auto-saved to disk and recovered after crash
@@ -182,6 +183,34 @@ Use this checklist to exercise the full shipped bookmark and annotation flow:
 - Annotation indicators are currently **highlight-based**, not clickable gutter popovers or inline rendered note blocks.
 - Annotation export is **markdown only** in the first release.
 
+## Local History
+
+LushText includes a narrow local-history MVP for saved documents.
+
+- Open **Local History** from the main menu, the command palette, `Ctrl+Alt+L`, the sidebar file context menu, or the editor content context menu while a saved file is active.
+- The browser opens in an adaptive Libadwaita dialog with newest-first snapshots and a read-only preview.
+- Restoring a snapshot writes it into the editor buffer, marks the document modified, and immediately offers **Undo Restore** without writing to disk.
+- **Save As** starts a fresh history lineage for the new path, while sidebar renames inside LushText migrate the existing lineage to the renamed path.
+
+### Shortcut
+
+| Workflow | Shortcut |
+|----------|----------|
+| Local History | `Ctrl+Alt+L` |
+
+### Capture policy
+
+- A baseline snapshot is recorded when a clean saved document first becomes modified.
+- Additional snapshots are captured no more than once every five minutes while the document stays modified.
+- Every successful save records a save-boundary snapshot.
+- Consecutive duplicate snapshot bodies are skipped so the browser stays readable.
+
+### Large-file limits
+
+- Up to `10 MB`: full capture cadence and browsing are available.
+- Above `10 MB` and up to `50 MB`: local history captures only on save boundaries.
+- Above `50 MB`: local history is unavailable.
+
 ## Preview and Sidebar Helpers
 
 ### Markdown preview
@@ -256,13 +285,15 @@ lushtext-core/src/
     draft.rs         Draft persistence metadata
     bookmark.rs      Bookmark sidecar model
     annotation.rs    Annotation sidecar model and styles
+    local_history.rs Local-history snapshot metadata
     content_search.rs  Content search types (SearchMatch, SearchEvent, etc.)
     encoding.rs      Document encoding, line endings, file health, and invisible-character modes
-    sidecar_identity.rs  Canonical-path sidecar identity helpers
+    sidecar_identity.rs  Canonical-path sidecar identity helpers for notes and history
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
     bookmark_service.rs  Bookmark sidecar load/save/move/list helpers
     annotation_service.rs  Annotation sidecar load/save/move/export helpers
+    local_history_service.rs  Local-history capture/list/load/prune/move helpers
     content_search/  Parallel workspace grep plus replace/undo helpers
     palette/         Command registry, SIMD fuzzy search, and file indexing
     editor_io.rs     Encoding-aware text file load/save helpers, health analysis, and mtimes
@@ -279,8 +310,8 @@ lushtext-core/src/
     workspace_watch.rs  Materialized-scope filesystem watch service for sidebar auto-refresh
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
-    window/          Main window shell plus actions, documents, drafts, encoding, notes, search, preview, session persistence, tab management, print, and zoom wiring
-    editor_page/     GtkSourceView tab plus minimap, overscroll, invisible-character rendering, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
+    window/          Main window shell plus actions, documents, drafts, encoding, local-history, notes, search, preview, session persistence, tab management, print, and zoom wiring
+    editor_page/     GtkSourceView tab plus local-history capture, minimap, overscroll, invisible-character rendering, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows

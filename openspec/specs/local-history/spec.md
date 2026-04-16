@@ -1,0 +1,98 @@
+# local-history Specification
+
+## Purpose
+TBD - created by archiving change session-time-travel. Update Purpose after archive.
+## Requirements
+### Requirement: The system captures local-history snapshots for saved documents automatically
+The system SHALL capture local-history snapshots for saved, file-backed documents without blocking the GTK main thread. The system MUST record a baseline snapshot when a clean saved document first becomes modified, MUST record additional snapshots no more than once every five minutes while that document remains modified, and MUST record a snapshot after each successful save. The system MUST skip writing a new snapshot when the candidate content is identical to the most recent snapshot already stored for that document.
+
+#### Scenario: Baseline snapshot on first dirty transition
+- **WHEN** a saved document with no unsaved changes becomes modified for the first time in an editing cycle
+- **THEN** the system records a local-history snapshot of the document state that existed immediately before those unsaved edits
+
+#### Scenario: Periodic snapshot during a long unsaved edit session
+- **WHEN** a saved document remains modified and at least five minutes have elapsed since its last local-history snapshot
+- **THEN** the system records a new local-history snapshot in the background
+
+#### Scenario: Deduplicated snapshot candidate
+- **WHEN** the system reaches a local-history capture boundary but the candidate content is identical to the newest stored snapshot for that document
+- **THEN** the system does not create a duplicate snapshot
+
+#### Scenario: Post-save snapshot
+- **WHEN** the user successfully saves a saved document
+- **THEN** the system records a local-history snapshot representing the saved content
+
+### Requirement: Users can browse local history for the active saved document
+The system SHALL provide a deliberate browse action for local history on the active saved document. Opening local history MUST present an adaptive GTK-native browser that shows snapshots in newest-first order together with a read-only preview of the currently selected snapshot. The MVP MUST NOT require or expose diff-only controls in order to browse history. The browser MUST be reachable from a keyboard shortcut and from native context menus on eligible saved files in both the sidebar and the active editor content surface.
+
+#### Scenario: Open local history for a saved file
+- **WHEN** the active editor is a saved document and the user invokes the local-history action
+- **THEN** the system opens a local-history browser for that document
+- **AND** the browser lists available snapshots from newest to oldest
+- **AND** the selected snapshot is shown in a read-only preview
+
+#### Scenario: Open local history from the keyboard
+- **WHEN** the active editor is an eligible saved document and the user presses the local-history shortcut
+- **THEN** the system opens the local-history browser for that document
+
+#### Scenario: Open local history from the sidebar context menu
+- **WHEN** the user right-clicks an eligible saved file row in the sidebar and chooses `Local History`
+- **THEN** the system opens the local-history browser for that file
+
+#### Scenario: Open local history from the editor context menu
+- **WHEN** the active editor is an eligible saved document and the user chooses `Local History` from the editor content context menu
+- **THEN** the system opens the local-history browser for that document
+
+#### Scenario: Narrow-window local history browsing
+- **WHEN** the local-history browser is opened in a window width that cannot comfortably show the snapshot list and preview side by side
+- **THEN** the system adapts the browser into a navigation flow that still allows the user to reach both the snapshot list and the selected snapshot preview
+
+#### Scenario: No snapshots available
+- **WHEN** the user opens local history for a saved document that has no stored snapshots
+- **THEN** the browser shows an empty state instead of a broken or blank list
+
+#### Scenario: Preview text keeps deliberate inner spacing
+- **WHEN** the browser shows a read-only snapshot preview
+- **THEN** the preview text is padded inside its scrollable surface instead of rendering flush against the frame edge
+
+### Requirement: Local-history restore is safe and reversible
+The system SHALL restore historical snapshots into the active editor buffer without writing directly to disk. Before replacing the buffer content, the system MUST store the current buffer state as a fresh local-history snapshot. After restore, the system MUST mark the editor modified and MUST provide an immediate undo path. The system SHALL also provide a non-destructive copy action for the selected snapshot.
+
+#### Scenario: Restore a historical snapshot
+- **WHEN** the user chooses Restore for a selected snapshot in the local-history browser
+- **THEN** the system stores the current buffer content as a fresh local-history snapshot before applying the selected snapshot
+- **AND** the editor buffer is replaced with the selected snapshot content
+- **AND** the editor is marked modified after restore
+
+#### Scenario: Undo a restore
+- **WHEN** the user restores a snapshot and then invokes the immediate undo affordance for that restore
+- **THEN** the system returns the editor buffer to the content that was active immediately before the restore
+
+#### Scenario: Copy snapshot content
+- **WHEN** the user chooses Copy for a selected snapshot in the local-history browser
+- **THEN** the system copies that snapshot content without modifying the active editor buffer
+
+### Requirement: Local-history identity follows in-app renames and resets on Save As
+The system SHALL key local history by a stable saved-document identity derived from the document’s canonical path. When a saved document or its parent path is renamed through LushText’s in-app rename workflow, the system MUST migrate the existing local-history lineage to the new path identity. When a document is saved through Save As, the system MUST start a new local-history lineage for the new path instead of merging histories.
+
+#### Scenario: In-app rename preserves history lineage
+- **WHEN** the user renames a saved document or one of its ancestor directories through LushText’s in-app rename workflow
+- **THEN** the system keeps that document’s existing local-history snapshots associated with the renamed path
+
+#### Scenario: Save As starts a new history lineage
+- **WHEN** the user saves a document to a new path through Save As
+- **THEN** the new path starts with its own local-history lineage
+- **AND** the previous path’s local-history snapshots are not merged into the new path automatically
+
+### Requirement: Local history respects large-file safety policy
+The system SHALL apply LushText’s existing large-file safety thresholds to local history. For files above 10 MB and at or below 50 MB, the system MUST limit history capture to save-boundary snapshots. For files above 50 MB, the system MUST make local history unavailable and MUST not capture or preview historical snapshots for that document.
+
+#### Scenario: Reduced history capture for very large but still openable files
+- **WHEN** the active saved document is larger than 10 MB and not larger than 50 MB
+- **THEN** the system limits local-history capture to save-boundary snapshots
+
+#### Scenario: Local history unavailable for huge files
+- **WHEN** the active saved document is larger than 50 MB
+- **THEN** the system does not offer local-history browsing for that document
+- **AND** the system does not create new local-history snapshots for that document
+

@@ -249,13 +249,20 @@ impl LushtextWindow {
         let editor_weak = editor.downgrade();
         editor.info_bar().connect_discard(move || {
             if let Some(editor) = editor_weak.upgrade() {
-                if editor.take_pending_warning_action()
-                    == Some(crate::ui::editor_page::PendingWarningAction::NormalizeLineEndings)
-                {
-                    if let Some(window) = window_weak.upgrade() {
-                        window.show_line_ending_controls_dialog();
+                match editor.take_pending_warning_action() {
+                    Some(crate::ui::editor_page::PendingWarningAction::NormalizeLineEndings) => {
+                        if let Some(window) = window_weak.upgrade() {
+                            window.show_line_ending_controls_dialog();
+                        }
+                        return;
                     }
-                    return;
+                    Some(crate::ui::editor_page::PendingWarningAction::UndoLocalHistoryRestore) => {
+                        if let Some(window) = window_weak.upgrade() {
+                            window.undo_local_history_restore(&editor);
+                        }
+                        return;
+                    }
+                    None => {}
                 }
                 if editor.is_draft_restored() {
                     if let Some(window) = window_weak.upgrade()
@@ -325,6 +332,7 @@ impl LushtextWindow {
             "edit-annotation",
             "save",
             "save-as",
+            "show-local-history",
             "close-tab",
             "discard-changes",
             "print",
@@ -391,6 +399,7 @@ impl LushtextWindow {
         }
         self.refresh_header_bar_with(editor.as_ref());
         self.update_discard_action();
+        self.update_local_history_action();
     }
 
     /// Update the header bar title/subtitle to reflect the given editor.

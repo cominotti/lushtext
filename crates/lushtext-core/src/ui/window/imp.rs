@@ -459,11 +459,19 @@ impl ObjectImpl for LushtextWindow {
         });
 
         let window_weak = obj.downgrade();
+        self.sidebar.connect_local_history_requested(move |path| {
+            if let Some(window) = window_weak.upgrade() {
+                window.show_local_history_for_path(path);
+            }
+        });
+
+        let window_weak = obj.downgrade();
         self.sidebar
             .connect_file_renamed(move |old_path, new_path| {
                 if let Some(window) = window_weak.upgrade() {
                     window.update_tab_path(old_path, new_path);
                     window.migrate_note_sidecars_after_rename(old_path, new_path);
+                    window.migrate_local_history_after_rename(old_path, new_path);
                     window
                         .imp()
                         .command_palette

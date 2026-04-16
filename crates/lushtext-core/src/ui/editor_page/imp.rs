@@ -93,6 +93,8 @@ pub struct DraftState {
 pub enum PendingWarningAction {
     /// Open the line-ending chooser so mixed endings can be normalized.
     NormalizeLineEndings,
+    /// Restore the buffer state that existed before a local-history restore.
+    UndoLocalHistoryRestore,
 }
 
 /// Encoding, line-ending, health, and save-confirmation state for one tab.
@@ -118,8 +120,11 @@ pub struct DocumentMetadataState {
 pub struct LoadState {
     /// One-shot callback fired after the first successful file load.
     pub load_completed_callback: RefCell<Option<LoadCompletedCallback>>,
-    /// Recurring callback fired after every successful file load or reload.
-    pub file_loaded_callback: RefCell<Option<FileLoadedCallback>>,
+    /// Recurring callbacks fired after every successful file load or reload.
+    ///
+    /// Notes, local history, and future tab-local workflows all need the same
+    /// "a real file just finished loading" hook, so this stays fan-out friendly.
+    pub file_loaded_callbacks: RefCell<Vec<FileLoadedCallback>>,
 }
 
 /// Deferred cursor and scroll restoration applied after async file load.
@@ -223,6 +228,21 @@ pub struct MinimapState {
     pub changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
 }
 
+/// Automatic local-history capture state scoped to one editor tab.
+#[derive(Default)]
+pub struct LocalHistoryState {
+    /// Last clean saved text used to capture the "before edits" baseline snapshot.
+    pub last_clean_text: RefCell<Option<String>>,
+    /// Generation counter used to cancel or replace pending periodic capture timers.
+    pub periodic_generation: Cell<u32>,
+    /// Suppresses automatic capture while save or restore changes the buffer programmatically.
+    pub automatic_capture_suppressed: Cell<bool>,
+    /// One-shot text used by the browser's immediate undo-restore action.
+    pub restore_undo_text: RefCell<Option<String>>,
+    /// Handler ID for the buffer's `modified-changed` signal used by local history. Disconnected in dispose.
+    pub modified_changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+}
+
 // CompositeTemplate loads the UI layout from a compiled XML file (bundled
 // as a GResource at build time). Each #[template_child] field is auto-bound
 // to the widget with the matching `id` attribute in the XML.
@@ -293,6 +313,8 @@ pub struct LushtextEditorPage {
     pub bookmarks: BookmarkState,
     /// Live annotation range projection and persistence state.
     pub annotations: AnnotationState,
+    /// Automatic local-history capture lifecycle state.
+    pub local_history: LocalHistoryState,
     /// Minimap widget state, marker projections, and refresh bookkeeping.
     pub minimap: MinimapState,
 }
@@ -327,6 +349,7 @@ impl Default for LushtextEditorPage {
             overscroll: OverscrollState::default(),
             bookmarks: BookmarkState::default(),
             annotations: AnnotationState::default(),
+            local_history: LocalHistoryState::default(),
             minimap: MinimapState::default(),
         }
     }
@@ -371,6 +394,9 @@ impl ObjectImpl for LushtextEditorPage {
             buffer.disconnect(handler_id);
         }
         if let Some(handler_id) = self.end_user_action_handler_id.take() {
+            buffer.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.local_history.modified_changed_handler_id.take() {
             buffer.disconnect(handler_id);
         }
         if let Some(handler_id) = self.minimap.insert_text_handler_id.take() {
@@ -556,6 +582,8 @@ impl ObjectImpl for LushtextEditorPage {
         }
 
         self.obj().setup_bookmark_projection();
+        self.obj().setup_local_history_context_menu();
+        self.obj().setup_local_history_tracking();
         self.obj().set_annotation_highlights_visible(
             settings.boolean(keys::ANNOTATION_HIGHLIGHTS_VISIBLE),
         );

@@ -7,7 +7,7 @@
 //! that still live in the window layer.
 
 use crate::common::{emit_key_pressed_on_focus, ensure_gtk_init};
-use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
+use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, MenuModelExt};
 use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -25,8 +25,8 @@ use lushtext_core::model::workspace::{
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::{
-    annotation_service, bookmark_service, draft_service, editor_io, json_store, session_service,
-    workspace_manager,
+    annotation_service, bookmark_service, draft_service, editor_io, json_store,
+    local_history_service, session_service, workspace_manager,
 };
 use lushtext_core::ui::editor_page::{
     LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
@@ -212,6 +212,12 @@ fn visible_alert_dialog(window: &LushtextWindow) -> Option<libadwaita::AlertDial
         .and_then(|dialog| dialog.downcast::<libadwaita::AlertDialog>().ok())
 }
 
+fn visible_sheet_dialog(window: &LushtextWindow) -> Option<libadwaita::Dialog> {
+    window
+        .visible_dialog()
+        .and_then(|dialog| dialog.downcast::<libadwaita::Dialog>().ok())
+}
+
 fn find_button_by_label(root: &gtk4::Widget, label: &str) -> Option<gtk4::Button> {
     if let Ok(button) = root.clone().downcast::<gtk4::Button>()
         && button.label().as_deref() == Some(label)
@@ -228,6 +234,74 @@ fn find_button_by_label(root: &gtk4::Widget, label: &str) -> Option<gtk4::Button
     }
 
     None
+}
+
+fn find_label_by_text(root: &gtk4::Widget, text: &str) -> Option<gtk4::Label> {
+    if let Ok(label) = root.clone().downcast::<gtk4::Label>()
+        && label.label() == text
+    {
+        return Some(label);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_label_by_text(&widget, text) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
+}
+
+fn find_navigation_split_view(root: &gtk4::Widget) -> Option<libadwaita::NavigationSplitView> {
+    if let Ok(split_view) = root.clone().downcast::<libadwaita::NavigationSplitView>() {
+        return Some(split_view);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_navigation_split_view(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
+}
+
+fn find_list_box(root: &gtk4::Widget) -> Option<gtk4::ListBox> {
+    if let Ok(list_box) = root.clone().downcast::<gtk4::ListBox>() {
+        return Some(list_box);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_list_box(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
+}
+
+fn menu_model_labels(model: &gio::MenuModel) -> Vec<String> {
+    let mut labels = Vec::new();
+    for index in 0..model.n_items() {
+        if let Some(label) = model
+            .item_attribute_value(index, "label", Some(glib::VariantTy::STRING))
+            .and_then(|variant| variant.get::<String>())
+        {
+            labels.push(label);
+        }
+        for link_name in ["section", "submenu"] {
+            if let Some(link) = model.item_link(index, link_name) {
+                labels.extend(menu_model_labels(&link));
+            }
+        }
+    }
+    labels
 }
 
 fn click_alert_extra_button(dialog: &libadwaita::AlertDialog, label: &str) {
@@ -1288,6 +1362,258 @@ fn test_complete_save_as_success_updates_editor_identity_and_cleans_old_draft() 
             .expect("read draft")
             .is_none()
     });
+}
+
+#[test]
+fn test_local_history_action_requires_saved_eligible_document() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert!(!action_enabled(&window, "show-local-history"));
+
+    window.new_tab();
+    flush_events();
+    assert!(!action_enabled(&window, "show-local-history"));
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("history.txt");
+    std::fs::write(&path, "one\n").expect("write file");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+    assert!(action_enabled(&window, "show-local-history"));
+
+    let editor = active_editor(&window);
+    editor.imp().size_check.set(FileSizeCheck::DisableUndoAndSyntax);
+    let saved_page = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("saved page selected");
+    window.new_tab();
+    flush_events();
+    window.imp().tab_view.set_selected_page(&saved_page);
+    flush_events();
+    assert!(!action_enabled(&window, "show-local-history"));
+}
+
+#[test]
+fn test_active_editor_extra_menu_includes_local_history() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("extra-menu.txt");
+    std::fs::write(&path, "hello").expect("write file");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    let editor = active_editor(&window);
+    let menu = editor
+        .source_view()
+        .extra_menu()
+        .expect("source view should expose an extra menu");
+    let labels = menu_model_labels(&menu);
+    assert!(
+        labels.iter().any(|label| label == "Local History…"),
+        "editor content menu should offer Local History"
+    );
+}
+
+#[test]
+fn test_local_history_dialog_shows_empty_state_without_snapshots() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("empty-history.txt");
+    std::fs::write(&path, "one\n").expect("write file");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    assert!(
+        find_label_by_text(&child, "No local history yet").is_some(),
+        "empty-state browser should explain why no snapshots are listed"
+    );
+}
+
+#[test]
+fn test_local_history_browser_collapses_and_restore_can_be_undone() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("history-browser.txt");
+    std::fs::write(&path, "current\n").expect("write file");
+
+    let data_dir = json_store::data_dir();
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "version one\n",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed version one");
+    std::thread::sleep(Duration::from_millis(2));
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "version two\n",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed version two");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("working copy");
+    editor.buffer().set_modified(true);
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    let split_view = find_navigation_split_view(&child).expect("navigation split view");
+    let list_box = find_list_box(&child).expect("snapshot list box");
+
+    split_view.set_collapsed(true);
+    let target_row = list_box.row_at_index(1).expect("restorable history row");
+    target_row.activate();
+    flush_events();
+
+    wait_until(Duration::from_secs(2), || split_view.shows_content());
+    wait_until(Duration::from_secs(2), || {
+        find_button_by_label(&child, "Restore").is_some_and(|button| button.is_sensitive())
+    });
+
+    let restore_button =
+        find_button_by_label(&child, "Restore").expect("restore button in local-history dialog");
+    restore_button.emit_clicked();
+
+    wait_until(Duration::from_secs(2), || editor_text(&editor) == "version two\n");
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .notification_bus
+            .editor_info_bar_view(editor.notification_owner_id())
+            .is_some()
+    });
+
+    let undo_button = find_button_by_label(
+        editor.info_bar().upcast_ref::<gtk4::Widget>(),
+        "Undo Restore",
+    )
+    .expect("undo restore button");
+    undo_button.emit_clicked();
+
+    wait_until(Duration::from_secs(2), || editor_text(&editor) == "working copy");
+}
+
+#[test]
+fn test_local_history_capture_policy_respects_full_save_only_and_unavailable_modes() {
+    ensure_gtk_init();
+    // SAFETY: each widget test runs in its own child process, and this interval
+    // override is read later when local-history timers are scheduled.
+    unsafe { std::env::set_var("LUSHTEXT_LOCAL_HISTORY_INTERVAL_MS", "25") };
+
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("capture-policy.txt");
+    std::fs::write(&path, "saved\n").expect("write file");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    let data_dir = json_store::data_dir();
+    let editor = active_editor(&window);
+    editor.buffer().set_text("baseline change");
+    editor.buffer().set_modified(true);
+
+    wait_until(Duration::from_secs(2), || {
+        !local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .expect("list local history")
+            .is_empty()
+    });
+
+    editor.buffer().set_text("periodic change");
+    editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(2), || {
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .expect("list local history")
+            .len()
+            >= 2
+    });
+
+    editor.buffer().set_text("save boundary change");
+    editor.buffer().set_modified(true);
+    activate_action(&window, "save");
+    wait_until(Duration::from_secs(2), || {
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .expect("list local history")
+            .len()
+            >= 3
+    });
+
+    editor.imp().size_check.set(FileSizeCheck::DisableSyntax);
+    let count_after_full = local_history_service::list_snapshots_for_path(&data_dir, &path)
+        .expect("list after full mode")
+        .len();
+
+    editor.buffer().set_text("save only change");
+    editor.buffer().set_modified(true);
+    flush_after_delay(Duration::from_millis(120));
+    assert_eq!(
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .expect("list after save-only baseline wait")
+            .len(),
+        count_after_full,
+        "save-only mode must skip baseline and periodic capture",
+    );
+
+    activate_action(&window, "save");
+    wait_until(Duration::from_secs(2), || {
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .expect("list after save-only save")
+            .len()
+            == count_after_full + 1
+    });
+
+    editor.imp().size_check.set(FileSizeCheck::DisableUndoAndSyntax);
+    let count_after_save_only = local_history_service::list_snapshots_for_path(&data_dir, &path)
+        .expect("list after save-only mode")
+        .len();
+
+    editor.buffer().set_text("unavailable change");
+    editor.buffer().set_modified(true);
+    flush_after_delay(Duration::from_millis(120));
+    activate_action(&window, "save");
+    flush_after_delay(Duration::from_millis(120));
+
+    assert_eq!(
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .expect("list after unavailable mode")
+            .len(),
+        count_after_save_only,
+        "unavailable mode must disable both automatic and save-boundary capture",
+    );
 }
 
 #[test]

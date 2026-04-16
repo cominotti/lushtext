@@ -26,6 +26,13 @@ impl LushtextSidebar {
         });
 
         let sidebar_weak = self.downgrade();
+        section.connect_local_history_requested(move |path| {
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                sidebar.emit_local_history_requested(path);
+            }
+        });
+
+        let sidebar_weak = self.downgrade();
         section.connect_file_renamed(move |old, new| {
             if let Some(sidebar) = sidebar_weak.upgrade() {
                 sidebar.emit_file_renamed(old, new);
@@ -94,6 +101,12 @@ impl LushtextSidebar {
 
     fn emit_file_activated(&self, path: &Path) {
         if let Some(ref callback) = *self.imp().file_activated_callback.borrow() {
+            callback(path);
+        }
+    }
+
+    fn emit_local_history_requested(&self, path: &Path) {
+        if let Some(ref callback) = *self.imp().local_history_callback.borrow() {
             callback(path);
         }
     }

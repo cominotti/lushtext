@@ -11,6 +11,7 @@ mod bookmarks;
 mod imp;
 mod invisibles;
 mod load_save;
+mod local_history;
 mod minimap;
 mod monitor;
 mod overscroll;
@@ -334,7 +335,11 @@ impl LushtextEditorPage {
 
     /// Register a callback fired after every successful file load or reload.
     pub fn connect_file_loaded<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().load.file_loaded_callback.borrow_mut() = Some(Box::new(f));
+        self.imp()
+            .load
+            .file_loaded_callbacks
+            .borrow_mut()
+            .push(Box::new(f));
     }
 
     /// Register a callback fired when bookmark state changes and should be persisted.

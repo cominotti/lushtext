@@ -114,6 +114,14 @@ LushtextWindow (AdwApplicationWindow)
 - Titles, subtitles, and infobar action labels must stay readable on narrow windows by wrapping instead of disappearing or being truncated.
 - Save/Discard action widths should stay visually balanced so restored-document banners do not jitter while the window is being resized.
 
+## Dialog Text Surface Padding (CRITICAL)
+
+Any `GtkTextView`, `GtkSourceView`, or similar document surface placed inside a `GtkScrolledWindow` within a dialog, browser, popover, or other secondary surface must provide explicit inner content padding. Outer shell margins do not pad the document itself.
+
+- Use text-widget margins or an inner padded wrapper so text never renders flush against the frame edge.
+- Treat this as a blocking readability issue, not a polish-only follow-up.
+- When a repo-local example already solves it correctly, reuse that pattern instead of inventing a one-off layout.
+
 ## GSettings Bindings
 
 Editor preferences use GSettings (`dev.cominotti.lushtext` schema) with `gio::Settings::bind()`:

@@ -181,6 +181,8 @@ pub struct LushtextWorkspaceSection {
     pub rename_callback: RefCell<Option<RenameCallback>>,
     pub delete_callback: RefCell<Option<FileCallback>>,
     pub create_callback: RefCell<Option<FileCallback>>,
+    /// Callback used when a file row should open the local-history browser.
+    pub local_history_callback: RefCell<Option<FileCallback>>,
     /// Callback used when a peek should be promoted into the normal open flow.
     pub peek_promote_callback: RefCell<Option<FileCallback>>,
     /// Callback used for lightweight status-bar messages owned by the window.
@@ -563,6 +565,7 @@ impl LushtextWorkspaceSection {
 
         let nav_section = gio::Menu::new();
         nav_section.append(Some("Focus Folder"), Some("section.focus-folder"));
+        nav_section.append(Some("Local History…"), Some("section.local-history"));
         menu.append_section(None, &nav_section);
 
         let create_section = gio::Menu::new();
@@ -597,6 +600,18 @@ impl LushtextWorkspaceSection {
             }
         });
         action_group.add_action(&focus_folder_action);
+
+        let local_history_action = gio::SimpleAction::new("local-history", None);
+        let section_weak = obj.downgrade();
+        local_history_action.connect_activate(move |_, _| {
+            if let Some(section) = section_weak.upgrade()
+                && let Some(path) = section.imp().context_path.borrow().clone()
+                && !section.imp().context_is_dir.get()
+            {
+                section.notify_local_history_requested(&path);
+            }
+        });
+        action_group.add_action(&local_history_action);
 
         let new_file_action = gio::SimpleAction::new("new-file", None);
         let section_weak = obj.downgrade();
@@ -642,6 +657,7 @@ impl LushtextWorkspaceSection {
 
         let section_weak = obj.downgrade();
         let focus_folder_action_clone = focus_folder_action.clone();
+        let local_history_action_clone = local_history_action.clone();
         gesture.connect_pressed(move |gesture, _n_press, x, y| {
             let Some(section) = section_weak.upgrade() else {
                 return;
@@ -674,6 +690,10 @@ impl LushtextWorkspaceSection {
             focus_folder_action_clone.set_enabled(
                 file_item.is_dir() && !file_item.is_placeholder() && tree_row.depth() > 0,
             );
+            let local_history_enabled = !file_item.is_dir()
+                && !file_item.is_placeholder()
+                && file_item.path().as_deref().is_some_and(can_show_local_history_for_path);
+            local_history_action_clone.set_enabled(local_history_enabled);
 
             let popover = imp.context_menu.borrow().clone();
             if let Some(popover) = popover {
@@ -769,6 +789,15 @@ fn click_target_is_header_background(gesture: &gtk4::GestureClick, x: f64, y: f6
         return true;
     };
     target.ancestor(gtk4::Button::static_type()).is_none()
+}
+
+fn can_show_local_history_for_path(path: &Path) -> bool {
+    std::fs::metadata(path).ok().is_some_and(|metadata| {
+        crate::services::local_history_service::availability_for_size_check(
+            crate::services::file_limits::FileSizeCheck::classify(metadata.len()),
+        )
+        .allows_browsing()
+    })
 }
 
 /// Match Builder's "Files" root row only for the normal single-directory workspace root.

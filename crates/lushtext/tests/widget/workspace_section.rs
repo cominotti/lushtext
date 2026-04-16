@@ -5,6 +5,7 @@
 use crate::common::{
     emit_key_pressed_on_focus, ensure_gtk_init, flush_events, present_window, wait_until,
 };
+use gio::prelude::MenuModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -179,6 +180,24 @@ fn row_for_path(
         }
     }
     None
+}
+
+fn menu_model_labels(model: &gio::MenuModel) -> Vec<String> {
+    let mut labels = Vec::new();
+    for index in 0..model.n_items() {
+        if let Some(label) = model
+            .item_attribute_value(index, "label", Some(glib::VariantTy::STRING))
+            .and_then(|variant| variant.get::<String>())
+        {
+            labels.push(label);
+        }
+        for link_name in ["section", "submenu"] {
+            if let Some(link) = model.item_link(index, link_name) {
+                labels.extend(menu_model_labels(&link));
+            }
+        }
+    }
+    labels
 }
 
 fn selected_path(section: &LushtextWorkspaceSection) -> Option<PathBuf> {
@@ -377,6 +396,44 @@ fn test_workspace_section_context_menu_no_arrow() {
     let popover = section.imp().context_menu.borrow();
     let popover = popover.as_ref().expect("expected operation to succeed");
     assert!(!popover.has_arrow());
+}
+
+#[test]
+fn test_workspace_section_context_menu_lists_local_history() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+    let popover = section.imp().context_menu.borrow();
+    let popover = popover.as_ref().expect("context menu should exist");
+    let menu = popover.menu_model().expect("context menu should expose a menu model");
+
+    let labels = menu_model_labels(&menu);
+    assert!(
+        labels.iter().any(|label| label == "Local History…"),
+        "file context menu should advertise Local History"
+    );
+}
+
+#[test]
+fn test_workspace_section_local_history_action_emits_requested_path() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+    let path = PathBuf::from("/tmp/local-history.txt");
+    let requested = Rc::new(RefCell::new(None::<PathBuf>));
+
+    {
+        let requested = requested.clone();
+        section.connect_local_history_requested(move |requested_path| {
+            *requested.borrow_mut() = Some(requested_path.to_path_buf());
+        });
+    }
+
+    *section.imp().context_path.borrow_mut() = Some(path.clone());
+    section.imp().context_is_dir.set(false);
+    section
+        .activate_action("section.local-history", None)
+        .expect("local-history widget action should exist");
+
+    assert_eq!(*requested.borrow(), Some(path));
 }
 
 #[test]

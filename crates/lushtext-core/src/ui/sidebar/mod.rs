@@ -156,6 +156,10 @@ impl LushtextSidebar {
         *self.imp().file_activated_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_local_history_requested<F: Fn(&Path) + 'static>(&self, f: F) {
+        *self.imp().local_history_callback.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn connect_file_renamed<F: Fn(&Path, &Path) + 'static>(&self, f: F) {
         *self.imp().rename_callback.borrow_mut() = Some(Box::new(f));
     }

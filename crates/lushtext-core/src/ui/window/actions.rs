@@ -31,6 +31,9 @@ impl LushtextWindow {
             gio::ActionEntry::builder("save-as")
                 .activate(|window: &Self, _, _| window.show_save_as_dialog())
                 .build(),
+            gio::ActionEntry::builder("show-local-history")
+                .activate(|window: &Self, _, _| window.show_local_history_dialog())
+                .build(),
             gio::ActionEntry::builder("show-encoding-controls")
                 .activate(|window: &Self, _, _| window.show_encoding_controls_dialog())
                 .build(),
@@ -244,6 +247,7 @@ impl LushtextWindow {
             ("win.open-file", "<Control>o"),
             ("win.save", "<Control>s"),
             ("win.save-as", "<Control><Shift>s"),
+            ("win.show-local-history", "<Control><Alt>l"),
             ("win.cycle-invisible-characters", "<Control><Shift>i"),
             ("win.begin-search", "<Control>f"),
             ("win.begin-replace", "<Control>h"),

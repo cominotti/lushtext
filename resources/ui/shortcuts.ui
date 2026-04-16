@@ -38,6 +38,12 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Local History</property>
+                <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;l</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
                 <property name="title" translatable="yes">Close Tab</property>
                 <property name="accelerator">&lt;Control&gt;w</property>
               </object>

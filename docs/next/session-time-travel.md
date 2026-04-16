@@ -1,92 +1,95 @@
 # Session Time Travel (Local History)
 
-## Status: Proposed
+## Status: Implemented MVP
 
-## Description
-Automatic periodic snapshots of file states that let users browse and restore previous
-versions of any file from their editing session. A lightweight local history between
-"undo" (lost when the session ends) and "git" (requires explicit knowledge). Presented
-as a simple timeline UI — not branches, not diffs, just "go back to how this file
-looked 15 minutes ago."
+## Summary
 
-## Current State
-- Draft persistence saves unsaved buffer content to `$XDG_DATA_HOME/lushtext/drafts/`
-  every 30 seconds for modified files
-- Draft manifest (`manifest.json`) tracks metadata per draft (original path, mtime)
-- Only the latest draft is kept — no history
-- Undo history lives in GtkSourceView's `GtkSourceUndoManager` and is lost on tab close
+LushText now ships a narrow local-history MVP for saved, file-backed documents. The feature sits
+between short-lived undo and full version control: it automatically records
+restore points, lets users browse them in a GTK-native history browser, and
+restores earlier text safely without writing directly to disk.
 
-## Motivation
-Writers and casual users lose work constantly because undo history is ephemeral and
-version control is a foreign concept. Even developers occasionally wish they could see
-"what this file looked like an hour ago" without git archaeology. The gap between
-per-session undo and full VCS is vast — local history fills it with zero user effort.
+## MVP Scope
 
-## Implementation Plan
+- Saved, file-backed documents only
+- Automatic snapshot capture at meaningful edit boundaries
+- Adaptive history browser with snapshot list plus read-only preview
+- Restore into the active buffer, not directly to disk
+- Immediate undo path after restore
+- Canonical-path identity with in-app rename migration
+- Large-file-aware capture limits
 
-### Phase 1: Snapshot Storage (services/local_history.rs)
-1. Storage location: `$XDG_DATA_HOME/lushtext/history/<file_hash>/`
-2. Each snapshot is a plain text file named `<timestamp_epoch_ms>.txt`
-3. `LocalHistoryService` with methods:
-   - `save_snapshot(path: &Path, content: &str) -> Result<()>`
-   - `list_snapshots(path: &Path) -> Result<Vec<SnapshotEntry>>`
-   - `load_snapshot(path: &Path, timestamp: u64) -> Result<String>`
-   - `cleanup_old_snapshots()` — retention policy enforcement
-4. File identification uses the same `DefaultHasher` → hex string as drafts
-5. Snapshots are taken:
-   - On every explicit save (`Ctrl+S`)
-   - On file open (snapshot the original state)
-   - Periodically (every 5 minutes for modified buffers, alongside draft saves)
+## Recommended UX
 
-### Phase 2: Retention Policy
-1. Keep all snapshots from the last 24 hours
-2. Keep hourly snapshots for the last 7 days
-3. Keep daily snapshots for the last 30 days
-4. Delete everything older than 30 days
-5. Per-file cap: 200 snapshots (safety net for pathological cases)
-6. Global storage cap: 500MB — oldest snapshots pruned first when exceeded
-7. Cleanup runs at startup (same pattern as draft orphan cleanup)
+- Trigger local history from the main menu, command palette, `Ctrl+Alt+L`, the
+  sidebar file context menu, or the editor content context menu for the active
+  saved document
+- Open an adaptive `AdwDialog` browser rather than reusing the narrow properties
+  pane
+- Use a snapshot list sorted newest-first with a read-only preview of the
+  selected snapshot
+- Provide `Restore` and `Copy` actions in the browser
+- On narrow windows, adapt into a navigation flow instead of squeezing list and
+  preview side by side
+- Keep explicit inner spacing inside the preview text surface so the snapshot
+  content never sits flush against the frame edge
 
-### Phase 3: Timeline UI (ui/local_history/)
-1. New `LushtextLocalHistory` widget — a side panel or dialog
-2. Triggered via command palette ("Show Local History") or menu
-3. Timeline view: vertical list of snapshot entries sorted newest-first
-4. Each entry shows: relative time ("5 minutes ago"), absolute timestamp, file size delta
-5. Selecting a snapshot shows a read-only diff view against current buffer content
-6. "Restore" button replaces current buffer with snapshot content (marks as modified)
-7. "Copy to Clipboard" as a non-destructive alternative
+## Snapshot Model
 
-### Phase 4: Diff View
-1. Use GtkSourceView's built-in line marks or gutter renderer for inline diff markers
-2. Alternatively, a simple side-by-side two-pane view using two `GtkSourceView` widgets
-3. Highlight added lines (green), removed lines (red), changed lines (yellow)
-4. For MVP: a single `GtkSourceView` showing the snapshot content (no diff), with a
-   "Compare" button that opens a basic two-pane view
+- Store full UTF-8 text snapshots, not diffs, for the MVP
+- Use stable canonical-path identity instead of `DefaultHasher`
+- Keep one local-history lineage per saved document
+- Skip duplicate snapshots when the candidate content matches the latest stored
+  snapshot
+- Keep fixed retention caps in code for the MVP rather than exposing user-tuned
+  storage controls yet
 
-## Architecture Considerations
-- Snapshots are stored as full file copies, not diffs. This is simpler, faster to
-  restore, and storage is cheap. Delta compression could be added later if storage
-  becomes a concern.
-- The `file_hash` directory naming allows files to be renamed/moved without losing
-  history — but makes history discovery for moved files non-trivial. Consider storing
-  a `paths.json` that maps hashes to known paths for reverse lookup.
-- Snapshot I/O must be fully async (`spawn_blocking_then`) to avoid blocking the UI,
-  especially for large files.
-- The retention policy cleanup should be incremental (process N files per startup, not
-  all at once) to avoid slow startup on large history stores.
+## Capture Policy
 
-## Dependencies
-- Existing draft infrastructure (services/draft_service.rs) — similar patterns
-- Existing `spawn_blocking_then` for async I/O
-- New UI widget for timeline/history browsing
-- Optional: diff library (`similar` crate) for inline diff computation
+- Capture a baseline snapshot when a clean saved document first becomes dirty in
+  an editing cycle
+- Capture additional snapshots no more than once every 5 minutes while the
+  document remains modified
+- Capture a snapshot after each successful save
+- Keep all snapshot I/O off the GTK main thread
 
-## Risks
-- Storage growth on machines with limited disk space. The 500MB global cap and 30-day
-  retention mitigate this, but users editing many large files could still be surprised.
-  A preferences toggle to disable local history is advisable.
-- Performance of snapshot listing for files with many snapshots. The filesystem-based
-  approach (one file per snapshot) should handle 200 entries fine, but a SQLite backend
-  might be needed if the feature scales beyond simple file history.
-- Users may confuse local history with version control and neglect proper VCS. The UI
-  should include a subtle note that local history is not a substitute for git.
+## Restore Safety
+
+- Before restoring a selected snapshot, first store the current buffer as a
+  fresh safety snapshot
+- Apply the selected historical text to the editor buffer
+- Mark the editor modified after restore so the user still chooses whether to
+  save it
+- Surface an immediate undo path instead of requiring a confirmation dialog for
+  every restore
+
+## Identity and Path Behavior
+
+- In-app rename of a file or parent directory should migrate the document's
+  local-history lineage
+- `Save As` should start a new lineage for the new path instead of merging the
+  previous history automatically
+
+## Large-File Policy
+
+- Up to 10 MB: full MVP behavior
+- Above 10 MB and up to 50 MB: save-boundary snapshots only
+- Above 50 MB: local history unavailable
+
+These thresholds intentionally align with LushText's existing large-file safety
+policy instead of inventing a separate one for local history.
+
+## Suggested Follow-Ups
+
+- Diff and compare UI for selected snapshots
+- Local history for untitled documents
+- Workspace-wide history browser across multiple files
+- Richer retention and storage controls
+- Additional timeline metadata, filtering, and search
+
+## Notes
+
+- This feature is not a substitute for git or other version-control tools
+- The MVP intentionally favors a robust, GTK-native recovery workflow over a
+  feature-rich compare experience
+- Current storage lives under `$XDG_DATA_HOME/lushtext/local-history/`

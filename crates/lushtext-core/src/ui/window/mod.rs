@@ -13,6 +13,7 @@ mod drafts;
 mod encoding;
 mod focus_indexing;
 mod imp;
+mod local_history;
 mod notes;
 mod notifications;
 mod preview;

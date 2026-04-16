@@ -12,6 +12,7 @@ pub mod content_search;
 pub mod draft;
 pub mod encoding;
 pub mod formatting_overrides;
+pub mod local_history;
 pub mod palette;
 pub mod session;
 pub mod sidecar_identity;

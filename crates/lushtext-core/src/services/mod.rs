@@ -19,6 +19,7 @@ pub mod file_limits;
 pub mod file_peek;
 pub mod file_tree;
 pub mod json_store;
+pub mod local_history_service;
 pub mod notifications;
 pub mod palette;
 pub mod saved_searches;

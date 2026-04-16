@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Stable document identity helpers for bookmark and annotation sidecars.
+//! Stable document identity helpers for bookmark, annotation, and history sidecars.
 //!
 //! The UI and services reason about notes as "belonging to a saved file path",
 //! but persistence needs a filesystem-safe filename that survives restarts.
@@ -46,11 +46,20 @@ impl DocumentSidecarIdentity {
 /// filenames remain stable across Rust versions and process launches.
 #[must_use]
 pub fn stable_path_hash(path: &Path) -> String {
+    stable_bytes_hash(path.to_string_lossy().as_bytes())
+}
+
+/// Generate a deterministic hash from arbitrary bytes.
+///
+/// Local history reuses the same explicit hash for snapshot deduplication so
+/// persistence never relies on process-randomized hash seeds.
+#[must_use]
+pub fn stable_bytes_hash(bytes: &[u8]) -> String {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
     let mut hash = FNV_OFFSET;
-    for byte in path.to_string_lossy().as_bytes() {
+    for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
@@ -85,6 +94,18 @@ pub fn now_epoch_secs() -> u64 {
         .as_secs()
 }
 
+/// Current UNIX timestamp in milliseconds for persisted snapshot ordering.
+#[must_use]
+pub fn now_epoch_millis() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +122,11 @@ mod tests {
             stable_path_hash(Path::new("/tmp/a.rs")),
             stable_path_hash(Path::new("/tmp/b.rs"))
         );
+    }
+
+    #[test]
+    fn stable_bytes_hash_changes_with_content() {
+        assert_ne!(stable_bytes_hash(b"alpha"), stable_bytes_hash(b"beta"));
     }
 
     #[test]

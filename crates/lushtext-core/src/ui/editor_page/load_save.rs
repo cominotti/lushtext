@@ -76,6 +76,7 @@ impl LushtextEditorPage {
                     editor.notify_estimated_memory_changed();
                     editor.imp().monitor.last_known_mtime.set(loaded.mtime);
                     editor.clear_inline_notification();
+                    editor.seed_local_history_from_loaded_content(&loaded.content);
                     if editor
                         .file_health()
                         .iter()
@@ -99,8 +100,7 @@ impl LushtextEditorPage {
                     if let Some(callback) = editor.imp().load.load_completed_callback.take() {
                         callback();
                     }
-                    if let Some(callback) = editor.imp().load.file_loaded_callback.borrow().as_ref()
-                    {
+                    for callback in editor.imp().load.file_loaded_callbacks.borrow().iter() {
                         callback();
                     }
                 }
@@ -281,20 +281,46 @@ impl LushtextEditorPage {
         restore_view_state: Option<ViewInteractivityState>,
         callback: SaveCallback,
     ) {
+        self.prepare_local_history_for_save();
         self.buffer().set_modified(false);
         let metadata = self.document_encoding_state();
         let allow_lossy = self.take_lossy_save_once();
+        let history_availability = self.local_history_availability();
 
         async_task::spawn_blocking_then(
             self.clone(),
             move || {
-                editor_io::write_document_to_path(
+                let (size, mtime) = editor_io::write_document_to_path(
                     &path,
                     &text,
                     metadata.save_encoding,
                     metadata.save_line_ending,
                     allow_lossy,
-                )
+                )?;
+
+                if history_availability.allows_browsing() {
+                    let data_dir = crate::services::json_store::data_dir();
+                    if let Err(error) = crate::services::local_history_service::capture_snapshot_for_path(
+                        &data_dir,
+                        &path,
+                        &text,
+                        crate::model::local_history::LocalHistorySnapshotOrigin::Save,
+                        crate::services::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+                    ) {
+                        tracing::warn!(
+                            "Saved {}, but local-history snapshot capture failed: {error}",
+                            path.display()
+                        );
+                    }
+                }
+
+                Ok::<_, SaveError>((
+                    size,
+                    mtime,
+                    history_availability
+                        .allows_automatic_capture()
+                        .then_some(text),
+                ))
             },
             move |editor, result| {
                 if let Some(restore) = restore_view_state {
@@ -305,7 +331,7 @@ impl LushtextEditorPage {
                 }
 
                 match result {
-                    Ok((size, mtime)) => {
+                    Ok((size, mtime, clean_text)) => {
                         editor.imp().file_size.set(Some(size));
                         editor.imp().size_check.set(FileSizeCheck::classify(size));
                         let mut state = editor.document_encoding_state();
@@ -345,10 +371,12 @@ impl LushtextEditorPage {
                         editor.imp().monitor.last_known_mtime.set(mtime);
                         editor.clear_modified_line_marks();
                         editor.refresh_minimap();
+                        editor.complete_local_history_after_save_success(clean_text);
                         callback(Ok(()));
                     }
                     Err(error) => {
                         editor.buffer().set_modified(true);
+                        editor.complete_local_history_after_save_failure();
                         callback(Err(error));
                     }
                 }

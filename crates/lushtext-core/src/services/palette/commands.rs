@@ -47,6 +47,12 @@ pub fn all_commands() -> &'static [CommandDef] {
             shortcut: Some("Ctrl+Shift+S"),
         },
         CommandDef {
+            id: "win.show-local-history",
+            label: "Local History",
+            category: CommandCategory::View,
+            shortcut: Some("Ctrl+Alt+L"),
+        },
+        CommandDef {
             id: "win.print",
             label: "Print",
             category: CommandCategory::File,

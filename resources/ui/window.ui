@@ -193,6 +193,10 @@
         <attribute name="action">win.save-as</attribute>
       </item>
       <item>
+        <attribute name="label" translatable="yes">Local _History…</attribute>
+        <attribute name="action">win.show-local-history</attribute>
+      </item>
+      <item>
         <attribute name="label" translatable="yes">_Discard Changes…</attribute>
         <attribute name="action">win.discard-changes</attribute>
       </item>
