@@ -257,6 +257,7 @@ lushtext-core/src/
     bookmark.rs      Bookmark sidecar model
     annotation.rs    Annotation sidecar model and styles
     content_search.rs  Content search types (SearchMatch, SearchEvent, etc.)
+    encoding.rs      Document encoding, line endings, file health, and invisible-character modes
     sidecar_identity.rs  Canonical-path sidecar identity helpers
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
@@ -264,7 +265,7 @@ lushtext-core/src/
     annotation_service.rs  Annotation sidecar load/save/move/export helpers
     content_search/  Parallel workspace grep plus replace/undo helpers
     palette/         Command registry, SIMD fuzzy search, and file indexing
-    editor_io.rs     Text file load/save helpers and mtimes
+    editor_io.rs     Encoding-aware text file load/save helpers, health analysis, and mtimes
     editorconfig.rs  .editorconfig resolution
     file_peek.rs     Bounded read-only snapshots for sidebar file peek
     notifications.rs Window-scoped status and inline notification store
@@ -278,8 +279,8 @@ lushtext-core/src/
     workspace_watch.rs  Materialized-scope filesystem watch service for sidebar auto-refresh
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
-    window/          Main window shell plus actions, documents, drafts, notes, search, preview, session persistence, tab management, print, and zoom wiring
-    editor_page/     GtkSourceView tab plus minimap, overscroll, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
+    window/          Main window shell plus actions, documents, drafts, encoding, notes, search, preview, session persistence, tab management, print, and zoom wiring
+    editor_page/     GtkSourceView tab plus minimap, overscroll, invisible-character rendering, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows

@@ -95,15 +95,57 @@
         </child>
 
         <child>
-          <object class="GtkLabel" id="encoding_label">
+          <object class="GtkButton" id="line_ending_button">
+            <property name="label">LF</property>
+            <property name="action-name">win.show-line-ending-controls</property>
+            <property name="margin-start">10</property>
+            <property name="margin-end">4</property>
+            <property name="margin-top">4</property>
+            <property name="margin-bottom">4</property>
+            <style>
+              <class name="flat"/>
+              <class name="caption"/>
+              <class name="dim-label"/>
+            </style>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkSeparator">
+            <property name="orientation">vertical</property>
+            <property name="margin-top">6</property>
+            <property name="margin-bottom">6</property>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkButton" id="encoding_button">
             <property name="label">UTF-8</property>
+            <property name="action-name">win.show-encoding-controls</property>
+            <property name="margin-start">10</property>
+            <property name="margin-end">4</property>
+            <property name="margin-top">4</property>
+            <property name="margin-bottom">4</property>
+            <style>
+              <class name="flat"/>
+              <class name="caption"/>
+              <class name="dim-label"/>
+            </style>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkButton" id="health_button">
+            <property name="label">Health</property>
+            <property name="action-name">win.show-file-health</property>
+            <property name="visible">false</property>
             <property name="margin-start">10</property>
             <property name="margin-end">12</property>
             <property name="margin-top">4</property>
             <property name="margin-bottom">4</property>
             <style>
+              <class name="flat"/>
               <class name="caption"/>
-              <class name="dim-label"/>
             </style>
           </object>
         </child>

@@ -16,6 +16,9 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{self, glib};
 use sourceview5::prelude::*;
 
+use crate::model::encoding::{
+    DocumentEncoding, FileHealthFinding, FileHealthFindingKind, FileHealthSeverity,
+};
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::services::{async_task, editor_io};
@@ -43,6 +46,11 @@ impl LushtextEditorPage {
     /// Start loading a file asynchronously. Sets the file path immediately
     /// so duplicate detection works before content arrives.
     pub fn load_file_async(&self, path: &Path) {
+        self.load_file_async_with_encoding(path, None);
+    }
+
+    /// Start loading a file asynchronously, optionally forcing a reopen encoding.
+    pub fn load_file_async_with_encoding(&self, path: &Path, reopen_as: Option<DocumentEncoding>) {
         let file_path = path.to_path_buf();
         self.imp().file_path.replace(Some(file_path.clone()));
 
@@ -51,12 +59,15 @@ impl LushtextEditorPage {
 
         async_task::spawn_blocking_then(
             self.clone(),
-            move || editor_io::load_text_file(&file_path, &cancel),
+            move || editor_io::load_text_file_with_encoding(&file_path, &cancel, reopen_as),
             |editor, result| match result {
                 Ok(loaded) => {
                     editor.imp().file_size.set(Some(loaded.size));
                     editor.imp().size_check.set(loaded.size_check);
                     editor.imp().evicted.set(false);
+                    editor.set_document_encoding_state(loaded.encoding_state);
+                    editor.set_has_bom(loaded.has_bom);
+                    editor.set_file_health(loaded.file_health);
                     editor.set_minimap_tracking_suspended(true);
                     editor.apply_loaded_content(&loaded.content, loaded.size_check);
                     editor.set_minimap_tracking_suspended(false);
@@ -65,6 +76,25 @@ impl LushtextEditorPage {
                     editor.notify_estimated_memory_changed();
                     editor.imp().monitor.last_known_mtime.set(loaded.mtime);
                     editor.clear_inline_notification();
+                    if editor
+                        .file_health()
+                        .iter()
+                        .any(|finding| finding.kind == FileHealthFindingKind::MixedLineEndings)
+                    {
+                        editor.emit_inline_notification_with_warning_action(
+                            InlineActionNotification {
+                                style: InlineNotificationStyle::Warning,
+                                title: "Mixed Line Endings Detected".to_string(),
+                                body: format!(
+                                    "This document opened with mixed line endings. Normalize future saves to {}.",
+                                    editor.save_line_ending().label()
+                                ),
+                                primary_button: Some("_Normalize…".to_string()),
+                                secondary_button: None,
+                            },
+                            super::imp::PendingWarningAction::NormalizeLineEndings,
+                        );
+                    }
                     editor.refresh_minimap();
                     if let Some(callback) = editor.imp().load.load_completed_callback.take() {
                         callback();
@@ -252,10 +282,20 @@ impl LushtextEditorPage {
         callback: SaveCallback,
     ) {
         self.buffer().set_modified(false);
+        let metadata = self.document_encoding_state();
+        let allow_lossy = self.take_lossy_save_once();
 
         async_task::spawn_blocking_then(
             self.clone(),
-            move || editor_io::write_snapshot_to_path(&path, &text),
+            move || {
+                editor_io::write_document_to_path(
+                    &path,
+                    &text,
+                    metadata.save_encoding,
+                    metadata.save_line_ending,
+                    allow_lossy,
+                )
+            },
             move |editor, result| {
                 if let Some(restore) = restore_view_state {
                     editor.source_view().set_editable(restore.editable);
@@ -268,6 +308,39 @@ impl LushtextEditorPage {
                     Ok((size, mtime)) => {
                         editor.imp().file_size.set(Some(size));
                         editor.imp().size_check.set(FileSizeCheck::classify(size));
+                        let mut state = editor.document_encoding_state();
+                        state.opened_encoding = state.save_encoding;
+                        state.detected_line_ending = state.save_line_ending;
+                        state.decode_confidence = crate::model::encoding::DecodeConfidence::Exact;
+                        editor.set_document_encoding_state(state);
+                        let has_bom = state.save_encoding.writes_bom();
+                        editor.set_has_bom(has_bom);
+                        let mut findings: Vec<FileHealthFinding> = editor
+                            .file_health()
+                            .into_iter()
+                            .filter(|finding| {
+                                !matches!(
+                                    finding.kind,
+                                    FileHealthFindingKind::LowConfidenceDecode
+                                        | FileHealthFindingKind::MixedLineEndings
+                                        | FileHealthFindingKind::Utf8Bom
+                                )
+                            })
+                            .collect();
+                        if has_bom && state.save_encoding == DocumentEncoding::Utf8Bom {
+                            findings.insert(
+                                0,
+                                FileHealthFinding {
+                                    kind: FileHealthFindingKind::Utf8Bom,
+                                    severity: FileHealthSeverity::Info,
+                                    title: "UTF-8 BOM detected".to_string(),
+                                    body:
+                                        "This document will be saved with a UTF-8 byte-order mark."
+                                            .to_string(),
+                                },
+                            );
+                        }
+                        editor.set_file_health(findings);
                         editor.notify_estimated_memory_changed();
                         editor.imp().monitor.last_known_mtime.set(mtime);
                         editor.clear_modified_line_marks();

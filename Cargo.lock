@@ -1104,6 +1104,7 @@ dependencies = [
  "crossbeam-channel",
  "dirs",
  "editorconfig-parser",
+ "encoding_rs",
  "gdk4",
  "gio",
  "glib",

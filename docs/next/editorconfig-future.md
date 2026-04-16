@@ -6,15 +6,17 @@ settings provider layer.
 
 ## `end_of_line` (lf / crlf / cr)
 
-Requires line-ending detection on file load and conversion on save.
-GtkSourceView buffers normalize to LF internally; conversion must happen
-at the I/O boundary in `editor_io.rs`.
+The encoding-toolkit work now provides line-ending detection on load plus
+save-time normalization at the `editor_io.rs` boundary. The remaining work
+here is to let EditorConfig set or warn on the already-shipped save policy for
+the active document.
 
 ## `charset` (utf-8 / utf-8-bom / latin1 / utf-16be / utf-16le)
 
-Requires encoding detection on load and conversion on save. Currently
-LushText only supports UTF-8. Would need `encoding_rs` or similar crate
-plus a status bar encoding selector.
+The encoding-toolkit work now provides encoding-aware load/save behavior,
+status-bar controls, and lossy-conversion confirmation. The remaining work
+here is EditorConfig enforcement: mapping `charset` onto the current
+open/save encoding policy without fighting explicit user choices.
 
 ## `trim_trailing_whitespace` (true / false)
 
@@ -40,5 +42,5 @@ Recommended order based on user impact and implementation effort:
 1. `insert_final_newline` — small scope, high value (POSIX compliance)
 2. `trim_trailing_whitespace` — small scope, high value (code cleanliness)
 3. `max_line_length` — medium scope, maps directly to existing GtkSourceView properties
-4. `end_of_line` — medium scope, common need for cross-platform teams
-5. `charset` — large scope, niche need (most modern codebases are UTF-8)
+4. `end_of_line` — medium scope, now mostly EditorConfig policy wiring
+5. `charset` — medium scope, now mostly EditorConfig policy wiring

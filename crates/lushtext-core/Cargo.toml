@@ -29,6 +29,7 @@ notify-debouncer-full = { workspace = true }
 tracing        = { workspace = true }
 nucleo-matcher = { workspace = true }
 simdutf8       = { workspace = true }
+encoding_rs    = { workspace = true }
 unicase            = { workspace = true }
 editorconfig-parser = { workspace = true }
 pulldown-cmark      = { workspace = true }

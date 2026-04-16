@@ -119,6 +119,29 @@ impl super::LushtextWindow {
                 self.publish_status_message(&format!("Saved as {path_display}"), MessageKind::Info);
                 self.refresh_status_bar();
             }
+            Err(crate::ui::editor_page::SaveError::LossyEncoding { preview, .. }) => {
+                let window = self.clone();
+                let editor = editor.clone();
+                let editor_for_dialog = editor.clone();
+                let retry_path = path.to_path_buf();
+                let retry_old_path = old_path.map(std::path::Path::to_path_buf);
+                let retry_old_draft_id = old_draft_id.map(ToOwned::to_owned);
+                self.confirm_lossy_save(&editor_for_dialog, &preview, move || {
+                    let editor_for_result = editor.clone();
+                    let window_for_retry = window.clone();
+                    let retry_old_path = retry_old_path.clone();
+                    let retry_old_draft_id = retry_old_draft_id.clone();
+                    editor.save_file_async_to_path(retry_path.clone(), move |retry_result| {
+                        window_for_retry.complete_save_as(
+                            &editor_for_result,
+                            retry_old_path.as_deref(),
+                            retry_old_draft_id.as_deref(),
+                            &retry_path,
+                            retry_result,
+                        );
+                    });
+                });
+            }
             Err(e) => {
                 tracing::error!("Save As failed: {}", e);
                 self.publish_status_message(&format!("Save failed: {e}"), MessageKind::Error);

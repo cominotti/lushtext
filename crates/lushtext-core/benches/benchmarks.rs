@@ -16,6 +16,7 @@ use tempfile::TempDir;
 
 use lushtext_core::model::content_search::ContentSearchOptions;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
+use lushtext_core::model::encoding::{DocumentEncoding, LineEnding};
 use lushtext_core::model::palette::IndexedFile;
 use lushtext_core::model::palette::SearchMode;
 use lushtext_core::model::session::{SessionData, SessionTab};
@@ -525,6 +526,60 @@ fn bench_editor_file_io(c: &mut Criterion) {
                         let _written =
                             editor_io::write_snapshot_to_path(black_box(&path), black_box(&text))
                                 .expect("expected operation to succeed");
+                        dir
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        let windows_1252_text = "café\r\n".repeat(size / 6);
+        group.bench_function(
+            BenchmarkId::new("load_text_file_windows1252", format!("{size_mb}MB")),
+            |b| {
+                b.iter_batched(
+                    || {
+                        let dir = TempDir::new().expect("expected operation to succeed");
+                        let path = dir.path().join("bench-1252.txt");
+                        let (bytes, _, _) = DocumentEncoding::Windows1252
+                            .codec()
+                            .encode(&windows_1252_text);
+                        std::fs::write(&path, bytes.as_ref())
+                            .expect("expected operation to succeed");
+                        (dir, path, AtomicBool::new(false))
+                    },
+                    |(dir, path, cancel)| {
+                        let _loaded = editor_io::load_text_file_with_encoding(
+                            black_box(path.as_path()),
+                            black_box(&cancel),
+                            None,
+                        )
+                        .expect("expected operation to succeed");
+                        dir
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new("write_document_windows1252_crlf", format!("{size_mb}MB")),
+            |b| {
+                b.iter_batched(
+                    || {
+                        let dir = TempDir::new().expect("expected operation to succeed");
+                        let path = dir.path().join("bench-1252.txt");
+                        (dir, path, windows_1252_text.clone())
+                    },
+                    |(dir, path, text)| {
+                        let _written = editor_io::write_document_to_path(
+                            black_box(&path),
+                            black_box(&text),
+                            DocumentEncoding::Windows1252,
+                            LineEnding::Crlf,
+                            false,
+                        )
+                        .expect("expected operation to succeed");
                         dir
                     },
                     BatchSize::SmallInput,

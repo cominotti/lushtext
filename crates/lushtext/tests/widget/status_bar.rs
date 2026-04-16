@@ -175,13 +175,27 @@ fn test_set_metadata_visible_again() {
     assert!(bar.imp().metadata_box.is_visible());
 }
 
-// --- Encoding label ---
+// --- Metadata controls ---
 
 #[test]
-fn test_encoding_label_shows_utf8() {
+fn test_encoding_button_shows_utf8() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    assert_eq!(bar.imp().encoding_label.label().as_str(), "UTF-8");
+    assert_eq!(bar.imp().encoding_button.label().as_deref(), Some("UTF-8"));
+}
+
+#[test]
+fn test_line_ending_button_shows_lf() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    assert_eq!(bar.imp().line_ending_button.label().as_deref(), Some("LF"));
+}
+
+#[test]
+fn test_health_button_hidden_by_default() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    assert!(!bar.imp().health_button.is_visible());
 }
 
 // --- Sidebar toggle button ---

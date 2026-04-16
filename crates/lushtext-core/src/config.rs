@@ -16,6 +16,7 @@ pub mod keys {
     pub const HIGHLIGHT_CURRENT_LINE: &str = "highlight-current-line";
     pub const SHOW_MINIMAP: &str = "show-minimap";
     pub const MINIMAP_WIDTH: &str = "minimap-width";
+    pub const INVISIBLE_CHARACTERS_MODE: &str = "invisible-characters-mode";
     pub const BOOKMARK_GUTTER_VISIBLE: &str = "bookmark-gutter-visible";
     pub const ANNOTATION_HIGHLIGHTS_VISIBLE: &str = "annotation-highlights-visible";
     pub const TAB_WIDTH: &str = "tab-width";

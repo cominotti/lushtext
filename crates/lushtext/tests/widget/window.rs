@@ -12,10 +12,13 @@ use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{
-    ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AnimationExt, ComboRowExt,
+    ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt, AnimationExt,
+    ComboRowExt,
 };
 use lushtext_core::config::keys;
 use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
+use lushtext_core::model::draft::{DraftEntry, DraftManifest};
+use lushtext_core::model::encoding::{DocumentEncoding, FileHealthFindingKind, LineEnding};
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
@@ -23,7 +26,7 @@ use lushtext_core::model::workspace::{
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::{
-    annotation_service, bookmark_service, draft_service, json_store, session_service,
+    annotation_service, bookmark_service, draft_service, editor_io, json_store, session_service,
     workspace_manager,
 };
 use lushtext_core::ui::editor_page::{LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError};
@@ -158,6 +161,13 @@ fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
         .expect("expected operation to succeed")
 }
 
+fn editor_text(editor: &LushtextEditorPage) -> String {
+    let buffer = editor.buffer();
+    buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string()
+}
+
 fn assert_tab_count(window: &LushtextWindow, expected: i32) {
     assert_eq!(
         window.imp().tab_view.n_pages(),
@@ -199,6 +209,32 @@ fn visible_alert_dialog(window: &LushtextWindow) -> Option<libadwaita::AlertDial
     window
         .visible_dialog()
         .and_then(|dialog| dialog.downcast::<libadwaita::AlertDialog>().ok())
+}
+
+fn find_button_by_label(root: &gtk4::Widget, label: &str) -> Option<gtk4::Button> {
+    if let Ok(button) = root.clone().downcast::<gtk4::Button>()
+        && button.label().as_deref() == Some(label)
+    {
+        return Some(button);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_button_by_label(&widget, label) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
+}
+
+fn click_alert_extra_button(dialog: &libadwaita::AlertDialog, label: &str) {
+    let extra = dialog.extra_child().expect("alert dialog extra child");
+    let button = find_button_by_label(&extra, label)
+        .unwrap_or_else(|| panic!("button '{label}' not found in alert extra child"));
+    button.emit_clicked();
+    flush_events();
 }
 
 fn workspace_sidebar_visible(window: &LushtextWindow) -> bool {
@@ -1050,7 +1086,7 @@ fn test_properties_panel_shows_safe_untitled_metadata_state() {
 
     let panel = window.imp().properties_panel.imp();
     assert_eq!(panel.path_row.subtitle().as_deref(), Some("Untitled document"));
-    assert_eq!(panel.encoding_row.subtitle().as_deref(), Some("Not available"));
+    assert_eq!(panel.encoding_row.subtitle().as_deref(), Some("UTF-8"));
     assert_eq!(panel.file_size_row.subtitle().as_deref(), Some("Not available"));
     assert_eq!(
         panel.formatting_source_row.subtitle().as_deref(),
@@ -1192,6 +1228,132 @@ fn test_properties_panel_updates_for_file_backed_editor() {
         Some(path.display().to_string().as_str())
     );
     assert_eq!(panel.encoding_row.subtitle().as_deref(), Some("UTF-8"));
+}
+
+#[test]
+fn test_status_bar_shows_detected_encoding_and_line_endings_after_open() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("encoded.txt");
+    std::fs::write(&path, [0x63, 0x61, 0x66, 0xE9, b'\r', b'\n']).expect("write file");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || active_editor(&window).file_size().is_some());
+
+    let status_bar = window.imp().status_bar.imp();
+    assert_eq!(
+        status_bar.encoding_button.label().as_deref(),
+        Some("Windows-1252")
+    );
+    assert_eq!(status_bar.line_ending_button.label().as_deref(), Some("CRLF"));
+    assert!(status_bar.health_button.property::<bool>("visible"));
+}
+
+#[test]
+fn test_reopen_with_encoding_requires_discard_confirmation_for_modified_document() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("reopen.txt");
+    std::fs::write(&path, "hello").expect("write file");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || active_editor(&window).file_size().is_some());
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("modified");
+    editor.buffer().set_modified(true);
+
+    activate_action(&window, "show-encoding-controls");
+    let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
+    click_alert_extra_button(&dialog, "Reopen as Windows-1252");
+
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Discard Changes"))
+    });
+}
+
+#[test]
+fn test_save_encoding_choice_surfaces_lossy_confirmation() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("lossy.txt");
+    std::fs::write(&path, "hello").expect("write file");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || active_editor(&window).file_size().is_some());
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("emoji 😀");
+    editor.buffer().set_modified(true);
+
+    activate_action(&window, "show-encoding-controls");
+    let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
+    click_alert_extra_button(&dialog, "Save as Windows-1252");
+
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Lossy Encoding Conversion"))
+    });
+    assert_eq!(active_editor(&window).save_encoding(), DocumentEncoding::Utf8);
+}
+
+#[test]
+fn test_mixed_line_endings_warning_opens_normalization_picker_and_updates_status_bar() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("mixed.txt");
+    std::fs::write(&path, "a\r\nb\nc\r\n").expect("write file");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || active_editor(&window).file_size().is_some());
+
+    let editor = active_editor(&window);
+    wait_until(Duration::from_secs(2), || {
+        editor
+            .info_bar()
+            .imp()
+            .discard_infobar
+            .property::<bool>("revealed")
+    });
+    assert_eq!(
+        editor.info_bar().imp().discard_button.label().as_deref(),
+        Some("_Normalize…")
+    );
+
+    editor.info_bar().imp().discard_button.emit_clicked();
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Line Endings"))
+    });
+
+    let dialog = visible_alert_dialog(&window).expect("line endings dialog visible");
+    click_alert_extra_button(&dialog, "LF");
+
+    assert_eq!(active_editor(&window).save_line_ending(), LineEnding::Lf);
+    assert!(
+        active_editor(&window)
+            .file_health()
+            .into_iter()
+            .all(|finding| finding.kind != FileHealthFindingKind::MixedLineEndings)
+    );
+    assert_eq!(
+        window
+            .imp()
+            .status_bar
+            .imp()
+            .line_ending_button
+            .label()
+            .as_deref(),
+        Some("LF")
+    );
 }
 
 #[test]
@@ -1429,6 +1591,187 @@ fn test_session_restore_keeps_pinned_tabs_ahead_of_unpinned_tabs() {
             .as_str(),
         "gamma.txt"
     );
+}
+
+#[test]
+fn test_startup_restore_applies_matching_file_backed_draft() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("restored.txt");
+    std::fs::write(&file_path, "disk content").expect("write file");
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    draft_service::write_draft(&data_dir, &draft_id, "draft content").expect("seed draft");
+    let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
+    draft_service::save_manifest(
+        &data_dir,
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: draft_id.clone(),
+                original_path: Some(file_path.clone()),
+                original_mtime_secs: Some(current_mtime),
+                saved_at_secs: 1,
+            }],
+        },
+    )
+    .expect("save manifest");
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: Some(file_path),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("save session");
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        let editor = active_editor(&window);
+        editor_text(&editor) == "draft content"
+    });
+
+    let editor = active_editor(&window);
+    assert_eq!(editor_text(&editor), "draft content");
+    assert!(editor.is_draft_restored());
+    let notification = window
+        .imp()
+        .notification_bus
+        .editor_info_bar_view(editor.notification_owner_id())
+        .expect("draft restore notification");
+    assert_eq!(notification.title, "Draft Changes Restored");
+}
+
+#[test]
+fn test_startup_restore_skips_stale_file_backed_draft_once() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("stale.txt");
+    std::fs::write(&file_path, "current disk content").expect("write file");
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    draft_service::write_draft(&data_dir, &draft_id, "stale draft").expect("seed draft");
+    let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
+    let stale_mtime = current_mtime
+        .checked_add(1)
+        .unwrap_or_else(|| current_mtime.saturating_sub(1));
+    draft_service::save_manifest(
+        &data_dir,
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: draft_id.clone(),
+                original_path: Some(file_path.clone()),
+                original_mtime_secs: Some(stale_mtime),
+                saved_at_secs: 1,
+            }],
+        },
+    )
+    .expect("save manifest");
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: Some(file_path),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("save session");
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        let editor = active_editor(&window);
+        window
+            .imp()
+            .notification_bus
+            .editor_info_bar_view(editor.notification_owner_id())
+            .is_some()
+    });
+    wait_until(Duration::from_secs(2), || {
+        draft_service::read_draft(&data_dir, &draft_id)
+            .expect("read draft")
+            .is_none()
+    });
+
+    let editor = active_editor(&window);
+    assert_eq!(editor_text(&editor), "current disk content");
+    assert!(!editor.is_draft_restored());
+    let notification = window
+        .imp()
+        .notification_bus
+        .editor_info_bar_view(editor.notification_owner_id())
+        .expect("stale draft warning");
+    assert_eq!(notification.title, "Draft Not Restored");
+    assert!(window.imp().drafts.manifest.borrow().find_by_id(&draft_id).is_none());
+}
+
+#[test]
+fn test_startup_restore_keeps_untitled_draft_behavior() {
+    ensure_gtk_init();
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_untitled(42);
+    draft_service::write_draft(&data_dir, &draft_id, "untitled restored content")
+        .expect("seed untitled draft");
+    draft_service::save_manifest(
+        &data_dir,
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: draft_id.clone(),
+                original_path: None,
+                original_mtime_secs: None,
+                saved_at_secs: 1,
+            }],
+        },
+    )
+    .expect("save manifest");
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: None,
+                draft_id: Some(draft_id),
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("save session");
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        let editor = active_editor(&window);
+        editor_text(&editor) == "untitled restored content"
+    });
+
+    let editor = active_editor(&window);
+    assert_eq!(editor_text(&editor), "untitled restored content");
+    assert!(editor.is_draft_restored());
+    let notification = window
+        .imp()
+        .notification_bus
+        .editor_info_bar_view(editor.notification_owner_id())
+        .expect("untitled restore notification");
+    assert_eq!(notification.title, "Document Restored");
 }
 
 #[test]

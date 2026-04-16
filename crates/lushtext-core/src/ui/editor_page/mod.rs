@@ -9,6 +9,7 @@
 mod annotations;
 mod bookmarks;
 mod imp;
+mod invisibles;
 mod load_save;
 mod minimap;
 mod monitor;
@@ -17,6 +18,9 @@ mod search;
 
 use crate::model::annotation::{AnnotationId, AnnotationRecord, AnnotationStyle};
 use crate::model::bookmark::BookmarkRecord;
+use crate::model::encoding::{
+    DocumentEncoding, DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode, LineEnding,
+};
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::notifications::InlineActionNotification;
 use crate::ui::info_bar::LushtextInfoBar;
@@ -27,6 +31,7 @@ use gtk4::prelude::*;
 pub use crate::services::editor_io::SaveError;
 pub use annotations::AnnotationEditSelection;
 pub use bookmarks::{BookmarkNavigationDirection, BookmarkToggleState};
+pub use imp::PendingWarningAction;
 pub use minimap::{MinimapAvailability, MinimapMarkerKind};
 
 glib::wrapper! {
@@ -73,6 +78,119 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn file_size(&self) -> Option<u64> {
         self.imp().file_size.get()
+    }
+
+    /// Current encoding and line-ending facts for this tab.
+    #[must_use]
+    pub fn document_encoding_state(&self) -> DocumentEncodingState {
+        self.imp().document_metadata.encoding_state.get()
+    }
+
+    /// Replace the current encoding and line-ending facts for this tab.
+    pub fn set_document_encoding_state(&self, state: DocumentEncodingState) {
+        self.imp().document_metadata.encoding_state.set(state);
+    }
+
+    /// Current "opened as" encoding for the active buffer content.
+    #[must_use]
+    pub fn opened_encoding(&self) -> DocumentEncoding {
+        self.document_encoding_state().opened_encoding
+    }
+
+    /// Current save encoding policy for the next write.
+    #[must_use]
+    pub fn save_encoding(&self) -> DocumentEncoding {
+        self.document_encoding_state().save_encoding
+    }
+
+    /// Update the save encoding policy while keeping the current open facts.
+    pub fn set_save_encoding(&self, save_encoding: DocumentEncoding) {
+        let mut state = self.document_encoding_state();
+        state.save_encoding = save_encoding;
+        self.set_document_encoding_state(state);
+    }
+
+    /// Current line-ending state detected during the last load.
+    #[must_use]
+    pub fn detected_line_ending(&self) -> LineEnding {
+        self.document_encoding_state().detected_line_ending
+    }
+
+    /// Current line-ending style selected for the next save.
+    #[must_use]
+    pub fn save_line_ending(&self) -> LineEnding {
+        self.document_encoding_state().save_line_ending
+    }
+
+    /// Update the next-save line-ending policy while keeping other metadata.
+    pub fn set_save_line_ending(&self, save_line_ending: LineEnding) {
+        let mut state = self.document_encoding_state();
+        state.save_line_ending = save_line_ending;
+        self.set_document_encoding_state(state);
+    }
+
+    /// Whether the loaded on-disk representation carried a byte-order mark.
+    #[must_use]
+    pub fn has_bom(&self) -> bool {
+        self.imp().document_metadata.has_bom.get()
+    }
+
+    /// Record whether the active on-disk representation carries a byte-order mark.
+    pub fn set_has_bom(&self, has_bom: bool) {
+        self.imp().document_metadata.has_bom.set(has_bom);
+    }
+
+    /// Current encoding-adjacent file-health findings for this tab.
+    #[must_use]
+    pub fn file_health(&self) -> Vec<FileHealthFinding> {
+        self.imp().document_metadata.file_health.borrow().clone()
+    }
+
+    /// Replace the current file-health findings for this tab.
+    pub fn set_file_health(&self, findings: Vec<FileHealthFinding>) {
+        *self.imp().document_metadata.file_health.borrow_mut() = findings;
+    }
+
+    /// Whether the current tab has any surfaced file-health findings.
+    #[must_use]
+    pub fn has_file_health(&self) -> bool {
+        !self.imp().document_metadata.file_health.borrow().is_empty()
+    }
+
+    /// Current invisible-character visibility mode for this tab.
+    #[must_use]
+    pub fn invisible_characters_mode(&self) -> InvisibleCharactersMode {
+        self.imp().document_metadata.invisible_mode.get()
+    }
+
+    /// Update the per-tab invisible-character visibility mode.
+    pub fn set_invisible_characters_mode(&self, mode: InvisibleCharactersMode) {
+        self.imp().document_metadata.invisible_mode.set(mode);
+    }
+
+    /// Allow exactly one lossy save attempt to proceed for this tab.
+    pub fn arm_lossy_save_once(&self) {
+        self.imp().document_metadata.allow_lossy_save_once.set(true);
+    }
+
+    /// Consume the one-shot lossy-save permission for this tab.
+    #[must_use]
+    pub fn take_lossy_save_once(&self) -> bool {
+        self.imp()
+            .document_metadata
+            .allow_lossy_save_once
+            .replace(false)
+    }
+
+    /// Route the shared warning-bar primary action to one editor-specific workflow.
+    pub fn set_pending_warning_action(&self, action: Option<imp::PendingWarningAction>) {
+        self.imp().document_metadata.warning_action.set(action);
+    }
+
+    /// Consume the current editor-specific warning-bar action, if any.
+    #[must_use]
+    pub fn take_pending_warning_action(&self) -> Option<imp::PendingWarningAction> {
+        self.imp().document_metadata.warning_action.replace(None)
     }
 
     #[must_use]
@@ -139,6 +257,21 @@ impl LushtextEditorPage {
     }
 
     pub fn emit_inline_notification(&self, notification: InlineActionNotification) {
+        self.set_pending_warning_action(None);
+        if let Some(ref callback) = *self.imp().notification_callback.borrow() {
+            callback(notification);
+        } else {
+            self.info_bar().render_notification(Some(&notification));
+        }
+    }
+
+    /// Emit one inline notification while keeping a specific warning action wired.
+    pub fn emit_inline_notification_with_warning_action(
+        &self,
+        notification: InlineActionNotification,
+        action: imp::PendingWarningAction,
+    ) {
+        self.set_pending_warning_action(Some(action));
         if let Some(ref callback) = *self.imp().notification_callback.borrow() {
             callback(notification);
         } else {

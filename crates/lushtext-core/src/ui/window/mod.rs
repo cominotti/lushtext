@@ -10,6 +10,7 @@ mod actions;
 mod dialogs;
 mod documents;
 mod drafts;
+mod encoding;
 mod focus_indexing;
 mod imp;
 mod notes;

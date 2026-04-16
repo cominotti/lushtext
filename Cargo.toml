@@ -54,6 +54,9 @@ nucleo-matcher = "0.3"
 # SIMD-accelerated UTF-8 validation for large files
 simdutf8 = "0.1"
 
+# WHATWG-compliant text encoding and transcoding for non-UTF-8 files
+encoding_rs = "0.8"
+
 # Zero-allocation case-insensitive string comparison
 unicase = "2"
 

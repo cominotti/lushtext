@@ -9,6 +9,7 @@
 use crate::config::keys;
 use crate::model::annotation::{AnnotationId, AnnotationRecord};
 use crate::model::bookmark::BookmarkRecord;
+use crate::model::encoding::{DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode};
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::InlineActionNotification;
@@ -85,6 +86,31 @@ pub struct DraftState {
     pub draft_id: RefCell<Option<String>>,
     /// Whether this tab is currently showing draft-restored content.
     pub draft_restored: Cell<bool>,
+}
+
+/// One editor-scoped warning action routed through the shared info bar buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingWarningAction {
+    /// Open the line-ending chooser so mixed endings can be normalized.
+    NormalizeLineEndings,
+}
+
+/// Encoding, line-ending, health, and save-confirmation state for one tab.
+#[derive(Default)]
+pub struct DocumentMetadataState {
+    /// Current open/save encoding and line-ending facts for this tab.
+    pub encoding_state: Cell<DocumentEncodingState>,
+    /// Whether the current on-disk representation carried a byte-order mark.
+    pub has_bom: Cell<bool>,
+    /// Encoding-adjacent health findings surfaced for the current content.
+    pub file_health: RefCell<Vec<FileHealthFinding>>,
+    /// Per-tab invisible-character visibility mode.
+    pub invisible_mode: Cell<InvisibleCharactersMode>,
+    /// Shared info-bar action currently routed to this editor.
+    pub warning_action: Cell<Option<PendingWarningAction>>,
+    /// One-shot guard that allows the next save to proceed even if the current
+    /// encoding conversion is known to be lossy.
+    pub allow_lossy_save_once: Cell<bool>,
 }
 
 /// File-load lifecycle callbacks that need to survive repeated reloads.
@@ -255,6 +281,8 @@ pub struct LushtextEditorPage {
     pub monitor: MonitorState,
     /// Draft lifecycle state.
     pub draft: DraftState,
+    /// Per-document encoding, line-ending, and health metadata.
+    pub document_metadata: DocumentMetadataState,
     /// File-load lifecycle callbacks.
     pub load: LoadState,
     /// Deferred cursor/scroll restoration state.
@@ -293,6 +321,7 @@ impl Default for LushtextEditorPage {
             notification_callback: RefCell::default(),
             monitor: MonitorState::default(),
             draft: DraftState::default(),
+            document_metadata: DocumentMetadataState::default(),
             load: LoadState::default(),
             restore: RestoreState::default(),
             overscroll: OverscrollState::default(),
@@ -380,6 +409,11 @@ impl ObjectImpl for LushtextEditorPage {
         buffer.set_highlight_syntax(true);
 
         let settings = &self.settings;
+        let invisible_mode = crate::model::encoding::InvisibleCharactersMode::from_id(
+            settings.string(keys::INVISIBLE_CHARACTERS_MODE).as_str(),
+        )
+        .unwrap_or_default();
+        self.document_metadata.invisible_mode.set(invisible_mode);
 
         // GSettings bind() creates a live sync between the settings key and
         // the widget property. GET flag = one-way: setting changes update the
@@ -562,6 +596,7 @@ impl ObjectImpl for LushtextEditorPage {
         }
 
         self.obj().setup_minimap();
+        self.obj().apply_invisible_characters_mode();
     }
 }
 

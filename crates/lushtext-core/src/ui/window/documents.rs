@@ -10,7 +10,6 @@ use gtk4::prelude::*;
 use libadwaita::prelude::AnimationExt;
 
 use crate::config::keys;
-use crate::model::draft::DraftEntry;
 use crate::services::async_task;
 use crate::services::editorconfig;
 use crate::services::notifications::InlineActionNotification;
@@ -51,18 +50,6 @@ impl LushtextWindow {
         self.resolve_editorconfig_for_editor(&editor_page, path);
         self.assign_draft_id(&editor_page);
 
-        if let Some(draft_id) = editor_page.draft_id() {
-            let mut manifest = self.imp().drafts.manifest.borrow_mut();
-            if manifest.find_by_id(&draft_id).is_none() {
-                manifest.upsert(DraftEntry {
-                    draft_id,
-                    original_path: Some(path.to_path_buf()),
-                    original_mtime_secs: None,
-                    saved_at_secs: 0,
-                });
-            }
-        }
-
         let window_weak = self.downgrade();
         let path_for_draft = path.to_path_buf();
         let editor_weak = editor_page.downgrade();
@@ -96,6 +83,7 @@ impl LushtextWindow {
             return;
         }
         let window = self.clone();
+        let editor_for_retry = editor.clone();
         let save_path = editor.file_path();
         editor.save_file_async(move |result| match result {
             Ok(()) => {
@@ -108,6 +96,12 @@ impl LushtextWindow {
                 }
                 window.publish_status_message("File saved", MessageKind::Info);
                 window.refresh_status_bar();
+            }
+            Err(crate::ui::editor_page::SaveError::LossyEncoding { preview, .. }) => {
+                let window_for_retry = window.clone();
+                window.confirm_lossy_save(&editor_for_retry, &preview, move || {
+                    window_for_retry.save_current();
+                });
             }
             Err(e) => {
                 tracing::error!("Failed to save: {}", e);
@@ -255,6 +249,14 @@ impl LushtextWindow {
         let editor_weak = editor.downgrade();
         editor.info_bar().connect_discard(move || {
             if let Some(editor) = editor_weak.upgrade() {
+                if editor.take_pending_warning_action()
+                    == Some(crate::ui::editor_page::PendingWarningAction::NormalizeLineEndings)
+                {
+                    if let Some(window) = window_weak.upgrade() {
+                        window.show_line_ending_controls_dialog();
+                    }
+                    return;
+                }
                 if editor.is_draft_restored() {
                     if let Some(window) = window_weak.upgrade()
                         && let Some(ref path) = editor.file_path()
@@ -360,17 +362,32 @@ impl LushtextWindow {
         let imp = self.imp();
         let editor = self.active_editor();
         imp.properties_panel.set_active_editor(editor.as_ref());
-        match &editor {
-            Some(e) => {
-                imp.status_bar.set_metadata_visible(true);
-                imp.status_bar.set_file_size(e.file_size());
-                let ec_active = !e.formatting_overrides().is_empty()
-                    && imp.settings.boolean(keys::USE_EDITORCONFIG);
-                imp.status_bar.set_editorconfig_active(ec_active);
-            }
-            None => {
-                imp.status_bar.set_metadata_visible(false);
-            }
+        if let Some(e) = &editor {
+            imp.status_bar.set_metadata_visible(true);
+            imp.status_bar.set_file_size(e.file_size());
+            let ec_active = !e.formatting_overrides().is_empty()
+                && imp.settings.boolean(keys::USE_EDITORCONFIG);
+            imp.status_bar.set_editorconfig_active(ec_active);
+            imp.status_bar
+                .set_encoding_label(&e.document_encoding_state().summary());
+            let line_ending_label =
+                if e.detected_line_ending() == crate::model::encoding::LineEnding::Mixed {
+                    "Mixed"
+                } else {
+                    e.save_line_ending().label()
+                };
+            imp.status_bar.set_line_ending_label(line_ending_label);
+            let finding_count = e.file_health().len();
+            imp.status_bar.set_health_visible(finding_count > 0);
+            let health_label = if finding_count == 1 {
+                "1 Issue".to_string()
+            } else {
+                format!("{finding_count} Issues")
+            };
+            imp.status_bar.set_health_label(&health_label);
+        } else {
+            imp.status_bar.set_metadata_visible(false);
+            imp.status_bar.set_health_visible(false);
         }
         self.refresh_header_bar_with(editor.as_ref());
         self.update_discard_action();

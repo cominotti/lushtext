@@ -56,6 +56,26 @@ impl LushtextStatusBar {
         self.imp().editorconfig_label.set_visible(active);
     }
 
+    /// Update the encoding control label for the active tab.
+    pub fn set_encoding_label(&self, label: &str) {
+        self.imp().encoding_button.set_label(label);
+    }
+
+    /// Update the line-ending control label for the active tab.
+    pub fn set_line_ending_label(&self, label: &str) {
+        self.imp().line_ending_button.set_label(label);
+    }
+
+    /// Show or hide the file-health entry point for the active tab.
+    pub fn set_health_visible(&self, visible: bool) {
+        self.imp().health_button.set_visible(visible);
+    }
+
+    /// Update the file-health button label for the active tab.
+    pub fn set_health_label(&self, label: &str) {
+        self.imp().health_button.set_label(label);
+    }
+
     /// Show or hide the metadata section between the message area and the
     /// right-side properties toggle. Hidden when no tabs are open.
     pub fn set_metadata_visible(&self, visible: bool) {

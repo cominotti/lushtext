@@ -41,10 +41,12 @@ impl LushtextPropertiesPanel {
                 self.imp()
                     .path_row
                     .set_subtitle(&path.display().to_string());
-                self.imp().encoding_row.set_subtitle("UTF-8");
+                let summary = editor.document_encoding_state().summary();
+                self.imp().encoding_row.set_subtitle(&summary);
             } else {
                 self.imp().path_row.set_subtitle("Untitled document");
-                self.imp().encoding_row.set_subtitle("Not available");
+                let summary = editor.document_encoding_state().summary();
+                self.imp().encoding_row.set_subtitle(&summary);
             }
             self.imp()
                 .file_size_row

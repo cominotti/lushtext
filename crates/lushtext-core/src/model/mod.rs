@@ -10,6 +10,7 @@ pub mod annotation;
 pub mod bookmark;
 pub mod content_search;
 pub mod draft;
+pub mod encoding;
 pub mod formatting_overrides;
 pub mod palette;
 pub mod session;

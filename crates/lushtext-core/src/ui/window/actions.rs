@@ -31,6 +31,18 @@ impl LushtextWindow {
             gio::ActionEntry::builder("save-as")
                 .activate(|window: &Self, _, _| window.show_save_as_dialog())
                 .build(),
+            gio::ActionEntry::builder("show-encoding-controls")
+                .activate(|window: &Self, _, _| window.show_encoding_controls_dialog())
+                .build(),
+            gio::ActionEntry::builder("show-line-ending-controls")
+                .activate(|window: &Self, _, _| window.show_line_ending_controls_dialog())
+                .build(),
+            gio::ActionEntry::builder("show-file-health")
+                .activate(|window: &Self, _, _| window.show_file_health_dialog())
+                .build(),
+            gio::ActionEntry::builder("cycle-invisible-characters")
+                .activate(|window: &Self, _, _| window.cycle_invisible_characters())
+                .build(),
             gio::ActionEntry::builder("begin-search")
                 .activate(|window: &Self, _, _| window.open_editor_search(false))
                 .build(),
@@ -229,6 +241,7 @@ impl LushtextWindow {
             ("win.open-file", "<Control>o"),
             ("win.save", "<Control>s"),
             ("win.save-as", "<Control><Shift>s"),
+            ("win.cycle-invisible-characters", "<Control><Shift>i"),
             ("win.begin-search", "<Control>f"),
             ("win.begin-replace", "<Control>h"),
             ("win.next-match", "<Control>g"),

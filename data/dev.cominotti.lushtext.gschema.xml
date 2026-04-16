@@ -34,6 +34,11 @@
       <summary>Show Minimap</summary>
       <description>Whether an editor minimap appears on supported documents.</description>
     </key>
+    <key name="invisible-characters-mode" type="s">
+      <default>'off'</default>
+      <summary>Invisible Characters Mode</summary>
+      <description>Default invisible-character visibility mode for newly opened editor tabs: 'off', 'whitespace-only', or 'all'.</description>
+    </key>
     <key name="minimap-width" type="i">
       <default>90</default>
       <summary>Minimap Width</summary>

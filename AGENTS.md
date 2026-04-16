@@ -47,6 +47,7 @@ src/
 │   ├── bookmark.rs     # BookmarkId, BookmarkRecord, BookmarkDocument — saved-file line bookmarks
 │   ├── annotation.rs   # AnnotationId, AnnotationRecord, AnnotationStyle, AnnotationDocument
 │   ├── content_search.rs # SearchMatch, ContentSearchOptions, SearchEvent, SearchHistoryEntry — content search types
+│   ├── encoding.rs     # DocumentEncodingState, LineEnding, FileHealthFinding, InvisibleCharactersMode
 │   ├── sidecar_identity.rs # DocumentSidecarIdentity — canonical-path sidecar keys for notes
 │   └── formatting_overrides.rs  # FormattingOverrides — per-file EditorConfig overrides
 ├── services/           # Business logic
@@ -56,7 +57,7 @@ src/
 │   ├── content_search/ # Workspace-wide grep: streaming search + replace/undo helpers
 │   ├── palette/        # Command registry, fuzzy matching, and file indexing
 │   ├── draft_service.rs # Draft persistence: save/load/delete draft files and manifest
-│   ├── editor_io.rs    # Text file load/save helpers, mtimes, close-flush timestamps
+│   ├── editor_io.rs    # Encoding-aware text file load/save helpers, health analysis, mtimes
 │   ├── editorconfig.rs # .editorconfig file discovery and parsing (pure I/O, no GTK)
 │   ├── file_peek.rs    # Bounded read-only snapshots for sidebar file peek
 │   ├── file_limits.rs  # File size thresholds for graceful degradation
@@ -72,8 +73,8 @@ src/
 ├── benches/
 │   └── benchmarks.rs   # Criterion benchmarks for all performance-sensitive services
 └── ui/                 # GTK4/Libadwaita widgets (each folder keeps mod.rs + imp.rs)
-    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, notes, search, preview, print, session persistence, tab management, and zoom
-    ├── editor_page/     # Per-tab editor adapter plus minimap, overscroll, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
+    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, encoding, notes, search, preview, print, session persistence, tab management, and zoom
+    ├── editor_page/     # Per-tab editor adapter plus minimap, overscroll, invisible-character rendering, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
     ├── sidebar/         # Multi-workspace sidebar orchestrator plus dialogs, callbacks, and per-workspace sections
     ├── search_panel/    # Workspace-wide content search panel plus history, list factory, replace, results, and runtime flows
     ├── command_palette/ # Ctrl+P fuzzy search: files + commands
@@ -120,7 +121,7 @@ If you add another nested `AGENTS.md`, keep it local, non-duplicative, and worth
 - **New File / New Folder**: Context menu "New File" and "New Folder" actions use `spawn_blocking_then` for the `create_unique` filesystem call (avoids blocking the UI on slow filesystems or name collision retries), then add a `FileTreeItem` with `pending_rename = true` to the target `ListStore`. `connect_bind` detects the flag to automatically trigger inline rename. On confirm, the temp file is renamed to the user's chosen name and `connect_file_created` opens files in tabs. On cancel, the temp file is deleted via fire-and-forget `std::thread::spawn` and removed from the model. The `workspace_section/tree_loading.rs` helper deduplicates items already in the store to prevent duplicates when an expanded directory's async scan finds the temp file.
 - **Workspace concept**: a named collection of root directories/files, persisted to `$XDG_DATA_HOME/lushtext/workspaces.json`. Methods: `add_workspace()`, `remove_workspace()`, `rename_workspace()`, `add_entry()`, `remove_entry()`.
 - **Session persistence**: All open tabs (with cursor position and scroll offset) are saved to a single global `$XDG_DATA_HOME/lushtext/session.json`. Tabs are not workspace-scoped in the UI — they all share one `AdwTabView` — so a single session file captures everything. Session save is debounced at 500ms (generation-counter pattern) and triggered by tab open, close, switch, and detach. A synchronous save runs on `close_request` as a safety net. On startup, `load_session_and_drafts` combines draft manifest + session loading in one background task (via `spawn_blocking_then`), then `restore_tabs` opens file-backed tabs via `open_document` and untitled tabs via `new_tab` with draft recovery. Cursor/scroll positions are deferred via `set_restore_position` → `apply_restore_position` (called in `load_file_async`'s success callback after content is loaded). The `restoring_session` flag suppresses redundant session saves during restore. CLI file arguments (`ApplicationImpl::open`) take priority over session's active tab selection.
-- **Status bar**: per-window bottom bar below the split-view shell, always visible. Four sections: workspace sidebar toggle button (far left), feedback message area (left, hexpand), metadata cluster (EditorConfig, file size, encoding), and the properties toggle button at the far right. The window orchestrates all updates via `refresh_status_bar()`, which also refreshes the properties panel's document rows.
+- **Status bar**: per-window bottom bar below the split-view shell, always visible. Four sections: workspace sidebar toggle button (far left), feedback message area (left, hexpand), metadata cluster (EditorConfig, file size, line ending, encoding, conditional file-health entry point), and the properties toggle button at the far right. The window orchestrates all updates via `refresh_status_bar()`, which also refreshes the properties panel's document rows.
 - **Dual split-view shell**: The outer window shell uses nested `AdwOverlaySplitView`s. `workspace_split_view` hosts `LushtextSidebar` on the left, and `properties_split_view` wraps the central editor/search host with `LushtextPropertiesPanel` on the right. The left pane restores one of three preset identities (`Small=20%`, `Comfy=30%`, `Large=40%`) from `Preferences > Workspace`, then clamps the visible sidebar width to a comfortable desktop range before turning that width back into the effective split fraction. The right pane keeps its quarter-width target and derives its inner nested fraction from the remaining width. Both toggles live in the status bar, and breakpoints collapse the properties pane before the workspace pane while preserving the same boolean toggle model in side-by-side and overlay modes. The properties breakpoint is recalculated from the active left pane's effective visible width whenever the workspace pane actually consumes width so the center editor column stays wide enough for restored-document infobars and other editor chrome before the right pane overlays.
 - **Status bar auto-dismiss**: messages auto-dismiss after 5 seconds using a generation counter (`Cell<u32>`). Each `push_message` increments the counter; the timer closure captures the value and no-ops if the counter has advanced (a newer message replaced the old one). This avoids storing/cancelling `glib::SourceId` handles entirely.
 - **File metadata on EditorPage**: `file_size: Cell<Option<u64>>` is populated during async load (from `fs::metadata`) and updated on save (from written byte count). The window pulls this on tab switch via `editor.file_size()`.
