@@ -198,6 +198,27 @@ fn test_health_button_hidden_by_default() {
     assert!(!bar.imp().health_button.is_visible());
 }
 
+#[test]
+fn test_document_format_button_hidden_by_default() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    assert!(!bar.imp().document_format_button.is_visible());
+}
+
+#[test]
+fn test_document_format_button_action_name() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    assert_eq!(
+        bar.imp()
+            .document_format_button
+            .action_name()
+            .expect("expected operation to succeed")
+            .as_str(),
+        "win.show-document-format-controls"
+    );
+}
+
 // --- Sidebar toggle button ---
 
 #[test]
@@ -232,7 +253,11 @@ fn test_sidebar_toggle_button_is_flat() {
 fn test_sidebar_toggle_button_has_tooltip() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    let tooltip = bar.imp().sidebar_toggle_button.tooltip_text().expect("expected operation to succeed");
+    let tooltip = bar
+        .imp()
+        .sidebar_toggle_button
+        .tooltip_text()
+        .expect("expected operation to succeed");
     assert!(tooltip.contains("Sidebar"));
 }
 
@@ -284,7 +309,11 @@ fn test_properties_toggle_button_is_flat() {
 fn test_properties_toggle_button_has_tooltip() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    let tooltip = bar.imp().properties_toggle_button.tooltip_text().expect("expected operation to succeed");
+    let tooltip = bar
+        .imp()
+        .properties_toggle_button
+        .tooltip_text()
+        .expect("expected operation to succeed");
     assert!(tooltip.contains("Properties"));
 }
 

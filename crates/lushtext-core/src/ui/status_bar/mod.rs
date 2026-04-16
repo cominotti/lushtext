@@ -13,6 +13,11 @@ use gtk4::prelude::*;
 
 pub use crate::services::notifications::NotificationSeverity as MessageKind;
 
+/// Below this width, the separate encoding, line-ending, and issue buttons are
+/// collapsed into one grouped entry point so the central message label keeps
+/// enough room to stay readable.
+const FORMAT_CONTROLS_COMPACT_MAX_WIDTH: i32 = 900;
+
 glib::wrapper! {
     pub struct LushtextStatusBar(ObjectSubclass<imp::LushtextStatusBar>)
         @extends gtk4::Box, gtk4::Widget,
@@ -68,7 +73,8 @@ impl LushtextStatusBar {
 
     /// Show or hide the file-health entry point for the active tab.
     pub fn set_health_visible(&self, visible: bool) {
-        self.imp().health_button.set_visible(visible);
+        self.imp().health_visible.set(visible);
+        self.sync_format_controls_visibility();
     }
 
     /// Update the file-health button label for the active tab.
@@ -80,6 +86,36 @@ impl LushtextStatusBar {
     /// right-side properties toggle. Hidden when no tabs are open.
     pub fn set_metadata_visible(&self, visible: bool) {
         self.imp().metadata_box.set_visible(visible);
+        self.sync_format_controls_visibility();
+        self.update_format_controls_compact(self.width());
+    }
+
+    /// Update whether the narrow-width grouped document-format control should
+    /// replace the separate encoding, line-ending, and issue buttons.
+    pub fn update_format_controls_compact(&self, width: i32) {
+        let compact = width > 0 && width <= FORMAT_CONTROLS_COMPACT_MAX_WIDTH;
+        if self.imp().format_controls_compact.replace(compact) != compact {
+            self.sync_format_controls_visibility();
+        }
+    }
+
+    fn sync_format_controls_visibility(&self) {
+        let imp = self.imp();
+        // `is_visible()` walks parent visibility and returns false in
+        // unpresented windows, but the status bar still needs to update its own
+        // widget visibility state before the window is shown.
+        let metadata_visible = imp.metadata_box.property::<bool>("visible");
+        let compact = imp.format_controls_compact.get();
+        let health_visible = imp.health_visible.get();
+
+        imp.document_format_controls_box
+            .set_visible(metadata_visible && !compact);
+        imp.document_format_button
+            .set_visible(metadata_visible && compact);
+        imp.health_separator
+            .set_visible(metadata_visible && !compact && health_visible);
+        imp.health_button
+            .set_visible(metadata_visible && !compact && health_visible);
     }
 }
 

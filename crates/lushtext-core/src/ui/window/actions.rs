@@ -34,6 +34,9 @@ impl LushtextWindow {
             gio::ActionEntry::builder("show-encoding-controls")
                 .activate(|window: &Self, _, _| window.show_encoding_controls_dialog())
                 .build(),
+            gio::ActionEntry::builder("show-document-format-controls")
+                .activate(|window: &Self, _, _| window.show_document_format_controls_dialog())
+                .build(),
             gio::ActionEntry::builder("show-line-ending-controls")
                 .activate(|window: &Self, _, _| window.show_line_ending_controls_dialog())
                 .build(),

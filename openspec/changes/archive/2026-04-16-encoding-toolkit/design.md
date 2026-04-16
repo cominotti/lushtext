@@ -131,4 +131,69 @@ Rollback is low risk because the data model stays in-memory and the app can fall
 ## Open Questions
 
 - Which exact encoding shortlist should the first UI expose by default versus hide behind a fuller picker?
-- Should low-confidence decode warnings appear immediately on open, or only inside the file-health surface unless the content contains replacement characters or other visible damage?
+
+## GNOME HIG UX Delta
+
+This capability is intentionally editor-adjacent and should follow GNOME's
+lightweight, progressive-disclosure patterns rather than introducing a
+settings-heavy toolbox.
+
+### 1. Keep status-bar surfaces compact
+
+The status bar should communicate current document state and offer immediate
+next actions, but it should not become a dense chooser surface.
+
+- The encoding entry point may show current open/save state plus nearby actions
+  such as `Reopen with Encoding…` and `Save Using Encoding…`.
+- The line-ending entry point may expose the small mutually exclusive set of
+  `LF`, `CRLF`, and `CR`.
+- If the user needs a broader encoding list, explanatory copy, or preview
+  details, the status-bar affordance should launch a document-modal dialog
+  rather than expanding into a large transient surface.
+
+### 2. Prefer persistent document warnings over surprise modals
+
+Encoding-adjacent issues vary in urgency and should not all interrupt the user
+in the same way.
+
+- Mixed line endings, BOM presence, and low-confidence decode results should
+  surface through the file-health indicator and, when useful, a persistent
+  document warning or banner.
+- Opening a document should only block on a modal confirmation when user work
+  could be lost or bytes could be written destructively.
+- This keeps the editor usable while still making anomalies visible and
+  actionable.
+
+### 3. Reserve modal confirmation for destructive transitions
+
+Two flows in this capability warrant explicit confirmation: discarding unsaved
+edits before a reopen, and approving a lossy save conversion.
+
+- Those flows should use a document-modal dialog with explicit verbs such as
+  `Reopen` or `Save`.
+- `Cancel` should preserve the current buffer state and offer the safe way out.
+- The confirmation step should live outside status-bar popovers so the
+  consequence is clear and the action target is not cramped.
+
+### 4. Keep the workflow adaptive
+
+The metadata cluster must remain usable at narrow widths. If the full set of
+entry points cannot fit cleanly, the UI should collapse them into a grouped
+entry point in the status bar or another equally local document surface.
+
+- Narrow layouts must preserve the same functionality, not silently drop
+  encoding or health actions.
+- The adaptation should avoid clipped labels and should not force a separate
+  preferences-style window for document-local actions.
+
+### 5. Use GNOME-style action copy
+
+The first implementation should standardize on concise, plain-language wording.
+
+- Actions that require more input or confirmation should use an ellipsis:
+  `Reopen with Encoding…`, `Save Using Encoding…`, `Normalize…`.
+- Compact state labels should stay short and scannable, such as `UTF-8`, `LF`,
+  or `Issues`.
+- Warning text should describe the user-visible state and consequence instead of
+  leaning on internal terms such as "decode confidence" unless those terms are
+  explained in context.

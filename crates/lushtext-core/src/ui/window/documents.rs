@@ -369,7 +369,7 @@ impl LushtextWindow {
                 && imp.settings.boolean(keys::USE_EDITORCONFIG);
             imp.status_bar.set_editorconfig_active(ec_active);
             imp.status_bar
-                .set_encoding_label(&e.document_encoding_state().summary());
+                .set_encoding_label(e.opened_encoding().label());
             let line_ending_label =
                 if e.detected_line_ending() == crate::model::encoding::LineEnding::Mixed {
                     "Mixed"

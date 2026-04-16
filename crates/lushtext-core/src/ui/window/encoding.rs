@@ -13,6 +13,7 @@ use crate::model::encoding::{
 use crate::services::editor_io::{self, LossyEncodingPreview};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
+use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita::prelude::*;
@@ -24,31 +25,132 @@ const RESPONSE_CONTINUE: &str = "continue";
 const RESPONSE_CANCEL: &str = "cancel";
 
 impl super::LushtextWindow {
-    /// Present the encoding toolkit surface for the active tab.
+    /// Present the compact grouped document-format surface for narrow windows.
+    pub(super) fn show_document_format_controls_dialog(&self) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+
+        let issue_summary = if editor.file_health().is_empty() {
+            "No issues recorded".to_string()
+        } else if editor.file_health().len() == 1 {
+            "1 issue recorded".to_string()
+        } else {
+            format!("{} issues recorded", editor.file_health().len())
+        };
+
+        let dialog = build_dialog(
+            "Text Format",
+            &format!(
+                "Opened as {}. Next save uses {}. Line endings: {}. {}.",
+                editor.opened_encoding().label(),
+                editor.save_encoding().label(),
+                if editor.detected_line_ending() == LineEnding::Mixed {
+                    "Mixed"
+                } else {
+                    editor.save_line_ending().label()
+                },
+                issue_summary
+            ),
+        );
+        let content = standard_dialog_content();
+
+        append_action_button(
+            &content,
+            "Text Encoding…",
+            self.downgrade(),
+            dialog.clone(),
+            |window| {
+                window.show_encoding_controls_dialog();
+            },
+        );
+        append_action_button(
+            &content,
+            "Line Endings…",
+            self.downgrade(),
+            dialog.clone(),
+            |window| {
+                window.show_line_ending_controls_dialog();
+            },
+        );
+        append_action_button(
+            &content,
+            "Issues…",
+            self.downgrade(),
+            dialog.clone(),
+            |window| {
+                window.show_file_health_dialog();
+            },
+        );
+
+        dialog.set_extra_child(Some(&content));
+        dialog.present(Some(self));
+    }
+
+    /// Present the summary encoding surface for the active tab.
     pub(super) fn show_encoding_controls_dialog(&self) {
         let Some(editor) = self.active_editor() else {
             return;
         };
 
-        let dialog = libadwaita::AlertDialog::builder()
-            .heading("Encoding Toolkit")
-            .body(format!(
+        let dialog = build_dialog(
+            "Text Encoding",
+            &format!(
                 "Opened as {}. Next save uses {}.",
                 editor.opened_encoding().label(),
                 editor.save_encoding().label()
-            ))
-            .build();
-        dialog.add_response(RESPONSE_CLOSE, "_Close");
-        dialog.set_default_response(Some(RESPONSE_CLOSE));
-        dialog.set_close_response(RESPONSE_CLOSE);
+            ),
+        );
+        let content = standard_dialog_content();
 
-        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-        content.set_margin_top(6);
-        content.set_margin_bottom(6);
+        append_action_button_with_sensitivity(
+            &content,
+            "Reopen with Encoding…",
+            editor.file_path().is_some(),
+            self.downgrade(),
+            dialog.clone(),
+            |window| {
+                window.show_reopen_encoding_dialog();
+            },
+        );
+        append_action_button(
+            &content,
+            "Save Using Encoding…",
+            self.downgrade(),
+            dialog.clone(),
+            |window| {
+                window.show_save_encoding_dialog();
+            },
+        );
+        append_action_button(
+            &content,
+            "Invisible Characters…",
+            self.downgrade(),
+            dialog.clone(),
+            |window| {
+                window.show_invisible_characters_dialog();
+            },
+        );
 
-        append_section_label(&content, "Reopen With Encoding");
+        dialog.set_extra_child(Some(&content));
+        dialog.present(Some(self));
+    }
+
+    /// Present the chooser for reinterpreting the bytes currently on disk.
+    fn show_reopen_encoding_dialog(&self) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+
+        let dialog = build_dialog(
+            "Reopen with Encoding",
+            "Choose how to interpret the bytes currently on disk.",
+        );
+        let content = standard_dialog_content();
+        append_section_label(&content, "Choose Encoding");
+
         for encoding in DocumentEncoding::COMMON {
-            let button = gtk4::Button::with_label(&format!("Reopen as {}", encoding.label()));
+            let button = gtk4::Button::with_label(encoding.label());
             button.add_css_class("flat");
             button.set_sensitive(editor.opened_encoding() != encoding);
             let window_weak = self.downgrade();
@@ -62,9 +164,25 @@ impl super::LushtextWindow {
             content.append(&button);
         }
 
-        append_section_label(&content, "Save Using Encoding");
+        dialog.set_extra_child(Some(&content));
+        dialog.present(Some(self));
+    }
+
+    /// Present the chooser for the document's next-save encoding policy.
+    fn show_save_encoding_dialog(&self) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+
+        let dialog = build_dialog(
+            "Save Using Encoding",
+            "Choose how the next save should encode this document.",
+        );
+        let content = standard_dialog_content();
+        append_section_label(&content, "Choose Encoding");
+
         for encoding in DocumentEncoding::COMMON {
-            let button = gtk4::Button::with_label(&format!("Save as {}", encoding.label()));
+            let button = gtk4::Button::with_label(encoding.label());
             button.add_css_class("flat");
             button.set_sensitive(editor.save_encoding() != encoding);
             let window_weak = self.downgrade();
@@ -78,7 +196,23 @@ impl super::LushtextWindow {
             content.append(&button);
         }
 
-        append_section_label(&content, "Invisible Characters");
+        dialog.set_extra_child(Some(&content));
+        dialog.present(Some(self));
+    }
+
+    /// Present the chooser for invisible-character display mode.
+    fn show_invisible_characters_dialog(&self) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+
+        let dialog = build_dialog(
+            "Invisible Characters",
+            "Choose how much whitespace and encoding-adjacent detail the editor should draw.",
+        );
+        let content = standard_dialog_content();
+        append_section_label(&content, "Choose Mode");
+
         for mode in [
             InvisibleCharactersMode::Off,
             InvisibleCharactersMode::WhitespaceOnly,
@@ -159,25 +293,14 @@ impl super::LushtextWindow {
             return;
         };
 
-        let dialog = libadwaita::AlertDialog::builder()
-            .heading("File Health")
-            .body(format!(
-                "Opened as {} with {} confidence.",
-                editor.opened_encoding().label(),
-                editor
-                    .document_encoding_state()
-                    .decode_confidence
-                    .label()
-                    .to_lowercase()
-            ))
-            .build();
-        dialog.add_response(RESPONSE_CLOSE, "_Close");
-        dialog.set_default_response(Some(RESPONSE_CLOSE));
-        dialog.set_close_response(RESPONSE_CLOSE);
-
-        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-        content.set_margin_top(6);
-        content.set_margin_bottom(6);
+        let dialog = build_dialog(
+            "Issues",
+            &format!(
+                "Review document issues for the file opened as {}.",
+                editor.opened_encoding().label()
+            ),
+        );
+        let content = standard_dialog_content();
 
         let findings = editor.file_health();
         if findings.is_empty() {
@@ -242,7 +365,7 @@ impl super::LushtextWindow {
         };
         let Some(path) = editor.file_path() else {
             self.publish_status_message(
-                "Save the document before using Reopen With Encoding.",
+                "Save the document before using Reopen with Encoding.",
                 MessageKind::Warning,
             );
             return;
@@ -456,12 +579,65 @@ impl super::LushtextWindow {
     }
 }
 
+/// Build a standard dialog shell for document-local format workflows.
+fn build_dialog(heading: &str, body: &str) -> libadwaita::AlertDialog {
+    let dialog = libadwaita::AlertDialog::builder()
+        .heading(heading)
+        .body(body)
+        .build();
+    dialog.add_response(RESPONSE_CLOSE, "_Close");
+    dialog.set_default_response(Some(RESPONSE_CLOSE));
+    dialog.set_close_response(RESPONSE_CLOSE);
+    dialog
+}
+
+/// Create the standard content box used by the encoding toolkit dialogs.
+fn standard_dialog_content() -> gtk4::Box {
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+    content.set_margin_top(6);
+    content.set_margin_bottom(6);
+    content
+}
+
 /// Append a compact section heading into an AlertDialog extra child.
 fn append_section_label(container: &gtk4::Box, title: &str) {
     let label = gtk4::Label::new(Some(title));
     label.set_xalign(0.0);
     label.add_css_class("heading");
     container.append(&label);
+}
+
+/// Append one dialog action button that closes the current dialog before
+/// opening the next window-level format surface.
+fn append_action_button(
+    container: &gtk4::Box,
+    label: &str,
+    window_weak: glib::WeakRef<super::LushtextWindow>,
+    dialog: libadwaita::AlertDialog,
+    action: impl Fn(super::LushtextWindow) + 'static,
+) {
+    append_action_button_with_sensitivity(container, label, true, window_weak, dialog, action);
+}
+
+/// Append one dialog action button with an explicit sensitivity override.
+fn append_action_button_with_sensitivity(
+    container: &gtk4::Box,
+    label: &str,
+    sensitive: bool,
+    window_weak: glib::WeakRef<super::LushtextWindow>,
+    dialog: libadwaita::AlertDialog,
+    action: impl Fn(super::LushtextWindow) + 'static,
+) {
+    let button = gtk4::Button::with_label(label);
+    button.add_css_class("flat");
+    button.set_sensitive(sensitive);
+    button.connect_clicked(move |_| {
+        dialog.close();
+        if let Some(window) = window_weak.upgrade() {
+            action(window);
+        }
+    });
+    container.append(&button);
 }
 
 /// Return whether the active file-health set includes hidden-character issues.

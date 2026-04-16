@@ -12,8 +12,7 @@ use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{
-    ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt, AnimationExt,
-    ComboRowExt,
+    ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt, AnimationExt, ComboRowExt,
 };
 use lushtext_core::config::keys;
 use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
@@ -29,7 +28,9 @@ use lushtext_core::services::{
     annotation_service, bookmark_service, draft_service, editor_io, json_store, session_service,
     workspace_manager,
 };
-use lushtext_core::ui::editor_page::{LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError};
+use lushtext_core::ui::editor_page::{
+    LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
+};
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::window::LushtextWindow;
 use std::path::{Path, PathBuf};
@@ -349,7 +350,8 @@ fn seed_named_tab_files(names: &[&str]) -> (tempfile::TempDir, Vec<PathBuf>) {
 fn test_open_document_restores_bookmarks_and_annotations() {
     let tempdir = tempfile::tempdir().expect("notes tempdir");
     let file_path = tempdir.path().join("src/main.rs");
-    std::fs::create_dir_all(file_path.parent().expect("expected operation to succeed")).expect("create file parent");
+    std::fs::create_dir_all(file_path.parent().expect("expected operation to succeed"))
+        .expect("create file parent");
     std::fs::write(&file_path, "one\ntwo\nthree\nfour\n").expect("write source file");
 
     let window = test_window();
@@ -385,8 +387,14 @@ fn test_open_document_restores_bookmarks_and_annotations() {
     });
 
     let editor = active_editor(&window);
-    assert_eq!(editor.bookmark_records()[0].label.as_deref(), Some("bookmark"));
-    assert_eq!(editor.annotation_records()[0].note_text, "restore annotation");
+    assert_eq!(
+        editor.bookmark_records()[0].label.as_deref(),
+        Some("bookmark")
+    );
+    assert_eq!(
+        editor.annotation_records()[0].note_text,
+        "restore annotation"
+    );
 }
 
 fn select_sidebar_path(section: &lushtext_core::ui::sidebar::WorkspaceSection, path: &Path) {
@@ -406,7 +414,9 @@ fn select_sidebar_path(section: &lushtext_core::ui::sidebar::WorkspaceSection, p
 
     for index in 0..tree_model.n_items() {
         if let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()
-            && let Some(item) = row.item().and_downcast::<lushtext_core::ui::sidebar::FileTreeItem>()
+            && let Some(item) = row
+                .item()
+                .and_downcast::<lushtext_core::ui::sidebar::FileTreeItem>()
             && item.path().as_deref() == Some(path)
         {
             selection.set_selected(index);
@@ -452,7 +462,10 @@ fn test_split_view_settings_defaults() {
     assert!(settings.boolean(keys::WORKSPACE_SIDEBAR_VISIBLE));
     assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.3);
     assert!(!settings.boolean(keys::PROPERTIES_SIDEBAR_VISIBLE));
-    assert_eq!(settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION), 0.25);
+    assert_eq!(
+        settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION),
+        0.25
+    );
 }
 
 #[test]
@@ -485,10 +498,15 @@ fn test_sidebar_peek_does_not_create_tab_until_promoted() {
 
     emit_key_pressed_on_focus(&window, gtk4::gdk::Key::Return);
     wait_until(Duration::from_secs(2), || !section.peek_visible());
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+    });
 
     assert_tab_count(&window, 1);
-    assert_eq!(active_editor(&window).file_path().as_deref(), Some(alpha.as_path()));
+    assert_eq!(
+        active_editor(&window).file_path().as_deref(),
+        Some(alpha.as_path())
+    );
 }
 
 #[test]
@@ -502,7 +520,9 @@ fn test_sidebar_peek_promotion_reuses_existing_tab() {
     });
 
     window.open_document(&alpha);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+    });
 
     let section = first_sidebar_section(&window);
     select_sidebar_path(&section, &alpha);
@@ -524,7 +544,10 @@ fn test_sidebar_peek_promotion_reuses_existing_tab() {
     wait_until(Duration::from_secs(2), || !section.peek_visible());
 
     assert_tab_count(&window, 1);
-    assert_eq!(active_editor(&window).file_path().as_deref(), Some(alpha.as_path()));
+    assert_eq!(
+        active_editor(&window).file_path().as_deref(),
+        Some(alpha.as_path())
+    );
 }
 
 #[test]
@@ -548,7 +571,10 @@ fn test_saved_split_view_widths_snap_to_supported_workspace_presets() {
     assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
     assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
     assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.3);
-    assert_eq!(settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION), 0.25);
+    assert_eq!(
+        settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION),
+        0.25
+    );
 }
 
 #[test]
@@ -594,10 +620,22 @@ fn test_toggle_sidebar_action_state_syncs_with_split_view() {
         .downcast::<gio::SimpleAction>()
         .expect("expected operation to succeed");
 
-    assert!(action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
+    assert!(
+        action
+            .state()
+            .expect("expected operation to succeed")
+            .get::<bool>()
+            .expect("expected operation to succeed")
+    );
     window.imp().workspace_split_view.set_show_sidebar(false);
     flush_events();
-    assert!(!action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
+    assert!(
+        !action
+            .state()
+            .expect("expected operation to succeed")
+            .get::<bool>()
+            .expect("expected operation to succeed")
+    );
 }
 
 #[test]
@@ -624,10 +662,22 @@ fn test_toggle_properties_action_state_syncs_with_split_view() {
         .downcast::<gio::SimpleAction>()
         .expect("expected operation to succeed");
 
-    assert!(!action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
+    assert!(
+        !action
+            .state()
+            .expect("expected operation to succeed")
+            .get::<bool>()
+            .expect("expected operation to succeed")
+    );
     window.imp().properties_split_view.set_show_sidebar(true);
     flush_events();
-    assert!(action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
+    assert!(
+        action
+            .state()
+            .expect("expected operation to succeed")
+            .get::<bool>()
+            .expect("expected operation to succeed")
+    );
 }
 
 #[test]
@@ -641,12 +691,24 @@ fn test_toggle_minimap_updates_setting_and_action_state() {
         .expect("expected operation to succeed");
 
     assert!(!minimap_setting(&window));
-    assert!(!action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
+    assert!(
+        !action
+            .state()
+            .expect("expected operation to succeed")
+            .get::<bool>()
+            .expect("expected operation to succeed")
+    );
 
     activate_action(&window, "toggle-minimap");
 
     assert!(minimap_setting(&window));
-    assert!(action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
+    assert!(
+        action
+            .state()
+            .expect("expected operation to succeed")
+            .get::<bool>()
+            .expect("expected operation to succeed")
+    );
 }
 
 #[test]
@@ -666,7 +728,13 @@ fn test_toggle_minimap_action_state_tracks_external_setting_changes() {
         .expect("set show-minimap");
     flush_events();
 
-    assert!(action.state().expect("expected operation to succeed").get::<bool>().expect("expected operation to succeed"));
+    assert!(
+        action
+            .state()
+            .expect("expected operation to succeed")
+            .get::<bool>()
+            .expect("expected operation to succeed")
+    );
 }
 
 #[test]
@@ -701,7 +769,9 @@ fn test_minimap_stays_visible_when_document_fits_viewport() {
     let editor = active_editor(&window);
     editor.buffer().set_text("short\nbuffer\n");
     flush_events();
-    wait_until(Duration::from_secs(2), || editor.minimap_availability() == MinimapAvailability::Visible);
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_availability() == MinimapAvailability::Visible
+    });
 
     assert!(editor.is_minimap_visible());
     assert_eq!(editor.minimap_availability(), MinimapAvailability::Visible);
@@ -789,7 +859,10 @@ fn test_preferences_sidebar_width_row_updates_workspace_shell_immediately() {
     });
 
     assert_eq!(
-        window.imp().settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
+        window
+            .imp()
+            .settings
+            .double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
         0.4
     );
     assert_workspace_sidebar_width_locked(&window, 440.0);
@@ -800,7 +873,10 @@ fn test_preferences_sidebar_width_row_updates_workspace_shell_immediately() {
     });
 
     assert_eq!(
-        window.imp().settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
+        window
+            .imp()
+            .settings
+            .double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
         0.2
     );
     assert_workspace_sidebar_width_locked(&window, 280.0);
@@ -821,8 +897,9 @@ fn test_workspace_sidebar_width_presets_clamp_across_representative_window_sizes
         present_window(&window);
 
         assert!(
-            (workspace_total_fraction(&window) - expected_width / f64::from(current_window_width(&window)))
-                .abs()
+            (workspace_total_fraction(&window)
+                - expected_width / f64::from(current_window_width(&window)))
+            .abs()
                 < 0.001
         );
         assert_workspace_sidebar_width_locked(&window, expected_width);
@@ -837,7 +914,9 @@ fn test_workspace_sidebar_setting_recalculates_properties_breakpoint() {
     present_window(&window);
 
     activate_action(&window, "toggle-properties");
-    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        properties_sidebar_visible(&window)
+    });
 
     assert!(
         !window.imp().properties_split_view.is_collapsed(),
@@ -1085,9 +1164,15 @@ fn test_properties_panel_shows_safe_untitled_metadata_state() {
     flush_events();
 
     let panel = window.imp().properties_panel.imp();
-    assert_eq!(panel.path_row.subtitle().as_deref(), Some("Untitled document"));
+    assert_eq!(
+        panel.path_row.subtitle().as_deref(),
+        Some("Untitled document")
+    );
     assert_eq!(panel.encoding_row.subtitle().as_deref(), Some("UTF-8"));
-    assert_eq!(panel.file_size_row.subtitle().as_deref(), Some("Not available"));
+    assert_eq!(
+        panel.file_size_row.subtitle().as_deref(),
+        Some("Not available")
+    );
     assert_eq!(
         panel.formatting_source_row.subtitle().as_deref(),
         Some("Not available for untitled tabs")
@@ -1190,13 +1275,7 @@ fn test_complete_save_as_success_updates_editor_identity_and_cleans_old_draft() 
     let path = dir.path().join("saved.txt");
     std::fs::write(&path, "saved content").expect("seed saved file");
 
-    window.complete_save_as(
-        &editor,
-        None,
-        Some(old_draft_id.as_str()),
-        &path,
-        Ok(()),
-    );
+    window.complete_save_as(&editor, None, Some(old_draft_id.as_str()), &path, Ok(()));
 
     assert_eq!(editor.file_path(), Some(path.clone()));
     assert_eq!(editor.title(), "saved.txt");
@@ -1239,14 +1318,19 @@ fn test_status_bar_shows_detected_encoding_and_line_endings_after_open() {
     std::fs::write(&path, [0x63, 0x61, 0x66, 0xE9, b'\r', b'\n']).expect("write file");
 
     window.open_document(&path);
-    wait_until(Duration::from_secs(2), || active_editor(&window).file_size().is_some());
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
 
     let status_bar = window.imp().status_bar.imp();
     assert_eq!(
         status_bar.encoding_button.label().as_deref(),
         Some("Windows-1252")
     );
-    assert_eq!(status_bar.line_ending_button.label().as_deref(), Some("CRLF"));
+    assert_eq!(
+        status_bar.line_ending_button.label().as_deref(),
+        Some("CRLF")
+    );
     assert!(status_bar.health_button.property::<bool>("visible"));
 }
 
@@ -1259,7 +1343,9 @@ fn test_reopen_with_encoding_requires_discard_confirmation_for_modified_document
     std::fs::write(&path, "hello").expect("write file");
 
     window.open_document(&path);
-    wait_until(Duration::from_secs(2), || active_editor(&window).file_size().is_some());
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
 
     let editor = active_editor(&window);
     editor.buffer().set_text("modified");
@@ -1267,13 +1353,62 @@ fn test_reopen_with_encoding_requires_discard_confirmation_for_modified_document
 
     activate_action(&window, "show-encoding-controls");
     let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
-    click_alert_extra_button(&dialog, "Reopen as Windows-1252");
+    click_alert_extra_button(&dialog, "Reopen with Encoding…");
+
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Reopen with Encoding"))
+    });
+    let dialog = visible_alert_dialog(&window).expect("reopen encoding dialog visible");
+    click_alert_extra_button(&dialog, "Windows-1252");
 
     wait_until(Duration::from_secs(2), || {
         visible_alert_dialog(&window)
             .and_then(|dialog| dialog.heading())
             .is_some_and(|heading| heading.contains("Discard Changes"))
     });
+}
+
+#[test]
+fn test_status_bar_encoding_label_stays_short_after_save_policy_change() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("save-policy.txt");
+    std::fs::write(&path, "hello").expect("write file");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    activate_action(&window, "show-encoding-controls");
+    let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
+    click_alert_extra_button(&dialog, "Save Using Encoding…");
+
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Save Using Encoding"))
+    });
+    let dialog = visible_alert_dialog(&window).expect("save encoding dialog visible");
+    click_alert_extra_button(&dialog, "Windows-1252");
+
+    assert_eq!(
+        active_editor(&window).save_encoding(),
+        DocumentEncoding::Windows1252
+    );
+    assert_eq!(
+        window
+            .imp()
+            .status_bar
+            .imp()
+            .encoding_button
+            .label()
+            .as_deref(),
+        Some("UTF-8")
+    );
 }
 
 #[test]
@@ -1285,7 +1420,9 @@ fn test_save_encoding_choice_surfaces_lossy_confirmation() {
     std::fs::write(&path, "hello").expect("write file");
 
     window.open_document(&path);
-    wait_until(Duration::from_secs(2), || active_editor(&window).file_size().is_some());
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
 
     let editor = active_editor(&window);
     editor.buffer().set_text("emoji 😀");
@@ -1293,14 +1430,25 @@ fn test_save_encoding_choice_surfaces_lossy_confirmation() {
 
     activate_action(&window, "show-encoding-controls");
     let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
-    click_alert_extra_button(&dialog, "Save as Windows-1252");
+    click_alert_extra_button(&dialog, "Save Using Encoding…");
+
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Save Using Encoding"))
+    });
+    let dialog = visible_alert_dialog(&window).expect("save encoding dialog visible");
+    click_alert_extra_button(&dialog, "Windows-1252");
 
     wait_until(Duration::from_secs(2), || {
         visible_alert_dialog(&window)
             .and_then(|dialog| dialog.heading())
             .is_some_and(|heading| heading.contains("Lossy Encoding Conversion"))
     });
-    assert_eq!(active_editor(&window).save_encoding(), DocumentEncoding::Utf8);
+    assert_eq!(
+        active_editor(&window).save_encoding(),
+        DocumentEncoding::Utf8
+    );
 }
 
 #[test]
@@ -1312,7 +1460,9 @@ fn test_mixed_line_endings_warning_opens_normalization_picker_and_updates_status
     std::fs::write(&path, "a\r\nb\nc\r\n").expect("write file");
 
     window.open_document(&path);
-    wait_until(Duration::from_secs(2), || active_editor(&window).file_size().is_some());
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
 
     let editor = active_editor(&window);
     wait_until(Duration::from_secs(2), || {
@@ -1354,6 +1504,68 @@ fn test_mixed_line_endings_warning_opens_normalization_picker_and_updates_status
             .as_deref(),
         Some("LF")
     );
+}
+
+#[test]
+fn test_narrow_window_collapses_document_format_controls_into_grouped_button() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_int(keys::WINDOW_WIDTH, 820)
+        .expect("set window width");
+    settings
+        .set_int(keys::WINDOW_HEIGHT, 900)
+        .expect("set window height");
+    settings
+        .set_boolean(keys::WINDOW_MAXIMIZED, false)
+        .expect("clear maximized");
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("narrow.txt");
+    std::fs::write(&path, "hello").expect("write file");
+
+    window.open_document(&path);
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .status_bar
+            .imp()
+            .document_format_button
+            .property::<bool>("visible")
+    });
+
+    let status_bar = window.imp().status_bar.imp();
+    assert!(
+        status_bar
+            .document_format_button
+            .property::<bool>("visible"),
+        "narrow windows should expose the grouped Text Format… control",
+    );
+    assert!(
+        !status_bar
+            .document_format_controls_box
+            .property::<bool>("visible"),
+        "the separate encoding/line-ending buttons should collapse away in compact mode",
+    );
+
+    status_bar.document_format_button.emit_clicked();
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Text Format"))
+    });
+    let dialog = visible_alert_dialog(&window).expect("text format dialog visible");
+    click_alert_extra_button(&dialog, "Line Endings…");
+
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Line Endings"))
+    });
 }
 
 #[test]
@@ -1444,7 +1656,9 @@ fn test_tab_context_menu_targets_background_tab_for_move_action() {
     for path in &files {
         window.open_document(path);
     }
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 3);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 3
+    });
 
     let selected_before = window
         .imp()
@@ -1488,14 +1702,18 @@ fn test_bulk_close_context_action_uses_one_confirmation_before_closing() {
     for path in &files {
         window.open_document(path);
     }
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 3);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 3
+    });
 
     let modified_page = find_tab_page_by_title(&window, "b.txt");
     let modified_editor = modified_page
         .child()
         .downcast::<LushtextEditorPage>()
         .expect("modified editor page");
-    wait_until(Duration::from_secs(2), || modified_editor.file_size().is_some());
+    wait_until(Duration::from_secs(2), || {
+        modified_editor.file_size().is_some()
+    });
     modified_editor.buffer().set_text("modified");
     modified_editor.buffer().set_modified(true);
     flush_events();
@@ -1504,14 +1722,20 @@ fn test_bulk_close_context_action_uses_one_confirmation_before_closing() {
     prepare_tab_context_menu(&window, &target);
     activate_action(&window, "close-other-tabs");
 
-    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_some()
+    });
     assert_tab_count(&window, 3);
 
     let dialog = visible_alert_dialog(&window).expect("bulk close confirmation");
     dialog.emit_by_name::<()>("response", &[&"discard"]);
     dialog.force_close();
-    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_none()
+    });
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+    });
 
     assert_eq!(tab_titles(&window), vec!["a.txt"]);
 }
@@ -1523,7 +1747,9 @@ fn test_pin_action_updates_indicator_icon() {
     let window = test_window();
     present_window(&window);
     window.open_document(&files[0]);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+    });
 
     let page = find_tab_page_by_title(&window, "pin-me.txt");
     prepare_tab_context_menu(&window, &page);
@@ -1574,9 +1800,14 @@ fn test_session_restore_keeps_pinned_tabs_ahead_of_unpinned_tabs() {
 
     let window = test_window();
     present_window(&window);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 3);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 3
+    });
 
-    assert_eq!(tab_titles(&window), vec!["alpha.txt", "beta.txt", "gamma.txt"]);
+    assert_eq!(
+        tab_titles(&window),
+        vec!["alpha.txt", "beta.txt", "gamma.txt"]
+    );
     let pages = tab_pages(&window);
     assert!(pages[0].is_pinned());
     assert!(pages[1].is_pinned());
@@ -1633,7 +1864,9 @@ fn test_startup_restore_applies_matching_file_backed_draft() {
 
     let window = test_window();
     present_window(&window);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+    });
     wait_until(Duration::from_secs(2), || {
         let editor = active_editor(&window);
         editor_text(&editor) == "draft content"
@@ -1693,7 +1926,9 @@ fn test_startup_restore_skips_stale_file_backed_draft_once() {
 
     let window = test_window();
     present_window(&window);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+    });
     wait_until(Duration::from_secs(2), || {
         let editor = active_editor(&window);
         window
@@ -1717,7 +1952,15 @@ fn test_startup_restore_skips_stale_file_backed_draft_once() {
         .editor_info_bar_view(editor.notification_owner_id())
         .expect("stale draft warning");
     assert_eq!(notification.title, "Draft Not Restored");
-    assert!(window.imp().drafts.manifest.borrow().find_by_id(&draft_id).is_none());
+    assert!(
+        window
+            .imp()
+            .drafts
+            .manifest
+            .borrow()
+            .find_by_id(&draft_id)
+            .is_none()
+    );
 }
 
 #[test]
@@ -1757,7 +2000,9 @@ fn test_startup_restore_keeps_untitled_draft_behavior() {
 
     let window = test_window();
     present_window(&window);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+    });
     wait_until(Duration::from_secs(2), || {
         let editor = active_editor(&window);
         editor_text(&editor) == "untitled restored content"

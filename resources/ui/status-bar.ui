@@ -95,57 +95,91 @@
         </child>
 
         <child>
-          <object class="GtkButton" id="line_ending_button">
-            <property name="label">LF</property>
-            <property name="action-name">win.show-line-ending-controls</property>
-            <property name="margin-start">10</property>
-            <property name="margin-end">4</property>
-            <property name="margin-top">4</property>
-            <property name="margin-bottom">4</property>
-            <style>
-              <class name="flat"/>
-              <class name="caption"/>
-              <class name="dim-label"/>
-            </style>
+          <object class="GtkBox" id="document_format_controls_box">
+            <property name="orientation">horizontal</property>
+            <property name="spacing">0</property>
+
+            <child>
+              <object class="GtkButton" id="line_ending_button">
+                <property name="label">LF</property>
+                <property name="action-name">win.show-line-ending-controls</property>
+                <property name="margin-start">10</property>
+                <property name="margin-end">4</property>
+                <property name="margin-top">4</property>
+                <property name="margin-bottom">4</property>
+                <style>
+                  <class name="flat"/>
+                  <class name="caption"/>
+                  <class name="dim-label"/>
+                </style>
+              </object>
+            </child>
+
+            <child>
+              <object class="GtkSeparator">
+                <property name="orientation">vertical</property>
+                <property name="margin-top">6</property>
+                <property name="margin-bottom">6</property>
+              </object>
+            </child>
+
+            <child>
+              <object class="GtkButton" id="encoding_button">
+                <property name="label">UTF-8</property>
+                <property name="action-name">win.show-encoding-controls</property>
+                <property name="margin-start">10</property>
+                <property name="margin-end">4</property>
+                <property name="margin-top">4</property>
+                <property name="margin-bottom">4</property>
+                <style>
+                  <class name="flat"/>
+                  <class name="caption"/>
+                  <class name="dim-label"/>
+                </style>
+              </object>
+            </child>
+
+            <child>
+              <object class="GtkSeparator" id="health_separator">
+                <property name="orientation">vertical</property>
+                <property name="margin-top">6</property>
+                <property name="margin-bottom">6</property>
+                <property name="visible">false</property>
+              </object>
+            </child>
+
+            <child>
+              <object class="GtkButton" id="health_button">
+                <property name="label">Health</property>
+                <property name="action-name">win.show-file-health</property>
+                <property name="visible">false</property>
+                <property name="margin-start">10</property>
+                <property name="margin-end">12</property>
+                <property name="margin-top">4</property>
+                <property name="margin-bottom">4</property>
+                <style>
+                  <class name="flat"/>
+                  <class name="caption"/>
+                </style>
+              </object>
+            </child>
           </object>
         </child>
 
         <child>
-          <object class="GtkSeparator">
-            <property name="orientation">vertical</property>
-            <property name="margin-top">6</property>
-            <property name="margin-bottom">6</property>
-          </object>
-        </child>
-
-        <child>
-          <object class="GtkButton" id="encoding_button">
-            <property name="label">UTF-8</property>
-            <property name="action-name">win.show-encoding-controls</property>
-            <property name="margin-start">10</property>
-            <property name="margin-end">4</property>
-            <property name="margin-top">4</property>
-            <property name="margin-bottom">4</property>
-            <style>
-              <class name="flat"/>
-              <class name="caption"/>
-              <class name="dim-label"/>
-            </style>
-          </object>
-        </child>
-
-        <child>
-          <object class="GtkButton" id="health_button">
-            <property name="label">Health</property>
-            <property name="action-name">win.show-file-health</property>
+          <object class="GtkButton" id="document_format_button">
+            <property name="label">Text Format…</property>
+            <property name="action-name">win.show-document-format-controls</property>
             <property name="visible">false</property>
             <property name="margin-start">10</property>
             <property name="margin-end">12</property>
             <property name="margin-top">4</property>
             <property name="margin-bottom">4</property>
+            <property name="tooltip-text" translatable="yes">Encoding, line endings, and issues</property>
             <style>
               <class name="flat"/>
               <class name="caption"/>
+              <class name="dim-label"/>
             </style>
           </object>
         </child>
