@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::model::draft::DraftManifest;
+use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
 use crate::model::session::{SessionData, SessionTab};
 use crate::services::{async_task, draft_service, json_store, session_service};
 use crate::ui::editor_page::LushtextEditorPage;
@@ -21,7 +21,7 @@ use gtk4::prelude::*;
 struct LoadedRestoreState {
     manifest: DraftManifest,
     session: SessionData,
-    preloaded_drafts: HashMap<String, String>,
+    preloaded_drafts: HashMap<String, PreloadedDraftRestore>,
 }
 
 impl super::LushtextWindow {

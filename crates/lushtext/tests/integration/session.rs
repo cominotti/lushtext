@@ -3,10 +3,10 @@
 //! Integration tests for session persistence.
 
 use crate::common::TestContext;
-use lushtext_core::model::draft::{DraftEntry, DraftManifest};
+use lushtext_core::model::draft::{DraftEntry, DraftManifest, PreloadedDraftRestore};
 use lushtext_core::model::session::{SessionData, SessionTab};
-use lushtext_core::services::draft_service;
 use lushtext_core::services::session_service;
+use lushtext_core::services::{draft_service, editor_io};
 
 /// Create a file-backed session tab with cursor/scroll state.
 fn tab(path: impl Into<std::path::PathBuf>, cursor_line: u32) -> SessionTab {
@@ -470,7 +470,55 @@ fn test_startup_restore_load_preserves_temporarily_unavailable_file_tabs() {
     assert_eq!(restored_session.tabs[1].path, Some(real_file));
     assert_eq!(restored_session.active_tab_index, Some(0));
     assert_eq!(
-        preloaded.get(&real_draft_id).map(String::as_str),
-        Some("drafted local")
+        preloaded.get(&real_draft_id),
+        Some(&PreloadedDraftRestore::Content("drafted local".to_string()))
+    );
+}
+
+#[test]
+fn test_startup_restore_load_marks_stale_file_backed_drafts_and_removes_them() {
+    let ctx = TestContext::new();
+
+    let file_path = ctx.write_file("stale.txt", "current disk content");
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    draft_service::write_draft(ctx.data_dir(), &draft_id, "stale draft content")
+        .expect("expected operation to succeed");
+    let current_mtime = editor_io::mtime_secs(&file_path).expect("expected file mtime");
+    let stale_mtime = current_mtime
+        .checked_add(1)
+        .unwrap_or_else(|| current_mtime.saturating_sub(1));
+
+    draft_service::save_manifest(
+        ctx.data_dir(),
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: draft_id.clone(),
+                original_path: Some(file_path.clone()),
+                original_mtime_secs: Some(stale_mtime),
+                saved_at_secs: 1,
+            }],
+        },
+    )
+    .expect("expected operation to succeed");
+
+    let session = SessionData {
+        tabs: vec![tab(file_path.clone(), 1)],
+        active_tab_index: Some(0),
+    };
+    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
+
+    let (manifest, restored_session, preloaded) = draft_service::load_restore_state(ctx.data_dir());
+
+    assert_eq!(restored_session.tabs.len(), 1);
+    assert_eq!(restored_session.tabs[0].path, Some(file_path));
+    assert_eq!(
+        preloaded.get(&draft_id),
+        Some(&PreloadedDraftRestore::SkipStaleFile)
+    );
+    assert!(manifest.find_by_id(&draft_id).is_none());
+    assert_eq!(
+        draft_service::read_draft(ctx.data_dir(), &draft_id).expect("read stale draft"),
+        None,
+        "confirmed-stale draft files should be deleted during preload cleanup",
     );
 }

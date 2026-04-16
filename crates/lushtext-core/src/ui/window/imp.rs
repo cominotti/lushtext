@@ -7,7 +7,7 @@
 //! command palette, session restore, and notifications into one shell.
 
 use crate::config::{self, keys};
-use crate::model::draft::DraftManifest;
+use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
 use crate::services::notifications::NotificationBus;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
@@ -76,8 +76,8 @@ pub struct DraftState {
     pub autosave_source_id: RefCell<Option<glib::SourceId>>,
     /// In-memory draft manifest kept in sync with disk.
     pub manifest: RefCell<DraftManifest>,
-    /// Draft content preloaded during session restore (draft_id -> text).
-    pub preloaded: RefCell<HashMap<String, String>>,
+    /// Draft restore outcomes preloaded during session restore and consumed once.
+    pub preloaded: RefCell<HashMap<String, PreloadedDraftRestore>>,
     /// Monotonic counter for generating unique IDs for untitled tab drafts.
     pub next_tab_id: Cell<u64>,
     /// Draft IDs explicitly discarded during an in-progress close flow.

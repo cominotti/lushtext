@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::model::draft::DraftEntry;
+use crate::model::draft::{DraftEntry, FileDraftRestoreResolution, PreloadedDraftRestore};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::services::{async_task, draft_service, editor_io, json_store};
 use crate::ui::editor_page::LushtextEditorPage;
@@ -104,8 +104,17 @@ impl super::LushtextWindow {
             return;
         };
 
-        if let Some(draft_content) = self.imp().drafts.preloaded.borrow_mut().remove(draft_id) {
-            Self::apply_draft(editor, &draft_content);
+        if let Some(preloaded) = self.imp().drafts.preloaded.borrow_mut().remove(draft_id) {
+            match preloaded {
+                PreloadedDraftRestore::Content(draft_content) => {
+                    Self::apply_draft(editor, &draft_content);
+                }
+                PreloadedDraftRestore::SkipStaleFile => {
+                    tracing::warn!(
+                        "Untitled draft {draft_id} unexpectedly carried a stale file warning"
+                    );
+                }
+            }
             return;
         }
 
@@ -167,6 +176,18 @@ impl super::LushtextWindow {
             } else {
                 "Save _As…".to_string()
             }),
+        });
+    }
+
+    /// Warn that a file-backed draft was skipped because the file changed on disk.
+    fn show_stale_draft_skipped(editor: &LushtextEditorPage) {
+        editor.set_draft_restored(false);
+        editor.emit_inline_notification(InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Draft Not Restored".to_string(),
+            body: "Unsaved changes from a previous session were not restored because the file changed on disk.".to_string(),
+            primary_button: None,
+            secondary_button: None,
         });
     }
 
@@ -343,6 +364,19 @@ impl super::LushtextWindow {
 
     /// Check whether a file-backed editor has restored draft content available.
     pub fn check_draft_on_open(&self, editor: &LushtextEditorPage, path: &Path) {
+        let draft_id = draft_service::draft_id_for_path(path);
+        if let Some(preloaded) = self.imp().drafts.preloaded.borrow_mut().remove(&draft_id) {
+            match preloaded {
+                PreloadedDraftRestore::Content(draft_content) => {
+                    Self::apply_draft(editor, &draft_content);
+                }
+                PreloadedDraftRestore::SkipStaleFile => {
+                    Self::show_stale_draft_skipped(editor);
+                }
+            }
+            return;
+        }
+
         let draft_entry = self
             .imp()
             .drafts
@@ -355,35 +389,34 @@ impl super::LushtextWindow {
             return;
         };
 
-        if let Some(draft_content) = self
-            .imp()
-            .drafts
-            .preloaded
-            .borrow_mut()
-            .remove(&entry.draft_id)
-        {
-            Self::apply_draft(editor, &draft_content);
-            return;
-        }
-
         let data_dir = json_store::data_dir();
         let draft_id = entry.draft_id.clone();
         let editor_weak = editor.downgrade();
+        let window_weak = self.downgrade();
 
         async_task::spawn_blocking_then(
             (),
-            move || draft_service::read_draft(&data_dir, &draft_id),
+            move || draft_service::resolve_file_draft_restore(&data_dir, &entry),
             move |(), result| {
                 let Some(editor) = editor_weak.upgrade() else {
                     return;
                 };
                 match result {
-                    Ok(Some(draft_content)) => {
-                        Self::apply_draft(&editor, &draft_content);
+                    Ok(FileDraftRestoreResolution::Restore { content }) => {
+                        Self::apply_draft(&editor, &content);
                     }
-                    Ok(None) => {}
+                    Ok(FileDraftRestoreResolution::SkipStale) => {
+                        Self::show_stale_draft_skipped(&editor);
+                        if let Some(window) = window_weak.upgrade() {
+                            window.delete_draft_by_id(&draft_id);
+                        }
+                    }
+                    Ok(
+                        FileDraftRestoreResolution::SkipUnavailable
+                        | FileDraftRestoreResolution::MissingDraft,
+                    ) => {}
                     Err(e) => {
-                        tracing::error!("Failed to read draft for open file: {e}");
+                        tracing::error!("Failed to resolve draft for open file: {e}");
                     }
                 }
             },

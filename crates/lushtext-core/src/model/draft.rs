@@ -34,6 +34,37 @@ pub struct DraftManifest {
     pub drafts: Vec<DraftEntry>,
 }
 
+/// Preloaded draft-restore data consumed exactly once during startup restore.
+///
+/// Untitled drafts and validated file-backed drafts preload their restored
+/// content directly. File-backed drafts that were proven stale preload a
+/// warning marker instead so the editor can show feedback without applying the
+/// old content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreloadedDraftRestore {
+    /// Restored content ready to apply once the target editor is available.
+    Content(String),
+    /// A file-backed draft was discarded because the backing file changed.
+    SkipStaleFile,
+}
+
+/// Result of validating a file-backed draft against its current backing file.
+///
+/// The service layer computes this on a background thread so the GTK layer can
+/// decide whether to apply content, warn once, or quietly skip restore without
+/// touching blocking filesystem APIs on the main thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileDraftRestoreResolution {
+    /// The draft is still safe to restore and includes ready-to-apply content.
+    Restore { content: String },
+    /// The backing file's mtime changed, so restoring would overwrite newer data.
+    SkipStale,
+    /// Automatic restore could not trust current file metadata for this attempt.
+    SkipUnavailable,
+    /// The manifest entry existed, but the draft file itself was already gone.
+    MissingDraft,
+}
+
 impl DraftManifest {
     /// Find a draft entry by original file path.
     #[must_use]

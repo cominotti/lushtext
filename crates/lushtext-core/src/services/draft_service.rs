@@ -7,9 +7,11 @@
 //! files in `$XDG_DATA_HOME/lushtext/drafts/`, with a JSON manifest mapping
 //! draft IDs to original file paths and metadata.
 
-use crate::model::draft::DraftManifest;
+use crate::model::draft::{
+    DraftEntry, DraftManifest, FileDraftRestoreResolution, PreloadedDraftRestore,
+};
 use crate::model::session::SessionData;
-use crate::services::{json_store, session_service};
+use crate::services::{editor_io, json_store, session_service};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::Write;
@@ -117,11 +119,16 @@ where
 /// outage into permanent session loss on the next save.
 pub fn load_restore_state(
     data_dir: &Path,
-) -> (DraftManifest, SessionData, HashMap<String, String>) {
-    let manifest = load_manifest(data_dir).unwrap_or_default();
+) -> (
+    DraftManifest,
+    SessionData,
+    HashMap<String, PreloadedDraftRestore>,
+) {
+    let mut manifest = load_manifest(data_dir).unwrap_or_default();
     let session = session_service::load(data_dir).unwrap_or_default();
 
     let mut preloaded = HashMap::new();
+    let mut stale_draft_ids = Vec::new();
     for tab in &session.tabs {
         let draft_id = match &tab.path {
             Some(path) => draft_id_for_path(path),
@@ -130,20 +137,110 @@ pub fn load_restore_state(
                 None => continue,
             },
         };
-        if manifest.find_by_id(&draft_id).is_some() {
-            match read_draft(data_dir, &draft_id) {
-                Ok(Some(content)) => {
-                    preloaded.insert(draft_id, content);
+        let Some(entry) = manifest.find_by_id(&draft_id).cloned() else {
+            continue;
+        };
+        if entry.original_path.is_some() {
+            match resolve_file_draft_restore(data_dir, &entry) {
+                Ok(FileDraftRestoreResolution::Restore { content }) => {
+                    preloaded.insert(draft_id, PreloadedDraftRestore::Content(content));
                 }
-                Ok(None) => {}
+                Ok(FileDraftRestoreResolution::SkipStale) => {
+                    preloaded.insert(draft_id.clone(), PreloadedDraftRestore::SkipStaleFile);
+                    if !stale_draft_ids.contains(&draft_id) {
+                        stale_draft_ids.push(draft_id);
+                    }
+                }
+                Ok(
+                    FileDraftRestoreResolution::SkipUnavailable
+                    | FileDraftRestoreResolution::MissingDraft,
+                ) => {}
                 Err(e) => {
-                    tracing::warn!("Failed to pre-read draft {draft_id}: {e}");
+                    tracing::warn!("Failed to pre-resolve draft {draft_id}: {e}");
                 }
+            }
+            continue;
+        }
+
+        match read_draft(data_dir, &draft_id) {
+            Ok(Some(content)) => {
+                preloaded.insert(draft_id, PreloadedDraftRestore::Content(content));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!("Failed to pre-read draft {draft_id}: {e}");
             }
         }
     }
 
+    cleanup_stale_restore_entries(data_dir, &mut manifest, &stale_draft_ids);
     (manifest, session, preloaded)
+}
+
+/// Resolve whether a file-backed draft is still safe to restore.
+///
+/// This helper keeps blocking metadata checks and draft-file reads inside the
+/// service layer so both startup preload and later `check_draft_on_open()`
+/// calls can share one decision path.
+///
+/// # Errors
+///
+/// Returns an error if the draft file exists but cannot be read as UTF-8 text.
+pub fn resolve_file_draft_restore(
+    data_dir: &Path,
+    entry: &DraftEntry,
+) -> Result<FileDraftRestoreResolution> {
+    let Some(path) = entry.original_path.as_deref() else {
+        return Ok(FileDraftRestoreResolution::SkipUnavailable);
+    };
+
+    if let Some(saved_mtime) = entry.original_mtime_secs {
+        let Some(current_mtime) = editor_io::mtime_secs(path) else {
+            return Ok(FileDraftRestoreResolution::SkipUnavailable);
+        };
+        if current_mtime != saved_mtime {
+            return Ok(FileDraftRestoreResolution::SkipStale);
+        }
+    }
+
+    match read_draft(data_dir, &entry.draft_id)? {
+        Some(content) => Ok(FileDraftRestoreResolution::Restore { content }),
+        None => Ok(FileDraftRestoreResolution::MissingDraft),
+    }
+}
+
+/// Delete stale draft files and remove their manifest entries after a confirmed
+/// backing-file mismatch.
+fn cleanup_stale_restore_entries(
+    data_dir: &Path,
+    manifest: &mut DraftManifest,
+    stale_draft_ids: &[String],
+) {
+    if stale_draft_ids.is_empty() {
+        return;
+    }
+
+    for draft_id in stale_draft_ids {
+        if let Err(e) = delete_draft_file(data_dir, draft_id) {
+            tracing::warn!("Failed to delete stale draft {draft_id}: {e}");
+        }
+    }
+
+    match update_manifest(data_dir, |manifest| {
+        for draft_id in stale_draft_ids {
+            manifest.remove_by_id(draft_id);
+        }
+    }) {
+        Ok(updated_manifest) => {
+            *manifest = updated_manifest;
+        }
+        Err(e) => {
+            tracing::warn!("Failed to persist stale draft cleanup: {e}");
+            manifest
+                .drafts
+                .retain(|entry| !stale_draft_ids.iter().any(|id| id == &entry.draft_id));
+        }
+    }
 }
 
 /// Write a single draft file atomically (temp + rename). The draft
@@ -266,8 +363,17 @@ pub fn cleanup_orphans(data_dir: &Path, manifest: &mut DraftManifest) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::draft::DraftEntry;
+    use crate::model::draft::{DraftEntry, FileDraftRestoreResolution};
     use tempfile::TempDir;
+
+    fn file_entry(id: &str, path: &Path, original_mtime_secs: Option<u64>) -> DraftEntry {
+        DraftEntry {
+            draft_id: id.into(),
+            original_path: Some(path.to_path_buf()),
+            original_mtime_secs,
+            saved_at_secs: 1,
+        }
+    }
 
     #[test]
     fn draft_id_for_path_is_deterministic() {
@@ -345,6 +451,94 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let manifest = load_manifest(dir.path()).expect("expected operation to succeed");
         assert_eq!(manifest, DraftManifest::default());
+    }
+
+    #[test]
+    fn resolve_file_draft_restore_returns_content_when_mtime_matches() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        write_draft(dir.path(), "draft", "restored content")
+            .expect("expected operation to succeed");
+        let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
+
+        let resolution = resolve_file_draft_restore(
+            dir.path(),
+            &file_entry("draft", &path, Some(current_mtime)),
+        )
+        .expect("expected operation to succeed");
+
+        assert_eq!(
+            resolution,
+            FileDraftRestoreResolution::Restore {
+                content: "restored content".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_file_draft_restore_skips_changed_file_mtime() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        write_draft(dir.path(), "draft", "stale content").expect("expected operation to succeed");
+        let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
+        let stale_mtime = current_mtime
+            .checked_add(1)
+            .unwrap_or_else(|| current_mtime.saturating_sub(1));
+
+        let resolution =
+            resolve_file_draft_restore(dir.path(), &file_entry("draft", &path, Some(stale_mtime)))
+                .expect("expected operation to succeed");
+
+        assert_eq!(resolution, FileDraftRestoreResolution::SkipStale);
+    }
+
+    #[test]
+    fn resolve_file_draft_restore_allows_legacy_entries_without_stored_mtime() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        write_draft(dir.path(), "draft", "legacy content").expect("expected operation to succeed");
+
+        let resolution = resolve_file_draft_restore(dir.path(), &file_entry("draft", &path, None))
+            .expect("expected operation to succeed");
+
+        assert_eq!(
+            resolution,
+            FileDraftRestoreResolution::Restore {
+                content: "legacy content".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_file_draft_restore_skips_when_metadata_cannot_be_read() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let missing_path = dir.path().join("missing.txt");
+        write_draft(dir.path(), "draft", "content").expect("expected operation to succeed");
+
+        let resolution =
+            resolve_file_draft_restore(dir.path(), &file_entry("draft", &missing_path, Some(123)))
+                .expect("expected operation to succeed");
+
+        assert_eq!(resolution, FileDraftRestoreResolution::SkipUnavailable);
+    }
+
+    #[test]
+    fn resolve_file_draft_restore_handles_missing_draft_file() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
+
+        let resolution = resolve_file_draft_restore(
+            dir.path(),
+            &file_entry("draft", &path, Some(current_mtime)),
+        )
+        .expect("expected operation to succeed");
+
+        assert_eq!(resolution, FileDraftRestoreResolution::MissingDraft);
     }
 
     #[test]
