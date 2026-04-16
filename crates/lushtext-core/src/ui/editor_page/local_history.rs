@@ -96,6 +96,20 @@ impl LushtextEditorPage {
         self.cancel_local_history_periodic_capture();
     }
 
+    /// Treat restored draft content as the baseline for future local-history capture.
+    pub(crate) fn seed_local_history_from_restored_draft(&self, content: &str) {
+        let clean_text = if self.file_path().is_some()
+            && self.local_history_availability().allows_automatic_capture()
+        {
+            Some(content.to_string())
+        } else {
+            None
+        };
+        self.imp().local_history.last_clean_text.replace(clean_text);
+        self.set_local_history_restore_undo_text(None);
+        self.cancel_local_history_periodic_capture();
+    }
+
     /// Suspend automatic capture while the save workflow toggles the modified flag.
     pub(crate) fn prepare_local_history_for_save(&self) {
         self.imp()

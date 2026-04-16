@@ -90,6 +90,24 @@ If the question becomes "what does GTK consider visible, mapped, realized, or ac
 - [../../gtk4-libadwaita-internals/references/lifecycle-and-ownership.md](../../gtk4-libadwaita-internals/references/lifecycle-and-ownership.md)
 - [../../gtk4-libadwaita-internals/references/geometry-measurement-and-allocation.md](../../gtk4-libadwaita-internals/references/geometry-measurement-and-allocation.md)
 
+## `AdwDialog` Geometry Assertions
+
+`AdwDialog` can be tricky to test geometrically because the dialog widget itself
+is an overlay participant inside the parent window, while the user-visible card
+or sheet is usually the dialog's child content.
+
+For LushText widget tests:
+
+- use `dialog.content_width()` / `dialog.content_height()` to assert the
+  configured target size
+- use the dialog child widget's `width()` / `height()` to assert the rendered
+  floating surface the user actually sees
+- do **not** assume `dialog.width()` / `dialog.height()` matches the visible
+  card size
+
+This matters for regressions where the dialog looks unchanged on screen even
+though the `content-width` property was updated.
+
 ## Fixed Row Chrome Regressions
 
 When a bug is really "the hover pill or active highlight of this button no longer fits inside its fixed row", prefer a property-level widget regression over screenshot-only verification.

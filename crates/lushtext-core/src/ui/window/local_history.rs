@@ -23,6 +23,26 @@ use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
 
+/// Leave a visible gutter around the local-history viewer so it still reads as
+/// a parent-owned secondary surface instead of another primary window.
+const LOCAL_HISTORY_VIEWER_PARENT_MARGIN_SP: i32 = 48;
+/// Wide local-history browsing should use most of the parent width.
+const LOCAL_HISTORY_VIEWER_WIDTH_FRACTION: f64 = 0.9;
+/// Wide local-history browsing should use most of the parent height.
+const LOCAL_HISTORY_VIEWER_HEIGHT_FRACTION: f64 = 0.88;
+/// Wide local-history browsing should stay comfortably readable on desktops.
+const LOCAL_HISTORY_VIEWER_MIN_WIDTH_SP: i32 = 1080;
+/// Wide local-history browsing should stop growing once it already feels like a viewer.
+const LOCAL_HISTORY_VIEWER_MAX_WIDTH_SP: i32 = 1680;
+/// Wide local-history browsing should keep enough height for reading snapshot text.
+const LOCAL_HISTORY_VIEWER_MIN_HEIGHT_SP: i32 = 720;
+/// Wide local-history browsing should stop growing once the preview has ample height.
+const LOCAL_HISTORY_VIEWER_MAX_HEIGHT_SP: i32 = 1080;
+/// The snapshot list should stay readable without competing evenly with the preview.
+const LOCAL_HISTORY_VIEWER_MIN_SIDEBAR_WIDTH_SP: f64 = 260.0;
+/// The snapshot list should behave like a browse rail, not a co-equal pane.
+const LOCAL_HISTORY_VIEWER_MAX_SIDEBAR_WIDTH_SP: f64 = 340.0;
+
 /// UI state for one open local-history browser dialog.
 struct LocalHistoryBrowserState {
     /// Window that owns the dialog and receives status updates.
@@ -200,16 +220,20 @@ impl LushtextWindow {
         path: PathBuf,
         snapshots: Vec<LocalHistorySnapshotMeta>,
     ) {
+        let snapshots = filter_visible_local_history_snapshots(snapshots);
         if snapshots.is_empty() {
             Self::build_empty_local_history_dialog(&path).present(Some(self));
             return;
         }
 
+        let (dialog_width, dialog_height) = local_history_viewer_dialog_size(self);
         let dialog = libadwaita::Dialog::builder()
             .title("Local History")
-            .content_width(1120)
-            .content_height(760)
-            .follows_content_size(true)
+            .content_width(dialog_width)
+            .content_height(dialog_height)
+            // Keep the viewer at the configured desktop-scale size instead of
+            // shrinking back down to the child widget's natural request.
+            .follows_content_size(false)
             .build();
 
         let list_box = gtk4::ListBox::new();
@@ -246,6 +270,7 @@ impl LushtextWindow {
         preview_stack.set_hexpand(true);
         preview_stack.set_vexpand(true);
         preview_stack.add_named(&loading_preview_widget(), Some("loading"));
+        preview_stack.add_named(&empty_snapshot_widget(), Some("empty"));
         preview_stack.add_named(&preview_error_widget("Preview unavailable"), Some("error"));
         let preview_scroll = gtk4::ScrolledWindow::builder()
             .vexpand(true)
@@ -268,8 +293,8 @@ impl LushtextWindow {
             .build();
 
         let split_view = libadwaita::NavigationSplitView::new();
-        split_view.set_min_sidebar_width(300.0);
-        split_view.set_max_sidebar_width(420.0);
+        split_view.set_min_sidebar_width(LOCAL_HISTORY_VIEWER_MIN_SIDEBAR_WIDTH_SP);
+        split_view.set_max_sidebar_width(LOCAL_HISTORY_VIEWER_MAX_SIDEBAR_WIDTH_SP);
         split_view.set_sidebar(Some(&libadwaita::NavigationPage::new(
             &build_history_sidebar(&path, &list_box),
             "Snapshots",
@@ -475,11 +500,8 @@ impl LocalHistoryBrowserState {
 
         self.loaded_snapshot.borrow_mut().take();
         self.preview_title.set_label("Loading snapshot…");
-        self.preview_meta.set_label(&format!(
-            "{} · {}",
-            meta.origin.label(),
-            format_bytes(meta.byte_len)
-        ));
+        self.preview_meta
+            .set_label(&format_snapshot_meta(meta.origin, meta.byte_len));
         self.preview_buffer.set_text("");
         self.preview_stack.set_visible_child_name("loading");
         self.restore_button.set_sensitive(false);
@@ -511,16 +533,21 @@ impl LocalHistoryBrowserState {
                         state
                             .preview_title
                             .set_label(&format_history_time(snapshot.meta.captured_at_millis));
-                        state.preview_meta.set_label(&format!(
-                            "{} · {}",
-                            snapshot.meta.origin.label(),
-                            format_bytes(snapshot.meta.byte_len)
+                        state.preview_meta.set_label(&format_snapshot_meta(
+                            snapshot.meta.origin,
+                            snapshot.meta.byte_len,
                         ));
-                        state.preview_buffer.set_text(&snapshot.text);
-                        state.preview_stack.set_visible_child_name("content");
+                        if snapshot.text.is_empty() {
+                            state.preview_buffer.set_text("");
+                            state.preview_stack.set_visible_child_name("empty");
+                            state.copy_button.set_sensitive(false);
+                        } else {
+                            state.preview_buffer.set_text(&snapshot.text);
+                            state.preview_stack.set_visible_child_name("content");
+                            state.copy_button.set_sensitive(true);
+                        }
                         state.loaded_snapshot.replace(Some(snapshot));
                         state.restore_button.set_sensitive(true);
-                        state.copy_button.set_sensitive(true);
                     }
                     Ok(None) => {
                         state.preview_title.set_label("Snapshot missing");
@@ -539,6 +566,64 @@ impl LocalHistoryBrowserState {
     }
 }
 
+/// Compute the current main-window size, falling back to the configured default
+/// geometry before the window is mapped in widget tests or at startup.
+fn current_window_size(window: &LushtextWindow) -> (i32, i32) {
+    let (default_width, default_height) = window.default_size();
+    (
+        current_window_dimension(window.width(), default_width),
+        current_window_dimension(window.height(), default_height),
+    )
+}
+
+/// Clamp one dialog axis so the viewer uses most of the parent window without
+/// outgrowing it on either small or large desktops.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The proportional viewer size is clamped back into GTK i32 geometry bounds"
+)]
+fn parent_relative_dialog_axis_size(
+    parent_axis: i32,
+    target_fraction: f64,
+    min_axis: i32,
+    max_axis: i32,
+) -> i32 {
+    let parent_axis = parent_axis.max(1);
+    let bounded_parent = (parent_axis - LOCAL_HISTORY_VIEWER_PARENT_MARGIN_SP).max(1);
+    let proportional = (f64::from(parent_axis) * target_fraction).round() as i32;
+    proportional.clamp(min_axis, max_axis).min(bounded_parent)
+}
+
+/// Size the populated local-history browser like a large viewer while keeping
+/// the dialog visibly smaller than its parent window.
+fn local_history_viewer_dialog_size(window: &LushtextWindow) -> (i32, i32) {
+    let (parent_width, parent_height) = current_window_size(window);
+    (
+        parent_relative_dialog_axis_size(
+            parent_width,
+            LOCAL_HISTORY_VIEWER_WIDTH_FRACTION,
+            LOCAL_HISTORY_VIEWER_MIN_WIDTH_SP,
+            LOCAL_HISTORY_VIEWER_MAX_WIDTH_SP,
+        ),
+        parent_relative_dialog_axis_size(
+            parent_height,
+            LOCAL_HISTORY_VIEWER_HEIGHT_FRACTION,
+            LOCAL_HISTORY_VIEWER_MIN_HEIGHT_SP,
+            LOCAL_HISTORY_VIEWER_MAX_HEIGHT_SP,
+        ),
+    )
+}
+
+/// Resolve one current-vs-default axis without forcing callers to repeat the
+/// same width/height fallback logic.
+fn current_window_dimension(current_axis: i32, default_axis: i32) -> i32 {
+    if current_axis > 0 {
+        current_axis
+    } else {
+        default_axis.max(1)
+    }
+}
+
 fn populate_history_rows(state: &LocalHistoryBrowserState) {
     for meta in &state.snapshots {
         let row = gtk4::ListBoxRow::new();
@@ -547,6 +632,44 @@ fn populate_history_rows(state: &LocalHistoryBrowserState) {
         row.set_child(Some(&history_row_widget(meta)));
         state.list_box.append(&row);
     }
+}
+
+/// Hide legacy empty baseline rows that were repeatedly created by the older
+/// draft-restore workflow while leaving the stored history untouched on disk.
+fn filter_visible_local_history_snapshots(
+    snapshots: Vec<LocalHistorySnapshotMeta>,
+) -> Vec<LocalHistorySnapshotMeta> {
+    let empty_baseline_count = snapshots
+        .iter()
+        .filter(|meta| is_empty_baseline_snapshot(meta))
+        .count();
+    let non_empty_periodic_count = snapshots
+        .iter()
+        .filter(|meta| {
+            meta.origin == crate::model::local_history::LocalHistorySnapshotOrigin::Periodic
+                && meta.byte_len > 0
+        })
+        .count();
+
+    snapshots
+        .into_iter()
+        .filter(|meta| {
+            !should_hide_legacy_empty_baseline(meta, empty_baseline_count, non_empty_periodic_count)
+        })
+        .collect()
+}
+
+fn should_hide_legacy_empty_baseline(
+    meta: &LocalHistorySnapshotMeta,
+    empty_baseline_count: usize,
+    non_empty_periodic_count: usize,
+) -> bool {
+    is_empty_baseline_snapshot(meta) && empty_baseline_count >= 2 && non_empty_periodic_count >= 2
+}
+
+fn is_empty_baseline_snapshot(meta: &LocalHistorySnapshotMeta) -> bool {
+    meta.origin == crate::model::local_history::LocalHistorySnapshotOrigin::Baseline
+        && meta.byte_len == 0
 }
 
 fn build_history_sidebar(path: &Path, list_box: &gtk4::ListBox) -> gtk4::Box {
@@ -627,11 +750,7 @@ fn history_row_widget(meta: &LocalHistorySnapshotMeta) -> gtk4::Box {
     title.add_css_class("heading");
     content.append(&title);
 
-    let subtitle = gtk4::Label::new(Some(&format!(
-        "{} · {}",
-        meta.origin.label(),
-        format_bytes(meta.byte_len)
-    )));
+    let subtitle = gtk4::Label::new(Some(&format_snapshot_meta(meta.origin, meta.byte_len)));
     subtitle.set_halign(gtk4::Align::Start);
     subtitle.set_xalign(0.0);
     subtitle.add_css_class("dim-label");
@@ -648,6 +767,17 @@ fn loading_preview_widget() -> gtk4::Widget {
     label.set_halign(gtk4::Align::Center);
     label.set_valign(gtk4::Align::Center);
     label.upcast()
+}
+
+fn empty_snapshot_widget() -> gtk4::Widget {
+    libadwaita::StatusPage::builder()
+        .icon_name("document-new-symbolic")
+        .title("This snapshot was empty")
+        .description(
+            "No text had been saved at this point. For “Before edits” entries, this can mean the file was empty before the current unsaved changes began.",
+        )
+        .build()
+        .upcast()
 }
 
 fn preview_error_widget(title: &str) -> gtk4::Widget {
@@ -671,6 +801,17 @@ fn format_history_time(captured_at_millis: u64) -> String {
                 )
             },
         )
+}
+
+fn format_snapshot_meta(
+    origin: crate::model::local_history::LocalHistorySnapshotOrigin,
+    byte_len: u64,
+) -> String {
+    if byte_len == 0 {
+        format!("{} · Empty file", origin.label())
+    } else {
+        format!("{} · {}", origin.label(), format_bytes(byte_len))
+    }
 }
 
 fn format_bytes(byte_len: u64) -> String {

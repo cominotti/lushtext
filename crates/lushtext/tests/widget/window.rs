@@ -333,6 +333,15 @@ fn current_window_width(window: &LushtextWindow) -> i32 {
     }
 }
 
+fn current_window_height(window: &LushtextWindow) -> i32 {
+    if window.height() > 0 {
+        window.height()
+    } else {
+        let (_, default_height) = window.default_size();
+        default_height
+    }
+}
+
 fn assert_workspace_sidebar_width_locked(window: &LushtextWindow, expected_width: f64) {
     let split = &window.imp().workspace_split_view;
     assert!(
@@ -1428,6 +1437,8 @@ fn test_active_editor_extra_menu_includes_local_history() {
 fn test_local_history_dialog_shows_empty_state_without_snapshots() {
     ensure_gtk_init();
     let window = test_window();
+    window.set_default_size(1400, 900);
+    present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("empty-history.txt");
     std::fs::write(&path, "one\n").expect("write file");
@@ -1442,9 +1453,257 @@ fn test_local_history_dialog_shows_empty_state_without_snapshots() {
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
+    wait_until(Duration::from_secs(2), || child.width() > 0 && child.height() > 0);
+    assert_eq!(
+        dialog.content_width(),
+        560,
+        "empty-state browser should keep its compact target width"
+    );
+    assert_eq!(
+        dialog.content_height(),
+        360,
+        "empty-state browser should keep its compact target height"
+    );
+    assert!(
+        child.width() <= 720,
+        "empty-state browser should stay compact on screen, got width {}",
+        child.width()
+    );
+    assert!(
+        child.height() <= 520,
+        "empty-state browser should stay compact on screen, got height {}",
+        child.height()
+    );
     assert!(
         find_label_by_text(&child, "No local history yet").is_some(),
         "empty-state browser should explain why no snapshots are listed"
+    );
+}
+
+#[test]
+fn test_local_history_browser_explains_empty_snapshot_and_disables_copy() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("empty-snapshot-history.txt");
+    std::fs::write(&path, "").expect("write file");
+
+    let data_dir = json_store::data_dir();
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed empty baseline");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    wait_until(Duration::from_secs(2), || {
+        find_label_by_text(&child, "This snapshot was empty").is_some()
+    });
+
+    assert!(
+        find_label_by_text(&child, "This snapshot was empty").is_some(),
+        "empty snapshots should explain that they contained no text"
+    );
+    assert!(
+        find_label_by_text(&child, "Before edits · Empty file").is_some(),
+        "empty snapshots should use semantic metadata instead of only 0 B"
+    );
+    assert!(
+        find_button_by_label(&child, "Restore").is_some_and(|button| button.is_sensitive()),
+        "empty historical snapshots should still be restorable"
+    );
+    assert!(
+        find_button_by_label(&child, "Copy").is_some_and(|button| !button.is_sensitive()),
+        "copy should be disabled when the snapshot has no text content"
+    );
+}
+
+#[test]
+fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("legacy-noise-history.txt");
+    std::fs::write(&path, "").expect("write file");
+
+    let data_dir = json_store::data_dir();
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed oldest empty baseline");
+    std::thread::sleep(Duration::from_millis(2));
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "draft content",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Periodic,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed first periodic");
+    std::thread::sleep(Duration::from_millis(2));
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed second empty baseline");
+    std::thread::sleep(Duration::from_millis(2));
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "draft content",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Periodic,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed second periodic");
+    std::thread::sleep(Duration::from_millis(2));
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed newest empty baseline");
+
+    let raw_snapshots = local_history_service::list_snapshots_for_path(&data_dir, &path)
+        .expect("list local history");
+    assert_eq!(raw_snapshots.len(), 5);
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    let list_box = find_list_box(&child).expect("snapshot list box");
+    wait_until(Duration::from_secs(2), || list_box.row_at_index(1).is_some());
+
+    assert!(
+        list_box.row_at_index(2).is_none(),
+        "legacy empty-baseline rows should be filtered out of the visible browser list"
+    );
+    assert!(
+        find_label_by_text(&child, "Before edits · Empty file").is_none(),
+        "legacy empty-baseline labels should be hidden from view"
+    );
+    assert!(
+        find_label_by_text(&child, "While editing · 13 B").is_some(),
+        "useful periodic history should remain visible"
+    );
+    assert_eq!(
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .expect("list stored local history")
+            .len(),
+        5,
+        "browser filtering must not delete stored local history"
+    );
+}
+
+#[test]
+fn test_local_history_dialog_scales_from_parent_and_keeps_preview_dominant() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(1600, 1000);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("viewer-history.txt");
+    std::fs::write(&path, "current\n").expect("write file");
+
+    let data_dir = json_store::data_dir();
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "version one\n",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed version one");
+    std::thread::sleep(Duration::from_millis(2));
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "version two\n",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed version two");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    let split_view = find_navigation_split_view(&child).expect("navigation split view");
+    wait_until(Duration::from_secs(2), || split_view.width() > 0 && split_view.height() > 0);
+
+    let window_width = current_window_width(&window);
+    let window_height = current_window_height(&window);
+    assert!(
+        !dialog.follows_content_size(),
+        "viewer dialog must honor the configured content size instead of shrinking to the child"
+    );
+    assert!(
+        split_view.width() >= 1200,
+        "expected a large rendered viewer width, got {}",
+        split_view.width()
+    );
+    assert!(
+        split_view.width() <= window_width - 20,
+        "viewer dialog should stay smaller than its parent width (dialog {}, parent {})",
+        split_view.width(),
+        window_width
+    );
+    assert!(
+        split_view.height() >= 760,
+        "expected a tall rendered viewer height, got {}",
+        split_view.height()
+    );
+    assert!(
+        split_view.height() <= window_height - 20,
+        "viewer dialog should stay smaller than its parent height (dialog {}, parent {})",
+        split_view.height(),
+        window_height
+    );
+    assert!(
+        split_view.max_sidebar_width() < f64::from(split_view.width()) / 2.0,
+        "snapshot rail should stay narrower than the preview-dominant half of the viewer"
+    );
+    assert!(
+        split_view.max_sidebar_width() <= 340.0,
+        "snapshot rail should stay in browse-rail territory, got {}",
+        split_view.max_sidebar_width()
     );
 }
 
@@ -2147,6 +2406,95 @@ fn test_session_restore_keeps_pinned_tabs_ahead_of_unpinned_tabs() {
             .title()
             .as_str(),
         "gamma.txt"
+    );
+}
+
+#[test]
+fn test_local_history_startup_restore_uses_restored_draft_as_baseline() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("restored-history.txt");
+    std::fs::write(&file_path, "").expect("write empty file");
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    let draft_content = "draft content";
+    draft_service::write_draft(&data_dir, &draft_id, draft_content).expect("seed draft");
+    let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
+    draft_service::save_manifest(
+        &data_dir,
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: draft_id.clone(),
+                original_path: Some(file_path.clone()),
+                original_mtime_secs: Some(current_mtime),
+                saved_at_secs: 1,
+            }],
+        },
+    )
+    .expect("save manifest");
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: Some(file_path.clone()),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("save session");
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        let editor = active_editor(&window);
+        editor_text(&editor) == draft_content
+    });
+    wait_until(Duration::from_secs(2), || {
+        !local_history_service::list_snapshots_for_path(&data_dir, &file_path)
+            .expect("list local history")
+            .is_empty()
+    });
+
+    let snapshots = local_history_service::list_snapshots_for_path(&data_dir, &file_path)
+        .expect("list local history");
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(
+        snapshots[0].origin,
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline
+    );
+    assert_eq!(snapshots[0].byte_len, draft_content.len() as u64);
+
+    let loaded = local_history_service::load_snapshot_for_path(
+        &data_dir,
+        &file_path,
+        &snapshots[0].snapshot_id,
+    )
+    .expect("load local history snapshot")
+    .expect("baseline snapshot should exist");
+    assert_eq!(loaded.text, draft_content);
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    wait_until(Duration::from_secs(2), || {
+        find_label_by_text(&child, "Before edits · 13 B").is_some()
+    });
+
+    assert!(
+        find_label_by_text(&child, "Before edits · 13 B").is_some(),
+        "draft-restored history should baseline the restored working content"
+    );
+    assert!(
+        find_label_by_text(&child, "Before edits · Empty file").is_none(),
+        "draft-restored history should not show a fresh empty disk baseline row"
     );
 }
 

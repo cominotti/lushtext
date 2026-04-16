@@ -145,6 +145,10 @@ impl super::LushtextWindow {
     /// Apply restored draft content to the editor buffer and show the infobar action.
     fn apply_draft(editor: &LushtextEditorPage, content: &str) {
         let buffer = editor.buffer();
+        // Seed local history before mutating the buffer because `set_text()`
+        // can already flip the modified state and trigger the baseline path.
+        // Restored drafts should baseline the restored work, not the stale file.
+        editor.seed_local_history_from_restored_draft(content);
         editor.set_minimap_tracking_suspended(true);
         buffer.begin_irreversible_action();
         buffer.set_text(content);

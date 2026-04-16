@@ -27,6 +27,23 @@ Important source-backed failure modes from `src/adw-breakpoint.c`:
 
 This means breakpoint errors are configuration errors first. Fix the parsed condition, object ID, property name, or value type before reasoning about adaptive behavior.
 
+## `AdwDialog`
+
+Libadwaita's adaptive-dialog migration guide maps `GtkWindow:default-width` and
+`GtkWindow:default-height` to `AdwDialog:content-width` and
+`AdwDialog:content-height`.
+
+The same guide also calls out the critical sizing switch:
+
+- when `AdwDialog:follows-content-size` is `TRUE`, the dialog follows the
+  child's content size precisely
+- when it is `FALSE`, `content-width` and `content-height` control the dialog
+  size the way `default-width` and `default-height` do for a resizable window
+
+So if a dialog is supposed to behave like a large viewer with a stable target
+size, leaving `follows-content-size` enabled will usually sabotage that goal by
+letting the child widget's natural size win instead.
+
 ## `AdwNavigationSplitView`
 
 `AdwNavigationSplitView` has two `AdwNavigationPage` children:

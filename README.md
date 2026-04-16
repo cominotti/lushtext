@@ -185,10 +185,13 @@ Use this checklist to exercise the full shipped bookmark and annotation flow:
 
 ## Local History
 
-LushText includes a narrow local-history MVP for saved documents.
+LushText includes a focused local-history MVP for saved documents.
 
 - Open **Local History** from the main menu, the command palette, `Ctrl+Alt+L`, the sidebar file context menu, or the editor content context menu while a saved file is active.
 - The browser opens in an adaptive Libadwaita dialog with newest-first snapshots and a read-only preview.
+- On wide windows, the dialog expands into a large viewer-first surface that uses most of the parent window while staying parent-bounded, with the snapshot list acting as a narrower browse rail beside the preview.
+- Empty historical snapshots are explained explicitly in the browser so an empty file state does not look like a broken preview.
+- Legacy stale-disk empty baseline rows from older history can be hidden from the browser while the stored history on disk remains unchanged.
 - Restoring a snapshot writes it into the editor buffer, marks the document modified, and immediately offers **Undo Restore** without writing to disk.
 - **Save As** starts a fresh history lineage for the new path, while sidebar renames inside LushText migrate the existing lineage to the renamed path.
 
@@ -201,6 +204,7 @@ LushText includes a narrow local-history MVP for saved documents.
 ### Capture policy
 
 - A baseline snapshot is recorded when a clean saved document first becomes modified.
+- If a file-backed draft is restored at open time, local history treats that restored working content as the baseline instead of adding a fresh row for stale on-disk file contents.
 - Additional snapshots are captured no more than once every five minutes while the document stays modified.
 - Every successful save records a save-boundary snapshot.
 - Consecutive duplicate snapshot bodies are skipped so the browser stays readable.
