@@ -1,201 +1,165 @@
-# Nucleo Full Framework Migration
+# Nucleo Full Framework Evaluation
 
-> Moved from `.agents/skills/gtk-perf-scale/references/search-scaling.md` — this is an aspirational architecture change, not a deployed pattern.
+> Moved from `.agents/skills/gtk-perf-scale/references/search-scaling.md`.
+> This note records the current recommendation as of 2026-04-15. It is not an implementation plan.
 
-The codebase currently uses `nucleo-matcher = "0.3"` (the low-level scoring library) via `fuzzy_score` and `search_items` in `services/palette.rs`. This document describes upgrading to `nucleo = "0.5"` (the full async framework with background worker threads, incremental results, and match highlighting).
+## Recommendation
 
-## Why nucleo's full framework
+Do not migrate from `nucleo-matcher` to the full `nucleo` framework right now.
 
-| Aspect | Current `nucleo-matcher` | Full `nucleo` |
-|--------|--------------------------|---------------|
-| Scoring | SIMD-accelerated (already in use) | Same scoring engine |
-| Threading | Scoring runs on main thread (synchronous) | Dedicated background worker thread |
-| Results | Synchronous — blocks until all candidates scored | Incremental — results stream in |
-| Match positions | Not tracked | Returns exact match positions (enables highlight rendering) |
-| Index ownership | Separate `FileIndex` + `search_items` | `Nucleo<T>` owns both data and matcher |
+The overall idea is still reasonable, but the main justification in the earlier version of this note is now outdated. LushText already moved command-palette search and full index rebuilds off the GTK main thread, and the current measured performance is already comfortably fast at the codebase's present scale.
 
-**RAM note**: `Nucleo<T>` uses ~2x the `IndexedFile` collection during active search (items + scored copies with UTF-32 char buffers). For 100k files (~20MB), expect ~40MB during search, ~20MB idle.
+This should stay a "revisit later if needed" topic, not active roadmap work.
 
-## Integration Guide
+## What Changed Since The Original Idea
 
-### Step 1: Add dependency
+The original migration pitch assumed the current palette path was still synchronous on the main thread. That is no longer true.
 
-```toml
-# In workspace Cargo.toml [workspace.dependencies]:
-nucleo = "0.5"
+Current command-palette behavior:
 
-# In crates/lushtext-core/Cargo.toml [dependencies]:
-nucleo = { workspace = true }
+- Query scoring already runs in a background task.
+- Full file-index rebuilds already run in a background task.
+- The palette already has debounced incremental create/delete/rename index updates.
+- The file index is intentionally capped at 100,000 files.
+
+That means the migration is no longer solving "make the palette async". That problem is already solved.
+
+## Current Strengths Of The Existing Design
+
+The current `nucleo-matcher` + `FileIndex` design fits LushText well:
+
+- It is simple and explicit: plain Rust `FileIndex`, plain search helpers, GTK-free service code.
+- It matches the current command palette UX, which only needs the top 50 results.
+- It already supports cheap incremental sidebar-driven updates instead of forcing full index replacement for every mutation.
+- It is easy to benchmark directly with the existing Criterion setup.
+
+The current design is also aligned with the rest of the codebase's structure:
+
+- `services/palette/` owns indexing and scoring as GTK-free logic.
+- `ui/command_palette/` owns debounce, activation, selection, and result presentation.
+
+That separation is working well today.
+
+## What Full `nucleo` Would Actually Improve
+
+The full framework still has real upside.
+
+### 1. Incremental result streaming
+
+The biggest genuine benefit is not "background work" anymore. It is the ability to stream partial results while matching is still running.
+
+That becomes more interesting if:
+
+- the file cap is raised significantly above 100k,
+- queries become much less selective,
+- or the palette starts mixing in much larger result sets.
+
+### 2. Match-position highlighting
+
+The full framework can expose match positions, which would allow visually highlighting matched characters in the palette row title.
+
+That is a real UX improvement, especially if the palette becomes more central to navigation.
+
+### 3. Better headroom for larger future scopes
+
+If LushText eventually wants a more ambitious picker model, such as:
+
+- richer file ranking across very large workspaces,
+- more persistent background matcher state,
+- or more advanced multi-column matching,
+
+then full `nucleo` becomes more compelling.
+
+## Costs And Risks
+
+These are the main reasons not to do the migration now.
+
+### 1. The payoff is smaller than it first appears
+
+Because the current palette is already async, a migration would mostly be buying:
+
+- streaming,
+- highlight indices,
+- and future scaling headroom.
+
+Those are nice improvements, but not strong enough on their own to justify replacing a working system.
+
+### 2. The current incremental update model is a better fit than the note implied
+
+LushText currently relies on fine-grained index mutations driven by sidebar operations:
+
+- create file,
+- delete file or directory,
+- rename file or directory.
+
+The full `nucleo` API is naturally strong at injecting items and restarting the matcher, but it is not an obvious drop-in replacement for the current in-place create/delete/rename model. In practice that likely means one of these tradeoffs:
+
+- rebuild larger portions of the matcher state more often, or
+- add a translation layer that reintroduces complexity above `nucleo`.
+
+That weakens the "full `nucleo` is simpler" argument.
+
+### 3. Memory cost goes up during active search
+
+The earlier memory warning still matters: active matching with full `nucleo` is expected to use meaningfully more memory than the current plain `IndexedFile` collection.
+
+That is not automatically disqualifying, but it is the wrong direction for a migration whose benefits are currently marginal.
+
+### 4. The high-level crate is still a more opinionated dependency
+
+The low-level matcher is already stable and useful on its own. The high-level `nucleo` crate is more opinionated, more integration-heavy, and more likely to shape LushText around its lifecycle.
+
+That is a reasonable trade when the app clearly needs what it offers. Today, LushText does not clearly need it.
+
+## Current Performance Snapshot
+
+Local benchmark runs on 2026-04-15 support keeping the current design for now.
+
+Command used:
+
+```bash
+cargo bench -p lushtext-core --bench benchmarks -- search_all
+cargo bench -p lushtext-core --bench benchmarks -- file_index_search
 ```
 
-Then: `cargo hakari generate && make cargo-sources`
+Representative results on this machine:
 
-### Step 2: Replace FileIndex + search_items with Nucleo<T>
+- `search_all/files/100000`: about `2.34 ms`
+- `search_all/all/100000`: about `2.32 ms`
+- `file_index_search/query_match/100000`: about `2.34 ms`
+- `file_index_search/no_match/100000`: about `0.86 ms`
 
-`Nucleo<T>` owns both the data and the matcher, replacing `FileIndex` + `fuzzy_score` + `search_items` with a single type.
+Those numbers do not point to an urgent architecture problem in the current palette path.
 
-```rust
-use nucleo::{Nucleo, Config, Injector, Utf32String};
-use nucleo::pattern::{CaseMatching, Normalization, Pattern, AtomKind};
-use std::path::PathBuf;
-use std::sync::Arc;
+## Strong Recommendation
 
-#[derive(Clone)]
-pub struct IndexedFile {
-    pub path: PathBuf,
-    pub name: String,
-    pub workspace_root: Arc<PathBuf>,
-}
+Do not schedule a full `nucleo` migration now.
 
-pub fn create_matcher(notify: impl Fn() + Send + Sync + 'static) -> Nucleo<IndexedFile> {
-    Nucleo::new(
-        Config::DEFAULT,
-        Arc::new(notify),
-        None,   // single column (match against filename)
-        1,      // 1 worker thread
-    )
-}
+If time is available for command-palette work, it is more likely to pay off in one of these directions instead:
 
-pub fn inject_files(injector: &Injector<IndexedFile>, roots: &[PathBuf]) {
-    let mut visited = std::collections::HashSet::new();
-    for root in roots {
-        let canonical_root = match root.canonicalize() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let workspace_root = Arc::new(root.clone());
-        inject_recursive(injector, root, &workspace_root, &canonical_root, &mut visited, 0);
-    }
-}
+- improve result presentation,
+- add matched-character highlighting only if it can be done without the full migration,
+- improve ranking or UX polish based on real usage,
+- or keep investing in benchmark coverage and measured regressions.
 
-fn inject_recursive(
-    injector: &Injector<IndexedFile>,
-    dir: &std::path::Path,
-    workspace_root: &Arc<PathBuf>,
-    canonical_root: &std::path::Path,
-    visited: &mut std::collections::HashSet<PathBuf>,
-    depth: u32,
-) {
-    if depth > 64 { return; }
-    let canonical = match dir.canonicalize() {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    if !canonical.starts_with(canonical_root) || !visited.insert(canonical) {
-        return;
-    }
+## Revisit Triggers
 
-    for (path, is_dir) in crate::services::file_tree::scan_directory(dir) {
-        if is_dir {
-            inject_recursive(injector, &path, workspace_root, canonical_root, visited, depth + 1);
-        } else {
-            let name = path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let file = IndexedFile {
-                path,
-                name: name.clone(),
-                workspace_root: Arc::clone(workspace_root),
-            };
-            injector.push(file, |item, cols| {
-                cols[0] = Utf32String::from(item.name.as_str());
-            });
-        }
-    }
-}
+Reopen this idea only if one or more of these become true:
 
-pub fn update_query(nucleo: &mut Nucleo<IndexedFile>, query: &str) {
-    nucleo.pattern.reparse(
-        0,
-        query,
-        CaseMatching::Smart,
-        Normalization::Smart,
-        query.starts_with(&nucleo.pattern.column_pattern(0).atoms().map_or(
-            String::new(),
-            |atoms| atoms.iter().map(|a| a.text()).collect::<String>(),
-        )),
-    );
-}
+1. The command palette starts feeling slow in measured benchmarks or real use at current scale.
+2. The 100k file cap becomes too restrictive for real user workflows.
+3. Matched-character highlighting becomes a clear product goal.
+4. The palette grows into a richer picker where streaming partial results materially improves UX.
+5. The existing `FileIndex` mutation model becomes harder to maintain than a persistent matcher model.
 
-pub fn get_results(nucleo: &Nucleo<IndexedFile>, max: usize) -> Vec<(u32, &IndexedFile)> {
-    let snapshot = nucleo.snapshot();
-    (0..snapshot.matched_item_count().min(max as u32))
-        .filter_map(|idx| {
-            let item = snapshot.get_matched_item(idx)?;
-            Some((item.score, item.data))
-        })
-        .collect()
-}
-```
+## If Revisited Later
 
-### Step 3: Wire into GTK main loop
+Do not jump straight to a full migration.
 
-The `notify` callback fires on the worker thread. Bounce to main thread:
+Start with a narrow spike:
 
-```rust
-let window_weak: glib::SendWeakRef<LushtextWindow> = window.downgrade().into();
-let matcher = create_matcher(move || {
-    let weak = window_weak.clone();
-    glib::idle_add_once(move || {
-        if let Some(window) = weak.upgrade() {
-            window.imp().command_palette.refresh_from_matcher();
-        }
-    });
-});
-```
-
-### Step 4: Match highlighting
-
-nucleo returns `Indices` (matched byte positions) per result for Pango markup rendering:
-
-```rust
-let item = snapshot.get_matched_item(position).unwrap();
-let indices = item.indices();
-let name = &item.data.name;
-
-let mut markup = String::with_capacity(name.len() * 2);
-for (i, ch) in name.chars().enumerate() {
-    if indices.contains(&(i as u32)) {
-        markup.push_str("<b>");
-        markup.push(ch);
-        markup.push_str("</b>");
-    } else {
-        match ch {
-            '&' => markup.push_str("&amp;"),
-            '<' => markup.push_str("&lt;"),
-            '>' => markup.push_str("&gt;"),
-            _ => markup.push(ch),
-        }
-    }
-}
-name_label.set_markup(&markup);
-```
-
-### What changes in existing code
-
-- **Delete**: `fuzzy_score`, `fuzzy_score_chars`, `search_items` in `palette.rs` — replaced by nucleo
-- **Delete**: `FileIndex` struct and `collect_files_recursive` — replaced by `Injector` + `inject_files`
-- **Keep**: `all_commands()`, `search_commands()` — commands are ~11 items; nucleo overhead not justified
-- **Keep**: `search_all()` as dispatcher between file results (nucleo) and command results (existing loop)
-
-## SIMD Crate Adoption Beyond Search
-
-> Cross-reference: For simdutf8 (file-load path), see `gtk-perf-rust-optimize/references/simd-opportunities.md`.
-
-### memchr — Fast byte scanning
-
-Already a transitive dependency. Use explicitly for newline counting in large files:
-
-```rust
-use memchr::memchr_iter;
-
-fn count_lines(content: &[u8]) -> usize {
-    memchr_iter(b'\n', content).count()
-}
-```
-
-50MB file: ~1.5ms with memchr vs ~50ms scalar.
-
-### aho-corasick — Multi-pattern matching (future)
-
-For project-wide search or multi-keyword filtering. Uses memchr internally for initial byte scan + DFA for multi-pattern matching.
+1. Prototype full `nucleo` behind a small branch-local experiment.
+2. Keep command search separate; only prototype file-result matching.
+3. Prove how create/delete/rename updates would work without regressing the current sidebar integration.
+4. Re-run the existing Criterion benchmarks plus any new UI-latency measurements.
+5. Only continue if the measured UX or maintainability gain is clearly worth the added complexity.
