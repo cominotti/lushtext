@@ -4,6 +4,7 @@
 
 use crate::common::ensure_gtk_init;
 use gio::prelude::*;
+use gtk4::{IconTheme, gdk};
 use lushtext_core::app::LushtextApplication;
 use lushtext_core::config;
 use sourceview5::StyleSchemeManager;
@@ -50,4 +51,26 @@ fn test_startup_registers_bundled_sourceview_scheme_path() {
     );
     assert!(manager.scheme("Adwaita").is_some());
     assert!(manager.scheme("Adwaita-dark").is_some());
+}
+
+#[test]
+fn test_startup_registers_bundled_app_icon_path() {
+    ensure_gtk_init();
+    let app = LushtextApplication::new();
+    app.register(gio::Cancellable::NONE)
+        .expect("test application registration");
+    app.emit_by_name::<()>("startup", &[]);
+
+    let display = gdk::Display::default().expect("display");
+    let theme = IconTheme::for_display(&display);
+    let expected = config::RESOURCE_ICON_PATH;
+    assert!(
+        theme.resource_path().iter().any(|path| path.as_str() == expected),
+        "expected bundled icon resource path {expected} to be registered"
+    );
+    assert!(
+        theme.has_icon(config::APP_ID),
+        "expected icon theme to expose {} after startup",
+        config::APP_ID
+    );
 }

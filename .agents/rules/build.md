@@ -10,7 +10,7 @@ globs: "{Cargo.toml,Makefile,.cargo/**,.config/**,build.rs,meson.build,meson_opt
 Use `make` targets for development. The Makefile auto-detects nextest for non-widget tests across the workspace, while full-suite widget coverage in `make test` flows through the shared headless `scripts/run-widget-tests.sh` path so local verification matches CI. `make test-widget` still uses the same runner in auto/native mode for interactive debugging.
 
 ```
-make run        # build + launch the app
+make run        # build + launch the app with temporary GNOME desktop staging for dock icon matching
 make test       # all tests
 make test-widget-headless # CI-style mutter/dbus widget run
 make check      # clippy + fmt

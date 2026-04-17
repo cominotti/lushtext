@@ -5,7 +5,7 @@
 # Targets:
 #   make build       - Release build
 #   make build-debug - Debug build
-#   make run         - Debug build + run
+#   make run         - Debug build + run with temporary GNOME desktop staging
 #   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
 #   make test-int    - Integration tests only
@@ -52,7 +52,7 @@ build-debug:
 # Debug build and run
 run: build-debug
 	@echo "Running LushText..."
-	cargo run
+	./scripts/run-dev-app.sh
 
 # Run all tests
 test:
@@ -160,7 +160,7 @@ help:
 	@echo "Build targets:"
 	@echo "  build        Release build (optimized)"
 	@echo "  build-debug  Debug build"
-	@echo "  run          Debug build and run"
+	@echo "  run          Debug build and run with temporary GNOME desktop staging"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  test         All tests (unit + integration + widget)"

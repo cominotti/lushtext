@@ -112,6 +112,25 @@ pub fn register_sourceview_style_schemes() {
     }
 }
 
+/// Add the app's bundled icon resources to the display icon theme so dev runs
+/// can resolve the application icon without an install step.
+///
+/// # Panics
+///
+/// Panics if no display is available, because icon-theme registration only
+/// makes sense after GTK startup has created the default display.
+pub fn register_app_icons() {
+    let display = gdk4::Display::default().expect("display");
+    let theme = gtk4::IconTheme::for_display(&display);
+    if !theme
+        .resource_path()
+        .iter()
+        .any(|path| path.as_str() == config::RESOURCE_ICON_PATH)
+    {
+        theme.add_resource_path(config::RESOURCE_ICON_PATH);
+    }
+}
+
 /// Load the application CSS and set up the font customization provider.
 /// Must be called after GTK is initialized (i.e. during startup).
 pub(crate) fn load_css() {

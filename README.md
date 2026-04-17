@@ -68,7 +68,7 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libglib2.0
 ```sh
 make build       # Release build
 make build-debug # Debug build
-make run         # Debug build + run
+make run         # Debug build + run with temporary GNOME desktop staging for dock icon matching
 make test        # All tests (unit + integration + widget)
 make check       # clippy + fmt check
 make pre-commit  # repo pre-commit gate (fmt + clippy)
@@ -78,6 +78,8 @@ make install-git-hooks
 LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hooks` once per checkout to configure `core.hooksPath`; after that, each commit runs the same rustfmt + Clippy gate locally before Git creates the commit.
 
 The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel non-widget execution (optional), but it always runs widget tests explicitly through the shared `scripts/run-widget-tests.sh` runner so `make test` still means the full suite. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
+
+On GNOME Shell, `make run` temporarily stages a user-local desktop entry plus `hicolor` app icons while the debug binary is running. This gives the dev build the same app ID and dock icon association as an installed build without leaving a persistent override behind after the process exits.
 
 Critical rule: pre-existing blockers discovered while implementing or verifying a change must be fixed in the same work stream rather than worked around, deferred, or called out as "pre-existing". No exceptions.
 

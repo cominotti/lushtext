@@ -13,7 +13,7 @@ Package lushtext as a Flatpak with proper desktop integration.
 5. `data/meson.build` — install desktop file, metainfo, icons, GSettings schema
 6. `data/dev.cominotti.lushtext.desktop.in` — desktop file
 7. `data/dev.cominotti.lushtext.metainfo.xml.in` — AppStream metainfo
-8. `data/icons/` — app icon (scalable SVG + symbolic)
+8. `data/icons/` — app icons (scalable SVG, symbolic, and PNG fallbacks)
 9. `resources/meson.build` — compile GResources via Meson
 10. `po/meson.build` + `po/POTFILES` — i18n scaffolding
 

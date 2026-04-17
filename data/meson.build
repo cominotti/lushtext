@@ -42,6 +42,18 @@ install_data(
   'icons/dev.cominotti.lushtext-symbolic.svg',
   install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'symbolic' / 'apps',
 )
+install_data(
+  'icons/hicolor/32x32/apps/dev.cominotti.lushtext.png',
+  install_dir: get_option('datadir') / 'icons' / 'hicolor' / '32x32' / 'apps',
+)
+install_data(
+  'icons/hicolor/64x64/apps/dev.cominotti.lushtext.png',
+  install_dir: get_option('datadir') / 'icons' / 'hicolor' / '64x64' / 'apps',
+)
+install_data(
+  'icons/hicolor/128x128/apps/dev.cominotti.lushtext.png',
+  install_dir: get_option('datadir') / 'icons' / 'hicolor' / '128x128' / 'apps',
+)
 
 # GSettings schema
 install_data(

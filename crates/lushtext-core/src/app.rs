@@ -30,6 +30,7 @@ mod imp {
         fn startup(&self) {
             self.parent_startup();
             crate::load_css();
+            crate::register_app_icons();
             crate::register_sourceview_style_schemes();
 
             // Apply persisted color scheme before any window is created so
@@ -94,6 +95,7 @@ impl LushtextApplication {
     pub fn new_with_application_id(application_id: &str) -> Self {
         let app: Self = glib::Object::builder()
             .property("application-id", application_id)
+            .property("resource-base-path", config::RESOURCE_BASE_PATH)
             .property("flags", gio::ApplicationFlags::HANDLES_OPEN)
             .build();
 

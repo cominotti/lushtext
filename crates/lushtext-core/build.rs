@@ -9,11 +9,16 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     let resource_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../resources");
+    let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data");
     let resource_xml = format!("{resource_dir}/dev.cominotti.lushtext.gresource.xml");
 
     // Only compile resources if the XML exists (skip during early scaffold)
     if std::path::Path::new(&resource_xml).exists() {
-        glib_build_tools::compile_resources(&[resource_dir], &resource_xml, "lushtext.gresource");
+        glib_build_tools::compile_resources(
+            &[resource_dir, data_dir],
+            &resource_xml,
+            "lushtext.gresource",
+        );
     }
 
     // Compile GSettings schemas for dev builds only.

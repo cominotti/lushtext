@@ -36,8 +36,8 @@
   <url type="vcs-browser">https://github.com/cominotti/lushtext</url>
 
   <branding>
-    <color type="primary" scheme_preference="light">#62a0ea</color>
-    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+    <color type="primary" scheme_preference="light">#d946ef</color>
+    <color type="primary" scheme_preference="dark">#8b5cf6</color>
   </branding>
 
   <content_rating type="oars-1.1"/>
@@ -69,6 +69,6 @@
   <translation type="gettext">lushtext</translation>
 
   <custom>
-    <value key="GnomeSoftware::key-colors">[(98, 160, 234)]</value>
+    <value key="GnomeSoftware::key-colors">[(217, 70, 239)]</value>
   </custom>
 </component>

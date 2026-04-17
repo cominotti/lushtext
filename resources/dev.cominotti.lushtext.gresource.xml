@@ -18,6 +18,13 @@
 
     <!-- Styling -->
     <file compressed="true">style/style.css</file>
+
+    <!-- Bundled app icons let dev runs resolve the application icon without an install step. -->
+    <file alias="icons/scalable/apps/dev.cominotti.lushtext.svg">../data/icons/dev.cominotti.lushtext.svg</file>
+    <file alias="icons/symbolic/apps/dev.cominotti.lushtext-symbolic.svg">../data/icons/dev.cominotti.lushtext-symbolic.svg</file>
+    <file alias="icons/32x32/apps/dev.cominotti.lushtext.png">../data/icons/hicolor/32x32/apps/dev.cominotti.lushtext.png</file>
+    <file alias="icons/64x64/apps/dev.cominotti.lushtext.png">../data/icons/hicolor/64x64/apps/dev.cominotti.lushtext.png</file>
+    <file alias="icons/128x128/apps/dev.cominotti.lushtext.png">../data/icons/hicolor/128x128/apps/dev.cominotti.lushtext.png</file>
   </gresource>
   <gresource prefix="/dev/cominotti/lushtext/gtksourceview">
     <file compressed="true">gtksourceview/styles/Adwaita.xml</file>

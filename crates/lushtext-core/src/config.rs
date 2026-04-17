@@ -3,6 +3,8 @@
 //! Compile-time application constants.
 
 pub const APP_ID: &str = "dev.cominotti.lushtext";
+pub const RESOURCE_BASE_PATH: &str = "/dev/cominotti/lushtext";
+pub const RESOURCE_ICON_PATH: &str = "/dev/cominotti/lushtext/icons";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Install-time data directory set by Meson via `cargo.sh`.
