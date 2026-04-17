@@ -25,16 +25,10 @@
                 <property name="title" translatable="yes">Document</property>
 
                 <child>
-                  <object class="AdwActionRow" id="path_row">
-                    <property name="title" translatable="yes">Path</property>
+                  <object class="AdwActionRow" id="location_row">
+                    <property name="title" translatable="yes">Location</property>
                     <property name="subtitle" translatable="yes">No document selected</property>
-                  </object>
-                </child>
-
-                <child>
-                  <object class="AdwActionRow" id="encoding_row">
-                    <property name="title" translatable="yes">Encoding</property>
-                    <property name="subtitle" translatable="yes">Not available</property>
+                    <property name="subtitle-lines">3</property>
                   </object>
                 </child>
 
@@ -46,60 +40,41 @@
                 </child>
 
                 <child>
+                  <object class="AdwActionRow" id="statistics_row">
+                    <property name="title" translatable="yes">Statistics</property>
+                    <property name="subtitle" translatable="yes">Open a document to inspect statistics</property>
+                  </object>
+                </child>
+
+                <child>
                   <object class="AdwActionRow" id="formatting_source_row">
                     <property name="title" translatable="yes">Formatting Source</property>
                     <property name="subtitle" translatable="yes">Not available</property>
+                    <property name="subtitle-lines">2</property>
                   </object>
                 </child>
               </object>
             </child>
 
             <child>
-              <object class="AdwPreferencesGroup">
-                <property name="title" translatable="yes">Editor</property>
+              <object class="AdwPreferencesGroup" id="health_group">
+                <property name="title" translatable="yes">Health</property>
 
                 <child>
-                  <object class="AdwSwitchRow" id="editorconfig_row">
-                    <property name="title" translatable="yes">Use EditorConfig</property>
-                    <property name="subtitle" translatable="yes">Apply .editorconfig files for per-file formatting</property>
-                  </object>
-                </child>
-
-                <child>
-                  <object class="AdwSwitchRow" id="word_wrap_row">
-                    <property name="title" translatable="yes">Word Wrap</property>
-                  </object>
-                </child>
-
-                <child>
-                  <object class="AdwSpinRow" id="tab_width_row">
-                    <property name="title" translatable="yes">Tab Width</property>
-                    <property name="adjustment">
-                      <object class="GtkAdjustment">
-                        <property name="lower">1</property>
-                        <property name="upper">12</property>
-                        <property name="step-increment">1</property>
-                        <property name="value">4</property>
+                  <object class="AdwActionRow" id="health_summary_row">
+                    <property name="title" translatable="yes">File Health</property>
+                    <property name="subtitle" translatable="yes">Open a document to inspect file health</property>
+                    <property name="subtitle-lines">3</property>
+                    <child type="suffix">
+                      <object class="GtkButton" id="health_review_button">
+                        <property name="label" translatable="yes">Review…</property>
+                        <property name="action-name">win.show-file-health</property>
+                        <property name="visible">false</property>
+                        <style>
+                          <class name="flat"/>
+                        </style>
                       </object>
-                    </property>
-                  </object>
-                </child>
-
-                <child>
-                  <object class="AdwSwitchRow" id="insert_spaces_row">
-                    <property name="title" translatable="yes">Insert Spaces Instead of Tabs</property>
-                  </object>
-                </child>
-
-                <child>
-                  <object class="AdwSwitchRow" id="show_line_numbers_row">
-                    <property name="title" translatable="yes">Show Line Numbers</property>
-                  </object>
-                </child>
-
-                <child>
-                  <object class="AdwSwitchRow" id="highlight_line_row">
-                    <property name="title" translatable="yes">Highlight Current Line</property>
+                    </child>
                   </object>
                 </child>
               </object>

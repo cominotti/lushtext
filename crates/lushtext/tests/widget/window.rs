@@ -317,7 +317,11 @@ fn workspace_sidebar_visible(window: &LushtextWindow) -> bool {
 }
 
 fn properties_sidebar_visible(window: &LushtextWindow) -> bool {
-    window.imp().properties_split_view.shows_sidebar()
+    window.imp().properties_split_view.shows_sidebar() || window.imp().properties_bottom_sheet.is_open()
+}
+
+fn properties_surface_uses_bottom_sheet(window: &LushtextWindow) -> bool {
+    window.imp().properties_bottom_sheet.is_open()
 }
 
 fn workspace_total_fraction(window: &LushtextWindow) -> f64 {
@@ -714,8 +718,7 @@ fn test_toggle_sidebar_action_state_syncs_with_split_view() {
             .get::<bool>()
             .expect("expected operation to succeed")
     );
-    window.imp().workspace_split_view.set_show_sidebar(false);
-    flush_events();
+    activate_action(&window, "toggle-sidebar");
     assert!(
         !action
             .state()
@@ -740,7 +743,7 @@ fn test_toggle_properties_shows_properties_split_view() {
 }
 
 #[test]
-fn test_toggle_properties_action_state_syncs_with_split_view() {
+fn test_toggle_properties_action_state_tracks_rendered_surface() {
     ensure_gtk_init();
     let window = test_window();
     let action = window
@@ -756,8 +759,7 @@ fn test_toggle_properties_action_state_syncs_with_split_view() {
             .get::<bool>()
             .expect("expected operation to succeed")
     );
-    window.imp().properties_split_view.set_show_sidebar(true);
-    flush_events();
+    activate_action(&window, "toggle-properties");
     assert!(
         action
             .state()
@@ -765,6 +767,43 @@ fn test_toggle_properties_action_state_syncs_with_split_view() {
             .get::<bool>()
             .expect("expected operation to succeed")
     );
+    activate_action(&window, "toggle-properties");
+    assert!(
+        !action
+            .state()
+            .expect("expected operation to succeed")
+            .get::<bool>()
+            .expect("expected operation to succeed")
+    );
+}
+
+#[test]
+fn test_f9_toggles_document_properties_instead_of_workspace_sidebar() {
+    ensure_gtk_init();
+    let window = test_window();
+    let controllers = window.observe_controllers();
+    let shortcut_controller = (0..controllers.n_items())
+        .filter_map(|index| controllers.item(index))
+        .filter_map(|object| object.downcast::<gtk4::ShortcutController>().ok())
+        .find(|controller| controller.scope() == gtk4::ShortcutScope::Managed)
+        .expect("window should install a managed shortcut controller");
+    let display = gtk4::gdk::Display::default().expect("default display");
+
+    let matched = (0..shortcut_controller.n_items())
+        .filter_map(|index| shortcut_controller.item(index))
+        .filter_map(|object| object.downcast::<gtk4::Shortcut>().ok())
+        .any(|shortcut| {
+            let action_matches = shortcut
+                .action()
+                .and_then(|action| action.downcast::<gtk4::NamedAction>().ok())
+                .is_some_and(|action| action.action_name().as_str() == "win.toggle-properties");
+            let trigger_matches = shortcut
+                .trigger()
+                .is_some_and(|trigger| trigger.to_label(&display).as_str() == "F9");
+            action_matches && trigger_matches
+        });
+
+    assert!(matched, "F9 should be bound to win.toggle-properties");
 }
 
 #[test]
@@ -1039,31 +1078,31 @@ fn test_workspace_sidebar_width_presets_clamp_across_representative_window_sizes
 #[test]
 fn test_workspace_sidebar_setting_recalculates_properties_breakpoint() {
     ensure_gtk_init();
-    let window = test_window();
-    window.set_default_size(1400, 900);
-    present_window(&window);
-
-    activate_action(&window, "toggle-properties");
-    wait_until(Duration::from_secs(2), || {
-        properties_sidebar_visible(&window)
-    });
+    let comfy_window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    comfy_window.set_default_size(1400, 900);
+    present_window(&comfy_window);
+    activate_action(&comfy_window, "toggle-properties");
+    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&comfy_window));
 
     assert!(
-        !window.imp().properties_split_view.is_collapsed(),
+        !comfy_window.imp().properties_split_view.is_collapsed(),
         "Comfy should keep the properties pane side-by-side at 1400sp"
     );
 
-    window
-        .imp()
-        .settings
-        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.4)
-        .expect("set large preset");
+    comfy_window.destroy();
+    flush_events();
+
+    let large_window = test_window_with_split_view_state(true, 0.4, false, 0.25);
+    large_window.set_default_size(1400, 900);
+    present_window(&large_window);
+    activate_action(&large_window, "toggle-properties");
     wait_until(Duration::from_secs(2), || {
-        window.imp().properties_split_view.is_collapsed()
+        properties_surface_uses_bottom_sheet(&large_window)
     });
 
-    assert!(window.imp().properties_split_view.is_collapsed());
-    assert_workspace_sidebar_width_locked(&window, 440.0);
+    assert!(large_window.imp().properties_split_view.is_collapsed());
+    assert!(properties_surface_uses_bottom_sheet(&large_window));
+    assert_workspace_sidebar_width_locked(&large_window, 440.0);
 }
 
 #[test]
@@ -1162,64 +1201,133 @@ fn test_properties_pane_collapses_before_workspace_pane() {
     ensure_gtk_init();
 
     // At a narrow width just below the adaptive Comfy breakpoint (~1350sp),
-    // the properties pane should collapse to overlay while
+    // the document-properties surface should re-render as a bottom sheet while
     // the workspace pane stays in layout.
-    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
+    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
     window.set_default_size(1300, 900);
     present_window(&window);
+    activate_action(&window, "toggle-properties");
+    wait_until(Duration::from_secs(2), || properties_surface_uses_bottom_sheet(&window));
 
-    // Properties requested visible, but collapsed by the breakpoint.
     assert!(properties_sidebar_visible(&window));
     assert!(window.imp().properties_split_view.is_collapsed());
-    // Workspace pane stays non-collapsed at this width.
+    assert!(properties_surface_uses_bottom_sheet(&window));
     assert!(!window.imp().workspace_split_view.is_collapsed());
 }
 
 #[test]
 fn test_large_workspace_preset_collapses_properties_pane_earlier() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.4, true, 0.25);
+    let window = test_window_with_split_view_state(true, 0.4, false, 0.25);
     window.set_default_size(1400, 900);
     present_window(&window);
+    activate_action(&window, "toggle-properties");
+    wait_until(Duration::from_secs(2), || properties_surface_uses_bottom_sheet(&window));
 
     assert!(properties_sidebar_visible(&window));
     assert!(window.imp().properties_split_view.is_collapsed());
+    assert!(properties_surface_uses_bottom_sheet(&window));
     assert!(!window.imp().workspace_split_view.is_collapsed());
 }
 
 #[test]
 fn test_hiding_workspace_sidebar_relaxes_properties_breakpoint() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(false, 0.4, true, 0.25);
+    let window = test_window_with_split_view_state(false, 0.4, false, 0.25);
     window.set_default_size(1400, 900);
     present_window(&window);
+    activate_action(&window, "toggle-properties");
+    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&window));
 
     assert!(properties_sidebar_visible(&window));
     assert!(!window.imp().properties_split_view.is_collapsed());
+    assert!(!properties_surface_uses_bottom_sheet(&window));
     assert!(!workspace_sidebar_visible(&window));
+}
+
+#[test]
+fn test_compact_layout_mutual_exclusion_switches_secondary_surface() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    window.set_default_size(1300, 900);
+    present_window(&window);
+
+    activate_action(&window, "toggle-properties");
+    wait_until(Duration::from_secs(2), || {
+        properties_surface_uses_bottom_sheet(&window) && !workspace_sidebar_visible(&window)
+    });
+
+    assert!(properties_sidebar_visible(&window));
+    assert!(!workspace_sidebar_visible(&window));
+
+    activate_action(&window, "toggle-sidebar");
+    wait_until(Duration::from_secs(2), || {
+        workspace_sidebar_visible(&window) && !properties_sidebar_visible(&window)
+    });
+
+    assert!(workspace_sidebar_visible(&window));
+    assert!(!properties_sidebar_visible(&window));
+}
+
+#[test]
+fn test_widening_restores_both_requested_surfaces_after_compact_suppression() {
+    ensure_gtk_init();
+    let narrow_window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    narrow_window.set_default_size(1300, 900);
+    present_window(&narrow_window);
+
+    activate_action(&narrow_window, "toggle-properties");
+    wait_until(Duration::from_secs(2), || properties_surface_uses_bottom_sheet(&narrow_window));
+    assert!(properties_sidebar_visible(&narrow_window));
+    assert!(!workspace_sidebar_visible(&narrow_window));
+    narrow_window.destroy();
+    flush_events();
+
+    let wider_window = test_window();
+    wider_window.set_default_size(1600, 900);
+    present_window(&wider_window);
+    wait_until(Duration::from_secs(2), || {
+        workspace_sidebar_visible(&wider_window)
+            && wider_window.imp().properties_split_view.shows_sidebar()
+            && !properties_surface_uses_bottom_sheet(&wider_window)
+    });
+
+    assert!(workspace_sidebar_visible(&wider_window));
+    assert!(wider_window.imp().properties_split_view.shows_sidebar());
+    assert!(!properties_surface_uses_bottom_sheet(&wider_window));
 }
 
 #[test]
 fn test_properties_visibility_preference_survives_breakpoint_changes() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
-    window.set_default_size(1600, 900);
-    present_window(&window);
+    let narrow_window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    narrow_window.set_default_size(1300, 900);
+    present_window(&narrow_window);
+    activate_action(&narrow_window, "toggle-properties");
+    wait_until(Duration::from_secs(2), || {
+        properties_surface_uses_bottom_sheet(&narrow_window)
+    });
 
-    assert!(properties_sidebar_visible(&window));
     assert!(
-        window
+        narrow_window
             .imp()
             .settings
             .boolean(keys::PROPERTIES_SIDEBAR_VISIBLE)
     );
 
-    window.set_default_size(1200, 900);
-    flush_after_delay(Duration::from_millis(20));
+    narrow_window.destroy();
+    flush_events();
 
-    assert!(properties_sidebar_visible(&window));
+    let wide_window = test_window();
+    wide_window.set_default_size(1600, 900);
+    present_window(&wide_window);
+    wait_until(Duration::from_secs(2), || {
+        wide_window.imp().properties_split_view.shows_sidebar()
+    });
+
+    assert!(wide_window.imp().properties_split_view.shows_sidebar());
     assert!(
-        window
+        wide_window
             .imp()
             .settings
             .boolean(keys::PROPERTIES_SIDEBAR_VISIBLE)
@@ -1229,7 +1337,7 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
 #[test]
 fn test_warning_infobar_actions_stay_allocated_in_a_narrow_window() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
+    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
     window.set_default_size(1000, 900);
     window.new_tab();
     present_window(&window);
@@ -1255,7 +1363,7 @@ fn test_warning_infobar_actions_stay_allocated_in_a_narrow_window() {
 #[test]
 fn test_access_error_infobar_action_stays_allocated_in_a_narrow_window() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
+    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
     window.set_default_size(1000, 900);
     window.new_tab();
     present_window(&window);
@@ -1295,17 +1403,26 @@ fn test_properties_panel_shows_safe_untitled_metadata_state() {
 
     let panel = window.imp().properties_panel.imp();
     assert_eq!(
-        panel.path_row.subtitle().as_deref(),
+        panel.location_row.subtitle().as_deref(),
         Some("Untitled document")
     );
-    assert_eq!(panel.encoding_row.subtitle().as_deref(), Some("UTF-8"));
     assert_eq!(
         panel.file_size_row.subtitle().as_deref(),
         Some("Not available")
     );
+    assert!(
+        panel
+            .statistics_row
+            .subtitle()
+            .is_some_and(|subtitle| subtitle.contains("1 line")),
+    );
     assert_eq!(
         panel.formatting_source_row.subtitle().as_deref(),
         Some("Not available for untitled tabs")
+    );
+    assert_eq!(
+        panel.health_summary_row.subtitle().as_deref(),
+        Some("Untitled documents do not have file-backed health details yet.")
     );
 }
 
@@ -1931,14 +2048,32 @@ fn test_properties_panel_updates_for_file_backed_editor() {
     std::fs::write(&path, "hello world").expect("write file");
 
     window.open_document(&path);
-    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .properties_panel
+            .imp()
+            .file_size_row
+            .subtitle()
+            .is_some_and(|subtitle| subtitle == "11 B")
+    });
 
     let panel = window.imp().properties_panel.imp();
     assert_eq!(
-        panel.path_row.subtitle().as_deref(),
+        panel.location_row.subtitle().as_deref(),
         Some(path.display().to_string().as_str())
     );
-    assert_eq!(panel.encoding_row.subtitle().as_deref(), Some("UTF-8"));
+    assert_eq!(panel.file_size_row.subtitle().as_deref(), Some("11 B"));
+    assert!(
+        panel
+            .statistics_row
+            .subtitle()
+            .is_some_and(|subtitle| subtitle.contains("1 line")),
+    );
+    assert_eq!(
+        panel.health_summary_row.subtitle().as_deref(),
+        Some("No file-health issues recorded for this document.")
+    );
 }
 
 #[test]
@@ -1963,7 +2098,6 @@ fn test_status_bar_shows_detected_encoding_and_line_endings_after_open() {
         status_bar.line_ending_button.label().as_deref(),
         Some("CRLF")
     );
-    assert!(status_bar.health_button.property::<bool>("visible"));
 }
 
 #[test]
@@ -2139,7 +2273,7 @@ fn test_mixed_line_endings_warning_opens_normalization_picker_and_updates_status
 }
 
 #[test]
-fn test_narrow_window_collapses_document_format_controls_into_grouped_button() {
+fn test_narrow_window_keeps_quick_encoding_controls_visible() {
     ensure_gtk_init();
     let settings = gio::Settings::new(lushtext_core::config::APP_ID);
     settings
@@ -2152,6 +2286,7 @@ fn test_narrow_window_collapses_document_format_controls_into_grouped_button() {
         .set_boolean(keys::WINDOW_MAXIMIZED, false)
         .expect("clear maximized");
     let window = test_window();
+    window.set_default_size(820, 900);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("narrow.txt");
     std::fs::write(&path, "hello").expect("write file");
@@ -2162,42 +2297,18 @@ fn test_narrow_window_collapses_document_format_controls_into_grouped_button() {
         active_editor(&window).file_size().is_some()
     });
     wait_until(Duration::from_secs(2), || {
-        window
-            .imp()
-            .status_bar
-            .imp()
-            .document_format_button
-            .property::<bool>("visible")
+        active_editor(&window).file_size().is_some()
     });
 
     let status_bar = window.imp().status_bar.imp();
     assert!(
-        status_bar
-            .document_format_button
-            .property::<bool>("visible"),
-        "narrow windows should expose the grouped Text Format… control",
+        status_bar.line_ending_button.property::<bool>("visible"),
+        "narrow windows should keep the line-ending entry point visible",
     );
     assert!(
-        !status_bar
-            .document_format_controls_box
-            .property::<bool>("visible"),
-        "the separate encoding/line-ending buttons should collapse away in compact mode",
+        status_bar.encoding_button.property::<bool>("visible"),
+        "narrow windows should keep the encoding entry point visible",
     );
-
-    status_bar.document_format_button.emit_clicked();
-    wait_until(Duration::from_secs(2), || {
-        visible_alert_dialog(&window)
-            .and_then(|dialog| dialog.heading())
-            .is_some_and(|heading| heading.contains("Text Format"))
-    });
-    let dialog = visible_alert_dialog(&window).expect("text format dialog visible");
-    click_alert_extra_button(&dialog, "Line Endings…");
-
-    wait_until(Duration::from_secs(2), || {
-        visible_alert_dialog(&window)
-            .and_then(|dialog| dialog.heading())
-            .is_some_and(|heading| heading.contains("Line Endings"))
-    });
 }
 
 #[test]
@@ -2215,16 +2326,14 @@ fn test_closing_properties_pane_restores_editor_focus() {
     activate_action(&window, "toggle-properties");
     window
         .imp()
-        .status_bar
-        .imp()
-        .properties_toggle_button
+        .document_properties_toggle_button
         .grab_focus();
     flush_events();
     let hidden_row_ptr = window
         .imp()
         .properties_panel
         .imp()
-        .editorconfig_row
+        .health_summary_row
         .upcast_ref::<gtk4::Widget>()
         .as_ptr();
     activate_action(&window, "toggle-properties");
@@ -2248,7 +2357,7 @@ fn test_closing_properties_pane_with_no_editor_clears_focus() {
 
     activate_action(&window, "toggle-properties");
     let panel = window.imp().properties_panel.imp();
-    panel.editorconfig_row.grab_focus();
+    panel.location_row.grab_focus();
     flush_events();
 
     activate_action(&window, "toggle-properties");
@@ -2256,15 +2365,13 @@ fn test_closing_properties_pane_with_no_editor_clears_focus() {
 }
 
 #[test]
-fn test_properties_toggle_button_lives_in_status_bar_and_is_wired() {
+fn test_properties_toggle_button_lives_in_header_bar_and_is_wired() {
     ensure_gtk_init();
     let window = test_window();
     assert_eq!(
         window
             .imp()
-            .status_bar
-            .imp()
-            .properties_toggle_button
+            .document_properties_toggle_button
             .action_name()
             .as_deref(),
         Some("win.toggle-properties")

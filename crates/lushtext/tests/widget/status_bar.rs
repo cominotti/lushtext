@@ -114,41 +114,6 @@ fn test_render_none_removes_css_classes() {
     assert!(!bar.imp().message_label.has_css_class("status-info"));
 }
 
-// --- File size ---
-
-#[test]
-fn test_set_file_size_some() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    bar.set_file_size(Some(2_500));
-    assert_eq!(bar.imp().file_size_label.label().as_str(), "2.5 KB");
-}
-
-#[test]
-fn test_set_file_size_bytes() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    bar.set_file_size(Some(512));
-    assert_eq!(bar.imp().file_size_label.label().as_str(), "512 B");
-}
-
-#[test]
-fn test_set_file_size_mb() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    bar.set_file_size(Some(2_000_000));
-    assert_eq!(bar.imp().file_size_label.label().as_str(), "2.0 MB");
-}
-
-#[test]
-fn test_set_file_size_none_clears_label() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    bar.set_file_size(Some(1_000));
-    bar.set_file_size(None);
-    assert_eq!(bar.imp().file_size_label.label().as_str(), "");
-}
-
 // --- Metadata visibility ---
 
 #[test]
@@ -192,31 +157,29 @@ fn test_line_ending_button_shows_lf() {
 }
 
 #[test]
-fn test_health_button_hidden_by_default() {
+fn test_editorconfig_separator_hidden_by_default() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    assert!(!bar.imp().health_button.is_visible());
+    assert!(!bar.imp().editorconfig_separator.is_visible());
 }
 
 #[test]
-fn test_document_format_button_hidden_by_default() {
+fn test_set_editorconfig_active_shows_badge_and_separator() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    assert!(!bar.imp().document_format_button.is_visible());
+    bar.set_editorconfig_active(true);
+    assert!(bar.imp().editorconfig_label.is_visible());
+    assert!(bar.imp().editorconfig_separator.is_visible());
 }
 
 #[test]
-fn test_document_format_button_action_name() {
+fn test_set_editorconfig_inactive_hides_badge_and_separator() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
-    assert_eq!(
-        bar.imp()
-            .document_format_button
-            .action_name()
-            .expect("expected operation to succeed")
-            .as_str(),
-        "win.show-document-format-controls"
-    );
+    bar.set_editorconfig_active(true);
+    bar.set_editorconfig_active(false);
+    assert!(!bar.imp().editorconfig_label.is_visible());
+    assert!(!bar.imp().editorconfig_separator.is_visible());
 }
 
 // --- Sidebar toggle button ---
@@ -273,71 +236,4 @@ fn test_sidebar_toggle_button_action_name() {
             .as_str(),
         "win.toggle-sidebar"
     );
-}
-
-// --- Properties toggle button ---
-
-#[test]
-fn test_properties_toggle_button_exists() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    let _button = &bar.imp().properties_toggle_button;
-}
-
-#[test]
-fn test_properties_toggle_button_icon() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    assert_eq!(
-        bar.imp()
-            .properties_toggle_button
-            .icon_name()
-            .expect("expected operation to succeed")
-            .as_str(),
-        "sidebar-show-right-symbolic"
-    );
-}
-
-#[test]
-fn test_properties_toggle_button_is_flat() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    assert!(bar.imp().properties_toggle_button.has_css_class("flat"));
-}
-
-#[test]
-fn test_properties_toggle_button_has_tooltip() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    let tooltip = bar
-        .imp()
-        .properties_toggle_button
-        .tooltip_text()
-        .expect("expected operation to succeed");
-    assert!(tooltip.contains("Properties"));
-}
-
-#[test]
-fn test_properties_toggle_button_action_name() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    assert_eq!(
-        bar.imp()
-            .properties_toggle_button
-            .action_name()
-            .expect("expected operation to succeed")
-            .as_str(),
-        "win.toggle-properties"
-    );
-}
-
-#[test]
-fn test_properties_toggle_button_is_rightmost_child() {
-    ensure_gtk_init();
-    let bar = LushtextStatusBar::new();
-    let last = bar
-        .last_child()
-        .and_downcast::<gtk4::ToggleButton>()
-        .expect("rightmost child is a toggle button");
-    assert_eq!(last.as_ptr(), bar.imp().properties_toggle_button.as_ptr());
 }

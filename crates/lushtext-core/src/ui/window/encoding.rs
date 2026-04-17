@@ -25,68 +25,6 @@ const RESPONSE_CONTINUE: &str = "continue";
 const RESPONSE_CANCEL: &str = "cancel";
 
 impl super::LushtextWindow {
-    /// Present the compact grouped document-format surface for narrow windows.
-    pub(super) fn show_document_format_controls_dialog(&self) {
-        let Some(editor) = self.active_editor() else {
-            return;
-        };
-
-        let issue_summary = if editor.file_health().is_empty() {
-            "No issues recorded".to_string()
-        } else if editor.file_health().len() == 1 {
-            "1 issue recorded".to_string()
-        } else {
-            format!("{} issues recorded", editor.file_health().len())
-        };
-
-        let dialog = build_dialog(
-            "Text Format",
-            &format!(
-                "Opened as {}. Next save uses {}. Line endings: {}. {}.",
-                editor.opened_encoding().label(),
-                editor.save_encoding().label(),
-                if editor.detected_line_ending() == LineEnding::Mixed {
-                    "Mixed"
-                } else {
-                    editor.save_line_ending().label()
-                },
-                issue_summary
-            ),
-        );
-        let content = standard_dialog_content();
-
-        append_action_button(
-            &content,
-            "Text Encoding…",
-            self.downgrade(),
-            dialog.clone(),
-            |window| {
-                window.show_encoding_controls_dialog();
-            },
-        );
-        append_action_button(
-            &content,
-            "Line Endings…",
-            self.downgrade(),
-            dialog.clone(),
-            |window| {
-                window.show_line_ending_controls_dialog();
-            },
-        );
-        append_action_button(
-            &content,
-            "Issues…",
-            self.downgrade(),
-            dialog.clone(),
-            |window| {
-                window.show_file_health_dialog();
-            },
-        );
-
-        dialog.set_extra_child(Some(&content));
-        dialog.present(Some(self));
-    }
-
     /// Present the summary encoding surface for the active tab.
     pub(super) fn show_encoding_controls_dialog(&self) {
         let Some(editor) = self.active_editor() else {
@@ -294,18 +232,15 @@ impl super::LushtextWindow {
         };
 
         let dialog = build_dialog(
-            "Issues",
-            &format!(
-                "Review document issues for the file opened as {}.",
-                editor.opened_encoding().label()
-            ),
+            "File Health",
+            "Review encoding-adjacent findings and any slower follow-up actions for the active document.",
         );
         let content = standard_dialog_content();
 
         let findings = editor.file_health();
         if findings.is_empty() {
             let label = gtk4::Label::new(Some(
-                "No encoding-related issues are currently recorded for this document.",
+                "No file-health issues are currently recorded for this document.",
             ));
             label.set_wrap(true);
             label.set_xalign(0.0);

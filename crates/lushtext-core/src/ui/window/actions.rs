@@ -37,9 +37,6 @@ impl LushtextWindow {
             gio::ActionEntry::builder("show-encoding-controls")
                 .activate(|window: &Self, _, _| window.show_encoding_controls_dialog())
                 .build(),
-            gio::ActionEntry::builder("show-document-format-controls")
-                .activate(|window: &Self, _, _| window.show_document_format_controls_dialog())
-                .build(),
             gio::ActionEntry::builder("show-line-ending-controls")
                 .activate(|window: &Self, _, _| window.show_line_ending_controls_dialog())
                 .build(),
@@ -142,62 +139,119 @@ impl LushtextWindow {
         }
         self.add_action(&discard_action);
 
-        self.register_split_view_toggle_action(
+        self.register_secondary_surface_toggle_action(
             "toggle-sidebar",
-            &self.imp().workspace_split_view,
-            keys::WORKSPACE_SIDEBAR_VISIBLE,
-            |imp, visible| {
-                imp.sidebar_visible.set(visible);
-            },
+            self.rendered_workspace_sidebar_visible(),
+            Self::set_workspace_sidebar_requested_visible,
         );
-        self.register_split_view_toggle_action(
+        self.register_secondary_surface_toggle_action(
             "toggle-properties",
-            &self.imp().properties_split_view,
-            keys::PROPERTIES_SIDEBAR_VISIBLE,
-            |imp, visible| {
-                imp.properties_sidebar_visible.set(visible);
-            },
+            self.rendered_document_properties_visible(),
+            Self::set_document_properties_requested_visible,
         );
         self.register_boolean_setting_toggle_action("toggle-minimap", keys::SHOW_MINIMAP);
     }
 
-    fn register_split_view_toggle_action(
+    fn register_secondary_surface_toggle_action(
         &self,
         action_name: &'static str,
-        split_view: &libadwaita::OverlaySplitView,
-        settings_key: &'static str,
-        cache_visible: fn(&imp::LushtextWindow, bool),
+        initial_state: bool,
+        apply: fn(&Self, bool),
     ) {
-        let action = gio::SimpleAction::new_stateful(
-            action_name,
-            None,
-            &split_view.shows_sidebar().to_variant(),
-        );
+        let action =
+            gio::SimpleAction::new_stateful(action_name, None, &initial_state.to_variant());
         {
-            let split_view = split_view.clone();
+            action.connect_activate(move |action, _| {
+                let current = action
+                    .state()
+                    .and_then(|state| state.get::<bool>())
+                    .unwrap_or(false);
+                action.change_state(&(!current).to_variant());
+            });
+        }
+        {
+            let window_weak = self.downgrade();
             action.connect_change_state(move |_action, state| {
                 let Some(state) = state else { return };
                 let Some(new_visible) = state.get::<bool>() else {
                     tracing::error!("{action_name}: expected bool state");
                     return;
                 };
-                split_view.set_show_sidebar(new_visible);
+                if let Some(window) = window_weak.upgrade() {
+                    apply(&window, new_visible);
+                }
             });
         }
         self.add_action(&action);
+    }
 
-        let window_weak = self.downgrade();
-        split_view.connect_show_sidebar_notify(move |split| {
-            let visible = split.shows_sidebar();
-            action.set_state(&visible.to_variant());
-            if let Some(window) = window_weak.upgrade() {
-                cache_visible(window.imp(), visible);
-                let _ = window.imp().settings.set_boolean(settings_key, visible);
-                if !visible {
-                    window.restore_focus_after_secondary_pane_close();
-                }
+    /// Persist the user's explicit workspace-sidebar preference, then let the
+    /// adaptive shell decide how that preference is rendered right now.
+    fn set_workspace_sidebar_requested_visible(&self, visible: bool) {
+        let state = &self.imp().secondary_surfaces;
+        state.workspace_requested_visible.set(visible);
+        if self.imp().properties_split_view.is_collapsed() {
+            if visible {
+                state
+                    .compact_surface
+                    .set(Some(imp::SecondarySurface::Workspace));
+            } else if state.compact_surface.get() == Some(imp::SecondarySurface::Workspace) {
+                state.compact_surface.set(None);
             }
-        });
+        }
+        let _ = self
+            .imp()
+            .settings
+            .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, visible);
+        self.sync_secondary_surface_layout();
+    }
+
+    /// Persist the user's explicit document-properties preference, then let the
+    /// adaptive shell render it as a side pane or bottom sheet as needed.
+    fn set_document_properties_requested_visible(&self, visible: bool) {
+        let state = &self.imp().secondary_surfaces;
+        state.properties_requested_visible.set(visible);
+        if self.imp().properties_split_view.is_collapsed() {
+            if visible {
+                state
+                    .compact_surface
+                    .set(Some(imp::SecondarySurface::DocumentProperties));
+            } else if state.compact_surface.get() == Some(imp::SecondarySurface::DocumentProperties)
+            {
+                state.compact_surface.set(None);
+            }
+        }
+        let _ = self
+            .imp()
+            .settings
+            .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, visible);
+        self.sync_secondary_surface_layout();
+    }
+
+    /// Update the rendered on/off state that powers both toggle buttons and
+    /// any other surfaces bound to the same stateful window actions.
+    pub(super) fn sync_secondary_surface_action_states(&self) {
+        self.set_toggle_action_state("toggle-sidebar", self.rendered_workspace_sidebar_visible());
+        self.set_toggle_action_state(
+            "toggle-properties",
+            self.rendered_document_properties_visible(),
+        );
+    }
+
+    fn set_toggle_action_state(&self, action_name: &str, visible: bool) {
+        let Some(action) = self.lookup_action(action_name) else {
+            return;
+        };
+        let Some(action) = action.downcast_ref::<gio::SimpleAction>() else {
+            return;
+        };
+        let current = action
+            .state()
+            .and_then(|state| state.get::<bool>())
+            .unwrap_or(!visible);
+        if current != visible {
+            action.set_state(&visible.to_variant());
+        }
     }
 
     fn register_boolean_setting_toggle_action(
@@ -269,7 +323,7 @@ impl LushtextWindow {
             ("win.edit-annotation", "<Control><Alt>m"),
             ("win.show-annotations", "<Control><Alt>a"),
             ("win.export-annotations", "<Control><Alt><Shift>a"),
-            ("win.toggle-sidebar", "F9"),
+            ("win.toggle-properties", "F9"),
             ("win.toggle-preview-mode", "<Alt>p"),
             ("win.toggle-fullscreen", "F11"),
             (

@@ -128,6 +128,12 @@ pub fn all_commands() -> &'static [CommandDef] {
             id: "win.toggle-sidebar",
             label: "Toggle Sidebar",
             category: CommandCategory::View,
+            shortcut: None,
+        },
+        CommandDef {
+            id: "win.toggle-properties",
+            label: "Document Properties",
+            category: CommandCategory::View,
             shortcut: Some("F9"),
         },
         CommandDef {

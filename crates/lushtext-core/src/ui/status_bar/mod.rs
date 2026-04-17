@@ -13,11 +13,6 @@ use gtk4::prelude::*;
 
 pub use crate::services::notifications::NotificationSeverity as MessageKind;
 
-/// Below this width, the separate encoding, line-ending, and issue buttons are
-/// collapsed into one grouped entry point so the central message label keeps
-/// enough room to stay readable.
-const FORMAT_CONTROLS_COMPACT_MAX_WIDTH: i32 = 900;
-
 glib::wrapper! {
     pub struct LushtextStatusBar(ObjectSubclass<imp::LushtextStatusBar>)
         @extends gtk4::Box, gtk4::Widget,
@@ -47,18 +42,10 @@ impl LushtextStatusBar {
         label.set_label(&message.text);
     }
 
-    /// Update the file size display. Pass `None` for untitled tabs
-    /// or when no size is available.
-    pub fn set_file_size(&self, bytes: Option<u64>) {
-        match bytes {
-            Some(b) => self.imp().file_size_label.set_label(&format_file_size(b)),
-            None => self.imp().file_size_label.set_label(""),
-        }
-    }
-
     /// Show or hide the "EditorConfig" indicator in the status bar.
     pub fn set_editorconfig_active(&self, active: bool) {
         self.imp().editorconfig_label.set_visible(active);
+        self.imp().editorconfig_separator.set_visible(active);
     }
 
     /// Update the encoding control label for the active tab.
@@ -71,51 +58,10 @@ impl LushtextStatusBar {
         self.imp().line_ending_button.set_label(label);
     }
 
-    /// Show or hide the file-health entry point for the active tab.
-    pub fn set_health_visible(&self, visible: bool) {
-        self.imp().health_visible.set(visible);
-        self.sync_format_controls_visibility();
-    }
-
-    /// Update the file-health button label for the active tab.
-    pub fn set_health_label(&self, label: &str) {
-        self.imp().health_button.set_label(label);
-    }
-
     /// Show or hide the metadata section between the message area and the
-    /// right-side properties toggle. Hidden when no tabs are open.
+    /// workspace toggle. Hidden when no tabs are open.
     pub fn set_metadata_visible(&self, visible: bool) {
         self.imp().metadata_box.set_visible(visible);
-        self.sync_format_controls_visibility();
-        self.update_format_controls_compact(self.width());
-    }
-
-    /// Update whether the narrow-width grouped document-format control should
-    /// replace the separate encoding, line-ending, and issue buttons.
-    pub fn update_format_controls_compact(&self, width: i32) {
-        let compact = width > 0 && width <= FORMAT_CONTROLS_COMPACT_MAX_WIDTH;
-        if self.imp().format_controls_compact.replace(compact) != compact {
-            self.sync_format_controls_visibility();
-        }
-    }
-
-    fn sync_format_controls_visibility(&self) {
-        let imp = self.imp();
-        // `is_visible()` walks parent visibility and returns false in
-        // unpresented windows, but the status bar still needs to update its own
-        // widget visibility state before the window is shown.
-        let metadata_visible = imp.metadata_box.property::<bool>("visible");
-        let compact = imp.format_controls_compact.get();
-        let health_visible = imp.health_visible.get();
-
-        imp.document_format_controls_box
-            .set_visible(metadata_visible && !compact);
-        imp.document_format_button
-            .set_visible(metadata_visible && compact);
-        imp.health_separator
-            .set_visible(metadata_visible && !compact && health_visible);
-        imp.health_button
-            .set_visible(metadata_visible && !compact && health_visible);
     }
 }
 
@@ -129,58 +75,4 @@ fn clear_message_classes(label: &gtk4::Label) {
     label.remove_css_class("status-info");
     label.remove_css_class("status-warning");
     label.remove_css_class("status-error");
-}
-
-/// Format a byte count into a human-readable string using SI units,
-/// matching GNOME Files / `g_format_size()` convention.
-fn format_file_size(bytes: u64) -> String {
-    const KB: f64 = 1_000.0;
-    const MB: f64 = 1_000_000.0;
-    let b = bytes as f64;
-    if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        let kb = b / KB;
-        // Promote to MB when rounding would produce "1000.0 KB"
-        if kb >= 999.95 {
-            format!("{:.1} MB", b / MB)
-        } else {
-            format!("{kb:.1} KB")
-        }
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_file_size_bytes() {
-        assert_eq!(format_file_size(0), "0 B");
-        assert_eq!(format_file_size(512), "512 B");
-        assert_eq!(format_file_size(999), "999 B");
-    }
-
-    #[test]
-    fn test_format_file_size_kb() {
-        assert_eq!(format_file_size(1_000), "1.0 KB");
-        assert_eq!(format_file_size(1_500), "1.5 KB");
-        assert_eq!(format_file_size(500_000), "500.0 KB");
-    }
-
-    #[test]
-    fn test_format_file_size_kb_to_mb_boundary() {
-        // Values near the KB/MB boundary should promote to MB
-        // when rounding would produce "1000.0 KB"
-        assert_eq!(format_file_size(999_949), "999.9 KB");
-        assert_eq!(format_file_size(999_999), "1.0 MB");
-    }
-
-    #[test]
-    fn test_format_file_size_mb() {
-        assert_eq!(format_file_size(1_000_000), "1.0 MB");
-        assert_eq!(format_file_size(2_500_000), "2.5 MB");
-    }
 }

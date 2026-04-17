@@ -2,13 +2,12 @@
 
 //! Private implementation for the properties panel widget.
 //!
-//! Mirrors the existing preferences dialog bindings so the sidebar can expose
-//! the same editor controls without duplicating settings state elsewhere.
+//! The widget keeps slow, inspectable document details in one place and owns
+//! the dynamic file-health rows that are rebuilt as the active document changes.
 
-use crate::config::keys;
 use gtk4::{self, CompositeTemplate, gio, glib};
-use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
+use std::cell::RefCell;
 
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/properties-panel.ui")]
@@ -16,50 +15,45 @@ pub struct LushtextPropertiesPanel {
     /// Full path for the active document, or an empty-state message when no
     /// file-backed editor is selected.
     #[template_child]
-    pub path_row: TemplateChild<libadwaita::ActionRow>,
-    /// Current encoding. Today LushText only opens UTF-8 text files, so this
-    /// row is mostly an explicit confirmation for the user.
-    #[template_child]
-    pub encoding_row: TemplateChild<libadwaita::ActionRow>,
+    pub location_row: TemplateChild<libadwaita::ActionRow>,
     /// On-disk size populated after async file load finishes.
     #[template_child]
     pub file_size_row: TemplateChild<libadwaita::ActionRow>,
+    /// Buffer statistics that stay available even for untitled documents.
+    #[template_child]
+    pub statistics_row: TemplateChild<libadwaita::ActionRow>,
     /// Whether formatting is coming from raw preferences or an EditorConfig
     /// override for the active file.
     #[template_child]
     pub formatting_source_row: TemplateChild<libadwaita::ActionRow>,
-    /// Global formatting controls reused from the preferences dialog.
+    /// Group containing the summary row plus any dynamic finding rows.
     #[template_child]
-    pub editorconfig_row: TemplateChild<libadwaita::SwitchRow>,
+    pub health_group: TemplateChild<libadwaita::PreferencesGroup>,
+    /// Stable summary row that explains the current file-health state.
     #[template_child]
-    pub word_wrap_row: TemplateChild<libadwaita::SwitchRow>,
+    pub health_summary_row: TemplateChild<libadwaita::ActionRow>,
+    /// Launch point for the dedicated health dialog when findings exist.
     #[template_child]
-    pub tab_width_row: TemplateChild<libadwaita::SpinRow>,
-    #[template_child]
-    pub insert_spaces_row: TemplateChild<libadwaita::SwitchRow>,
-    #[template_child]
-    pub show_line_numbers_row: TemplateChild<libadwaita::SwitchRow>,
-    #[template_child]
-    pub highlight_line_row: TemplateChild<libadwaita::SwitchRow>,
-    /// Shared application settings backing both the preferences dialog and
-    /// this lightweight sidebar surface.
+    pub health_review_button: TemplateChild<gtk4::Button>,
+    /// Shared application settings used to explain whether Preferences or
+    /// EditorConfig currently drive the document formatting behavior.
     pub settings: gio::Settings,
+    /// Extra rows currently mounted under the health group.
+    pub health_detail_rows: RefCell<Vec<libadwaita::ActionRow>>,
 }
 
 impl Default for LushtextPropertiesPanel {
     fn default() -> Self {
         Self {
-            path_row: TemplateChild::default(),
-            encoding_row: TemplateChild::default(),
+            location_row: TemplateChild::default(),
             file_size_row: TemplateChild::default(),
+            statistics_row: TemplateChild::default(),
             formatting_source_row: TemplateChild::default(),
-            editorconfig_row: TemplateChild::default(),
-            word_wrap_row: TemplateChild::default(),
-            tab_width_row: TemplateChild::default(),
-            insert_spaces_row: TemplateChild::default(),
-            show_line_numbers_row: TemplateChild::default(),
-            highlight_line_row: TemplateChild::default(),
+            health_group: TemplateChild::default(),
+            health_summary_row: TemplateChild::default(),
+            health_review_button: TemplateChild::default(),
             settings: gio::Settings::new(crate::config::APP_ID),
+            health_detail_rows: RefCell::new(Vec::new()),
         }
     }
 }
@@ -79,33 +73,7 @@ impl ObjectSubclass for LushtextPropertiesPanel {
     }
 }
 
-impl ObjectImpl for LushtextPropertiesPanel {
-    fn constructed(&self) {
-        self.parent_constructed();
-
-        let s = &self.settings;
-        s.bind(keys::USE_EDITORCONFIG, &*self.editorconfig_row, "active")
-            .build();
-        s.bind(keys::WORD_WRAP, &*self.word_wrap_row, "active")
-            .build();
-        s.bind(
-            keys::SHOW_LINE_NUMBERS,
-            &*self.show_line_numbers_row,
-            "active",
-        )
-        .build();
-        s.bind(
-            keys::HIGHLIGHT_CURRENT_LINE,
-            &*self.highlight_line_row,
-            "active",
-        )
-        .build();
-        s.bind(keys::INSERT_SPACES, &*self.insert_spaces_row, "active")
-            .build();
-        s.bind(keys::TAB_WIDTH, &self.tab_width_row.adjustment(), "value")
-            .build();
-    }
-}
+impl ObjectImpl for LushtextPropertiesPanel {}
 
 impl WidgetImpl for LushtextPropertiesPanel {}
 impl BoxImpl for LushtextPropertiesPanel {}

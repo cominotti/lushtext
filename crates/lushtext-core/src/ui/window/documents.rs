@@ -372,7 +372,6 @@ impl LushtextWindow {
         imp.properties_panel.set_active_editor(editor.as_ref());
         if let Some(e) = &editor {
             imp.status_bar.set_metadata_visible(true);
-            imp.status_bar.set_file_size(e.file_size());
             let ec_active = !e.formatting_overrides().is_empty()
                 && imp.settings.boolean(keys::USE_EDITORCONFIG);
             imp.status_bar.set_editorconfig_active(ec_active);
@@ -385,17 +384,9 @@ impl LushtextWindow {
                     e.save_line_ending().label()
                 };
             imp.status_bar.set_line_ending_label(line_ending_label);
-            let finding_count = e.file_health().len();
-            imp.status_bar.set_health_visible(finding_count > 0);
-            let health_label = if finding_count == 1 {
-                "1 Issue".to_string()
-            } else {
-                format!("{finding_count} Issues")
-            };
-            imp.status_bar.set_health_label(&health_label);
         } else {
             imp.status_bar.set_metadata_visible(false);
-            imp.status_bar.set_health_visible(false);
+            imp.status_bar.set_editorconfig_active(false);
         }
         self.refresh_header_bar_with(editor.as_ref());
         self.update_discard_action();

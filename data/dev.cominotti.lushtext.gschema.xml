@@ -118,8 +118,8 @@
     </key>
     <key name="properties-sidebar-visible" type="b">
       <default>false</default>
-      <summary>Properties sidebar visibility</summary>
-      <description>Whether the right properties sidebar is visible in the split-view layout.</description>
+      <summary>Document properties requested visibility</summary>
+      <description>Whether document properties should be shown when the current layout allows it. Compact layouts may temporarily render the same surface as a bottom sheet instead of a side pane.</description>
     </key>
     <key name="properties-sidebar-width-fraction" type="d">
       <default>0.28</default>

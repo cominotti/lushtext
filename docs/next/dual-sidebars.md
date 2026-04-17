@@ -2,6 +2,21 @@
 
 ## Status: Proposed
 
+## Current Note
+
+This note is still useful as the historical justification for moving the shell
+onto toolkit-owned split views, but the shipped contract has moved beyond the
+original proposal:
+
+- the workspace sidebar still uses `AdwOverlaySplitView`
+- the document-properties surface now adapts between a wide right pane and a
+  compact `AdwBottomSheet`
+- the header bar owns the `Document Properties` toggle with `info-outline-symbolic`
+  and `F9`
+- the bottom bar now keeps only quick editor state such as `EditorConfig`,
+  line endings, and encoding; slower document details live in document
+  properties
+
 ## Summary
 
 Replace the current custom `GtkPaned`-driven left sidebar animation with a

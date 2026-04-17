@@ -40,6 +40,26 @@ const DUAL_PANE_LAYOUT_OVERHEAD_SP: f64 = 32.0;
 /// Collapse the left workspace pane on narrower windows.
 const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: &str = "max-width: 860sp";
 
+/// Secondary surfaces that can compete for the compact-width slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecondarySurface {
+    /// The left workspace sidebar.
+    Workspace,
+    /// The document-properties surface.
+    DocumentProperties,
+}
+
+/// Requested-versus-rendered visibility state for compact secondary-surface arbitration.
+#[derive(Default)]
+pub struct SecondarySurfaceState {
+    /// Whether the user last explicitly left the workspace sidebar open.
+    pub workspace_requested_visible: Cell<bool>,
+    /// Whether the user last explicitly left document properties open.
+    pub properties_requested_visible: Cell<bool>,
+    /// Which secondary surface currently owns the compact-width slot, if any.
+    pub compact_surface: Cell<Option<SecondarySurface>>,
+}
+
 /// Editor-memory accounting shared by the eviction helpers.
 #[derive(Default)]
 pub struct EditorMemoryState {
@@ -123,9 +143,13 @@ pub struct LushtextWindow {
     #[template_child]
     pub title_widget: TemplateChild<libadwaita::WindowTitle>,
     #[template_child]
+    pub document_properties_toggle_button: TemplateChild<gtk4::ToggleButton>,
+    #[template_child]
     pub tab_bar: TemplateChild<libadwaita::TabBar>,
     #[template_child]
     pub workspace_split_view: TemplateChild<libadwaita::OverlaySplitView>,
+    #[template_child]
+    pub properties_bottom_sheet: TemplateChild<libadwaita::BottomSheet>,
     #[template_child]
     pub properties_split_view: TemplateChild<libadwaita::OverlaySplitView>,
     #[template_child]
@@ -159,10 +183,8 @@ pub struct LushtextWindow {
 
     /// Application-wide settings for geometry, sidebar layout, and editor behavior.
     pub settings: gio::Settings,
-    /// Cached workspace sidebar visibility for action-state synchronization and tests.
-    pub sidebar_visible: Cell<bool>,
-    /// Cached properties sidebar visibility for action-state synchronization and tests.
-    pub properties_sidebar_visible: Cell<bool>,
+    /// Requested-versus-rendered state for the workspace sidebar and document properties.
+    pub secondary_surfaces: SecondarySurfaceState,
     /// Whether the side-by-side preview pane is currently visible.
     pub preview_visible: Cell<bool>,
     /// Whether the preview-only mode (Alt+P) is active (editor hidden, preview full-width).
@@ -213,8 +235,10 @@ impl Default for LushtextWindow {
         Self {
             header_bar: TemplateChild::default(),
             title_widget: TemplateChild::default(),
+            document_properties_toggle_button: TemplateChild::default(),
             tab_bar: TemplateChild::default(),
             workspace_split_view: TemplateChild::default(),
+            properties_bottom_sheet: TemplateChild::default(),
             properties_split_view: TemplateChild::default(),
             tab_view: TemplateChild::default(),
             content_stack: TemplateChild::default(),
@@ -231,8 +255,7 @@ impl Default for LushtextWindow {
             search_panel_revealer: TemplateChild::default(),
             search_panel: TemplateChild::default(),
             settings: gio::Settings::new(config::APP_ID),
-            sidebar_visible: Cell::new(true),
-            properties_sidebar_visible: Cell::new(false),
+            secondary_surfaces: SecondarySurfaceState::default(),
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
             saved_preview_pos: Cell::new(0),
@@ -295,7 +318,11 @@ impl ObjectImpl for LushtextWindow {
             obj.maximize();
         }
 
-        configure_split_views(&self.workspace_split_view, &self.properties_split_view);
+        configure_split_views(
+            &self.workspace_split_view,
+            &self.properties_split_view,
+            &self.properties_bottom_sheet,
+        );
         migrate_split_view_settings(settings, w);
         install_split_view_breakpoints(&obj);
         restore_workspace_split_view(&obj);
@@ -445,7 +472,8 @@ impl ObjectImpl for LushtextWindow {
                     let Some(window) = window_weak.upgrade() else {
                         return;
                     };
-                    if split.is_collapsed() && split.shows_sidebar() {
+                    sync_secondary_surfaces(&window);
+                    if split.is_collapsed() && window.rendered_document_properties_visible() {
                         window.restore_focus_after_breakpoint_collapse();
                     }
                 });
@@ -678,6 +706,7 @@ impl AdwApplicationWindowImpl for LushtextWindow {}
 fn configure_split_views(
     workspace_split_view: &libadwaita::OverlaySplitView,
     properties_split_view: &libadwaita::OverlaySplitView,
+    properties_bottom_sheet: &libadwaita::BottomSheet,
 ) {
     workspace_split_view.set_sidebar_position(gtk4::PackType::Start);
     workspace_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
@@ -693,6 +722,14 @@ fn configure_split_views(
     properties_split_view.set_pin_sidebar(true);
     properties_split_view.set_enable_show_gesture(false);
     properties_split_view.set_enable_hide_gesture(false);
+
+    // The compact presentation is driven only by the same window action that
+    // owns the wide pane. Disabling swipe open/close keeps that requested
+    // visibility state deterministic.
+    properties_bottom_sheet.set_can_open(false);
+    properties_bottom_sheet.set_can_close(false);
+    properties_bottom_sheet.set_full_width(true);
+    properties_bottom_sheet.set_modal(false);
 }
 
 fn migrate_split_view_settings(settings: &gio::Settings, restored_width: i32) {
@@ -733,10 +770,11 @@ fn restore_workspace_split_view(window: &super::LushtextWindow) {
         .imp()
         .settings
         .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, preset.fraction());
-    window.imp().workspace_split_view.set_show_sidebar(visible);
-    window.imp().sidebar_visible.set(visible);
-    sync_properties_breakpoint(window);
-    sync_properties_split_view(window, width);
+    window
+        .imp()
+        .secondary_surfaces
+        .workspace_requested_visible
+        .set(visible);
 }
 
 fn restore_properties_split_view(window: &super::LushtextWindow) {
@@ -754,8 +792,13 @@ fn restore_properties_split_view(window: &super::LushtextWindow) {
         keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
         desired_properties_fraction(width),
     );
-    window.imp().properties_split_view.set_show_sidebar(visible);
-    window.imp().properties_sidebar_visible.set(visible);
+    window
+        .imp()
+        .secondary_surfaces
+        .properties_requested_visible
+        .set(visible);
+    sync_properties_breakpoint(window);
+    sync_secondary_surfaces(window);
 }
 
 fn install_split_view_breakpoints(window: &super::LushtextWindow) {
@@ -905,6 +948,69 @@ fn workspace_sidebar_consumes_width(window: &super::LushtextWindow) -> bool {
     split.shows_sidebar() && !split.is_collapsed()
 }
 
+fn properties_surface_is_compact(window: &super::LushtextWindow) -> bool {
+    window.imp().properties_split_view.is_collapsed()
+}
+
+fn secondary_surface_requested(state: &SecondarySurfaceState, surface: SecondarySurface) -> bool {
+    match surface {
+        SecondarySurface::Workspace => state.workspace_requested_visible.get(),
+        SecondarySurface::DocumentProperties => state.properties_requested_visible.get(),
+    }
+}
+
+fn preferred_compact_surface(window: &super::LushtextWindow) -> Option<SecondarySurface> {
+    let state = &window.imp().secondary_surfaces;
+    if let Some(surface) = state.compact_surface.get()
+        && secondary_surface_requested(state, surface)
+    {
+        return Some(surface);
+    }
+    if state.properties_requested_visible.get() {
+        Some(SecondarySurface::DocumentProperties)
+    } else if state.workspace_requested_visible.get() {
+        Some(SecondarySurface::Workspace)
+    } else {
+        None
+    }
+}
+
+fn focus_is_within(window: &super::LushtextWindow, root: &gtk4::Widget) -> bool {
+    let mut focus = gtk4::prelude::GtkWindowExt::focus(window);
+    while let Some(widget) = focus {
+        if widget.as_ptr() == root.as_ptr() {
+            return true;
+        }
+        focus = widget.parent();
+    }
+    false
+}
+
+fn rehost_document_properties_panel(window: &super::LushtextWindow, compact: bool) {
+    let imp = window.imp();
+    if compact {
+        imp.properties_split_view.set_show_sidebar(false);
+        if imp.properties_split_view.sidebar().is_some() {
+            imp.properties_split_view.set_sidebar(gtk4::Widget::NONE);
+        }
+        if imp.properties_bottom_sheet.sheet().is_none() {
+            imp.properties_bottom_sheet
+                .set_sheet(Some(imp.properties_panel.upcast_ref::<gtk4::Widget>()));
+        }
+    } else {
+        if imp.properties_bottom_sheet.is_open() {
+            imp.properties_bottom_sheet.set_open(false);
+        }
+        if imp.properties_bottom_sheet.sheet().is_some() {
+            imp.properties_bottom_sheet.set_sheet(gtk4::Widget::NONE);
+        }
+        if imp.properties_split_view.sidebar().is_none() {
+            imp.properties_split_view
+                .set_sidebar(Some(imp.properties_panel.upcast_ref::<gtk4::Widget>()));
+        }
+    }
+}
+
 fn set_workspace_sidebar_preset(
     window: &super::LushtextWindow,
     preset: WorkspaceSidebarWidthPreset,
@@ -932,6 +1038,71 @@ fn sync_properties_breakpoint(window: &super::LushtextWindow) {
             .expect("valid properties breakpoint condition");
     if let Some(breakpoint) = window.imp().properties_breakpoint.borrow().as_ref() {
         breakpoint.set_condition(Some(&condition));
+    }
+}
+
+fn sync_secondary_surfaces(window: &super::LushtextWindow) {
+    let imp = window.imp();
+    let compact = properties_surface_is_compact(window);
+    let was_workspace_visible = imp.workspace_split_view.shows_sidebar();
+    let was_properties_visible = window.rendered_document_properties_visible();
+    let focus_in_workspace = focus_is_within(window, imp.sidebar.upcast_ref::<gtk4::Widget>());
+    let focus_in_properties =
+        focus_is_within(window, imp.properties_panel.upcast_ref::<gtk4::Widget>());
+
+    if !compact {
+        imp.secondary_surfaces.compact_surface.set(None);
+    }
+
+    let compact_surface = if compact {
+        preferred_compact_surface(window)
+    } else {
+        None
+    };
+    let render_workspace = if compact {
+        compact_surface == Some(SecondarySurface::Workspace)
+            && imp.secondary_surfaces.workspace_requested_visible.get()
+    } else {
+        imp.secondary_surfaces.workspace_requested_visible.get()
+    };
+    let render_properties = if compact {
+        compact_surface == Some(SecondarySurface::DocumentProperties)
+            && imp.secondary_surfaces.properties_requested_visible.get()
+    } else {
+        imp.secondary_surfaces.properties_requested_visible.get()
+    };
+
+    rehost_document_properties_panel(window, compact);
+
+    if imp.workspace_split_view.shows_sidebar() != render_workspace {
+        imp.workspace_split_view.set_show_sidebar(render_workspace);
+    }
+
+    if compact {
+        if imp.properties_split_view.shows_sidebar() {
+            imp.properties_split_view.set_show_sidebar(false);
+        }
+        if imp.properties_bottom_sheet.is_open() != render_properties {
+            imp.properties_bottom_sheet.set_open(render_properties);
+        }
+    } else {
+        if imp.properties_bottom_sheet.is_open() {
+            imp.properties_bottom_sheet.set_open(false);
+        }
+        if imp.properties_split_view.shows_sidebar() != render_properties {
+            imp.properties_split_view
+                .set_show_sidebar(render_properties);
+        }
+    }
+
+    window.sync_secondary_surface_action_states();
+
+    if (was_workspace_visible && !render_workspace && focus_in_workspace)
+        || (was_properties_visible
+            && !render_properties
+            && (focus_in_properties || window.active_editor().is_none()))
+    {
+        window.restore_focus_after_secondary_pane_close();
     }
 }
 
@@ -967,6 +1138,31 @@ fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
     );
     sync_properties_breakpoint(window);
     sync_properties_split_view(window, window_width);
+    sync_secondary_surfaces(window);
+}
+
+impl super::LushtextWindow {
+    /// Return whether the workspace sidebar is currently rendered on screen.
+    pub(super) fn rendered_workspace_sidebar_visible(&self) -> bool {
+        self.imp().workspace_split_view.shows_sidebar()
+    }
+
+    /// Return whether document properties are currently rendered on screen.
+    pub(super) fn rendered_document_properties_visible(&self) -> bool {
+        if properties_surface_is_compact(self) {
+            self.imp().properties_bottom_sheet.is_open()
+        } else {
+            self.imp().properties_split_view.shows_sidebar()
+        }
+    }
+
+    /// Recompute the adaptive properties host after any explicit visibility change.
+    pub(super) fn sync_secondary_surface_layout(&self) {
+        let width = current_window_width(self);
+        sync_properties_breakpoint(self);
+        sync_properties_split_view(self, width);
+        sync_secondary_surfaces(self);
+    }
 }
 
 fn fixed_fraction(window_width: i32, min_width_sp: f64, target_fraction: f64) -> f64 {
