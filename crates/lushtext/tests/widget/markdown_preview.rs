@@ -6,6 +6,7 @@ use crate::common::{ensure_gtk_init, present_window, test_application, wait_unti
 use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
 use gtk4::prelude::*;
+use lushtext_core::config::{self, keys};
 use lushtext_core::ui::markdown_preview::{
     LushtextMarkdownPreview, MarkdownPreviewRenderContext,
 };
@@ -34,6 +35,25 @@ fn test_render_markdown_switches_to_content_mode() {
     let preview = LushtextMarkdownPreview::new();
     preview.render_markdown("# Hello");
     assert!(preview.is_showing_content());
+}
+
+#[test]
+fn test_preview_background_opacity_tracks_setting() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(config::APP_ID);
+    settings
+        .set_double(keys::TAB_CONTENT_OPACITY, 0.7)
+        .expect("set tab-content-opacity");
+
+    let preview = LushtextMarkdownPreview::new();
+    assert!((preview.background_opacity() - 0.7).abs() < f64::EPSILON);
+
+    settings
+        .set_double(keys::TAB_CONTENT_OPACITY, 0.55)
+        .expect("update tab-content-opacity");
+    while glib::MainContext::default().iteration(false) {}
+
+    assert!((preview.background_opacity() - 0.55).abs() < f64::EPSILON);
 }
 
 #[test]

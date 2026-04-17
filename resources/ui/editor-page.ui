@@ -35,6 +35,9 @@
                     <property name="bottom-margin">6</property>
                     <property name="left-margin">12</property>
                     <property name="right-margin">12</property>
+                    <style>
+                      <class name="tab-content-editor-surface"/>
+                    </style>
                     <!-- show-line-numbers, highlight-current-line, tab-width,
                          insert-spaces-instead-of-tabs, and wrap-mode are set
                          via GSettings bindings in constructed() -->

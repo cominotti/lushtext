@@ -24,6 +24,7 @@ pub mod keys {
     pub const USE_EDITORCONFIG: &str = "use-editorconfig";
     pub const COLOR_SCHEME: &str = "color-scheme";
     pub const STYLE_SCHEME: &str = "style-scheme";
+    pub const TAB_CONTENT_OPACITY: &str = "tab-content-opacity";
     pub const USE_SYSTEM_FONT: &str = "use-system-font";
     pub const CUSTOM_FONT: &str = "custom-font";
     pub const ZOOM_LEVEL: &str = "zoom-level";

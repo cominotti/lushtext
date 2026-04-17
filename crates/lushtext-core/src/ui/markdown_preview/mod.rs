@@ -776,6 +776,17 @@ impl LushtextMarkdownPreview {
         self.imp().text_view.get()
     }
 
+    /// Return the current document-surface opacity used by the preview.
+    ///
+    /// Widget tests use this to verify that preview mode tracks the same
+    /// transparency preference as the editor surface.
+    #[must_use]
+    pub fn background_opacity(&self) -> f64 {
+        gtk4::gio::Settings::new(crate::config::APP_ID)
+            .double(crate::config::keys::TAB_CONTENT_OPACITY)
+            .clamp(0.0, 1.0)
+    }
+
     /// Install click and hover controllers for launchable text-buffer links.
     fn setup_link_interaction(&self) {
         let click = gtk4::GestureClick::new();

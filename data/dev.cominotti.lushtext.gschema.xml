@@ -67,6 +67,12 @@
       <summary>Color Scheme</summary>
       <description>Base GtkSourceView style scheme ID (dark variant selected automatically)</description>
     </key>
+    <key name="tab-content-opacity" type="d">
+      <default>1.0</default>
+      <summary>Tab Content Transparency</summary>
+      <description>Opacity used for editor and Markdown preview document backgrounds, where 1.0 is fully opaque.</description>
+      <range min="0.0" max="1.0"/>
+    </key>
     <key name="use-system-font" type="b">
       <default>true</default>
       <summary>Use System Monospace Font</summary>

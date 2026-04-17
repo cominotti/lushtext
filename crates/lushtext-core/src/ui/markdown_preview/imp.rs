@@ -144,6 +144,8 @@ pub struct LushtextMarkdownPreview {
     /// Optional override used by tests to capture preview link activations
     /// without spawning an external desktop handler.
     pub(super) link_activation_callback: RefCell<Option<LinkActivationCallback>>,
+    /// Current document-surface opacity used for the preview background.
+    pub background_opacity: Cell<f64>,
 }
 
 #[glib::object_subclass]
@@ -169,6 +171,27 @@ impl ObjectImpl for LushtextMarkdownPreview {
         let is_dark = libadwaita::StyleManager::default().is_dark();
         create_or_update_tags(&self.text_view.buffer(), is_dark);
         self.obj().setup_link_interaction();
+        self.background_opacity.set(
+            gtk4::gio::Settings::new(crate::config::APP_ID)
+                .double(crate::config::keys::TAB_CONTENT_OPACITY)
+                .clamp(0.0, 1.0),
+        );
+
+        {
+            let settings = gtk4::gio::Settings::new(crate::config::APP_ID);
+            let preview_weak = self.obj().downgrade();
+            settings.connect_changed(
+                Some(crate::config::keys::TAB_CONTENT_OPACITY),
+                move |s, _| {
+                    if let Some(preview) = preview_weak.upgrade() {
+                        preview.imp().background_opacity.set(
+                            s.double(crate::config::keys::TAB_CONTENT_OPACITY)
+                                .clamp(0.0, 1.0),
+                        );
+                    }
+                },
+            );
+        }
 
         // Re-create tags when the dark/light mode changes so colors stay correct.
         let obj_weak = self.obj().downgrade();

@@ -6,6 +6,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 
 - **Dual sidebars** -- persistent left workspace tree plus optional right properties panel for document metadata and editor formatting controls
 - **Adaptive workspace sidebar width** -- choose `Small`, `Comfy`, or `Large` in `Preferences > Workspace`; each preset stays comfortable on large displays by clamping to a bounded desktop width
+- **Tab content transparency** -- adjust `Transparency` in `Preferences > Editor > Appearance` to soften editor and Markdown preview backgrounds while keeping the header, side panels, status/search chrome, and minimap opaque
 - **Workspaces** -- named collections of root directories, persisted across sessions
 - **Workspace auto-refresh** -- external file and folder changes refresh the sidebar's currently materialized root rows and expanded directories automatically, with access-noise filtering plus in-place reconciliation for both subtree and manual root refreshes to avoid visible flashing, and a per-section `Refresh` button for deterministic broader reloads
 - **File peek** -- press `Space` on a selected sidebar file to inspect a bounded read-only preview in a floating card with the absolute file path, then `Enter` or `Open` to promote it into a real tab

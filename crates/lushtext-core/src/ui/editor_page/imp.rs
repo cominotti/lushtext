@@ -53,6 +53,8 @@ pub struct PreferenceBindingState {
     pub word_wrap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `style-scheme` change. Disconnected in `Drop`.
     pub style_scheme_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `tab-content-opacity` change. Disconnected in `Drop`.
+    pub tab_content_opacity_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `tab-width` change. Disconnected in `Drop`.
     pub tab_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `insert-spaces` change. Disconnected in `Drop`.
@@ -280,6 +282,10 @@ pub struct LushtextEditorPage {
     /// Cooperative cancellation token for background file loads. `Arc<AtomicBool>`
     /// is Send+Sync, allowing the background thread to check it.
     pub cancel_token: Arc<AtomicBool>,
+    /// Last style-scheme ID actually applied to this buffer.
+    pub applied_style_scheme_id: RefCell<Option<String>>,
+    /// Current document-surface opacity for the main editor text area.
+    pub document_surface_opacity: Cell<f64>,
     /// Application-wide GSettings instance for editor preference bindings.
     pub settings: gio::Settings,
     /// Grouped signal-handler IDs for application-global settings/theme wiring.
@@ -333,6 +339,8 @@ impl Default for LushtextEditorPage {
             size_check: Cell::new(FileSizeCheck::Normal),
             evicted: Cell::new(false),
             cancel_token: Arc::new(AtomicBool::new(false)),
+            applied_style_scheme_id: RefCell::new(None),
+            document_surface_opacity: Cell::new(1.0),
             settings: gio::Settings::new(crate::config::APP_ID),
             preference_bindings: PreferenceBindingState::default(),
             formatting_overrides: Cell::new(FormattingOverrides::default()),
@@ -513,15 +521,40 @@ impl ObjectImpl for LushtextEditorPage {
             .word_wrap_handler_id
             .replace(Some(id));
 
-        apply_color_scheme(&buffer, settings);
+        *self.applied_style_scheme_id.borrow_mut() = apply_color_scheme(&buffer, settings);
+        self.document_surface_opacity
+            .set(settings.double(keys::TAB_CONTENT_OPACITY).clamp(0.0, 1.0));
         {
             let buf = buffer.clone();
             let s = settings.clone();
+            let editor_weak = self.obj().downgrade();
             let id = settings.connect_changed(Some(keys::STYLE_SCHEME), move |_, _| {
-                apply_color_scheme(&buf, &s);
+                let applied = apply_color_scheme(&buf, &s);
+                if let Some(editor) = editor_weak.upgrade() {
+                    *editor.imp().applied_style_scheme_id.borrow_mut() = applied;
+                }
             });
             self.preference_bindings
                 .style_scheme_handler_id
+                .replace(Some(id));
+        }
+        {
+            let buf = buffer.clone();
+            let s = settings.clone();
+            let editor_weak = self.obj().downgrade();
+            let id = settings.connect_changed(Some(keys::TAB_CONTENT_OPACITY), move |_, _| {
+                let applied = apply_color_scheme(&buf, &s);
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor
+                        .imp()
+                        .document_surface_opacity
+                        .set(s.double(keys::TAB_CONTENT_OPACITY).clamp(0.0, 1.0));
+                    *editor.imp().applied_style_scheme_id.borrow_mut() = applied;
+                    editor.queue_minimap_draw();
+                }
+            });
+            self.preference_bindings
+                .tab_content_opacity_handler_id
                 .replace(Some(id));
         }
         {
@@ -531,9 +564,16 @@ impl ObjectImpl for LushtextEditorPage {
             let style_manager = libadwaita::StyleManager::default();
             let handler_id = style_manager.connect_dark_notify(move |_| {
                 if let Some(buf) = buf.upgrade() {
-                    apply_color_scheme(&buf, &s);
+                    let applied = apply_color_scheme(&buf, &s);
+                    if let Some(editor) = editor_weak.upgrade() {
+                        *editor.imp().applied_style_scheme_id.borrow_mut() = applied;
+                    }
                 }
                 if let Some(editor) = editor_weak.upgrade() {
+                    editor
+                        .imp()
+                        .document_surface_opacity
+                        .set(s.double(keys::TAB_CONTENT_OPACITY).clamp(0.0, 1.0));
                     editor.refresh_annotation_highlights();
                     editor.queue_minimap_draw();
                 }
@@ -653,6 +693,13 @@ impl Drop for LushtextEditorPage {
         if let Some(handler_id) = self.preference_bindings.style_scheme_handler_id.take() {
             self.settings.disconnect(handler_id);
         }
+        if let Some(handler_id) = self
+            .preference_bindings
+            .tab_content_opacity_handler_id
+            .take()
+        {
+            self.settings.disconnect(handler_id);
+        }
         if let Some(handler_id) = self.preference_bindings.tab_width_handler_id.take() {
             self.settings.disconnect(handler_id);
         }
@@ -708,21 +755,100 @@ fn apply_word_wrap(view: &sourceview5::View, settings: &gio::Settings) {
     view.set_wrap_mode(mode);
 }
 
-fn apply_color_scheme(buffer: &sourceview5::Buffer, settings: &gio::Settings) {
-    let base_id = settings.string(keys::STYLE_SCHEME);
-    let style_manager = libadwaita::StyleManager::default();
+fn apply_color_scheme(buffer: &sourceview5::Buffer, settings: &gio::Settings) -> Option<String> {
     let scheme_manager = sourceview5::StyleSchemeManager::default();
+    let base_scheme = crate::active_sourceview_scheme(settings)?;
+    let opacity = settings.double(keys::TAB_CONTENT_OPACITY).clamp(0.0, 1.0);
 
-    let scheme = if style_manager.is_dark() {
-        let dark_id = format!("{base_id}-dark");
-        scheme_manager
-            .scheme(&dark_id)
-            .or_else(|| scheme_manager.scheme(&base_id))
-    } else {
-        scheme_manager.scheme(&base_id)
-    };
-
-    if let Some(scheme) = scheme {
-        buffer.set_style_scheme(Some(&scheme));
+    if opacity >= 1.0 - f64::EPSILON {
+        let applied_id = base_scheme.id().to_string();
+        buffer.set_style_scheme(Some(&base_scheme));
+        return Some(applied_id);
     }
+
+    let derived_id = ensure_transparency_style_scheme(&base_scheme, settings);
+    let scheme = scheme_manager
+        .scheme(&derived_id)
+        .unwrap_or_else(|| base_scheme.clone());
+    let applied_id = scheme.id().to_string();
+    buffer.set_style_scheme(Some(&scheme));
+    Some(applied_id)
+}
+
+/// Create or reuse an opacity-aware child scheme derived from the active base scheme.
+fn ensure_transparency_style_scheme(
+    base_scheme: &sourceview5::StyleScheme,
+    settings: &gio::Settings,
+) -> String {
+    let palette = crate::resolve_tab_content_palette(settings);
+    let manager = sourceview5::StyleSchemeManager::default();
+    let base_id = base_scheme.id().to_string();
+    let sanitized_base = sanitize_style_scheme_component(&base_id);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "tab-content opacity is clamped to 0..1 before converting to a 0..100 scheme suffix"
+    )]
+    let opacity_percent = (palette.opacity * 100.0).round() as u32;
+    let derived_id = format!("lushtext-opacity-{sanitized_base}-{opacity_percent}");
+
+    if manager.scheme(&derived_id).is_some() {
+        return derived_id;
+    }
+
+    let scheme_dir = crate::services::json_store::data_dir().join("style-schemes");
+    let file_path = scheme_dir.join(format!("{derived_id}.xml"));
+    if !file_path.exists() {
+        let text_bg = crate::sourceview_rgba_with_alpha(&palette.text_bg, palette.opacity);
+        let line_numbers_bg =
+            crate::sourceview_rgba_with_alpha(&palette.line_numbers_bg, palette.opacity);
+        let current_line_bg =
+            crate::sourceview_rgba_with_alpha(&palette.current_line_bg, palette.opacity);
+        let current_line_number_bg =
+            crate::sourceview_rgba_with_alpha(&palette.current_line_number_bg, palette.opacity);
+        let right_margin_bg =
+            crate::sourceview_rgba_with_alpha(&palette.right_margin_bg, palette.opacity);
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<style-scheme id="{derived_id}" _name="LushText Transparency" version="1.0" parent-scheme="{base_id}">
+  <author>LushText</author>
+  <_description>Opacity-aware derived scheme for LushText tab content</_description>
+  <style name="text" background="{text_bg}"/>
+  <style name="background-pattern" background="{text_bg}"/>
+  <style name="current-line" background="{current_line_bg}"/>
+  <style name="line-numbers" background="{line_numbers_bg}"/>
+  <style name="current-line-number" background="{current_line_number_bg}"/>
+  <style name="right-margin" background="{right_margin_bg}"/>
+</style-scheme>
+"#
+        );
+        let _ = std::fs::create_dir_all(&scheme_dir);
+        let _ = std::fs::write(&file_path, xml);
+    }
+
+    let scheme_dir_str = scheme_dir.to_string_lossy();
+    if !manager
+        .search_path()
+        .iter()
+        .any(|path| path.as_str() == scheme_dir_str.as_ref())
+    {
+        manager.prepend_search_path(&scheme_dir_str);
+    }
+    manager.force_rescan();
+
+    derived_id
+}
+
+/// Replace punctuation in runtime-generated style-scheme IDs so the file name stays stable.
+fn sanitize_style_scheme_component(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }

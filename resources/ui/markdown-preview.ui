@@ -18,6 +18,9 @@
             <property name="right-margin">16</property>
             <property name="top-margin">12</property>
             <property name="bottom-margin">12</property>
+            <style>
+              <class name="tab-content-preview-surface"/>
+            </style>
           </object>
         </child>
       </object>
@@ -31,6 +34,9 @@
         <property name="icon-name">document-page-setup-symbolic</property>
         <property name="title" translatable="yes">Markdown Preview</property>
         <property name="description" translatable="yes">Open a Markdown file to see a rendered preview</property>
+        <style>
+          <class name="preview-placeholder-opaque"/>
+        </style>
       </object>
     </child>
   </template>

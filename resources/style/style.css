@@ -3,6 +3,7 @@
 /* Search bar container: bottom bar below editor, separator provides visual boundary */
 .search-bar-container {
   padding: 6px;
+  background-color: @window_bg_color;
 }
 
 /* Status bar: bottom strip spanning full window width */

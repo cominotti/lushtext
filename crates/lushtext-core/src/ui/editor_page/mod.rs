@@ -65,6 +65,33 @@ impl LushtextEditorPage {
         self.imp().source_view.as_ref()
     }
 
+    /// Return the style-scheme ID currently applied to this editor buffer.
+    ///
+    /// Widget tests use this to verify that transparency swaps the buffer onto
+    /// the derived opacity-aware scheme instead of fading the whole widget.
+    #[must_use]
+    pub fn applied_style_scheme_id(&self) -> Option<String> {
+        self.imp().applied_style_scheme_id.borrow().clone()
+    }
+
+    /// Return the current document-surface opacity used by this editor tab.
+    ///
+    /// The minimap intentionally stays opaque, so this value only describes
+    /// the main editor surface.
+    #[must_use]
+    pub fn content_background_opacity(&self) -> f64 {
+        self.imp().document_surface_opacity.get()
+    }
+
+    /// Return the opacity used for the minimap surface.
+    ///
+    /// The minimap remains on an explicitly opaque path even when the editor
+    /// document surface becomes translucent.
+    #[must_use]
+    pub fn minimap_background_opacity(&self) -> f64 {
+        1.0
+    }
+
     #[must_use]
     pub fn info_bar(&self) -> &LushtextInfoBar {
         self.imp().info_bar.as_ref()

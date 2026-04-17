@@ -40,6 +40,64 @@
                 </child>
               </object>
             </child>
+
+            <child>
+              <object class="AdwActionRow" id="transparency_row">
+                <property name="title" translatable="yes">Transparency</property>
+                <property name="subtitle" translatable="yes">Adjust the opacity of editor and Markdown preview backgrounds</property>
+                <property name="activatable-widget">transparency_button</property>
+                <child type="suffix">
+                  <object class="GtkMenuButton" id="transparency_button">
+                    <style>
+                      <class name="flat"/>
+                    </style>
+                    <property name="valign">center</property>
+                    <child>
+                      <object class="GtkBox">
+                        <property name="spacing">6</property>
+                        <child>
+                          <object class="GtkLabel" id="transparency_label">
+                            <property name="width-chars">6</property>
+                            <property name="max-width-chars">6</property>
+                            <attributes>
+                              <attribute name="font-features" value="'tnum'"/>
+                            </attributes>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkImage">
+                            <property name="icon-name">pan-down-symbolic</property>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                    <property name="popover">
+                      <object class="GtkPopover">
+                        <child>
+                          <object class="GtkScale" id="transparency_scale">
+                            <property name="width-request">200</property>
+                            <property name="adjustment">
+                              <object class="GtkAdjustment" id="transparency_adjustment">
+                                <property name="lower">0</property>
+                                <property name="upper">1</property>
+                                <property name="step-increment">0.05</property>
+                                <property name="page-increment">0.25</property>
+                                <property name="value">1.0</property>
+                              </object>
+                            </property>
+                            <marks>
+                              <mark value="0.25"/>
+                              <mark value="0.5"/>
+                              <mark value="0.75"/>
+                            </marks>
+                          </object>
+                        </child>
+                      </object>
+                    </property>
+                  </object>
+                </child>
+              </object>
+            </child>
           </object>
         </child>
 

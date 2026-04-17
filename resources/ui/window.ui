@@ -16,6 +16,9 @@
         <!-- Header bar -->
         <child>
           <object class="AdwHeaderBar" id="header_bar">
+            <style>
+              <class name="header-chrome-opaque"/>
+            </style>
             <child type="start">
               <object class="GtkButton" id="new_tab_button">
                 <property name="icon-name">tab-new-symbolic</property>
@@ -49,6 +52,9 @@
         <child>
           <object class="AdwTabBar" id="tab_bar">
             <property name="view">tab_view</property>
+            <style>
+              <class name="header-chrome-opaque"/>
+            </style>
           </object>
         </child>
 
@@ -62,7 +68,11 @@
               <object class="AdwOverlaySplitView" id="workspace_split_view">
                 <property name="vexpand">true</property>
                 <property name="sidebar">
-                  <object class="LushtextSidebar" id="sidebar"/>
+                  <object class="LushtextSidebar" id="sidebar">
+                    <style>
+                      <class name="shell-chrome-opaque"/>
+                    </style>
+                  </object>
                 </property>
 
                 <property name="content">
@@ -117,6 +127,9 @@
                                     <property name="icon-name">document-edit-symbolic</property>
                                     <property name="title" translatable="yes">Open a File</property>
                                     <property name="description" translatable="yes">Open a file from the sidebar or create a new document</property>
+                                    <style>
+                                      <class name="empty-state-opaque"/>
+                                    </style>
                                   </object>
                                 </property>
                               </object>
@@ -136,7 +149,11 @@
                       </object>
                     </property>
                     <property name="sidebar">
-                      <object class="LushtextPropertiesPanel" id="properties_panel"/>
+                      <object class="LushtextPropertiesPanel" id="properties_panel">
+                        <style>
+                          <class name="shell-chrome-opaque"/>
+                        </style>
+                      </object>
                     </property>
                   </object>
                 </property>

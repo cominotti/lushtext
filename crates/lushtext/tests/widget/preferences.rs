@@ -117,6 +117,55 @@ fn test_color_scheme_row_populated() {
 }
 
 #[test]
+fn test_transparency_row_is_visible_with_default_percentage() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(config::APP_ID);
+    settings
+        .set_double(keys::TAB_CONTENT_OPACITY, 1.0)
+        .expect("reset tab-content-opacity");
+
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    assert!(imp.transparency_row.is_visible());
+    assert_eq!(imp.transparency_adjustment.value(), 1.0);
+    assert_eq!(imp.transparency_label.label().as_str(), "100%");
+}
+
+#[test]
+fn test_transparency_row_updates_setting_and_label() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(config::APP_ID);
+    settings
+        .set_double(keys::TAB_CONTENT_OPACITY, 1.0)
+        .expect("reset tab-content-opacity");
+
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+    imp.transparency_adjustment.set_value(0.85);
+
+    while glib::MainContext::default().iteration(false) {}
+
+    assert!((settings.double(keys::TAB_CONTENT_OPACITY) - 0.85).abs() < f64::EPSILON);
+    assert_eq!(imp.transparency_label.label().as_str(), " 85%");
+}
+
+#[test]
+fn test_transparency_row_restores_persisted_percentage() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(config::APP_ID);
+    settings
+        .set_double(keys::TAB_CONTENT_OPACITY, 0.65)
+        .expect("set tab-content-opacity");
+
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    assert!((imp.transparency_adjustment.value() - 0.65).abs() < f64::EPSILON);
+    assert_eq!(imp.transparency_label.label().as_str(), " 65%");
+}
+
+#[test]
 fn test_workspace_sidebar_width_row_lists_all_presets() {
     ensure_gtk_init();
     let settings = gio::Settings::new(config::APP_ID);

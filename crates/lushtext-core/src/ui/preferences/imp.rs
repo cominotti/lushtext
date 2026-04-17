@@ -5,7 +5,8 @@
 //! Binds GSettings keys to Adwaita preference rows (switches, combos, spin)
 //! using two-way `Settings::bind()`. The color scheme row and font button
 //! require manual wiring because their value types don't map directly to
-//! GSettings string/bool keys.
+//! GSettings string/bool keys, and the transparency control formats a double
+//! setting into the percentage label shown in its row suffix.
 
 use crate::config::keys;
 use crate::ui::sidebar::WorkspaceSidebarWidthPreset;
@@ -26,6 +27,14 @@ pub struct LushtextPreferences {
     pub custom_font_row: TemplateChild<libadwaita::ActionRow>,
     #[template_child]
     pub font_button: TemplateChild<gtk4::FontDialogButton>,
+    #[template_child]
+    pub transparency_row: TemplateChild<libadwaita::ActionRow>,
+    #[template_child]
+    pub transparency_button: TemplateChild<gtk4::MenuButton>,
+    #[template_child]
+    pub transparency_label: TemplateChild<gtk4::Label>,
+    #[template_child]
+    pub transparency_adjustment: TemplateChild<gtk4::Adjustment>,
     #[template_child]
     pub editorconfig_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
@@ -61,6 +70,10 @@ impl Default for LushtextPreferences {
             use_system_font_row: TemplateChild::default(),
             custom_font_row: TemplateChild::default(),
             font_button: TemplateChild::default(),
+            transparency_row: TemplateChild::default(),
+            transparency_button: TemplateChild::default(),
+            transparency_label: TemplateChild::default(),
+            transparency_adjustment: TemplateChild::default(),
             word_wrap_row: TemplateChild::default(),
             tab_width_row: TemplateChild::default(),
             insert_spaces_row: TemplateChild::default(),
@@ -152,10 +165,17 @@ impl ObjectImpl for LushtextPreferences {
         s.bind(keys::USE_SYSTEM_FONT, &*self.custom_font_row, "sensitive")
             .flags(gio::SettingsBindFlags::GET | gio::SettingsBindFlags::INVERT_BOOLEAN)
             .build();
+        s.bind(
+            keys::TAB_CONTENT_OPACITY,
+            &*self.transparency_adjustment,
+            "value",
+        )
+        .build();
 
         self.setup_color_scheme_row();
         self.setup_workspace_sidebar_width_row();
         self.setup_font_button();
+        self.setup_transparency_row();
     }
 }
 
@@ -248,8 +268,31 @@ impl LushtextPreferences {
             }
         });
     }
+
+    /// Mirror the Fedora-style transparency control with a percentage label
+    /// while keeping the slider value persisted through GSettings.
+    fn setup_transparency_row(&self) {
+        update_transparency_label(
+            &self.transparency_label,
+            self.settings.double(keys::TAB_CONTENT_OPACITY),
+        );
+
+        let label = self.transparency_label.clone();
+        self.transparency_adjustment
+            .connect_value_changed(move |adjustment| {
+                update_transparency_label(&label, adjustment.value());
+            });
+    }
 }
 
 impl WidgetImpl for LushtextPreferences {}
 impl AdwDialogImpl for LushtextPreferences {}
 impl PreferencesDialogImpl for LushtextPreferences {}
+
+/// Format one stored opacity value as a whole-percent label for the row suffix.
+fn update_transparency_label(label: &gtk4::Label, opacity: f64) {
+    label.set_label(&format!(
+        "{:>3.0}%",
+        (opacity.clamp(0.0, 1.0) * 100.0).floor()
+    ));
+}

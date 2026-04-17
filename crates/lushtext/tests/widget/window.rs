@@ -383,6 +383,10 @@ fn minimap_setting(window: &LushtextWindow) -> bool {
     window.imp().settings.boolean(keys::SHOW_MINIMAP)
 }
 
+fn tab_content_opacity_setting() -> f64 {
+    gio::Settings::new(lushtext_core::config::APP_ID).double(keys::TAB_CONTENT_OPACITY)
+}
+
 fn preview_animation(window: &LushtextWindow) -> libadwaita::TimedAnimation {
     window
         .imp()
@@ -817,6 +821,49 @@ fn test_toggle_minimap_action_state_tracks_external_setting_changes() {
             .expect("expected operation to succeed")
             .get::<bool>()
             .expect("expected operation to succeed")
+    );
+}
+
+#[test]
+fn test_shell_chrome_uses_explicit_opaque_classes_for_transparency_mode() {
+    let window = test_window();
+
+    assert!(window.imp().header_bar.has_css_class("header-chrome-opaque"));
+    assert!(window.imp().tab_bar.has_css_class("header-chrome-opaque"));
+    assert!(window.imp().sidebar.has_css_class("shell-chrome-opaque"));
+    assert!(window.imp().properties_panel.has_css_class("shell-chrome-opaque"));
+    assert!(window.imp().status_bar.has_css_class("status-bar"));
+}
+
+#[test]
+fn test_editor_transparency_uses_derived_scheme_and_keeps_minimap_opaque() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_double(keys::TAB_CONTENT_OPACITY, 0.85)
+        .expect("set tab-content-opacity");
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let temp_dir = tempfile::tempdir().expect("editor tempdir");
+    let file_path = temp_dir.path().join("alpha.rs");
+    std::fs::write(&file_path, "fn main() {\n    println!(\"hi\");\n}\n").expect("write file");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&file_path);
+    wait_until(Duration::from_secs(2), || active_editor(&window).file_size().is_some());
+
+    let editor = active_editor(&window);
+    assert!((tab_content_opacity_setting() - 0.85).abs() < f64::EPSILON);
+    assert!((editor.content_background_opacity() - 0.85).abs() < f64::EPSILON);
+    assert_eq!(editor.minimap_background_opacity(), 1.0);
+    assert!(
+        editor
+            .applied_style_scheme_id()
+            .is_some_and(|id| id.starts_with("lushtext-opacity-")),
+        "editor should switch onto the derived opacity-aware style scheme"
     );
 }
 
