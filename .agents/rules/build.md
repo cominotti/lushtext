@@ -11,6 +11,7 @@ Use `make` targets for development. The Makefile auto-detects nextest for non-wi
 
 ```
 make run        # build + launch the app with temporary GNOME desktop staging for dock icon matching
+make refresh-dock-icon # regenerate icon assets + force a fresh GNOME Shell dock icon reload
 make test       # all tests
 make test-widget-headless # CI-style mutter/dbus widget run
 make check      # clippy + fmt
@@ -21,6 +22,10 @@ make install-git-hooks
 Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-linux for fast linking.
 
 The repo-managed Git hooks live under `.githooks/`. Install them with `make install-git-hooks`, which sets `core.hooksPath` for this checkout. The pre-commit hook runs `make pre-commit`, which must stay aligned with the formatting and Clippy gates enforced in CI.
+
+On GNOME Shell, `make run` stages a desktop file plus `hicolor` icons and writes the desktop entry with a per-run absolute icon file path. This avoids Shell holding onto a stale themed-icon cache entry when the app icon bytes change between dev runs.
+
+Changing `data/icons/dev.cominotti.lushtext.svg` alone is not enough to refresh every icon surface. The fixed-size PNG fallbacks must be regenerated, and an already-running dev session still needs a fresh Shell app object. Use `make refresh-dock-icon` after icon asset changes: it regenerates the PNG fallbacks from the canonical SVG and then replaces the running dev instance so the dock rebuilds from the fresh file-backed icon.
 
 ## Compilation Speed
 

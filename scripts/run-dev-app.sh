@@ -11,10 +11,13 @@ desktop_dir="$data_home/applications"
 icons_root="$data_home/icons/hicolor"
 desktop_target="$desktop_dir/$app_id.desktop"
 desktop_template="$repo_root/data/$app_id.desktop.in"
+desktop_icon_source="$repo_root/data/icons/hicolor/128x128/apps/$app_id.png"
+desktop_icon_target="$data_home/icons/lushtext-dev-run/$app_id-$$-$RANDOM.png"
 target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
 build_target="${CARGO_BUILD_TARGET:-}"
 keep_staged="${LUSHTEXT_DEV_RUN_KEEP_STAGED:-0}"
 no_exec="${LUSHTEXT_DEV_RUN_NO_EXEC:-0}"
+force_restart="${LUSHTEXT_DEV_RUN_FORCE_RESTART:-0}"
 
 if [[ -n "$build_target" ]]; then
     binary="$target_dir/$build_target/debug/lushtext"
@@ -92,6 +95,46 @@ matching_binary_pids() {
     done
 }
 
+wait_for_pids_to_exit() {
+    local deadline="$1"
+
+    while (( SECONDS < deadline )); do
+        mapfile -t current_pids < <(matching_binary_pids | sort -u)
+        if (( ${#current_pids[@]} == 0 )); then
+            return 0
+        fi
+        sleep 0.1
+    done
+
+    mapfile -t current_pids < <(matching_binary_pids | sort -u)
+    (( ${#current_pids[@]} == 0 ))
+}
+
+stop_existing_instance() {
+    echo "Stopping existing LushText instance so GNOME Shell picks up the refreshed dock icon." >&2
+
+    if command -v gapplication >/dev/null 2>&1; then
+        gapplication action "$app_id" quit >/dev/null 2>&1 || true
+    fi
+
+    if wait_for_pids_to_exit $((SECONDS + 5)); then
+        return 0
+    fi
+
+    mapfile -t current_pids < <(matching_binary_pids | sort -u)
+    if (( ${#current_pids[@]} > 0 )); then
+        echo "Existing instance ignored app.quit; sending SIGTERM to refresh the dock icon cleanly." >&2
+        kill "${current_pids[@]}" 2>/dev/null || true
+    fi
+
+    if wait_for_pids_to_exit $((SECONDS + 5)); then
+        return 0
+    fi
+
+    echo "Error: existing LushText instance is still running; close it manually and retry." >&2
+    exit 1
+}
+
 stage_file() {
     local src="$1"
     local dst="$2"
@@ -110,10 +153,13 @@ stage_file() {
     install -m 0644 -- "$src" "$dst"
 }
 
+stage_file "$desktop_icon_source" "$desktop_icon_target"
+
 desktop_tmp="$backup_dir/$app_id.desktop"
 sed \
     -e "s|^Exec=.*$|Exec=$binary %U|" \
     -e "/^Exec=/a TryExec=$binary" \
+    -e "s|^Icon=.*$|Icon=$desktop_icon_target|" \
     "$desktop_template" > "$desktop_tmp"
 
 stage_file "$desktop_tmp" "$desktop_target"
@@ -137,8 +183,13 @@ fi
 
 mapfile -t before_pids < <(matching_binary_pids | sort -u)
 if (( ${#before_pids[@]} > 0 )); then
-    echo "Existing LushText instance detected; activating it through the staged desktop entry." >&2
-    echo "If the dock item came from an older direct launch, close all LushText windows once and rerun make run for a fresh Shell association." >&2
+    if [[ "$force_restart" == "1" ]]; then
+        stop_existing_instance
+        before_pids=()
+    else
+        echo "Existing LushText instance detected; activating it through the staged desktop entry." >&2
+        echo "If the dock item came from an older direct launch, close all LushText windows once and rerun make refresh-dock-icon for a fresh Shell association." >&2
+    fi
 fi
 gtk-launch "$app_id" "$@"
 

@@ -69,6 +69,7 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libglib2.0
 make build       # Release build
 make build-debug # Debug build
 make run         # Debug build + run with temporary GNOME desktop staging for dock icon matching
+make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
 make test        # All tests (unit + integration + widget)
 make check       # clippy + fmt check
 make pre-commit  # repo pre-commit gate (fmt + clippy)
@@ -79,7 +80,7 @@ LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hoo
 
 The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel non-widget execution (optional), but it always runs widget tests explicitly through the shared `scripts/run-widget-tests.sh` runner so `make test` still means the full suite. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 
-On GNOME Shell, `make run` temporarily stages a user-local desktop entry plus `hicolor` app icons while the debug binary is running. This gives the dev build the same app ID and dock icon association as an installed build without leaving a persistent override behind after the process exits.
+On GNOME Shell, `make run` temporarily stages a user-local desktop entry plus `hicolor` app icons while the debug binary is running. The staged desktop entry points at a per-run absolute icon file so Shell reloads icon changes reliably during development instead of reusing a stale themed-icon cache entry. If you changed the app icon artwork, use `make refresh-dock-icon`: it regenerates the shipped PNG fallbacks from `data/icons/dev.cominotti.lushtext.svg`, then restarts the current dev instance against a fresh file-backed icon so the dock updates immediately.
 
 Critical rule: pre-existing blockers discovered while implementing or verifying a change must be fixed in the same work stream rather than worked around, deferred, or called out as "pre-existing". No exceptions.
 

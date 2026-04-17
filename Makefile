@@ -6,6 +6,7 @@
 #   make build       - Release build
 #   make build-debug - Debug build
 #   make run         - Debug build + run with temporary GNOME desktop staging
+#   make refresh-dock-icon - Regenerate app icon assets and restart dev run so GNOME Shell reloads the app icon
 #   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
 #   make test-int    - Integration tests only
@@ -17,7 +18,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run test test-unit test-int test-widget test-widget-headless \
+.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless \
        check-fmt check-clippy check pre-commit install-git-hooks clean help \
        meson-build flatpak cargo-sources \
        bench bench-report bench-report-full bench-baseline bench-compare
@@ -53,6 +54,16 @@ build-debug:
 run: build-debug
 	@echo "Running LushText..."
 	./scripts/run-dev-app.sh
+
+# Force a fresh dev relaunch so GNOME Shell reloads the dock icon
+refresh-dock-icon:
+	@echo "Regenerating LushText app icon assets..."
+	rsvg-convert -w 32 -h 32 data/icons/dev.cominotti.lushtext.svg -o data/icons/hicolor/32x32/apps/dev.cominotti.lushtext.png
+	rsvg-convert -w 64 -h 64 data/icons/dev.cominotti.lushtext.svg -o data/icons/hicolor/64x64/apps/dev.cominotti.lushtext.png
+	rsvg-convert -w 128 -h 128 data/icons/dev.cominotti.lushtext.svg -o data/icons/hicolor/128x128/apps/dev.cominotti.lushtext.png
+	@$(MAKE) build-debug
+	@echo "Refreshing the LushText GNOME Shell dock icon..."
+	LUSHTEXT_DEV_RUN_FORCE_RESTART=1 ./scripts/run-dev-app.sh
 
 # Run all tests
 test:
@@ -161,6 +172,7 @@ help:
 	@echo "  build        Release build (optimized)"
 	@echo "  build-debug  Debug build"
 	@echo "  run          Debug build and run with temporary GNOME desktop staging"
+	@echo "  refresh-dock-icon Regenerate app icon assets + force a fresh dock icon reload in GNOME Shell"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  test         All tests (unit + integration + widget)"
