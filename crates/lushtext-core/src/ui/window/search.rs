@@ -35,19 +35,8 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     let imp = window.imp();
 
     // --- Workspace roots: forward current roots and future changes ---
-    let initial_roots = imp.sidebar.workspace_roots();
+    let initial_roots = window.current_workspace_directory_roots();
     imp.search_panel.set_workspace_roots(initial_roots);
-
-    let window_weak = window.downgrade();
-    imp.sidebar.connect_workspace_changed(move || {
-        if let Some(window) = window_weak.upgrade() {
-            let roots = window.imp().sidebar.workspace_roots();
-            window.imp().search_panel.set_workspace_roots(roots);
-            // Also rebuild the command palette file index — the sidebar uses a
-            // single-slot callback, so both operations must be in the same closure.
-            window.rebuild_file_index();
-        }
-    });
 
     // --- Result activation: open file at line ---
     let window_weak = window.downgrade();

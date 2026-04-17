@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 
-use crate::model::workspace::WorkspaceEntry;
+use crate::model::workspace::{WorkspaceScope, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
 
 pub use file_tree_item::FileTreeItem;
@@ -176,49 +176,50 @@ impl LushtextSidebar {
         *self.imp().message_callback.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_workspace_changed<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().workspace_changed_callback.borrow_mut() = Some(Box::new(f));
+    pub fn connect_workspace_structure_changed<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().workspace_structure_changed_callback.borrow_mut() = Some(Box::new(f));
     }
 
-    /// Collect all directory root paths from all workspaces.
+    /// Store a callback invoked whenever the current workspace scope changes.
+    pub fn connect_workspace_scope_changed<F: Fn(WorkspaceScope) + 'static>(&self, f: F) {
+        *self.imp().workspace_scope_changed_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Return the current workspace scope mirrored by the sidebar shell.
     #[must_use]
-    pub fn workspace_roots(&self) -> Vec<PathBuf> {
+    pub fn current_scope(&self) -> WorkspaceScope {
+        self.imp().current_scope.borrow().clone()
+    }
+
+    /// Collect all persisted workspace roots regardless of the current scope.
+    #[must_use]
+    pub fn all_workspace_root_paths(&self) -> Vec<PathBuf> {
         self.imp()
             .workspaces_file
             .borrow()
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.entries.iter())
-            .filter_map(|entry| match entry {
-                WorkspaceEntry::Directory { path } => Some(path.clone()),
-                WorkspaceEntry::File { .. } => None,
-            })
-            .collect()
+            .all_workspace_root_paths()
     }
 
-    /// Collect the currently selected workspace scope paths.
-    ///
-    /// Directories are returned as directory roots and file entries are returned
-    /// as exact file paths, so window-level note workflows can stay aligned
-    /// with the active workspace filter instead of inferring scope elsewhere.
+    /// Collect the workspace roots covered by one explicit scope.
     #[must_use]
-    pub fn filtered_workspace_scope_paths(&self) -> Vec<PathBuf> {
-        let selected_filter = self.imp().selected_workspace_filter.borrow().clone();
+    pub fn root_paths_for_scope(&self, scope: &WorkspaceScope) -> Vec<PathBuf> {
         self.imp()
             .workspaces_file
             .borrow()
-            .workspaces
-            .iter()
-            .filter(|workspace| {
-                selected_filter
-                    .as_ref()
-                    .is_none_or(|workspace_id| workspace.id == *workspace_id)
-            })
-            .flat_map(|workspace| workspace.entries.iter())
-            .map(|entry| match entry {
-                WorkspaceEntry::Directory { path } | WorkspaceEntry::File { path } => path.clone(),
-            })
-            .collect()
+            .root_paths_for_scope(scope)
+    }
+
+    /// Collect the current scope's workspace roots.
+    #[must_use]
+    pub fn current_scope_root_paths(&self) -> Vec<PathBuf> {
+        let scope = self.current_scope();
+        self.root_paths_for_scope(&scope)
+    }
+
+    /// Return a snapshot of the current persisted workspace state.
+    #[must_use]
+    pub fn workspaces_file(&self) -> WorkspacesFile {
+        self.imp().workspaces_file.borrow().clone()
     }
 }
 

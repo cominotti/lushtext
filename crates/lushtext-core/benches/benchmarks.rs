@@ -21,7 +21,7 @@ use lushtext_core::model::palette::IndexedFile;
 use lushtext_core::model::palette::SearchMode;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
+    WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
 use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
@@ -133,16 +133,12 @@ fn make_workspaces_file(n_workspaces: usize, entries_per: usize) -> WorkspacesFi
         .map(|w| WorkspaceConfig {
             id: WorkspaceId::new(format!("ws-{w}")),
             name: format!("Workspace {w}"),
-            entries: (0..entries_per)
-                .map(|e| WorkspaceEntry::Directory {
-                    path: PathBuf::from(format!("/home/user/project_{w}/dir_{e}")),
-                })
-                .collect(),
+            root: PathBuf::from(format!("/home/user/project_{w}/root_{entries_per}")),
         })
         .collect();
 
     WorkspacesFile {
-        active_workspace: Some(WorkspaceId::new("ws-0")),
+        current_scope: WorkspaceScope::workspace(WorkspaceId::new("ws-0")),
         workspaces,
     }
 }

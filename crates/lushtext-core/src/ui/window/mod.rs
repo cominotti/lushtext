@@ -21,6 +21,7 @@ mod print;
 mod search;
 mod session_persistence;
 mod tabs;
+mod workspace_scope;
 mod zoom;
 
 use crate::config::keys;

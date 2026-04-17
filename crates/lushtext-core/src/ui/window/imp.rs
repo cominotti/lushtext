@@ -8,6 +8,7 @@
 
 use crate::config::{self, keys};
 use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
+use crate::model::workspace::WorkspaceScope;
 use crate::services::notifications::NotificationBus;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
@@ -225,6 +226,8 @@ pub struct LushtextWindow {
     pub notification_sweep_source_id: RefCell<Option<glib::SourceId>>,
     /// Search-progress lease state used by the status-bar notification flow.
     pub search_progress: SearchProgressState,
+    /// Shared app-wide workspace scope mirrored from the sidebar selector.
+    pub workspace_scope: RefCell<WorkspaceScope>,
     /// Stored so the properties breakpoint condition can track the selected
     /// workspace preset and whether the left pane currently consumes width.
     pub properties_breakpoint: RefCell<Option<libadwaita::Breakpoint>>,
@@ -276,6 +279,7 @@ impl Default for LushtextWindow {
             notification_bus: NotificationBus::default(),
             notification_sweep_source_id: RefCell::new(None),
             search_progress: SearchProgressState::default(),
+            workspace_scope: RefCell::new(WorkspaceScope::All),
             properties_breakpoint: RefCell::new(None),
         }
     }
@@ -533,6 +537,20 @@ impl ObjectImpl for LushtextWindow {
         self.sidebar.connect_message(move |text, severity| {
             if let Some(window) = window_weak.upgrade() {
                 window.publish_status_message(text, severity);
+            }
+        });
+
+        let window_weak = obj.downgrade();
+        self.sidebar.connect_workspace_structure_changed(move || {
+            if let Some(window) = window_weak.upgrade() {
+                window.refresh_workspace_scope_consumers();
+            }
+        });
+
+        let window_weak = obj.downgrade();
+        self.sidebar.connect_workspace_scope_changed(move |scope| {
+            if let Some(window) = window_weak.upgrade() {
+                window.set_workspace_scope(scope);
             }
         });
 

@@ -5,7 +5,7 @@
 //! Manages workspace sections, the fixed workspace selector row, and debounced
 //! persistence of workspace state to disk.
 
-use crate::model::workspace::{WorkspaceId, WorkspacesFile};
+use crate::model::workspace::{WorkspaceScope, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -18,6 +18,7 @@ use super::workspace_section::LushtextWorkspaceSection;
 type FileCallback = Box<dyn Fn(&Path)>;
 type MessageCallback = Box<dyn Fn(&str, NotificationSeverity)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
+type WorkspaceScopeCallback = Box<dyn Fn(WorkspaceScope)>;
 
 // CompositeTemplate loads the UI layout from a compiled XML file.
 // GObject methods always take &self; RefCell/Cell provide interior mutability.
@@ -42,14 +43,14 @@ pub struct LushtextSidebar {
     pub workspaces_file: RefCell<WorkspacesFile>,
     /// Live workspace section widgets in display order.
     pub sections: RefCell<Vec<LushtextWorkspaceSection>>,
-    /// Visible filter selection in the top selector row. `None` means all workspaces.
-    pub selected_workspace_filter: RefCell<Option<WorkspaceId>>,
-    /// Maps dropdown positions to workspace IDs. Position 0 is always `None`.
-    pub workspace_filter_options: RefCell<Vec<Option<WorkspaceId>>>,
+    /// Current workspace scope mirrored into the selector row and section visibility.
+    pub current_scope: RefCell<WorkspaceScope>,
+    /// Maps dropdown positions to concrete scope values.
+    pub workspace_filter_options: RefCell<Vec<WorkspaceScope>>,
     /// Guard to suppress selector callbacks while the dropdown is being rebuilt.
     pub syncing_workspace_filter: Cell<bool>,
-    /// Filter currently applied to the visible workspace list.
-    pub applied_workspace_filter: RefCell<Option<WorkspaceId>>,
+    /// Scope currently applied to the visible workspace list.
+    pub applied_workspace_filter: RefCell<WorkspaceScope>,
     /// Guard tracking the fade-out/fade-in sequence for selector changes.
     pub workspace_filter_animation_active: Cell<bool>,
 
@@ -63,7 +64,9 @@ pub struct LushtextSidebar {
     /// Callback forwarding workspace-section status messages to the window.
     pub message_callback: RefCell<Option<MessageCallback>>,
     /// Callback notifying the window that workspace structure changed.
-    pub workspace_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
+    pub workspace_structure_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
+    /// Callback notifying the window that the shared workspace scope changed.
+    pub workspace_scope_changed_callback: RefCell<Option<WorkspaceScopeCallback>>,
     /// Generation counter for debouncing workspace persistence (150ms).
     pub persist_generation: Cell<u32>,
     /// Guard preventing overlapping persistence writes to disk.
@@ -85,10 +88,10 @@ impl Default for LushtextSidebar {
             new_workspace_button: TemplateChild::default(),
             workspaces_file: RefCell::default(),
             sections: RefCell::default(),
-            selected_workspace_filter: RefCell::default(),
+            current_scope: RefCell::new(WorkspaceScope::All),
             workspace_filter_options: RefCell::default(),
             syncing_workspace_filter: Cell::default(),
-            applied_workspace_filter: RefCell::default(),
+            applied_workspace_filter: RefCell::new(WorkspaceScope::All),
             workspace_filter_animation_active: Cell::default(),
             file_activated_callback: RefCell::default(),
             local_history_callback: RefCell::default(),
@@ -96,7 +99,8 @@ impl Default for LushtextSidebar {
             delete_callback: RefCell::default(),
             create_callback: RefCell::default(),
             message_callback: RefCell::default(),
-            workspace_changed_callback: RefCell::default(),
+            workspace_structure_changed_callback: RefCell::default(),
+            workspace_scope_changed_callback: RefCell::default(),
             persist_generation: Cell::default(),
             persist_inflight: Cell::default(),
             persist_dirty: Cell::default(),
@@ -136,19 +140,18 @@ impl ObjectImpl for LushtextSidebar {
                     return;
                 }
                 let index = dropdown.selected() as usize;
-                let filter = sidebar
+                let scope = sidebar
                     .imp()
                     .workspace_filter_options
                     .borrow()
                     .get(index)
                     .cloned()
-                    .unwrap_or(None);
-                let current_filter = sidebar.imp().selected_workspace_filter.borrow().clone();
-                if current_filter == filter {
+                    .unwrap_or(WorkspaceScope::All);
+                let current_scope = sidebar.imp().current_scope.borrow().clone();
+                if current_scope == scope {
                     return;
                 }
-                *sidebar.imp().selected_workspace_filter.borrow_mut() = filter;
-                sidebar.animate_workspace_filter_change();
+                sidebar.change_scope_from_selector(scope);
             });
 
         let sidebar_weak = self.obj().downgrade();
@@ -170,7 +173,7 @@ impl ObjectImpl for LushtextSidebar {
                 if revealer.reveals_child() && revealer.is_child_revealed() {
                     sidebar.imp().workspace_filter_animation_active.set(false);
                     if sidebar.imp().applied_workspace_filter.borrow().clone()
-                        != sidebar.imp().selected_workspace_filter.borrow().clone()
+                        != sidebar.imp().current_scope.borrow().clone()
                     {
                         sidebar.animate_workspace_filter_change();
                     }

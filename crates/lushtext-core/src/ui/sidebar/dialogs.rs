@@ -9,7 +9,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 
-use crate::model::workspace::{WorkspaceEntry, WorkspaceId};
+use crate::model::workspace::WorkspaceId;
 
 use super::LushtextSidebar;
 
@@ -45,21 +45,10 @@ impl LushtextSidebar {
             return;
         };
 
-        let has_entries = self
-            .imp()
-            .workspaces_file
-            .borrow()
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.id == *workspace_id && !workspace.entries.is_empty());
-
-        let title = if has_entries {
-            "Replace Workspace Root"
-        } else {
-            "Add Folder to Workspace"
-        };
-
-        let dialog = gtk4::FileDialog::builder().title(title).modal(true).build();
+        let dialog = gtk4::FileDialog::builder()
+            .title("Replace Workspace Root")
+            .modal(true)
+            .build();
 
         let sidebar_weak = self.downgrade();
         let workspace_id = workspace_id.clone();
@@ -72,12 +61,12 @@ impl LushtextSidebar {
 
                 sidebar.imp().workspaces_file.borrow_mut().replace_root(
                     &workspace_id,
-                    WorkspaceEntry::Directory { path: path.clone() },
+                    path.clone(),
                     &name,
                 );
                 sidebar.persist();
                 sidebar.rebuild_sections_from_state();
-                sidebar.notify_workspace_changed();
+                sidebar.notify_workspace_structure_changed();
             }
         });
     }
@@ -123,6 +112,7 @@ impl LushtextSidebar {
                     .rename_workspace(&workspace_id, new_name);
                 sidebar.persist();
                 sidebar.rebuild_sections_from_state();
+                sidebar.notify_workspace_structure_changed();
             }
         });
 
@@ -153,14 +143,23 @@ impl LushtextSidebar {
                 return;
             }
             if let Some(sidebar) = sidebar_weak.upgrade() {
+                let scope_changed =
+                    sidebar.imp().current_scope.borrow().workspace_id() == Some(&workspace_id);
                 sidebar
                     .imp()
                     .workspaces_file
                     .borrow_mut()
                     .remove_workspace(&workspace_id);
+                if scope_changed {
+                    *sidebar.imp().current_scope.borrow_mut() =
+                        sidebar.imp().workspaces_file.borrow().current_scope();
+                }
                 sidebar.persist();
                 sidebar.rebuild_sections_from_state();
-                sidebar.notify_workspace_changed();
+                sidebar.notify_workspace_structure_changed();
+                if scope_changed {
+                    sidebar.notify_workspace_scope_changed();
+                }
             }
         });
 

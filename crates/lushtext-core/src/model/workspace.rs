@@ -1,39 +1,88 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Workspace model — a named collection of root directories and files.
+//! Workspace model — persisted single-root workspaces plus the current scope.
+//!
+//! This module stays framework-free and defines the durable workspace contract
+//! that the sidebar shell, search, palette, and note workflows all share.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Stable identifier for a workspace (not user-visible name).
+/// Stable identifier for a workspace.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WorkspaceId(String);
 
 impl WorkspaceId {
+    /// Build a workspace identifier from stored or generated text.
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 
+    /// Borrow the underlying identifier string.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Return whether this identifier is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }
 
-/// A single entry in a workspace: either a directory root or a standalone file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// App-wide workspace scope shared by the sidebar and workspace-aware features.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "workspace_id", rename_all = "snake_case")]
+pub enum WorkspaceScope {
+    /// Aggregate scope spanning every restored workspace.
+    #[default]
+    All,
+    /// Scope narrowed to one specific workspace.
+    Workspace(WorkspaceId),
+}
+
+impl WorkspaceScope {
+    /// Build a scope targeting one concrete workspace.
+    #[must_use]
+    pub fn workspace(workspace_id: WorkspaceId) -> Self {
+        Self::Workspace(workspace_id)
+    }
+
+    /// Return whether this scope is the explicit aggregate scope.
+    #[must_use]
+    pub fn is_all(&self) -> bool {
+        matches!(self, Self::All)
+    }
+
+    /// Borrow the concrete workspace id when this scope targets one workspace.
+    #[must_use]
+    pub fn workspace_id(&self) -> Option<&WorkspaceId> {
+        match self {
+            Self::All => None,
+            Self::Workspace(workspace_id) => Some(workspace_id),
+        }
+    }
+
+    /// Return whether this scope includes the given workspace id.
+    #[must_use]
+    pub fn includes_workspace(&self, workspace_id: &WorkspaceId) -> bool {
+        self.is_all() || self.workspace_id() == Some(workspace_id)
+    }
+}
+
+/// Legacy or section-local root entry shape used during migration and tree setup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkspaceEntry {
+    /// Directory root used by legacy persisted workspaces and drill-down views.
     Directory { path: PathBuf },
+    /// Standalone file root used only by legacy persisted workspaces.
     File { path: PathBuf },
 }
 
 impl WorkspaceEntry {
+    /// Borrow the filesystem path behind this legacy entry.
     #[must_use]
     pub fn path(&self) -> &Path {
         match self {
@@ -41,104 +90,135 @@ impl WorkspaceEntry {
         }
     }
 
+    /// Return whether this entry points at a directory.
     #[must_use]
     pub fn is_dir(&self) -> bool {
         matches!(self, WorkspaceEntry::Directory { .. })
     }
 }
 
-/// A named workspace persisted to disk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One persisted workspace with exactly one root directory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceConfig {
+    /// Stable identifier used by persisted scope selection and callbacks.
     pub id: WorkspaceId,
+    /// User-visible workspace label shown in the selector and section header.
     pub name: String,
-    pub entries: Vec<WorkspaceEntry>,
+    /// Canonical root directory for this workspace.
+    pub root: PathBuf,
 }
 
-/// Top-level persisted state: all workspaces + which one is active.
-/// Stored at `$XDG_DATA_HOME/lushtext/workspaces.json`.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+/// Top-level persisted state for all workspaces plus the current scope.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspacesFile {
-    pub active_workspace: Option<WorkspaceId>,
+    /// The user's last explicit workspace scope selection.
+    #[serde(default)]
+    pub current_scope: WorkspaceScope,
+    /// All restored workspaces, each with exactly one root directory.
+    #[serde(default)]
     pub workspaces: Vec<WorkspaceConfig>,
 }
 
 impl WorkspacesFile {
-    /// Get the active workspace, or create a default one if none exists.
-    pub fn active_workspace(&mut self) -> &WorkspaceConfig {
-        if self.workspaces.is_empty() {
-            let default_ws = WorkspaceConfig {
-                id: WorkspaceId::new(generate_id()),
-                name: "New Workspace".to_string(),
-                entries: Vec::new(),
-            };
-            self.workspaces.push(default_ws);
-            self.active_workspace = Some(self.workspaces[0].id.clone());
-        }
-
-        let idx = self
-            .active_workspace
-            .as_ref()
-            .and_then(|id| self.workspaces.iter().position(|w| &w.id == id))
-            .unwrap_or(0);
-        &self.workspaces[idx]
-    }
-
-    /// Add an entry to a workspace. Deduplicates by path.
-    pub fn add_entry(&mut self, ws_id: &WorkspaceId, entry: WorkspaceEntry) {
-        if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id)
-            && !ws.entries.iter().any(|e| e.path() == entry.path())
-        {
-            ws.entries.push(entry);
-        }
-    }
-
-    /// Remove an entry from a workspace by path.
-    pub fn remove_entry(&mut self, ws_id: &WorkspaceId, path: &Path) {
-        if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id) {
-            ws.entries.retain(|e| e.path() != path);
-        }
-    }
-
-    /// Add a new workspace with the given name. Returns the generated ID.
-    pub fn add_workspace(&mut self, name: &str) -> WorkspaceId {
+    /// Add a new single-root workspace and select it immediately.
+    pub fn add_workspace(&mut self, name: &str, root: PathBuf) -> WorkspaceId {
         let id = WorkspaceId::new(generate_id());
         self.workspaces.push(WorkspaceConfig {
             id: id.clone(),
             name: name.to_string(),
-            entries: Vec::new(),
+            root,
         });
+        self.current_scope = WorkspaceScope::workspace(id.clone());
         id
     }
 
-    /// Remove a workspace by ID. If the removed workspace was active,
-    /// switches active to the first remaining workspace.
+    /// Remove one workspace by id and fall back to the aggregate scope when needed.
     pub fn remove_workspace(&mut self, ws_id: &WorkspaceId) {
-        self.workspaces.retain(|w| &w.id != ws_id);
-        if self.active_workspace.as_ref() == Some(ws_id) {
-            self.active_workspace = self.workspaces.first().map(|w| w.id.clone());
+        self.workspaces.retain(|workspace| &workspace.id != ws_id);
+        if self.current_scope.workspace_id() == Some(ws_id) {
+            self.current_scope = WorkspaceScope::All;
+        } else {
+            self.normalize_scope();
         }
     }
 
-    /// Rename a workspace. No-op if the workspace ID is not found.
+    /// Rename one workspace. No-op if the workspace id is not found.
     pub fn rename_workspace(&mut self, ws_id: &WorkspaceId, new_name: &str) {
-        if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id) {
-            ws.name = new_name.to_string();
+        if let Some(workspace) = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| &workspace.id == ws_id)
+        {
+            workspace.name = new_name.to_string();
         }
     }
 
-    /// Replace all entries in a workspace with a single new root, updating the name.
-    /// No-op if the workspace ID is not found.
-    pub fn replace_root(&mut self, ws_id: &WorkspaceId, entry: WorkspaceEntry, name: &str) {
-        if let Some(ws) = self.workspaces.iter_mut().find(|w| &w.id == ws_id) {
-            ws.entries.clear();
-            ws.entries.push(entry);
-            ws.name = name.to_string();
+    /// Replace a workspace root while preserving the same workspace identity.
+    pub fn replace_root(&mut self, ws_id: &WorkspaceId, root: PathBuf, name: &str) {
+        if let Some(workspace) = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| &workspace.id == ws_id)
+        {
+            workspace.root = root;
+            workspace.name = name.to_string();
+        }
+    }
+
+    /// Persist a new current scope, falling back to `All` if the target is gone.
+    pub fn set_current_scope(&mut self, scope: WorkspaceScope) {
+        self.current_scope = self.normalized_scope(scope);
+    }
+
+    /// Return the current scope after applying missing-workspace fallback rules.
+    #[must_use]
+    pub fn current_scope(&self) -> WorkspaceScope {
+        self.normalized_scope(self.current_scope.clone())
+    }
+
+    /// Collect every persisted workspace root directory.
+    #[must_use]
+    pub fn all_workspace_root_paths(&self) -> Vec<PathBuf> {
+        self.workspaces
+            .iter()
+            .map(|workspace| workspace.root.clone())
+            .collect()
+    }
+
+    /// Collect the workspace roots covered by the given scope.
+    #[must_use]
+    pub fn root_paths_for_scope(&self, scope: &WorkspaceScope) -> Vec<PathBuf> {
+        match self.normalized_scope(scope.clone()) {
+            WorkspaceScope::All => self.all_workspace_root_paths(),
+            WorkspaceScope::Workspace(workspace_id) => self
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == workspace_id)
+                .map_or_else(Vec::new, |workspace| vec![workspace.root.clone()]),
+        }
+    }
+
+    /// Re-normalize the stored scope after structural mutations.
+    pub fn normalize_scope(&mut self) {
+        self.current_scope = self.normalized_scope(self.current_scope.clone());
+    }
+
+    fn normalized_scope(&self, scope: WorkspaceScope) -> WorkspaceScope {
+        match scope {
+            WorkspaceScope::Workspace(workspace_id)
+                if self
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.id == workspace_id) =>
+            {
+                WorkspaceScope::Workspace(workspace_id)
+            }
+            WorkspaceScope::All | WorkspaceScope::Workspace(_) => WorkspaceScope::All,
         }
     }
 }
 
-/// Generate a unique-enough identifier for workspace IDs.
+/// Generate a unique-enough identifier for workspace ids.
 fn generate_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
@@ -152,335 +232,123 @@ fn generate_id() -> String {
 mod tests {
     use super::*;
 
-    /// Create a `WorkspacesFile` with a default workspace already initialized.
-    /// Returns the file and the active workspace's id.
-    fn file_with_default_workspace() -> (WorkspacesFile, WorkspaceId) {
+    #[test]
+    fn workspace_scope_defaults_to_all() {
+        assert_eq!(WorkspaceScope::default(), WorkspaceScope::All);
+    }
+
+    #[test]
+    fn add_workspace_selects_new_workspace() {
         let mut file = WorkspacesFile::default();
-        let _ = file.active_workspace();
-        let ws_id = file.workspaces[0].id.clone();
-        (file, ws_id)
+        let id = file.add_workspace("project", "/tmp/project".into());
+
+        assert_eq!(file.workspaces.len(), 1);
+        assert_eq!(file.current_scope(), WorkspaceScope::workspace(id.clone()));
+        assert_eq!(file.workspaces[0].root, Path::new("/tmp/project"));
     }
 
     #[test]
-    fn test_active_workspace_creates_default() {
+    fn remove_selected_workspace_falls_back_to_all() {
         let mut file = WorkspacesFile::default();
-        let ws = file.active_workspace();
-        assert_eq!(ws.name, "New Workspace");
-        assert!(file.active_workspace.is_some());
+        let first = file.add_workspace("first", "/tmp/first".into());
+        let _second = file.add_workspace("second", "/tmp/second".into());
+        file.set_current_scope(WorkspaceScope::workspace(first.clone()));
+
+        file.remove_workspace(&first);
+
+        assert_eq!(file.current_scope(), WorkspaceScope::All);
+        assert_eq!(file.workspaces.len(), 1);
     }
 
     #[test]
-    fn test_add_entry_deduplicates() {
-        let (mut file, ws_id) = file_with_default_workspace();
+    fn set_current_scope_falls_back_to_all_for_missing_workspace() {
+        let mut file = WorkspacesFile::default();
+        let existing = file.add_workspace("project", "/tmp/project".into());
 
-        file.add_entry(
-            &ws_id,
-            WorkspaceEntry::Directory {
-                path: "/tmp/test".into(),
-            },
+        file.set_current_scope(WorkspaceScope::workspace(WorkspaceId::new("missing")));
+        assert_eq!(file.current_scope(), WorkspaceScope::All);
+
+        file.set_current_scope(WorkspaceScope::workspace(existing.clone()));
+        assert_eq!(file.current_scope(), WorkspaceScope::workspace(existing));
+    }
+
+    #[test]
+    fn replace_root_updates_root_and_name() {
+        let mut file = WorkspacesFile::default();
+        let workspace_id = file.add_workspace("old", "/tmp/old".into());
+
+        file.replace_root(&workspace_id, "/tmp/new".into(), "new");
+
+        assert_eq!(file.workspaces[0].root, Path::new("/tmp/new"));
+        assert_eq!(file.workspaces[0].name, "new");
+    }
+
+    #[test]
+    fn root_paths_for_scope_returns_selected_workspace_only() {
+        let mut file = WorkspacesFile::default();
+        let first = file.add_workspace("first", "/tmp/first".into());
+        let _second = file.add_workspace("second", "/tmp/second".into());
+
+        let roots = file.root_paths_for_scope(&WorkspaceScope::workspace(first));
+
+        assert_eq!(roots, vec![PathBuf::from("/tmp/first")]);
+    }
+
+    #[test]
+    fn root_paths_for_all_scope_returns_every_root() {
+        let mut file = WorkspacesFile::default();
+        let _ = file.add_workspace("first", "/tmp/first".into());
+        let _ = file.add_workspace("second", "/tmp/second".into());
+
+        let roots = file.root_paths_for_scope(&WorkspaceScope::All);
+
+        assert_eq!(
+            roots,
+            vec![PathBuf::from("/tmp/first"), PathBuf::from("/tmp/second")]
         );
-        file.add_entry(
-            &ws_id,
-            WorkspaceEntry::Directory {
-                path: "/tmp/test".into(),
-            },
-        );
-
-        assert_eq!(file.workspaces[0].entries.len(), 1);
     }
 
     #[test]
-    fn test_remove_entry() {
-        let (mut file, ws_id) = file_with_default_workspace();
-
-        file.add_entry(
-            &ws_id,
-            WorkspaceEntry::Directory {
-                path: "/tmp/test".into(),
-            },
-        );
-        assert_eq!(file.workspaces[0].entries.len(), 1);
-
-        file.remove_entry(&ws_id, Path::new("/tmp/test"));
-        assert!(file.workspaces[0].entries.is_empty());
+    fn workspace_scope_serialization_roundtrip() {
+        let scope = WorkspaceScope::workspace(WorkspaceId::new("demo"));
+        let json = serde_json::to_string(&scope).expect("expected operation to succeed");
+        let restored: WorkspaceScope =
+            serde_json::from_str(&json).expect("expected operation to succeed");
+        assert_eq!(restored, scope);
     }
 
     #[test]
-    fn test_workspace_entry_path_directory() {
-        let entry = WorkspaceEntry::Directory {
-            path: "/tmp/project".into(),
-        };
-        assert_eq!(entry.path(), Path::new("/tmp/project"));
-    }
-
-    #[test]
-    fn test_workspace_entry_path_file() {
-        let entry = WorkspaceEntry::File {
-            path: "/tmp/notes.md".into(),
-        };
-        assert_eq!(entry.path(), Path::new("/tmp/notes.md"));
-    }
-
-    #[test]
-    fn test_active_workspace_fallback_when_id_not_found() {
-        let mut file = WorkspacesFile {
-            active_workspace: Some(WorkspaceId::new("nonexistent")),
-            workspaces: vec![WorkspaceConfig {
-                id: WorkspaceId::new("real"),
-                name: "real-workspace".into(),
-                entries: vec![],
-            }],
-        };
-        let ws = file.active_workspace();
-        assert_eq!(ws.id, WorkspaceId::new("real"));
-        assert_eq!(ws.name, "real-workspace");
-    }
-
-    #[test]
-    fn test_add_entry_noop_for_unknown_workspace() {
-        let (mut file, _) = file_with_default_workspace();
-
-        file.add_entry(
-            &WorkspaceId::new("nonexistent"),
-            WorkspaceEntry::File {
-                path: "/tmp/file".into(),
-            },
-        );
-        assert!(file.workspaces[0].entries.is_empty());
-    }
-
-    #[test]
-    fn test_remove_entry_noop_for_unknown_workspace() {
-        let (mut file, ws_id) = file_with_default_workspace();
-
-        file.add_entry(
-            &ws_id,
-            WorkspaceEntry::File {
-                path: "/tmp/file".into(),
-            },
-        );
-
-        file.remove_entry(&WorkspaceId::new("nonexistent"), Path::new("/tmp/file"));
-        assert_eq!(file.workspaces[0].entries.len(), 1);
-    }
-
-    #[test]
-    fn test_remove_entry_noop_for_nonexistent_path() {
-        let (mut file, ws_id) = file_with_default_workspace();
-
-        file.add_entry(
-            &ws_id,
-            WorkspaceEntry::File {
-                path: "/tmp/file".into(),
-            },
-        );
-
-        file.remove_entry(&ws_id, Path::new("/tmp/other"));
-        assert_eq!(file.workspaces[0].entries.len(), 1);
-    }
-
-    #[test]
-    fn test_add_entry_deduplicates_across_kinds() {
-        let (mut file, ws_id) = file_with_default_workspace();
-
-        file.add_entry(
-            &ws_id,
-            WorkspaceEntry::Directory {
-                path: "/tmp/target".into(),
-            },
-        );
-        file.add_entry(
-            &ws_id,
-            WorkspaceEntry::File {
-                path: "/tmp/target".into(),
-            },
-        );
-
-        assert_eq!(file.workspaces[0].entries.len(), 1);
-    }
-
-    #[test]
-    fn test_workspaces_file_default_is_empty() {
-        let file = WorkspacesFile::default();
-        assert!(file.workspaces.is_empty());
-        assert!(file.active_workspace.is_none());
-    }
-
-    #[test]
-    fn test_workspace_entry_serialization_directory() {
+    fn workspace_entry_serialization_directory() {
         let entry = WorkspaceEntry::Directory {
             path: "/tmp/project".into(),
         };
         let json = serde_json::to_string(&entry).expect("expected operation to succeed");
-        let deserialized: WorkspaceEntry =
+        let restored: WorkspaceEntry =
             serde_json::from_str(&json).expect("expected operation to succeed");
-        assert_eq!(deserialized.path(), entry.path());
-        assert!(matches!(deserialized, WorkspaceEntry::Directory { .. }));
+        assert_eq!(restored, entry);
     }
 
     #[test]
-    fn test_workspace_entry_serialization_file() {
+    fn workspace_entry_serialization_file() {
         let entry = WorkspaceEntry::File {
-            path: "/tmp/notes.md".into(),
+            path: "/tmp/file.txt".into(),
         };
         let json = serde_json::to_string(&entry).expect("expected operation to succeed");
-        let deserialized: WorkspaceEntry =
+        let restored: WorkspaceEntry =
             serde_json::from_str(&json).expect("expected operation to succeed");
-        assert_eq!(deserialized.path(), entry.path());
-        assert!(matches!(deserialized, WorkspaceEntry::File { .. }));
+        assert_eq!(restored, entry);
     }
 
     #[test]
-    fn test_workspace_config_serialization_roundtrip() {
+    fn workspace_config_serialization_roundtrip() {
         let config = WorkspaceConfig {
             id: WorkspaceId::new("ws-123"),
-            name: "my project".into(),
-            entries: vec![
-                WorkspaceEntry::Directory {
-                    path: "/home/user/src".into(),
-                },
-                WorkspaceEntry::File {
-                    path: "/home/user/notes.md".into(),
-                },
-            ],
+            name: "project".into(),
+            root: "/tmp/project".into(),
         };
         let json = serde_json::to_string(&config).expect("expected operation to succeed");
-        let deserialized: WorkspaceConfig =
+        let restored: WorkspaceConfig =
             serde_json::from_str(&json).expect("expected operation to succeed");
-        assert_eq!(deserialized.id, config.id);
-        assert_eq!(deserialized.name, config.name);
-        assert_eq!(deserialized.entries.len(), 2);
-        assert!(matches!(
-            deserialized.entries[0],
-            WorkspaceEntry::Directory { .. }
-        ));
-        assert!(matches!(
-            deserialized.entries[1],
-            WorkspaceEntry::File { .. }
-        ));
-    }
-
-    #[test]
-    fn test_generated_ids_are_nonempty() {
-        let (file, _) = file_with_default_workspace();
-        assert!(!file.workspaces[0].id.is_empty());
-    }
-
-    #[test]
-    fn test_add_workspace_creates_with_id() {
-        let mut file = WorkspacesFile::default();
-        let id = file.add_workspace("my project");
-        assert_eq!(file.workspaces.len(), 1);
-        assert_eq!(file.workspaces[0].name, "my project");
-        assert_eq!(file.workspaces[0].id, id);
-        assert!(file.workspaces[0].entries.is_empty());
-    }
-
-    #[test]
-    fn test_add_workspace_appends_to_existing() {
-        let (mut file, _) = file_with_default_workspace();
-        let id = file.add_workspace("second");
-        assert_eq!(file.workspaces.len(), 2);
-        assert_eq!(file.workspaces[1].id, id);
-        assert_eq!(file.workspaces[1].name, "second");
-    }
-
-    #[test]
-    fn test_remove_workspace_basic() {
-        let mut file = WorkspacesFile::default();
-        let id1 = file.add_workspace("first");
-        let _id2 = file.add_workspace("second");
-        assert_eq!(file.workspaces.len(), 2);
-
-        file.remove_workspace(&id1);
-        assert_eq!(file.workspaces.len(), 1);
-        assert_eq!(file.workspaces[0].name, "second");
-    }
-
-    #[test]
-    fn test_remove_workspace_updates_active() {
-        let mut file = WorkspacesFile::default();
-        let id1 = file.add_workspace("first");
-        let id2 = file.add_workspace("second");
-        file.active_workspace = Some(id1.clone());
-
-        file.remove_workspace(&id1);
-        assert_eq!(file.active_workspace, Some(id2));
-    }
-
-    #[test]
-    fn test_remove_workspace_noop_for_unknown() {
-        let (mut file, _) = file_with_default_workspace();
-        let count_before = file.workspaces.len();
-        file.remove_workspace(&WorkspaceId::new("nonexistent"));
-        assert_eq!(file.workspaces.len(), count_before);
-    }
-
-    #[test]
-    fn test_rename_workspace_basic() {
-        let mut file = WorkspacesFile::default();
-        let id = file.add_workspace("old name");
-        file.rename_workspace(&id, "new name");
-        assert_eq!(file.workspaces[0].name, "new name");
-    }
-
-    #[test]
-    fn test_rename_workspace_noop_for_unknown() {
-        let (mut file, _) = file_with_default_workspace();
-        let original_name = file.workspaces[0].name.clone();
-        file.rename_workspace(&WorkspaceId::new("nonexistent"), "changed");
-        assert_eq!(file.workspaces[0].name, original_name);
-    }
-
-    #[test]
-    fn test_replace_root_clears_and_replaces() {
-        let (mut file, ws_id) = file_with_default_workspace();
-        file.add_entry(
-            &ws_id,
-            WorkspaceEntry::Directory {
-                path: "/old/dir".into(),
-            },
-        );
-        file.add_entry(
-            &ws_id,
-            WorkspaceEntry::File {
-                path: "/old/file.txt".into(),
-            },
-        );
-        assert_eq!(file.workspaces[0].entries.len(), 2);
-
-        file.replace_root(
-            &ws_id,
-            WorkspaceEntry::Directory {
-                path: "/new/root".into(),
-            },
-            "new-name",
-        );
-
-        assert_eq!(file.workspaces[0].entries.len(), 1);
-        assert_eq!(file.workspaces[0].entries[0].path(), Path::new("/new/root"));
-        assert_eq!(file.workspaces[0].name, "new-name");
-    }
-
-    #[test]
-    fn test_replace_root_noop_for_unknown() {
-        let (mut file, ws_id) = file_with_default_workspace();
-        file.add_entry(
-            &ws_id,
-            WorkspaceEntry::Directory {
-                path: "/keep".into(),
-            },
-        );
-
-        file.replace_root(
-            &WorkspaceId::new("nonexistent"),
-            WorkspaceEntry::Directory {
-                path: "/new".into(),
-            },
-            "ignored",
-        );
-
-        assert_eq!(file.workspaces[0].entries.len(), 1);
-        assert_eq!(file.workspaces[0].entries[0].path(), Path::new("/keep"));
+        assert_eq!(restored, config);
     }
 }

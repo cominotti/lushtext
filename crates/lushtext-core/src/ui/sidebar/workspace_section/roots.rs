@@ -17,6 +17,13 @@ use crate::ui::sidebar::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;
 
 impl LushtextWorkspaceSection {
+    /// Load the persisted root directory for one workspace section.
+    pub fn load_workspace_root(&self, root: &Path) {
+        self.load_roots(&[WorkspaceEntry::Directory {
+            path: root.to_path_buf(),
+        }]);
+    }
+
     /// Load root paths into the file tree.
     pub fn load_roots(&self, roots: &[WorkspaceEntry]) {
         *self.imp().original_roots.borrow_mut() = roots.to_vec();

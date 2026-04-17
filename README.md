@@ -7,7 +7,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Document properties surface** -- persistent left workspace tree plus an adaptive document-properties surface that appears as a right pane on spacious windows and a bottom sheet on compact ones, keeping document metadata, file-health details, and formatting-source explanation out of the bottom bar
 - **Adaptive workspace sidebar width** -- choose `Small`, `Comfy`, or `Large` in `Preferences > Workspace`; each preset stays comfortable on large displays by clamping to a bounded desktop width
 - **Tab content transparency** -- adjust `Transparency` in `Preferences > Editor > Appearance` to soften editor and Markdown preview backgrounds while keeping the header, side panels, status/search chrome, and minimap opaque
-- **Workspaces** -- named collections of root directories, persisted across sessions
+- **Workspaces** -- named single-root directories with a shared current workspace scope, persisted across sessions
 - **Workspace auto-refresh** -- external file and folder changes refresh the sidebar's currently materialized root rows and expanded directories automatically, with access-noise filtering plus in-place reconciliation for both subtree and manual root refreshes to avoid visible flashing, and a per-section `Refresh` button for deterministic broader reloads
 - **File peek** -- press `Space` on a selected sidebar file to inspect a bounded read-only preview in a floating card with the absolute file path, then `Enter` or `Open` to promote it into a real tab
 - **Focus Folder** -- re-root a workspace section into a deep subfolder so the sidebar can drill into nested trees without wasting width on clipped ancestors
@@ -19,10 +19,10 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Session persistence** -- tabs, pinned state, cursor positions, and scroll offsets restored on restart
 - **Draft recovery** -- unsaved changes auto-saved to disk and recovered after crash
 - **Print** -- native GTK print dialog with syntax highlighting and editor settings preserved
-- **Workspace content search** -- Ctrl+Shift+F parallel grep across all workspace files with streaming results, regex/literal/whole-word modes, .gitignore toggle, glob file filter, F4/Shift+F4 match navigation, progress reporting, search history with full state recall, and named saved searches
+- **Workspace content search** -- Ctrl+Shift+F parallel grep across the current workspace scope (`All workspaces` or one selected workspace) with streaming results, regex/literal/whole-word modes, .gitignore toggle, glob file filter, F4/Shift+F4 match navigation, progress reporting, search history with full state recall, and named saved searches
 - **Multi-file Replace All** -- preview proposed changes with per-match checkboxes, atomic file writes, skip-modified-tabs safety, and full undo support
 - **Find and replace** -- per-tab search bar with match highlighting
-- **Command palette** -- Ctrl+P fuzzy search for files and commands (SIMD-accelerated via nucleo)
+- **Command palette** -- Ctrl+P fuzzy search for files and commands, scoped to the current workspace selection unless `All workspaces` is active (SIMD-accelerated via nucleo)
 - **Large file handling** -- graceful degradation: >1MB toast, >10MB disable syntax, >50MB disable undo, >500MB refuse
 - **Buffer eviction** -- background tabs evicted when total memory exceeds 256MB, transparently reloaded on focus
 - **Dark mode** -- automatic GtkSourceView scheme switching via Libadwaita StyleManager

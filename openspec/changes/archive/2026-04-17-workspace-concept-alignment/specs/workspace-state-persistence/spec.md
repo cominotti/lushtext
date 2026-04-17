@@ -1,8 +1,5 @@
-# workspace-state-persistence Specification
+## MODIFIED Requirements
 
-## Purpose
-Persist and restore the user's named single-root workspaces and current workspace scope under the LushText app data directory so startup behavior stays predictable and recoverable.
-## Requirements
 ### Requirement: Workspaces persist named roots and active workspace reference in the app data directory
 The system SHALL persist workspace state to `$XDG_DATA_HOME/lushtext/workspaces.json`. Each persisted workspace MUST keep a stable ID, a display name, and exactly one root directory. Persisted workspace state MUST also keep the user's current workspace scope selection as either a concrete workspace or the explicit aggregate scope `All workspaces`.
 
@@ -41,6 +38,8 @@ The system SHALL persist at most one root directory per workspace, and rapid wor
 - **WHEN** the user makes several workspace mutations in quick succession and then restarts the app after persistence completes
 - **THEN** the restored workspace state reflects the latest completed in-memory state
 - **AND** an older debounced snapshot does not overwrite the newer one
+
+## ADDED Requirements
 
 ### Requirement: Legacy persisted workspaces migrate safely to single-root form
 The system SHALL normalize legacy persisted workspace data into the single-root contract before that data is rendered or re-saved. Extra directory roots from one legacy workspace MUST become additional sibling workspaces. Standalone file roots MUST be promoted to parent-directory workspaces when their parent directory can be determined.

@@ -20,7 +20,7 @@ use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::encoding::{DocumentEncoding, FileHealthFindingKind, LineEnding};
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile,
+    WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
@@ -92,7 +92,7 @@ fn seed_restored_workspaces() -> tempfile::TempDir {
         workspaces.workspaces.push(WorkspaceConfig {
             id: WorkspaceId::new(format!("ws-{idx}")),
             name: name.to_string(),
-            entries: vec![WorkspaceEntry::Directory { path }],
+            root: path,
         });
     }
 
@@ -100,18 +100,62 @@ fn seed_restored_workspaces() -> tempfile::TempDir {
     roots_dir
 }
 
+fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    ensure_gtk_init();
+    let roots_dir = tempfile::tempdir().expect("scoped workspace roots tempdir");
+    let left_root = roots_dir.path().join("left");
+    let right_root = roots_dir.path().join("right");
+    std::fs::create_dir_all(&left_root).expect("create left workspace root");
+    std::fs::create_dir_all(&right_root).expect("create right workspace root");
+    std::fs::write(left_root.join("alpha.rs"), "fn alpha() {}\n").expect("write alpha");
+    std::fs::write(right_root.join("beta.rs"), "fn beta() {}\n").expect("write beta");
+
+    let workspaces = WorkspacesFile {
+        current_scope: initial_scope,
+        workspaces: vec![
+            WorkspaceConfig {
+                id: WorkspaceId::new("ws-left"),
+                name: "left".to_string(),
+                root: left_root.clone(),
+            },
+            WorkspaceConfig {
+                id: WorkspaceId::new("ws-right"),
+                name: "right".to_string(),
+                root: right_root.clone(),
+            },
+        ],
+    };
+    workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save scoped workspaces");
+    (roots_dir, left_root, right_root)
+}
+
 fn wait_for_workspace_roots(window: &LushtextWindow, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        if window.imp().sidebar.workspace_roots().len() == expected {
+        if window.imp().sidebar.all_workspace_root_paths().len() == expected {
             return;
         }
         flush_after_delay(Duration::from_millis(20));
     }
     panic!(
         "expected {expected} restored workspace roots, got {}",
-        window.imp().sidebar.workspace_roots().len()
+        window.imp().sidebar.all_workspace_root_paths().len()
     );
+}
+
+fn wait_for_workspace_consumers(window: &LushtextWindow, expected_roots: usize, expected_index: usize) {
+    wait_until(Duration::from_secs(3), || {
+        window
+            .imp()
+            .search_panel
+            .imp()
+            .runtime
+            .workspace_roots
+            .borrow()
+            .len()
+            == expected_roots
+            && window.imp().command_palette.file_index_len() == expected_index
+    });
 }
 
 fn flush_events() {
@@ -413,13 +457,9 @@ fn seed_peek_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
     workspaces.workspaces.push(WorkspaceConfig {
         id: WorkspaceId::new("peek-ws"),
         name: "peek".to_string(),
-        entries: vec![
-            WorkspaceEntry::File {
-                path: alpha.clone(),
-            },
-            WorkspaceEntry::File { path: beta.clone() },
-        ],
+        root: root_dir.path().to_path_buf(),
     });
+    workspaces.current_scope = WorkspaceScope::workspace(WorkspaceId::new("peek-ws"));
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save peek workspaces");
     (root_dir, alpha, beta)
 }
@@ -489,38 +529,51 @@ fn test_open_document_restores_bookmarks_and_annotations() {
 }
 
 fn select_sidebar_path(section: &lushtext_core::ui::sidebar::WorkspaceSection, path: &Path) {
-    let selection = section
-        .imp()
-        .file_tree_view
-        .model()
-        .and_downcast::<gtk4::SingleSelection>()
-        .expect("sidebar section should use SingleSelection");
-    let tree_model = section
-        .imp()
-        .tree_model
-        .borrow()
-        .as_ref()
-        .cloned()
-        .expect("tree model should be loaded");
+    fn try_select_path(
+        section: &lushtext_core::ui::sidebar::WorkspaceSection,
+        path: &Path,
+    ) -> bool {
+        let selection = section
+            .imp()
+            .file_tree_view
+            .model()
+            .and_downcast::<gtk4::SingleSelection>()
+            .expect("sidebar section should use SingleSelection");
+        let tree_model = section
+            .imp()
+            .tree_model
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("tree model should be loaded");
 
-    for index in 0..tree_model.n_items() {
-        if let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()
-            && let Some(item) = row
-                .item()
-                .and_downcast::<lushtext_core::ui::sidebar::FileTreeItem>()
-            && item.path().as_deref() == Some(path)
-        {
-            selection.set_selected(index);
-            section
-                .imp()
-                .file_tree_view
-                .scroll_to(index, gtk4::ListScrollFlags::FOCUS, None);
-            flush_events();
-            return;
+        for index in 0..tree_model.n_items() {
+            if let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()
+                && let Some(item) = row
+                    .item()
+                    .and_downcast::<lushtext_core::ui::sidebar::FileTreeItem>()
+                && item.path().as_deref() == Some(path)
+            {
+                selection.set_selected(index);
+                section
+                    .imp()
+                    .file_tree_view
+                    .scroll_to(index, gtk4::ListScrollFlags::FOCUS, None);
+                flush_events();
+                return true;
+            }
         }
+        false
     }
 
-    panic!("sidebar path {} was not found", path.display());
+    if try_select_path(section, path) {
+        return;
+    }
+
+    // Single-root workspaces now expose files under a real directory root, so
+    // expand the root tree once before giving up on a nested file-path lookup.
+    section.expand_roots();
+    wait_until(Duration::from_secs(2), || try_select_path(section, path));
 }
 
 fn first_sidebar_section(window: &LushtextWindow) -> lushtext_core::ui::sidebar::WorkspaceSection {
@@ -1391,7 +1444,65 @@ fn test_restored_workspaces_survive_dual_sidebar_shell() {
     present_window(&window);
     wait_for_workspace_roots(&window, 3);
     assert!(workspace_sidebar_visible(&window));
-    assert_eq!(window.imp().sidebar.workspace_roots().len(), 3);
+    assert_eq!(window.imp().sidebar.all_workspace_root_paths().len(), 3);
+}
+
+#[test]
+fn test_workspace_selector_updates_search_and_palette_scope() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 2);
+
+    let dropdown = &window.imp().sidebar.imp().workspace_filter_dropdown;
+    dropdown.set_selected(1);
+    flush_events();
+
+    wait_for_workspace_consumers(&window, 1, 1);
+    assert_eq!(
+        window
+            .imp()
+            .search_panel
+            .imp()
+            .runtime
+            .workspace_roots
+            .borrow()
+            .as_slice(),
+        &[left_root],
+    );
+
+    dropdown.set_selected(0);
+    flush_events();
+    wait_for_workspace_consumers(&window, 2, 2);
+}
+
+#[test]
+fn test_restored_workspace_scope_narrows_consumers_on_startup() {
+    ensure_gtk_init();
+    let (_roots_dir, _left_root, right_root) =
+        seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-right")));
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 1, 1);
+
+    let dropdown = &window.imp().sidebar.imp().workspace_filter_dropdown;
+    assert_eq!(dropdown.selected(), 2);
+    assert_eq!(
+        window
+            .imp()
+            .search_panel
+            .imp()
+            .runtime
+            .workspace_roots
+            .borrow()
+            .as_slice(),
+        &[right_root],
+    );
 }
 
 #[test]

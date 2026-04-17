@@ -335,7 +335,7 @@ impl LushtextWindow {
                 let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
                 let context = MarkdownPreviewRenderContext::new(
                     editor.file_path(),
-                    self.imp().sidebar.workspace_roots(),
+                    self.current_workspace_directory_roots(),
                 );
                 preview.render_markdown_with_context(&text, &context);
             }

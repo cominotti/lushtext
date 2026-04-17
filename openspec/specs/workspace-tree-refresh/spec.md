@@ -1,4 +1,9 @@
-## ADDED Requirements
+# workspace-tree-refresh Specification
+
+## Purpose
+Keep each workspace section's visible tree aligned with on-disk changes while preserving the section's current browsing context and avoiding visually disruptive rebuilds.
+
+## Requirements
 
 ### Requirement: Workspace sections refresh automatically for external filesystem changes
 The system SHALL keep each workspace section's visible tree aligned with files and directories inside the sidebar's currently materialized scope when those paths are created, removed, renamed, or moved outside the LushText sidebar workflow. Automatic watching MUST prefer the visible root rows and expanded directories needed to keep the rendered tree current, rather than recursively watching every descendant under a broad configured root at startup.

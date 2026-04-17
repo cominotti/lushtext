@@ -5,7 +5,7 @@
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspacesFile};
+use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
 use lushtext_core::services::{json_store, workspace_manager};
 use lushtext_core::ui::sidebar::LushtextSidebar;
 use lushtext_core::ui::window::LushtextWindow;
@@ -228,7 +228,7 @@ fn seed_restored_workspaces() -> tempfile::TempDir {
         workspaces.workspaces.push(WorkspaceConfig {
             id: WorkspaceId::new(format!("ws-{idx}")),
             name: name.to_string(),
-            entries: vec![WorkspaceEntry::Directory { path }],
+            root: path,
         });
     }
 

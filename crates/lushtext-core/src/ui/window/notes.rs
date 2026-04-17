@@ -570,7 +570,7 @@ impl LushtextWindow {
 
     /// Collect the current workspace scope for bookmark, annotation, and export workflows.
     fn workspace_note_scope_paths(&self) -> Vec<PathBuf> {
-        self.imp().sidebar.filtered_workspace_scope_paths()
+        self.current_workspace_scope_paths()
     }
 
     /// Present the searchable bookmark browser dialog.

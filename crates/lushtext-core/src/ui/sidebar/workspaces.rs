@@ -13,7 +13,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use crate::model::workspace::{WorkspaceEntry, WorkspaceId, WorkspacesFile};
+use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::services::{async_task, json_store, workspace_manager};
 
 use super::{LushtextSidebar, WorkspaceSection};
@@ -27,7 +27,8 @@ impl LushtextSidebar {
             move || workspace_manager::load(&data_dir).unwrap_or_default(),
             |sidebar, workspaces_file| {
                 sidebar.build_sections_from_file(workspaces_file);
-                sidebar.notify_workspace_changed();
+                sidebar.notify_workspace_structure_changed();
+                sidebar.notify_workspace_scope_changed();
             },
         );
     }
@@ -44,12 +45,15 @@ impl LushtextSidebar {
 
         for workspace in &workspaces_file.workspaces {
             let section =
-                self.create_section(workspace.id.clone(), &workspace.name, &workspace.entries);
+                self.create_section(workspace.id.clone(), &workspace.name, &workspace.root);
             imp.sections_box.append(&section);
             imp.sections.borrow_mut().push(section);
         }
 
+        let current_scope = workspaces_file.current_scope();
         *imp.workspaces_file.borrow_mut() = workspaces_file;
+        *imp.current_scope.borrow_mut() = current_scope.clone();
+        *imp.applied_workspace_filter.borrow_mut() = current_scope;
         imp.workspace_filter_animation_active.set(false);
         imp.workspace_list_revealer.set_reveal_child(true);
         self.refresh_workspace_filter_dropdown();
@@ -64,21 +68,17 @@ impl LushtextSidebar {
         let mut options = Vec::with_capacity(workspaces.workspaces.len() + 1);
         let model = gtk4::StringList::new(&[]);
         model.append("All workspaces");
-        options.push(None);
+        options.push(WorkspaceScope::All);
 
         for workspace in &workspaces.workspaces {
             model.append(&workspace.name);
-            options.push(Some(workspace.id.clone()));
+            options.push(WorkspaceScope::workspace(workspace.id.clone()));
         }
 
-        let selected_filter = imp.selected_workspace_filter.borrow().clone();
-        let selected_index = selected_filter
-            .as_ref()
-            .and_then(|selected_id| {
-                options
-                    .iter()
-                    .position(|candidate| candidate.as_ref() == Some(selected_id))
-            })
+        let current_scope = imp.current_scope.borrow().clone();
+        let selected_index = options
+            .iter()
+            .position(|candidate| *candidate == current_scope)
             .unwrap_or(0);
 
         drop(workspaces);
@@ -93,8 +93,7 @@ impl LushtextSidebar {
             .set_selected(selected_index as u32);
         imp.syncing_workspace_filter.set(false);
 
-        *imp.workspace_filter_options.borrow_mut() = options.clone();
-        *imp.selected_workspace_filter.borrow_mut() = options[selected_index].clone();
+        *imp.workspace_filter_options.borrow_mut() = options;
 
         let tooltip = if selected_index == 0 {
             "All workspaces".to_string()
@@ -114,14 +113,11 @@ impl LushtextSidebar {
 
     /// Show either every workspace section or only the selected one.
     pub(super) fn apply_workspace_filter_visibility(&self) {
-        let selected_filter = self.imp().selected_workspace_filter.borrow().clone();
+        let current_scope = self.imp().current_scope.borrow().clone();
         for section in self.imp().sections.borrow().iter() {
-            let visible = selected_filter
-                .as_ref()
-                .is_none_or(|workspace_id| section.workspace_id() == *workspace_id);
-            section.set_visible(visible);
+            section.set_visible(current_scope.includes_workspace(&section.workspace_id()));
         }
-        *self.imp().applied_workspace_filter.borrow_mut() = selected_filter;
+        *self.imp().applied_workspace_filter.borrow_mut() = current_scope;
     }
 
     /// Fade the scrollable workspace list out, swap the filter, then fade it back in.
@@ -129,8 +125,7 @@ impl LushtextSidebar {
         let imp = self.imp();
         if imp.workspace_filter_animation_active.get()
             || imp.sections.borrow().is_empty()
-            || imp.applied_workspace_filter.borrow().clone()
-                == imp.selected_workspace_filter.borrow().clone()
+            || imp.applied_workspace_filter.borrow().clone() == imp.current_scope.borrow().clone()
         {
             return;
         }
@@ -145,20 +140,16 @@ impl LushtextSidebar {
         self.build_sections_from_file(current);
     }
 
-    /// Create a single workspace section, load its roots, and wire callbacks.
+    /// Create a single workspace section, load its root, and wire callbacks.
     pub(super) fn create_section(
         &self,
         workspace_id: WorkspaceId,
         name: &str,
-        roots: &[WorkspaceEntry],
+        root: &Path,
     ) -> WorkspaceSection {
         let section = WorkspaceSection::new(workspace_id);
         section.set_workspace_name(name);
-
-        if !roots.is_empty() {
-            section.load_roots(roots);
-        }
-
+        section.load_workspace_root(root);
         self.wire_section_callbacks(&section);
         section
     }
@@ -209,25 +200,47 @@ impl LushtextSidebar {
     pub(super) fn handle_new_workspace(&self, path: &Path) {
         let imp = self.imp();
         let name = folder_display_name(path);
-        let root_entry = WorkspaceEntry::Directory {
-            path: path.to_path_buf(),
-        };
 
         {
             let mut workspaces = imp.workspaces_file.borrow_mut();
-            let workspace_id = workspaces.add_workspace(&name);
-            workspaces.add_entry(&workspace_id, root_entry.clone());
+            workspaces.add_workspace(&name, path.to_path_buf());
+            *imp.current_scope.borrow_mut() = workspaces.current_scope();
         }
         self.persist();
         self.rebuild_sections_from_state();
-        self.notify_workspace_changed();
+        self.notify_workspace_structure_changed();
+        self.notify_workspace_scope_changed();
     }
 
     /// Notify the window that workspace structure changed.
-    pub(super) fn notify_workspace_changed(&self) {
-        if let Some(ref callback) = *self.imp().workspace_changed_callback.borrow() {
+    pub(super) fn notify_workspace_structure_changed(&self) {
+        if let Some(ref callback) = *self.imp().workspace_structure_changed_callback.borrow() {
             callback();
         }
+    }
+
+    /// Notify the window that the current workspace scope changed.
+    pub(super) fn notify_workspace_scope_changed(&self) {
+        if let Some(ref callback) = *self.imp().workspace_scope_changed_callback.borrow() {
+            callback(self.imp().current_scope.borrow().clone());
+        }
+    }
+
+    /// Apply a selector-driven scope change, persist it, and refresh visible sections.
+    pub(super) fn change_scope_from_selector(&self, scope: WorkspaceScope) {
+        let mut workspaces = self.imp().workspaces_file.borrow_mut();
+        workspaces.set_current_scope(scope);
+        let normalized_scope = workspaces.current_scope();
+        drop(workspaces);
+
+        if self.imp().current_scope.borrow().clone() == normalized_scope {
+            return;
+        }
+
+        *self.imp().current_scope.borrow_mut() = normalized_scope;
+        self.animate_workspace_filter_change();
+        self.persist();
+        self.notify_workspace_scope_changed();
     }
 
     /// Save the current workspace state to disk on a background thread.
@@ -283,7 +296,7 @@ impl LushtextSidebar {
 /// Extract a display name from a path's last component.
 pub(super) fn folder_display_name(path: &Path) -> String {
     path.file_name().map_or_else(
-        || "New Workspace".to_string(),
+        || "Workspace".to_string(),
         |name| name.to_string_lossy().into_owned(),
     )
 }

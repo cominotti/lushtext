@@ -223,7 +223,7 @@ impl LushtextWindow {
                 return;
             }
             let prev_count = window.imp().command_palette.file_index_len();
-            let roots = window.imp().sidebar.workspace_roots();
+            let roots = window.current_workspace_directory_roots();
             let window_weak = window.downgrade();
             async_task::spawn_blocking_then(
                 (),
