@@ -364,6 +364,17 @@ fn properties_sidebar_visible(window: &LushtextWindow) -> bool {
     window.imp().properties_split_view.shows_sidebar() || window.imp().properties_bottom_sheet.is_open()
 }
 
+fn notes_menu_button_visible(window: &LushtextWindow) -> bool {
+    window.imp().notes_menu_button.property::<bool>("visible")
+}
+
+fn widget_left_in(reference: &gtk4::Widget, widget: &gtk4::Widget) -> f32 {
+    widget
+        .compute_bounds(reference)
+        .expect("widget should share allocated bounds with the reference")
+        .x()
+}
+
 fn properties_surface_uses_bottom_sheet(window: &LushtextWindow) -> bool {
     window.imp().properties_bottom_sheet.is_open()
 }
@@ -2494,6 +2505,196 @@ fn test_primary_menu_button_exists() {
     ensure_gtk_init();
     let window = test_window();
     assert!(window.imp().primary_menu_button.popover().is_some());
+}
+
+#[test]
+fn test_notes_menu_exists_and_primary_menu_excludes_note_actions() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert!(window.imp().notes_menu_button.popover().is_some());
+
+    let notes_menu = window
+        .imp()
+        .notes_menu_button
+        .menu_model()
+        .expect("notes menu model");
+    assert_eq!(
+        menu_model_labels(&notes_menu),
+        vec![
+            "Toggle Bookmark".to_string(),
+            "Edit Bookmark Label…".to_string(),
+            "Add Annotation…".to_string(),
+            "Edit Annotation…".to_string(),
+            "Browse Bookmarks…".to_string(),
+            "Browse Annotations…".to_string(),
+            "Export Annotations…".to_string(),
+        ]
+    );
+
+    let primary_menu = window
+        .imp()
+        .primary_menu_button
+        .menu_model()
+        .expect("primary menu model");
+    let primary_labels = menu_model_labels(&primary_menu);
+    for label in [
+        "Toggle Bookmark",
+        "Edit Bookmark Label…",
+        "Add Annotation…",
+        "Edit Annotation…",
+        "Browse Bookmarks…",
+        "Browse Annotations…",
+        "Export Annotations…",
+    ] {
+        assert!(
+            !primary_labels.iter().any(|entry| entry == label),
+            "primary menu should not include '{label}' once the Notes menu exists",
+        );
+    }
+}
+
+#[test]
+fn test_notes_menu_button_hides_without_editor_or_workspace() {
+    ensure_gtk_init();
+    let window = test_window();
+    assert!(!notes_menu_button_visible(&window));
+}
+
+#[test]
+fn test_notes_menu_state_for_workspace_without_saved_file() {
+    ensure_gtk_init();
+    let (_roots_dir, _left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 2);
+    assert!(notes_menu_button_visible(&window));
+
+    for name in [
+        "notes-toggle-bookmark",
+        "notes-edit-bookmark-label",
+        "notes-add-annotation",
+        "notes-edit-annotation",
+    ] {
+        assert!(
+            !action_enabled(&window, name),
+            "expected '{name}' to stay disabled without a saved document",
+        );
+    }
+    for name in [
+        "notes-show-bookmarks",
+        "notes-show-annotations",
+        "notes-export-annotations",
+    ] {
+        assert!(
+            action_enabled(&window, name),
+            "expected '{name}' to stay enabled when a workspace scope exists",
+        );
+    }
+
+    activate_action(&window, "new-tab");
+    assert!(notes_menu_button_visible(&window));
+    for name in [
+        "notes-toggle-bookmark",
+        "notes-edit-bookmark-label",
+        "notes-add-annotation",
+        "notes-edit-annotation",
+    ] {
+        assert!(
+            !action_enabled(&window, name),
+            "expected '{name}' to stay disabled for an untitled tab",
+        );
+    }
+}
+
+#[test]
+fn test_notes_menu_renders_immediately_left_of_main_menu() {
+    ensure_gtk_init();
+    let (_roots_dir, _left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 2);
+    wait_until(Duration::from_secs(2), || {
+        let header_bar = window.imp().header_bar.upcast_ref::<gtk4::Widget>();
+        let notes_button = window.imp().notes_menu_button.upcast_ref::<gtk4::Widget>();
+        let main_button = window.imp().primary_menu_button.upcast_ref::<gtk4::Widget>();
+        notes_menu_button_visible(&window)
+            && notes_button.compute_bounds(header_bar).is_some()
+            && main_button.compute_bounds(header_bar).is_some()
+    });
+
+    let header_bar = window.imp().header_bar.upcast_ref::<gtk4::Widget>();
+    let notes_x = widget_left_in(
+        header_bar,
+        window.imp().notes_menu_button.upcast_ref::<gtk4::Widget>(),
+    );
+    let main_x = widget_left_in(
+        header_bar,
+        window.imp().primary_menu_button.upcast_ref::<gtk4::Widget>(),
+    );
+
+    assert!(
+        notes_x < main_x,
+        "Notes should render left of Main Menu instead of to its right",
+    );
+}
+
+#[test]
+fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("notes-state.rs");
+    std::fs::write(&path, "one\ntwo\nthree\n").expect("write note-state source");
+
+    let data_dir = json_store::data_dir();
+    bookmark_service::save_for_path(
+        &data_dir,
+        &path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            0,
+            Some("bookmark".to_string()),
+        )],
+    )
+    .expect("save bookmark sidecar");
+    annotation_service::save_for_path(
+        &data_dir,
+        &path,
+        &[AnnotationRecord::new(0, 0, "annotation", AnnotationStyle::Note)],
+    )
+    .expect("save annotation sidecar");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        let editor = active_editor(&window);
+        editor.bookmark_records().len() == 1
+            && editor.annotation_records().len() == 1
+            && action_enabled(&window, "notes-edit-bookmark-label")
+            && action_enabled(&window, "notes-edit-annotation")
+    });
+
+    assert!(action_enabled(&window, "notes-toggle-bookmark"));
+    assert!(action_enabled(&window, "notes-add-annotation"));
+
+    let editor = active_editor(&window);
+    let line_two = editor.buffer().iter_at_line(1).expect("line two");
+    editor.buffer().place_cursor(&line_two);
+    flush_events();
+
+    wait_until(Duration::from_secs(2), || {
+        !action_enabled(&window, "notes-edit-bookmark-label")
+            && !action_enabled(&window, "notes-edit-annotation")
+    });
+    assert!(action_enabled(&window, "notes-toggle-bookmark"));
+    assert!(action_enabled(&window, "notes-add-annotation"));
 }
 
 #[test]

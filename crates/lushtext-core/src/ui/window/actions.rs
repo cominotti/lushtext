@@ -97,7 +97,16 @@ impl LushtextWindow {
             gio::ActionEntry::builder("toggle-bookmark")
                 .activate(|window: &Self, _, _| window.toggle_bookmark())
                 .build(),
+            // Menu-scoped note actions stay separate from the existing
+            // shortcuts/command-palette actions so the Notes menu can become
+            // insensitive without disabling those other invocation surfaces.
+            gio::ActionEntry::builder("notes-toggle-bookmark")
+                .activate(|window: &Self, _, _| window.toggle_bookmark())
+                .build(),
             gio::ActionEntry::builder("edit-bookmark-label")
+                .activate(|window: &Self, _, _| window.edit_bookmark_label())
+                .build(),
+            gio::ActionEntry::builder("notes-edit-bookmark-label")
                 .activate(|window: &Self, _, _| window.edit_bookmark_label())
                 .build(),
             gio::ActionEntry::builder("next-bookmark")
@@ -113,16 +122,31 @@ impl LushtextWindow {
             gio::ActionEntry::builder("show-bookmarks")
                 .activate(|window: &Self, _, _| window.show_bookmarks_dialog())
                 .build(),
+            gio::ActionEntry::builder("notes-show-bookmarks")
+                .activate(|window: &Self, _, _| window.show_bookmarks_dialog())
+                .build(),
             gio::ActionEntry::builder("add-annotation")
+                .activate(|window: &Self, _, _| window.add_annotation())
+                .build(),
+            gio::ActionEntry::builder("notes-add-annotation")
                 .activate(|window: &Self, _, _| window.add_annotation())
                 .build(),
             gio::ActionEntry::builder("edit-annotation")
                 .activate(|window: &Self, _, _| window.edit_annotation())
                 .build(),
+            gio::ActionEntry::builder("notes-edit-annotation")
+                .activate(|window: &Self, _, _| window.edit_annotation())
+                .build(),
             gio::ActionEntry::builder("show-annotations")
                 .activate(|window: &Self, _, _| window.show_annotations_dialog())
                 .build(),
+            gio::ActionEntry::builder("notes-show-annotations")
+                .activate(|window: &Self, _, _| window.show_annotations_dialog())
+                .build(),
             gio::ActionEntry::builder("export-annotations")
+                .activate(|window: &Self, _, _| window.export_annotations())
+                .build(),
+            gio::ActionEntry::builder("notes-export-annotations")
                 .activate(|window: &Self, _, _| window.export_annotations())
                 .build(),
         ]);

@@ -47,5 +47,6 @@ impl LushtextWindow {
         let roots = self.current_workspace_directory_roots();
         self.imp().search_panel.set_workspace_roots(roots);
         self.rebuild_file_index();
+        self.refresh_notes_menu_state();
     }
 }

@@ -58,6 +58,9 @@ impl LushtextWindow {
                 && let Some(editor) = editor_weak.upgrade()
             {
                 window.save_bookmarks_debounced(&editor);
+                if window.is_active_editor(&editor) {
+                    window.refresh_notes_menu_state();
+                }
             }
         });
 
@@ -68,6 +71,20 @@ impl LushtextWindow {
                 && let Some(editor) = editor_weak.upgrade()
             {
                 window.save_annotations_debounced(&editor);
+                if window.is_active_editor(&editor) {
+                    window.refresh_notes_menu_state();
+                }
+            }
+        });
+
+        let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
+        editor.buffer().connect_mark_set(move |_, _, _| {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(editor) = editor_weak.upgrade()
+                && window.is_active_editor(&editor)
+            {
+                window.refresh_notes_menu_state();
             }
         });
     }
@@ -571,6 +588,51 @@ impl LushtextWindow {
     /// Collect the current workspace scope for bookmark, annotation, and export workflows.
     fn workspace_note_scope_paths(&self) -> Vec<PathBuf> {
         self.current_workspace_scope_paths()
+    }
+
+    /// Recompute the Notes menu button visibility and menu-only action state.
+    ///
+    /// The dedicated menu uses its own `notes-*` actions so it can become
+    /// insensitive without disabling the existing shortcuts or command-palette
+    /// commands that still rely on the workflow guards below.
+    pub(super) fn refresh_notes_menu_state(&self) {
+        let workspace_actions_available = self.notes_workspace_actions_available();
+        let active_editor = self.active_editor();
+        let saved_editor = active_editor
+            .as_ref()
+            .filter(|editor| editor.file_path().is_some());
+
+        self.imp()
+            .notes_menu_button
+            .set_visible(active_editor.is_some() || workspace_actions_available);
+
+        self.set_notes_menu_action_enabled("notes-toggle-bookmark", saved_editor.is_some());
+        self.set_notes_menu_action_enabled(
+            "notes-edit-bookmark-label",
+            saved_editor.is_some_and(|editor| editor.current_bookmark().is_some()),
+        );
+        self.set_notes_menu_action_enabled("notes-add-annotation", saved_editor.is_some());
+        self.set_notes_menu_action_enabled(
+            "notes-edit-annotation",
+            saved_editor.is_some_and(|editor| editor.current_annotation().is_some()),
+        );
+        self.set_notes_menu_action_enabled("notes-show-bookmarks", workspace_actions_available);
+        self.set_notes_menu_action_enabled("notes-show-annotations", workspace_actions_available);
+        self.set_notes_menu_action_enabled("notes-export-annotations", workspace_actions_available);
+    }
+
+    /// Return whether the current shared workspace scope exposes any roots.
+    fn notes_workspace_actions_available(&self) -> bool {
+        !self.workspace_note_scope_paths().is_empty()
+    }
+
+    /// Update one Notes-menu-only action without affecting shortcut actions.
+    fn set_notes_menu_action_enabled(&self, action_name: &str, enabled: bool) {
+        if let Some(action) = self.lookup_action(action_name)
+            && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
+        {
+            simple.set_enabled(enabled);
+        }
     }
 
     /// Present the searchable bookmark browser dialog.

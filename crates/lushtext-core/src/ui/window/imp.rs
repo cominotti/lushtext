@@ -167,6 +167,9 @@ pub struct LushtextWindow {
     pub palette_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
     pub command_palette: TemplateChild<LushtextCommandPalette>,
+    /// Dedicated secondary menu for bookmark and annotation workflows.
+    #[template_child]
+    pub notes_menu_button: TemplateChild<gtk4::MenuButton>,
     #[template_child]
     pub primary_menu_button: TemplateChild<gtk4::MenuButton>,
     #[template_child]
@@ -250,6 +253,7 @@ impl Default for LushtextWindow {
             status_bar: TemplateChild::default(),
             palette_revealer: TemplateChild::default(),
             command_palette: TemplateChild::default(),
+            notes_menu_button: TemplateChild::default(),
             primary_menu_button: TemplateChild::default(),
             preview_paned: TemplateChild::default(),
             editor_box: TemplateChild::default(),
@@ -584,6 +588,16 @@ impl ObjectImpl for LushtextWindow {
         });
 
         let window_weak = obj.downgrade();
+        self.notes_menu_button
+            .connect_notify_local(Some("active"), move |button, _| {
+                if button.is_active()
+                    && let Some(window) = window_weak.upgrade()
+                {
+                    window.refresh_notes_menu_state();
+                }
+            });
+
+        let window_weak = obj.downgrade();
         self.tab_view
             .connect_notify_local(Some("n-pages"), move |_, _| {
                 if let Some(window) = window_weak.upgrade() {
@@ -658,6 +672,7 @@ impl ObjectImpl for LushtextWindow {
 
         obj.update_content_stack();
         self.sidebar.load_workspaces();
+        obj.refresh_workspace_scope_consumers();
         obj.load_session_and_drafts();
         obj.start_autosave_timer();
     }

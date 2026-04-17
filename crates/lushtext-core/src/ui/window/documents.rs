@@ -391,6 +391,7 @@ impl LushtextWindow {
         self.refresh_header_bar_with(editor.as_ref());
         self.update_discard_action();
         self.update_local_history_action();
+        self.refresh_notes_menu_state();
     }
 
     /// Update the header bar title/subtitle to reflect the given editor.
