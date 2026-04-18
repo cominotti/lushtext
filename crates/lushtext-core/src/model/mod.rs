@@ -9,11 +9,14 @@
 pub mod annotation;
 pub mod bookmark;
 pub mod content_search;
+pub mod document_note;
 pub mod draft;
 pub mod encoding;
 pub mod formatting_overrides;
 pub mod local_history;
+pub mod note;
 pub mod palette;
 pub mod session;
 pub mod sidecar_identity;
 pub mod workspace;
+pub mod workspace_note;

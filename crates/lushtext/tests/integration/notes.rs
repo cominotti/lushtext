@@ -4,7 +4,11 @@
 
 use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
 use lushtext_core::model::bookmark::BookmarkRecord;
-use lushtext_core::services::{annotation_service, bookmark_service};
+use lushtext_core::model::note::RichNoteBody;
+use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspaceScope};
+use lushtext_core::services::{
+    annotation_service, bookmark_service, document_note_service, workspace_note_service,
+};
 
 use crate::common::TestContext;
 
@@ -55,17 +59,24 @@ fn note_sidecars_follow_in_app_rename_migration() {
         )],
     )
     .expect("expected operation to succeed");
+    document_note_service::save_for_path(ctx.data_dir(), &old_file, &RichNoteBody::new("doc note"))
+        .expect("expected operation to succeed");
 
     std::fs::rename(&old_file, &new_file).expect("expected operation to succeed");
     bookmark_service::move_path_tree(ctx.data_dir(), &old_file, &new_file)
         .expect("expected operation to succeed");
     annotation_service::move_path_tree(ctx.data_dir(), &old_file, &new_file)
         .expect("expected operation to succeed");
+    document_note_service::move_path_tree(ctx.data_dir(), &old_file, &new_file)
+        .expect("expected operation to succeed");
 
     let loaded_bookmarks = bookmark_service::load_for_path(ctx.data_dir(), &new_file)
         .expect("expected operation to succeed");
     let loaded_annotations = annotation_service::load_for_path(ctx.data_dir(), &new_file)
         .expect("expected operation to succeed");
+    let loaded_document_note = document_note_service::load_for_path(ctx.data_dir(), &new_file)
+        .expect("expected operation to succeed")
+        .expect("expected document note after rename");
 
     assert_eq!(loaded_bookmarks.bookmarks.len(), 1);
     assert_eq!(
@@ -77,6 +88,7 @@ fn note_sidecars_follow_in_app_rename_migration() {
         loaded_annotations.annotations[0].note_text,
         "carry this annotation"
     );
+    assert_eq!(loaded_document_note.note.text, "doc note");
 }
 
 #[test]
@@ -105,9 +117,69 @@ fn annotation_export_groups_by_file_and_includes_excerpt() {
     )
     .expect("expected operation to succeed");
 
-    assert!(markdown.contains("# Workspace Annotations"));
+    assert!(markdown.contains("# Workspace Range Notes"));
     assert!(markdown.contains("## "));
     assert!(markdown.contains("Lines 2-5 · Todo"));
     assert!(markdown.contains("Explain this block"));
     assert!(markdown.contains("line 2\nline 3\nline 4\nline 5"));
+}
+
+#[test]
+fn document_note_roundtrip_uses_saved_file_identity() {
+    let ctx = TestContext::new();
+    let file_path = ctx.write_file("workspace/src/main.rs", "fn main() {}\n");
+
+    let identity =
+        document_note_service::save_for_path(ctx.data_dir(), &file_path, &RichNoteBody::new("Doc"))
+            .expect("expected operation to succeed");
+    let loaded = document_note_service::load_for_path(ctx.data_dir(), &file_path)
+        .expect("expected operation to succeed")
+        .expect("expected document note");
+
+    let sidecar_path = document_note_service::document_notes_dir(ctx.data_dir())
+        .join(format!("{}.json", identity.sidecar_id));
+    assert!(
+        sidecar_path.exists(),
+        "document note sidecar should be written"
+    );
+    assert_eq!(loaded.identity.display_path, file_path);
+    assert_eq!(loaded.note.text, "Doc");
+}
+
+#[test]
+fn workspace_note_roundtrip_uses_root_identity_and_scope_listing() {
+    let ctx = TestContext::new();
+    let root = ctx.mkdir("workspace");
+
+    let identity = workspace_note_service::save_for_root(
+        ctx.data_dir(),
+        &root,
+        &RichNoteBody::new("Root note"),
+    )
+    .expect("expected operation to succeed");
+    let loaded = workspace_note_service::load_for_root(ctx.data_dir(), &root)
+        .expect("expected operation to succeed")
+        .expect("expected workspace note");
+
+    let sidecar_path = workspace_note_service::workspace_notes_dir(ctx.data_dir())
+        .join(format!("{}.json", identity.sidecar_id));
+    assert!(
+        sidecar_path.exists(),
+        "workspace note sidecar should be written"
+    );
+    assert_eq!(loaded.identity.display_root, root);
+    assert_eq!(loaded.note.text, "Root note");
+
+    let listed = workspace_note_service::list_workspace_notes_for_scope(
+        ctx.data_dir(),
+        &[WorkspaceConfig {
+            id: WorkspaceId::new("new-slot"),
+            name: "Workspace".to_string(),
+            root: root.clone(),
+        }],
+        &WorkspaceScope::Workspace(WorkspaceId::new("new-slot")),
+    )
+    .expect("expected operation to succeed");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].note.text, "Root note");
 }

@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::note::{normalize_note_text, note_preview_line};
 use super::sidecar_identity::{DocumentSidecarIdentity, next_record_id, now_epoch_secs};
 
 /// Stable identifier for one persisted annotation.
@@ -121,6 +122,12 @@ impl AnnotationRecord {
             format!("Lines {start}-{end}")
         }
     }
+
+    /// Human-friendly single-line preview used in compact range-note rows.
+    #[must_use]
+    pub fn preview_line(&self) -> String {
+        note_preview_line(&self.note_text)
+    }
 }
 
 /// Persisted annotation collection for one file-backed document.
@@ -151,10 +158,6 @@ impl AnnotationDocument {
                 .then_with(|| left.id.0.cmp(&right.id.0))
         });
     }
-}
-
-fn normalize_note_text(note_text: &str) -> String {
-    note_text.trim().to_string()
 }
 
 #[cfg(test)]

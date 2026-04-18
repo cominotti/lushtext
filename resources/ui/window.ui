@@ -299,25 +299,33 @@
         <attribute name="action">win.notes-edit-bookmark-label</attribute>
       </item>
       <item>
-        <attribute name="label" translatable="yes">Add Annotation…</attribute>
+        <attribute name="label" translatable="yes">Add Range Note…</attribute>
         <attribute name="action">win.notes-add-annotation</attribute>
       </item>
       <item>
-        <attribute name="label" translatable="yes">Edit Annotation…</attribute>
+        <attribute name="label" translatable="yes">Edit Range Note…</attribute>
         <attribute name="action">win.notes-edit-annotation</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">Open Document Note…</attribute>
+        <attribute name="action">win.notes-open-document-note</attribute>
       </item>
     </section>
     <section>
+      <item>
+        <attribute name="label" translatable="yes">Open Workspace Note…</attribute>
+        <attribute name="action">win.notes-open-workspace-note</attribute>
+      </item>
       <item>
         <attribute name="label" translatable="yes">Browse Bookmarks…</attribute>
         <attribute name="action">win.notes-show-bookmarks</attribute>
       </item>
       <item>
-        <attribute name="label" translatable="yes">Browse Annotations…</attribute>
+        <attribute name="label" translatable="yes">Browse Notes…</attribute>
         <attribute name="action">win.notes-show-annotations</attribute>
       </item>
       <item>
-        <attribute name="label" translatable="yes">Export Annotations…</attribute>
+        <attribute name="label" translatable="yes">Export Range Notes…</attribute>
         <attribute name="action">win.notes-export-annotations</attribute>
       </item>
     </section>

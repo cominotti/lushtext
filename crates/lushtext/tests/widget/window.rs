@@ -18,6 +18,7 @@ use lushtext_core::config::keys;
 use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::encoding::{DocumentEncoding, FileHealthFindingKind, LineEnding};
+use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
@@ -25,8 +26,8 @@ use lushtext_core::model::workspace::{
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::{
-    annotation_service, bookmark_service, draft_service, editor_io, json_store,
-    local_history_service, session_service, workspace_manager,
+    annotation_service, bookmark_service, document_note_service, draft_service, editor_io,
+    json_store, local_history_service, session_service, workspace_manager, workspace_note_service,
 };
 use lushtext_core::ui::editor_page::{
     LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
@@ -330,6 +331,38 @@ fn find_list_box(root: &gtk4::Widget) -> Option<gtk4::ListBox> {
     None
 }
 
+fn find_stack(root: &gtk4::Widget) -> Option<gtk4::Stack> {
+    if let Ok(stack) = root.clone().downcast::<gtk4::Stack>() {
+        return Some(stack);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_stack(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
+}
+
+fn find_stack_switcher(root: &gtk4::Widget) -> Option<gtk4::StackSwitcher> {
+    if let Ok(switcher) = root.clone().downcast::<gtk4::StackSwitcher>() {
+        return Some(switcher);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_stack_switcher(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
+}
+
 fn menu_model_labels(model: &gio::MenuModel) -> Vec<String> {
     let mut labels = Vec::new();
     for index in 0..model.n_items() {
@@ -350,10 +383,40 @@ fn menu_model_labels(model: &gio::MenuModel) -> Vec<String> {
 
 fn click_alert_extra_button(dialog: &libadwaita::AlertDialog, label: &str) {
     let extra = dialog.extra_child().expect("alert dialog extra child");
-    let button = find_button_by_label(&extra, label)
-        .unwrap_or_else(|| panic!("button '{label}' not found in alert extra child"));
-    button.emit_clicked();
+    click_labeled_widget(&extra, label);
     flush_events();
+}
+
+fn click_labeled_widget(root: &gtk4::Widget, label: &str) {
+    if let Some(button) = find_button_by_label(root, label) {
+        button.emit_clicked();
+        return;
+    }
+
+    if let Some(toggle) = find_toggle_button_by_label(root, label) {
+        toggle.emit_clicked();
+        return;
+    }
+
+    panic!("clickable widget '{label}' not found");
+}
+
+fn find_toggle_button_by_label(root: &gtk4::Widget, label: &str) -> Option<gtk4::ToggleButton> {
+    if let Ok(toggle) = root.clone().downcast::<gtk4::ToggleButton>()
+        && toggle.label().as_deref() == Some(label)
+    {
+        return Some(toggle);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_toggle_button_by_label(&widget, label) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
 }
 
 fn workspace_sidebar_visible(window: &LushtextWindow) -> bool {
@@ -2524,11 +2587,13 @@ fn test_notes_menu_exists_and_primary_menu_excludes_note_actions() {
         vec![
             "Toggle Bookmark".to_string(),
             "Edit Bookmark Label…".to_string(),
-            "Add Annotation…".to_string(),
-            "Edit Annotation…".to_string(),
+            "Add Range Note…".to_string(),
+            "Edit Range Note…".to_string(),
+            "Open Document Note…".to_string(),
+            "Open Workspace Note…".to_string(),
             "Browse Bookmarks…".to_string(),
-            "Browse Annotations…".to_string(),
-            "Export Annotations…".to_string(),
+            "Browse Notes…".to_string(),
+            "Export Range Notes…".to_string(),
         ]
     );
 
@@ -2541,11 +2606,13 @@ fn test_notes_menu_exists_and_primary_menu_excludes_note_actions() {
     for label in [
         "Toggle Bookmark",
         "Edit Bookmark Label…",
-        "Add Annotation…",
-        "Edit Annotation…",
+        "Add Range Note…",
+        "Edit Range Note…",
+        "Open Document Note…",
+        "Open Workspace Note…",
         "Browse Bookmarks…",
-        "Browse Annotations…",
-        "Export Annotations…",
+        "Browse Notes…",
+        "Export Range Notes…",
     ] {
         assert!(
             !primary_labels.iter().any(|entry| entry == label),
@@ -2577,6 +2644,8 @@ fn test_notes_menu_state_for_workspace_without_saved_file() {
         "notes-edit-bookmark-label",
         "notes-add-annotation",
         "notes-edit-annotation",
+        "notes-open-document-note",
+        "notes-open-workspace-note",
     ] {
         assert!(
             !action_enabled(&window, name),
@@ -2601,12 +2670,164 @@ fn test_notes_menu_state_for_workspace_without_saved_file() {
         "notes-edit-bookmark-label",
         "notes-add-annotation",
         "notes-edit-annotation",
+        "notes-open-document-note",
+        "notes-open-workspace-note",
     ] {
         assert!(
             !action_enabled(&window, name),
             "expected '{name}' to stay disabled for an untitled tab",
         );
     }
+}
+
+#[test]
+fn test_notes_menu_workspace_note_action_enables_for_concrete_scope() {
+    ensure_gtk_init();
+    let (_roots_dir, _left_root, _right_root) =
+        seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-right")));
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 1, 1);
+    assert!(notes_menu_button_visible(&window));
+    assert!(action_enabled(&window, "notes-open-workspace-note"));
+    assert!(action_enabled(&window, "notes-show-annotations"));
+    assert!(action_enabled(&window, "notes-export-annotations"));
+}
+
+#[test]
+fn test_document_note_dialog_supports_edit_and_render_modes() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("document-note.md");
+    std::fs::write(&path, "# Heading\n\nBody\n").expect("write document note source");
+
+    let data_dir = json_store::data_dir();
+    document_note_service::save_for_path(
+        &data_dir,
+        &path,
+        &RichNoteBody::new("# Heading\n\nSaved note"),
+    )
+    .expect("save document note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || active_editor(&window).file_path() == Some(path.clone()));
+
+    activate_action(&window, "open-document-note");
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Document Note")
+    });
+
+    let dialog = visible_alert_dialog(&window).expect("document note dialog");
+    let extra = dialog.extra_child().expect("document note extra child");
+    let stack = find_stack(&extra).expect("note editor stack");
+    let switcher = find_stack_switcher(&extra).expect("note editor switcher");
+    assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
+
+    let switcher_bounds = switcher
+        .compute_bounds(&extra)
+        .expect("switcher bounds in dialog content");
+    let stack_bounds = stack.compute_bounds(&extra).expect("stack bounds in dialog content");
+    let switcher_right = switcher_bounds.x() + switcher_bounds.width();
+    let stack_right = stack_bounds.x() + stack_bounds.width();
+    assert!(
+        (switcher_bounds.x() - stack_bounds.x()).abs() <= 1.0,
+        "switcher should start at the same left edge as the note stack"
+    );
+    assert!(
+        (switcher_right - stack_right).abs() <= 1.0,
+        "switcher should reach the same right edge as the note stack"
+    );
+
+    stack.set_visible_child_name("render");
+    flush_events();
+    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+
+    stack.set_visible_child_name("edit");
+    flush_events();
+    assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
+}
+
+#[test]
+fn test_open_workspace_note_dialog_for_concrete_scope() {
+    ensure_gtk_init();
+    let (_roots_dir, _left_root, right_root) =
+        seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-right")));
+
+    let data_dir = json_store::data_dir();
+    workspace_note_service::save_for_root(
+        &data_dir,
+        &right_root,
+        &RichNoteBody::new("Workspace note"),
+    )
+    .expect("save workspace note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 1, 1);
+
+    activate_action(&window, "open-workspace-note");
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Workspace Note")
+    });
+}
+
+#[test]
+fn test_browse_notes_opens_document_note_for_selected_row() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("browse-notes.md");
+    std::fs::write(&path, "# Notes\n").expect("write browser note source");
+
+    let data_dir = json_store::data_dir();
+    document_note_service::save_for_path(
+        &data_dir,
+        &path,
+        &RichNoteBody::new("# Note\n\nOpen me"),
+    )
+    .expect("save document note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    activate_action(&window, "show-annotations");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let dialog_child = dialog.child().expect("notes browser child");
+    let list_box = find_list_box(&dialog_child).expect("notes browser list");
+    wait_until(Duration::from_secs(2), || {
+        list_box.row_at_index(0).is_some()
+            && find_button_by_label(&dialog_child, "Open")
+                .is_some_and(|button| button.is_sensitive())
+    });
+
+    find_button_by_label(&dialog_child, "Open")
+        .expect("notes browser open button")
+        .emit_clicked();
+    flush_events();
+
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Document Note")
+    });
 }
 
 #[test]
@@ -2683,6 +2904,8 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
 
     assert!(action_enabled(&window, "notes-toggle-bookmark"));
     assert!(action_enabled(&window, "notes-add-annotation"));
+    assert!(action_enabled(&window, "notes-open-document-note"));
+    assert!(!action_enabled(&window, "notes-open-workspace-note"));
 
     let editor = active_editor(&window);
     let line_two = editor.buffer().iter_at_line(1).expect("line two");
@@ -2695,6 +2918,7 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
     });
     assert!(action_enabled(&window, "notes-toggle-bookmark"));
     assert!(action_enabled(&window, "notes-add-annotation"));
+    assert!(action_enabled(&window, "notes-open-document-note"));
 }
 
 #[test]

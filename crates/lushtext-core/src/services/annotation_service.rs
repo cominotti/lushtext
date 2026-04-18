@@ -7,7 +7,6 @@
 //! read source excerpts on background threads.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -17,10 +16,12 @@ use crate::model::annotation::{
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
 use crate::services::json_store;
 
+use super::note_storage;
+
 /// Directory name that stores per-file annotation sidecars.
 const ANNOTATIONS_DIR: &str = "annotations";
 /// Default export title shown at the top of generated markdown reports.
-const EXPORT_TITLE: &str = "# Workspace Annotations";
+const EXPORT_TITLE: &str = "# Workspace Range Notes";
 /// Maximum number of source lines embedded for one annotation excerpt.
 const EXPORT_EXCERPT_LINE_CAP: usize = 6;
 
@@ -61,22 +62,6 @@ pub fn annotations_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(ANNOTATIONS_DIR)
 }
 
-/// Resolve the stable identity for a saved document path.
-///
-/// # Errors
-///
-/// Returns an error if the path cannot be canonicalized.
-pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
-    let display_path = path.to_path_buf();
-    let canonical_path = path
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize {}", path.display()))?;
-    Ok(DocumentSidecarIdentity::from_paths(
-        display_path,
-        canonical_path,
-    ))
-}
-
 /// Load annotations for a saved file, returning an empty document if no sidecar exists yet.
 ///
 /// # Errors
@@ -84,7 +69,7 @@ pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity>
 /// Returns an error if the document identity cannot be resolved, the sidecar
 /// cannot be read, or the stored JSON cannot be parsed.
 pub fn load_for_path(data_dir: &Path, path: &Path) -> Result<AnnotationDocument> {
-    let identity = resolve_document_identity(path)?;
+    let identity = note_storage::resolve_document_identity(path)?;
     load_for_identity(data_dir, identity)
 }
 
@@ -92,9 +77,8 @@ fn load_for_identity(
     data_dir: &Path,
     identity: DocumentSidecarIdentity,
 ) -> Result<AnnotationDocument> {
-    let filename = sidecar_filename(&identity);
-    let path = annotations_dir(data_dir).join(&filename);
-    match load_json_file::<AnnotationDocument>(&path) {
+    let path = annotations_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
+    match note_storage::load_json_file::<AnnotationDocument>(&path) {
         Ok(Some(mut document)) => {
             document.sort_stable();
             Ok(document)
@@ -115,7 +99,7 @@ pub fn save_for_path(
     path: &Path,
     annotations: &[AnnotationRecord],
 ) -> Result<DocumentSidecarIdentity> {
-    let identity = resolve_document_identity(path)?;
+    let identity = note_storage::resolve_document_identity(path)?;
     save_document(
         data_dir,
         AnnotationDocument {
@@ -140,7 +124,7 @@ pub fn save_document(data_dir: &Path, mut document: AnnotationDocument) -> Resul
 
     json_store::save(
         &annotations_dir(data_dir),
-        &sidecar_filename(&document.identity),
+        &note_storage::sidecar_filename(&document.identity.sidecar_id),
         &document,
     )
 }
@@ -152,12 +136,12 @@ pub fn save_document(data_dir: &Path, mut document: AnnotationDocument) -> Resul
 /// Returns an error if the document identity cannot be resolved or an existing
 /// sidecar cannot be deleted.
 pub fn delete_for_path(data_dir: &Path, path: &Path) -> Result<()> {
-    let identity = resolve_document_identity(path)?;
+    let identity = note_storage::resolve_document_identity(path)?;
     delete_sidecar_file(data_dir, &identity)
 }
 
 fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> Result<()> {
-    let path = annotations_dir(data_dir).join(sidecar_filename(identity));
+    let path = annotations_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -193,17 +177,20 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
             continue;
         }
 
-        let Some(mut document) = load_json_file::<AnnotationDocument>(&sidecar_path)? else {
+        let Some(mut document) = note_storage::load_json_file::<AnnotationDocument>(&sidecar_path)?
+        else {
             continue;
         };
         let Some((display_path, canonical_path)) =
-            rebase_identity_paths(&document.identity, old_path, new_path)
+            note_storage::rebase_identity_paths(&document.identity, old_path, new_path)
         else {
             continue;
         };
 
         document.identity = DocumentSidecarIdentity::from_paths(display_path, canonical_path);
-        let new_sidecar_path = dir.join(sidecar_filename(&document.identity));
+        let new_sidecar_path = dir.join(note_storage::sidecar_filename(
+            &document.identity.sidecar_id,
+        ));
         save_document(data_dir, document)?;
         if entry.path() != new_sidecar_path {
             let _ = std::fs::remove_file(entry.path());
@@ -224,7 +211,7 @@ pub fn list_workspace_annotations(
     data_dir: &Path,
     workspace_roots: &[PathBuf],
 ) -> Result<Vec<WorkspaceAnnotation>> {
-    let canonical_roots = canonicalize_roots(workspace_roots);
+    let canonical_roots = note_storage::canonicalize_roots(workspace_roots);
     let dir = annotations_dir(data_dir);
     if !dir.exists() {
         return Ok(Vec::new());
@@ -235,10 +222,11 @@ pub fn list_workspace_annotations(
         std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
     {
         let entry = entry.with_context(|| format!("failed to iterate {}", dir.display()))?;
-        let Some(document) = load_json_file::<AnnotationDocument>(&entry.path())? else {
+        let Some(document) = note_storage::load_json_file::<AnnotationDocument>(&entry.path())?
+        else {
             continue;
         };
-        if !matches_any_root(&document.identity, &canonical_roots) {
+        if !note_storage::matches_any_root(&document.identity, &canonical_roots) {
             continue;
         }
         let display_path = document.identity.display_path.clone();
@@ -344,83 +332,6 @@ fn excerpt_for_annotation(path: &Path, start_line: u32, end_line: u32) -> Option
     Some(excerpt)
 }
 
-fn sidecar_filename(identity: &DocumentSidecarIdentity) -> String {
-    format!("{}.json", identity.sidecar_id)
-}
-
-fn canonicalize_roots(workspace_roots: &[PathBuf]) -> Vec<PathBuf> {
-    workspace_roots
-        .iter()
-        .map(|root| root.canonicalize().unwrap_or_else(|_| root.clone()))
-        .collect()
-}
-
-fn matches_any_root(identity: &DocumentSidecarIdentity, workspace_roots: &[PathBuf]) -> bool {
-    workspace_roots.iter().any(|root| {
-        identity.canonical_path.starts_with(root) || identity.display_path.starts_with(root)
-    })
-}
-
-fn rebase_identity_paths(
-    identity: &DocumentSidecarIdentity,
-    old_path: &Path,
-    new_path: &Path,
-) -> Option<(PathBuf, PathBuf)> {
-    if identity.display_path == old_path || identity.display_path.starts_with(old_path) {
-        let suffix = identity
-            .display_path
-            .strip_prefix(old_path)
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let display_path = if suffix.as_os_str().is_empty() {
-            new_path.to_path_buf()
-        } else {
-            new_path.join(suffix)
-        };
-        let canonical_path = display_path
-            .canonicalize()
-            .unwrap_or_else(|_| display_path.clone());
-        return Some((display_path, canonical_path));
-    }
-
-    if identity.canonical_path == old_path || identity.canonical_path.starts_with(old_path) {
-        let suffix = identity
-            .canonical_path
-            .strip_prefix(old_path)
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let display_path = if suffix.as_os_str().is_empty() {
-            new_path.to_path_buf()
-        } else {
-            new_path.join(suffix)
-        };
-        let canonical_path = display_path
-            .canonicalize()
-            .unwrap_or_else(|_| display_path.clone());
-        return Some((display_path, canonical_path));
-    }
-
-    None
-}
-
-fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            let value = serde_json::from_slice(&bytes)
-                .with_context(|| format!("failed to parse {}", path.display()))?;
-            Ok(Some(value))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to read {}: {}",
-            path.display(),
-            error
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,7 +415,7 @@ mod tests {
         let markdown = export_workspace_markdown(dir.path(), &[dir.path().join("workspace")])
             .expect("expected operation to succeed");
 
-        assert!(markdown.contains("# Workspace Annotations"));
+        assert!(markdown.contains("# Workspace Range Notes"));
         assert!(markdown.contains("## "));
         assert!(markdown.contains("Lines 2-5"));
         assert!(markdown.contains("Explain this block"));

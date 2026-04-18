@@ -137,6 +137,18 @@ impl LushtextWindow {
             gio::ActionEntry::builder("notes-edit-annotation")
                 .activate(|window: &Self, _, _| window.edit_annotation())
                 .build(),
+            gio::ActionEntry::builder("open-document-note")
+                .activate(|window: &Self, _, _| window.open_document_note())
+                .build(),
+            gio::ActionEntry::builder("notes-open-document-note")
+                .activate(|window: &Self, _, _| window.open_document_note())
+                .build(),
+            gio::ActionEntry::builder("open-workspace-note")
+                .activate(|window: &Self, _, _| window.open_workspace_note())
+                .build(),
+            gio::ActionEntry::builder("notes-open-workspace-note")
+                .activate(|window: &Self, _, _| window.open_workspace_note())
+                .build(),
             gio::ActionEntry::builder("show-annotations")
                 .activate(|window: &Self, _, _| window.show_annotations_dialog())
                 .build(),

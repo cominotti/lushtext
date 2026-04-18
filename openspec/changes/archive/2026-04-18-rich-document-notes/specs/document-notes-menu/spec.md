@@ -1,8 +1,5 @@
-# document-notes-menu Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change notes-menu-organization. Update Purpose after archive.
-## Requirements
 ### Requirement: Notes workflows use a dedicated secondary menu
 The system SHALL expose bookmark workflows together with range-note, document-note, and workspace-note workflows through a dedicated `Notes` secondary menu in the window header bar. Once the `Notes` menu is available, the primary menu MUST not list bookmark or note commands, and the notes surface MUST not rely on nested submenus.
 
@@ -11,15 +8,6 @@ The system SHALL expose bookmark workflows together with range-note, document-no
 - **THEN** the header bar shows a dedicated `Notes` menu button
 - **AND** opening that menu reveals bookmark and note commands
 - **AND** opening the primary menu does not reveal bookmark or note commands
-
-### Requirement: Notes placement follows the header-bar menu hierarchy
-While the app-wide `Main Menu` remains in the header bar, it SHALL stay the outermost end-aligned menu button. When both `Notes` and `Main Menu` are visible in the header bar, the `Notes` menu MUST appear immediately to the left of `Main Menu` and MUST NOT appear to its right.
-
-#### Scenario: Render both Notes and Main Menu in the header bar
-- **WHEN** the window shows both the `Notes` secondary menu and the app-wide `Main Menu`
-- **THEN** `Main Menu` is the outermost end-aligned header-bar menu
-- **AND** `Notes` appears immediately to its left
-- **AND** `Notes` does not appear to the right of `Main Menu`
 
 ### Requirement: Notes menu groups actions by scope
 The system SHALL organize the `Notes` menu into a current-document section and a workspace section. The current-document section MUST contain `Toggle Bookmark`, `Edit Bookmark Label…`, `Add Range Note…`, `Edit Range Note…`, and `Open Document Note…`. The workspace section MUST contain `Open Workspace Note…`, `Browse Bookmarks…`, `Browse Notes…`, and `Export Range Notes…`.
@@ -52,4 +40,3 @@ The system SHALL keep the `Notes` menu surface aligned with the current window c
 #### Scenario: Hide the Notes menu when no note workflow is available
 - **WHEN** the window has no active editor and no current workspace scope
 - **THEN** the header bar does not show the `Notes` menu button
-
