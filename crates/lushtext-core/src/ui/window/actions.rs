@@ -267,10 +267,21 @@ impl LushtextWindow {
     /// Update the rendered on/off state that powers both toggle buttons and
     /// any other surfaces bound to the same stateful window actions.
     pub(super) fn sync_secondary_surface_action_states(&self) {
-        self.set_toggle_action_state("toggle-sidebar", self.rendered_workspace_sidebar_visible());
+        self.set_toggle_action_state(
+            "toggle-sidebar",
+            if self.is_focus_mode_active() {
+                self.workspace_sidebar_requested_visible()
+            } else {
+                self.rendered_workspace_sidebar_visible()
+            },
+        );
         self.set_toggle_action_state(
             "toggle-properties",
-            self.rendered_document_properties_visible(),
+            if self.is_focus_mode_active() {
+                self.document_properties_requested_visible()
+            } else {
+                self.rendered_document_properties_visible()
+            },
         );
     }
 
@@ -360,6 +371,7 @@ impl LushtextWindow {
             ("win.show-annotations", "<Control><Alt>a"),
             ("win.export-annotations", "<Control><Alt><Shift>a"),
             ("win.toggle-properties", "F9"),
+            ("win.toggle-focus-mode", "<Control><Shift>F11"),
             ("win.toggle-preview-mode", "<Alt>p"),
             ("win.toggle-fullscreen", "F11"),
             (

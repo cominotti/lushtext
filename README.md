@@ -5,6 +5,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 ## Features
 
 - **Document properties surface** -- persistent left workspace tree plus an adaptive document-properties surface that appears as a right pane on spacious windows and a bottom sheet on compact ones, keeping document metadata, file-health details, and formatting-source explanation out of the bottom bar
+- **Focus Mode** -- `Ctrl+Shift+F11` enters a reversible fullscreen writing shell with chrome suppressed, readable editor/Markdown columns, a subtle source text-origin guide, optional typewriter scrolling, and `Alt+P` preview-only support
 - **Adaptive workspace sidebar width** -- choose `Small`, `Comfy`, or `Large` in `Preferences > Workspace`; each preset stays comfortable on large displays by clamping to a bounded desktop width
 - **Tab content transparency** -- adjust `Transparency` in `Preferences > Editor > Appearance` to soften editor and Markdown preview backgrounds while keeping the header, side panels, status/search chrome, and minimap opaque
 - **Workspaces** -- named single-root directories with a shared current workspace scope, persisted across sessions
@@ -331,8 +332,8 @@ lushtext-core/src/
     workspace_watch.rs  Materialized-scope filesystem watch service for sidebar auto-refresh
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
-    window/          Main window shell plus actions, documents, drafts, encoding, local-history, notes, search, preview, session persistence, tab management, print, and zoom wiring
-    editor_page/     GtkSourceView tab plus local-history capture, minimap, overscroll, invisible-character rendering, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
+    window/          Main window shell plus actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, session persistence, tab management, print, and zoom wiring
+    editor_page/     GtkSourceView tab plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows

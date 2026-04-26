@@ -78,6 +78,12 @@
                 <property name="accelerator">F11</property>
               </object>
             </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Focus Mode</property>
+                <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;F11</property>
+              </object>
+            </child>
           </object>
         </child>
 

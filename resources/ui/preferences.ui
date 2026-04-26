@@ -101,6 +101,36 @@
           </object>
         </child>
 
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title" translatable="yes">Focus Mode</property>
+
+            <child>
+              <object class="AdwSpinRow" id="focus_mode_target_columns_row">
+                <property name="title" translatable="yes">Column Width</property>
+                <property name="subtitle" translatable="yes">Target readable column width while focused</property>
+                <property name="adjustment">
+                  <object class="GtkAdjustment">
+                    <property name="lower">60</property>
+                    <property name="upper">120</property>
+                    <property name="step-increment">5</property>
+                    <property name="page-increment">10</property>
+                    <property name="value">80</property>
+                  </object>
+                </property>
+              </object>
+            </child>
+
+            <child>
+              <object class="AdwSwitchRow" id="focus_mode_typewriter_scrolling_row">
+                <property name="title" translatable="yes">Typewriter Scrolling</property>
+                <property name="subtitle" translatable="yes">Keep the cursor near the center while editing in Focus Mode</property>
+                <property name="active">false</property>
+              </object>
+            </child>
+          </object>
+        </child>
+
         <!-- Behavior group -->
         <child>
           <object class="AdwPreferencesGroup">

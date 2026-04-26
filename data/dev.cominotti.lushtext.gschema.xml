@@ -88,6 +88,17 @@
       <description>Editor zoom as a percentage (100 = normal size)</description>
       <range min="50" max="400"/>
     </key>
+    <key name="focus-mode-target-columns" type="u">
+      <default>80</default>
+      <summary>Focus Mode Column Width</summary>
+      <description>Target readable column width in characters while Focus Mode is active.</description>
+      <range min="60" max="120"/>
+    </key>
+    <key name="focus-mode-typewriter-scrolling" type="b">
+      <default>false</default>
+      <summary>Focus Mode Typewriter Scrolling</summary>
+      <description>Keep the cursor near the vertical center while typing in Focus Mode.</description>
+    </key>
     <!-- Window state -->
     <key name="window-width" type="i">
       <default>1200</default>

@@ -36,6 +36,10 @@ pub struct LushtextPreferences {
     #[template_child]
     pub transparency_adjustment: TemplateChild<gtk4::Adjustment>,
     #[template_child]
+    pub focus_mode_target_columns_row: TemplateChild<libadwaita::SpinRow>,
+    #[template_child]
+    pub focus_mode_typewriter_scrolling_row: TemplateChild<libadwaita::SwitchRow>,
+    #[template_child]
     pub editorconfig_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
     pub word_wrap_row: TemplateChild<libadwaita::SwitchRow>,
@@ -74,6 +78,8 @@ impl Default for LushtextPreferences {
             transparency_button: TemplateChild::default(),
             transparency_label: TemplateChild::default(),
             transparency_adjustment: TemplateChild::default(),
+            focus_mode_target_columns_row: TemplateChild::default(),
+            focus_mode_typewriter_scrolling_row: TemplateChild::default(),
             word_wrap_row: TemplateChild::default(),
             tab_width_row: TemplateChild::default(),
             insert_spaces_row: TemplateChild::default(),
@@ -169,6 +175,18 @@ impl ObjectImpl for LushtextPreferences {
             keys::TAB_CONTENT_OPACITY,
             &*self.transparency_adjustment,
             "value",
+        )
+        .build();
+        s.bind(
+            keys::FOCUS_MODE_TARGET_COLUMNS,
+            &self.focus_mode_target_columns_row.adjustment(),
+            "value",
+        )
+        .build();
+        s.bind(
+            keys::FOCUS_MODE_TYPEWRITER_SCROLLING,
+            &*self.focus_mode_typewriter_scrolling_row,
+            "active",
         )
         .build();
 

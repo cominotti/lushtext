@@ -5,7 +5,7 @@ This folder owns one open editor tab: buffer state, file I/O choreography, exter
 ## Responsibilities
 
 - Keep `mod.rs` as the small public facade for `LushtextEditorPage`.
-- Keep file load/save flows in `load_save.rs`, minimap behavior in `minimap.rs`, dynamic editor overscroll in `overscroll.rs`, bookmark projection in `bookmarks.rs`, annotation projection in `annotations.rs`, external monitor behavior in `monitor.rs`, and in-tab search-bar behavior in `search.rs`.
+- Keep file load/save flows in `load_save.rs`, Focus Mode presentation in `focus_mode.rs`, minimap behavior in `minimap.rs`, dynamic editor overscroll in `overscroll.rs`, bookmark projection in `bookmarks.rs`, annotation projection in `annotations.rs`, external monitor behavior in `monitor.rs`, and in-tab search-bar behavior in `search.rs`.
 - Keep `imp.rs` focused on template/state wiring and helper routines shared by those workflows.
 
 ## Local Contracts

@@ -46,6 +46,10 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
             };
             action.set_state(state);
             if let Some(window) = window_weak.upgrade() {
+                if window.is_focus_mode_active() {
+                    window.mark_focus_mode_preview_changed();
+                    return;
+                }
                 // If entering side-by-side while preview-only is active, exit preview-only first.
                 // Must also cancel any in-flight animation and reset shrink-start-child
                 // which animate_preview_mode(true) set to true temporarily.
@@ -87,9 +91,13 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
                 if window.imp().preview_visible.get() {
                     return;
                 }
+                if window.is_focus_mode_active() {
+                    window.mark_focus_mode_preview_changed();
+                }
                 action.set_state(state);
                 window.imp().preview_mode.set(new_mode);
                 window.animate_preview_mode(new_mode);
+                window.refresh_focus_mode_preview_column();
                 if new_mode {
                     window.refresh_preview();
                 }
@@ -232,6 +240,55 @@ impl LushtextWindow {
         imp.preview_animation_active.set(true);
         animation.play();
         imp.preview_animation.replace(Some(animation));
+    }
+
+    /// Show or hide side-by-side preview as a temporary Focus Mode effect.
+    ///
+    /// This intentionally avoids writing the preview visibility GSettings key so
+    /// Focus Mode can suppress the pane without changing the user's preference.
+    pub(super) fn set_preview_pane_visible_for_focus_mode(&self, show: bool) {
+        let imp = self.imp();
+        if imp.preview_visible.get() == show {
+            return;
+        }
+        if show && imp.preview_mode.get() {
+            imp.preview_mode.set(false);
+            imp.editor_box.set_visible(true);
+        }
+        imp.preview_visible.set(show);
+        self.set_preview_action_state("toggle-preview-pane", show);
+        self.animate_preview_pane(show);
+        if show {
+            self.refresh_preview();
+        }
+    }
+
+    /// Toggle preview-only mode from Focus Mode cleanup without recording user intent.
+    ///
+    /// Normal `Alt+P` activation still goes through the action path, where the
+    /// window records that preview state changed while focused.
+    pub(super) fn set_preview_mode_for_focus_mode(&self, enabled: bool) {
+        let imp = self.imp();
+        if imp.preview_mode.get() == enabled {
+            return;
+        }
+        imp.preview_mode.set(enabled);
+        self.set_preview_action_state("toggle-preview-mode", enabled);
+        self.animate_preview_mode(enabled);
+        self.refresh_focus_mode_preview_column();
+        if enabled {
+            self.refresh_preview();
+        }
+    }
+
+    fn set_preview_action_state(&self, action_name: &str, enabled: bool) {
+        let Some(action) = self.lookup_action(action_name) else {
+            return;
+        };
+        let Some(action) = action.downcast_ref::<gtk4::gio::SimpleAction>() else {
+            return;
+        };
+        action.set_state(&enabled.to_variant());
     }
 
     /// Animate the preview-only mode (Alt+P): editor hidden, preview full-width.

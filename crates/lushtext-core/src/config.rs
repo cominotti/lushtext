@@ -30,6 +30,8 @@ pub mod keys {
     pub const USE_SYSTEM_FONT: &str = "use-system-font";
     pub const CUSTOM_FONT: &str = "custom-font";
     pub const ZOOM_LEVEL: &str = "zoom-level";
+    pub const FOCUS_MODE_TARGET_COLUMNS: &str = "focus-mode-target-columns";
+    pub const FOCUS_MODE_TYPEWRITER_SCROLLING: &str = "focus-mode-typewriter-scrolling";
 
     // Window state
     pub const WINDOW_WIDTH: &str = "window-width";

@@ -65,6 +65,10 @@ pub struct PreferenceBindingState {
     pub show_minimap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `minimap-width`. Disconnected in `Drop`.
     pub minimap_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `focus-mode-target-columns`. Disconnected in `Drop`.
+    pub focus_mode_columns_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `focus-mode-typewriter-scrolling`. Disconnected in `Drop`.
+    pub focus_mode_typewriter_handler_id: RefCell<Option<glib::SignalHandlerId>>,
 }
 
 /// File-monitor state for external change detection.
@@ -230,6 +234,27 @@ pub struct MinimapState {
     pub changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
 }
 
+/// Temporary editor presentation state while the window is in Focus Mode.
+#[derive(Default)]
+pub struct FocusModeEditorState {
+    /// Whether Focus Mode is currently shaping this editor page.
+    pub active: Cell<bool>,
+    /// Left margin to restore when Focus Mode exits.
+    pub normal_left_margin: Cell<i32>,
+    /// Right margin to restore when Focus Mode exits.
+    pub normal_right_margin: Cell<i32>,
+    /// Target readable-column width in characters.
+    pub target_columns: Cell<u32>,
+    /// Whether typewriter scrolling is enabled for source editing.
+    pub typewriter_scrolling: Cell<bool>,
+    /// Gentle overlay line that marks the source editor's column-zero text origin while focused.
+    pub text_origin_guide: RefCell<Option<gtk4::DrawingArea>>,
+    /// Handler ID for cursor movement through the insert mark.
+    pub mark_set_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for inserted/deleted text changes.
+    pub changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+}
+
 /// Automatic local-history capture state scoped to one editor tab.
 #[derive(Default)]
 pub struct LocalHistoryState {
@@ -258,6 +283,8 @@ pub struct LocalHistoryState {
 pub struct LushtextEditorPage {
     #[template_child]
     pub info_bar: TemplateChild<LushtextInfoBar>,
+    #[template_child]
+    pub overlay: TemplateChild<gtk4::Overlay>,
     #[template_child]
     pub minimap_overlay: TemplateChild<gtk4::Overlay>,
     #[template_child]
@@ -323,12 +350,15 @@ pub struct LushtextEditorPage {
     pub local_history: LocalHistoryState,
     /// Minimap widget state, marker projections, and refresh bookkeeping.
     pub minimap: MinimapState,
+    /// Focus Mode presentation state scoped to this tab.
+    pub focus_mode: FocusModeEditorState,
 }
 
 impl Default for LushtextEditorPage {
     fn default() -> Self {
         Self {
             info_bar: TemplateChild::default(),
+            overlay: TemplateChild::default(),
             minimap_overlay: TemplateChild::default(),
             source_view: TemplateChild::default(),
             scrolled_window: TemplateChild::default(),
@@ -359,6 +389,7 @@ impl Default for LushtextEditorPage {
             annotations: AnnotationState::default(),
             local_history: LocalHistoryState::default(),
             minimap: MinimapState::default(),
+            focus_mode: FocusModeEditorState::default(),
         }
     }
 }
@@ -419,8 +450,15 @@ impl ObjectImpl for LushtextEditorPage {
         if let Some(handler_id) = self.minimap.changed_handler_id.take() {
             buffer.disconnect(handler_id);
         }
+        if let Some(handler_id) = self.focus_mode.mark_set_handler_id.take() {
+            buffer.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self.focus_mode.changed_handler_id.take() {
+            buffer.disconnect(handler_id);
+        }
         self.minimap.source_map.borrow_mut().take();
         self.minimap.marker_strip.borrow_mut().take();
+        self.focus_mode.text_origin_guide.borrow_mut().take();
         self.minimap.modified_marks.borrow_mut().clear();
         self.minimap.modified_lines_cache.borrow_mut().clear();
         self.minimap.markers.borrow_mut().clear();
@@ -620,6 +658,35 @@ impl ObjectImpl for LushtextEditorPage {
                 .minimap_width_handler_id
                 .replace(Some(id));
         }
+        {
+            let editor_weak = self.obj().downgrade();
+            let id =
+                settings.connect_changed(Some(keys::FOCUS_MODE_TARGET_COLUMNS), move |s, _| {
+                    if let Some(editor) = editor_weak.upgrade() {
+                        editor
+                            .set_focus_mode_target_columns(s.uint(keys::FOCUS_MODE_TARGET_COLUMNS));
+                    }
+                });
+            self.preference_bindings
+                .focus_mode_columns_handler_id
+                .replace(Some(id));
+        }
+        {
+            let editor_weak = self.obj().downgrade();
+            let id = settings.connect_changed(
+                Some(keys::FOCUS_MODE_TYPEWRITER_SCROLLING),
+                move |s, _| {
+                    if let Some(editor) = editor_weak.upgrade() {
+                        editor.set_focus_mode_typewriter_scrolling(
+                            s.boolean(keys::FOCUS_MODE_TYPEWRITER_SCROLLING),
+                        );
+                    }
+                },
+            );
+            self.preference_bindings
+                .focus_mode_typewriter_handler_id
+                .replace(Some(id));
+        }
 
         self.obj().setup_bookmark_projection();
         self.obj().setup_local_history_context_menu();
@@ -664,6 +731,8 @@ impl ObjectImpl for LushtextEditorPage {
         }
 
         self.obj().setup_minimap();
+        self.obj().setup_focus_mode_text_origin_guide();
+        self.obj().setup_focus_mode_presentation();
         self.obj().apply_invisible_characters_mode();
     }
 }
@@ -675,6 +744,8 @@ impl WidgetImpl for LushtextEditorPage {
         // Recompute the EOF overscroll after GTK has allocated the text view so
         // `visible_rect()` reflects the real viewport height for this frame.
         self.obj().schedule_dynamic_overscroll_update();
+        self.obj().refresh_focus_mode_readable_column();
+        self.obj().queue_focus_mode_text_origin_guide_draw();
     }
 }
 impl BoxImpl for LushtextEditorPage {}
@@ -717,6 +788,20 @@ impl Drop for LushtextEditorPage {
             self.settings.disconnect(handler_id);
         }
         if let Some(handler_id) = self.preference_bindings.minimap_width_handler_id.take() {
+            self.settings.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self
+            .preference_bindings
+            .focus_mode_columns_handler_id
+            .take()
+        {
+            self.settings.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self
+            .preference_bindings
+            .focus_mode_typewriter_handler_id
+            .take()
+        {
             self.settings.disconnect(handler_id);
         }
     }

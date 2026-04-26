@@ -1,97 +1,63 @@
-# Distraction-Free Writing Mode
+# Focus Mode
 
-## Status: Proposed
+## Status: Implemented by `distraction-free-writing-mode`
 
-## Description
-A single keybinding transitions the editor into a focused writing mode: fullscreen,
-sidebar hidden, headerbar auto-hiding, text centered in a readable column width (~80
-characters), with optional typewriter scrolling. Designed for prose writers and anyone
-who needs sustained focus without visual clutter.
+## Contract
 
-## Current State
-- Sidebar toggle exists (`F9`, `win.toggle-sidebar` action) with smooth animation
-- No fullscreen mode
-- No header bar auto-hide
-- No text centering or column width limiting
-- Word wrap is supported and defaults to enabled
+Focus Mode is a reversible per-window writing shell. It enters fullscreen, hides persistent chrome, centers source editing and rendered Markdown in a readable column, and restores the previous shell presentation when it exits. The active Focus Mode state is not persisted across launches.
 
-## Motivation
-GNOME Text Editor lacks a distraction-free mode. Sublime Text and VS Code offer
-half-hearted versions (no centering, no typewriter scroll). For a Libadwaita app, the
-animated transitions and clean design language would feel premium. This is the feature
-that makes non-programmers choose LushText for prose — writers, students, journalers.
+The mode composes with the current LushText shell instead of replacing it:
 
-## Implementation Plan
+- `F11` remains ordinary fullscreen through `win.toggle-fullscreen`.
+- `Ctrl+Shift+F11` toggles Focus Mode through `win.toggle-focus-mode`.
+- `F9` remains Document Properties. While focused, it changes the requested properties state for after Focus Mode exits, but the properties surface stays suppressed.
+- `Alt+P` remains Markdown preview-only mode. While focused, it switches between focused source editing and focused rendered Markdown without leaving Focus Mode.
+- `Escape` exits Focus Mode only when higher-priority transient surfaces are not active. Command palette, in-tab search, workspace search, menus, popovers, and dialogs keep priority.
 
-### Phase 1: Fullscreen + Hide Chrome
-1. New `win.toggle-focus-mode` stateful boolean action
-2. Keyboard shortcut: `Ctrl+Shift+F11` (avoid `F11` which is often system fullscreen)
-3. On activate:
-   - Call `window.fullscreen()`
-   - Hide sidebar via existing `animate_sidebar(false)`
-   - Set `AdwHeaderBar` to auto-reveal mode (`show-title` + overlay mode if Adwaita
-     supports it, or use `GtkRevealer` with hover detection)
-   - Hide `AdwTabBar`
-   - Hide `LushtextStatusBar`
-4. On deactivate: reverse all above, restoring previous sidebar/fullscreen state
-5. Persist focus mode state? Probably not — always start in normal mode on launch.
+## Shell Behavior
 
-### Phase 2: Centered Text Column
-1. Add left and right margins to the `GtkSourceView` to center text:
-   - `set_left_margin()` and `set_right_margin()` dynamically based on view width
-   - Target line width: configurable, default 80 characters
-   - Calculate margin: `(view_width - char_width * column_count) / 2`
-2. Recalculate on `size_allocate` to stay centered during resize
-3. Use `pango::FontDescription` to measure character width for the current font
-4. Only apply centering in focus mode — normal mode uses standard margins
+Entering Focus Mode:
 
-### Phase 3: Typewriter Scrolling (optional, toggleable)
-1. Keep the cursor line vertically centered in the viewport at all times
-2. Override the default scroll behavior: after each cursor movement, scroll the view
-   so the cursor line is at 50% of the viewport height
-3. Use `GtkSourceView::scroll_to_iter()` with appropriate margins
-4. Toggle in preferences: "Typewriter scrolling in focus mode" (default: off)
-5. Smooth scrolling via the existing animation infrastructure
+1. Records whether the window was already fullscreen.
+2. Enters fullscreen if needed.
+3. Hides the ordinary header bar, tab bar, status bar, workspace sidebar, and document-properties surface.
+4. Suppresses side-by-side Markdown preview so `Alt+P` can operate as preview-only mode.
+5. Applies readable-column margins to the active editor, shows the source text-origin guide, and temporarily hides the minimap.
+6. Shows a minimal overlaid leave affordance when Focus Mode starts and when the pointer reaches the top edge.
 
-### Phase 4: Visual Polish
-1. Subtle vignette effect at screen edges using CSS gradient overlay (optional)
-2. Slightly dimmed line numbers (or hide them entirely in focus mode)
-3. Animated transitions for entering/leaving focus mode:
-   - Sidebar slides out (existing animation)
-   - Tab bar fades out
-   - Header bar fades out
-   - Margins animate from current to centered (use `AdwTimedAnimation`)
-4. `Escape` exits focus mode (in addition to the keybinding)
+Exiting Focus Mode:
 
-## Architecture Considerations
-- Header bar auto-hide is the trickiest part. `AdwHeaderBar` doesn't natively support
-  overlay/auto-reveal. Options:
-  - Wrap in `GtkRevealer` and show on mouse proximity to top edge (using
-    `GtkEventControllerMotion`)
-  - Use `GtkOverlay` to layer the header over content, showing on hover
-  - Accept that the header is simply hidden and require the keybinding to exit
-- The centered text approach using `GtkSourceView` margins is the cleanest and avoids
-  wrapping the view in additional containers. The margins recalculate per-frame during
-  resize via `size_allocate`, which is fast (just two property sets).
-- Focus mode state should be per-window, not global. Multiple windows can independently
-  enter/leave focus mode.
-- The `Escape` shortcut conflicts with search bar close and command palette close. Focus
-  mode `Escape` should only fire when no overlay is active. Use action enabled state to
-  manage priority.
+1. Restores ordinary chrome.
+2. Restores workspace sidebar and document properties from requested state without writing visibility preferences during suppression.
+3. Leaves fullscreen only if Focus Mode entered fullscreen itself.
+4. Restores side-by-side Markdown preview only when it was visible before entry and the user did not make a conflicting preview choice while focused.
+5. Restores normal editor, preview, and minimap presentation.
 
-## Dependencies
-- Existing sidebar toggle animation (`animate_sidebar`)
-- Existing `AdwTimedAnimation` infrastructure
-- `GtkSourceView` margin properties
-- `pango::FontDescription` for character width measurement
-- New GSettings keys: `focus-mode-column-width` (i, default 80),
-  `focus-mode-typewriter` (b, default false)
+## Readable Columns
 
-## Risks
-- Header bar auto-hide may feel janky if the hover detection zone is too small or the
-  animation too slow. Extensive UX testing needed.
-- `GtkSourceView` margin-based centering may interact poorly with word wrap — if the
-  view width minus margins is less than the wrap width, text may wrap unexpectedly.
-  Need to coordinate wrap mode with the effective column width.
-- Typewriter scrolling can feel disorienting if the scroll animation is too aggressive.
-  A gentle, interruptible animation is essential.
+The readable column uses margin-based layout on the native text surfaces:
+
+- Source editing applies dynamic left and right margins to `GtkSourceView`.
+- Source editing also shows a subtle text-origin guide at column zero so Focus Mode centering is visually distinct from document indentation.
+- Rendered Markdown applies the same policy to the preview `GtkTextView`.
+- The default target is 80 columns, backed by the `focus-mode-target-columns` GSettings key.
+- Margins are calculated from allocated width and current font metrics, with minimum margins so narrow windows stay usable.
+- Normal-mode margins are restored when Focus Mode exits.
+
+This keeps the editor and preview inside their existing GTK containers, avoiding wrapper layouts that would fight the tab view, minimap, and preview paned structure.
+
+The text-origin guide is editor-only. It is hidden outside Focus Mode and does not appear over rendered Markdown preview.
+
+## Typewriter Scrolling
+
+Typewriter scrolling is optional and defaults off through `focus-mode-typewriter-scrolling`.
+
+When enabled, Focus Mode keeps the source editor cursor near the vertical center after cursor movement or text edits. The behavior is source-editing only; rendered Markdown preview does not attempt to scroll a source cursor, and session cursor/scroll restore semantics stay unchanged.
+
+## Non-Goals
+
+- Do not persist active Focus Mode state.
+- Do not replace ordinary fullscreen.
+- Do not reassign `F9` or `Alt+P`.
+- Do not redesign sidebar, document properties, notes, search, or status-bar content outside Focus Mode.
+- Do not add decorative effects such as vignettes unless they remain accessible, readable, and clearly separate from the core writing-mode contract.

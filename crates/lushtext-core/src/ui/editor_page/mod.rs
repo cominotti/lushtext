@@ -8,6 +8,7 @@
 
 mod annotations;
 mod bookmarks;
+mod focus_mode;
 mod imp;
 mod invisibles;
 mod load_save;
@@ -32,6 +33,7 @@ use gtk4::prelude::*;
 pub use crate::services::editor_io::SaveError;
 pub use annotations::AnnotationEditSelection;
 pub use bookmarks::{BookmarkNavigationDirection, BookmarkToggleState};
+pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
 pub use imp::PendingWarningAction;
 pub use minimap::{MinimapAvailability, MinimapMarkerKind};
 

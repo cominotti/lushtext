@@ -372,6 +372,9 @@ impl LushtextEditorPage {
 }
 
 fn current_availability(editor: &LushtextEditorPage) -> MinimapAvailability {
+    if editor.focus_mode_suppresses_minimap() {
+        return MinimapAvailability::Disabled;
+    }
     if !editor.imp().settings.boolean(keys::SHOW_MINIMAP) {
         return MinimapAvailability::Disabled;
     }

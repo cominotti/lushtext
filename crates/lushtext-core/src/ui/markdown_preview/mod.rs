@@ -24,6 +24,8 @@ use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEn
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
+
 use imp::{
     TAG_ALERT_BODY, TAG_BLOCKQUOTE, TAG_BOLD, TAG_CODE, TAG_CODE_BLOCK, TAG_FOOTNOTE_DEF,
     TAG_FOOTNOTE_DEF_LABEL, TAG_FOOTNOTE_REF, TAG_HRULE, TAG_ITALIC, TAG_LINK, TAG_LIST_ITEM,
@@ -774,6 +776,29 @@ impl LushtextMarkdownPreview {
     #[must_use]
     pub fn text_view(&self) -> gtk4::TextView {
         self.imp().text_view.get()
+    }
+
+    /// Apply or clear Focus Mode readable-column margins for rendered Markdown.
+    pub(crate) fn set_focus_mode_readable_column(&self, active: bool, target_columns: u32) {
+        let text_view = self.text_view();
+        if active {
+            let margin = readable_column_margin(
+                text_view.width(),
+                approximate_char_width(text_view.upcast_ref::<gtk4::Widget>()),
+                target_columns,
+            );
+            text_view.set_left_margin(margin);
+            text_view.set_right_margin(margin);
+        } else {
+            text_view.set_left_margin(16);
+            text_view.set_right_margin(16);
+        }
+    }
+
+    #[must_use]
+    pub fn content_margins(&self) -> (i32, i32) {
+        let text_view = self.text_view();
+        (text_view.left_margin(), text_view.right_margin())
     }
 
     /// Return the current document-surface opacity used by the preview.

@@ -191,6 +191,16 @@ fn action_enabled(window: &LushtextWindow, name: &str) -> bool {
     action.is_enabled()
 }
 
+fn action_state_bool(window: &LushtextWindow, name: &str) -> bool {
+    window
+        .lookup_action(name)
+        .unwrap_or_else(|| panic!("action '{name}' not found"))
+        .state()
+        .unwrap_or_else(|| panic!("action '{name}' should be stateful"))
+        .get::<bool>()
+        .unwrap_or_else(|| panic!("action '{name}' should use bool state"))
+}
+
 fn activate_action(window: &LushtextWindow, name: &str) {
     ActionGroupExt::activate_action(window, name, None);
     flush_events();
@@ -425,6 +435,49 @@ fn workspace_sidebar_visible(window: &LushtextWindow) -> bool {
 
 fn properties_sidebar_visible(window: &LushtextWindow) -> bool {
     window.imp().properties_split_view.shows_sidebar() || window.imp().properties_bottom_sheet.is_open()
+}
+
+fn shortcut_bound(window: &LushtextWindow, action_name: &str, trigger_string: &str) -> bool {
+    let controllers = window.observe_controllers();
+    let shortcut_controller = (0..controllers.n_items())
+        .filter_map(|index| controllers.item(index))
+        .filter_map(|object| object.downcast::<gtk4::ShortcutController>().ok())
+        .find(|controller| controller.scope() == gtk4::ShortcutScope::Managed)
+        .expect("window should install a managed shortcut controller");
+
+    (0..shortcut_controller.n_items())
+        .filter_map(|index| shortcut_controller.item(index))
+        .filter_map(|object| object.downcast::<gtk4::Shortcut>().ok())
+        .any(|shortcut| {
+            let action_matches = shortcut
+                .action()
+                .and_then(|action| action.downcast::<gtk4::NamedAction>().ok())
+                .is_some_and(|action| action.action_name().as_str() == action_name);
+            let trigger_matches = shortcut
+                .trigger()
+                .is_some_and(|trigger| trigger.to_str().as_str() == trigger_string);
+            action_matches && trigger_matches
+        })
+}
+
+fn emit_escape_on_window_controller(window: &LushtextWindow) -> glib::Propagation {
+    let controllers = window.observe_controllers();
+    let controller = (0..controllers.n_items())
+        .filter_map(|index| controllers.item(index))
+        .filter_map(|object| object.downcast::<gtk4::EventControllerKey>().ok())
+        .find(|controller| controller.propagation_phase() == gtk4::PropagationPhase::Bubble)
+        .expect("window should install a bubble-phase key controller");
+    let args: [&dyn glib::value::ToValue; 3] = [
+        &gtk4::gdk::Key::Escape,
+        &0u32,
+        &gtk4::gdk::ModifierType::empty(),
+    ];
+    let stopped: bool = glib::object::ObjectExt::emit_by_name(&controller, "key-pressed", &args);
+    if stopped {
+        glib::Propagation::Stop
+    } else {
+        glib::Propagation::Proceed
+    }
 }
 
 fn notes_menu_button_visible(window: &LushtextWindow) -> bool {
@@ -908,29 +961,332 @@ fn test_toggle_properties_action_state_tracks_rendered_surface() {
 fn test_f9_toggles_document_properties_instead_of_workspace_sidebar() {
     ensure_gtk_init();
     let window = test_window();
-    let controllers = window.observe_controllers();
-    let shortcut_controller = (0..controllers.n_items())
-        .filter_map(|index| controllers.item(index))
-        .filter_map(|object| object.downcast::<gtk4::ShortcutController>().ok())
-        .find(|controller| controller.scope() == gtk4::ShortcutScope::Managed)
-        .expect("window should install a managed shortcut controller");
-    let display = gtk4::gdk::Display::default().expect("default display");
 
-    let matched = (0..shortcut_controller.n_items())
-        .filter_map(|index| shortcut_controller.item(index))
-        .filter_map(|object| object.downcast::<gtk4::Shortcut>().ok())
-        .any(|shortcut| {
-            let action_matches = shortcut
-                .action()
-                .and_then(|action| action.downcast::<gtk4::NamedAction>().ok())
-                .is_some_and(|action| action.action_name().as_str() == "win.toggle-properties");
-            let trigger_matches = shortcut
-                .trigger()
-                .is_some_and(|trigger| trigger.to_label(&display).as_str() == "F9");
-            action_matches && trigger_matches
-        });
+    assert!(
+        shortcut_bound(&window, "win.toggle-properties", "F9"),
+        "F9 should be bound to win.toggle-properties"
+    );
+}
 
-    assert!(matched, "F9 should be bound to win.toggle-properties");
+#[test]
+fn test_focus_mode_shortcut_is_separate_from_fullscreen_shortcut() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert!(
+        shortcut_bound(&window, "win.toggle-focus-mode", "<Shift><Control>F11"),
+        "Ctrl+Shift+F11 should be bound to Focus Mode"
+    );
+    assert!(
+        shortcut_bound(&window, "win.toggle-fullscreen", "F11"),
+        "F11 should stay bound to ordinary fullscreen"
+    );
+
+    activate_action(&window, "toggle-fullscreen");
+    assert!(
+        !action_state_bool(&window, "toggle-focus-mode"),
+        "ordinary fullscreen must not activate Focus Mode"
+    );
+}
+
+#[test]
+fn test_focus_mode_entry_exit_restores_shell_surfaces() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
+    window.set_default_size(1400, 900);
+    window.new_tab();
+    present_window(&window);
+
+    assert!(workspace_sidebar_visible(&window));
+    assert!(properties_sidebar_visible(&window));
+
+    activate_action(&window, "toggle-focus-mode");
+
+    assert!(action_state_bool(&window, "toggle-focus-mode"));
+    assert!(!window.imp().header_bar.property::<bool>("visible"));
+    assert!(!window.imp().tab_bar.property::<bool>("visible"));
+    assert!(!window.imp().status_bar.property::<bool>("visible"));
+    assert!(!workspace_sidebar_visible(&window));
+    assert!(!properties_sidebar_visible(&window));
+
+    activate_action(&window, "toggle-focus-mode");
+
+    assert!(!action_state_bool(&window, "toggle-focus-mode"));
+    assert!(window.imp().header_bar.property::<bool>("visible"));
+    assert!(window.imp().tab_bar.property::<bool>("visible"));
+    assert!(window.imp().status_bar.property::<bool>("visible"));
+    assert!(workspace_sidebar_visible(&window));
+    assert!(properties_sidebar_visible(&window));
+}
+
+#[test]
+fn test_f9_changes_requested_properties_state_while_focus_mode_suppresses_rendering() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
+    window.set_default_size(1400, 900);
+    window.new_tab();
+    present_window(&window);
+    assert!(
+        window
+            .imp()
+            .secondary_surfaces
+            .properties_requested_visible
+            .get()
+    );
+
+    activate_action(&window, "toggle-focus-mode");
+    assert!(!properties_sidebar_visible(&window));
+    assert!(
+        action_state_bool(&window, "toggle-properties"),
+        "while focused, the F9 action state should reflect requested state"
+    );
+
+    activate_action(&window, "toggle-properties");
+    assert!(
+        !window
+            .imp()
+            .secondary_surfaces
+            .properties_requested_visible
+            .get()
+    );
+    assert!(!properties_sidebar_visible(&window));
+
+    activate_action(&window, "toggle-focus-mode");
+    assert!(!properties_sidebar_visible(&window));
+}
+
+#[test]
+fn test_focus_mode_restores_side_by_side_preview_when_unchanged() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    activate_action(&window, "toggle-preview-pane");
+    assert!(window.imp().preview_visible.get());
+
+    activate_action(&window, "toggle-focus-mode");
+    assert!(!window.imp().preview_visible.get());
+
+    activate_action(&window, "toggle-focus-mode");
+    assert!(
+        window.imp().preview_visible.get(),
+        "side-by-side preview should restore when Focus Mode exits untouched"
+    );
+}
+
+#[test]
+fn test_alt_p_preview_only_works_inside_focus_mode_and_blocks_preview_restore() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    activate_action(&window, "toggle-preview-pane");
+    assert!(window.imp().preview_visible.get());
+
+    activate_action(&window, "toggle-focus-mode");
+    activate_action(&window, "toggle-preview-mode");
+
+    assert!(window.imp().focus_mode.active.get());
+    assert!(window.imp().preview_mode.get());
+    assert!(window.imp().markdown_preview.property::<bool>("visible"));
+
+    activate_action(&window, "toggle-focus-mode");
+
+    assert!(!window.imp().preview_mode.get());
+    assert!(
+        !window.imp().preview_visible.get(),
+        "focused preview changes should prevent side-by-side preview restoration"
+    );
+}
+
+#[test]
+fn test_focus_mode_readable_editor_margins_restore_after_exit() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(1600, 900);
+    window.new_tab();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || active_editor(&window).source_view().width() > 0);
+    let editor = active_editor(&window);
+    let normal_left = editor.focus_mode_left_margin();
+
+    activate_action(&window, "toggle-focus-mode");
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).focus_mode_left_margin() > normal_left
+    });
+    let focused_left = active_editor(&window).focus_mode_left_margin();
+    assert_eq!(focused_left, active_editor(&window).focus_mode_right_margin());
+
+    activate_action(&window, "toggle-focus-mode");
+    assert_eq!(active_editor(&window).focus_mode_left_margin(), normal_left);
+}
+
+#[test]
+fn test_focus_mode_text_origin_guide_visibility_and_margin_tracking() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_uint(keys::FOCUS_MODE_TARGET_COLUMNS, 80)
+        .expect("reset Focus Mode column width");
+    let window = test_window();
+    window.set_default_size(1600, 900);
+    window.new_tab();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || active_editor(&window).source_view().width() > 0);
+
+    assert!(
+        !active_editor(&window).focus_mode_text_origin_guide_visible(),
+        "the text-origin guide should not render outside Focus Mode"
+    );
+
+    activate_action(&window, "toggle-focus-mode");
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).focus_mode_text_origin_guide_visible()
+            && active_editor(&window)
+                .focus_mode_text_origin_guide_x()
+                .is_some()
+    });
+    let focused_margin = active_editor(&window).focus_mode_left_margin();
+    let focused_guide_x = active_editor(&window)
+        .focus_mode_text_origin_guide_x()
+        .expect("focused guide x coordinate");
+
+    settings
+        .set_uint(keys::FOCUS_MODE_TARGET_COLUMNS, 120)
+        .expect("widen Focus Mode column width");
+    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).focus_mode_left_margin() != focused_margin
+            && active_editor(&window)
+                .focus_mode_text_origin_guide_x()
+                .is_some_and(|x| x != focused_guide_x)
+    });
+
+    let updated_margin = active_editor(&window).focus_mode_left_margin();
+    let updated_guide_x = active_editor(&window)
+        .focus_mode_text_origin_guide_x()
+        .expect("updated guide x coordinate");
+    assert!(
+        (updated_guide_x - focused_guide_x - (updated_margin - focused_margin)).abs() <= 1,
+        "the guide should move with the readable-column margin"
+    );
+
+    activate_action(&window, "toggle-focus-mode");
+    assert!(
+        !active_editor(&window).focus_mode_text_origin_guide_visible(),
+        "the text-origin guide should hide again when Focus Mode exits"
+    );
+}
+
+#[test]
+fn test_focus_mode_readable_editor_margins_keep_narrow_allocations_usable() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(720, 700);
+    window.new_tab();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || active_editor(&window).source_view().width() > 0);
+
+    activate_action(&window, "toggle-focus-mode");
+    let editor = active_editor(&window);
+    assert!(editor.focus_mode_left_margin() >= 24);
+    assert!(editor.focus_mode_left_margin() <= editor.source_view().width() / 3);
+}
+
+#[test]
+fn test_focus_mode_applies_markdown_preview_readable_margins_and_restores() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(1600, 900);
+    window.new_tab();
+    present_window(&window);
+
+    activate_action(&window, "toggle-focus-mode");
+    activate_action(&window, "toggle-preview-mode");
+    let (left, right) = window.imp().markdown_preview.content_margins();
+    assert!(left > 16);
+    assert_eq!(left, right);
+
+    activate_action(&window, "toggle-focus-mode");
+    assert_eq!(window.imp().markdown_preview.content_margins(), (16, 16));
+}
+
+#[test]
+fn test_focus_mode_temporarily_hides_minimap_without_changing_preference() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || active_editor(&window).is_minimap_visible());
+
+    activate_action(&window, "toggle-focus-mode");
+    assert_eq!(
+        active_editor(&window).minimap_availability(),
+        MinimapAvailability::Disabled
+    );
+    assert!(settings.boolean(keys::SHOW_MINIMAP));
+
+    activate_action(&window, "toggle-focus-mode");
+    wait_until(Duration::from_secs(2), || active_editor(&window).is_minimap_visible());
+    assert!(settings.boolean(keys::SHOW_MINIMAP));
+}
+
+#[test]
+fn test_focus_mode_typewriter_scrolling_defaults_off_and_tracks_setting() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::FOCUS_MODE_TYPEWRITER_SCROLLING, false)
+        .expect("disable typewriter scrolling");
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    activate_action(&window, "toggle-focus-mode");
+    assert!(
+        !active_editor(&window)
+            .imp()
+            .focus_mode
+            .typewriter_scrolling
+            .get()
+    );
+
+    settings
+        .set_boolean(keys::FOCUS_MODE_TYPEWRITER_SCROLLING, true)
+        .expect("enable typewriter scrolling");
+    flush_events();
+    assert!(
+        active_editor(&window)
+            .imp()
+            .focus_mode
+            .typewriter_scrolling
+            .get()
+    );
+}
+
+#[test]
+fn test_escape_closes_command_palette_before_exiting_focus_mode() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    activate_action(&window, "toggle-focus-mode");
+    activate_action(&window, "toggle-command-palette");
+    assert!(window.imp().palette_revealer.reveals_child());
+
+    emit_escape_on_window_controller(&window);
+    flush_events();
+
+    assert!(!window.imp().palette_revealer.reveals_child());
+    assert!(window.imp().focus_mode.active.get());
+
+    emit_escape_on_window_controller(&window);
+    flush_events();
+    assert!(!window.imp().focus_mode.active.get());
 }
 
 #[test]

@@ -12,6 +12,7 @@ mod documents;
 mod drafts;
 mod encoding;
 mod focus_indexing;
+mod focus_mode;
 mod imp;
 mod local_history;
 mod notes;
@@ -61,6 +62,7 @@ impl LushtextWindow {
         window.setup_actions();
         window.setup_tab_management();
         window.setup_fullscreen();
+        window.setup_focus_mode();
         window.setup_theme_selector();
         preview::setup_preview_actions(&window);
         print::setup_print_action(&window);

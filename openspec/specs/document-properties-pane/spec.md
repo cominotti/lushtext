@@ -1,4 +1,9 @@
-## ADDED Requirements
+# document-properties-pane Specification
+
+## Purpose
+Define the document properties surface, its adaptive pane or sheet presentation, and its relationship with quick editor-state controls.
+
+## Requirements
 
 ### Requirement: Header bar provides the document properties toggle
 The system SHALL expose document properties through a toggle button at the end of the main header bar using the `info-outline-symbolic` icon. The toggle MUST reflect whether the document properties surface is open, MUST use the tooltip `Document Properties`, and MUST own the `F9` shortcut.
@@ -128,3 +133,30 @@ The system SHALL NOT add a `Document Type` row, language picker, or other docume
 - **WHEN** the user opens document properties for a file-backed document after this change
 - **THEN** the surface does not show a `Document Type` row or language picker
 - **AND** the surface remains focused on the slower document-inspection details defined by this delta
+
+### Requirement: Focus Mode suppresses document properties without discarding requested state
+The system SHALL keep `F9` and the document-properties action owned by the document properties surface while Focus Mode is active. Focus Mode MUST suppress the rendered document-properties surface without overwriting the user's requested document-properties visibility state.
+
+#### Scenario: Existing open properties are restored after focus
+- **WHEN** document properties are visible in a spacious layout
+- **AND** the user enters Focus Mode
+- **THEN** document properties are no longer rendered
+- **AND** the document-properties requested visibility remains open
+- **WHEN** the user exits Focus Mode without explicitly changing document-properties state
+- **THEN** document properties render again according to the current adaptive layout
+
+#### Scenario: F9 changes requested properties state while focused
+- **WHEN** Focus Mode is active and document properties were requested open before entry
+- **AND** the user presses `F9`
+- **THEN** the document-properties requested state changes to closed
+- **AND** the document-properties surface remains suppressed while Focus Mode is active
+- **WHEN** the user exits Focus Mode
+- **THEN** document properties remain closed
+
+#### Scenario: F9 can request properties for after focus
+- **WHEN** Focus Mode is active and document properties are not requested open
+- **AND** the user presses `F9`
+- **THEN** the document-properties requested state changes to open
+- **AND** the document-properties surface remains suppressed while Focus Mode is active
+- **WHEN** the user exits Focus Mode
+- **THEN** document properties render according to the current adaptive layout

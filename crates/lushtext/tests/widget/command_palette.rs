@@ -611,6 +611,18 @@ fn test_all_commands_contains_fullscreen() {
 }
 
 #[test]
+fn test_all_commands_contains_focus_mode() {
+    ensure_gtk_init();
+    let commands = lushtext_core::services::palette::all_commands();
+    let cmd = commands.iter().find(|c| c.id == "win.toggle-focus-mode");
+    assert!(cmd.is_some(), "all_commands() should include Focus Mode");
+    let cmd = cmd.expect("expected operation to succeed");
+    assert_eq!(cmd.label, "Focus Mode");
+    assert_eq!(cmd.shortcut, Some("Ctrl+Shift+F11"));
+    assert_eq!(cmd.category, CommandCategory::View);
+}
+
+#[test]
 fn test_all_commands_contains_zoom_in() {
     ensure_gtk_init();
     let commands = lushtext_core::services::palette::all_commands();

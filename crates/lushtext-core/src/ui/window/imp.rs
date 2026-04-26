@@ -90,6 +90,21 @@ pub struct SessionState {
     pub restoring: Cell<bool>,
 }
 
+/// Reversible shell state owned by Focus Mode.
+#[derive(Default)]
+pub struct FocusModeState {
+    /// Whether Focus Mode is currently active for this window.
+    pub active: Cell<bool>,
+    /// Whether the window was already fullscreen when Focus Mode was entered.
+    pub was_fullscreen_on_entry: Cell<bool>,
+    /// Whether side-by-side Markdown preview should be restored on exit.
+    pub restore_side_by_side_preview: Cell<bool>,
+    /// Whether the user changed preview state while focused.
+    pub preview_changed_while_focused: Cell<bool>,
+    /// Generation counter for delayed affordance hiding.
+    pub affordance_generation: Cell<u32>,
+}
+
 /// Draft lifecycle state owned by the main window shell.
 #[derive(Default)]
 pub struct DraftState {
@@ -148,6 +163,8 @@ pub struct LushtextWindow {
     #[template_child]
     pub tab_bar: TemplateChild<libadwaita::TabBar>,
     #[template_child]
+    pub window_overlay: TemplateChild<gtk4::Overlay>,
+    #[template_child]
     pub workspace_split_view: TemplateChild<libadwaita::OverlaySplitView>,
     #[template_child]
     pub properties_bottom_sheet: TemplateChild<libadwaita::BottomSheet>,
@@ -167,6 +184,10 @@ pub struct LushtextWindow {
     pub palette_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
     pub command_palette: TemplateChild<LushtextCommandPalette>,
+    #[template_child]
+    pub focus_mode_revealer: TemplateChild<gtk4::Revealer>,
+    #[template_child]
+    pub focus_mode_affordance: TemplateChild<gtk4::Box>,
     /// Dedicated secondary menu for bookmark and annotation workflows.
     #[template_child]
     pub notes_menu_button: TemplateChild<gtk4::MenuButton>,
@@ -217,6 +238,8 @@ pub struct LushtextWindow {
     pub editor_memory: EditorMemoryState,
     /// Session save/restore state.
     pub session: SessionState,
+    /// Focus Mode reversible shell state.
+    pub focus_mode: FocusModeState,
     /// Draft persistence and autosave state.
     pub drafts: DraftState,
     /// Tab-menu targeting, pinned-page wiring, and bulk-close authorization.
@@ -243,6 +266,7 @@ impl Default for LushtextWindow {
             title_widget: TemplateChild::default(),
             document_properties_toggle_button: TemplateChild::default(),
             tab_bar: TemplateChild::default(),
+            window_overlay: TemplateChild::default(),
             workspace_split_view: TemplateChild::default(),
             properties_bottom_sheet: TemplateChild::default(),
             properties_split_view: TemplateChild::default(),
@@ -253,6 +277,8 @@ impl Default for LushtextWindow {
             status_bar: TemplateChild::default(),
             palette_revealer: TemplateChild::default(),
             command_palette: TemplateChild::default(),
+            focus_mode_revealer: TemplateChild::default(),
+            focus_mode_affordance: TemplateChild::default(),
             notes_menu_button: TemplateChild::default(),
             primary_menu_button: TemplateChild::default(),
             preview_paned: TemplateChild::default(),
@@ -277,6 +303,7 @@ impl Default for LushtextWindow {
             open_paths: RefCell::new(HashSet::new()),
             editor_memory: EditorMemoryState::default(),
             session: SessionState::default(),
+            focus_mode: FocusModeState::default(),
             drafts: DraftState::default(),
             tab_management: TabManagementState::default(),
             search_saved_focus: RefCell::new(None),
@@ -614,6 +641,7 @@ impl ObjectImpl for LushtextWindow {
                     window.maybe_evict_background_tabs();
                     window.save_session_debounced();
                     window.refresh_preview();
+                    window.apply_focus_mode_to_editors();
                     if let Some(editor) = window.active_editor() {
                         editor.refresh_minimap();
                     }
@@ -1092,13 +1120,18 @@ fn sync_secondary_surfaces(window: &super::LushtextWindow) {
     } else {
         None
     };
-    let render_workspace = if compact {
+    let focus_mode_active = imp.focus_mode.active.get();
+    let render_workspace = if focus_mode_active {
+        false
+    } else if compact {
         compact_surface == Some(SecondarySurface::Workspace)
             && imp.secondary_surfaces.workspace_requested_visible.get()
     } else {
         imp.secondary_surfaces.workspace_requested_visible.get()
     };
-    let render_properties = if compact {
+    let render_properties = if focus_mode_active {
+        false
+    } else if compact {
         compact_surface == Some(SecondarySurface::DocumentProperties)
             && imp.secondary_surfaces.properties_requested_visible.get()
     } else {
@@ -1175,6 +1208,22 @@ fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
 }
 
 impl super::LushtextWindow {
+    /// Return whether the workspace sidebar is requested in user state.
+    pub(super) fn workspace_sidebar_requested_visible(&self) -> bool {
+        self.imp()
+            .secondary_surfaces
+            .workspace_requested_visible
+            .get()
+    }
+
+    /// Return whether document properties are requested in user state.
+    pub(super) fn document_properties_requested_visible(&self) -> bool {
+        self.imp()
+            .secondary_surfaces
+            .properties_requested_visible
+            .get()
+    }
+
     /// Return whether the workspace sidebar is currently rendered on screen.
     pub(super) fn rendered_workspace_sidebar_visible(&self) -> bool {
         self.imp().workspace_split_view.shows_sidebar()

@@ -155,6 +155,12 @@ pub fn all_commands() -> &'static [CommandDef] {
             shortcut: Some("F11"),
         },
         CommandDef {
+            id: "win.toggle-focus-mode",
+            label: "Focus Mode",
+            category: CommandCategory::View,
+            shortcut: Some("Ctrl+Shift+F11"),
+        },
+        CommandDef {
             id: "win.zoom-in",
             label: "Zoom In",
             category: CommandCategory::View,

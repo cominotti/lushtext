@@ -61,6 +61,24 @@ fn test_show_minimap_row_bound_to_settings() {
 }
 
 #[test]
+fn test_focus_mode_column_width_row_bound_to_settings() {
+    ensure_gtk_init();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    assert_eq!(imp.focus_mode_target_columns_row.value(), 80.0);
+}
+
+#[test]
+fn test_focus_mode_typewriter_scrolling_defaults_off() {
+    ensure_gtk_init();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    assert!(!imp.focus_mode_typewriter_scrolling_row.is_active());
+}
+
+#[test]
 fn test_insert_spaces_row_bound_to_settings() {
     ensure_gtk_init();
     let prefs = LushtextPreferences::new();
