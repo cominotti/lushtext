@@ -83,7 +83,7 @@ session management, no tabs within tabs, no tmux complexity.
 
 ## Risks
 - VTE's GTK4 port (`vte-2.91-gtk4`) may not be available in all distributions yet.
-  Fedora 43 and Ubuntu 24.04+ have it; older distros may not. This could be a
+  Fedora 43+ and Ubuntu 24.04+ have it; older distros may not. This could be a
   compile-time optional feature gated behind a cargo feature flag.
 - The `vte4` Rust crate may lag behind VTE releases. Check maintenance status and
   version availability before committing.

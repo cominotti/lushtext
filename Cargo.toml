@@ -19,13 +19,13 @@ rust-version = "1.95.0"
 lushtext-core = { path = "crates/lushtext-core" }
 
 # GTK / GNOME stack
-gtk4        = { version = "0.11", features = ["v4_20"] }
-libadwaita  = { version = "0.9",  features = ["v1_8"] }
-sourceview5 = { version = "0.11", features = ["v5_16"] }
-gio         = "0.22"
-glib        = "0.22"
-gdk4        = "0.11"
-pango       = "0.22"
+gtk4        = { version = "0.11", features = ["gnome_50"] }
+libadwaita  = { version = "0.9",  features = ["v1_9", "gtk_v4_22"] }
+sourceview5 = { version = "0.11", features = ["v5_18"] }
+gio         = { version = "0.22", features = ["v2_88"] }
+glib        = { version = "0.22", features = ["v2_88"] }
+gdk4        = { version = "0.11", features = ["v4_22"] }
+pango       = { version = "0.22", features = ["v1_57"] }
 
 # Content search (ripgrep engine)
 grep-regex    = "0.1"
@@ -64,19 +64,19 @@ encoding_rs = "0.8"
 unicase = "2"
 
 # EditorConfig parsing (pure Rust, zero deps)
-editorconfig-parser = "0.0.3"
+editorconfig-parser = "0.0.4"
 
 # Regex (backreference expansion in Replace All)
 regex = "1"
 
 # Markdown parsing (CommonMark, streaming events)
-pulldown-cmark = { version = "0.12", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false }
 
 # Dev / test
 tempfile   = "3.14"
 assert_cmd = "2.0"
 predicates = "3.0"
-criterion  = { version = "0.5", features = ["html_reports"] }
+criterion  = { version = "0.8", features = ["html_reports"] }
 libtest-mimic = "0.8"
 
 # --- Workspace-wide lint configuration ---

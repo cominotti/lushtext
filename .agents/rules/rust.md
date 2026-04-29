@@ -15,7 +15,7 @@ globs: "**/*.rs"
 
 - Use `libadwaita` (not `adw`) in all imports — there is no crate alias.
 - For `imp()` method: import `glib::subclass::prelude::ObjectSubclassIsExt`.
-- For GtkSourceView methods on Buffer: import `sourceview5::prelude::*`.
+- For GtkSourceView extension methods on Buffer, View, annotation providers, annotations, and other source-view objects: import `sourceview5::prelude::*`.
 - Prefer `gtk4::prelude::*` for general GTK widget methods.
 - In `imp.rs` files: use `libadwaita::subclass::prelude::*` (re-exports the full chain).
 
@@ -26,6 +26,7 @@ All gtk-rs crates must be from the same release series. Current versions:
 - `libadwaita = 0.9`
 - `glib = 0.22`, `gio = 0.22`, `pango = 0.22`
 - `glib-build-tools = 0.22`
+- Platform feature floor: GNOME 50 (`gtk4` `gnome_50` / GTK 4.22, Libadwaita 1.9, GLib/GIO 2.88, GtkSourceView feature `v5_18`).
 
 Mixing versions (e.g. glib 0.21 with gtk4 0.11) causes "multiple versions of crate glib" errors.
 
@@ -53,6 +54,12 @@ Use `services::async_task::spawn_blocking_then(state, work, then)` for any I/O t
 Never pass GTK objects directly across threads — they are not `Send`/`Sync`. Use `glib::thread_guard::ThreadGuard` or `glib::SendWeakRef`.
 
 Never set `autoexpand = true` on `GtkTreeListModel`.
+
+When save-time policy rewrites buffer text (for example EditorConfig
+`trim_trailing_whitespace` or `insert_final_newline`), the saved bytes and live
+buffer must agree before the buffer is marked clean. Either mirror the saved
+text back into the buffer after a successful write or keep the buffer modified;
+do not show a clean tab whose visible text differs from disk.
 
 ## Mutable State on GObject Structs
 

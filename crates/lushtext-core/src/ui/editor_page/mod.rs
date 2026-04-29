@@ -347,6 +347,12 @@ impl LushtextEditorPage {
 
     /// Apply EditorConfig formatting overrides and update the view.
     pub fn apply_editorconfig_overrides(&self, overrides: FormattingOverrides) {
+        if let Some(line_ending) = overrides.line_ending {
+            self.set_save_line_ending(line_ending);
+        }
+        if let Some(save_encoding) = overrides.save_encoding {
+            self.set_save_encoding(save_encoding);
+        }
         self.imp().formatting_overrides.set(overrides);
         imp::apply_formatting_settings(&self.imp().source_view, &self.imp().settings, overrides);
     }
@@ -438,6 +444,11 @@ impl LushtextEditorPage {
     /// Install bookmark gutter attributes on the source view.
     pub(crate) fn setup_bookmark_projection(&self) {
         bookmarks::setup_bookmark_projection(self);
+    }
+
+    /// Install the native GtkSourceView provider for end-of-line annotations.
+    pub(crate) fn setup_native_annotation_projection(&self) {
+        annotations::setup_native_annotation_projection(self);
     }
 
     /// Snapshot the current live annotation projection into pure model records.

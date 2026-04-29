@@ -6,6 +6,7 @@
 //! file parsing, section matching, and multi-level override merging.
 
 use super::common::TestContext;
+use lushtext_core::model::encoding::{DocumentEncoding, LineEnding};
 use lushtext_core::services::editorconfig;
 
 #[test]
@@ -77,6 +78,40 @@ fn section_glob_pattern_matching() {
     // txt doesn't match any section
     let txt_result = editorconfig::resolve_for_path(&txt);
     assert!(txt_result.is_empty());
+}
+
+#[test]
+fn save_policy_properties_resolve_from_editorconfig() {
+    let ctx = TestContext::new();
+
+    ctx.write_file(
+        ".editorconfig",
+        "root = true\n\n\
+         [*.md]\nend_of_line = crlf\ncharset = utf-8-bom\ntrim_trailing_whitespace = true\ninsert_final_newline = true\n",
+    );
+
+    let md = ctx.write_file("notes.md", "");
+    let result = editorconfig::resolve_for_path(&md);
+
+    assert_eq!(result.line_ending, Some(LineEnding::Crlf));
+    assert_eq!(result.save_encoding, Some(DocumentEncoding::Utf8Bom));
+    assert_eq!(result.trim_trailing_whitespace, Some(true));
+    assert_eq!(result.insert_final_newline, Some(true));
+}
+
+#[test]
+fn unsupported_charset_does_not_fall_back_to_wrong_encoding() {
+    let ctx = TestContext::new();
+
+    ctx.write_file(
+        ".editorconfig",
+        "root = true\n\n[*]\ncharset = utf-8\n\n[*.txt]\ncharset = latin1\n",
+    );
+
+    let txt = ctx.write_file("legacy.txt", "");
+    let result = editorconfig::resolve_for_path(&txt);
+
+    assert_eq!(result.save_encoding, None);
 }
 
 #[test]

@@ -74,12 +74,16 @@ composition) but ship only EditorConfig + GSettings. ~800 LOC. The
 
 ### 1. Which EditorConfig properties to support initially
 
-Supported: `indent_style`, `tab_width`, `indent_size` — the three that map
-directly to existing GtkSourceView properties.
+Initially supported: `indent_style`, `tab_width`, `indent_size` - the three
+that map directly to existing GtkSourceView properties.
 
-Deferred: `end_of_line`, `charset`, `trim_trailing_whitespace`,
-`insert_final_newline`, `max_line_length` — each requires new features
-beyond the settings layer. Documented in `docs/next/editorconfig-future.md`.
+Later extended: `end_of_line`, save-time `charset` for supported encodings,
+`trim_trailing_whitespace`, and `insert_final_newline`. These now participate
+in the same `FormattingOverrides` provider chain but apply at the save-policy
+boundary instead of as live GtkSourceView indentation properties.
+
+Still deferred: `max_line_length`, load-time charset hints, and real `latin1`
+support. Documented in `docs/next/editorconfig-future.md`.
 
 ### 2. Settings toggle
 
@@ -127,7 +131,7 @@ provider is added.
 - Created `model/formatting_overrides.rs` — `FormattingOverrides` struct
   (`Copy`, `Default`, `PartialEq`, zero GTK deps)
 - Added `use-editorconfig` key to GSettings schema
-- Added `editorconfig-parser = "0.0.3"` to workspace dependencies
+- Added `editorconfig-parser = "0.0.4"` to workspace dependencies
 - Ran `cargo hakari generate`
 
 ### Phase 2: EditorConfig Service

@@ -427,11 +427,20 @@ impl LushtextWindow {
             return;
         }
         let path = path.to_path_buf();
+        let window_weak = self.downgrade();
         async_task::spawn_blocking_then(
             editor.clone(),
             move || editorconfig::resolve_for_path(&path),
-            |editor, overrides| {
+            move |editor, overrides| {
                 editor.apply_editorconfig_overrides(overrides);
+                if let Some(window) = window_weak.upgrade()
+                    && window
+                        .active_editor()
+                        .as_ref()
+                        .is_some_and(|active| active.as_ptr() == editor.as_ptr())
+                {
+                    window.refresh_status_bar();
+                }
             },
         );
     }

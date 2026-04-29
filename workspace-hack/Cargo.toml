@@ -12,12 +12,14 @@ publish = false
 
 ### BEGIN HAKARI SECTION
 [dependencies]
+clap = { version = "4", features = ["derive"] }
+clap_builder = { version = "4", default-features = false, features = ["color", "help", "std", "suggestions", "usage"] }
 crossbeam-utils = { version = "0.8" }
-gio = { version = "0.22", default-features = false, features = ["v2_66"] }
-gio-sys = { version = "0.22", default-features = false, features = ["v2_66"] }
-glib = { version = "0.22", features = ["v2_66"] }
-glib-sys = { version = "0.22", default-features = false, features = ["v2_66"] }
-gobject-sys = { version = "0.22", default-features = false, features = ["v2_66"] }
+gio = { version = "0.22", default-features = false, features = ["v2_88"] }
+gio-sys = { version = "0.22", default-features = false, features = ["v2_88"] }
+glib = { version = "0.22", features = ["v2_88"] }
+glib-sys = { version = "0.22", default-features = false, features = ["v2_88"] }
+gobject-sys = { version = "0.22", default-features = false, features = ["v2_76", "v2_86"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 num-traits = { version = "0.2" }
 serde = { version = "1", features = ["alloc", "derive"] }
@@ -26,13 +28,14 @@ smallvec = { version = "1", default-features = false, features = ["const_new", "
 tracing-core = { version = "0.1" }
 
 [build-dependencies]
-gio = { version = "0.22", default-features = false, features = ["v2_66"] }
-gio-sys = { version = "0.22", default-features = false, features = ["v2_66"] }
-glib = { version = "0.22", features = ["v2_66"] }
-glib-sys = { version = "0.22", default-features = false, features = ["v2_66"] }
-gobject-sys = { version = "0.22", default-features = false, features = ["v2_66"] }
+gio = { version = "0.22", default-features = false, features = ["v2_88"] }
+gio-sys = { version = "0.22", default-features = false, features = ["v2_88"] }
+glib = { version = "0.22", features = ["v2_88"] }
+glib-sys = { version = "0.22", default-features = false, features = ["v2_88"] }
+gobject-sys = { version = "0.22", default-features = false, features = ["v2_76", "v2_86"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "union"] }
 syn = { version = "2", features = ["extra-traits", "full", "visit-mut"] }
+toml_datetime = { version = "1" }
 toml_parser = { version = "1" }
 winnow = { version = "1" }
 

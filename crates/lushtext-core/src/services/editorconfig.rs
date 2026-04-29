@@ -7,8 +7,9 @@
 //! blocking filesystem reads and must be called from a background thread
 //! (via `spawn_blocking_then`).
 
+use crate::model::encoding::{DocumentEncoding, LineEnding};
 use crate::model::formatting_overrides::FormattingOverrides;
-use editorconfig_parser::{EditorConfig, EditorConfigProperty, IndentStyle};
+use editorconfig_parser::{Charset, EditorConfig, EditorConfigProperty, EndOfLine, IndentStyle};
 use std::path::Path;
 
 /// Resolve EditorConfig formatting overrides for a file.
@@ -57,6 +58,10 @@ pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
     let mut resolved_tab_width = false;
     let mut resolved_insert_spaces = false;
     let mut resolved_indent_width = false;
+    let mut resolved_line_ending = false;
+    let mut resolved_save_encoding = false;
+    let mut resolved_trim_trailing_whitespace = false;
+    let mut resolved_insert_final_newline = false;
 
     for config in &configs {
         let props = config.resolve(file_path);
@@ -117,13 +122,94 @@ pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
             }
         }
 
+        if !resolved_line_ending {
+            match props.end_of_line {
+                EditorConfigProperty::Value(value) => {
+                    result.line_ending = Some(map_line_ending(value));
+                    resolved_line_ending = true;
+                }
+                EditorConfigProperty::Unset => {
+                    resolved_line_ending = true;
+                }
+                EditorConfigProperty::None => {}
+            }
+        }
+
+        if !resolved_save_encoding {
+            match props.charset {
+                EditorConfigProperty::Value(value) => {
+                    result.save_encoding = map_charset(value);
+                    resolved_save_encoding = true;
+                }
+                EditorConfigProperty::Unset => {
+                    resolved_save_encoding = true;
+                }
+                EditorConfigProperty::None => {}
+            }
+        }
+
+        if !resolved_trim_trailing_whitespace {
+            match props.trim_trailing_whitespace {
+                EditorConfigProperty::Value(value) => {
+                    result.trim_trailing_whitespace = Some(value);
+                    resolved_trim_trailing_whitespace = true;
+                }
+                EditorConfigProperty::Unset => {
+                    resolved_trim_trailing_whitespace = true;
+                }
+                EditorConfigProperty::None => {}
+            }
+        }
+
+        if !resolved_insert_final_newline {
+            match props.insert_final_newline {
+                EditorConfigProperty::Value(value) => {
+                    result.insert_final_newline = Some(value);
+                    resolved_insert_final_newline = true;
+                }
+                EditorConfigProperty::Unset => {
+                    resolved_insert_final_newline = true;
+                }
+                EditorConfigProperty::None => {}
+            }
+        }
+
         // Early exit: all fields resolved, no need to check parent files.
-        if resolved_tab_width && resolved_insert_spaces && resolved_indent_width {
+        if resolved_tab_width
+            && resolved_insert_spaces
+            && resolved_indent_width
+            && resolved_line_ending
+            && resolved_save_encoding
+            && resolved_trim_trailing_whitespace
+            && resolved_insert_final_newline
+        {
             break;
         }
     }
 
     result
+}
+
+/// Map EditorConfig line-ending values onto LushText's save-policy vocabulary.
+#[must_use]
+fn map_line_ending(value: EndOfLine) -> LineEnding {
+    match value {
+        EndOfLine::Lf => LineEnding::Lf,
+        EndOfLine::Cr => LineEnding::Cr,
+        EndOfLine::Crlf => LineEnding::Crlf,
+    }
+}
+
+/// Map exact EditorConfig charsets to save encodings LushText can preserve.
+#[must_use]
+fn map_charset(value: Charset) -> Option<DocumentEncoding> {
+    match value {
+        Charset::Utf8 => Some(DocumentEncoding::Utf8),
+        Charset::Utf8bom => Some(DocumentEncoding::Utf8Bom),
+        Charset::Utf16be => Some(DocumentEncoding::Utf16Be),
+        Charset::Utf16le => Some(DocumentEncoding::Utf16Le),
+        Charset::Latin1 => None,
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +255,37 @@ mod tests {
         assert_eq!(result.tab_width, Some(2));
         assert_eq!(result.insert_spaces, Some(true));
         assert_eq!(result.indent_width, None);
+    }
+
+    #[test]
+    fn save_policy_properties_are_resolved() {
+        let tmp = TempDir::new().expect("expected operation to succeed");
+        write_editorconfig(
+            tmp.path(),
+            "root = true\n\n[*]\nend_of_line = crlf\ncharset = utf-8-bom\ntrim_trailing_whitespace = true\ninsert_final_newline = true\n",
+        );
+        let file = tmp.path().join("main.rs");
+        touch(&file);
+
+        let result = resolve_for_path(&file);
+        assert_eq!(result.line_ending, Some(LineEnding::Crlf));
+        assert_eq!(result.save_encoding, Some(DocumentEncoding::Utf8Bom));
+        assert_eq!(result.trim_trailing_whitespace, Some(true));
+        assert_eq!(result.insert_final_newline, Some(true));
+    }
+
+    #[test]
+    fn unsupported_latin1_charset_marks_charset_resolved_without_guessing() {
+        let tmp = TempDir::new().expect("expected operation to succeed");
+        write_editorconfig(
+            tmp.path(),
+            "root = true\n\n[*]\ncharset = utf-8\n\n[*.txt]\ncharset = latin1\n",
+        );
+        let file = tmp.path().join("note.txt");
+        touch(&file);
+
+        let result = resolve_for_path(&file);
+        assert_eq!(result.save_encoding, None);
     }
 
     #[test]

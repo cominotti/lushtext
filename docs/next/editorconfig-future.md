@@ -1,33 +1,35 @@
-# EditorConfig: Deferred Properties
+# EditorConfig: Remaining Properties
 
 The following EditorConfig properties are recognized by the spec but are
-not yet supported by LushText. Each requires new features beyond the
-settings provider layer.
+either now supported by LushText's provider chain or still need product work
+beyond the settings layer.
 
 ## `end_of_line` (lf / crlf / cr)
 
-The encoding-toolkit work now provides line-ending detection on load plus
-save-time normalization at the `editor_io.rs` boundary. The remaining work
-here is to let EditorConfig set or warn on the already-shipped save policy for
-the active document.
+Supported. EditorConfig now sets the active document's save line-ending policy
+when `end_of_line` is present. The status bar refreshes after async
+EditorConfig resolution so users can see the effective policy.
 
 ## `charset` (utf-8 / utf-8-bom / latin1 / utf-16be / utf-16le)
 
-The encoding-toolkit work now provides encoding-aware load/save behavior,
-status-bar controls, and lossy-conversion confirmation. The remaining work
-here is EditorConfig enforcement: mapping `charset` onto the current
-open/save encoding policy without fighting explicit user choices.
+Partially supported. EditorConfig now maps `utf-8`, `utf-8-bom`, `utf-16be`,
+and `utf-16le` onto the active document's save encoding policy. `latin1` is
+recognized as present but intentionally not mapped because LushText's current
+save pipeline does not expose an ISO-8859-1 encoder, and guessing Windows-1252
+would be incorrect.
 
 ## `trim_trailing_whitespace` (true / false)
 
-Requires an on-save hook that strips trailing whitespace from each line
-before writing to disk. Must be careful not to mutate the buffer
-(strip from the snapshot text, not the live buffer).
+Supported. Save snapshots strip trailing spaces and tabs before writing when
+the nearest EditorConfig rule enables it. After a successful save, LushText
+mirrors the saved text back into the live buffer before marking the buffer
+clean, so the visible editor state and the bytes on disk do not diverge.
 
 ## `insert_final_newline` (true / false)
 
-Requires an on-save hook that ensures the file ends with a newline (or
-removes the trailing newline if `false`). Similar to `trim_trailing_whitespace`.
+Supported. Save snapshots add or remove the final newline according to the
+resolved EditorConfig value, preserving the document's effective line-ending
+policy when a newline is inserted.
 
 ## `max_line_length` (number / off)
 
@@ -37,10 +39,8 @@ right margin, plus EditorConfig override support in the provider chain.
 
 ## Implementation Priority
 
-Recommended order based on user impact and implementation effort:
+Recommended remaining order based on user impact and implementation effort:
 
-1. `insert_final_newline` — small scope, high value (POSIX compliance)
-2. `trim_trailing_whitespace` — small scope, high value (code cleanliness)
-3. `max_line_length` — medium scope, maps directly to existing GtkSourceView properties
-4. `end_of_line` — medium scope, now mostly EditorConfig policy wiring
-5. `charset` — medium scope, now mostly EditorConfig policy wiring
+1. `max_line_length` - medium scope, maps directly to existing GtkSourceView properties
+2. `latin1` save support - only if LushText adds a real ISO-8859-1 encoding path
+3. Load-time charset hints - only if the product should let EditorConfig influence initial decoding rather than save policy only

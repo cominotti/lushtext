@@ -7,9 +7,13 @@
 //! highlights. This module owns that per-buffer projection.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::gio;
 use gtk4::prelude::*;
+use sourceview5::prelude::*;
 
-use crate::model::annotation::{AnnotationId, AnnotationRecord, AnnotationStyle};
+use crate::model::annotation::{
+    AnnotationId, AnnotationRecord, AnnotationStyle as LushAnnotationStyle,
+};
 
 use super::{LushtextEditorPage, imp};
 
@@ -22,6 +26,13 @@ pub enum AnnotationEditSelection {
 
 /// Prefix for text-tag names created for annotation highlights.
 const ANNOTATION_TAG_PREFIX: &str = "lushtext-annotation-";
+
+/// Attach one GtkSourceView annotation provider to the editor's source view.
+pub(super) fn setup_native_annotation_projection(editor: &LushtextEditorPage) {
+    let provider = sourceview5::AnnotationProvider::new();
+    editor.source_view().annotations().add_provider(&provider);
+    *editor.imp().annotations.source_provider.borrow_mut() = Some(provider);
+}
 
 /// Return a pure-model snapshot of the current live annotation anchors.
 #[must_use]
@@ -61,6 +72,7 @@ pub(super) fn load_annotations(editor: &LushtextEditorPage, annotations: &[Annot
 
     *editor.imp().annotations.entries.borrow_mut() = live_entries;
     editor.imp().annotations.loaded.set(true);
+    sync_native_annotations(editor);
     refresh_annotation_highlights(editor);
 }
 
@@ -68,6 +80,9 @@ pub(super) fn load_annotations(editor: &LushtextEditorPage, annotations: &[Annot
 pub(super) fn clear_annotations(editor: &LushtextEditorPage) {
     let buffer = editor.buffer();
     let table = buffer.tag_table();
+    if let Some(provider) = editor.imp().annotations.source_provider.borrow().as_ref() {
+        provider.remove_all();
+    }
     for entry in editor.imp().annotations.entries.borrow().iter() {
         buffer.delete_mark(&entry.start_mark);
         buffer.delete_mark(&entry.end_mark);
@@ -84,7 +99,7 @@ pub(super) fn clear_annotations(editor: &LushtextEditorPage) {
 pub(super) fn create_annotation_from_selection(
     editor: &LushtextEditorPage,
     note_text: &str,
-    style: AnnotationStyle,
+    style: LushAnnotationStyle,
 ) -> AnnotationRecord {
     let (start_line, end_line) = selected_line_range(editor);
     let record = AnnotationRecord::new(start_line, end_line, note_text, style);
@@ -102,6 +117,7 @@ pub(super) fn create_annotation_from_selection(
                 .then_with(|| left.record.end_line.cmp(&right.record.end_line))
                 .then_with(|| left.record.id.0.cmp(&right.record.id.0))
         });
+    sync_native_annotations(editor);
     refresh_annotation_highlights(editor);
     emit_annotations_changed(editor);
     record
@@ -113,7 +129,7 @@ pub(super) fn update_annotation(
     editor: &LushtextEditorPage,
     annotation_id: &AnnotationId,
     note_text: &str,
-    style: AnnotationStyle,
+    style: LushAnnotationStyle,
 ) -> Option<AnnotationRecord> {
     let mut entries = editor.imp().annotations.entries.borrow_mut();
     let entry = entries
@@ -122,6 +138,7 @@ pub(super) fn update_annotation(
     entry.record.update_content(note_text, style);
     let record = entry.record.clone();
     drop(entries);
+    sync_native_annotations(editor);
     refresh_annotation_highlights(editor);
     emit_annotations_changed(editor);
     Some(record)
@@ -248,6 +265,7 @@ pub(super) fn reconcile_annotations_after_edit(editor: &LushtextEditorPage) -> b
                     .then_with(|| left.record.end_line.cmp(&right.record.end_line))
                     .then_with(|| left.record.id.0.cmp(&right.record.id.0))
             });
+        sync_native_annotations(editor);
     }
 
     changed
@@ -293,12 +311,14 @@ fn create_live_annotation(
         buffer.create_mark(Some(&format!("{}-start", record.id.0)), &start_iter, false);
     let end_mark = buffer.create_mark(Some(&format!("{}-end", record.id.0)), &end_iter, true);
     let tag_name = annotation_tag_name(&record.id);
+    let source_annotation = source_annotation_for_record(&record);
 
     imp::LiveAnnotation {
         record,
         start_mark,
         end_mark,
         tag_name,
+        source_annotation,
     }
 }
 
@@ -312,6 +332,7 @@ fn remove_annotation_at_index(editor: &LushtextEditorPage, index: usize) {
     if let Some(tag) = table.lookup(&entry.tag_name) {
         table.remove(&tag);
     }
+    sync_native_annotations(editor);
 }
 
 /// Resolve the current inclusive line range and iter pair for one live annotation.
@@ -395,12 +416,60 @@ fn annotation_tag_name(annotation_id: &AnnotationId) -> String {
     format!("{ANNOTATION_TAG_PREFIX}{}", annotation_id.0)
 }
 
+/// Rebuild the native GtkSourceView annotations from the current live records.
+fn sync_native_annotations(editor: &LushtextEditorPage) {
+    let Some(provider) = editor
+        .imp()
+        .annotations
+        .source_provider
+        .borrow()
+        .as_ref()
+        .cloned()
+    else {
+        return;
+    };
+
+    provider.remove_all();
+    for entry in editor.imp().annotations.entries.borrow_mut().iter_mut() {
+        entry.source_annotation = source_annotation_for_record(&entry.record);
+        provider.add_annotation(&entry.source_annotation);
+    }
+}
+
+/// Build the native end-of-line annotation object for one persisted range note.
+fn source_annotation_for_record(record: &AnnotationRecord) -> sourceview5::Annotation {
+    let line = i32::try_from(record.start_line).unwrap_or(i32::MAX);
+    let description = source_annotation_description(record);
+    sourceview5::Annotation::new(
+        Some(&description),
+        None::<gio::Icon>,
+        line,
+        source_annotation_style(record.style),
+    )
+}
+
+/// Keep the inline annotation compact so it does not dominate source text.
+fn source_annotation_description(record: &AnnotationRecord) -> String {
+    format!("{}: {}", record.style.label(), record.preview_line())
+}
+
+/// Map LushText's note styles onto GtkSourceView's built-in annotation colors.
+fn source_annotation_style(style: LushAnnotationStyle) -> sourceview5::AnnotationStyle {
+    match style {
+        LushAnnotationStyle::Note | LushAnnotationStyle::Question => {
+            sourceview5::AnnotationStyle::Accent
+        }
+        LushAnnotationStyle::Todo => sourceview5::AnnotationStyle::None,
+        LushAnnotationStyle::Warning => sourceview5::AnnotationStyle::Warning,
+    }
+}
+
 /// Ensure the text-tag table contains the annotation highlight tag.
 #[must_use]
 fn ensure_annotation_tag(
     buffer: &sourceview5::Buffer,
     tag_name: &str,
-    style: AnnotationStyle,
+    style: LushAnnotationStyle,
 ) -> gtk4::TextTag {
     if let Some(tag) = buffer.tag_table().lookup(tag_name) {
         tag
@@ -413,16 +482,16 @@ fn ensure_annotation_tag(
 }
 
 /// Apply theme-aware colors to one annotation highlight tag.
-fn apply_annotation_tag_style(tag: &gtk4::TextTag, style: AnnotationStyle, is_dark: bool) {
+fn apply_annotation_tag_style(tag: &gtk4::TextTag, style: LushAnnotationStyle, is_dark: bool) {
     let background = match (style, is_dark) {
-        (AnnotationStyle::Note, false) => "#f8efc8",
-        (AnnotationStyle::Todo, false) => "#d9f1d6",
-        (AnnotationStyle::Warning, false) => "#ffd9d1",
-        (AnnotationStyle::Question, false) => "#dce7ff",
-        (AnnotationStyle::Note, true) => "#5c4a1c",
-        (AnnotationStyle::Todo, true) => "#204b2a",
-        (AnnotationStyle::Warning, true) => "#5b2621",
-        (AnnotationStyle::Question, true) => "#243a66",
+        (LushAnnotationStyle::Note, false) => "#f8efc8",
+        (LushAnnotationStyle::Todo, false) => "#d9f1d6",
+        (LushAnnotationStyle::Warning, false) => "#ffd9d1",
+        (LushAnnotationStyle::Question, false) => "#dce7ff",
+        (LushAnnotationStyle::Note, true) => "#5c4a1c",
+        (LushAnnotationStyle::Todo, true) => "#204b2a",
+        (LushAnnotationStyle::Warning, true) => "#5b2621",
+        (LushAnnotationStyle::Question, true) => "#243a66",
     };
     tag.set_background(Some(background));
     tag.set_underline(gtk4::pango::Underline::Single);

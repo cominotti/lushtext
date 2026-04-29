@@ -17,11 +17,11 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # gtk4-rs 0.11 requires GTK >= 4.20 (GNOME 49). Ubuntu LTS only ships 4.14.
-    # Fedora 43 ships GNOME 49 (GTK 4.20, Libadwaita 1.8, GtkSourceView 5).
+    # gtk4-rs 0.11 targets GNOME 50 here (GTK 4.22, Libadwaita 1.9).
+    # Ubuntu LTS only ships GTK 4.14, so CI uses Fedora's current GNOME stack.
     # Bump this when gtk4-rs minimum GTK version increases.
     container:
-      image: registry.fedoraproject.org/fedora:43
+      image: registry.fedoraproject.org/fedora:44
 
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +43,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-43
+          shared-key: fedora-44
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     container:
-      image: registry.fedoraproject.org/fedora:43
+      image: registry.fedoraproject.org/fedora:44
 
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +82,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-43
+          shared-key: fedora-44
 
       - name: Install cargo-nextest
         run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
-      image: registry.fedoraproject.org/fedora:43
+      image: registry.fedoraproject.org/fedora:44
 
     steps:
       - uses: actions/checkout@v4
@@ -117,7 +117,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-43
+          shared-key: fedora-44
 
       - name: Run widget tests
         # Widget tests use a custom single-threaded harness, so they must run
@@ -131,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     container:
-      image: registry.fedoraproject.org/fedora:43
+      image: registry.fedoraproject.org/fedora:44
 
     steps:
       - uses: actions/checkout@v4
@@ -151,7 +151,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-43
+          shared-key: fedora-44
 
       - name: Compile-check benchmarks
         run: cargo bench -p lushtext-core --no-run

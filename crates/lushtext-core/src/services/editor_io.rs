@@ -11,6 +11,7 @@ use crate::model::encoding::{
     DecodeConfidence, DocumentEncoding, DocumentEncodingState, FileHealthFinding,
     FileHealthFindingKind, FileHealthSeverity, LineEnding,
 };
+use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::file_limits::FileSizeCheck;
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -263,6 +264,34 @@ pub fn write_document_to_path(
         .ok()
         .and_then(|metadata| mtime_from_metadata(&metadata));
     Ok((bytes_written, mtime))
+}
+
+/// Apply EditorConfig save-only text rewrites before encoding and line-ending normalization.
+///
+/// This is pure string processing and performs no filesystem work, so it can be
+/// unit-tested separately from the atomic write path. The returned text is still
+/// normalized to the active save line ending later in `write_document_to_path`.
+#[must_use]
+pub fn apply_save_formatting_overrides(text: &str, overrides: FormattingOverrides) -> String {
+    let mut formatted = if overrides.trim_trailing_whitespace == Some(true) {
+        trim_trailing_space_and_tabs(text)
+    } else {
+        text.to_string()
+    };
+
+    match overrides.insert_final_newline {
+        Some(true) if !formatted.is_empty() && !formatted.ends_with(['\n', '\r']) => {
+            formatted.push('\n');
+        }
+        Some(false) => {
+            while formatted.ends_with(['\n', '\r']) {
+                formatted.pop();
+            }
+        }
+        _ => {}
+    }
+
+    formatted
 }
 
 /// Analyze whether saving the current text in the given encoding would be lossy.
@@ -618,6 +647,31 @@ fn normalize_line_endings(text: &str, line_ending: LineEnding) -> Result<String,
     Ok(normalized)
 }
 
+/// Strip spaces and tabs immediately before line endings and at end-of-file.
+fn trim_trailing_space_and_tabs(text: &str) -> String {
+    let mut trimmed = String::with_capacity(text.len());
+    let mut pending_spaces = String::new();
+
+    for character in text.chars() {
+        if matches!(character, ' ' | '\t') {
+            pending_spaces.push(character);
+            continue;
+        }
+
+        if matches!(character, '\n' | '\r') {
+            pending_spaces.clear();
+            trimmed.push(character);
+            continue;
+        }
+
+        trimmed.push_str(&pending_spaces);
+        pending_spaces.clear();
+        trimmed.push(character);
+    }
+
+    trimmed
+}
+
 /// Encode normalized text bytes for the requested save encoding.
 fn encode_text(
     text: &str,
@@ -905,6 +959,40 @@ mod tests {
         );
 
         assert!(matches!(result, Err(SaveError::MixedLineEndings)));
+    }
+
+    #[test]
+    fn apply_save_formatting_overrides_trims_trailing_space() {
+        let formatted = apply_save_formatting_overrides(
+            "keep  middle\t \ntrim\t\r\nend\t ",
+            FormattingOverrides {
+                trim_trailing_whitespace: Some(true),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(formatted, "keep  middle\ntrim\r\nend");
+    }
+
+    #[test]
+    fn apply_save_formatting_overrides_controls_final_newline() {
+        let inserted = apply_save_formatting_overrides(
+            "text",
+            FormattingOverrides {
+                insert_final_newline: Some(true),
+                ..Default::default()
+            },
+        );
+        assert_eq!(inserted, "text\n");
+
+        let removed = apply_save_formatting_overrides(
+            "text\r\n\n",
+            FormattingOverrides {
+                insert_final_newline: Some(false),
+                ..Default::default()
+            },
+        );
+        assert_eq!(removed, "text");
     }
 
     #[test]

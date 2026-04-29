@@ -72,7 +72,7 @@ The Flathub manifest differs slightly from a local development manifest:
 {
     "id": "dev.cominotti.lushtext",
     "runtime": "org.gnome.Platform",
-    "runtime-version": "49",
+    "runtime-version": "50",
     "sdk": "org.gnome.Sdk",
     "sdk-extensions": ["org.freedesktop.Sdk.Extension.rust-stable"],
     "command": "lushtext",

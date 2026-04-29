@@ -5,10 +5,11 @@
 //! All benchmarked functions are GTK-free — no display server needed.
 //! Run with: `cargo bench -p lushtext-core` or `make bench`
 
-use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use gtk4::gio;
 use gtk4::prelude::ListModelExt;
 use std::collections::VecDeque;
+use std::hint::black_box;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

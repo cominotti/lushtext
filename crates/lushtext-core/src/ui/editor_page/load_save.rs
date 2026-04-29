@@ -284,15 +284,19 @@ impl LushtextEditorPage {
         self.prepare_local_history_for_save();
         self.buffer().set_modified(false);
         let metadata = self.document_encoding_state();
+        let formatting_overrides = self.formatting_overrides();
         let allow_lossy = self.take_lossy_save_once();
         let history_availability = self.local_history_availability();
 
         async_task::spawn_blocking_then(
             self.clone(),
             move || {
+                let formatted_text =
+                    editor_io::apply_save_formatting_overrides(&text, formatting_overrides);
+                let should_update_buffer = formatted_text != text;
                 let (size, mtime) = editor_io::write_document_to_path(
                     &path,
-                    &text,
+                    &formatted_text,
                     metadata.save_encoding,
                     metadata.save_line_ending,
                     allow_lossy,
@@ -303,7 +307,7 @@ impl LushtextEditorPage {
                     if let Err(error) = crate::services::local_history_service::capture_snapshot_for_path(
                         &data_dir,
                         &path,
-                        &text,
+                        &formatted_text,
                         crate::model::local_history::LocalHistorySnapshotOrigin::Save,
                         crate::services::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
                     ) {
@@ -319,7 +323,8 @@ impl LushtextEditorPage {
                     mtime,
                     history_availability
                         .allows_automatic_capture()
-                        .then_some(text),
+                        .then(|| formatted_text.clone()),
+                    should_update_buffer.then_some(formatted_text),
                 ))
             },
             move |editor, result| {
@@ -331,7 +336,10 @@ impl LushtextEditorPage {
                 }
 
                 match result {
-                    Ok((size, mtime, clean_text)) => {
+                    Ok((size, mtime, clean_text, saved_buffer_text)) => {
+                        if let Some(saved_buffer_text) = saved_buffer_text {
+                            editor.replace_buffer_after_save_formatting(&saved_buffer_text);
+                        }
                         editor.imp().file_size.set(Some(size));
                         editor.imp().size_check.set(FileSizeCheck::classify(size));
                         let mut state = editor.document_encoding_state();
@@ -382,6 +390,21 @@ impl LushtextEditorPage {
                 }
             },
         );
+    }
+
+    /// Mirror save-time EditorConfig rewrites back into the live buffer.
+    fn replace_buffer_after_save_formatting(&self, saved_text: &str) {
+        let buffer = self.buffer();
+        let cursor_offset = buffer.iter_at_mark(&buffer.get_insert()).offset();
+        self.set_minimap_tracking_suspended(true);
+        buffer.begin_irreversible_action();
+        buffer.set_text(saved_text);
+        buffer.end_irreversible_action();
+        let mut iter = buffer.start_iter();
+        iter.forward_chars(cursor_offset.min(buffer.end_iter().offset()));
+        buffer.place_cursor(&iter);
+        buffer.set_modified(false);
+        self.set_minimap_tracking_suspended(false);
     }
 }
 

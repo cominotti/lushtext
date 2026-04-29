@@ -1,26 +1,26 @@
 ---
 name: gtk4-libadwaita-internals
-description: "Deep operational guide to GTK4 and Libadwaita internals for Rust applications using gtk4-rs and libadwaita-rs. Use when investigating widget lifecycle, measurement and allocation, focus and actions, builder templates, CSS nodes, list virtualization, adaptive Libadwaita containers, or GTK and Adwaita warnings and criticals. Trigger on warnings such as `Trying to measure ... needs at least ...`, allocation or snapshot or parenting errors, Paned or Revealer or Box or ListView or TreeListModel behavior, or when implementing or reviewing custom GTK widgets in Rust and you need the toolkit contract rather than app-level heuristics."
+description: "Deep operational guide to GTK4, Libadwaita, and GtkSourceView internals for Rust applications using gtk4-rs, libadwaita-rs, and sourceview5-rs. Use when investigating widget lifecycle, measurement and allocation, focus and actions, builder templates, CSS nodes, list virtualization, adaptive Libadwaita containers, GtkSourceView editor features, or GTK and Adwaita warnings and criticals. Trigger on warnings such as `Trying to measure ... needs at least ...`, allocation or snapshot or parenting errors, Paned or Revealer or Box or ListView or TreeListModel behavior, or when implementing or reviewing custom GTK widgets and editor projections in Rust and you need the toolkit contract rather than app-level heuristics."
 ---
 
 # GTK4 Libadwaita Internals
 
 ## Overview
 
-Use this skill when the real question is "what contract is GTK or Libadwaita enforcing here?" rather than "what quick patch makes my app stop complaining?" It is built for Rust codebases, but every conclusion must come from official GNOME docs and official GTK or Libadwaita source.
+Use this skill when the real question is "what contract is GTK, Libadwaita, or GtkSourceView enforcing here?" rather than "what quick patch makes my app stop complaining?" It is built for Rust codebases, but every conclusion must come from official GNOME docs and official GTK, Libadwaita, or GtkSourceView source.
 
 ## Source Discipline
 
-- Treat only official GNOME docs and official GTK or Libadwaita source as authoritative.
+- Treat only official GNOME docs and official GTK, Libadwaita, or GtkSourceView source as authoritative.
 - Start with docs for the public contract. Escalate to source for warning emitters, allocation math, child-type parsing, signal ordering, or behavior that the docs describe only loosely.
 - Ignore blog posts, forum answers, StackOverflow snippets, and binding docs when settling disputed behavior.
 - Use supporting GNOME platform docs on `docs.gtk.org` for `GObject`, `Gio`, and `GLib` only when GTK or Libadwaita docs point into them.
 
 ## Version Discipline
 
-- This repo targets `gtk4 = 0.11` with feature `v4_20` and `libadwaita = 0.9` with feature `v1_8`.
-- Treat GTK 4.20.x and Libadwaita 1.8.x as the valid source families.
-- The docs sites may render newer library versions. Honor `since` markers and do not recommend APIs added after GTK 4.20 or Libadwaita 1.8 unless the user explicitly asks for forward-looking guidance.
+- This repo targets `gtk4 = 0.11` with feature `gnome_50`, `libadwaita = 0.9` with feature `v1_9`, and `sourceview5 = 0.11` with feature `v5_18`.
+- Treat GTK 4.22.x, Libadwaita 1.9.x, and GtkSourceView 5.20.x as the valid source families.
+- The docs sites may render newer library versions. Honor `since` markers and do not recommend APIs added after GTK 4.22, Libadwaita 1.9, or the enabled GtkSourceView binding feature floor unless the user explicitly asks for forward-looking guidance.
 - Micro releases inside the same stable family are acceptable for source lookup because the invariants and warning paths are the same class of behavior this skill is documenting.
 
 ## Quick Start
@@ -30,8 +30,9 @@ Use this skill when the real question is "what contract is GTK or Libadwaita enf
 3. If it involves `GtkListView`, factories, models, row reuse, or `GtkTreeListModel`, read [references/containers-lists-and-factories.md](references/containers-lists-and-factories.md).
 4. If it involves templates, builder XML, actions, focus, CSS, or accessibility metadata, read [references/builder-templates-actions-css-accessibility.md](references/builder-templates-actions-css-accessibility.md).
 5. If it involves adaptive layouts, split views, header bars, toolbars, breakpoints, or page navigation, read [references/libadwaita-adaptive-surfaces.md](references/libadwaita-adaptive-surfaces.md).
-6. If it involves parentage, mapping, visibility, disposal, or object ownership, read [references/lifecycle-and-ownership.md](references/lifecycle-and-ownership.md).
-7. When the docs are too high-level, use [references/official-sources.md](references/official-sources.md) to jump to the exact upstream source file and function.
+6. If it involves GtkSourceView editor features such as marks, gutters, annotations, hover providers, completion, style schemes, or text-buffer projections, use [references/official-sources.md](references/official-sources.md) to confirm both the GtkSourceView source contract and the Rust binding feature gate.
+7. If it involves parentage, mapping, visibility, disposal, or object ownership, read [references/lifecycle-and-ownership.md](references/lifecycle-and-ownership.md).
+8. When the docs are too high-level, use [references/official-sources.md](references/official-sources.md) to jump to the exact upstream source file and function.
 
 ## Operating Rules
 
@@ -44,7 +45,7 @@ Use this skill when the real question is "what contract is GTK or Libadwaita enf
 
 ## Rust Framing
 
-- In Rust, the semantic contract matches the C docs and source exactly: custom widget `measure`, `size_allocate`, `snapshot`, buildable child types, and action or focus behavior are GTK rules, not binding-specific inventions.
+- In Rust, the semantic contract matches the C docs and source exactly: custom widget `measure`, `size_allocate`, `snapshot`, buildable child types, action or focus behavior, and GtkSourceView editor projections are toolkit rules, not binding-specific inventions.
 - When subclassing, never re-enter the measurement wrapper on `self` from your own `measure` implementation. Measuring child widgets via the wrapper is correct.
 - Keep GTK objects on the main thread. Background threads may compute data, parse files, or search the filesystem, but they must hand plain data back to the UI thread.
 - Use weak references or equivalent patterns for long-lived closures so disposal can complete and widgets can actually die.

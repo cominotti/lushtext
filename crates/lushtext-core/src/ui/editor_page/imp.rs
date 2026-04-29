@@ -186,6 +186,8 @@ pub struct LiveAnnotation {
     pub end_mark: gtk4::TextMark,
     /// Stable tag name used to keep the highlight tied to this annotation ID.
     pub tag_name: String,
+    /// Native GtkSourceView end-of-line annotation shown beside the source text.
+    pub source_annotation: sourceview5::Annotation,
 }
 
 /// Live annotation projection state scoped to one editor tab.
@@ -193,6 +195,8 @@ pub struct LiveAnnotation {
 pub struct AnnotationState {
     /// Current annotation range anchors projected into the buffer.
     pub entries: RefCell<Vec<LiveAnnotation>>,
+    /// GtkSourceView provider that renders native end-of-line annotations.
+    pub source_provider: RefCell<Option<sourceview5::AnnotationProvider>>,
     /// Callback invoked when annotation state changes and should be persisted.
     pub changed_callback: RefCell<Option<NotesChangedCallback>>,
     /// Pending annotation ID that should reopen once the file load completes.
@@ -456,6 +460,9 @@ impl ObjectImpl for LushtextEditorPage {
         if let Some(handler_id) = self.focus_mode.changed_handler_id.take() {
             buffer.disconnect(handler_id);
         }
+        if let Some(provider) = self.annotations.source_provider.take() {
+            self.source_view.annotations().remove_provider(&provider);
+        }
         self.minimap.source_map.borrow_mut().take();
         self.minimap.marker_strip.borrow_mut().take();
         self.focus_mode.text_origin_guide.borrow_mut().take();
@@ -689,6 +696,7 @@ impl ObjectImpl for LushtextEditorPage {
         }
 
         self.obj().setup_bookmark_projection();
+        self.obj().setup_native_annotation_projection();
         self.obj().setup_local_history_context_menu();
         self.obj().setup_local_history_tracking();
         self.obj().set_annotation_highlights_visible(
