@@ -35,7 +35,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 
 | Component | Technology |
 |-----------|------------|
-| Language | Rust (Edition 2024, MSRV 1.94.1) |
+| Language | Rust (Edition 2024, MSRV 1.95.0) |
 | GUI | GTK4 0.11 + Libadwaita 0.9 + GtkSourceView 5 0.11 |
 | Config | GSettings |
 | Build | Cargo workspace + Makefile (dev), Meson (Flatpak/installed) |
@@ -46,7 +46,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 
 ### Dependencies
 
-- Rust 1.94.1+
+- Rust 1.95.0+
 - GTK4 development libraries
 - Libadwaita development libraries
 - GtkSourceView 5 development libraries

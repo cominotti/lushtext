@@ -538,10 +538,7 @@ mod tests {
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
-            if fs::read_to_string(&file_a)
-                .map(|content| content.contains("replaced"))
-                .unwrap_or(false)
-            {
+            if fs::read_to_string(&file_a).is_ok_and(|content| content.contains("replaced")) {
                 cancel.store(true, Ordering::Relaxed);
                 break;
             }

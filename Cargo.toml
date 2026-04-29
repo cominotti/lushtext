@@ -9,6 +9,9 @@ members = [
 # Default binary for `cargo run`
 default-members = ["crates/lushtext"]
 
+[workspace.package]
+rust-version = "1.95.0"
+
 # --- Centralized dependencies (union of features across all crates) ---
 
 [workspace.dependencies]

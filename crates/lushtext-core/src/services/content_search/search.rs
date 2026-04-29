@@ -96,9 +96,7 @@ pub fn search(
             builder.add(root);
         }
 
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get().min(8))
-            .unwrap_or(4);
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
         builder.threads(threads);
         builder.hidden(true); // skip hidden files (LushText convention)
 

@@ -1687,7 +1687,7 @@ fn test_properties_pane_collapses_before_workspace_pane() {
     // the document-properties surface should re-render as a bottom sheet while
     // the workspace pane stays in layout.
     let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
-    window.set_default_size(1300, 900);
+    window.set_default_size(1320, 900);
     present_window(&window);
     activate_action(&window, "toggle-properties");
     wait_until(Duration::from_secs(2), || properties_surface_uses_bottom_sheet(&window));
@@ -1732,7 +1732,7 @@ fn test_hiding_workspace_sidebar_relaxes_properties_breakpoint() {
 fn test_compact_layout_mutual_exclusion_switches_secondary_surface() {
     ensure_gtk_init();
     let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
-    window.set_default_size(1300, 900);
+    window.set_default_size(1320, 900);
     present_window(&window);
 
     activate_action(&window, "toggle-properties");

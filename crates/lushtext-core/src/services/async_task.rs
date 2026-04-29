@@ -14,25 +14,15 @@ const MAX_CONCURRENT_SPAWNS: usize = 8;
 /// `MAX_CONCURRENT_SPAWNS` to apply back-pressure.
 static ACTIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
 
-/// Attempt to claim a concurrency slot via a lock-free CAS loop.
-/// Returns `true` if under the limit. `compare_exchange_weak` is sufficient
-/// (spurious failure just retries) and avoids a full memory fence on ARM.
+/// Attempt to claim a concurrency slot via a lock-free atomic update.
+/// Returns `true` if under the limit. `try_update` preserves the same
+/// compare-exchange retry behavior while keeping the limit rule in one place.
 fn try_acquire_slot() -> bool {
-    let mut active = ACTIVE_THREADS.load(Ordering::Relaxed);
-    loop {
-        if active >= MAX_CONCURRENT_SPAWNS {
-            return false;
-        }
-        match ACTIVE_THREADS.compare_exchange_weak(
-            active,
-            active + 1,
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return true,
-            Err(observed) => active = observed,
-        }
-    }
+    ACTIVE_THREADS
+        .try_update(Ordering::AcqRel, Ordering::Relaxed, |active| {
+            (active < MAX_CONCURRENT_SPAWNS).then_some(active + 1)
+        })
+        .is_ok()
 }
 
 fn release_slot() {

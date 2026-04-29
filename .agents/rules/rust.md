@@ -65,7 +65,7 @@ Never set `autoexpand = true` on `GtkTreeListModel`.
 - Prefer `#[expect(lint)]` over `#[allow(lint)]` when suppressing a lint for a known reason (e.g., using a deprecated API that has no replacement yet). `#[expect]` is self-policing: it causes a compile error if the lint no longer fires, so stale suppressions are caught automatically.
 - Reserve `#[allow(lint)]` only for cases where the lint may or may not fire depending on configuration or feature flags.
 
-## If-Let Chains
+## Modern Rust Idioms
 
 Use `if let` chains with `&&` / `&& let` (Edition 2024) as the preferred pattern for multi-condition guards that combine option unwrapping with boolean checks:
 
@@ -84,6 +84,25 @@ if let Some(obj) = obj_weak.upgrade() {
     }
 }
 ```
+
+With Rust 1.95.0, also use `if let` match guards when a match arm needs both the matched value and a short fallible guard:
+
+```rust
+match encoding {
+    DocumentEncoding::Utf8 if let Ok(text) = simdutf8::basic::from_utf8(bytes) => {
+        text.to_string()
+    }
+    _ => fallback_decode(bytes),
+}
+```
+
+Prefer the new standard-library helpers when they make intent clearer:
+
+- Use `slice.array_windows::<N>()` over `slice.windows(N)` when the window width is fixed and every element is indexed.
+- Use `Atomic*::try_update` / `Atomic*::update` instead of hand-written compare-exchange loops when the closure expresses the complete state transition clearly.
+- Use `Peekable::next_if_eq`, `next_if`, `next_if_map`, or `next_if_map_mut` instead of manual `peek()` + `next()` pairs.
+- Use `Vec::push_mut` / `insert_mut` only when the caller immediately needs a mutable reference to the inserted value; plain `push` remains clearer otherwise.
+- Use `cfg_select!` for expression-level or tightly grouped cfg choices. Keep item-level `#[cfg]` when separate Unix/non-Unix implementations are already clearer.
 
 ## Error Handling
 

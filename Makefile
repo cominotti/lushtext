@@ -155,7 +155,7 @@ meson-build:
 # Flatpak build (requires flatpak-builder + org.gnome.Sdk)
 flatpak:
 	@echo "Building Flatpak..."
-	flatpak-builder --force-clean build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
+	flatpak-builder --disable-rofiles-fuse --force-clean build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
 
 # Regenerate cargo-sources.json (requires flatpak-cargo-generator)
 cargo-sources: Cargo.lock

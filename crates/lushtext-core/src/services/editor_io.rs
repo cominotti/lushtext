@@ -340,8 +340,7 @@ pub fn mtime_secs(path: &Path) -> Option<u64> {
 pub fn now_epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 /// One decoded document snapshot before it becomes an editor tab.
@@ -408,13 +407,10 @@ fn decode_with_encoding(bytes: &[u8], encoding: DocumentEncoding) -> (String, bo
 /// Decode bytes with the requested encoding after BOM handling has been resolved.
 fn decode_bytes_without_bom(bytes: &[u8], encoding: DocumentEncoding) -> String {
     match encoding {
-        DocumentEncoding::Utf8 | DocumentEncoding::Utf8Bom => {
-            if let Ok(utf8) = simdutf8::basic::from_utf8(bytes) {
-                utf8.to_string()
-            } else {
-                let (decoded, _) = encoding.codec().decode_without_bom_handling(bytes);
-                decoded.into_owned()
-            }
+        DocumentEncoding::Utf8 | DocumentEncoding::Utf8Bom
+            if let Ok(utf8) = simdutf8::basic::from_utf8(bytes) =>
+        {
+            utf8.to_string()
         }
         _ => {
             let (decoded, _) = encoding.codec().decode_without_bom_handling(bytes);
@@ -609,9 +605,7 @@ fn normalize_line_endings(text: &str, line_ending: LineEnding) -> Result<String,
     let mut chars = text.chars().peekable();
     while let Some(character) = chars.next() {
         if character == '\r' {
-            if chars.peek() == Some(&'\n') {
-                chars.next();
-            }
+            let _ = chars.next_if_eq(&'\n');
             normalized.push_str(separator);
             continue;
         }

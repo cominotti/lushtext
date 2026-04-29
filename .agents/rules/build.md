@@ -35,7 +35,7 @@ These patterns are replicated from invowk-rust and must be maintained:
 2. **rust-lld** — default linker on x86_64-linux since Rust 1.90 (~10x faster than BFD, zero config). No manual linker override needed.
 3. **cargo-hakari** — run `cargo hakari generate` after any dependency change.
 4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here.
-5. **`rust-version`** — consider adding `rust-version = "1.94.1"` to `[workspace.package]` in root `Cargo.toml` so `cargo check` surfaces MSRV violations early. Currently enforced only via `rust-toolchain.toml`.
+5. **`rust-version`** — keep `rust-version = "1.95.0"` in `[workspace.package]` and inherited by every package so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` pins the local toolchain to the same version.
 
 ## Adding Dependencies
 

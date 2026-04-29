@@ -37,7 +37,7 @@ jobs:
             git
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.1
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy, rustfmt
 
@@ -78,7 +78,7 @@ jobs:
             curl
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.1
+        uses: dtolnay/rust-toolchain@1.95.0
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -113,7 +113,7 @@ jobs:
             dbus-daemon
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.1
+        uses: dtolnay/rust-toolchain@1.95.0
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -147,7 +147,7 @@ jobs:
             git
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.1
+        uses: dtolnay/rust-toolchain@1.95.0
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -165,7 +165,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.1
+        uses: dtolnay/rust-toolchain@1.95.0
 
       - uses: Swatinem/rust-cache@v2
 

@@ -90,7 +90,7 @@ This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent inte
 
    **Subagent B: Rust Code Quality Review**
    ```
-   You are performing a Rust code quality review for the LushText text editor, focusing on idiomatic patterns, correctness, and SIMD coverage on established hot paths.
+   You are performing a Rust code quality review for the LushText text editor, focusing on idiomatic patterns, latest-stable Rust readability improvements, correctness, and SIMD coverage on established hot paths.
 
    Read the skill file at: .agents/skills/gtk-perf-rust-optimize/SKILL.md
 

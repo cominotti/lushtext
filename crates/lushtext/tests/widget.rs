@@ -48,14 +48,14 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let list_mode = args.iter().any(|arg| arg == "--list");
     let terse_list = args
-        .windows(2)
-        .any(|window| window[0] == "--format" && window[1] == "terse");
+        .array_windows::<2>()
+        .any(|[flag, value]| flag == "--format" && value == "terse");
     let exact = args.iter().any(|arg| arg == "--exact");
     let skip_filters: Vec<String> = args
-        .windows(2)
-        .filter_map(|window| {
-            if window[0] == "--skip" {
-                Some(window[1].clone())
+        .array_windows::<2>()
+        .filter_map(|[flag, value]| {
+            if flag == "--skip" {
+                Some(value.clone())
             } else {
                 None
             }

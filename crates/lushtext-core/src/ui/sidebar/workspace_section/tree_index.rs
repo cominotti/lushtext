@@ -233,22 +233,20 @@ impl LushtextWorkspaceSection {
             )]
             let idx = location.index as u32;
             match location.parent_dir.as_deref() {
-                None => {
-                    if let Some(ref root_store) = *imp.root_store.borrow()
-                        && idx < root_store.n_items()
-                    {
-                        root_store.remove(idx);
-                        return true;
-                    }
+                None if let Some(ref root_store) = *imp.root_store.borrow()
+                    && idx < root_store.n_items() =>
+                {
+                    root_store.remove(idx);
+                    return true;
                 }
-                Some(parent_dir) => {
+                Some(parent_dir)
                     if let Some(store) = self.find_store_for_dir(parent_dir)
-                        && idx < store.n_items()
-                    {
-                        store.remove(idx);
-                        return true;
-                    }
+                        && idx < store.n_items() =>
+                {
+                    store.remove(idx);
+                    return true;
                 }
+                _ => {}
             }
         }
 
