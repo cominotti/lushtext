@@ -6,6 +6,7 @@
 //! live in `actions.rs`, and index/cache helpers live in their dedicated files.
 
 mod actions;
+mod icon_presentation;
 mod imp;
 mod peek;
 mod refresh;

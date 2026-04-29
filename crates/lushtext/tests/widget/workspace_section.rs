@@ -68,6 +68,18 @@ fn realized_root_row_widgets(
     (window, icon, label)
 }
 
+fn themed_icon_names(icon: &gio::Icon) -> Vec<String> {
+    icon.downcast_ref::<gio::ThemedIcon>()
+        .map(|themed_icon| {
+            themed_icon
+                .names()
+                .into_iter()
+                .map(|name| name.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 struct PeekFixture {
     _dir: tempfile::TempDir,
     section: LushtextWorkspaceSection,
@@ -357,7 +369,7 @@ fn test_single_directory_root_row_matches_builder_files_presentation() {
     }]);
 
     let (_window, icon, label) = realized_root_row_widgets(&section);
-    assert_eq!(icon.icon_name().as_deref(), Some("view-list-symbolic"));
+    assert_eq!(icon.icon_name().as_deref(), Some("folder"));
     assert_eq!(label.label().as_str(), "Files");
 }
 
@@ -376,8 +388,86 @@ fn test_drilldown_root_row_keeps_actual_folder_presentation() {
     section.focus_folder(&nested);
 
     let (_window, icon, label) = realized_root_row_widgets(&section);
-    assert_eq!(icon.icon_name().as_deref(), Some("folder-symbolic"));
+    assert_eq!(icon.icon_name().as_deref(), Some("folder"));
     assert_eq!(label.label().as_str(), "nested");
+}
+
+#[test]
+fn test_file_tree_file_row_uses_regular_content_type_icon() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let image_path = dir.path().join("preview.png");
+    std::fs::write(&image_path, b"not a real image, extension is enough")
+        .expect("expected operation to succeed");
+    section.load_roots(&[WorkspaceEntry::File {
+        path: image_path.clone(),
+    }]);
+
+    let (_window, icon, label) = realized_root_row_widgets(&section);
+    assert_eq!(label.label().as_str(), "preview.png");
+    assert_eq!(icon.storage_type(), gtk4::ImageType::Gicon);
+
+    let gicon = icon.gicon().expect("file row should use a content-type icon");
+    let names = themed_icon_names(&gicon);
+    assert!(
+        names.iter().any(|name| name.contains("image")),
+        "image file row should use image-themed icon names, got {names:?}"
+    );
+    assert!(
+        names.first().is_some_and(|name| !name.ends_with("-symbolic")),
+        "file row should prefer a regular themed icon, got {names:?}"
+    );
+}
+
+#[test]
+fn test_workspace_section_chrome_icons_remain_symbolic() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+
+    assert_eq!(
+        section.imp().refresh_button.icon_name().as_deref(),
+        Some("view-refresh-symbolic")
+    );
+    assert_eq!(
+        section.imp().add_folder_button.icon_name().as_deref(),
+        Some("folder-new-symbolic")
+    );
+    assert_eq!(
+        section.imp().drilldown_back_button.icon_name().as_deref(),
+        Some("go-previous-symbolic")
+    );
+}
+
+#[test]
+fn test_file_activation_still_emits_after_regular_icon_binding() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let file_path = dir.path().join("main.rs");
+    std::fs::write(&file_path, "fn main() {}\n").expect("expected operation to succeed");
+    section.load_roots(&[WorkspaceEntry::File {
+        path: file_path.clone(),
+    }]);
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(2), || {
+        section.imp().file_tree_view.first_child().is_some()
+    });
+
+    let activated = Rc::new(RefCell::new(None::<PathBuf>));
+    {
+        let activated = activated.clone();
+        section.connect_file_activated(move |path| {
+            *activated.borrow_mut() = Some(path.to_path_buf());
+        });
+    }
+
+    section.imp().file_tree_view.emit_by_name::<()>("activate", &[&0u32]);
+    flush_events();
+
+    assert_eq!(*activated.borrow(), Some(file_path));
 }
 
 // --- Context menu ---

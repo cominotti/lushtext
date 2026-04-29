@@ -257,6 +257,9 @@ pub struct LushtextWindow {
     /// Stored so the properties breakpoint condition can track the selected
     /// workspace preset and whether the left pane currently consumes width.
     pub properties_breakpoint: RefCell<Option<libadwaita::Breakpoint>>,
+    /// Guards split-width synchronization against reentrant allocations caused
+    /// by programmatic `OverlaySplitView` fraction updates.
+    pub split_width_syncing: Cell<bool>,
 }
 
 impl Default for LushtextWindow {
@@ -312,6 +315,7 @@ impl Default for LushtextWindow {
             search_progress: SearchProgressState::default(),
             workspace_scope: RefCell::new(WorkspaceScope::All),
             properties_breakpoint: RefCell::new(None),
+            split_width_syncing: Cell::new(false),
         }
     }
 }
@@ -1188,6 +1192,10 @@ fn sync_properties_split_view(window: &super::LushtextWindow, window_width: i32)
 }
 
 fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
+    if window.imp().split_width_syncing.replace(true) {
+        return;
+    }
+
     let workspace_fraction = effective_workspace_sidebar_fraction(window, window_width);
     sync_workspace_sidebar_width_constraints(window, window_width);
     if (window.imp().workspace_split_view.sidebar_width_fraction() - workspace_fraction).abs()
@@ -1205,6 +1213,8 @@ fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
     sync_properties_breakpoint(window);
     sync_properties_split_view(window, window_width);
     sync_secondary_surfaces(window);
+
+    window.imp().split_width_syncing.set(false);
 }
 
 impl super::LushtextWindow {

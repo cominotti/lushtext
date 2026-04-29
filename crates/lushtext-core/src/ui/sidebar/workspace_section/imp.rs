@@ -7,6 +7,7 @@
 //! to the parent sidebar.
 
 use super::super::file_tree_item::FileTreeItem;
+use super::icon_presentation;
 use crate::model::workspace::{WorkspaceEntry, WorkspaceId};
 use crate::services::file_peek::PeekRequestToken;
 use crate::services::notifications::NotificationSeverity;
@@ -395,25 +396,13 @@ impl LushtextWorkspaceSection {
                     .and_downcast::<gtk4::Label>()
                     .expect("second child is Label");
 
-                let root_presentation = section_weak.upgrade().and_then(|section| {
-                    workspace_root_row_presentation(&section, &tree_row, &file_item)
+                let root_display_name = section_weak.upgrade().and_then(|section| {
+                    workspace_root_row_display_name(&section, &tree_row, &file_item)
                 });
+                icon_presentation::icon_for_file_item(&file_item).apply_to(&icon);
 
-                let icon_name = if let Some((icon_name, _)) = root_presentation {
-                    icon_name
-                } else if file_item.is_placeholder() {
-                    "dialog-information-symbolic"
-                } else if file_item.is_dir() {
-                    "folder-symbolic"
-                } else {
-                    "text-x-generic-symbolic"
-                };
-                icon.set_icon_name(Some(icon_name));
-
-                let display_name = root_presentation.map_or_else(
-                    || file_item.name(),
-                    |(_, display_name)| display_name.to_string(),
-                );
+                let display_name =
+                    root_display_name.map_or_else(|| file_item.name(), ToString::to_string);
 
                 if file_item.is_empty() == Some(true) {
                     label.set_markup(&format!(
@@ -801,11 +790,11 @@ fn can_show_local_history_for_path(path: &Path) -> bool {
 }
 
 /// Match Builder's "Files" root row only for the normal single-directory workspace root.
-fn workspace_root_row_presentation(
+fn workspace_root_row_display_name(
     section: &super::LushtextWorkspaceSection,
     tree_row: &gtk4::TreeListRow,
     file_item: &FileTreeItem,
-) -> Option<(&'static str, &'static str)> {
+) -> Option<&'static str> {
     if tree_row.depth() != 0 || !file_item.is_dir() || file_item.is_placeholder() {
         return None;
     }
@@ -823,7 +812,7 @@ fn workspace_root_row_presentation(
         return None;
     }
 
-    Some(("view-list-symbolic", "Files"))
+    Some("Files")
 }
 
 /// Walk up the widget tree to find a `TreeExpander` ancestor.
