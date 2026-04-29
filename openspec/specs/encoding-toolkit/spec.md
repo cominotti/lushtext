@@ -1,4 +1,9 @@
-## ADDED Requirements
+# encoding-toolkit Specification
+
+## Purpose
+Define the document-local encoding, line-ending, and file-health workflows so quick state stays accessible from the bottom bar while slower inspection and health details live in document properties.
+
+## Requirements
 
 ### Requirement: File-health details live in the document properties surface
 The system SHALL expose file-health details through the document properties surface for the active document rather than through the bottom bar's quick editor-state strip. When an active document has encoding-adjacent health findings, the document properties surface MUST provide the detailed findings and any slower follow-up actions.
@@ -7,8 +12,6 @@ The system SHALL expose file-health details through the document properties surf
 - **WHEN** the active document has one or more file-health findings and the user opens document properties
 - **THEN** the document properties surface shows the recorded findings for that document
 - **AND** the user can inspect any available next actions from that surface
-
-## MODIFIED Requirements
 
 ### Requirement: LushText detects and surfaces document encoding state on open
 The system SHALL open file-backed documents through an encoding-aware load pipeline that records the decoding used for the active buffer, the presence of a BOM, decode confidence, and the document's line-ending state. The system MUST surface the current encoding and line-ending state in the bottom bar for file-backed tabs using compact, quick editor-state controls that remain secondary to the editor content.
@@ -97,9 +100,3 @@ The system SHALL preserve access to encoding, line-ending, and file-health workf
 - **THEN** the encoding and line-ending actions remain reachable through the bottom bar
 - **AND** file-health details remain reachable through the document properties bottom-sheet presentation
 - **AND** the controls do not disappear or require a separate preferences-style surface
-
-## REMOVED Requirements
-
-### Requirement: Document-properties encoding controls stay lightweight and document-local
-**Reason**: The agreed hybrid model keeps quick encoding and line-ending controls in the bottom bar instead of moving them into the document properties surface.
-**Migration**: Use the bottom bar for quick encoding and line-ending actions, and use `Document Properties` for file-health details and slower document inspection.

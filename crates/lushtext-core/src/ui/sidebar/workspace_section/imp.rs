@@ -399,7 +399,11 @@ impl LushtextWorkspaceSection {
                 let root_display_name = section_weak.upgrade().and_then(|section| {
                     workspace_root_row_display_name(&section, &tree_row, &file_item)
                 });
-                icon_presentation::icon_for_file_item(&file_item).apply_to(&icon);
+                if root_display_name.is_some() {
+                    icon.set_icon_name(Some(icon_presentation::WORKSPACE_ROOT_ICON_NAME));
+                } else {
+                    icon_presentation::icon_for_file_item(&file_item).apply_to(&icon);
+                }
 
                 let display_name =
                     root_display_name.map_or_else(|| file_item.name(), ToString::to_string);

@@ -369,7 +369,7 @@ fn test_single_directory_root_row_matches_builder_files_presentation() {
     }]);
 
     let (_window, icon, label) = realized_root_row_widgets(&section);
-    assert_eq!(icon.icon_name().as_deref(), Some("folder"));
+    assert_eq!(icon.icon_name().as_deref(), Some("view-list-symbolic"));
     assert_eq!(label.label().as_str(), "Files");
 }
 

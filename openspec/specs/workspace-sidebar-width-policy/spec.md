@@ -1,4 +1,9 @@
-## ADDED Requirements
+# workspace-sidebar-width-policy Specification
+
+## Purpose
+Define how users choose workspace sidebar width and how the selected preset becomes an adaptive, persistent, clamped layout policy across normal and ultrawide windows.
+
+## Requirements
 
 ### Requirement: Workspace sidebar width selection lives in Preferences
 The system SHALL expose workspace sidebar width selection in `Preferences > Workspace` as a single-choice preference with exactly three options: `Small`, `Comfy`, and `Large`. The selected option MUST reflect the active workspace sidebar preset, and changing the selection MUST apply the new preset immediately.

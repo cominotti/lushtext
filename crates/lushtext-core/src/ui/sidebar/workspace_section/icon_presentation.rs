@@ -10,6 +10,8 @@ use super::super::file_tree_item::FileTreeItem;
 
 /// Regular themed folder icon used for actual directory rows in the file tree.
 pub(super) const DIRECTORY_ICON_NAME: &str = "folder";
+/// Symbolic icon for the synthetic `Files` root landmark above real content rows.
+pub(super) const WORKSPACE_ROOT_ICON_NAME: &str = "view-list-symbolic";
 /// Regular themed fallback for files whose content type or theme icon is unavailable.
 pub(super) const FILE_FALLBACK_ICON_NAME: &str = "text-x-generic";
 /// Symbolic status icon kept for synthetic placeholder rows, not filesystem content.
