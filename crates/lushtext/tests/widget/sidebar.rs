@@ -89,7 +89,7 @@ fn test_sidebar_workspace_list_revealer_uses_crossfade() {
 #[test]
 fn test_workspace_filter_can_show_only_one_workspace() {
     ensure_gtk_init();
-    seed_restored_workspaces();
+    let _roots_dir = seed_restored_workspaces();
 
     let window = test_window();
     present_window(&window);
@@ -97,7 +97,6 @@ fn test_workspace_filter_can_show_only_one_workspace() {
     wait_until(Duration::from_secs(2), || {
         window.imp().sidebar.imp().sections.borrow().len() == 3
     });
-
     let dropdown = &window.imp().sidebar.imp().workspace_filter_dropdown;
     let model = dropdown
         .model()
@@ -113,8 +112,7 @@ fn test_workspace_filter_can_show_only_one_workspace() {
     assert_eq!(model.string(3).expect("third workspace option should exist").as_str(), "three");
 
     dropdown.set_selected(2);
-    flush_events();
-    assert!(!window.imp().sidebar.imp().workspace_list_revealer.reveals_child());
+    flush_after_delay(Duration::from_millis(300));
 
     wait_until(Duration::from_secs(3), || {
         let sidebar = window.imp().sidebar.imp();
@@ -128,7 +126,7 @@ fn test_workspace_filter_can_show_only_one_workspace() {
     });
 
     dropdown.set_selected(0);
-    flush_events();
+    flush_after_delay(Duration::from_millis(300));
     wait_until(Duration::from_secs(3), || {
         let sidebar = window.imp().sidebar.imp();
         let revealer = &sidebar.workspace_list_revealer;

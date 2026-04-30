@@ -9,6 +9,7 @@
 - `GtkPaned` handle math and child slot math
 - `GtkRevealer` transition scaling and integer rounding
 - Snapshot surfaces used as paned children
+- Hidden stack pages and placeholder swaps
 - Libadwaita adaptive containers in the same pipeline
 - Related warnings from the same invariant family
 - Rust implications
@@ -167,6 +168,27 @@ The robust fix pattern is:
 - if a frozen content pane stretches or shows a seam near the final collapsed frame, inspect `GtkPicture:content-fit` and ask whether the content pane should remain live while only the expensive opposite pane is frozen
 
 When debugging this class of bug, compare the warned widget pointer with the actual widget pointers in the live tree. If the warned widget is the end child, still inspect the start-child wrapper or snapshot surface before assuming the end child is the root cause.
+
+## Hidden Stack Pages And Placeholder Swaps
+
+`GtkStack` and similar multiplexers can make a hidden page part of the practical size contract for a dialog or popover. The user may only see the Edit page, but the Render page can still affect the stack's measured natural size, especially when the stack is homogeneous or the parent dialog follows its child's natural size.
+
+A common failure pattern:
+
+- a note dialog opens in Edit mode
+- the hidden Render page contains a placeholder such as `AdwStatusPage`
+- the first Render click replaces that placeholder with a scrolled Markdown/text surface
+- the stack queues a resize with the new child geometry
+- an `AdwDialog` or popover shrinks or grows by a few pixels even though its outer `content-width` / `content-height` was unchanged
+
+Outer requests are not always enough here. A `width-request`, `height-request`, or scroller `min-content-*` can stabilize the shell while the page itself still changes its natural size after the first render. The robust fix is to make the first measured Render state match the eventual displayed state:
+
+- pre-render hidden Render pages for existing non-empty content before presenting the surface
+- keep Edit visible while warming the Render page
+- make placeholder and rendered content advertise the same natural size when pre-rendering is not possible
+- assert natural size before and after the first activation, not only on later toggles
+
+Treat a one-to-five-pixel dialog change on first activation as a real geometry bug. It usually means a hidden child changed from placeholder geometry to content geometry after the parent had already settled.
 
 ## Libadwaita Adaptive Containers In The Same Pipeline
 

@@ -52,12 +52,14 @@ LushtextWindow (AdwApplicationWindow)
 - `AdwTabView` + `AdwTabBar` for document tabs
 - `AdwPreferencesDialog` with `AdwComboRow`, `AdwSwitchRow`, `AdwSpinRow`
 - `AdwStatusPage` for empty states
+- `AdwSidebar` for shallow, sectioned dialog browse rails such as Notes and Local History where each item activates or previews one record
 - `AdwAboutDialog` for the about dialog
 - `AdwWindowTitle` for header title/subtitle
 
 ## File Tree
 
 - Use `GtkListView` + `GtkTreeListModel` + `GtkTreeExpander` (modern GTK4 pattern).
+- Do not replace the primary workspace file tree with `AdwSidebar`; it owns filesystem tree expansion, deep-folder focus, file operations, file peek, and watcher reconciliation rather than shallow navigation.
 - Never use deprecated `GtkTreeView`.
 - Sort: directories first, then alphabetical (case-insensitive).
 - Skip hidden files (starting with `.`).
@@ -121,6 +123,15 @@ Any `GtkTextView`, `GtkSourceView`, or similar document surface placed inside a 
 - Use text-widget margins or an inner padded wrapper so text never renders flush against the frame edge.
 - Treat this as a blocking readability issue, not a polish-only follow-up.
 - When a repo-local example already solves it correctly, reuse that pattern instead of inventing a one-off layout.
+
+## Dialog Edit/Render Geometry (CRITICAL)
+
+Dialogs, popovers, and browsers that use `GtkStack`, `GtkStackSwitcher`, or another multiplexer for Edit/Render modes must keep the first user-visible mode switch geometry-stable. Hidden stack pages can still participate in measurement, and a Render page that starts as a placeholder can change the parent dialog's natural size by a few pixels when it first renders real content.
+
+- For existing non-empty notes or similar records, pre-render the hidden Render page before presenting the dialog while keeping Edit as the visible mode. The first click on Render must reveal already-measured content, not swap placeholder geometry for content geometry.
+- If pre-rendering is not appropriate, make the placeholder and rendered content advertise the same natural size contract.
+- Do not rely only on `set_size_request()` on an outer scroller when the inner visible child changes from placeholder to content.
+- Add widget coverage for the first Edit -> Render activation, comparing dialog/content natural sizes and text-surface padding before and after activation.
 
 ## GSettings Bindings
 

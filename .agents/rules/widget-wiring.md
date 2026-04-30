@@ -103,6 +103,8 @@ Code that "looks wired correctly" can silently fail if GTK4's internal gesture s
 
 **Keyboard shortcut variant of the same pitfall:** `GtkListView` keyboard focus usually lands on a realized row widget inside the list, not on the `GtkListView` wrapper itself. For list-wide shortcuts such as sidebar `Space` peek, attach the `EventControllerKey` to the list view in `PropagationPhase::Capture` and gate the handler against focused controls that should still own their keys (for example inline rename `GtkEntry`s or row buttons). If the shortcut logic assumes `list_view.has_focus()` or only works when tests emit the key directly on the list widget, real users will see "nothing happens" even though synthetic tests pass.
 
+**First-activation rendering paths:** Signals such as `notify::visible-child-name` often do more work on the first activation than on later toggles. If the handler renders Markdown, replaces placeholders, mounts scrollers, or otherwise changes the active page's child tree, verify the first user activation as its own path. A mode switch that looks wired correctly can still be wrong if the first activation changes dialog geometry, focus, or content padding.
+
 ## Testing
 
 Every wired signal must have a widget test that asserts the expected state change (button click hides widget, entry propagates value, toggle flips state). Tests must also cover the action enabled/disabled lifecycle (disabled when no tabs, enabled after tab creation, disabled again after closing all tabs).

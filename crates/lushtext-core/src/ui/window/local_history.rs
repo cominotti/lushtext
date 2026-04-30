@@ -13,7 +13,7 @@ use std::rc::Rc;
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
-use libadwaita::prelude::AdwDialogExt;
+use libadwaita::prelude::{AdwDialogExt, SidebarItemExt};
 
 use crate::model::local_history::{LocalHistorySnapshot, LocalHistorySnapshotMeta};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
@@ -55,8 +55,8 @@ struct LocalHistoryBrowserState {
     dialog: libadwaita::Dialog,
     /// Adaptive split view used for wide and narrow dialog layouts.
     split_view: libadwaita::NavigationSplitView,
-    /// Snapshot list shown newest-first.
-    list_box: gtk4::ListBox,
+    /// Adwaita sidebar rail showing snapshots newest-first.
+    sidebar: libadwaita::Sidebar,
     /// Header label for the selected snapshot.
     preview_title: gtk4::Label,
     /// Secondary metadata label for the selected snapshot.
@@ -236,9 +236,9 @@ impl LushtextWindow {
             .follows_content_size(false)
             .build();
 
-        let list_box = gtk4::ListBox::new();
-        list_box.set_selection_mode(gtk4::SelectionMode::Single);
-        list_box.add_css_class("boxed-list");
+        let sidebar = libadwaita::Sidebar::new();
+        sidebar.set_mode(libadwaita::SidebarMode::Sidebar);
+        sidebar.set_vexpand(true);
 
         let preview_title = gtk4::Label::new(Some("Loading snapshot…"));
         preview_title.set_halign(gtk4::Align::Start);
@@ -296,7 +296,7 @@ impl LushtextWindow {
         split_view.set_min_sidebar_width(LOCAL_HISTORY_VIEWER_MIN_SIDEBAR_WIDTH_SP);
         split_view.set_max_sidebar_width(LOCAL_HISTORY_VIEWER_MAX_SIDEBAR_WIDTH_SP);
         split_view.set_sidebar(Some(&libadwaita::NavigationPage::new(
-            &build_history_sidebar(&path, &list_box),
+            &build_history_sidebar(&path, &sidebar),
             "Snapshots",
         )));
         split_view.set_content(Some(&libadwaita::NavigationPage::new(
@@ -319,7 +319,7 @@ impl LushtextWindow {
             path,
             dialog,
             split_view,
-            list_box,
+            sidebar,
             preview_title,
             preview_meta,
             preview_buffer,
@@ -332,7 +332,7 @@ impl LushtextWindow {
             preview_generation: Cell::new(0),
         });
 
-        populate_history_rows(&state);
+        populate_history_sidebar(&state);
         state.back_button.connect_clicked({
             let state = Rc::clone(&state);
             move |_| {
@@ -371,21 +371,22 @@ impl LushtextWindow {
             }
         });
 
-        if let Some(first_row) = state.list_box.row_at_index(0) {
-            state.list_box.select_row(Some(&first_row));
-            state.load_preview_for_row(&first_row, false);
-        }
-        state.list_box.connect_row_selected({
+        state.sidebar.set_selected(0);
+        state.load_preview_for_index(0, false);
+        state.sidebar.connect_selected_item_notify({
             let state = Rc::clone(&state);
-            move |_list, row| {
-                let Some(row) = row else { return };
-                state.load_preview_for_row(row, true);
+            move |sidebar| {
+                if let Some(index) = history_sidebar_item_index(sidebar.selected_item()) {
+                    state.load_preview_for_index(index, true);
+                }
             }
         });
-        state.list_box.connect_row_activated({
+        state.sidebar.connect_activated({
             let state = Rc::clone(&state);
-            move |_list, row| {
-                state.load_preview_for_row(row, true);
+            move |_sidebar, index| {
+                if let Ok(index) = usize::try_from(index) {
+                    state.load_preview_for_index(index, true);
+                }
             }
         });
 
@@ -489,11 +490,7 @@ impl LushtextWindow {
 }
 
 impl LocalHistoryBrowserState {
-    fn load_preview_for_row(self: &Rc<Self>, row: &gtk4::ListBoxRow, user_selected: bool) {
-        let index = row.index();
-        let Ok(index) = usize::try_from(index) else {
-            return;
-        };
+    fn load_preview_for_index(self: &Rc<Self>, index: usize, user_selected: bool) {
         let Some(meta) = self.snapshots.get(index).cloned() else {
             return;
         };
@@ -624,14 +621,28 @@ fn current_window_dimension(current_axis: i32, default_axis: i32) -> i32 {
     }
 }
 
-fn populate_history_rows(state: &LocalHistoryBrowserState) {
+fn populate_history_sidebar(state: &LocalHistoryBrowserState) {
+    let section = libadwaita::SidebarSection::new();
+    section.set_title(Some("Snapshots"));
     for meta in &state.snapshots {
-        let row = gtk4::ListBoxRow::new();
-        row.set_selectable(true);
-        row.set_activatable(true);
-        row.set_child(Some(&history_row_widget(meta)));
-        state.list_box.append(&row);
+        section.append(history_sidebar_item(meta));
     }
+    state.sidebar.append(section);
+}
+
+fn history_sidebar_item(meta: &LocalHistorySnapshotMeta) -> libadwaita::SidebarItem {
+    let title = format_history_time(meta.captured_at_millis);
+    let subtitle = format_snapshot_meta(meta.origin, meta.byte_len);
+    libadwaita::SidebarItem::builder()
+        .title(title)
+        .subtitle(subtitle.clone())
+        .tooltip(subtitle)
+        .icon_name("document-open-recent-symbolic")
+        .build()
+}
+
+fn history_sidebar_item_index(item: Option<libadwaita::SidebarItem>) -> Option<usize> {
+    item.and_then(|item| usize::try_from(item.index()).ok())
 }
 
 /// Hide legacy empty baseline rows that were repeatedly created by the older
@@ -672,7 +683,7 @@ fn is_empty_baseline_snapshot(meta: &LocalHistorySnapshotMeta) -> bool {
         && meta.byte_len == 0
 }
 
-fn build_history_sidebar(path: &Path, list_box: &gtk4::ListBox) -> gtk4::Box {
+fn build_history_sidebar(path: &Path, sidebar: &libadwaita::Sidebar) -> gtk4::Box {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
     content.set_margin_start(18);
     content.set_margin_end(18);
@@ -695,7 +706,7 @@ fn build_history_sidebar(path: &Path, list_box: &gtk4::ListBox) -> gtk4::Box {
     let scroll = gtk4::ScrolledWindow::builder()
         .hexpand(true)
         .vexpand(true)
-        .child(list_box)
+        .child(sidebar)
         .build();
     content.append(&scroll);
 
@@ -733,29 +744,6 @@ fn build_history_preview_page(
     actions.append(copy_button);
     actions.append(restore_button);
     content.append(&actions);
-
-    content
-}
-
-fn history_row_widget(meta: &LocalHistorySnapshotMeta) -> gtk4::Box {
-    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-    content.set_margin_start(10);
-    content.set_margin_end(10);
-    content.set_margin_top(10);
-    content.set_margin_bottom(10);
-
-    let title = gtk4::Label::new(Some(&format_history_time(meta.captured_at_millis)));
-    title.set_halign(gtk4::Align::Start);
-    title.set_xalign(0.0);
-    title.add_css_class("heading");
-    content.append(&title);
-
-    let subtitle = gtk4::Label::new(Some(&format_snapshot_meta(meta.origin, meta.byte_len)));
-    subtitle.set_halign(gtk4::Align::Start);
-    subtitle.set_xalign(0.0);
-    subtitle.add_css_class("dim-label");
-    subtitle.set_wrap(true);
-    content.append(&subtitle);
 
     content
 }

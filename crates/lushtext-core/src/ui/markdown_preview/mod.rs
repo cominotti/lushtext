@@ -778,6 +778,17 @@ impl LushtextMarkdownPreview {
         self.imp().text_view.get()
     }
 
+    /// Pin the preview scroller to one natural size for compact embedded uses.
+    pub(crate) fn set_scroller_content_size(&self, width: i32, height: i32) {
+        let scroller = self.imp().scrolled_window.get();
+        scroller.set_min_content_width(width);
+        scroller.set_max_content_width(width);
+        scroller.set_min_content_height(height);
+        scroller.set_max_content_height(height);
+        scroller.set_propagate_natural_width(false);
+        scroller.set_propagate_natural_height(false);
+    }
+
     /// Apply or clear Focus Mode readable-column margins for rendered Markdown.
     pub(crate) fn set_focus_mode_readable_column(&self, active: bool, target_columns: u32) {
         let text_view = self.text_view();

@@ -13,7 +13,7 @@ use std::time::Duration;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
-use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, AlertDialogExtManual};
+use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, AlertDialogExtManual, SidebarItemExt};
 
 use crate::model::annotation::{AnnotationId, AnnotationRecord, AnnotationStyle};
 use crate::model::note::{NoteViewMode, RichNoteBody, note_preview_line};
@@ -51,6 +51,16 @@ const NOTES_BROWSER_WIDTH_SP: i32 = 980;
 /// Fixed notes browser height leaves room for the list, preview, and action row.
 const NOTES_BROWSER_HEIGHT_SP: i32 = 700;
 
+/// Stable width for the shared edit/render note surface inside note dialogs.
+const NOTE_EDITOR_SURFACE_WIDTH_SP: i32 = 520;
+/// Stable height for the edit/render stack, matching the editable page's
+/// measured request so toggling render mode does not shrink note dialogs.
+const NOTE_EDITOR_SURFACE_HEIGHT_SP: i32 = 300;
+/// Shared horizontal text inset for edit and rendered note bodies.
+const NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP: i32 = 12;
+/// Shared vertical text inset for edit and rendered note bodies.
+const NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP: i32 = 10;
+
 /// One entry shown in the unified notes browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NotesBrowserEntry {
@@ -87,8 +97,8 @@ struct NotesBrowserState {
     split_view: libadwaita::NavigationSplitView,
     /// Search field driving the current filtered row set.
     search_entry: gtk4::SearchEntry,
-    /// Notes list shown in the sidebar rail.
-    list_box: gtk4::ListBox,
+    /// Adwaita browse rail for workspace, document, and range notes.
+    sidebar: libadwaita::Sidebar,
     /// Header label for the selected note.
     preview_title: gtk4::Label,
     /// Secondary metadata label for the selected note.
@@ -101,7 +111,7 @@ struct NotesBrowserState {
     back_button: gtk4::Button,
     /// Complete set of notes covered by this browser session.
     all_entries: Vec<NotesBrowserEntry>,
-    /// Current filtered entries in the same order as the list box rows.
+    /// Current filtered entries in the same order as the sidebar items.
     filtered_entries: RefCell<Vec<NotesBrowserEntry>>,
 }
 
@@ -1281,12 +1291,13 @@ impl LushtextWindow {
             .follows_content_size(false)
             .build();
 
-        let list_box = gtk4::ListBox::new();
-        list_box.set_selection_mode(gtk4::SelectionMode::Single);
-        list_box.add_css_class("boxed-list");
-
         let search_entry = gtk4::SearchEntry::new();
         search_entry.set_placeholder_text(Some(&format!("Search {WORKSPACE_SCOPE_TITLE}…")));
+
+        let sidebar = libadwaita::Sidebar::new();
+        sidebar.set_mode(libadwaita::SidebarMode::Sidebar);
+        sidebar.set_vexpand(true);
+        sidebar.set_placeholder(Some(&empty_browser_label("No notes match that search")));
 
         let preview_title = gtk4::Label::new(Some("Select a note"));
         preview_title.set_halign(gtk4::Align::Start);
@@ -1320,7 +1331,7 @@ impl LushtextWindow {
         split_view.set_min_sidebar_width(260.0);
         split_view.set_max_sidebar_width(340.0);
         split_view.set_sidebar(Some(&libadwaita::NavigationPage::new(
-            &build_notes_sidebar(&search_entry, &list_box),
+            &build_notes_sidebar(&search_entry, &sidebar),
             "Notes",
         )));
         split_view.set_content(Some(&libadwaita::NavigationPage::new(
@@ -1341,7 +1352,7 @@ impl LushtextWindow {
             dialog,
             split_view,
             search_entry,
-            list_box,
+            sidebar,
             preview_title,
             preview_meta,
             preview,
@@ -1351,24 +1362,24 @@ impl LushtextWindow {
             all_entries: entries,
         });
 
-        rebuild_notes_browser_rows(&state, "");
+        rebuild_notes_browser_sidebar(&state, "");
         state.search_entry.connect_search_changed({
             let state = Rc::clone(&state);
             move |entry| {
-                rebuild_notes_browser_rows(&state, entry.text().as_str());
+                rebuild_notes_browser_sidebar(&state, entry.text().as_str());
             }
         });
-        state.list_box.connect_row_selected({
+        state.sidebar.connect_selected_item_notify({
             let state = Rc::clone(&state);
-            move |_list, row| {
-                state.refresh_preview(row, true);
+            move |sidebar| {
+                state.refresh_preview(sidebar_item_index(sidebar.selected_item()), true);
             }
         });
-        state.list_box.connect_row_activated({
+        state.sidebar.connect_activated({
             let state = Rc::clone(&state);
-            move |_list, row| {
-                state.refresh_preview(Some(row), true);
-                state.open_selected();
+            move |sidebar, index| {
+                sidebar.set_selected(index);
+                state.refresh_preview(usize::try_from(index).ok(), true);
             }
         });
         state.open_button.connect_clicked({
@@ -1405,8 +1416,11 @@ fn build_note_editor_surface(
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
 
     let stack = gtk4::Stack::new();
+    stack.set_size_request(NOTE_EDITOR_SURFACE_WIDTH_SP, NOTE_EDITOR_SURFACE_HEIGHT_SP);
     stack.set_hexpand(true);
     stack.set_vexpand(true);
+    stack.set_hhomogeneous(true);
+    stack.set_vhomogeneous(true);
 
     let switcher = gtk4::StackSwitcher::new();
     switcher.set_stack(Some(&stack));
@@ -1415,28 +1429,64 @@ fn build_note_editor_surface(
     content.append(&switcher);
 
     let note_view = gtk4::TextView::new();
+    note_view.set_size_request(NOTE_EDITOR_SURFACE_WIDTH_SP, NOTE_EDITOR_SURFACE_HEIGHT_SP);
     note_view.set_wrap_mode(gtk4::WrapMode::WordChar);
     note_view.set_vexpand(true);
     // TextView margin properties act as inner padding for the editable
     // document, so this gives the note body breathing room inside the box
     // instead of just pushing the whole widget farther from neighboring rows.
-    note_view.set_left_margin(12);
-    note_view.set_right_margin(12);
-    note_view.set_top_margin(10);
-    note_view.set_bottom_margin(10);
+    note_view.set_left_margin(NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP);
+    note_view.set_right_margin(NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP);
+    note_view.set_top_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
+    note_view.set_bottom_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
     note_view.buffer().set_text(initial_text);
 
     let note_scroll = gtk4::ScrolledWindow::builder()
-        .min_content_height(180)
+        .width_request(NOTE_EDITOR_SURFACE_WIDTH_SP)
+        .height_request(NOTE_EDITOR_SURFACE_HEIGHT_SP)
+        .min_content_width(NOTE_EDITOR_SURFACE_WIDTH_SP)
+        .max_content_width(NOTE_EDITOR_SURFACE_WIDTH_SP)
+        .min_content_height(NOTE_EDITOR_SURFACE_HEIGHT_SP)
+        .max_content_height(NOTE_EDITOR_SURFACE_HEIGHT_SP)
+        .propagate_natural_width(false)
+        .propagate_natural_height(false)
         .vexpand(true)
         .child(&note_view)
         .build();
     stack.add_titled(&note_scroll, Some("edit"), "Edit");
 
     let preview = LushtextMarkdownPreview::new();
+    preview.set_size_request(NOTE_EDITOR_SURFACE_WIDTH_SP, NOTE_EDITOR_SURFACE_HEIGHT_SP);
     preview.set_hexpand(true);
     preview.set_vexpand(true);
+    preview.set_scroller_content_size(NOTE_EDITOR_SURFACE_WIDTH_SP, NOTE_EDITOR_SURFACE_HEIGHT_SP);
+    preview
+        .text_view()
+        .set_size_request(NOTE_EDITOR_SURFACE_WIDTH_SP, NOTE_EDITOR_SURFACE_HEIGHT_SP);
+    preview
+        .text_view()
+        .set_left_margin(NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP);
+    preview
+        .text_view()
+        .set_right_margin(NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP);
+    preview
+        .text_view()
+        .set_top_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
+    preview
+        .text_view()
+        .set_bottom_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
     preview.show_placeholder(empty_preview_description);
+    // Existing notes open in Edit mode, but the hidden Render page still
+    // participates in stack measurement. Render once up front so the first
+    // click on Render does not swap placeholder geometry into content geometry.
+    if !initial_text.trim().is_empty() {
+        render_note_preview(
+            &preview,
+            &note_view.buffer(),
+            render_context,
+            empty_preview_description,
+        );
+    }
     stack.add_titled(&preview, Some("render"), "Render");
 
     let buffer = note_view.buffer();
@@ -1508,7 +1558,10 @@ fn build_empty_notes_dialog() -> libadwaita::Dialog {
 }
 
 /// Build the browse rail used by the unified notes browser.
-fn build_notes_sidebar(search_entry: &gtk4::SearchEntry, list_box: &gtk4::ListBox) -> gtk4::Box {
+fn build_notes_sidebar(
+    search_entry: &gtk4::SearchEntry,
+    sidebar: &libadwaita::Sidebar,
+) -> gtk4::Box {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
     content.set_margin_start(18);
     content.set_margin_end(18);
@@ -1525,7 +1578,7 @@ fn build_notes_sidebar(search_entry: &gtk4::SearchEntry, list_box: &gtk4::ListBo
     let scroll = gtk4::ScrolledWindow::builder()
         .hexpand(true)
         .vexpand(true)
-        .child(list_box)
+        .child(sidebar)
         .build();
     content.append(&scroll);
 
@@ -1705,6 +1758,16 @@ impl NotesBrowserEntry {
         }
     }
 
+    /// Symbolic icon used by the grouped Adwaita sidebar item.
+    #[must_use]
+    fn sidebar_icon_name(&self) -> &'static str {
+        match self {
+            Self::Workspace { .. } => "folder-symbolic",
+            Self::Document { .. } => "text-x-generic-symbolic",
+            Self::Range { .. } => "insert-text-symbolic",
+        }
+    }
+
     /// Return whether this entry matches one search query.
     #[must_use]
     fn matches_query(&self, query: &str) -> bool {
@@ -1720,9 +1783,9 @@ impl NotesBrowserEntry {
 }
 
 impl NotesBrowserState {
-    /// Refresh the preview pane for one selected browser row.
-    fn refresh_preview(&self, row: Option<&gtk4::ListBoxRow>, user_selected: bool) {
-        let Some(row) = row else {
+    /// Refresh the preview pane for one selected sidebar item.
+    fn refresh_preview(&self, index: Option<usize>, user_selected: bool) {
+        let Some(index) = index else {
             self.preview_title.set_label("Select a note");
             self.preview_meta
                 .set_label("Choose a workspace, document, or range note to preview it here.");
@@ -1732,9 +1795,6 @@ impl NotesBrowserState {
             return;
         };
 
-        let Ok(index) = usize::try_from(row.index()) else {
-            return;
-        };
         let Some(entry) = self.filtered_entries.borrow().get(index).cloned() else {
             self.preview_title.set_label("Select a note");
             self.preview_meta
@@ -1762,10 +1822,7 @@ impl NotesBrowserState {
 
     /// Open the currently selected note through the same window workflows used elsewhere.
     fn open_selected(&self) {
-        let Some(row) = self.list_box.selected_row() else {
-            return;
-        };
-        let Ok(index) = usize::try_from(row.index()) else {
+        let Some(index) = sidebar_item_index(self.sidebar.selected_item()) else {
             return;
         };
         let Some(entry) = self.filtered_entries.borrow().get(index).cloned() else {
@@ -1777,45 +1834,103 @@ impl NotesBrowserState {
     }
 }
 
-/// Rebuild the list rows shown by the unified notes browser.
-fn rebuild_notes_browser_rows(state: &Rc<NotesBrowserState>, query: &str) {
-    clear_list_box_rows(&state.list_box);
+/// Rebuild the sectioned sidebar items shown by the unified notes browser.
+fn rebuild_notes_browser_sidebar(state: &Rc<NotesBrowserState>, query: &str) {
+    state.sidebar.remove_all();
 
-    let filtered: Vec<_> = state
+    let matching_entries: Vec<_> = state
         .all_entries
         .iter()
         .filter(|entry| entry.matches_query(query))
         .cloned()
         .collect();
-    *state.filtered_entries.borrow_mut() = filtered.clone();
 
-    if filtered.is_empty() {
-        let row = gtk4::ListBoxRow::new();
-        row.set_selectable(false);
-        row.set_activatable(false);
-        row.set_child(Some(&empty_browser_label("No notes match that search")));
-        state.list_box.append(&row);
+    if matching_entries.is_empty() {
+        *state.filtered_entries.borrow_mut() = Vec::new();
         state.refresh_preview(None, false);
         return;
     }
 
-    for entry in filtered {
-        let row = gtk4::ListBoxRow::new();
-        row.set_selectable(true);
-        row.set_activatable(true);
-        let detail = entry.row_detail();
-        row.set_child(Some(&browser_row_content(
-            &entry.row_title(),
-            &entry.row_subtitle(),
-            detail.as_deref(),
-        )));
-        state.list_box.append(&row);
+    let grouped_entries = append_notes_sidebar_sections(&state.sidebar, &matching_entries);
+    *state.filtered_entries.borrow_mut() = grouped_entries;
+
+    state.sidebar.set_selected(0);
+    state.refresh_preview(Some(0), false);
+}
+
+/// Append note entries as semantic Adwaita sidebar sections and return the
+/// exact flat order used for selection lookup.
+fn append_notes_sidebar_sections(
+    sidebar: &libadwaita::Sidebar,
+    entries: &[NotesBrowserEntry],
+) -> Vec<NotesBrowserEntry> {
+    let mut ordered_entries = Vec::with_capacity(entries.len());
+    append_note_sidebar_section(
+        sidebar,
+        "Workspace Notes",
+        entries
+            .iter()
+            .filter(|entry| matches!(entry, NotesBrowserEntry::Workspace { .. })),
+        &mut ordered_entries,
+    );
+    append_note_sidebar_section(
+        sidebar,
+        "Document Notes",
+        entries
+            .iter()
+            .filter(|entry| matches!(entry, NotesBrowserEntry::Document { .. })),
+        &mut ordered_entries,
+    );
+    append_note_sidebar_section(
+        sidebar,
+        "Range Notes",
+        entries
+            .iter()
+            .filter(|entry| matches!(entry, NotesBrowserEntry::Range { .. })),
+        &mut ordered_entries,
+    );
+    ordered_entries
+}
+
+/// Add one non-empty Notes browser section to the sidebar.
+fn append_note_sidebar_section<'a>(
+    sidebar: &libadwaita::Sidebar,
+    title: &str,
+    entries: impl Iterator<Item = &'a NotesBrowserEntry>,
+    ordered_entries: &mut Vec<NotesBrowserEntry>,
+) {
+    let section = libadwaita::SidebarSection::new();
+    section.set_title(Some(title));
+
+    let start_len = ordered_entries.len();
+    for entry in entries {
+        section.append(build_notes_sidebar_item(entry));
+        ordered_entries.push(entry.clone());
     }
 
-    if let Some(first_row) = state.list_box.row_at_index(0) {
-        state.list_box.select_row(Some(&first_row));
-        state.refresh_preview(Some(&first_row), false);
+    if ordered_entries.len() > start_len {
+        sidebar.append(section);
     }
+}
+
+/// Build one Adwaita sidebar item while preserving the old row's searchable
+/// metadata and preview line in the visible subtitle/tooltip.
+fn build_notes_sidebar_item(entry: &NotesBrowserEntry) -> libadwaita::SidebarItem {
+    let subtitle = entry.row_detail().map_or_else(
+        || entry.row_subtitle(),
+        |detail| format!("{} · {detail}", entry.row_subtitle()),
+    );
+    libadwaita::SidebarItem::builder()
+        .title(entry.row_title())
+        .subtitle(subtitle.clone())
+        .tooltip(subtitle)
+        .icon_name(entry.sidebar_icon_name())
+        .build()
+}
+
+/// Resolve an Adwaita sidebar item back to the flat backing vector index.
+fn sidebar_item_index(item: Option<libadwaita::SidebarItem>) -> Option<usize> {
+    item.and_then(|item| usize::try_from(item.index()).ok())
 }
 
 /// Route one browser row back through the appropriate window workflow.
@@ -2059,13 +2174,6 @@ fn browser_row_content(title: &str, subtitle: &str, detail: Option<&str>) -> gtk
 fn clear_box_children(rows_box: &gtk4::Box) {
     while let Some(child) = rows_box.first_child() {
         rows_box.remove(&child);
-    }
-}
-
-/// Remove every row from a list box before rebuilding its filtered contents.
-fn clear_list_box_rows(list_box: &gtk4::ListBox) {
-    while let Some(row) = list_box.row_at_index(0) {
-        list_box.remove(&row);
     }
 }
 

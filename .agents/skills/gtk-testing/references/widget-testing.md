@@ -108,6 +108,19 @@ For LushText widget tests:
 This matters for regressions where the dialog looks unchanged on screen even
 though the `content-width` property was updated.
 
+## Edit/Render Dialog Geometry Regressions
+
+Dialogs with `GtkStack` Edit/Render modes need tests for the first activation, not only repeated toggles. The first click can perform extra work such as rendering Markdown, replacing an `AdwStatusPage` placeholder, or mounting a scrolled text surface; that is exactly when small dialog-size regressions appear.
+
+For this class of test:
+
+- compare the content widget's `measure()` natural sizes before and after the first Render activation
+- use `dialog.content_width()` / `content_height()` or the dialog child's measured size instead of `dialog.width()` / `height()`
+- assert inner text-surface margins before and after mode switches so Edit and Render do not drift
+- cover existing non-empty content, because empty placeholders do not exercise the same measurement path
+
+If allocation is unavailable or unstable in the harness, measuring the dialog child is still useful. The important invariant is that the first Edit -> Render switch does not change the natural size contract that the parent dialog follows.
+
 ## Fixed Row Chrome Regressions
 
 When a bug is really "the hover pill or active highlight of this button no longer fits inside its fixed row", prefer a property-level widget regression over screenshot-only verification.

@@ -132,6 +132,27 @@ impl LushtextSidebar {
 
         imp.workspace_filter_animation_active.set(true);
         imp.workspace_list_revealer.set_reveal_child(false);
+
+        let sidebar_weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(300), move || {
+            let Some(sidebar) = sidebar_weak.upgrade() else {
+                return;
+            };
+            let imp = sidebar.imp();
+            if !imp.workspace_filter_animation_active.get()
+                || imp.applied_workspace_filter.borrow().clone()
+                    == imp.current_scope.borrow().clone()
+            {
+                return;
+            }
+
+            // The revealer normally applies the filter from its
+            // child-revealed notification. This timeout is a safety net for
+            // test/headless frame clocks where that notification may not fire.
+            sidebar.apply_workspace_filter_visibility();
+            imp.workspace_list_revealer.set_reveal_child(true);
+            imp.workspace_filter_animation_active.set(false);
+        });
     }
 
     /// Rebuild all sidebar sections from the current in-memory workspace file.

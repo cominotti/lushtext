@@ -15,7 +15,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)
 - **EditorConfig support** -- per-file formatting overrides from `.editorconfig` files (`indent_style`, `tab_width`, `indent_size`); toggle in Preferences
 - **Bookmarks and rich notes** -- saved-file bookmark gutter marks with labels and F2 navigation, plus markdown-capable range notes, document notes, workspace notes, and a unified notes browser
-- **Local history** -- saved-file snapshot browser with automatic baseline, periodic, and save-boundary restore points, adaptive browse/preview UI, restore safety snapshots, and one-click undo of a restore
+- **Local history** -- saved-file snapshot browser with automatic baseline, periodic, and save-boundary restore points, an adaptive Adwaita browse/preview UI, restore safety snapshots, and one-click undo of a restore
 - **Minimap** -- toggleable right-edge document overview with semantic markers for bookmarks, active in-tab search matches, modified-since-save regions, and long-line warnings on supported files
 - **Session persistence** -- tabs, pinned state, cursor positions, and scroll offsets restored on restart
 - **Draft recovery** -- unsaved changes auto-saved to disk and recovered after crash
@@ -39,7 +39,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 | GUI | GTK4 0.11 + Libadwaita 0.9 + GtkSourceView 5 0.11 |
 | Config | GSettings |
 | Build | Cargo workspace + Makefile (dev), Meson (Flatpak/installed) |
-| Packaging | Flatpak (org.gnome.Platform 49) |
+| Packaging | Flatpak (org.gnome.Platform 50) |
 | License | GPL-3.0-or-later |
 
 ## Building from Source
@@ -201,7 +201,7 @@ LushText includes a focused local-history MVP for saved documents.
 
 - Open **Local History** from the main menu, the command palette, `Ctrl+Alt+L`, the sidebar file context menu, or the editor content context menu while a saved file is active.
 - The browser opens in an adaptive Libadwaita dialog with newest-first snapshots and a read-only preview.
-- On wide windows, the dialog expands into a large viewer-first surface that uses most of the parent window while staying parent-bounded, with the snapshot list acting as a narrower browse rail beside the preview.
+- On wide windows, the dialog expands into a large viewer-first surface that uses most of the parent window while staying parent-bounded, with an Adwaita snapshot rail beside the preview.
 - Empty historical snapshots are explained explicitly in the browser so an empty file state does not look like a broken preview.
 - Legacy stale-disk empty baseline rows from older history can be hidden from the browser while the stored history on disk remains unchanged.
 - Restoring a snapshot writes it into the editor buffer, marks the document modified, and immediately offers **Undo Restore** without writing to disk.

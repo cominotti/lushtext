@@ -42,30 +42,40 @@ than simplify it.
 
 Do **not** rewrite the workspace file tree around `AdwSidebar` now.
 
-Instead, use the new Adwaita sidebar family for a separate navigation surface
-where the data is naturally sectioned, shallow, and action-oriented:
+Instead, use the new Adwaita sidebar family for shallow browse rails where the
+data is naturally sectioned and activation-oriented:
 
-1. Prototype a **Workspace Activity** surface inside the document-properties
-   area or notes browser.
-2. Model sections as:
-   - `Bookmarks`
-   - `Range Notes`
-   - `Document Note`
-   - `Workspace Note`
-   - `Local History`
-3. Prefer `AdwViewSwitcherSidebar` if the destination pages already live in an
-   `AdwViewStack`; prefer `AdwSidebar` if the surface wants explicit model
-   rows independent from a stack.
-4. Keep the existing file sidebar on `GtkListView` / `GtkTreeListModel`.
+1. Replace the unified Notes browser's hand-built `GtkListBox` rail with
+   `AdwSidebar` sections for workspace notes, document notes, and range notes.
+2. Preserve the current Notes browser contract: dialog sizing, Markdown preview,
+   search behavior, Open action, compact `AdwNavigationSplitView` handoff, and
+   all existing note activation flows.
+3. Add regression coverage for each sidebar section, search/filter results,
+   empty filtered state, compact collapse handoff, activation, and selected-item
+   persistence after preview changes.
+4. Replace the Local History snapshot browser's hand-built `GtkListBox` rail
+   with an `AdwSidebar` rail while preserving preview loading, Copy, Restore,
+   safety snapshots, compact handoff, and large-file availability gating.
+5. Follow-up only: evaluate a stable `AdwViewStack`-backed Document
+   Activity/Inspector surface using `AdwViewSwitcherSidebar` for pages such as
+   Document, Health, Notes, History, and Encoding.
+
+Prefer `AdwSidebar` for the Notes and Local History work because both surfaces
+need dynamic model rows rather than stable pages in an `AdwViewStack`. Reserve
+`AdwViewSwitcherSidebar` for the follow-up inspector idea, where the destination
+pages would be stable and page-like.
 
 ### Acceptance Criteria
 
-- The prototype preserves keyboard navigation and activation without custom
-  focus workarounds.
-- Compact layouts keep the current one-secondary-surface rule intact.
-- Widget tests cover selecting every activity item, compact-width allocation,
-  and the active item after page changes.
-- The prototype does not regress existing bookmark, annotation, document-note,
+- The Notes browser uses `AdwSidebar` for note rows and preserves keyboard
+  navigation and activation without custom focus workarounds.
+- The Local History browser uses `AdwSidebar` for snapshot rows and preserves
+  asynchronous preview loading plus Copy and Restore behavior.
+- Compact dialog layouts keep the current navigation split handoff intact.
+- Widget tests cover selecting every Notes and Local History section/item,
+  search/filter behavior, compact-width allocation, and active item state after
+  page changes.
+- The change does not regress existing bookmark, annotation, document-note,
   workspace-note, or local-history flows.
 
 ### Risks
@@ -74,8 +84,12 @@ where the data is naturally sectioned, shallow, and action-oriented:
   hierarchy, file-system mutation, or async directory loading.
 - Rehosting the current workspace file tree would put custom row factories and
   context menus back into a surface designed for simpler navigation rows.
-- A narrow prototype is safer than a broad shell rewrite because the current
-  sidebar has a lot of stateful behavior.
+- Notes and Local History rows carry domain-specific activation behavior, so the
+  implementation must keep existing window workflows as the authority instead
+  of moving business logic into sidebar row setup.
+- A narrow browse-rail migration is safer than a broad shell rewrite because the
+  current workspace sidebar and document-properties shell have a lot of
+  stateful behavior.
 
 ## 6. pulldown-cmark 0.13 Markdown Extensions
 

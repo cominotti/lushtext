@@ -7,12 +7,13 @@
 //! that still live in the window layer.
 
 use crate::common::{emit_key_pressed_on_focus, ensure_gtk_init};
-use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, MenuModelExt};
+use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
 use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{
-    ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt, AnimationExt, ComboRowExt,
+    ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt, AnimationExt,
+    ComboRowExt, SidebarItemExt,
 };
 use lushtext_core::config::keys;
 use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
@@ -138,10 +139,8 @@ fn wait_for_workspace_roots(window: &LushtextWindow, expected: usize) {
         }
         flush_after_delay(Duration::from_millis(20));
     }
-    panic!(
-        "expected {expected} restored workspace roots, got {}",
-        window.imp().sidebar.all_workspace_root_paths().len()
-    );
+    let actual = window.imp().sidebar.all_workspace_root_paths().len();
+    panic!("expected {expected} restored workspace roots, got {actual}");
 }
 
 fn wait_for_workspace_consumers(window: &LushtextWindow, expected_roots: usize, expected_index: usize) {
@@ -225,11 +224,11 @@ fn editor_text(editor: &LushtextEditorPage) -> String {
 }
 
 fn assert_tab_count(window: &LushtextWindow, expected: i32) {
+    let actual = window.imp().tab_view.n_pages();
     assert_eq!(
-        window.imp().tab_view.n_pages(),
+        actual,
         expected,
-        "expected {expected} open tab(s), got {}",
-        window.imp().tab_view.n_pages()
+        "expected {expected} open tab(s), got {actual}"
     );
 }
 
@@ -325,14 +324,14 @@ fn find_navigation_split_view(root: &gtk4::Widget) -> Option<libadwaita::Navigat
     None
 }
 
-fn find_list_box(root: &gtk4::Widget) -> Option<gtk4::ListBox> {
-    if let Ok(list_box) = root.clone().downcast::<gtk4::ListBox>() {
-        return Some(list_box);
+fn find_adw_sidebar(root: &gtk4::Widget) -> Option<libadwaita::Sidebar> {
+    if let Ok(sidebar) = root.clone().downcast::<libadwaita::Sidebar>() {
+        return Some(sidebar);
     }
 
     let mut child = root.first_child();
     while let Some(widget) = child {
-        if let Some(found) = find_list_box(&widget) {
+        if let Some(found) = find_adw_sidebar(&widget) {
             return Some(found);
         }
         child = widget.next_sibling();
@@ -341,14 +340,35 @@ fn find_list_box(root: &gtk4::Widget) -> Option<gtk4::ListBox> {
     None
 }
 
-fn find_stack(root: &gtk4::Widget) -> Option<gtk4::Stack> {
-    if let Ok(stack) = root.clone().downcast::<gtk4::Stack>() {
-        return Some(stack);
+fn has_tree_list_model_list_view(root: &gtk4::Widget) -> bool {
+    if let Ok(list_view) = root.clone().downcast::<gtk4::ListView>()
+        && let Some(selection) = list_view.model().and_downcast::<gtk4::SingleSelection>()
+        && selection
+            .model()
+            .is_some_and(|model| model.is::<gtk4::TreeListModel>())
+    {
+        return true;
     }
 
     let mut child = root.first_child();
     while let Some(widget) = child {
-        if let Some(found) = find_stack(&widget) {
+        if has_tree_list_model_list_view(&widget) {
+            return true;
+        }
+        child = widget.next_sibling();
+    }
+
+    false
+}
+
+fn find_search_entry(root: &gtk4::Widget) -> Option<gtk4::SearchEntry> {
+    if let Ok(search_entry) = root.clone().downcast::<gtk4::SearchEntry>() {
+        return Some(search_entry);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_search_entry(&widget) {
             return Some(found);
         }
         child = widget.next_sibling();
@@ -371,6 +391,102 @@ fn find_stack_switcher(root: &gtk4::Widget) -> Option<gtk4::StackSwitcher> {
     }
 
     None
+}
+
+fn find_note_editor_stack(root: &gtk4::Widget) -> Option<gtk4::Stack> {
+    if let Ok(stack) = root.clone().downcast::<gtk4::Stack>()
+        && stack.child_by_name("edit").is_some()
+        && stack.child_by_name("render").is_some()
+    {
+        return Some(stack);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_note_editor_stack(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
+}
+
+fn collect_text_views(root: &gtk4::Widget, text_views: &mut Vec<gtk4::TextView>) {
+    if let Ok(text_view) = root.clone().downcast::<gtk4::TextView>() {
+        text_views.push(text_view);
+        return;
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        collect_text_views(&widget, text_views);
+        child = widget.next_sibling();
+    }
+}
+
+fn note_editor_text_views(root: &gtk4::Widget) -> (gtk4::TextView, gtk4::TextView) {
+    let mut text_views = Vec::new();
+    collect_text_views(root, &mut text_views);
+
+    let edit = text_views
+        .iter()
+        .find(|text_view| text_view.is_editable())
+        .cloned()
+        .expect("editable note text view");
+    let render = text_views
+        .into_iter()
+        .find(|text_view| !text_view.is_editable())
+        .expect("rendered note text view");
+
+    (edit, render)
+}
+
+fn assert_note_editor_text_margins_match(root: &gtk4::Widget) {
+    let (edit, render) = note_editor_text_views(root);
+    assert_eq!(edit.left_margin(), render.left_margin());
+    assert_eq!(edit.right_margin(), render.right_margin());
+    assert_eq!(edit.top_margin(), render.top_margin());
+    assert_eq!(edit.bottom_margin(), render.bottom_margin());
+}
+
+fn assert_note_editor_measurements_stable(
+    edit_extra_size: (i32, i32),
+    render_extra_size: (i32, i32),
+    edit_stack_size: (i32, i32),
+    render_stack_size: (i32, i32),
+) {
+    assert!(
+        (edit_extra_size.0 - render_extra_size.0).abs() <= 1
+            && (edit_extra_size.1 - render_extra_size.1).abs() <= 1
+            && (edit_stack_size.0 - render_stack_size.0).abs() <= 1
+            && (edit_stack_size.1 - render_stack_size.1).abs() <= 1,
+        "note editor measurements should stay stable when switching Edit -> Render: extra {edit_extra_size:?}->{render_extra_size:?}, stack {edit_stack_size:?}->{render_stack_size:?}"
+    );
+}
+
+fn measured_natural_size(widget: &impl IsA<gtk4::Widget>) -> (i32, i32) {
+    let (_, natural_width, _, _) = widget.measure(gtk4::Orientation::Horizontal, -1);
+    let (_, natural_height, _, _) = widget.measure(gtk4::Orientation::Vertical, natural_width);
+    (natural_width, natural_height)
+}
+
+fn assert_note_editor_render_keeps_size(extra: &gtk4::Widget, stack: &gtk4::Stack) {
+    let (extra_width, extra_height) = measured_natural_size(extra);
+    let (stack_width, stack_height) = measured_natural_size(stack);
+
+    stack.set_visible_child_name("render");
+    flush_events();
+    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+    let (render_extra_width, render_extra_height) = measured_natural_size(extra);
+    let (render_stack_width, render_stack_height) = measured_natural_size(stack);
+
+    assert_note_editor_measurements_stable(
+        (extra_width, extra_height),
+        (render_extra_width, render_extra_height),
+        (stack_width, stack_height),
+        (render_stack_width, render_stack_height),
+    );
 }
 
 fn menu_model_labels(model: &gio::MenuModel) -> Vec<String> {
@@ -519,15 +635,15 @@ fn current_window_height(window: &LushtextWindow) -> i32 {
 
 fn assert_workspace_sidebar_width_locked(window: &LushtextWindow, expected_width: f64) {
     let split = &window.imp().workspace_split_view;
+    let min_width = split.min_sidebar_width();
+    let max_width = split.max_sidebar_width();
     assert!(
-        (split.min_sidebar_width() - expected_width).abs() < 1.0,
-        "expected min sidebar width near {expected_width}, got {}",
-        split.min_sidebar_width()
+        (min_width - expected_width).abs() < 1.0,
+        "expected min sidebar width near {expected_width}, got {min_width}"
     );
     assert!(
-        (split.max_sidebar_width() - expected_width).abs() < 1.0,
-        "expected max sidebar width near {expected_width}, got {}",
-        split.max_sidebar_width()
+        (max_width - expected_width).abs() < 1.0,
+        "expected max sidebar width near {expected_width}, got {max_width}"
     );
 }
 
@@ -831,6 +947,28 @@ fn test_split_view_defaults_restore_on_window() {
     assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
     assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
     assert_workspace_sidebar_width_locked(&window, 360.0);
+}
+
+#[test]
+fn test_workspace_file_sidebar_keeps_list_view_tree_model_rail() {
+    ensure_gtk_init();
+    let (_roots_dir, _left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 2);
+
+    let workspace_sidebar = window.imp().sidebar.upcast_ref::<gtk4::Widget>();
+    assert!(
+        find_adw_sidebar(workspace_sidebar).is_none(),
+        "the primary workspace file sidebar must not be replaced by AdwSidebar"
+    );
+
+    assert!(
+        has_tree_list_model_list_view(workspace_sidebar),
+        "workspace file sidebar should keep GtkTreeListModel backing"
+    );
 }
 
 #[test]
@@ -2150,7 +2288,7 @@ fn test_local_history_dialog_shows_empty_state_without_snapshots() {
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
-        active_editor(&window).file_size().is_some()
+        active_editor(&window).file_size().is_some() && action_enabled(&window, "show-local-history")
     });
 
     activate_action(&window, "show-local-history");
@@ -2158,7 +2296,6 @@ fn test_local_history_dialog_shows_empty_state_without_snapshots() {
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
-    wait_until(Duration::from_secs(2), || child.width() > 0 && child.height() > 0);
     assert_eq!(
         dialog.content_width(),
         560,
@@ -2170,14 +2307,14 @@ fn test_local_history_dialog_shows_empty_state_without_snapshots() {
         "empty-state browser should keep its compact target height"
     );
     assert!(
-        child.width() <= 720,
+        dialog.content_width() <= 720,
         "empty-state browser should stay compact on screen, got width {}",
-        child.width()
+        dialog.content_width()
     );
     assert!(
-        child.height() <= 520,
+        dialog.content_height() <= 520,
         "empty-state browser should stay compact on screen, got height {}",
-        child.height()
+        dialog.content_height()
     );
     assert!(
         find_label_by_text(&child, "No local history yet").is_some(),
@@ -2207,7 +2344,7 @@ fn test_local_history_browser_explains_empty_snapshot_and_disables_copy() {
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
-        active_editor(&window).file_size().is_some()
+        active_editor(&window).file_size().is_some() && action_enabled(&window, "show-local-history")
     });
 
     activate_action(&window, "show-local-history");
@@ -2299,7 +2436,7 @@ fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
-        active_editor(&window).file_size().is_some()
+        active_editor(&window).file_size().is_some() && action_enabled(&window, "show-local-history")
     });
 
     activate_action(&window, "show-local-history");
@@ -2307,12 +2444,12 @@ fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
-    let list_box = find_list_box(&child).expect("snapshot list box");
-    wait_until(Duration::from_secs(2), || list_box.row_at_index(1).is_some());
+    let sidebar = find_adw_sidebar(&child).expect("snapshot sidebar");
+    wait_until(Duration::from_secs(2), || sidebar.item(1).is_some());
 
     assert!(
-        list_box.row_at_index(2).is_none(),
-        "legacy empty-baseline rows should be filtered out of the visible browser list"
+        sidebar.item(2).is_none(),
+        "legacy empty-baseline rows should be filtered out of the visible browser sidebar"
     );
     assert!(
         find_label_by_text(&child, "Before edits · Empty file").is_none(),
@@ -2371,44 +2508,39 @@ fn test_local_history_dialog_scales_from_parent_and_keeps_preview_dominant() {
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
     let split_view = find_navigation_split_view(&child).expect("navigation split view");
-    wait_until(Duration::from_secs(2), || split_view.width() > 0 && split_view.height() > 0);
 
     let window_width = current_window_width(&window);
     let window_height = current_window_height(&window);
+    let dialog_width = dialog.content_width();
+    let dialog_height = dialog.content_height();
     assert!(
         !dialog.follows_content_size(),
         "viewer dialog must honor the configured content size instead of shrinking to the child"
     );
     assert!(
-        split_view.width() >= 1200,
-        "expected a large rendered viewer width, got {}",
-        split_view.width()
+        dialog_width >= 1200,
+        "expected a large rendered viewer width, got {dialog_width}"
     );
     assert!(
-        split_view.width() <= window_width - 20,
-        "viewer dialog should stay smaller than its parent width (dialog {}, parent {})",
-        split_view.width(),
-        window_width
+        dialog_width <= window_width - 20,
+        "viewer dialog should stay smaller than its parent width (dialog {dialog_width}, parent {window_width})"
     );
     assert!(
-        split_view.height() >= 760,
-        "expected a tall rendered viewer height, got {}",
-        split_view.height()
+        dialog_height >= 760,
+        "expected a tall rendered viewer height, got {dialog_height}"
     );
     assert!(
-        split_view.height() <= window_height - 20,
-        "viewer dialog should stay smaller than its parent height (dialog {}, parent {})",
-        split_view.height(),
-        window_height
+        dialog_height <= window_height - 20,
+        "viewer dialog should stay smaller than its parent height (dialog {dialog_height}, parent {window_height})"
     );
     assert!(
-        split_view.max_sidebar_width() < f64::from(split_view.width()) / 2.0,
+        split_view.max_sidebar_width() < f64::from(dialog_width) / 2.0,
         "snapshot rail should stay narrower than the preview-dominant half of the viewer"
     );
+    let max_sidebar_width = split_view.max_sidebar_width();
     assert!(
-        split_view.max_sidebar_width() <= 340.0,
-        "snapshot rail should stay in browse-rail territory, got {}",
-        split_view.max_sidebar_width()
+        max_sidebar_width <= 340.0,
+        "snapshot rail should stay in browse-rail territory, got {max_sidebar_width}"
     );
 }
 
@@ -2454,11 +2586,11 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
     let split_view = find_navigation_split_view(&child).expect("navigation split view");
-    let list_box = find_list_box(&child).expect("snapshot list box");
+    let sidebar = find_adw_sidebar(&child).expect("snapshot sidebar");
+    wait_until(Duration::from_secs(2), || sidebar.item(1).is_some());
 
     split_view.set_collapsed(true);
-    let target_row = list_box.row_at_index(1).expect("restorable history row");
-    target_row.activate();
+    sidebar.set_selected(1);
     flush_events();
 
     wait_until(Duration::from_secs(2), || split_view.shows_content());
@@ -3085,8 +3217,9 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
 
     let dialog = visible_alert_dialog(&window).expect("document note dialog");
     let extra = dialog.extra_child().expect("document note extra child");
-    let stack = find_stack(&extra).expect("note editor stack");
     let switcher = find_stack_switcher(&extra).expect("note editor switcher");
+    let stack = find_note_editor_stack(&extra).expect("note editor stack");
+    assert_eq!(switcher.stack(), Some(stack.clone()));
     assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
 
     let switcher_bounds = switcher
@@ -3104,8 +3237,8 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
         "switcher should reach the same right edge as the note stack"
     );
 
-    stack.set_visible_child_name("render");
-    flush_events();
+    assert_note_editor_text_margins_match(&extra);
+    assert_note_editor_render_keeps_size(&extra, &stack);
     assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
 
     stack.set_visible_child_name("edit");
@@ -3166,12 +3299,23 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let dialog_child = dialog.child().expect("notes browser child");
-    let list_box = find_list_box(&dialog_child).expect("notes browser list");
+    let sidebar = find_adw_sidebar(&dialog_child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(2), || {
-        list_box.row_at_index(0).is_some()
+        sidebar.item(0).is_some()
             && find_button_by_label(&dialog_child, "Open")
                 .is_some_and(|button| button.is_sensitive())
     });
+
+    sidebar.emit_by_name::<()>("activated", &[&0u32]);
+    flush_events();
+    assert!(
+        visible_alert_dialog(&window).is_none(),
+        "activating a notes browser row should preview/select instead of opening the editor"
+    );
+    assert!(
+        visible_sheet_dialog(&window).is_some(),
+        "the notes browser should remain open after row activation"
+    );
 
     find_button_by_label(&dialog_child, "Open")
         .expect("notes browser open button")
@@ -3184,6 +3328,155 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
             .as_deref()
             == Some("Document Note")
     });
+}
+
+#[test]
+fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("sectioned-notes.md");
+    std::fs::write(&path, "one\ntwo\nthree\n").expect("write sectioned note source");
+
+    let data_dir = json_store::data_dir();
+    workspace_note_service::save_for_root(
+        &data_dir,
+        &left_root,
+        &RichNoteBody::new("workspace needle"),
+    )
+    .expect("save workspace note");
+    document_note_service::save_for_path(
+        &data_dir,
+        &path,
+        &RichNoteBody::new("document needle"),
+    )
+    .expect("save document note");
+    annotation_service::save_for_path(
+        &data_dir,
+        &path,
+        &[AnnotationRecord::new(
+            0,
+            1,
+            "range body needle",
+            AnnotationStyle::Question,
+        )],
+    )
+    .expect("save range note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    activate_action(&window, "show-annotations");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 3);
+
+    for index in 0u32..3 {
+        sidebar.emit_by_name::<()>("activated", &[&index]);
+        flush_events();
+        assert!(
+            visible_alert_dialog(&window).is_none(),
+            "pointer-style activation at notes browser index {index} should not open an editor"
+        );
+        assert!(
+            visible_sheet_dialog(&window).is_some(),
+            "the notes browser should stay visible after activating index {index}"
+        );
+    }
+
+    let section_titles: Vec<_> = (0..sidebar.sections().n_items())
+        .filter_map(|index| sidebar.section(index))
+        .filter_map(|section| section.title().map(|title| title.to_string()))
+        .collect();
+    assert_eq!(
+        section_titles,
+        ["Workspace Notes", "Document Notes", "Range Notes"],
+        "notes browser should expose semantic Adwaita sidebar sections"
+    );
+
+    let split_view = find_navigation_split_view(&child).expect("notes split view");
+    split_view.set_collapsed(true);
+    sidebar.set_selected(1);
+    flush_events();
+    wait_until(Duration::from_secs(2), || split_view.shows_content());
+    assert!(
+        find_label_by_text(&child, "Document Note · sectioned-notes.md").is_some(),
+        "selecting a sidebar note should update the preview before opening it"
+    );
+
+    let search_entry = find_search_entry(&child).expect("notes search entry");
+    search_entry.set_text("range body");
+    flush_events();
+    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 1);
+    assert!(
+        sidebar
+            .item(0)
+            .and_then(|item| item.title())
+            .is_some_and(|title| title.contains("Question")),
+        "notes search should match range-note body text, not only visible metadata"
+    );
+
+    search_entry.set_text("missing needle");
+    flush_events();
+    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 0);
+    assert!(
+        find_label_by_text(&child, "No notes match that search").is_some(),
+        "empty filtered notes state should remain explicit"
+    );
+}
+
+#[test]
+fn test_range_note_dialog_keeps_edit_render_geometry_and_padding() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("range-note-layout.md");
+    std::fs::write(&path, "one\ntwo\nthree\n").expect("write range note layout source");
+
+    let data_dir = json_store::data_dir();
+    annotation_service::save_for_path(
+        &data_dir,
+        &path,
+        &[AnnotationRecord::new(
+            0,
+            1,
+            "# Range note\n\nRender me",
+            AnnotationStyle::Question,
+        )],
+    )
+    .expect("save range note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_path() == Some(path.clone())
+            && active_editor(&window).annotation_records().len() == 1
+            && action_enabled(&window, "edit-annotation")
+    });
+
+    activate_action(&window, "edit-annotation");
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Edit Range Note")
+    });
+
+    let dialog = visible_alert_dialog(&window).expect("range note dialog");
+    let extra = dialog.extra_child().expect("range note extra child");
+    let switcher = find_stack_switcher(&extra).expect("range note switcher");
+    let stack = find_note_editor_stack(&extra).expect("range note editor stack");
+    assert_eq!(switcher.stack(), Some(stack.clone()));
+
+    assert_note_editor_text_margins_match(&extra);
+    assert_note_editor_render_keeps_size(&extra, &stack);
 }
 
 #[test]
