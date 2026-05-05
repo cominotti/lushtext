@@ -195,6 +195,7 @@ make bench-compare     # Compare against saved baseline
 # Packaging
 make meson-build     # Meson release build (installed layout)
 make flatpak         # Build Flatpak (needs flatpak-builder)
+make flatpak-install # Build and install Flatpak into the user installation
 make cargo-sources   # Regenerate cargo-sources.json
 ```
 

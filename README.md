@@ -39,12 +39,13 @@ source checkout for development.
 ### Flatpak from this checkout
 
 ```sh
-make flatpak
-flatpak-builder --user --install --force-clean build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
+make flatpak-install
 flatpak run dev.cominotti.lushtext
 ```
 
 The Flatpak uses `org.gnome.Platform` 50 and requires the matching GNOME SDK.
+Use `make flatpak` when you only want to build the Flatpak without installing
+it.
 If dependencies change, regenerate the vendored Cargo sources before building:
 
 ```sh
@@ -238,6 +239,7 @@ On GNOME Shell, `make run` temporarily stages a user-local desktop entry plus `h
 
 ```sh
 make flatpak         # Build Flatpak (requires flatpak-builder)
+make flatpak-install # Build and install Flatpak into the user installation
 make cargo-sources   # Regenerate cargo-sources.json after dependency changes
 ```
 

@@ -14,13 +14,14 @@
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make check       - clippy + fmt check
 #   make pre-commit  - repo pre-commit gate (fmt + clippy)
+#   make flatpak-install - Build and install Flatpak into the user installation
 #   make install-git-hooks - configure this repo to use .githooks/
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless \
        check-fmt check-clippy check pre-commit install-git-hooks clean help \
-       meson-build flatpak cargo-sources \
+       meson-build flatpak flatpak-install cargo-sources \
        bench bench-report bench-report-full bench-baseline bench-compare
 
 .DEFAULT_GOAL := help
@@ -157,6 +158,11 @@ flatpak:
 	@echo "Building Flatpak..."
 	flatpak-builder --disable-rofiles-fuse --force-clean build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
 
+# Flatpak build and install into the user installation
+flatpak-install:
+	@echo "Building and installing Flatpak..."
+	flatpak-builder --disable-rofiles-fuse --force-clean --user --install build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
+
 # Regenerate cargo-sources.json (requires flatpak-cargo-generator)
 cargo-sources: Cargo.lock
 	@echo "Generating cargo-sources.json..."
@@ -193,6 +199,7 @@ help:
 	@echo "Packaging targets:"
 	@echo "  meson-build     Meson release build (installed layout)"
 	@echo "  flatpak         Build Flatpak (needs flatpak-builder)"
+	@echo "  flatpak-install Build and install Flatpak into the user installation"
 	@echo "  cargo-sources   Regenerate cargo-sources.json"
 	@echo ""
 	@echo "Other targets:"

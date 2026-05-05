@@ -82,6 +82,10 @@ trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
 refresh_shell_metadata() {
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q "$desktop_dir" >/dev/null 2>&1 || true
+    fi
+
     if command -v gtk4-update-icon-cache >/dev/null 2>&1; then
         gtk4-update-icon-cache -qtf "$icons_root" >/dev/null 2>&1 || true
     elif command -v gtk-update-icon-cache >/dev/null 2>&1; then
