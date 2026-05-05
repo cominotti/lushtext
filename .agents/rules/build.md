@@ -12,6 +12,7 @@ Use `make` targets for development. The Makefile auto-detects nextest for non-wi
 ```
 make run        # build + launch the app with temporary GNOME desktop staging for dock icon matching
 make refresh-dock-icon # regenerate icon assets + force a fresh GNOME Shell dock icon reload
+make verify-flatpak-identity # verify Flatpak export identity, permissions, and MIME registration
 make test       # all tests
 make test-widget-headless # CI-style mutter/dbus widget run
 make check      # clippy + fmt
@@ -24,6 +25,8 @@ Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-lin
 The repo-managed Git hooks live under `.githooks/`. Install them with `make install-git-hooks`, which sets `core.hooksPath` for this checkout. The pre-commit hook runs `make pre-commit`, which must stay aligned with the formatting and Clippy gates enforced in CI.
 
 On GNOME Shell, `make run` stages a desktop file plus `hicolor` icons and writes the desktop entry with a content-addressed absolute icon file path. This avoids Shell holding onto a stale themed-icon cache entry when the app icon bytes change between dev runs while keeping the icon file alive for as long as a restored user-local desktop entry might reference it. The launcher must repair any stale absolute `Icon=` path before backing up or restoring an existing `dev.cominotti.lushtext.desktop` override. Because the staged desktop file also carries `MimeType` associations, the launcher must refresh the applications desktop database after staging or restoring it so GNOME Settings and `gio mime` see current handler metadata.
+
+Normal dev staging is temporary and may use the production desktop ID only while the debug process is running. Persistent dev staging (`LUSHTEXT_DEV_RUN_KEEP_STAGED=1`) must use a non-production ID such as `dev.cominotti.lushtext.Devel`; leaving a same-ID non-Flatpak `~/.local/share/applications/dev.cominotti.lushtext.desktop` shadows the Flatpak export and makes GNOME Settings treat LushText as unsandboxed. Use `make verify-flatpak-identity` after Flatpak or desktop-entry work to confirm the exported desktop entry has `X-Flatpak=dev.cominotti.lushtext`, no same-ID dev shadow exists, effective Flatpak permissions are reported, and required MIME handlers remain registered.
 
 Changing `data/icons/dev.cominotti.lushtext.svg` alone is not enough to refresh every icon surface. The fixed-size PNG fallbacks must be regenerated, and an already-running dev session still needs a fresh Shell app object. Use `make refresh-dock-icon` after icon asset changes: it regenerates the PNG fallbacks from the canonical SVG and then replaces the running dev instance so the dock rebuilds from the fresh file-backed icon.
 
@@ -73,6 +76,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 - Runtime: `org.gnome.Platform` 50, SDK extension: `org.freedesktop.Sdk.Extension.rust-stable`
 - Use `make flatpak` for a local build without installing it
 - Use `make flatpak-install` to build and install the latest checkout into the user Flatpak installation
+- Use `make verify-flatpak-identity` after install/export changes to catch stale same-ID dev launchers and verify `X-Flatpak`, permissions, and MIME registration
 - `build-aux/cargo-sources.json` vendors all Cargo dependencies for offline builds
 - Regenerate after dependency changes: `make cargo-sources` (requires `flatpak-cargo-generator`)
 - Dependency update chain: `cargo update` → `cargo hakari generate` → `make cargo-sources`

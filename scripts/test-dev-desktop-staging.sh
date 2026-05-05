@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+tmpdir="$(mktemp -d)"
+
+cleanup() {
+    rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+
+mkdir -p "$tmpdir/bin" "$tmpdir/target/debug" "$tmpdir/xdg"
+touch "$tmpdir/target/debug/lushtext"
+chmod +x "$tmpdir/target/debug/lushtext"
+
+cat > "$tmpdir/bin/gtk-launch" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$1" > "$GTK_LAUNCH_LOG"
+EOF
+chmod +x "$tmpdir/bin/gtk-launch"
+
+cat > "$tmpdir/bin/update-desktop-database" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$tmpdir/bin/update-desktop-database"
+
+cat > "$tmpdir/bin/gtk4-update-icon-cache" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$tmpdir/bin/gtk4-update-icon-cache"
+
+export PATH="$tmpdir/bin:$PATH"
+export XDG_DATA_HOME="$tmpdir/xdg"
+export CARGO_TARGET_DIR="$tmpdir/target"
+export GTK_LAUNCH_LOG="$tmpdir/gtk-launch.log"
+
+LUSHTEXT_DEV_RUN_NO_EXEC=1 "$repo_root/scripts/run-dev-app.sh"
+if [[ -e "$tmpdir/xdg/applications/dev.cominotti.lushtext.desktop" ]]; then
+    echo "normal no-exec staging left a production desktop entry behind" >&2
+    exit 1
+fi
+
+LUSHTEXT_DEV_RUN_NO_EXEC=1 \
+LUSHTEXT_DEV_RUN_KEEP_STAGED=1 \
+    "$repo_root/scripts/run-dev-app.sh"
+if [[ -e "$tmpdir/xdg/applications/dev.cominotti.lushtext.desktop" ]]; then
+    echo "persistent staging used the production desktop ID" >&2
+    exit 1
+fi
+if [[ ! -f "$tmpdir/xdg/applications/dev.cominotti.lushtext.Devel.desktop" ]]; then
+    echo "persistent staging did not create the development desktop entry" >&2
+    exit 1
+fi
+grep -q '^Name=LushText (Development)$' \
+    "$tmpdir/xdg/applications/dev.cominotti.lushtext.Devel.desktop"
+
+if LUSHTEXT_DEV_RUN_NO_EXEC=1 \
+    LUSHTEXT_DEV_RUN_KEEP_STAGED=1 \
+    LUSHTEXT_DEV_RUN_STAGED_APP_ID=dev.cominotti.lushtext \
+    "$repo_root/scripts/run-dev-app.sh" > "$tmpdir/prod-id.log" 2>&1; then
+    echo "production desktop ID was accepted for persistent staging" >&2
+    exit 1
+fi
+grep -q "must not use production desktop ID" "$tmpdir/prod-id.log"
+
+echo "development desktop staging tests passed"

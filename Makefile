@@ -15,13 +15,14 @@
 #   make check       - clippy + fmt check
 #   make pre-commit  - repo pre-commit gate (fmt + clippy)
 #   make flatpak-install - Build and install Flatpak into the user installation
+#   make verify-flatpak-identity - Verify Flatpak desktop identity and MIME registration
 #   make install-git-hooks - configure this repo to use .githooks/
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless \
        check-fmt check-clippy check pre-commit install-git-hooks clean help \
-       meson-build flatpak flatpak-install cargo-sources \
+       meson-build flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        bench bench-report bench-report-full bench-baseline bench-compare
 
 .DEFAULT_GOAL := help
@@ -163,6 +164,21 @@ flatpak-install:
 	@echo "Building and installing Flatpak..."
 	flatpak-builder --disable-rofiles-fuse --force-clean --user --install build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
 
+# Verify the installed Flatpak export is the active production desktop identity
+verify-flatpak-identity:
+	@echo "Verifying Flatpak desktop identity..."
+	./scripts/verify-flatpak-identity.sh
+
+# Unit-style shell checks for the Flatpak identity verifier
+test-flatpak-identity-verifier:
+	@echo "Testing Flatpak identity verifier..."
+	./scripts/test-flatpak-identity-verifier.sh
+
+# Unit-style shell checks for development desktop-entry staging
+test-dev-desktop-staging:
+	@echo "Testing development desktop-entry staging..."
+	./scripts/test-dev-desktop-staging.sh
+
 # Regenerate cargo-sources.json (requires flatpak-cargo-generator)
 cargo-sources: Cargo.lock
 	@echo "Generating cargo-sources.json..."
@@ -200,6 +216,9 @@ help:
 	@echo "  meson-build     Meson release build (installed layout)"
 	@echo "  flatpak         Build Flatpak (needs flatpak-builder)"
 	@echo "  flatpak-install Build and install Flatpak into the user installation"
+	@echo "  verify-flatpak-identity Verify Flatpak desktop identity and MIME registration"
+	@echo "  test-flatpak-identity-verifier Test the Flatpak identity verifier"
+	@echo "  test-dev-desktop-staging Test dev-run desktop staging behavior"
 	@echo "  cargo-sources   Regenerate cargo-sources.json"
 	@echo ""
 	@echo "Other targets:"

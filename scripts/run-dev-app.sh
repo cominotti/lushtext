@@ -9,7 +9,6 @@ app_id="dev.cominotti.lushtext"
 data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 desktop_dir="$data_home/applications"
 icons_root="$data_home/icons/hicolor"
-desktop_target="$desktop_dir/$app_id.desktop"
 desktop_template="$repo_root/data/$app_id.desktop.in"
 desktop_icon_source="$repo_root/data/icons/hicolor/128x128/apps/$app_id.png"
 desktop_icon_hash="$(sha256sum "$desktop_icon_source" | awk '{ print substr($1, 1, 16) }')"
@@ -20,6 +19,23 @@ build_target="${CARGO_BUILD_TARGET:-}"
 keep_staged="${LUSHTEXT_DEV_RUN_KEEP_STAGED:-0}"
 no_exec="${LUSHTEXT_DEV_RUN_NO_EXEC:-0}"
 force_restart="${LUSHTEXT_DEV_RUN_FORCE_RESTART:-0}"
+desktop_app_id="$app_id"
+
+if [[ "$keep_staged" == "1" ]]; then
+    desktop_app_id="${LUSHTEXT_DEV_RUN_STAGED_APP_ID:-$app_id.Devel}"
+    if [[ "$desktop_app_id" == "$app_id" ]]; then
+        echo "Error: persistent development staging must not use production desktop ID $app_id." >&2
+        echo "Use the default $app_id.Devel ID or set LUSHTEXT_DEV_RUN_STAGED_APP_ID to another non-production ID." >&2
+        exit 1
+    fi
+fi
+
+if [[ "$desktop_app_id" =~ [[:space:]/] ]]; then
+    echo "Error: desktop application ID '$desktop_app_id' is not safe for a desktop filename." >&2
+    exit 1
+fi
+
+desktop_target="$desktop_dir/$desktop_app_id.desktop"
 
 if [[ -n "$build_target" ]]; then
     binary="$target_dir/$build_target/debug/lushtext"
@@ -198,8 +214,13 @@ stage_file() {
 
 install_desktop_icon_target
 
-desktop_tmp="$backup_dir/$app_id.desktop"
+desktop_tmp="$backup_dir/$desktop_app_id.desktop"
+desktop_name="LushText"
+if [[ "$keep_staged" == "1" ]]; then
+    desktop_name="LushText (Development)"
+fi
 sed \
+    -e "s|^Name=.*$|Name=$desktop_name|" \
     -e "s|^Exec=.*$|Exec=$binary %U|" \
     -e "/^Exec=/a TryExec=$binary" \
     -e "s|^Icon=.*$|Icon=$desktop_icon_target|" \
@@ -221,7 +242,7 @@ stage_file "$repo_root/data/icons/hicolor/128x128/apps/dev.cominotti.lushtext.pn
 refresh_shell_metadata
 
 if [[ "$no_exec" == "1" ]]; then
-    echo "Prepared temporary GNOME desktop integration for $app_id"
+    echo "Prepared GNOME desktop integration for $desktop_app_id"
     exit 0
 fi
 
@@ -235,7 +256,7 @@ if (( ${#before_pids[@]} > 0 )); then
         echo "If the dock item came from an older direct launch, close all LushText windows once and rerun make refresh-dock-icon for a fresh Shell association." >&2
     fi
 fi
-gtk-launch "$app_id" "$@"
+gtk-launch "$desktop_app_id" "$@"
 
 new_pids=()
 for _ in $(seq 1 100); do
