@@ -14,18 +14,24 @@
 
   <description>
     <p>
-      LushText is a fast, minimalist text editor for GNOME. It features a
-      left-side file tree, workspace support for organizing projects, and
-      syntax highlighting for common file types.
+      LushText is a fast, minimalist text editor for GNOME. It combines a
+      focused GtkSourceView editing surface with persistent workspaces,
+      adaptive document properties, Markdown preview, notes, local history,
+      and careful draft recovery.
     </p>
     <p>Features:</p>
     <ul>
-      <li>Always-visible file tree sidebar</li>
-      <li>Workspace support with multiple root directories</li>
+      <li>Persistent workspace sidebar with multiple named roots</li>
+      <li>Adaptive document properties pane for metadata, file health, and formatting details</li>
+      <li>Focus Mode for distraction-free writing</li>
+      <li>Native Markdown preview with tables, task lists, callouts, footnotes, and local images</li>
       <li>Syntax highlighting via GtkSourceView</li>
-      <li>Tab-based editing with session persistence</li>
-      <li>Automatic dark mode support</li>
-      <li>Find and replace</li>
+      <li>EditorConfig-aware indentation settings</li>
+      <li>Bookmarks, range notes, document notes, workspace notes, and note export</li>
+      <li>Local history snapshots for saved files</li>
+      <li>Workspace search and safe multi-file Replace All with undo</li>
+      <li>Session restore, autosaved drafts, and external file change monitoring</li>
+      <li>Large-file safeguards, minimap, dark mode, and customizable editor font</li>
     </ul>
   </description>
 
@@ -53,7 +59,7 @@
 
   <screenshots>
     <screenshot type="default">
-      <caption>Editing a Rust file with the file tree sidebar</caption>
+      <caption>Editing a text file with the workspace sidebar</caption>
       <image>https://raw.githubusercontent.com/cominotti/lushtext/main/data/screenshots/editor.png</image>
     </screenshot>
   </screenshots>

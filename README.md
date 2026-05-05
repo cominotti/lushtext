@@ -31,6 +31,157 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Markdown preview** -- side-by-side or full-width preview pane with native GTK rendering for headings, emphasis, code, links, ordered and unordered lists, task lists, blockquotes, GitHub alert callouts, footnotes, and Markdown tables; Alt+P toggles full-width preview
 - **File monitoring** -- detects external changes and offers reload
 
+## Installation and Running
+
+LushText is packaged as a GNOME Flatpak and can also be run directly from a
+source checkout for development.
+
+### Flatpak from this checkout
+
+```sh
+make flatpak
+flatpak-builder --user --install --force-clean build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
+flatpak run dev.cominotti.lushtext
+```
+
+The Flatpak uses `org.gnome.Platform` 50 and requires the matching GNOME SDK.
+If dependencies change, regenerate the vendored Cargo sources before building:
+
+```sh
+make cargo-sources
+```
+
+### Development run
+
+```sh
+make run
+```
+
+`make run` builds the debug binary and temporarily stages a GNOME desktop entry
+and app icon so the running development copy appears correctly in GNOME Shell.
+
+## First Run
+
+1. Open a file with `Ctrl+O`, from the header-bar open button, or by launching
+   `lushtext PATH`.
+2. Add a workspace folder from the left sidebar to browse a project directory.
+3. Use the workspace selector to choose `All workspaces` or one specific root.
+4. Open the command palette with `Ctrl+Shift+P` to search files and commands.
+5. Open the main menu and choose **Keyboard Shortcuts** for the complete
+   shortcut reference shipped with the app.
+
+LushText restores open tabs, pinned tabs, cursor positions, scroll positions,
+workspaces, search state, and recoverable drafts on restart.
+
+## Preferences
+
+Preferences are stored with GSettings under `dev.cominotti.lushtext`.
+
+### Editor
+
+- **Color Scheme** selects the base GtkSourceView style scheme; dark variants
+  are chosen automatically when GNOME is in dark mode.
+- **Use System Monospace Font** and **Custom Font** control editor and sidebar
+  monospace text.
+- **Transparency** adjusts editor and Markdown preview document backgrounds
+  without making window chrome or side panels transparent.
+- **Focus Mode** preferences set the target column width and optional typewriter
+  scrolling.
+- **Use EditorConfig**, **Word Wrap**, **Tab Width**, **Insert Spaces Instead of
+  Tabs**, **Show Line Numbers**, **Highlight Current Line**, **Show Minimap**,
+  **Show Bookmark Gutter**, and **Show Annotation Highlights** control editing
+  behavior and editor decorations.
+
+### Workspace
+
+- **Sidebar Width** chooses the `Small`, `Comfy`, or `Large` workspace sidebar
+  preset.
+- **Auto-Collapse Workspaces** collapses other workspace sections when focusing
+  a folder.
+- **Empty Folder Lookahead Cap** controls how many subdirectories LushText peeks
+  into when deciding whether a folder should be marked `(Empty)`.
+
+Advanced users can inspect or reset settings with:
+
+```sh
+gsettings list-recursively dev.cominotti.lushtext
+gsettings reset-recursively dev.cominotti.lushtext
+```
+
+For Flatpak installs, run those commands inside the sandbox:
+
+```sh
+flatpak run --command=gsettings dev.cominotti.lushtext list-recursively dev.cominotti.lushtext
+```
+
+## Data, Privacy, and Reset
+
+LushText keeps application state under `$XDG_DATA_HOME/lushtext` for source and
+host installs. On typical systems this is `~/.local/share/lushtext`. Flatpak
+installs keep the same app data inside the sandbox, normally under
+`~/.var/app/dev.cominotti.lushtext/data/lushtext`.
+
+Stored state can include document text:
+
+| Path | Contains |
+|------|----------|
+| `session.json` | Open tabs, pinned state, cursor positions, and scroll offsets |
+| `workspaces.json` | Saved workspace roots and names |
+| `drafts/` | Plain-text autosaved drafts for unsaved changes |
+| `bookmarks/` | Saved-file bookmark metadata |
+| `annotations/` | Range-note metadata and note text |
+| `document-notes/` | Per-file document notes |
+| `workspace-notes/` | Per-workspace-root notes |
+| `local-history/` | Local-history snapshots for saved files |
+| `search-history.json` | Recent workspace search queries and options |
+| `saved-searches.json` | Named saved searches |
+| `replace-backup.json` | Temporary undo data for multi-file Replace All |
+
+To fully reset LushText state, close the app and remove that app-data directory.
+For Flatpak installs, also reset the sandboxed GSettings if you want preferences
+back at defaults:
+
+```sh
+flatpak run --command=gsettings dev.cominotti.lushtext reset-recursively dev.cominotti.lushtext
+```
+
+## Flatpak Permissions
+
+The Flatpak manifest grants home-directory file access because LushText is a
+text editor that opens, saves, searches, and renames user files across workspace
+folders. It does not request network access.
+
+| Permission | Why it is used |
+|------------|----------------|
+| `--filesystem=home` | Open, save, search, rename, and delete user-selected files and workspace folders |
+| `--socket=wayland` | Native Wayland display support |
+| `--socket=fallback-x11` and `--share=ipc` | X11 fallback support |
+| `--device=dri` | GTK hardware-accelerated rendering |
+
+## Common Shortcuts
+
+The full shortcut list is available in **Main Menu > Keyboard Shortcuts**.
+
+| Workflow | Shortcut |
+|----------|----------|
+| New tab | `Ctrl+T` |
+| Open file | `Ctrl+O` |
+| Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
+| Close tab | `Ctrl+W` |
+| Print | `Ctrl+P` |
+| Find / Find and Replace | `Ctrl+F` / `Ctrl+H` |
+| Next / previous find match | `Ctrl+G` / `Ctrl+Shift+G` |
+| Command palette | `Ctrl+Shift+P` |
+| Workspace search | `Ctrl+Shift+F` |
+| Workspace search next / previous match | `F4` / `Shift+F4` |
+| Toggle minimap | `Ctrl+Shift+M` |
+| Cycle invisible characters | `Ctrl+Shift+I` |
+| Document properties | `F9` |
+| Fullscreen | `F11` |
+| Focus Mode | `Ctrl+Shift+F11` |
+| Markdown preview-only mode | `Alt+P` |
+| Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |
+
 ## Tech Stack
 
 | Component | Technology |
@@ -82,8 +233,6 @@ LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hoo
 The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel non-widget execution (optional), but it always runs widget tests explicitly through the shared `scripts/run-widget-tests.sh` runner so `make test` still means the full suite. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 
 On GNOME Shell, `make run` temporarily stages a user-local desktop entry plus `hicolor` app icons while the debug binary is running. The staged desktop entry points at a per-run absolute icon file so Shell reloads icon changes reliably during development instead of reusing a stale themed-icon cache entry. If you changed the app icon artwork, use `make refresh-dock-icon`: it regenerates the shipped PNG fallbacks from `data/icons/dev.cominotti.lushtext.svg`, then restarts the current dev instance against a fresh file-backed icon so the dock updates immediately.
-
-Critical rule: pre-existing blockers discovered while implementing or verifying a change must be fixed in the same work stream rather than worked around, deferred, or called out as "pre-existing". No exceptions.
 
 ### Flatpak
 
