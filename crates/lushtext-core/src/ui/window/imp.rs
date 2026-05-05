@@ -116,6 +116,10 @@ pub struct DraftState {
     pub preloaded: RefCell<HashMap<String, PreloadedDraftRestore>>,
     /// Monotonic counter for generating unique IDs for untitled tab drafts.
     pub next_tab_id: Cell<u64>,
+    /// Whether a draft autosave batch is currently writing draft files/manifest state.
+    pub autosave_inflight: Cell<bool>,
+    /// Whether another autosave pass is needed after the in-flight batch finishes.
+    pub autosave_pending: Cell<bool>,
     /// Draft IDs explicitly discarded during an in-progress close flow.
     /// These must not be re-written by `flush_dirty_drafts()` right before the
     /// window is destroyed.
@@ -743,6 +747,10 @@ impl WindowImpl for LushtextWindow {
     fn close_request(&self) -> glib::Propagation {
         let window = self.obj().clone();
         window.clear_close_discard_drafts();
+        if window.has_saving_editors() {
+            window.publish_save_in_progress_warning();
+            return glib::Propagation::Stop;
+        }
         let modified = window.modified_editors();
 
         if modified.is_empty() {

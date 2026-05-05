@@ -241,12 +241,7 @@ fn detect_line_ending(text: &str) -> &'static str {
 fn atomic_write(path: &Path, content: &[u8]) -> anyhow::Result<()> {
     use std::io::Write;
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let tmp_path = parent.join(format!(".{file_name}.replace-tmp"));
+    let tmp_path = durable_write::unique_temp_path(path, "replace");
     let file = std::fs::File::create(&tmp_path)
         .map_err(|e| anyhow::anyhow!("Failed to create {}: {}", tmp_path.display(), e))?;
     let mut writer = std::io::BufWriter::new(file);

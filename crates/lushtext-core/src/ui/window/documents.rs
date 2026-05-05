@@ -208,10 +208,13 @@ impl LushtextWindow {
             {
                 editor.set_draft_dirty(true);
             }
-            if let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade())
-                && window.imp().tab_view.selected_page().as_ref() == Some(&page)
-            {
-                window.refresh_preview_debounced();
+            if let Some(window) = window_weak.upgrade() {
+                window.mark_draft_autosave_pending_if_inflight();
+                if let Some(page) = page_weak.upgrade()
+                    && window.imp().tab_view.selected_page().as_ref() == Some(&page)
+                {
+                    window.refresh_preview_debounced();
+                }
             }
         });
         editor

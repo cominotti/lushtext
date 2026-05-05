@@ -115,7 +115,7 @@ Scale Thresholds (calibrated for GTK4/GtkSourceView5 on 4-core, 8-16GB RAM, SSD)
 
 Review criteria:
 - Size-gated loading: does the code check fs::metadata size BEFORE read_to_string? Are thresholds applied (1MB toast, 10MB no syntax, 50MB no undo, 500MB refuse)?
-- Background save: is fs::write moved to spawn_blocking_then? Is buffer.set_modified(false) called optimistically with rollback on failure?
+- Background save: is file writing moved to spawn_blocking_then? Does it use the durable atomic-write helper, keep the editor state protected while saving, reject duplicate in-flight saves, and clear buffer.modified only after success?
 - Cancel token: does EditorPage store Arc<AtomicBool>? Is it checked before AND after read_to_string? Is cancel_load() called on tab close?
 - Syntax gate: is reapply_language() skipped for files >10MB?
 

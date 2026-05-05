@@ -94,6 +94,16 @@ pub struct DraftState {
     pub draft_restored: Cell<bool>,
 }
 
+/// Save lifecycle state for one editor tab.
+#[derive(Default)]
+pub struct SaveState {
+    /// Whether a background save is currently writing this editor's snapshot.
+    ///
+    /// The modified flag stays true while this is set so close flows cannot treat
+    /// an in-flight durable write as already safe.
+    pub inflight: Cell<bool>,
+}
+
 /// One editor-scoped warning action routed through the shared info bar buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingWarningAction {
@@ -338,6 +348,8 @@ pub struct LushtextEditorPage {
     pub monitor: MonitorState,
     /// Draft lifecycle state.
     pub draft: DraftState,
+    /// Background save lifecycle state.
+    pub save: SaveState,
     /// Per-document encoding, line-ending, and health metadata.
     pub document_metadata: DocumentMetadataState,
     /// File-load lifecycle callbacks.
@@ -385,6 +397,7 @@ impl Default for LushtextEditorPage {
             notification_callback: RefCell::default(),
             monitor: MonitorState::default(),
             draft: DraftState::default(),
+            save: SaveState::default(),
             document_metadata: DocumentMetadataState::default(),
             load: LoadState::default(),
             restore: RestoreState::default(),

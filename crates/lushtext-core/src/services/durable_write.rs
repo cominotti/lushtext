@@ -8,6 +8,29 @@
 //! from remembering the filesystem contract by hand.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Process-local counter for temp-file names that may be created concurrently.
+///
+/// Including the process ID and this counter keeps overlapping writes from
+/// reusing the same temp path while still leaving recognizable filenames for
+/// crash leftovers.
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Build a unique hidden temp path next to the final destination.
+#[must_use]
+pub fn unique_temp_path(path: &Path, tmp_tag: &str) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map_or_else(|| "untitled".into(), |name| name.to_string_lossy());
+    let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(
+        ".{file_name}.{tmp_tag}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ))
+}
 
 /// Atomically replace `path` with `bytes` and sync the renamed directory entry.
 ///
@@ -24,11 +47,7 @@ use std::path::{Path, PathBuf};
 pub fn atomic_write_bytes(path: &Path, tmp_tag: &str, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .map_or_else(|| "untitled".into(), |name| name.to_string_lossy());
-    let tmp_path = parent.join(format!(".{file_name}.{tmp_tag}.tmp"));
+    let tmp_path = unique_temp_path(path, tmp_tag);
     let file = std::fs::File::create(&tmp_path)?;
     let mut writer = std::io::BufWriter::new(file);
     let write_result = writer
@@ -182,8 +201,21 @@ mod tests {
                     .expect("expected operation to succeed")
                     .file_name()
                     .to_string_lossy()
-                    .contains(".test.tmp"))
+                    .contains(".test."))
         );
+    }
+
+    #[test]
+    fn unique_temp_path_changes_between_calls() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("session.json");
+
+        let first = unique_temp_path(&path, "json");
+        let second = unique_temp_path(&path, "json");
+
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(dir.path()));
+        assert_eq!(second.parent(), Some(dir.path()));
     }
 
     #[test]

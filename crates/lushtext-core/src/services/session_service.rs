@@ -8,10 +8,17 @@
 use crate::model::session::SessionData;
 use crate::services::json_store;
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 /// Fixed filename for the global session file.
 const SESSION_FILENAME: &str = "session.json";
+
+fn ordered_session_saves() -> &'static Mutex<HashMap<std::path::PathBuf, u64>> {
+    static SAVES: OnceLock<Mutex<HashMap<std::path::PathBuf, u64>>> = OnceLock::new();
+    SAVES.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Load the global session. Returns default (no tabs) if file doesn't exist.
 ///
@@ -29,6 +36,34 @@ pub fn load(data_dir: &Path) -> Result<SessionData> {
 /// Returns an error if the session file cannot be serialized or written.
 pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
     json_store::save(data_dir, SESSION_FILENAME, session)
+}
+
+/// Save the global session unless a newer snapshot has already been persisted.
+///
+/// Window close uses this to outrank older debounced background saves that may
+/// still be queued behind filesystem I/O. The lock is scoped per process and
+/// per data directory so widget tests using isolated data homes do not interfere
+/// with each other.
+///
+/// # Errors
+///
+/// Returns an error if the session file cannot be serialized or written.
+///
+/// # Panics
+///
+/// Panics if an earlier panic poisoned the process-local session ordering lock.
+pub fn save_ordered(data_dir: &Path, session: &SessionData, generation: u64) -> Result<bool> {
+    let mut generations = ordered_session_saves()
+        .lock()
+        .expect("session save ordering lock poisoned");
+    let accepted_generation = generations.get(data_dir).copied().unwrap_or(0);
+    if generation < accepted_generation {
+        return Ok(false);
+    }
+
+    save(data_dir, session)?;
+    generations.insert(data_dir.to_path_buf(), generation);
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -136,5 +171,30 @@ mod tests {
         assert_eq!(loaded.tabs.len(), 2);
         assert_eq!(loaded.tabs[0].path, Some("/new.rs".into()));
         assert_eq!(loaded.active_tab_index, Some(1));
+    }
+
+    #[test]
+    fn ordered_save_ignores_older_generation_after_newer_snapshot() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let older = SessionData {
+            tabs: vec![tab("/tmp/older.rs", 1)],
+            active_tab_index: Some(0),
+        };
+        let newer = SessionData {
+            tabs: vec![tab("/tmp/newer.rs", 2)],
+            active_tab_index: Some(0),
+        };
+
+        assert!(
+            save_ordered(dir.path(), &newer, 2).expect("expected operation to succeed"),
+            "newer save should be accepted"
+        );
+        assert!(
+            !save_ordered(dir.path(), &older, 1).expect("expected operation to succeed"),
+            "older save should be ignored"
+        );
+
+        let loaded = load(dir.path()).expect("expected operation to succeed");
+        assert_eq!(loaded.tabs[0].path, Some("/tmp/newer.rs".into()));
     }
 }

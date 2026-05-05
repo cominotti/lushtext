@@ -61,7 +61,7 @@ Every finding is anchored to a grep match, validated through a binary decision t
 ## Definitions
 
 - **Persistence operation**: Write to `$XDG_DATA_HOME/lushtext/` (drafts, session, workspaces, search history, saved searches) or GSettings.
-- **Atomic write**: Temp file + flush + rename. Final path is always fully old or fully new.
+- **Atomic write**: Unique temp path in the target directory + temp-file flush/sync + rename + parent-directory sync. Final path is always fully old or fully new, and the renamed directory entry is durable before success is reported on common Linux filesystems.
 - **Fire-and-forget cleanup**: `std::thread::spawn` that ONLY deletes temp files — no manifest or data writes.
 - **Optimistic state clear**: Setting a flag to "clean" BEFORE the async operation completes.
 - **Data loss (flaggable)**: User content (buffer text, file content, draft) permanently unrecoverable. Metadata loss (cursor position, window size) is not flagged.
@@ -80,7 +80,8 @@ Assigned by trigger likelihood (impact is always data loss):
 
 - **Collect candidates**: Read changed `.rs` files from `git diff --name-only` (or known review context). For explicit `/data-safety`, inspect all `.rs` files.
 - **Normalize paths**: Normalize separators to `/`, strip any leading `./`, and derive a **path suffix alias** by removing everything through the last `/src/` when present.
-  - `/repo/crates/lushtext-core/src/ui/window/session.rs` → `ui/window/session.rs`
+  - `/repo/crates/lushtext-core/src/ui/window/drafts.rs` → `ui/window/drafts.rs`
+  - `/repo/crates/lushtext-core/src/ui/window/session_persistence.rs` → `ui/window/session_persistence.rs`
   - `crates/lushtext-core/src/services/session_service.rs` → `services/session_service.rs`
   - `packages/editor-core/src/model/draft.rs` → `model/draft.rs`
 - **Match on suffix aliases, not repo layout**: Trigger matching must work for absolute paths, repo-relative paths, crate-relative paths, and future crate moves/reorgs.
@@ -97,11 +98,11 @@ Launch subagents in parallel via the Agent tool. Skip any whose normalized suffi
 
 | Subagent | Trigger suffixes | Content hints / fallback triggers |
 |---|---|---|
-| `draft-integrity` | `services/draft_service.rs`, `ui/window/session.rs`, `ui/editor_page/**` | `set_draft_dirty`, `draft_dirty`, `write_draft`, `save_manifest`, `find_by_id`, `original_path`, `is_evicted` |
-| `close-flow` | `ui/window/imp.rs`, `ui/window/mod.rs`, `ui/window/dialogs.rs`, `ui/editor_page/mod.rs` | `close_page_finish`, `save_file_async`, `cleanup_drafts`, `on_done(true)`, `.destroy()`, `search_panel.close()` |
+| `draft-integrity` | `services/draft_service.rs`, `ui/window/drafts.rs`, `ui/window/documents.rs`, `ui/editor_page/**` | `set_draft_dirty`, `draft_dirty`, `write_draft`, `save_manifest`, `find_by_id`, `original_path`, `is_evicted`, `autosave_inflight`, `autosave_pending` |
+| `close-flow` | `ui/window/imp.rs`, `ui/window/mod.rs`, `ui/window/dialogs.rs`, `ui/window/tabs.rs`, `ui/editor_page/mod.rs` | `close_page_finish`, `save_file_async`, `is_saving`, `SaveInProgress`, `cleanup_drafts`, `on_done(true)`, `.destroy()`, `search_panel.close()` |
 | `atomic-write` | `ui/**/*.rs`, `services/**/*.rs` | `std::thread::spawn`, `spawn_blocking_then`, `json_store::save`, `save_manifest`, `fs::write`, `write_all`, `rename`, `sync_all`, `sync_data`, `release_slot` |
-| `replace-safety` | `services/content_search.rs`, `ui/search_panel/**`, `ui/window/search.rs` | `undo_backup`, `skip_paths`, `apply_replacements`, `original_line`, `content_mismatch` |
-| `restore-lifecycle` | `services/session_service.rs`, `ui/window/session.rs`, `ui/window/mod.rs`, `ui/editor_page/mod.rs` | `load_completed_callback`, `timeout_add_local_once`, `preloaded_drafts`, `filter_existing_tabs`, `path.exists()`, `set_restore_position`, `apply_restore_position` |
+| `replace-safety` | `services/content_search/**`, `ui/search_panel/**`, `ui/window/search.rs` | `undo_backup`, `skip_paths`, `apply_replacements`, `original_line`, `content_mismatch` |
+| `restore-lifecycle` | `services/session_service.rs`, `ui/window/session_persistence.rs`, `ui/window/drafts.rs`, `ui/window/mod.rs`, `ui/editor_page/mod.rs` | `load_completed_callback`, `timeout_add_local_once`, `preloaded_drafts`, `filter_existing_tabs`, `path.exists()`, `set_restore_position`, `apply_restore_position`, `save_ordered` |
 
 If a future feature moves code into a different crate or package but preserves the normalized suffix and/or hits the same content hints, the same subagent must still trigger.
 
@@ -139,6 +140,11 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > Grep: `save_manifest` across all in-scope files
 > Tree: Can `save_manifest` be called from both `spawn_blocking_then` AND `std::thread::spawn` paths? → No: SAFE. Serialization between callers (mutex, channel)? → Yes: SAFE.
 > FLAG HIGH: "Manifest written from autosave (spawn_blocking_then) and draft delete (thread::spawn). Last-writer-wins race can silently lose manifest entries."
+>
+> **DI-4b: Overlapping draft autosave batches**
+> Grep: `autosave_inflight` and `autosave_pending`
+> Tree: Can a new autosave batch start while a prior batch is still writing drafts and manifest? → No, inflight guard present: SAFE. Edits during inflight mark pending and rerun after completion? → Yes: SAFE.
+> FLAG HIGH: "Overlapping autosave batches write stale manifest snapshots out of order. Last writer wins and can drop newer draft entries."
 >
 > **DI-5: Evicted tab handling in draft flush**
 > Grep: `is_evicted` in flush context
@@ -182,6 +188,11 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > Tree: Does close_request close the search panel before showing save dialog? → No: SAFE. If user cancels close, is the undo backup restored?
 > FLAG HIGH: "Replace All undo backup destroyed on close attempt. Cancelling close doesn't restore it — undo permanently lost."
 >
+> **CF-6: Close while a save is already in flight**
+> Grep: `is_saving` or `SaveInProgress` near tab/window close paths
+> Tree: Can a user close a tab/window while `save_file_async` is still writing? → No, close is cancelled with warning: SAFE. Duplicate save returns `SaveInProgress` and leaves the editor open? → Yes: SAFE.
+> FLAG HIGH: "Close proceeds while the editor is read-only and save is in flight. A failure can happen after the tab/window is gone, leaving no recovery path."
+>
 > **Output**: Same format as draft-integrity.
 
 ---
@@ -197,7 +208,7 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 >
 > **AW-1: Non-atomic write for persistent data**
 > Grep: `fs::write` or `write_all` in functions that write to persistent paths
-> Tree: Writing to a persistent path (under `data_dir()` or similar)? → No: SAFE. Uses temp file + rename pattern? → Yes: SAFE.
+> Tree: Writing to a persistent path (under `data_dir()` or similar)? → No: SAFE. Uses durable temp-file sync + rename + parent-directory sync pattern? → Yes: SAFE.
 > FLAG HIGH: "Direct write to persistent file without atomic temp+rename. Crash during write corrupts file."
 >
 > **AW-2: Persistence I/O via raw thread::spawn**
@@ -214,6 +225,11 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > Grep: `rename` in atomic write functions (e.g., `json_store::save`, `write_draft`)
 > Tree: Is `flush()`, `sync_all()`, or `sync_data()` called on the temp file before rename? → No: FLAG. After successful rename, is the parent directory synced (for example through `durable_write::sync_parent_dir`)? → Yes: SAFE.
 > FLAG HIGH: "Atomic write missing temp-file sync or parent-directory sync. Power loss on ext4/XFS/Btrfs can lose the new bytes or the renamed directory entry."
+>
+> **AW-5: Shared temp path for concurrent writers**
+> Grep: temp path construction near atomic writes (`with_extension("tmp")`, `.tmp`, or `unique_temp_path`)
+> Tree: Does each atomic write use `durable_write::unique_temp_path` or another collision-resistant temp name in the final directory? → Yes: SAFE. Can two saves of the same final path use the same temp path concurrently?
+> FLAG HIGH: "Concurrent writers share one temp path. One writer can rename or delete the other's temp file, causing failed saves or stale bytes."
 >
 > **Output**: Same format as draft-integrity.
 
@@ -325,7 +341,7 @@ Present findings as:
     **Fix**: Track per-save results. Only cleanup/destroy when ALL saves succeed.
 
     #### [HIGH] DI-1: Draft dirty flag not restored on write error
-    **File**: `ui/window/session.rs:408`
+    **File**: `ui/window/drafts.rs:408`
     ...
 
     ### Clean Domains

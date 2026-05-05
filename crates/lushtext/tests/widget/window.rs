@@ -1821,6 +1821,58 @@ fn test_modified_markers_clear_after_save() {
 }
 
 #[test]
+fn test_close_tab_is_blocked_while_save_is_in_progress() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    let editor = active_editor(&window);
+    let temp = tempfile::NamedTempFile::new().expect("temp file");
+    editor.set_file_path(temp.path());
+    editor.imp().file_size.set(Some(10_000_000));
+    editor.buffer().set_text(&"x".repeat(70_000));
+
+    let save_done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let save_done_clone = save_done.clone();
+    editor.save_file_async(move |result| {
+        result.expect("save should succeed");
+        save_done_clone.set(true);
+    });
+    assert!(editor.is_saving());
+
+    let page = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("selected page");
+    let close_confirmed = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let close_confirmed_clone = close_confirmed.clone();
+    window.confirm_close_tab(&page, &editor, move |confirmed| {
+        *close_confirmed_clone.borrow_mut() = Some(confirmed);
+    });
+
+    assert_eq!(*close_confirmed.borrow(), Some(false));
+    wait_until(Duration::from_secs(2), || save_done.get());
+}
+
+#[test]
+fn test_draft_autosave_marks_pending_when_editing_during_inflight_batch() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    let editor = active_editor(&window);
+    window.imp().drafts.autosave_inflight.set(true);
+    editor.buffer().set_text("changed during autosave");
+
+    assert!(window.imp().drafts.autosave_pending.get());
+    window.imp().drafts.autosave_inflight.set(false);
+    window.imp().drafts.autosave_pending.set(false);
+}
+
+#[test]
 fn test_properties_pane_collapses_before_workspace_pane() {
     ensure_gtk_init();
 

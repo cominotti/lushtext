@@ -196,6 +196,30 @@ impl super::LushtextWindow {
         result
     }
 
+    /// Return whether any open editor is currently saving on a background thread.
+    #[must_use]
+    pub fn has_saving_editors(&self) -> bool {
+        let tab_view = &self.imp().tab_view;
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            let child = page.child();
+            if let Some(editor) = child.downcast_ref::<LushtextEditorPage>()
+                && editor.is_saving()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Publish the shared close-flow warning for tabs whose save is still running.
+    pub(crate) fn publish_save_in_progress_warning(&self) {
+        self.publish_status_message(
+            "Save is still in progress. Wait for it to finish before closing.",
+            MessageKind::Warning,
+        );
+    }
+
     /// Show the "Save Changes?" dialog for the given modified editors.
     /// Calls `on_done(confirmed)` after the user responds — `true` means
     /// proceed with close (save or discard completed), `false` means cancel.
@@ -423,6 +447,11 @@ impl super::LushtextWindow {
         editor: &LushtextEditorPage,
         confirm_close: F,
     ) {
+        if editor.is_saving() {
+            self.publish_save_in_progress_warning();
+            confirm_close(false);
+            return;
+        }
         if !editor.is_modified() {
             confirm_close(true);
             return;

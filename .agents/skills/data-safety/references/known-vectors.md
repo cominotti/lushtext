@@ -3,30 +3,32 @@
 Calibration catalog for data-safety subagents. Each entry documents a confirmed or calibration-relevant data loss pattern with its location, the specific code that causes it, the user scenario, and a safe counterexample where one exists. Subagents use this to distinguish genuinely dangerous code from similar-looking safe patterns.
 
 All paths are written as normalized suffixes relative to any `*/src/` root.
-- `/repo/crates/lushtext-core/src/ui/window/session.rs` → `ui/window/session.rs`
+- `/repo/crates/lushtext-core/src/ui/window/drafts.rs` → `ui/window/drafts.rs`
+- `/repo/crates/lushtext-core/src/ui/window/session_persistence.rs` → `ui/window/session_persistence.rs`
 - `packages/editor-core/src/services/session_service.rs` → `services/session_service.rs`
 
 ---
 
 ## Draft Persistence
 
-### DI-1: Optimistic dirty-flag clear (CONFIRMED)
-**Location**: `ui/window/session.rs` — `autosave_tick()` function
-**Code**: `editor.set_draft_dirty(false)` is called BEFORE `spawn_blocking_then` that writes drafts. The `then` callback logs errors but does NOT call `set_draft_dirty(true)`.
+### DI-1: Optimistic dirty-flag clear (CONFIRMED HISTORICAL)
+**Former location**: `ui/window/session.rs`; current workflow owner: `ui/window/drafts.rs` — `autosave_tick()` function
+**Old code**: `editor.set_draft_dirty(false)` was called BEFORE `spawn_blocking_then` that writes drafts. The `then` callback logged errors but did NOT call `set_draft_dirty(true)`.
 **Scenario**: Disk full → `write_draft` fails → dirty flag stays false → user makes no edits in next 5s → next autosave skips tab → app closes → draft not on disk → content lost.
-**Safe counterexample**: `save_file_async` in `ui/editor_page/mod.rs` calls `set_modified(false)` optimistically but DOES call `set_modified(true)` on error. That's the correct pattern.
+**Current guardrail**: Draft autosave keeps batches serialized with inflight/pending state and restores dirty state on write failure. `save_file_async` must not clear `buffer.modified` until the durable write succeeds.
 
-### DI-3: Stale manifest path after rename (CONFIRMED)
-**Location**: `ui/window/session.rs` — autosave tick, manifest upsert block
-**Code**: `original_path` is read from `manifest.find_by_id(draft_id)` (the existing manifest entry) instead of from `editor.file_path()` (the live, post-rename path).
+### DI-3: Stale manifest path after rename (CONFIRMED HISTORICAL)
+**Former location**: `ui/window/session.rs`; current workflow owner: `ui/window/drafts.rs` — autosave tick, manifest upsert block
+**Old code**: `original_path` was read from `manifest.find_by_id(draft_id)` (the existing manifest entry) instead of from `editor.file_path()` (the live, post-rename path).
 **Scenario**: User renames file in sidebar → `editor.file_path()` updated → autosave reads old path from manifest → writes manifest with old path → crash → draft orphaned from new path → `find_by_path` with new path returns None → draft not applied on next startup.
 
-### DI-4: Concurrent manifest writes (CONFIRMED)
-**Location**: `ui/window/session.rs`
+### DI-4: Concurrent manifest writes (CONFIRMED HISTORICAL)
+**Former location**: `ui/window/session.rs`; current workflow owner: `ui/window/drafts.rs`
 - `autosave_tick()` uses `spawn_blocking_then` → calls `save_manifest`
 - `delete_draft_by_id()` uses `std::thread::spawn` → calls `save_manifest`
-**Code**: Both paths clone the in-memory manifest at call time and write it independently. No serialization between them.
+**Old code**: Both paths cloned the in-memory manifest at call time and wrote it independently. No serialization between them.
 **Scenario**: Tab close triggers `delete_draft_by_id` (thread A clones manifest after removal). Simultaneously, autosave fires (thread B clones manifest with removal already applied but also with new draft data). Thread A writes first, thread B overwrites. Or vice versa — either way, one write's changes are lost.
+**Current guardrail**: Persistent draft writes should go through the guarded async path; overlapping autosave batches must be serialized with a pending rerun when edits arrive mid-flight.
 
 ---
 
@@ -56,11 +58,11 @@ All paths are written as normalized suffixes relative to any `*/src/` root.
 
 ## Atomic Writes and Concurrency
 
-### AW-2: Raw thread::spawn for persistence (CONFIRMED)
-**Location**: `ui/window/session.rs` — `delete_draft_by_id()`
-**Code**: `std::thread::spawn` calling `delete_draft_file` + `save_manifest`
+### AW-2: Raw thread::spawn for persistence (CONFIRMED HISTORICAL)
+**Former location**: `ui/window/session.rs`; current workflow owner: `ui/window/drafts.rs` — `delete_draft_by_id()`
+**Old code**: `std::thread::spawn` called `delete_draft_file` + `save_manifest`
 **Why not fire-and-forget**: `save_manifest` writes the FULL manifest to disk. This is a persistence operation.
-**Safe counterexample**: Temp file cleanup after failed inline-create in sidebar uses `std::thread::spawn` for JUST deleting a temp file. That IS fire-and-forget cleanup and is acceptable.
+**Current guardrail**: Draft deletion uses `spawn_blocking_then` plus manifest update helpers so it stays under the concurrency guard and merges against the current on-disk manifest. Temp file cleanup after failed inline-create in sidebar uses `std::thread::spawn` for JUST deleting a temp file. That IS fire-and-forget cleanup and is acceptable.
 
 ### AW-3: Panic slot leak (CONFIRMED — LOW LIKELIHOOD)
 **Location**: `services/async_task.rs` — `spawn_blocking_then` implementation
@@ -68,11 +70,17 @@ All paths are written as normalized suffixes relative to any `*/src/` root.
 **Scenario**: If a work closure panics (e.g., serde panic on corrupt data), `release_slot()` is never called. ACTIVE_THREADS stays incremented. After 8 such panics, all `spawn_blocking_then` calls enter the 50ms retry loop permanently.
 **Likelihood**: Very low — work closures are simple I/O. But possible with corrupt files.
 
-### AW-4: Missing parent-directory sync after atomic rename (CONFIRMED)
+### AW-4: Missing parent-directory sync after atomic rename (CONFIRMED HISTORICAL)
 **Location**: `services/json_store.rs`, `services/draft_service.rs`, `services/editor_io.rs`, `services/content_search/replace.rs`, `services/local_history_service.rs`
-**Code**: Atomic write helpers flushed and `sync_all()`ed the temp file before `std::fs::rename`, but returned immediately after rename without syncing the containing directory. Local-history migration also renamed/copy-then-removed snapshot files without making the destination entry durable first.
+**Old code**: Atomic write helpers flushed and `sync_all()`ed the temp file before `std::fs::rename`, but returned immediately after rename without syncing the containing directory. Local-history migration also renamed/copy-then-removed snapshot files without making the destination entry durable first.
 **Scenario**: Power loss after rename on ext4, XFS, or Btrfs can preserve the synced temp-file bytes while losing the directory entry update. The app may restart with the old JSON state, old draft file, old saved document, missing Replace All rollback state, or a broken local-history lineage.
-**Safe counterexample**: `durable_write::sync_parent_dir(path)` after a successful rename makes the new directory entry durable. `durable_write::copy_file_durable()` makes cross-filesystem fallback copies durable before deleting the source.
+**Current guardrail**: `durable_write::atomic_write_bytes` and call sites using `durable_write::sync_parent_dir(path)` after successful rename make the new directory entry durable. `durable_write::copy_file_durable()` makes cross-filesystem fallback copies durable before deleting the source.
+
+### AW-5: Shared temp path for concurrent writers (CONFIRMED HISTORICAL)
+**Location**: `services/json_store.rs`, `services/draft_service.rs`, `services/editor_io.rs`, `services/content_search/replace.rs`
+**Old code**: Several atomic writers derived temp paths only from the final file name, such as `.tmp`, so concurrent writes to the same final path shared one temp file.
+**Scenario**: Two saves of the same file overlap. Writer A syncs and renames the temp path while writer B is still writing, or writer B recreates the same temp path after writer A opened it. The final rename can fail or persist stale bytes.
+**Current guardrail**: Use `durable_write::unique_temp_path(final_path, tag)` so each writer gets a collision-resistant temp path in the final directory.
 
 ---
 

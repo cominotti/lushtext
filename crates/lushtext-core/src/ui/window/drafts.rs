@@ -257,6 +257,11 @@ impl super::LushtextWindow {
 
     /// Single autosave tick: collect dirty tabs and write drafts.
     fn autosave_tick(&self) {
+        if self.imp().drafts.autosave_inflight.get() {
+            self.imp().drafts.autosave_pending.set(true);
+            return;
+        }
+
         let tab_view = &self.imp().tab_view;
         let mut dirty_tabs = Vec::new();
 
@@ -291,6 +296,7 @@ impl super::LushtextWindow {
         let manifest = self.imp().drafts.manifest.borrow().clone();
         let data_dir = json_store::data_dir();
         let window_weak = self.downgrade();
+        self.imp().drafts.autosave_inflight.set(true);
 
         async_task::spawn_blocking_then(
             (),
@@ -344,6 +350,7 @@ impl super::LushtextWindow {
             },
             move |(), result| {
                 if let Some(window) = window_weak.upgrade() {
+                    window.imp().drafts.autosave_inflight.set(false);
                     if let Some(manifest) = result.manifest {
                         *window.imp().drafts.manifest.borrow_mut() = manifest;
                     }
@@ -361,9 +368,21 @@ impl super::LushtextWindow {
                             }
                         }
                     }
+                    let rerun = window.imp().drafts.autosave_pending.get();
+                    window.imp().drafts.autosave_pending.set(false);
+                    if rerun {
+                        window.autosave_tick();
+                    }
                 }
             },
         );
+    }
+
+    /// Remember that a fresh autosave pass is needed after the active batch.
+    pub(crate) fn mark_draft_autosave_pending_if_inflight(&self) {
+        if self.imp().drafts.autosave_inflight.get() {
+            self.imp().drafts.autosave_pending.set(true);
+        }
     }
 
     /// Check whether a file-backed editor has restored draft content available.

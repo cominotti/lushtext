@@ -200,6 +200,99 @@ fn test_save_file_writes_content() {
 }
 
 #[test]
+fn test_save_keeps_document_dirty_until_background_write_finishes() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+    let tmp = tempfile::NamedTempFile::new().expect("expected operation to succeed");
+    let path = tmp.path().to_path_buf();
+    let content = "x".repeat(70_000);
+
+    page.imp().file_path.replace(Some(path.clone()));
+    page.imp().file_size.set(Some(10_000_000));
+    buffer.set_text(&content);
+
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_clone = done.clone();
+    page.save_file_async(move |r| {
+        r.expect("expected operation to succeed");
+        done_clone.set(true);
+    });
+
+    assert!(page.is_saving());
+    assert!(page.is_modified());
+    assert!(!page.source_view().is_editable());
+
+    wait_until(std::time::Duration::from_secs(2), || done.get());
+    assert!(!page.is_saving());
+    assert!(!page.is_modified());
+    assert!(page.source_view().is_editable());
+    assert_eq!(
+        std::fs::read_to_string(path).expect("expected operation to succeed"),
+        content
+    );
+}
+
+#[test]
+fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let tmp = tempfile::NamedTempFile::new().expect("expected operation to succeed");
+
+    page.imp().file_path.replace(Some(tmp.path().to_path_buf()));
+    page.imp().file_size.set(Some(10_000_000));
+    page.buffer().set_text(&"x".repeat(70_000));
+
+    let first_done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let first_done_clone = first_done.clone();
+    page.save_file_async(move |r| {
+        r.expect("expected operation to succeed");
+        first_done_clone.set(true);
+    });
+
+    let duplicate_result: std::rc::Rc<
+        std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::SaveError>>>,
+    > = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let duplicate_result_clone = duplicate_result.clone();
+    page.save_file_async(move |r| {
+        *duplicate_result_clone.borrow_mut() = Some(r);
+    });
+
+    let duplicate_result = duplicate_result
+        .borrow_mut()
+        .take()
+        .expect("duplicate save should finish synchronously");
+    assert!(matches!(
+        duplicate_result,
+        Err(lushtext_core::ui::editor_page::SaveError::SaveInProgress)
+    ));
+
+    wait_until(std::time::Duration::from_secs(2), || first_done.get());
+}
+
+#[test]
+fn test_failed_save_restores_previous_modified_state() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let dir = tempfile::TempDir::new().expect("expected operation to succeed");
+
+    page.imp().file_path.replace(Some(dir.path().to_path_buf()));
+    page.buffer().set_text("unsaved content");
+
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_clone = done.clone();
+    page.save_file_async(move |r| {
+        assert!(r.is_err());
+        done_clone.set(true);
+    });
+
+    wait_until(std::time::Duration::from_secs(2), || done.get());
+    assert!(!page.is_saving());
+    assert!(page.is_modified());
+    assert!(page.source_view().is_editable());
+}
+
+#[test]
 fn test_title_with_file_path() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();

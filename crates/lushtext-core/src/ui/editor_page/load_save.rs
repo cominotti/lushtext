@@ -30,6 +30,7 @@ type SaveCallback = Box<dyn FnOnce(Result<(), SaveError>)>;
 type ChunkedCallback = Rc<RefCell<Option<Box<dyn FnOnce(String)>>>>;
 
 /// Temporary view flags captured while chunked snapshotting makes the editor read-only.
+#[derive(Clone, Copy)]
 struct ViewInteractivityState {
     editable: bool,
     cursor_visible: bool,
@@ -187,19 +188,24 @@ impl LushtextEditorPage {
         callback: F,
     ) {
         let callback: SaveCallback = Box::new(callback);
+        if self.imp().save.inflight.get() {
+            callback(Err(SaveError::SaveInProgress));
+            return;
+        }
+
+        self.imp().save.inflight.set(true);
+        let view = self.source_view().clone();
+        let restore_state = ViewInteractivityState {
+            editable: view.is_editable(),
+            cursor_visible: view.is_cursor_visible(),
+        };
+        view.set_editable(false);
+        view.set_cursor_visible(false);
 
         if self.file_size().unwrap_or_default() >= LARGE_SAVE_SNAPSHOT_THRESHOLD {
-            let view = self.source_view().clone();
-            let restore_state = ViewInteractivityState {
-                editable: view.is_editable(),
-                cursor_visible: view.is_cursor_visible(),
-            };
-            view.set_editable(false);
-            view.set_cursor_visible(false);
-
             let editor = self.clone();
             snapshot_buffer_text_async(self.buffer(), move |text| {
-                editor.write_snapshot_async(path, text, Some(restore_state), callback);
+                editor.write_snapshot_async(path, text, restore_state, callback);
             });
             return;
         }
@@ -208,7 +214,7 @@ impl LushtextEditorPage {
         let text = buffer
             .text(&buffer.start_iter(), &buffer.end_iter(), true)
             .to_string();
-        self.write_snapshot_async(path, text, None, callback);
+        self.write_snapshot_async(path, text, restore_state, callback);
     }
 
     /// Store a cursor and scroll position to apply after the next async load.
@@ -278,11 +284,11 @@ impl LushtextEditorPage {
         &self,
         path: PathBuf,
         text: String,
-        restore_view_state: Option<ViewInteractivityState>,
+        restore_view_state: ViewInteractivityState,
         callback: SaveCallback,
     ) {
         self.prepare_local_history_for_save();
-        self.buffer().set_modified(false);
+        let was_modified_before_save = self.buffer().is_modified();
         let metadata = self.document_encoding_state();
         let formatting_overrides = self.formatting_overrides();
         let allow_lossy = self.take_lossy_save_once();
@@ -328,18 +334,20 @@ impl LushtextEditorPage {
                 ))
             },
             move |editor, result| {
-                if let Some(restore) = restore_view_state {
-                    editor.source_view().set_editable(restore.editable);
-                    editor
-                        .source_view()
-                        .set_cursor_visible(restore.cursor_visible);
-                }
+                editor
+                    .source_view()
+                    .set_editable(restore_view_state.editable);
+                editor
+                    .source_view()
+                    .set_cursor_visible(restore_view_state.cursor_visible);
+                editor.imp().save.inflight.set(false);
 
                 match result {
                     Ok((size, mtime, clean_text, saved_buffer_text)) => {
                         if let Some(saved_buffer_text) = saved_buffer_text {
                             editor.replace_buffer_after_save_formatting(&saved_buffer_text);
                         }
+                        editor.buffer().set_modified(false);
                         editor.imp().file_size.set(Some(size));
                         editor.imp().size_check.set(FileSizeCheck::classify(size));
                         let mut state = editor.document_encoding_state();
@@ -383,7 +391,7 @@ impl LushtextEditorPage {
                         callback(Ok(()));
                     }
                     Err(error) => {
-                        editor.buffer().set_modified(true);
+                        editor.buffer().set_modified(was_modified_before_save);
                         editor.complete_local_history_after_save_failure();
                         callback(Err(error));
                     }

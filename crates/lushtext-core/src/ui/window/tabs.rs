@@ -334,6 +334,11 @@ impl LushtextWindow {
         // Close from right to left so page indices and selection adjustments
         // stay stable while `page_detached` updates shell bookkeeping.
         targets.sort_by_key(|page| Reverse(self.imp().tab_view.page_position(page)));
+        if targets.iter().any(page_has_saving_editor) {
+            self.publish_save_in_progress_warning();
+            self.refresh_tab_context_menu(None);
+            return;
+        }
         let modified_targets = collect_modified_close_targets(&targets);
         let close_count = targets.len();
         let window = self.clone();
@@ -436,6 +441,13 @@ fn collect_modified_close_targets(
             editor.is_modified().then(|| (page.clone(), editor))
         })
         .collect()
+}
+
+/// Return whether a tab page owns an editor with an in-flight background save.
+fn page_has_saving_editor(page: &libadwaita::TabPage) -> bool {
+    page.child()
+        .downcast::<LushtextEditorPage>()
+        .is_ok_and(|editor| editor.is_saving())
 }
 
 /// Use the editor title when available so status messages do not include the modified dot.

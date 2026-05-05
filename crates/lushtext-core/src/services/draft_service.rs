@@ -258,7 +258,7 @@ pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()>
         .with_context(|| format!("failed to create drafts dir: {}", dir.display()))?;
 
     let path = dir.join(format!("{draft_id}.draft"));
-    let tmp_path = dir.join(format!(".{draft_id}.draft.tmp"));
+    let tmp_path = durable_write::unique_temp_path(&path, "draft");
 
     let mut file = std::fs::File::create(&tmp_path)
         .with_context(|| format!("failed to create temp draft: {}", tmp_path.display()))?;

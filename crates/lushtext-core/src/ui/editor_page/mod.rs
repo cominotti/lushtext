@@ -241,6 +241,12 @@ impl LushtextEditorPage {
         self.buffer().is_modified()
     }
 
+    /// Return whether this tab has a background save in progress.
+    #[must_use]
+    pub fn is_saving(&self) -> bool {
+        self.imp().save.inflight.get()
+    }
+
     /// Evict buffer content to free memory. The tab reloads from disk when re-focused.
     pub fn evict(&self) {
         self.imp().evicted.set(true);

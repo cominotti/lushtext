@@ -129,6 +129,8 @@ pub enum LoadError {
 pub enum SaveError {
     #[error("No file path set")]
     NoPath,
+    #[error("Save already in progress")]
+    SaveInProgress,
     #[error("Saving as {encoding} would replace {issue_count} character(s)")]
     LossyEncoding {
         encoding: DocumentEncoding,
@@ -709,14 +711,7 @@ fn encode_text(
 
 /// Write already-prepared bytes to disk atomically.
 fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
-    let tmp_name = format!(
-        ".{}.tmp",
-        path.file_name().map_or_else(
-            || "untitled".to_string(),
-            |name| name.to_string_lossy().into_owned()
-        )
-    );
-    let tmp_path = path.with_file_name(&tmp_name);
+    let tmp_path = durable_write::unique_temp_path(path, "save");
     let file = std::fs::File::create(&tmp_path).map_err(|source| SaveError::WriteTemp {
         path: tmp_path.clone(),
         source,

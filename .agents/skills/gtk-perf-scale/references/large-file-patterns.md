@@ -32,7 +32,7 @@ The key insight: `fs::metadata` is a stat() call — fast even on network filesy
 
 ## 2. Background Save {#2-background-save}
 
-**Status: IMPLEMENTED** — `save_file_async` uses atomic write (temp file + `rename`) on a background thread via `spawn_blocking_then`.
+**Status: IMPLEMENTED** — `save_file_async` uses durable atomic write (unique temp file + temp-file sync + `rename` + parent-directory sync) on a background thread via `spawn_blocking_then`.
 
 ```rust
 pub fn save_file_async(&self) -> bool {
@@ -40,33 +40,35 @@ pub fn save_file_async(&self) -> bool {
         Some(p) => p,
         None => return false, // No path set — caller should show Save As dialog
     };
+    if self.is_saving() {
+        return false; // Duplicate in-flight saves are rejected.
+    }
 
     let buffer = self.buffer();
     let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
     let content = text.to_string();
-
-    // Mark as non-modified immediately so the user sees the tab title
-    // update right away. If save fails, we'll re-mark as modified.
-    buffer.set_modified(false);
+    let was_modified = buffer.is_modified();
+    self.set_saving(true); // Keeps the view read-only while the snapshot is written.
 
     async_task::spawn_blocking_then(
         self.clone(),
         move || -> Result<u64, String> {
             let bytes = content.as_bytes();
-            std::fs::write(&path, bytes)
+            editor_io::write_bytes_to_path(&path, bytes)
                 .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
             Ok(bytes.len() as u64)
         },
         |editor, result| {
+            editor.set_saving(false);
             match result {
                 Ok(written) => {
+                    editor.buffer().set_modified(false);
                     editor.imp().file_size.set(Some(written));
                     // Push success message to status bar (via window callback)
                 }
                 Err(msg) => {
                     tracing::error!("{}", msg);
-                    // Re-mark as modified since save failed
-                    editor.buffer().set_modified(true);
+                    editor.buffer().set_modified(was_modified);
                     // Push error message to status bar
                 }
             }
@@ -77,7 +79,7 @@ pub fn save_file_async(&self) -> bool {
 }
 ```
 
-Design choice: `buffer.set_modified(false)` is called *before* the async write, not after. This gives instant visual feedback (tab title loses the dot). If the write fails, the `then` callback re-marks the buffer as modified. This is the UX pattern used by VS Code and most modern editors — optimistic UI with rollback on failure.
+Design choice: `buffer.set_modified(false)` is called only after the durable write succeeds. The editor stays temporarily read-only while saving, and duplicate save requests fail fast with an in-flight error. This avoids a clean-looking tab whose content has not reached disk yet, and keeps close flows from destroying the last recovery surface before the save result is known.
 
 **RAM impact**: The `text.to_string()` call creates a copy of the buffer content for the background thread. For a 50MB file, this temporarily adds ~50MB to memory (the original buffer content + the String copy). The copy is freed when the background closure completes. This is unavoidable — GTK buffer content cannot be sent across threads directly. For full analysis of this save-path memory doubling pattern, see `gtk-perf-rust-optimize/references/allocation-patterns.md` section 2.
 

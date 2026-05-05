@@ -86,10 +86,11 @@ impl super::LushtextWindow {
             }
             let session = window.collect_session();
             let data_dir = json_store::data_dir();
+            let generation = u64::from(generation);
             async_task::spawn_blocking_then(
                 (),
                 move || {
-                    if let Err(e) = session_service::save(&data_dir, &session) {
+                    if let Err(e) = session_service::save_ordered(&data_dir, &session, generation) {
                         tracing::error!("Failed to save session: {e}");
                     }
                 },
@@ -100,9 +101,11 @@ impl super::LushtextWindow {
 
     /// Synchronous session save for the close-request path.
     pub fn save_session_sync(&self) {
+        let generation = self.imp().session.save_generation.get().wrapping_add(1);
+        self.imp().session.save_generation.set(generation);
         let session = self.collect_session();
         let data_dir = json_store::data_dir();
-        if let Err(e) = session_service::save(&data_dir, &session) {
+        if let Err(e) = session_service::save_ordered(&data_dir, &session, u64::from(generation)) {
             tracing::error!("Failed to save session on close: {e}");
         }
     }

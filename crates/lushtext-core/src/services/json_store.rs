@@ -51,7 +51,7 @@ pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<
     durable_write::create_dir_all_durable(data_dir)
         .with_context(|| format!("failed to create {}", data_dir.display()))?;
     let path = data_dir.join(filename);
-    let tmp_path = data_dir.join(format!(".{filename}.tmp"));
+    let tmp_path = durable_write::unique_temp_path(&path, "json");
     let file = std::fs::File::create(&tmp_path)
         .with_context(|| format!("failed to create {}", tmp_path.display()))?;
     let mut writer = BufWriter::new(file);
