@@ -232,7 +232,7 @@ LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hoo
 
 The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel non-widget execution (optional), but it always runs widget tests explicitly through the shared `scripts/run-widget-tests.sh` runner so `make test` still means the full suite. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 
-On GNOME Shell, `make run` temporarily stages a user-local desktop entry plus `hicolor` app icons while the debug binary is running. The staged desktop entry points at a per-run absolute icon file so Shell reloads icon changes reliably during development instead of reusing a stale themed-icon cache entry. If you changed the app icon artwork, use `make refresh-dock-icon`: it regenerates the shipped PNG fallbacks from `data/icons/dev.cominotti.lushtext.svg`, then restarts the current dev instance against a fresh file-backed icon so the dock updates immediately.
+On GNOME Shell, `make run` temporarily stages a user-local desktop entry plus `hicolor` app icons while the debug binary is running. The staged desktop entry points at a content-addressed absolute icon file so Shell reloads icon changes reliably during development instead of reusing a stale themed-icon cache entry. The launcher also repairs any stale user-local LushText desktop entry whose absolute `Icon=` path no longer exists. If you changed the app icon artwork, use `make refresh-dock-icon`: it regenerates the shipped PNG fallbacks from `data/icons/dev.cominotti.lushtext.svg`, then restarts the current dev instance against a fresh file-backed icon so the dock updates immediately.
 
 ### Flatpak
 

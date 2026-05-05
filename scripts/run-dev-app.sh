@@ -12,7 +12,9 @@ icons_root="$data_home/icons/hicolor"
 desktop_target="$desktop_dir/$app_id.desktop"
 desktop_template="$repo_root/data/$app_id.desktop.in"
 desktop_icon_source="$repo_root/data/icons/hicolor/128x128/apps/$app_id.png"
-desktop_icon_target="$data_home/icons/lushtext-dev-run/$app_id-$$-$RANDOM.png"
+desktop_icon_hash="$(sha256sum "$desktop_icon_source" | awk '{ print substr($1, 1, 16) }')"
+desktop_icon_dir="$data_home/icons/lushtext-dev-run"
+desktop_icon_target="$desktop_icon_dir/$app_id-$desktop_icon_hash.png"
 target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
 build_target="${CARGO_BUILD_TARGET:-}"
 keep_staged="${LUSHTEXT_DEV_RUN_KEEP_STAGED:-0}"
@@ -65,6 +67,9 @@ cleanup() {
     for index in "${!replaced_targets[@]}"; do
         rm -f -- "${replaced_targets[$index]}"
         mv -- "${replaced_backups[$index]}" "${replaced_targets[$index]}"
+        if [[ "${replaced_targets[$index]}" == "$desktop_target" ]]; then
+            repair_desktop_entry_icon "${replaced_targets[$index]}"
+        fi
     done
 
     refresh_shell_metadata
@@ -82,6 +87,39 @@ refresh_shell_metadata() {
     elif command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache -qtf "$icons_root" >/dev/null 2>&1 || true
     fi
+}
+
+desktop_entry_icon_path() {
+    local desktop_file="$1"
+
+    awk -F= '$1 == "Icon" { print substr($0, index($0, "=") + 1); exit }' "$desktop_file"
+}
+
+install_desktop_icon_target() {
+    mkdir -p -- "$desktop_icon_dir"
+    install -m 0644 -- "$desktop_icon_source" "$desktop_icon_target"
+}
+
+repair_desktop_entry_icon() {
+    local desktop_file="$1"
+    local icon_path
+    local repaired
+
+    [[ -f "$desktop_file" ]] || return 0
+
+    icon_path="$(desktop_entry_icon_path "$desktop_file")"
+    if [[ "$icon_path" != /* || -e "$icon_path" ]]; then
+        return 0
+    fi
+
+    repaired="$backup_dir/$(basename -- "$desktop_file").repaired.$RANDOM"
+    if grep -q '^Icon=' "$desktop_file"; then
+        sed -e "s|^Icon=.*$|Icon=$desktop_icon_target|" "$desktop_file" > "$repaired"
+    else
+        cp -- "$desktop_file" "$repaired"
+        printf 'Icon=%s\n' "$desktop_icon_target" >> "$repaired"
+    fi
+    install -m 0644 -- "$repaired" "$desktop_file"
 }
 
 matching_binary_pids() {
@@ -142,7 +180,8 @@ stage_file() {
     mkdir -p -- "$(dirname -- "$dst")"
 
     if [[ -e "$dst" ]]; then
-        local backup="$backup_dir/$(basename -- "$dst").$RANDOM.bak"
+        local backup
+        backup="$backup_dir/$(basename -- "$dst").$RANDOM.bak"
         mv -- "$dst" "$backup"
         replaced_targets+=("$dst")
         replaced_backups+=("$backup")
@@ -153,7 +192,7 @@ stage_file() {
     install -m 0644 -- "$src" "$dst"
 }
 
-stage_file "$desktop_icon_source" "$desktop_icon_target"
+install_desktop_icon_target
 
 desktop_tmp="$backup_dir/$app_id.desktop"
 sed \
@@ -162,6 +201,7 @@ sed \
     -e "s|^Icon=.*$|Icon=$desktop_icon_target|" \
     "$desktop_template" > "$desktop_tmp"
 
+repair_desktop_entry_icon "$desktop_target"
 stage_file "$desktop_tmp" "$desktop_target"
 stage_file "$repo_root/data/icons/dev.cominotti.lushtext.svg" \
     "$icons_root/scalable/apps/dev.cominotti.lushtext.svg"

@@ -23,7 +23,7 @@ Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-lin
 
 The repo-managed Git hooks live under `.githooks/`. Install them with `make install-git-hooks`, which sets `core.hooksPath` for this checkout. The pre-commit hook runs `make pre-commit`, which must stay aligned with the formatting and Clippy gates enforced in CI.
 
-On GNOME Shell, `make run` stages a desktop file plus `hicolor` icons and writes the desktop entry with a per-run absolute icon file path. This avoids Shell holding onto a stale themed-icon cache entry when the app icon bytes change between dev runs.
+On GNOME Shell, `make run` stages a desktop file plus `hicolor` icons and writes the desktop entry with a content-addressed absolute icon file path. This avoids Shell holding onto a stale themed-icon cache entry when the app icon bytes change between dev runs while keeping the icon file alive for as long as a restored user-local desktop entry might reference it. The launcher must repair any stale absolute `Icon=` path before backing up or restoring an existing `dev.cominotti.lushtext.desktop` override.
 
 Changing `data/icons/dev.cominotti.lushtext.svg` alone is not enough to refresh every icon surface. The fixed-size PNG fallbacks must be regenerated, and an already-running dev session still needs a fresh Shell app object. Use `make refresh-dock-icon` after icon asset changes: it regenerates the PNG fallbacks from the canonical SVG and then replaces the running dev instance so the dock rebuilds from the fresh file-backed icon.
 
