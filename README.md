@@ -317,6 +317,7 @@ lushtext-core/src/
     note_storage.rs  Shared sidecar identity/load/filter helpers for note workflows
     content_search/  Parallel workspace grep plus replace/undo helpers
     palette/         Command registry, SIMD fuzzy search, and file indexing
+    durable_write.rs Parent-directory fsync helpers for crash-durable atomic writes
     editor_io.rs     Encoding-aware text file load/save helpers, health analysis, and mtimes
     editorconfig.rs  .editorconfig resolution
     file_peek.rs     Bounded read-only snapshots for sidebar file peek

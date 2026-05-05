@@ -14,6 +14,7 @@ pub mod bookmark_service;
 pub mod content_search;
 pub mod document_note_service;
 pub mod draft_service;
+pub mod durable_write;
 pub mod editor_io;
 pub mod editorconfig;
 pub mod file_limits;

@@ -224,7 +224,7 @@ impl super::LushtextWorkspaceSection {
         services::async_task::spawn_blocking_then(
             self.clone(),
             move || {
-                let result = std::fs::rename(&old_path, &new_path_c);
+                let result = services::durable_write::rename_durable(&old_path, &new_path_c);
                 (old_path, new_path_c, result)
             },
             move |section, (old_path, new_path, result)| {
@@ -389,12 +389,14 @@ fn create_unique(dir: &Path, base: &str, is_dir: bool) -> std::io::Result<PathBu
         let path = dir.join(&name);
         let result = if is_dir {
             std::fs::create_dir(&path)
+                .and_then(|()| services::durable_write::sync_parent_dir(&path))
         } else {
             std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&path)
-                .map(|_| ())
+                .and_then(|file| file.sync_all())
+                .and_then(|()| services::durable_write::sync_parent_dir(&path))
         };
         match result {
             Ok(()) => return Ok(path),

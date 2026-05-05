@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::os::unix::io::AsRawFd;
 
 use crate::model::content_search::{ReplaceResult, Replacement};
+use crate::services::durable_write;
 
 /// Apply replacements to files on disk.
 ///
@@ -271,6 +272,13 @@ fn atomic_write(path: &Path, content: &[u8]) -> anyhow::Result<()> {
         anyhow::anyhow!(
             "Failed to rename {} to {}: {}",
             tmp_path.display(),
+            path.display(),
+            e
+        )
+    })?;
+    durable_write::sync_parent_dir(path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to sync parent directory for {}: {}",
             path.display(),
             e
         )

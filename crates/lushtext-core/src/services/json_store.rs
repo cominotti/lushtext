@@ -2,6 +2,7 @@
 
 //! Generic JSON file persistence: load/save any serde type to a JSON file.
 
+use crate::services::durable_write;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -47,7 +48,7 @@ pub fn load<T: DeserializeOwned + Default>(data_dir: &Path, filename: &str) -> R
 /// Returns an error if the parent directory cannot be created, the value cannot
 /// be serialized, or the temp file cannot be flushed, synced, or renamed.
 pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<()> {
-    std::fs::create_dir_all(data_dir)
+    durable_write::create_dir_all_durable(data_dir)
         .with_context(|| format!("failed to create {}", data_dir.display()))?;
     let path = data_dir.join(filename);
     let tmp_path = data_dir.join(format!(".{filename}.tmp"));
@@ -69,7 +70,9 @@ pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<
             tmp_path.display(),
             path.display()
         )
-    })
+    })?;
+    durable_write::sync_parent_dir(&path)
+        .with_context(|| format!("failed to sync parent directory for {}", path.display()))
 }
 
 #[cfg(test)]

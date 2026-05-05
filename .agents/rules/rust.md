@@ -53,6 +53,13 @@ Use `services::async_task::spawn_blocking_then(state, work, then)` for any I/O t
 
 Never pass GTK objects directly across threads — they are not `Send`/`Sync`. Use `glib::thread_guard::ThreadGuard` or `glib::SendWeakRef`.
 
+Durable atomic writes on Linux require both halves of the filesystem contract:
+write and flush the temp file, call `sync_all()` or `sync_data()` on that temp
+file before `rename()`, then sync the parent directory after the rename so ext4,
+XFS, and Btrfs cannot lose the renamed directory entry across power loss. Use
+`services::durable_write::sync_parent_dir()` for the directory half instead of
+leaving it to each call site.
+
 Never set `autoexpand = true` on `GtkTreeListModel`.
 
 When save-time policy rewrites buffer text (for example EditorConfig

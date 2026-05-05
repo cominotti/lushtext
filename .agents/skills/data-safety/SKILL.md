@@ -210,10 +210,10 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > Tree: Slot release in a Drop guard or catch_unwind wrapper? → Yes: SAFE. Panic in work closure can leave ACTIVE_THREADS permanently incremented?
 > FLAG MEDIUM: "Panic in work closure leaks concurrency slot. After 8 panics, all background I/O stalls permanently."
 >
-> **AW-4: Temp file not flushed before rename**
+> **AW-4: Temp file or renamed directory entry not flushed before completion**
 > Grep: `rename` in atomic write functions (e.g., `json_store::save`, `write_draft`)
-> Tree: Is `flush()`, `sync_all()`, or `sync_data()` called on the temp file before rename? → Yes: SAFE.
-> FLAG HIGH: "No flush before rename. Power loss → renamed file may contain partial/zero data from filesystem write-back cache."
+> Tree: Is `flush()`, `sync_all()`, or `sync_data()` called on the temp file before rename? → No: FLAG. After successful rename, is the parent directory synced (for example through `durable_write::sync_parent_dir`)? → Yes: SAFE.
+> FLAG HIGH: "Atomic write missing temp-file sync or parent-directory sync. Power loss on ext4/XFS/Btrfs can lose the new bytes or the renamed directory entry."
 >
 > **Output**: Same format as draft-integrity.
 

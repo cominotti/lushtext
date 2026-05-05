@@ -45,8 +45,8 @@ impl SessionData {
     /// Retain only untitled tabs and file-backed tabs whose paths satisfy `keep`.
     ///
     /// This keeps the "rebase the active index onto the surviving tab list"
-    /// rule in the domain model so service code can provide only the filesystem
-    /// predicate (`Path::exists`, precomputed path sets, and so on).
+    /// rule in the domain model so callers can provide a precomputed keep set or
+    /// another explicit policy without doing ad hoc path probes during restore.
     pub fn retain_tabs_where<F>(&mut self, mut keep: F)
     where
         F: FnMut(&Path) -> bool,

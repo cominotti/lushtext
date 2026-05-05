@@ -12,6 +12,7 @@ use crate::model::encoding::{
     FileHealthFindingKind, FileHealthSeverity, LineEnding,
 };
 use crate::model::formatting_overrides::FormattingOverrides;
+use crate::services::durable_write;
 use crate::services::file_limits::FileSizeCheck;
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -745,6 +746,11 @@ fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
             to: path.to_path_buf(),
             source,
         }
+    })?;
+    durable_write::sync_parent_dir(path).map_err(|source| SaveError::Finalize {
+        from: tmp_path.clone(),
+        to: path.to_path_buf(),
+        source,
     })?;
     Ok(())
 }

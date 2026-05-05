@@ -19,7 +19,7 @@ use crate::model::local_history::{
     LocalHistorySnapshotOrigin,
 };
 use crate::model::sidecar_identity::{DocumentSidecarIdentity, stable_bytes_hash};
-use crate::services::{editor_io, file_limits::FileSizeCheck, json_store};
+use crate::services::{durable_write, editor_io, file_limits::FileSizeCheck, json_store};
 
 /// Directory name that stores one local-history lineage per saved document.
 const LOCAL_HISTORY_DIR: &str = "local-history";
@@ -285,7 +285,7 @@ fn capture_snapshot_for_identity_locked(
 
     let meta = LocalHistorySnapshotMeta::new(origin, normalized.len() as u64, content_hash.clone());
     let doc_dir = document_dir(data_dir, &identity);
-    std::fs::create_dir_all(&doc_dir)
+    durable_write::create_dir_all_durable(&doc_dir)
         .with_context(|| format!("failed to create {}", doc_dir.display()))?;
     editor_io::write_snapshot_to_path(&snapshot_path(&doc_dir, &meta.snapshot_id), &normalized)
         .map(|_| ())
@@ -456,10 +456,10 @@ fn migrate_loaded_document(
 
     if !target_dir.exists() {
         if let Some(parent) = target_dir.parent() {
-            std::fs::create_dir_all(parent)
+            durable_write::create_dir_all_durable(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        std::fs::rename(&loaded.dir, &target_dir).with_context(|| {
+        durable_write::rename_durable(&loaded.dir, &target_dir).with_context(|| {
             format!(
                 "failed to move {} to {}",
                 loaded.dir.display(),
@@ -488,12 +488,8 @@ fn migrate_loaded_document(
         if !from.exists() || to.exists() {
             continue;
         }
-        std::fs::rename(&from, &to)
-            .or_else(|_| {
-                std::fs::copy(&from, &to)
-                    .map(|_| ())
-                    .and_then(|_| std::fs::remove_file(&from))
-            })
+        durable_write::rename_durable(&from, &to)
+            .or_else(|_| durable_write::copy_file_durable(&from, &to, "local-history-copy"))
             .with_context(|| {
                 format!(
                     "failed to move snapshot {} to {}",

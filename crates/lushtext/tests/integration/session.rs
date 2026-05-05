@@ -67,40 +67,13 @@ fn test_session_save_restore_roundtrip() {
     };
 
     session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
-    let mut loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
+    let loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(loaded.tabs.len(), 2);
     assert_eq!(loaded.tabs[1].cursor_line, 15);
     assert_eq!(loaded.tabs[1].cursor_col, 8);
     assert_eq!(loaded.tabs[1].scroll_line, 10);
     assert_eq!(loaded.active_tab_index, Some(1));
-
-    // All files exist, so filter should keep everything
-    session_service::filter_existing_tabs(&mut loaded);
-    assert_eq!(loaded.tabs.len(), 2);
-}
-
-#[test]
-fn test_session_filter_removes_deleted_files() {
-    let ctx = TestContext::new();
-
-    let real_file = ctx.write_file("still-here.txt", "content");
-
-    let session = SessionData {
-        tabs: vec![
-            tab(real_file.clone(), 1),
-            tab(ctx.path().join("deleted.txt"), 5),
-        ],
-        active_tab_index: Some(1), // deleted file was active
-    };
-
-    session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
-    let mut loaded = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
-
-    session_service::filter_existing_tabs(&mut loaded);
-    assert_eq!(loaded.tabs.len(), 1);
-    assert_eq!(loaded.tabs[0].path, Some(real_file));
-    assert_eq!(loaded.active_tab_index, None); // cleared — active tab was removed
 }
 
 // --- Untitled tab persistence ---
@@ -132,103 +105,6 @@ fn test_session_with_untitled_tabs_roundtrip() {
     assert_eq!(loaded.active_tab_index, Some(1));
 }
 
-#[test]
-fn test_filter_preserves_untitled_tabs() {
-    let ctx = TestContext::new();
-
-    let real_file = ctx.write_file("exists.txt", "content");
-
-    let mut session = SessionData {
-        tabs: vec![
-            tab(real_file.clone(), 1),
-            untitled("u-0"),
-            tab(ctx.path().join("gone.txt"), 3),
-            untitled("u-1"),
-        ],
-        active_tab_index: Some(1), // untitled tab
-    };
-
-    session_service::filter_existing_tabs(&mut session);
-
-    assert_eq!(session.tabs.len(), 3); // real_file + 2 untitled
-    assert_eq!(session.tabs[0].path, Some(real_file));
-    assert_eq!(session.tabs[1].path, None); // u-0
-    assert_eq!(session.tabs[1].draft_id, Some("u-0".into()));
-    assert_eq!(session.tabs[2].path, None); // u-1
-    assert_eq!(session.tabs[2].draft_id, Some("u-1".into()));
-    assert_eq!(session.active_tab_index, Some(1)); // untitled survived
-}
-
-#[test]
-fn test_filter_untitled_only_session_survives_intact() {
-    let mut session = SessionData {
-        tabs: vec![untitled("u-0"), untitled("u-1"), untitled("u-2")],
-        active_tab_index: Some(2),
-    };
-
-    session_service::filter_existing_tabs(&mut session);
-
-    assert_eq!(session.tabs.len(), 3);
-    assert_eq!(session.active_tab_index, Some(2));
-}
-
-// --- Active tab index tracking ---
-
-#[test]
-fn test_filter_adjusts_active_index_when_preceding_tab_removed() {
-    let ctx = TestContext::new();
-
-    let file_b = ctx.write_file("b.txt", "b");
-    let file_c = ctx.write_file("c.txt", "c");
-
-    let mut session = SessionData {
-        tabs: vec![
-            tab(ctx.path().join("gone.txt"), 1), // index 0, will be removed
-            tab(file_b.clone(), 2),              // index 1 → becomes 0
-            tab(file_c.clone(), 3),              // index 2 → becomes 1 (active)
-        ],
-        active_tab_index: Some(2), // c.txt
-    };
-
-    session_service::filter_existing_tabs(&mut session);
-
-    assert_eq!(session.tabs.len(), 2);
-    assert_eq!(session.active_tab_index, Some(1)); // shifted from 2→1
-    assert_eq!(session.tabs[1].path, Some(file_c));
-}
-
-#[test]
-fn test_filter_active_index_cleared_when_active_tab_removed() {
-    let ctx = TestContext::new();
-
-    let file_a = ctx.write_file("a.txt", "a");
-
-    let mut session = SessionData {
-        tabs: vec![tab(file_a.clone(), 1), tab(ctx.path().join("gone.txt"), 2)],
-        active_tab_index: Some(1), // gone.txt
-    };
-
-    session_service::filter_existing_tabs(&mut session);
-
-    assert_eq!(session.tabs.len(), 1);
-    assert_eq!(session.active_tab_index, None);
-}
-
-#[test]
-fn test_filter_no_active_tab_remains_none() {
-    let ctx = TestContext::new();
-
-    let file_a = ctx.write_file("a.txt", "a");
-
-    let mut session = SessionData {
-        tabs: vec![tab(file_a, 1)],
-        active_tab_index: None,
-    };
-
-    session_service::filter_existing_tabs(&mut session);
-    assert_eq!(session.active_tab_index, None);
-}
-
 // --- Edge cases ---
 
 #[test]
@@ -247,30 +123,6 @@ fn test_empty_session_roundtrip() {
 fn test_load_nonexistent_returns_default() {
     let ctx = TestContext::new();
     let session = session_service::load(ctx.data_dir()).expect("expected operation to succeed");
-    assert!(session.tabs.is_empty());
-    assert_eq!(session.active_tab_index, None);
-}
-
-#[test]
-fn test_filter_empty_session_is_noop() {
-    let mut session = SessionData::default();
-    session_service::filter_existing_tabs(&mut session);
-    assert!(session.tabs.is_empty());
-    assert_eq!(session.active_tab_index, None);
-}
-
-#[test]
-fn test_filter_all_files_deleted_clears_everything() {
-    let ctx = TestContext::new();
-    let mut session = SessionData {
-        tabs: vec![
-            tab(ctx.path().join("gone1.txt"), 1),
-            tab(ctx.path().join("gone2.txt"), 2),
-        ],
-        active_tab_index: Some(0),
-    };
-
-    session_service::filter_existing_tabs(&mut session);
     assert!(session.tabs.is_empty());
     assert_eq!(session.active_tab_index, None);
 }
@@ -323,35 +175,6 @@ fn test_cursor_and_scroll_positions_persist() {
 }
 
 // --- Mixed scenarios ---
-
-#[test]
-fn test_complex_mixed_session_filter() {
-    let ctx = TestContext::new();
-
-    let file_a = ctx.write_file("a.txt", "a");
-    let file_c = ctx.write_file("c.txt", "c");
-
-    let mut session = SessionData {
-        tabs: vec![
-            tab(file_a.clone(), 1),               // 0: survives → 0
-            tab(ctx.path().join("gone1.txt"), 2), // 1: removed
-            untitled("u-0"),                      // 2: survives → 1
-            tab(file_c.clone(), 4),               // 3: survives → 2
-            tab(ctx.path().join("gone2.txt"), 5), // 4: removed
-            untitled("u-1"),                      // 5: survives → 3
-        ],
-        active_tab_index: Some(3), // c.txt
-    };
-
-    session_service::filter_existing_tabs(&mut session);
-
-    assert_eq!(session.tabs.len(), 4);
-    assert_eq!(session.tabs[0].path, Some(file_a));
-    assert_eq!(session.tabs[1].path, None); // u-0
-    assert_eq!(session.tabs[2].path, Some(file_c));
-    assert_eq!(session.tabs[3].path, None); // u-1
-    assert_eq!(session.active_tab_index, Some(2)); // c.txt shifted from 3→2
-}
 
 #[test]
 fn test_many_tabs_roundtrip() {

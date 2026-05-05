@@ -11,7 +11,7 @@ use crate::model::draft::{
     DraftEntry, DraftManifest, FileDraftRestoreResolution, PreloadedDraftRestore,
 };
 use crate::model::session::SessionData;
-use crate::services::{editor_io, json_store, session_service};
+use crate::services::{durable_write, editor_io, json_store, session_service};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::Write;
@@ -254,7 +254,7 @@ fn cleanup_stale_restore_entries(
 /// cannot be written, flushed, synced, or renamed into place.
 pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()> {
     let dir = drafts_dir(data_dir);
-    std::fs::create_dir_all(&dir)
+    durable_write::create_dir_all_durable(&dir)
         .with_context(|| format!("failed to create drafts dir: {}", dir.display()))?;
 
     let path = dir.join(format!("{draft_id}.draft"));
@@ -275,7 +275,9 @@ pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()>
             tmp_path.display(),
             path.display()
         )
-    })
+    })?;
+    durable_write::sync_parent_dir(&path)
+        .with_context(|| format!("failed to sync drafts dir for {}", path.display()))
 }
 
 /// Read a draft file's content. Returns `None` if the draft file

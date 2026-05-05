@@ -68,6 +68,12 @@ All paths are written as normalized suffixes relative to any `*/src/` root.
 **Scenario**: If a work closure panics (e.g., serde panic on corrupt data), `release_slot()` is never called. ACTIVE_THREADS stays incremented. After 8 such panics, all `spawn_blocking_then` calls enter the 50ms retry loop permanently.
 **Likelihood**: Very low — work closures are simple I/O. But possible with corrupt files.
 
+### AW-4: Missing parent-directory sync after atomic rename (CONFIRMED)
+**Location**: `services/json_store.rs`, `services/draft_service.rs`, `services/editor_io.rs`, `services/content_search/replace.rs`, `services/local_history_service.rs`
+**Code**: Atomic write helpers flushed and `sync_all()`ed the temp file before `std::fs::rename`, but returned immediately after rename without syncing the containing directory. Local-history migration also renamed/copy-then-removed snapshot files without making the destination entry durable first.
+**Scenario**: Power loss after rename on ext4, XFS, or Btrfs can preserve the synced temp-file bytes while losing the directory entry update. The app may restart with the old JSON state, old draft file, old saved document, missing Replace All rollback state, or a broken local-history lineage.
+**Safe counterexample**: `durable_write::sync_parent_dir(path)` after a successful rename makes the new directory entry durable. `durable_write::copy_file_durable()` makes cross-filesystem fallback copies durable before deleting the source.
+
 ---
 
 ## Replace Operations
@@ -93,7 +99,8 @@ All paths are written as normalized suffixes relative to any `*/src/` root.
 **Nuance**: This means the current code is SAFE for the narrow "callback dropped on first error" failure mode. The remaining risk is lifecycle-based: if the user abandons or closes the failed tab, the callback never fires and the draft can later be deleted by orphan cleanup without ever being reapplied.
 **Calibration takeaway**: Do NOT flag code just because the callback fires only on success. Flag when the error path drops recovery state, omits any retry/recovery path, or later cleanup can delete the draft without another recovery route.
 
-### RL-3: Session filter drops unavailable files (CONFIRMED)
-**Location**: `services/session_service.rs` — `filter_existing_tabs()`
-**Code**: `path.exists()` stat check → false for NFS/slow mount → tab removed → session re-saved without it.
+### RL-3: Session filter drops unavailable files (CONFIRMED HISTORICAL)
+**Former location**: `services/session_service.rs` — removed `filter_existing_tabs()`
+**Old code**: `path.exists()` stat check → false for NFS/slow mount → tab removed → session re-saved without it.
 **Scenario**: Laptop undocked, NFS share unavailable → session restore drops all NFS-backed tabs → session saved → dock again → tabs permanently gone from session. Draft files (if any) survive as orphans for one restart cycle.
+**Current guardrail**: Startup restore must load `session.json` as-is and preserve temporarily unavailable file-backed tabs. Do not reintroduce a service API that filters session tabs with `Path::exists`.

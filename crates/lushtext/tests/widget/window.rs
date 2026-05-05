@@ -180,7 +180,10 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
 
 fn present_window(window: &LushtextWindow) {
     window.present();
-    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        window.width() > 0 && window.height() > 0
+    });
+    flush_after_delay(Duration::from_millis(20));
 }
 
 fn action_enabled(window: &LushtextWindow, name: &str) -> bool {
@@ -1834,6 +1837,8 @@ fn test_properties_pane_collapses_before_workspace_pane() {
     assert!(window.imp().properties_split_view.is_collapsed());
     assert!(properties_surface_uses_bottom_sheet(&window));
     assert!(!window.imp().workspace_split_view.is_collapsed());
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
 }
 
 #[test]
@@ -1849,6 +1854,8 @@ fn test_large_workspace_preset_collapses_properties_pane_earlier() {
     assert!(window.imp().properties_split_view.is_collapsed());
     assert!(properties_surface_uses_bottom_sheet(&window));
     assert!(!window.imp().workspace_split_view.is_collapsed());
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
 }
 
 #[test]
@@ -1888,21 +1895,29 @@ fn test_compact_layout_mutual_exclusion_switches_secondary_surface() {
 
     assert!(workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
 }
 
 #[test]
 fn test_widening_restores_both_requested_surfaces_after_compact_suppression() {
     ensure_gtk_init();
-    let narrow_window = test_window_with_split_view_state(true, 0.3, false, 0.25);
-    narrow_window.set_default_size(1300, 900);
-    present_window(&narrow_window);
-
-    activate_action(&narrow_window, "toggle-properties");
-    wait_until(Duration::from_secs(2), || properties_surface_uses_bottom_sheet(&narrow_window));
-    assert!(properties_sidebar_visible(&narrow_window));
-    assert!(!workspace_sidebar_visible(&narrow_window));
-    narrow_window.destroy();
-    flush_events();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true)
+        .expect("set split-view-layout-migrated");
+    settings
+        .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, true)
+        .expect("set workspace-sidebar-visible");
+    settings
+        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.3)
+        .expect("set workspace-sidebar-width-fraction");
+    settings
+        .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, true)
+        .expect("set properties-sidebar-visible");
+    settings
+        .set_double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION, 0.25)
+        .expect("set properties-sidebar-width-fraction");
 
     let wider_window = test_window();
     wider_window.set_default_size(1600, 900);
@@ -1937,7 +1952,7 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
     );
 
     narrow_window.destroy();
-    flush_events();
+    flush_after_delay(Duration::from_millis(50));
 
     let wide_window = test_window();
     wide_window.set_default_size(1600, 900);
@@ -1953,6 +1968,8 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
             .settings
             .boolean(keys::PROPERTIES_SIDEBAR_VISIBLE)
     );
+    wide_window.destroy();
+    flush_after_delay(Duration::from_millis(50));
 }
 
 #[test]

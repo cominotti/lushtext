@@ -742,7 +742,7 @@ fn bench_draft_restore(c: &mut Criterion) {
     group.sample_size(30);
 
     // Benchmark the full startup preload pipeline:
-    // load manifest + load session + filter_existing_tabs + batch-read drafts.
+    // load manifest + load session + resolve draft restore state.
     // This mirrors the background work in load_session_and_drafts.
     for &(label, n_tabs, n_drafts, draft_kb) in &[
         ("5_tabs_1_draft_1kb", 5, 1, 1),
@@ -754,26 +754,8 @@ fn bench_draft_restore(c: &mut Criterion) {
             b.iter_batched(
                 || make_draft_fixtures(n_tabs, n_drafts, draft_kb * 1024),
                 |(dir, _session)| {
-                    // Simulate the background thread work from load_session_and_drafts.
-                    let manifest =
-                        draft_service::load_manifest(black_box(dir.path())).unwrap_or_default();
-                    let mut session =
-                        session_service::load(black_box(dir.path())).unwrap_or_default();
-                    session_service::filter_existing_tabs(&mut session);
-
-                    let mut preloaded = std::collections::HashMap::new();
-                    for tab in &session.tabs {
-                        if let Some(ref path) = tab.path {
-                            let draft_id = draft_service::draft_id_for_path(path);
-                            if manifest.find_by_id(&draft_id).is_some()
-                                && let Ok(Some(content)) =
-                                    draft_service::read_draft(dir.path(), &draft_id)
-                            {
-                                preloaded.insert(draft_id, content);
-                            }
-                        }
-                    }
-
+                    let (manifest, session, preloaded) =
+                        draft_service::load_restore_state(black_box(dir.path()));
                     (manifest, session, preloaded, dir)
                 },
                 BatchSize::SmallInput,

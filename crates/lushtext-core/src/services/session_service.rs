@@ -31,17 +31,6 @@ pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
     json_store::save(data_dir, SESSION_FILENAME, session)
 }
 
-/// Filter session tabs to only those whose files still exist on disk.
-/// Untitled tabs (path = None) are always preserved.
-///
-/// **Threading:** This function calls `Path::exists()` (stat syscall) per
-/// file-backed tab. On NFS/FUSE mounts this can block for 10-100ms per
-/// path. Always call from a background thread via `spawn_blocking_then`,
-/// never on the GTK main thread.
-pub fn filter_existing_tabs(session: &mut SessionData) {
-    session.retain_tabs_where(Path::exists);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,94 +114,6 @@ mod tests {
         assert_eq!(loaded.tabs[1].draft_id, Some("untitled-0".into()));
         assert_eq!(loaded.tabs[2].draft_id, Some("untitled-1".into()));
         assert_eq!(loaded.active_tab_index, Some(1));
-    }
-
-    #[test]
-    fn test_filter_existing_tabs_removes_missing() {
-        let dir = TempDir::new().expect("expected operation to succeed");
-
-        let real_file = dir.path().join("exists.txt");
-        std::fs::write(&real_file, "hello").expect("expected operation to succeed");
-
-        let mut session = SessionData {
-            tabs: vec![tab(real_file.clone(), 1), tab("/nonexistent/file.txt", 5)],
-            active_tab_index: Some(1), // points to nonexistent
-        };
-
-        filter_existing_tabs(&mut session);
-
-        assert_eq!(session.tabs.len(), 1);
-        assert_eq!(session.tabs[0].path, Some(real_file));
-        assert_eq!(session.active_tab_index, None);
-    }
-
-    #[test]
-    fn test_filter_existing_tabs_preserves_untitled() {
-        let dir = TempDir::new().expect("expected operation to succeed");
-
-        let real_file = dir.path().join("exists.txt");
-        std::fs::write(&real_file, "content").expect("expected operation to succeed");
-
-        let mut session = SessionData {
-            tabs: vec![
-                tab(real_file.clone(), 1),
-                untitled("u-0"),
-                tab("/gone.txt", 3),
-            ],
-            active_tab_index: Some(1), // untitled tab
-        };
-
-        filter_existing_tabs(&mut session);
-
-        assert_eq!(session.tabs.len(), 2);
-        assert_eq!(session.tabs[0].path, Some(real_file));
-        assert_eq!(session.tabs[1].path, None);
-        assert_eq!(session.active_tab_index, Some(1)); // untitled survived at new index
-    }
-
-    #[test]
-    fn test_filter_existing_tabs_adjusts_active_index() {
-        let dir = TempDir::new().expect("expected operation to succeed");
-
-        let file_a = dir.path().join("a.txt");
-        let file_b = dir.path().join("b.txt");
-        std::fs::write(&file_a, "a").expect("expected operation to succeed");
-        std::fs::write(&file_b, "b").expect("expected operation to succeed");
-
-        let mut session = SessionData {
-            tabs: vec![
-                tab("/gone.txt", 1),
-                tab(file_a.clone(), 2),
-                tab(file_b.clone(), 3),
-            ],
-            active_tab_index: Some(2), // file_b
-        };
-
-        filter_existing_tabs(&mut session);
-
-        assert_eq!(session.tabs.len(), 2);
-        assert_eq!(session.active_tab_index, Some(1)); // shifted from 2→1
-    }
-
-    #[test]
-    fn test_filter_all_missing_clears_everything() {
-        let mut session = SessionData {
-            tabs: vec![tab("/gone1.txt", 1), tab("/gone2.txt", 2)],
-            active_tab_index: Some(0),
-        };
-
-        filter_existing_tabs(&mut session);
-
-        assert!(session.tabs.is_empty());
-        assert_eq!(session.active_tab_index, None);
-    }
-
-    #[test]
-    fn test_filter_empty_session_is_noop() {
-        let mut session = SessionData::default();
-        filter_existing_tabs(&mut session);
-        assert!(session.tabs.is_empty());
-        assert_eq!(session.active_tab_index, None);
     }
 
     #[test]
