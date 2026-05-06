@@ -51,6 +51,6 @@ The system SHALL update the current shared workspace scope predictably when work
 - **AND** workspace-aware features update to use that workspace
 
 #### Scenario: Removing the selected workspace falls back to All workspaces
-- **WHEN** the user unlists the currently selected workspace while other workspaces still exist
+- **WHEN** the user removes the currently selected workspace while other workspaces still exist
 - **THEN** the current shared workspace scope becomes `All workspaces`
 - **AND** the app does not silently choose a different concrete workspace instead

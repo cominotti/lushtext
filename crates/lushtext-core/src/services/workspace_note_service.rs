@@ -3,7 +3,7 @@
 //! Workspace-note persistence and listing helpers.
 //!
 //! Workspace notes are keyed by the canonical workspace root rather than by a
-//! transient UI slot identifier, so unlisting and re-adding the same root can
+//! transient UI slot identifier, so removing and re-adding the same root can
 //! restore the same note while `Replace Workspace Root` still starts fresh.
 
 use anyhow::{Context, Result};

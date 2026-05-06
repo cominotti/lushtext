@@ -702,13 +702,13 @@ impl LushtextWorkspaceSection {
         self.file_tree_view.add_controller(gesture);
     }
 
-    /// Build right-click context menu for the workspace header (Rename / Unlist).
+    /// Build right-click context menu for the workspace header (Rename / Remove).
     fn setup_header_context_menu(&self) {
         let obj = self.obj();
 
         let menu = gio::Menu::new();
         menu.append(Some("Rename Workspace"), Some("ws-header.rename"));
-        menu.append(Some("Unlist Workspace"), Some("ws-header.unlist"));
+        menu.append(Some("Remove Workspace"), Some("ws-header.unlist"));
 
         let popover = gtk4::PopoverMenu::from_model(Some(&menu));
         popover.set_parent(&*self.header_box);

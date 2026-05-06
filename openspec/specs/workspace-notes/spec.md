@@ -52,8 +52,8 @@ The system SHALL persist workspace notes under app data using a stable identity 
 - **THEN** the newly selected root starts without a copied workspace note by default
 - **AND** the previous root keeps its existing workspace note data
 
-#### Scenario: Unlist and re-add the same root restores the same workspace note
-- **WHEN** the user unlists a workspace that has a workspace note and later adds the same root directory again
+#### Scenario: Remove and re-add the same root restores the same workspace note
+- **WHEN** the user removes a workspace that has a workspace note and later adds the same root directory again
 - **THEN** the system restores the same workspace note for that root
 - **AND** the note does not depend on the old workspace slot identifier
 

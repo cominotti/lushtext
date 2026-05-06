@@ -25,12 +25,12 @@ The system SHALL treat the no-workspace state as an intentional empty sidebar sh
 - **AND** the sidebar renders zero workspace sections below it
 
 #### Scenario: Removing the last workspace returns to the empty shell
-- **WHEN** the user unlists the last remaining workspace
+- **WHEN** the user removes the last remaining workspace
 - **THEN** the sidebar returns to the fixed top scope row with no workspace sections
 - **AND** no placeholder `New Workspace` section is inserted automatically
 
 ### Requirement: Each workspace section owns one root directory
-The system SHALL render one sidebar section per workspace, and each section MUST correspond to exactly one persisted root directory. Each workspace-section header MUST expose `Refresh` immediately to the left of `Replace Workspace Root`, and the workspace header context menu MUST continue to expose rename and unlist actions for that one workspace.
+The system SHALL render one sidebar section per workspace, and each section MUST correspond to exactly one persisted root directory. Each workspace-section header MUST expose `Refresh` immediately to the left of `Replace Workspace Root`, and the workspace header context menu MUST continue to expose rename and remove actions for that one workspace.
 
 #### Scenario: Restored workspaces create one section each
 - **WHEN** the app restores multiple persisted workspaces
@@ -40,7 +40,7 @@ The system SHALL render one sidebar section per workspace, and each section MUST
 #### Scenario: Workspace header keeps section-local controls
 - **WHEN** a workspace section header is rendered
 - **THEN** it shows `Refresh` immediately to the left of `Replace Workspace Root`
-- **AND** its header context menu exposes `Rename Workspace` and `Unlist Workspace`
+- **AND** its header context menu exposes `Rename Workspace` and `Remove Workspace`
 
 ### Requirement: Drill-down navigation stays local to the current workspace section
 The system SHALL keep deep folder drill-down as temporary section-local navigation state. Focusing a descendant folder MUST re-root only that workspace section, MUST reveal a back affordance for the focused lineage, and MUST NOT mutate the workspace's persisted root directory.

@@ -119,7 +119,7 @@ impl LushtextSidebar {
         dialog.present(Some(&root));
     }
 
-    /// Show the unlist workspace confirmation dialog.
+    /// Show the remove workspace confirmation dialog.
     pub(super) fn show_unlist_workspace_dialog(&self, workspace_id: &WorkspaceId) {
         let Some(root) = self.root() else {
             return;
@@ -127,11 +127,11 @@ impl LushtextSidebar {
         let current_name = self.workspace_name_for_id(workspace_id);
 
         let dialog = libadwaita::AlertDialog::builder()
-            .heading(format!("Unlist '{current_name}'?"))
+            .heading(format!("Remove '{current_name}'?"))
             .body("The workspace will be removed from the sidebar. Files will not be deleted.")
             .build();
         dialog.add_response("cancel", "Cancel");
-        dialog.add_response("unlist", "Unlist");
+        dialog.add_response("unlist", "Remove");
         dialog.set_response_appearance("unlist", libadwaita::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
