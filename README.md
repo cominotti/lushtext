@@ -148,13 +148,14 @@ flatpak run --command=gsettings dev.cominotti.lushtext reset-recursively dev.com
 
 ## Flatpak Permissions
 
-The Flatpak manifest grants home-directory file access because LushText is a
-text editor that opens, saves, searches, and renames user files across workspace
-folders. It does not request network access.
+The Flatpak manifest grants host filesystem access because LushText is a local
+workspace text editor that must open, save, search, rename, delete, and
+event-monitor user-selected files and workspace folders across local paths, not
+only under the home directory. It does not request network access.
 
 | Permission | Why it is used |
 |------------|----------------|
-| `--filesystem=home` | Open, save, search, rename, and delete user-selected files and workspace folders |
+| `--filesystem=host` | Open, save, search, rename, delete, and event-monitor user-selected local files and workspace folders across host paths |
 | `--socket=wayland` | Native Wayland display support |
 | `--socket=fallback-x11` and `--share=ipc` | X11 fallback support |
 | `--device=dri` | GTK hardware-accelerated rendering |

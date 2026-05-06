@@ -51,39 +51,43 @@ Current manifest permissions:
 - `--socket=fallback-x11`
 - `--share=ipc`
 - `--device=dri`
-- `--filesystem=home`
+- `--filesystem=host`
 
 The display, IPC, and GPU permissions are the standard GTK/Libadwaita desktop
 surface needed for hardware-accelerated rendering on Wayland with X11 fallback.
 
-The broad `home` filesystem permission is intentionally retained for the
-current workspace model. LushText persists workspace root paths and then uses
-them for sidebar tree loading, file watches, command-palette indexing,
-workspace search and replace, sidecar notes, local history, draft/session
-recovery, and in-app file operations. Removing broad filesystem access without
-a portal-backed workspace grant model would break restored workspaces and
-background workspace features after restart.
+The broad `host` filesystem permission is intentionally retained for the
+current workspace model and live-monitoring contract. LushText persists
+workspace root paths and then uses them for sidebar tree loading, file watches,
+command-palette indexing, workspace search and replace, sidecar notes, local
+history, draft/session recovery, and in-app file operations. LushText must also
+support event-driven external-change monitoring for user-selected files and
+directories outside the home directory, not only one-off portal opens.
 
-This is still less sandboxed than the long-term ideal. Flatpak guidance prefers
-portals and narrower static filesystem permissions where possible. A future
-portal-first workspace design should investigate persisting document-portal
-grants or another user-visible reauthorization flow so LushText can narrow or
-remove broad `home` access without losing workspace behavior.
+This permission is broader than the long-term ideal and must remain an explicit
+product decision, not an accidental default. Flatpak guidance prefers portals
+and narrower static filesystem permissions where possible. The portal-first
+exploration found that document-portal paths can support app-initiated
+read/write/rename/delete operations, but `gio monitor` and low-level inotify
+probes did not receive events for host-side changes made to the original path.
+Until LushText can preserve event-driven monitoring through a narrower model,
+removing broad filesystem access would break required workspace behavior.
 
 The current exploration note for that migration lives in
 `docs/next/portal-first-sandbox-migration.md`. It splits the work into three
 future spec-sized phases: portal-backed grants, portal-compatible workspace
-behavior, and the final removal of broad filesystem access.
+behavior, and any later permission-tightening decision if event-driven behavior
+can be preserved.
 
 ## GNOME Text Editor Comparison
 
-GNOME Text Editor is useful as a feature and MIME reference, but its current
-Flatpak permission set is broader than LushText's: it grants `host`,
-`xdg-run/gvfsd`, `org.gtk.vfs.*`, and `org.freedesktop.FileManager1`.
-
-LushText should not copy those broader permissions by default. Add GVfs,
-file-manager, or `host` access only when a concrete LushText workflow proves it
-is required and the reason is documented with the manifest change.
+GNOME Text Editor is useful as a feature and MIME reference. LushText now
+matches its broad local filesystem posture for the specific reason that LushText
+requires event-driven monitoring for local workspace paths outside the home
+directory. LushText still should not copy unrelated GVfs or file-manager bus
+permissions by default. Add GVfs or file-manager access only when a concrete
+LushText workflow proves it is required and the reason is documented with the
+manifest change.
 
 ## Required Files
 
