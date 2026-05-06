@@ -70,6 +70,11 @@ portal-first workspace design should investigate persisting document-portal
 grants or another user-visible reauthorization flow so LushText can narrow or
 remove broad `home` access without losing workspace behavior.
 
+The current exploration note for that migration lives in
+`docs/next/portal-first-sandbox-migration.md`. It splits the work into three
+future spec-sized phases: portal-backed grants, portal-compatible workspace
+behavior, and the final removal of broad filesystem access.
+
 ## GNOME Text Editor Comparison
 
 GNOME Text Editor is useful as a feature and MIME reference, but its current
