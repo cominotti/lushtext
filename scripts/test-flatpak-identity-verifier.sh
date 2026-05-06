@@ -6,6 +6,7 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 tmpdir="$(mktemp -d)"
+expected_mime="MimeType=text/plain;application/x-zerosize;application/json;application/json5;application/toml;application/yaml;text/markdown;"
 
 cleanup() {
     rm -rf "$tmpdir"
@@ -52,13 +53,21 @@ cat > "$tmpdir/bin/gio" <<'EOF'
 set -euo pipefail
 
 if [[ "$1" == "mime" ]]; then
-    cat <<'MIME'
+    case "$2" in
+        text/plain|application/x-zerosize|application/json|application/json5|application/toml|application/yaml|text/markdown)
+            cat <<'MIME'
 Default application: org.gnome.TextEditor.desktop
 Registered applications:
 	dev.cominotti.lushtext.desktop
 Recommended applications:
 	dev.cominotti.lushtext.desktop
 MIME
+            ;;
+        *)
+            echo "unexpected gio mime query: $2" >&2
+            exit 1
+            ;;
+    esac
     exit 0
 fi
 
@@ -76,11 +85,13 @@ cat > "$tmpdir/xdg/flatpak/exports/share/applications/dev.cominotti.lushtext.des
 Name=LushText
 Exec=/usr/bin/flatpak run dev.cominotti.lushtext
 Type=Application
+MimeType=text/plain;application/x-zerosize;application/json;application/json5;application/toml;application/yaml;text/markdown;
 X-Flatpak=dev.cominotti.lushtext
 EOF
 
 "$repo_root/scripts/verify-flatpak-identity.sh" > "$tmpdir/success.log"
 grep -q "Flatpak desktop identity is usable" "$tmpdir/success.log"
+grep -Fxq "$expected_mime" "$tmpdir/success.log"
 
 mkdir -p "$tmpdir/xdg/applications"
 cat > "$tmpdir/xdg/applications/dev.cominotti.lushtext.desktop" <<'EOF'
@@ -95,5 +106,21 @@ if "$repo_root/scripts/verify-flatpak-identity.sh" > "$tmpdir/fail.log" 2>&1; th
     exit 1
 fi
 grep -q "same-ID non-Flatpak desktop entry" "$tmpdir/fail.log"
+
+rm -f "$tmpdir/xdg/applications/dev.cominotti.lushtext.desktop"
+cat > "$tmpdir/xdg/flatpak/exports/share/applications/dev.cominotti.lushtext.desktop" <<'EOF'
+[Desktop Entry]
+Name=LushText
+Exec=/usr/bin/flatpak run dev.cominotti.lushtext
+Type=Application
+MimeType=text/plain;application/x-zerosize;application/json;application/json5;application/toml;application/yaml;text/markdown;text/x-rust;
+X-Flatpak=dev.cominotti.lushtext
+EOF
+
+if "$repo_root/scripts/verify-flatpak-identity.sh" > "$tmpdir/source-mime.log" 2>&1; then
+    echo "expected verifier to fail for an active export with removed source MIME" >&2
+    exit 1
+fi
+grep -q "expected '$expected_mime'" "$tmpdir/source-mime.log"
 
 echo "flatpak identity verifier tests passed"

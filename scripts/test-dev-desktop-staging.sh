@@ -6,6 +6,7 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 tmpdir="$(mktemp -d)"
+expected_mime="MimeType=text/plain;application/x-zerosize;application/json;application/json5;application/toml;application/yaml;text/markdown;"
 
 cleanup() {
     rm -rf "$tmpdir"
@@ -25,6 +26,8 @@ chmod +x "$tmpdir/bin/gtk-launch"
 
 cat > "$tmpdir/bin/update-desktop-database" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$UPDATE_DESKTOP_DATABASE_LOG"
 exit 0
 EOF
 chmod +x "$tmpdir/bin/update-desktop-database"
@@ -39,6 +42,7 @@ export PATH="$tmpdir/bin:$PATH"
 export XDG_DATA_HOME="$tmpdir/xdg"
 export CARGO_TARGET_DIR="$tmpdir/target"
 export GTK_LAUNCH_LOG="$tmpdir/gtk-launch.log"
+export UPDATE_DESKTOP_DATABASE_LOG="$tmpdir/update-desktop-database.log"
 
 LUSHTEXT_DEV_RUN_NO_EXEC=1 "$repo_root/scripts/run-dev-app.sh"
 if [[ -e "$tmpdir/xdg/applications/dev.cominotti.lushtext.desktop" ]]; then
@@ -59,6 +63,21 @@ if [[ ! -f "$tmpdir/xdg/applications/dev.cominotti.lushtext.Devel.desktop" ]]; t
 fi
 grep -q '^Name=LushText (Development)$' \
     "$tmpdir/xdg/applications/dev.cominotti.lushtext.Devel.desktop"
+grep -Fxq "$expected_mime" \
+    "$tmpdir/xdg/applications/dev.cominotti.lushtext.Devel.desktop"
+if grep -Eq 'text/x-(csrc|chdr|python|rust)|jsonc|properties' \
+    "$tmpdir/xdg/applications/dev.cominotti.lushtext.Devel.desktop"; then
+    echo "persistent staging advertised a removed or deferred MIME type" >&2
+    exit 1
+fi
+if find "$tmpdir/xdg" -name mimeapps.list -print -quit | grep -q .; then
+    echo "development staging wrote MIME defaults" >&2
+    exit 1
+fi
+if [[ "$(wc -l < "$UPDATE_DESKTOP_DATABASE_LOG")" -lt 3 ]]; then
+    echo "development staging did not refresh the desktop database after staging and restore" >&2
+    exit 1
+fi
 
 if LUSHTEXT_DEV_RUN_NO_EXEC=1 \
     LUSHTEXT_DEV_RUN_KEEP_STAGED=1 \

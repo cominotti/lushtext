@@ -28,6 +28,8 @@ On GNOME Shell, `make run` stages a desktop file plus `hicolor` icons and writes
 
 Normal dev staging is temporary and may use the production desktop ID only while the debug process is running. Persistent dev staging (`LUSHTEXT_DEV_RUN_KEEP_STAGED=1`) must use a non-production ID such as `dev.cominotti.lushtext.Devel`; leaving a same-ID non-Flatpak `~/.local/share/applications/dev.cominotti.lushtext.desktop` shadows the Flatpak export and makes GNOME Settings treat LushText as unsandboxed. Use `make verify-flatpak-identity` after Flatpak or desktop-entry work to confirm the exported desktop entry has `X-Flatpak=dev.cominotti.lushtext`, no same-ID dev shadow exists, effective Flatpak permissions are reported, and required MIME handlers remain registered.
 
+For GNOME Settings File Types work, treat the desktop entry's explicit `MimeType=` line as the allowlist source of truth. `gio mime <type>` can still list LushText for source-like MIME types that inherit from `text/plain`, even when LushText does not explicitly advertise those types; that inherited output must not be used as proof that the File Types allowlist is wrong.
+
 Changing `data/icons/dev.cominotti.lushtext.svg` alone is not enough to refresh every icon surface. The fixed-size PNG fallbacks must be regenerated, and an already-running dev session still needs a fresh Shell app object. Use `make refresh-dock-icon` after icon asset changes: it regenerates the PNG fallbacks from the canonical SVG and then replaces the running dev instance so the dock rebuilds from the fresh file-backed icon.
 
 ## Compilation Speed

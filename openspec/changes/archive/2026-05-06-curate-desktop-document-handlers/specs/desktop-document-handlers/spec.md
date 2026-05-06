@@ -1,9 +1,4 @@
-# desktop-document-handlers Specification
-
-## Purpose
-Define the desktop metadata contract that lets GNOME Settings and GLib expose LushText as an available handler for a curated set of document formats without changing the user's default application choices.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Advertised Document MIME Types
 LushText SHALL advertise exactly the curated document MIME types needed for GNOME's standard file association UI: `text/plain`, `application/x-zerosize`, `application/json`, `application/json5`, `application/toml`, `application/yaml`, and `text/markdown`. The advertised desktop metadata MUST NOT include programming-language source MIME types such as `text/x-csrc`, `text/x-chdr`, `text/x-python`, or `text/x-rust`, and MUST NOT include JSONC or Properties MIME strings as part of this change.

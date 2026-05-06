@@ -7,6 +7,6 @@ Terminal=false
 Type=Application
 Categories=TextEditor;Utility;GTK;GNOME;
 Keywords=Text;Editor;Code;Markdown;Workspace;Notes;
-MimeType=text/plain;application/x-zerosize;text/x-csrc;text/x-chdr;text/x-python;application/json;text/markdown;text/x-rust;
+MimeType=text/plain;application/x-zerosize;application/json;application/json5;application/toml;application/yaml;text/markdown;
 StartupNotify=true
 X-Purism-FormFactor=workstation;
