@@ -264,6 +264,14 @@ pub struct LushtextWindow {
     /// Guards split-width synchronization against reentrant allocations caused
     /// by programmatic `OverlaySplitView` fraction updates.
     pub split_width_syncing: Cell<bool>,
+    /// Last window width whose split-view constraints were synced from allocation.
+    ///
+    /// `size_allocate()` runs for animation frames as well as real resizes, so
+    /// this keeps the handler to cheap width-change work instead of repeating
+    /// GSettings and breakpoint churn while Adwaita is animating panes.
+    pub split_width_synced_for_width: Cell<i32>,
+    /// Last parsed properties breakpoint width installed on the Adwaita breakpoint.
+    pub properties_breakpoint_max_width: Cell<i32>,
 }
 
 impl Default for LushtextWindow {
@@ -320,6 +328,8 @@ impl Default for LushtextWindow {
             workspace_scope: RefCell::new(WorkspaceScope::All),
             properties_breakpoint: RefCell::new(None),
             split_width_syncing: Cell::new(false),
+            split_width_synced_for_width: Cell::new(0),
+            properties_breakpoint_max_width: Cell::new(0),
         }
     }
 }
@@ -498,12 +508,7 @@ impl ObjectImpl for LushtextWindow {
                     let fixed = effective_properties_fraction(&window, width);
                     if (fixed - split.sidebar_width_fraction()).abs() > f64::EPSILON {
                         split.set_sidebar_width_fraction(fixed);
-                        return;
                     }
-                    let _ = window.imp().settings.set_double(
-                        keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
-                        desired_properties_fraction(width),
-                    );
                 },
             );
         }
@@ -738,7 +743,7 @@ impl WidgetImpl for LushtextWindow {
             if self.command_palette.width_request() != palette_width {
                 self.command_palette.set_width_request(palette_width);
             }
-            sync_split_view_widths(&self.obj(), width);
+            sync_split_view_widths_for_allocation(&self.obj(), width);
         }
     }
 }
@@ -835,6 +840,7 @@ fn restore_workspace_split_view(window: &super::LushtextWindow) {
     let preset = workspace_sidebar_preset(window);
     let fraction = preset.effective_fraction(width);
     sync_workspace_sidebar_width_constraints(window, width);
+    window.imp().split_width_synced_for_width.set(width);
     window
         .imp()
         .workspace_split_view
@@ -875,9 +881,16 @@ fn restore_properties_split_view(window: &super::LushtextWindow) {
 }
 
 fn install_split_view_breakpoints(window: &super::LushtextWindow) {
+    let properties_max_width = properties_breakpoint_max_width_for_window(window);
+    window
+        .imp()
+        .properties_breakpoint_max_width
+        .set(properties_max_width);
     let properties_bp = libadwaita::Breakpoint::new(
-        libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(window))
-            .expect("valid properties breakpoint condition"),
+        libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(
+            properties_max_width,
+        ))
+        .expect("valid properties breakpoint condition"),
     );
     properties_bp.add_setter(
         window
@@ -908,13 +921,14 @@ fn install_split_view_breakpoints(window: &super::LushtextWindow) {
     window.add_breakpoint(workspace_bp);
 }
 
+fn properties_breakpoint_condition(max_width_sp: i32) -> String {
+    format!("max-width: {max_width_sp}sp")
+}
+
 /// Build the properties-pane breakpoint from the minimum center width instead
 /// of a magic number so the shell explains *why* it collapses earlier.
-fn properties_breakpoint_condition(window: &super::LushtextWindow) -> String {
-    format!(
-        "max-width: {}sp",
-        properties_breakpoint_max_width_sp(properties_breakpoint_workspace_width_sp(window))
-    )
+fn properties_breakpoint_max_width_for_window(window: &super::LushtextWindow) -> i32 {
+    properties_breakpoint_max_width_sp(properties_breakpoint_workspace_width_sp(window))
 }
 
 /// Compute the total window width below which the properties pane should
@@ -953,10 +967,6 @@ fn workspace_sidebar_preset(window: &super::LushtextWindow) -> WorkspaceSidebarW
 fn dual_sidebar_window_width_for_center(center_width_sp: f64, workspace_width_sp: f64) -> f64 {
     (center_width_sp + workspace_width_sp)
         / (1.0 - FIXED_PROPERTIES_SIDEBAR_FRACTION).max(f64::EPSILON)
-}
-
-fn desired_workspace_hint_fraction(window: &super::LushtextWindow) -> f64 {
-    workspace_sidebar_preset(window).fraction()
 }
 
 fn effective_workspace_sidebar_width_sp(window: &super::LushtextWindow, window_width: i32) -> f64 {
@@ -1106,12 +1116,17 @@ fn set_workspace_sidebar_preset(
 }
 
 fn sync_properties_breakpoint(window: &super::LushtextWindow) {
+    let max_width = properties_breakpoint_max_width_for_window(window);
+    if window.imp().properties_breakpoint_max_width.get() == max_width {
+        return;
+    }
     let condition =
-        libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(window))
+        libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(max_width))
             .expect("valid properties breakpoint condition");
     if let Some(breakpoint) = window.imp().properties_breakpoint.borrow().as_ref() {
         breakpoint.set_condition(Some(&condition));
     }
+    window.imp().properties_breakpoint_max_width.set(max_width);
 }
 
 fn sync_secondary_surfaces(window: &super::LushtextWindow) {
@@ -1193,10 +1208,13 @@ fn sync_properties_split_view(window: &super::LushtextWindow, window_width: i32)
             .properties_split_view
             .set_sidebar_width_fraction(expected);
     }
-    let _ = window.imp().settings.set_double(
-        keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
-        desired_properties_fraction(window_width),
-    );
+}
+
+fn sync_split_view_widths_for_allocation(window: &super::LushtextWindow, window_width: i32) {
+    if window.imp().split_width_synced_for_width.get() == window_width {
+        return;
+    }
+    sync_split_view_widths(window, window_width);
 }
 
 fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
@@ -1214,14 +1232,11 @@ fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
             .workspace_split_view
             .set_sidebar_width_fraction(workspace_fraction);
     }
-    let _ = window.imp().settings.set_double(
-        keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION,
-        desired_workspace_hint_fraction(window),
-    );
     sync_properties_breakpoint(window);
     sync_properties_split_view(window, window_width);
     sync_secondary_surfaces(window);
 
+    window.imp().split_width_synced_for_width.set(window_width);
     window.imp().split_width_syncing.set(false);
 }
 

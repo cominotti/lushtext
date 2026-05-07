@@ -1700,6 +1700,31 @@ fn test_workspace_sidebar_width_presets_clamp_across_representative_window_sizes
 }
 
 #[test]
+fn test_split_view_allocation_sync_does_not_rewrite_persisted_properties_width() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    window.set_default_size(1770, 900);
+    present_window(&window);
+
+    let settings = &window.imp().settings;
+    settings
+        .set_double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION, 0.73)
+        .expect("seed sentinel properties width");
+    let synced_width = window.imp().split_width_synced_for_width.get();
+
+    // Allocation can be queued by Adwaita animation frames. It must keep to
+    // runtime geometry and avoid writing persisted settings on each frame.
+    window.queue_allocate();
+    flush_after_delay(Duration::from_millis(50));
+
+    assert_eq!(window.imp().split_width_synced_for_width.get(), synced_width);
+    assert_eq!(
+        settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION),
+        0.73
+    );
+}
+
+#[test]
 fn test_workspace_sidebar_setting_recalculates_properties_breakpoint() {
     ensure_gtk_init();
     let comfy_window = test_window_with_split_view_state(true, 0.3, false, 0.25);

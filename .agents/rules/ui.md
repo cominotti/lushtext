@@ -160,6 +160,7 @@ Window geometry and split-view state are persisted via GSettings (not JSON sessi
 - The left pane restores one of the Preferences-driven presets (`20%`, `30%`, `40%`) whenever it is shown, then clamps that preset to the active desktop width before deriving the effective split fraction, while the right pane keeps its quarter-width target.
 - Breakpoints collapse the properties pane before the workspace pane so medium-width windows keep the file tree visible longer.
 - The properties-pane breakpoint should be tuned from the workspace pane's effective visible width when the workspace pane consumes width so the center editor width stays protected for restored-document infobars and other editor chrome.
+- Allocation-time split-view sync is for live geometry only. `size_allocate()` can clamp the current fractions and update a cached properties breakpoint threshold, but it must not write `workspace-sidebar-width-fraction` / `properties-sidebar-width-fraction` to GSettings or call `AdwBreakpoint::set_condition()` with a newly parsed condition on every animation frame. Persist only explicit user intent or settled animation state, and cache derived thresholds so opening/closing sidebars stays monitor-refresh smooth in the installed Flatpak too.
 - When a utility pane closes, return focus to the active editor rather than leaving focus stranded on a toggle button.
 
 ## Entry Width Symmetry in Toggle Layouts (CRITICAL)
