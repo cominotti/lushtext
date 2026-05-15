@@ -76,8 +76,8 @@ Meson wraps Cargo for installed and Flatpak builds:
 
 - Manifest: `build-aux/dev.cominotti.lushtext.Flatpak.json` (local builds, `type: "dir"`)
 - Runtime: `org.gnome.Platform` 50, SDK extension: `org.freedesktop.Sdk.Extension.rust-stable`
-- Use `make flatpak` for a local build without installing it
-- Use `make flatpak-install` to build and install the latest checkout into the user Flatpak installation
+- Use `make flatpak` for a local build without installing it; it first ensures the user Flathub remote and manifest runtime/SDK dependencies are available
+- Use `make flatpak-install` to build and install the latest checkout into the user Flatpak installation; the target is idempotent and installs missing runtime/SDK dependencies from Flathub
 - Use `make verify-flatpak-identity` after install/export changes to catch stale same-ID dev launchers and verify `X-Flatpak`, permissions, and MIME registration
 - `build-aux/cargo-sources.json` vendors all Cargo dependencies for offline builds
 - Regenerate after dependency changes: `make cargo-sources` (requires `flatpak-cargo-generator`)

@@ -14,6 +14,7 @@
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make check       - clippy + fmt check
 #   make pre-commit  - repo pre-commit gate (fmt + clippy)
+#   make flatpak-deps - Install Flatpak runtime/SDK deps into the user installation
 #   make flatpak-install - Build and install Flatpak into the user installation
 #   make verify-flatpak-identity - Verify Flatpak desktop identity and MIME registration
 #   make install-git-hooks - configure this repo to use .githooks/
@@ -22,7 +23,7 @@
 
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless \
        check-fmt check-clippy check pre-commit install-git-hooks clean help \
-       meson-build flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
+       meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        bench bench-report bench-report-full bench-baseline bench-compare
 
 .DEFAULT_GOAL := help
@@ -41,6 +42,13 @@ CARGO_TEST_INT        = cargo test --workspace --test integration
 endif
 CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh
 CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 1
+
+FLATPAK_REMOTE ?= flathub
+FLATPAK_REMOTE_URL ?= https://dl.flathub.org/repo/flathub.flatpakrepo
+FLATPAK_BUILD_DIR := build-flatpak
+FLATPAK_MANIFEST := build-aux/dev.cominotti.lushtext.Flatpak.json
+FLATPAK_BUILDER_FLAGS := --disable-rofiles-fuse --force-clean --user
+FLATPAK_BUILDER_DEPS_FLAGS := --assumeyes --install-deps-from=$(FLATPAK_REMOTE)
 
 # Build the project (release, optimized)
 build:
@@ -154,15 +162,22 @@ meson-build:
 	meson setup _build -Dprofile=release
 	meson compile -C _build
 
-# Flatpak build (requires flatpak-builder + org.gnome.Sdk)
-flatpak:
+# Install the manifest's runtime, SDK, and SDK extensions into the user Flatpak installation.
+flatpak-deps:
+	@echo "Ensuring Flathub remote is available for user Flatpak builds..."
+	flatpak remote-add --if-not-exists --user $(FLATPAK_REMOTE) $(FLATPAK_REMOTE_URL)
+	@echo "Installing Flatpak runtime dependencies from $(FLATPAK_REMOTE)..."
+	flatpak-builder $(FLATPAK_BUILDER_FLAGS) $(FLATPAK_BUILDER_DEPS_FLAGS) --install-deps-only $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
+
+# Flatpak build (sets up missing runtime/SDK deps from Flathub)
+flatpak: flatpak-deps
 	@echo "Building Flatpak..."
-	flatpak-builder --disable-rofiles-fuse --force-clean build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
+	flatpak-builder $(FLATPAK_BUILDER_FLAGS) $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
 
 # Flatpak build and install into the user installation
-flatpak-install:
+flatpak-install: flatpak-deps
 	@echo "Building and installing Flatpak..."
-	flatpak-builder --disable-rofiles-fuse --force-clean --user --install build-flatpak build-aux/dev.cominotti.lushtext.Flatpak.json
+	flatpak-builder $(FLATPAK_BUILDER_FLAGS) --assumeyes --install $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
 
 # Verify the installed Flatpak export is the active production desktop identity
 verify-flatpak-identity:
@@ -214,7 +229,8 @@ help:
 	@echo ""
 	@echo "Packaging targets:"
 	@echo "  meson-build     Meson release build (installed layout)"
-	@echo "  flatpak         Build Flatpak (needs flatpak-builder)"
+	@echo "  flatpak-deps    Install Flatpak runtime/SDK deps into the user installation"
+	@echo "  flatpak         Build Flatpak (sets up missing runtime/SDK deps)"
 	@echo "  flatpak-install Build and install Flatpak into the user installation"
 	@echo "  verify-flatpak-identity Verify Flatpak desktop identity and MIME registration"
 	@echo "  test-flatpak-identity-verifier Test the Flatpak identity verifier"

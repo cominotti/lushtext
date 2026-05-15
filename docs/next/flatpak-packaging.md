@@ -13,6 +13,12 @@ LushText has an active Flatpak packaging path built with Meson and
 - Manifest: `build-aux/dev.cominotti.lushtext.Flatpak.json`
 - Local install command: `make flatpak-install`
 
+`make flatpak-install` is idempotent for local setup: it adds the user
+Flathub remote with `flatpak remote-add --if-not-exists --user` and asks
+`flatpak-builder` to install the manifest's missing runtime, SDK, and SDK
+extensions from that remote before building. `make flatpak` uses the same
+dependency setup path for build-only validation.
+
 ## Desktop Identity
 
 The production desktop identity is `dev.cominotti.lushtext.desktop`. The
