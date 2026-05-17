@@ -30,6 +30,7 @@ impl LushtextEditorPage {
 
         imp.search_bar.detach();
         imp.search_revealer.set_reveal_child(false);
+        self.refresh_minimap();
 
         if !navigated {
             self.restore_pre_search_cursor();

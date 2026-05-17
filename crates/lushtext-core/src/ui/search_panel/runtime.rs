@@ -223,7 +223,6 @@ impl LushtextSearchPanel {
         imp.preview.preview_replacements.borrow_mut().clear();
         imp.preview.checked_indices.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
-        self.clear_undo_backup();
         self.update_replace_button_sensitivity();
     }
 }

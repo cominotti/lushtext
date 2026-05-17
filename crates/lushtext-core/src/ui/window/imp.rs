@@ -760,7 +760,11 @@ impl WindowImpl for LushtextWindow {
 
         if modified.is_empty() {
             self.search_panel.close();
-            window.flush_dirty_drafts();
+            if let Err(e) = window.flush_dirty_drafts() {
+                window
+                    .publish_status_message(&format!("Draft save failed: {e}"), MessageKind::Error);
+                return glib::Propagation::Stop;
+            }
             window.save_session_sync();
             return self.parent_close_request();
         }
@@ -769,7 +773,13 @@ impl WindowImpl for LushtextWindow {
         window.show_save_changes_dialog(&modified, move |confirmed| {
             if confirmed {
                 window_for_close.imp().search_panel.close();
-                window_for_close.flush_dirty_drafts();
+                if let Err(e) = window_for_close.flush_dirty_drafts() {
+                    window_for_close.publish_status_message(
+                        &format!("Draft save failed: {e}"),
+                        MessageKind::Error,
+                    );
+                    return;
+                }
                 window_for_close.save_session_sync();
                 window_for_close.destroy();
             }

@@ -14,6 +14,7 @@ use crate::model::draft::{DraftEntry, FileDraftRestoreResolution, PreloadedDraft
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::services::{async_task, draft_service, editor_io, json_store};
 use crate::ui::editor_page::LushtextEditorPage;
+use anyhow::Result;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
@@ -35,11 +36,17 @@ struct DraftAutosaveResult {
 
 impl super::LushtextWindow {
     /// Write all dirty drafts synchronously during window close.
-    pub fn flush_dirty_drafts(&self) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any dirty draft file cannot be written or when
+    /// the draft manifest cannot be updated after successful draft writes.
+    pub fn flush_dirty_drafts(&self) -> Result<()> {
         let tab_view = &self.imp().tab_view;
         let data_dir = json_store::data_dir();
         let now = editor_io::now_epoch_secs();
         let mut manifest_updates = Vec::new();
+        let mut write_errors = Vec::new();
         let discarded_draft_ids = self.imp().drafts.close_discard_ids.borrow().clone();
 
         for i in 0..tab_view.n_pages() {
@@ -63,6 +70,7 @@ impl super::LushtextWindow {
                 .to_string();
             if let Err(e) = draft_service::write_draft(&data_dir, &draft_id, &text) {
                 tracing::error!("Failed to write draft on close: {e}");
+                write_errors.push(format!("{draft_id}: {e}"));
                 continue;
             }
             let original_path = editor.file_path();
@@ -76,18 +84,28 @@ impl super::LushtextWindow {
                 saved_at_secs: now,
             });
         }
-        if manifest_updates.is_empty() {
-            self.clear_close_discard_drafts();
-            return;
+        let had_manifest_updates = !manifest_updates.is_empty();
+        if had_manifest_updates {
+            draft_service::update_manifest(&data_dir, |manifest| {
+                for entry in manifest_updates {
+                    manifest.upsert(entry);
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("failed to save draft manifest on close: {e}"))?;
         }
-        if let Err(e) = draft_service::update_manifest(&data_dir, |manifest| {
-            for entry in manifest_updates {
-                manifest.upsert(entry);
-            }
-        }) {
-            tracing::error!("Failed to save draft manifest on close: {e}");
+        if !write_errors.is_empty() {
+            return Err(anyhow::anyhow!(
+                "failed to write {} drafts on close: {}",
+                write_errors.len(),
+                write_errors.join("; ")
+            ));
+        }
+        if !had_manifest_updates {
+            self.clear_close_discard_drafts();
+            return Ok(());
         }
         self.clear_close_discard_drafts();
+        Ok(())
     }
 
     /// Load draft content for an untitled tab by draft ID.

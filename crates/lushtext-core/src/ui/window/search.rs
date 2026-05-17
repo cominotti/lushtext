@@ -117,44 +117,49 @@ pub fn setup_search_panel(window: &LushtextWindow) {
         };
         let imp = window.imp();
 
-        // Build skip_paths: files open with unsaved modifications.
+        // Build skip_paths: files open with unsaved edits or an in-flight save.
+        // The replacement service also takes the same per-path advisory lock
+        // as editor saves, so a save that starts after this snapshot cannot
+        // race the final replacement rename for that file.
         let mut skip_paths = HashSet::new();
         let tab_view = &imp.tab_view;
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
                 && let Some(path) = editor.file_path()
-                && editor.is_modified()
+                && (editor.is_modified() || editor.is_saving())
             {
                 skip_paths.insert(path);
             }
         }
 
-        // Count skipped replacements for the status message.
         let total_replacements = replacements.len();
-        let filtered: Vec<_> = replacements
-            .into_iter()
+        let affected_paths: HashSet<std::path::PathBuf> = replacements
+            .iter()
             .filter(|r| !skip_paths.contains(&r.path))
+            .map(|r| r.path.clone())
             .collect();
 
-        let skipped_count = total_replacements - filtered.len();
-
-        if filtered.is_empty() {
+        if affected_paths.is_empty() {
             window.publish_status_message(
-                "No replacements to apply (all files have unsaved changes)",
+                "No replacements to apply (all files have unsaved changes or active saves)",
                 MessageKind::Warning,
             );
             return;
         }
 
-        // Collect paths that will be affected (for tab reload after replace).
-        let affected_paths: HashSet<std::path::PathBuf> =
-            filtered.iter().map(|r| r.path.clone()).collect();
-
         let cancel = AtomicBool::new(false);
+        let data_dir = json_store::data_dir();
         async_task::spawn_blocking_then(
             window.clone(),
-            move || content_search::apply_replacements(&filtered, &HashSet::new(), &cancel),
+            move || {
+                content_search::apply_replacements(
+                    &replacements,
+                    &skip_paths,
+                    &cancel,
+                    Some(&data_dir),
+                )
+            },
             move |window, result| {
                 let imp = window.imp();
                 match result {
@@ -165,9 +170,11 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                             total_replacements,
                             replace_result.files_affected,
                         );
-                        if skipped_count > 0 || !replace_result.skipped_paths.is_empty() {
-                            let skip_total = skipped_count + replace_result.skipped_paths.len();
-                            msg.push_str(&format!(" ({skip_total} files skipped)"));
+                        if !replace_result.skipped_paths.is_empty() {
+                            msg.push_str(&format!(
+                                " ({} files skipped)",
+                                replace_result.skipped_paths.len()
+                            ));
                         }
                         if !replace_result.errors.is_empty() {
                             msg.push_str(&format!(" ({} errors)", replace_result.errors.len()));
@@ -204,22 +211,43 @@ pub fn setup_search_panel(window: &LushtextWindow) {
             return;
         };
 
-        let affected_paths: HashSet<std::path::PathBuf> = backup.keys().cloned().collect();
-
         async_task::spawn_blocking_then(
             window.clone(),
             move || content_search::undo_replacements(&backup),
-            move |window, result| match result {
-                Ok(count) => {
+            move |window, outcome| {
+                let restored_paths: HashSet<std::path::PathBuf> =
+                    outcome.restored_paths.iter().cloned().collect();
+                if !restored_paths.is_empty() {
+                    reload_affected_tabs(&window, &restored_paths);
+                }
+
+                if outcome.remaining_backup.is_empty() {
                     window.publish_status_message(
-                        &format!("Reverted {count} files"),
+                        &format!("Reverted {} files", outcome.restored_count()),
                         MessageKind::Info,
                     );
-                    reload_affected_tabs(&window, &affected_paths);
                     window.imp().search_panel.clear_undo_backup();
-                }
-                Err(e) => {
-                    window.publish_status_message(&format!("Undo failed: {e}"), MessageKind::Error);
+                } else {
+                    let remaining = outcome.remaining_count();
+                    let skipped = outcome.skipped_paths.len();
+                    let failed = outcome.failed_paths.len();
+                    let message = if outcome.restored_count() > 0 {
+                        format!(
+                            "Reverted {} files; {remaining} files still need attention",
+                            outcome.restored_count()
+                        )
+                    } else if skipped > 0 && failed == 0 {
+                        format!(
+                            "Undo skipped {skipped} files changed after Replace All; backup kept"
+                        )
+                    } else {
+                        format!("Undo could not restore {remaining} files; backup kept")
+                    };
+                    window.publish_status_message(&message, MessageKind::Warning);
+                    window
+                        .imp()
+                        .search_panel
+                        .set_undo_backup(&outcome.remaining_backup);
                     window.imp().search_panel.show_undo_button();
                 }
             },
@@ -483,6 +511,7 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
             && let Some(path) = editor.file_path()
             && affected_paths.contains(&path)
             && !editor.is_modified()
+            && !editor.is_saving()
         {
             // Update mtime to suppress file monitor "changed" detection for our own write.
             if let Ok(metadata) = std::fs::metadata(&path) {

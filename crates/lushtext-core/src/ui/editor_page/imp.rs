@@ -11,8 +11,8 @@ use crate::model::annotation::{AnnotationId, AnnotationRecord};
 use crate::model::bookmark::BookmarkRecord;
 use crate::model::encoding::{DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode};
 use crate::model::formatting_overrides::FormattingOverrides;
-use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::InlineActionNotification;
+use crate::services::{durable_write, file_limits::FileSizeCheck};
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
 use gtk4::gio;
@@ -21,7 +21,7 @@ use gtk4::{self, CompositeTemplate, glib};
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -904,18 +904,17 @@ fn ensure_transparency_style_scheme(
 
     let scheme_dir = crate::services::json_store::data_dir().join("style-schemes");
     let file_path = scheme_dir.join(format!("{derived_id}.xml"));
-    if !file_path.exists() {
-        let text_bg = crate::sourceview_rgba_with_alpha(&palette.text_bg, palette.opacity);
-        let line_numbers_bg =
-            crate::sourceview_rgba_with_alpha(&palette.line_numbers_bg, palette.opacity);
-        let current_line_bg =
-            crate::sourceview_rgba_with_alpha(&palette.current_line_bg, palette.opacity);
-        let current_line_number_bg =
-            crate::sourceview_rgba_with_alpha(&palette.current_line_number_bg, palette.opacity);
-        let right_margin_bg =
-            crate::sourceview_rgba_with_alpha(&palette.right_margin_bg, palette.opacity);
-        let xml = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
+    let text_bg = crate::sourceview_rgba_with_alpha(&palette.text_bg, palette.opacity);
+    let line_numbers_bg =
+        crate::sourceview_rgba_with_alpha(&palette.line_numbers_bg, palette.opacity);
+    let current_line_bg =
+        crate::sourceview_rgba_with_alpha(&palette.current_line_bg, palette.opacity);
+    let current_line_number_bg =
+        crate::sourceview_rgba_with_alpha(&palette.current_line_number_bg, palette.opacity);
+    let right_margin_bg =
+        crate::sourceview_rgba_with_alpha(&palette.right_margin_bg, palette.opacity);
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <style-scheme id="{derived_id}" _name="LushText Transparency" version="1.0" parent-scheme="{base_id}">
   <author>LushText</author>
   <_description>Opacity-aware derived scheme for LushText tab content</_description>
@@ -927,10 +926,8 @@ fn ensure_transparency_style_scheme(
   <style name="right-margin" background="{right_margin_bg}"/>
 </style-scheme>
 "#
-        );
-        let _ = std::fs::create_dir_all(&scheme_dir);
-        let _ = std::fs::write(&file_path, xml);
-    }
+    );
+    write_transparency_style_scheme_if_needed(&scheme_dir, &file_path, &xml);
 
     let scheme_dir_str = scheme_dir.to_string_lossy();
     if !manager
@@ -957,4 +954,58 @@ fn sanitize_style_scheme_component(input: &str) -> String {
             }
         })
         .collect()
+}
+
+fn write_transparency_style_scheme_if_needed(scheme_dir: &Path, file_path: &Path, xml: &str) {
+    if std::fs::read_to_string(file_path).is_ok_and(|existing| existing == xml) {
+        return;
+    }
+
+    if let Err(error) = durable_write::create_dir_all_durable(scheme_dir) {
+        tracing::warn!(
+            "Failed to create style-scheme directory {}: {error}",
+            scheme_dir.display()
+        );
+        return;
+    }
+
+    if let Err(error) = durable_write::atomic_write_bytes(file_path, "style-scheme", xml.as_bytes())
+    {
+        tracing::warn!(
+            "Failed to write derived style scheme {}: {error}",
+            file_path.display()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_transparency_style_scheme_if_needed;
+    use tempfile::TempDir;
+
+    #[test]
+    fn transparency_style_scheme_rewrites_corrupt_existing_file() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let scheme_dir = dir.path().join("style-schemes");
+        std::fs::create_dir_all(&scheme_dir).expect("expected operation to succeed");
+        let file_path = scheme_dir.join("lushtext-opacity-test.xml");
+        std::fs::write(&file_path, "<truncated").expect("expected operation to succeed");
+        let xml = "<?xml version=\"1.0\"?><style-scheme id=\"ok\"/>";
+
+        write_transparency_style_scheme_if_needed(&scheme_dir, &file_path, xml);
+
+        assert_eq!(
+            std::fs::read_to_string(&file_path).expect("expected operation to succeed"),
+            xml
+        );
+        assert!(
+            std::fs::read_dir(&scheme_dir)
+                .expect("expected operation to succeed")
+                .all(|entry| !entry
+                    .expect("expected operation to succeed")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".style-scheme."))
+        );
+    }
 }

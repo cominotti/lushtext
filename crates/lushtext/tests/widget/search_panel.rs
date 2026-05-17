@@ -13,6 +13,7 @@ use lushtext_core::services::notifications::{
     NotificationBus, NotificationOwner, NotificationPayload, NotificationSeverity,
     NotificationSurface, StatusMessage,
 };
+use lushtext_core::services::content_search::{ReplaceUndoBackup, ReplaceUndoEntry};
 use lushtext_core::services::{json_store, search_backup};
 use lushtext_core::ui::search_panel::item::SearchResultItem;
 use lushtext_core::ui::search_panel::{
@@ -41,6 +42,10 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
         }
     }
     assert!(predicate(), "timed out waiting for widget state");
+}
+
+fn replace_undo_entry(original: &[u8], replaced: &[u8]) -> ReplaceUndoEntry {
+    ReplaceUndoEntry::new(original.to_vec(), replaced.to_vec())
 }
 
 fn make_history_entry(
@@ -763,55 +768,102 @@ fn test_exit_preview_mode_clears_state() {
 }
 
 #[test]
-fn test_clear_results_clears_undo_backup() {
+fn test_clear_results_preserves_undo_backup() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
 
     // Simulate an undo backup.
-    let mut backup = std::collections::HashMap::new();
+    let mut backup = ReplaceUndoBackup::new();
     backup.insert(
         std::path::PathBuf::from("/test.rs"),
-        b"original content".to_vec(),
+        replace_undo_entry(b"original content", b"replaced content"),
     );
     panel.set_undo_backup(&backup);
     panel.show_undo_button();
     assert!(panel.imp().preview.undo_backup.borrow().is_some());
 
-    // Starting a new search should clear any old undo state.
+    // Starting a new search should not discard the rollback path for a
+    // previous Replace All. Undo remains available until it is used or a new
+    // Replace All replaces the backup.
     panel.start_search(&search_spec(""));
-    assert!(panel.imp().preview.undo_backup.borrow().is_none());
+    assert!(panel.imp().preview.undo_backup.borrow().is_some());
     assert!(
-        !panel.imp().undo_button.property::<bool>("visible"),
-        "undo_button should hide after clear"
+        panel.imp().undo_button.property::<bool>("visible"),
+        "undo_button should stay visible after a new search starts"
     );
-    assert!(search_backup::load(&data_dir).expect("expected operation to succeed").is_empty());
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        backup
+    );
 
     let _ = search_backup::delete(&data_dir);
 }
 
 #[test]
-fn test_search_panel_discards_stale_persisted_undo_backup_on_construction() {
+fn test_search_panel_restores_persisted_undo_backup_on_construction() {
     ensure_gtk_init();
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
 
-    let mut backup = std::collections::HashMap::new();
+    let mut backup = ReplaceUndoBackup::new();
     backup.insert(
         std::path::PathBuf::from("/persisted.rs"),
-        b"persisted content".to_vec(),
+        replace_undo_entry(b"persisted content", b"persisted replacement"),
     );
     search_backup::save(&data_dir, &backup).expect("expected operation to succeed");
 
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir).expect("expected operation to succeed").is_empty()
+        panel.imp().preview.undo_backup.borrow().is_some()
     });
-    assert!(panel.imp().preview.undo_backup.borrow().is_none());
+    assert_eq!(
+        panel
+            .imp()
+            .preview
+            .undo_backup
+            .borrow()
+            .as_ref()
+            .expect("expected restored backup"),
+        &backup
+    );
     assert!(
-        !panel.imp().undo_button.property::<bool>("visible"),
-        "undo button should stay hidden when stale persisted backup is discarded"
+        panel.imp().undo_button.property::<bool>("visible"),
+        "undo button should be visible when persisted backup is restored"
+    );
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        backup
+    );
+
+    let _ = search_backup::delete(&data_dir);
+}
+
+#[test]
+fn test_search_panel_close_preserves_undo_backup() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let data_dir = json_store::data_dir();
+    let _ = search_backup::delete(&data_dir);
+
+    let mut backup = ReplaceUndoBackup::new();
+    backup.insert(
+        std::path::PathBuf::from("/persisted-close.rs"),
+        replace_undo_entry(b"before replace", b"after replace"),
+    );
+    panel.set_undo_backup(&backup);
+    panel.show_undo_button();
+
+    panel.close();
+
+    assert_eq!(
+        panel.imp().preview.undo_backup.borrow().as_ref(),
+        Some(&backup)
+    );
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        backup
     );
 
     let _ = search_backup::delete(&data_dir);

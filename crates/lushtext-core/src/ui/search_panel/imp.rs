@@ -10,6 +10,7 @@
 use super::item::SearchResultItem;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 use crate::model::content_search::{Replacement, SavedSearch, SearchHistoryEntry};
+use crate::services::content_search::ReplaceUndoBackup;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
@@ -33,7 +34,7 @@ type ProgressCallback = Box<dyn Fn(SearchProgressUpdate)>;
 type ReplaceCallback = Box<dyn Fn(Vec<Replacement>)>;
 
 /// Callback type for Undo All: receives the backup map to restore.
-type UndoCallback = Box<dyn Fn(HashMap<PathBuf, Vec<u8>>)>;
+type UndoCallback = Box<dyn Fn(ReplaceUndoBackup)>;
 type MessageCallback = Box<dyn Fn(&str)>;
 
 const SEARCH_INPUT_DEBOUNCE_MS: u64 = 300;
@@ -100,8 +101,8 @@ pub struct SearchHistoryState {
 pub struct SearchPreviewState {
     /// Whether the results list currently renders preview rows with checkboxes.
     pub preview_mode: Cell<bool>,
-    /// In-memory backup of original file contents after a successful replace.
-    pub undo_backup: RefCell<Option<HashMap<PathBuf, Vec<u8>>>>,
+    /// In-memory before/after file snapshots after a successful Replace All.
+    pub undo_backup: RefCell<Option<ReplaceUndoBackup>>,
     /// Generation counter invalidating stale backup loads and deletes.
     pub undo_backup_generation: Cell<u32>,
     /// Replacement previews currently displayed in preview mode.
@@ -327,7 +328,7 @@ impl ObjectImpl for LushtextSearchPanel {
         self.setup_options();
         self.setup_history();
         self.setup_save_button();
-        self.obj().clear_stale_persisted_undo_backup();
+        self.obj().load_persisted_undo_backup();
         self.history.constructed_complete.set(true);
     }
 

@@ -6,10 +6,8 @@
 //! models, but isolating them here keeps the runtime search loop separate from
 //! replace/undo behavior.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-
 use crate::model::content_search::generate_replacement_preview;
+use crate::services::content_search::ReplaceUndoBackup;
 use crate::services::{json_store, search_backup};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -28,7 +26,7 @@ impl LushtextSearchPanel {
     }
 
     /// Store undo backup after a successful replace.
-    pub fn set_undo_backup(&self, backup: &HashMap<PathBuf, Vec<u8>>) {
+    pub fn set_undo_backup(&self, backup: &ReplaceUndoBackup) {
         let generation = self
             .imp()
             .preview
@@ -41,12 +39,37 @@ impl LushtextSearchPanel {
         let data_dir = json_store::data_dir();
         if let Err(e) = search_backup::save(&data_dir, backup) {
             tracing::error!("Failed to persist replace backup: {e}");
-            if let Err(delete_err) = search_backup::delete(&data_dir) {
-                tracing::warn!(
-                    "Failed to clear stale replace backup after save failure: {delete_err}"
-                );
-            }
         }
+    }
+
+    /// Load a persisted Replace All backup left by a prior session.
+    pub(crate) fn load_persisted_undo_backup(&self) {
+        let data_dir = json_store::data_dir();
+        let load_generation = self.imp().preview.undo_backup_generation.get();
+        crate::services::async_task::spawn_blocking_then(
+            self.clone(),
+            move || search_backup::load(&data_dir),
+            move |panel, result| match result {
+                Ok(backup) if !backup.is_empty() => {
+                    if panel.imp().preview.undo_backup_generation.get() != load_generation {
+                        return;
+                    }
+                    let generation = panel
+                        .imp()
+                        .preview
+                        .undo_backup_generation
+                        .get()
+                        .wrapping_add(1);
+                    panel.imp().preview.undo_backup_generation.set(generation);
+                    panel.imp().preview.undo_backup.replace(Some(backup));
+                    panel.show_undo_button();
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("Failed to load persisted replace backup: {e}");
+                }
+            },
+        );
     }
 
     /// Clear undo backup and hide the undo button.
@@ -65,20 +88,6 @@ impl LushtextSearchPanel {
         if let Err(e) = search_backup::delete(&data_dir) {
             tracing::warn!("Failed to delete replace backup after undo: {e}");
         }
-    }
-
-    /// Delete any stale persisted undo backup from an earlier session.
-    pub(crate) fn clear_stale_persisted_undo_backup(&self) {
-        let data_dir = json_store::data_dir();
-        crate::services::async_task::spawn_blocking_then(
-            self.clone(),
-            move || search_backup::delete(&data_dir),
-            |_panel, result| {
-                if let Err(e) = result {
-                    tracing::warn!("Failed to clear stale replace backup: {e}");
-                }
-            },
-        );
     }
 
     /// Whether the panel is in preview mode.

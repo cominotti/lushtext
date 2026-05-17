@@ -2221,7 +2221,9 @@ fn test_flush_dirty_drafts_skips_close_discarded_editors() {
         .close_discard_ids
         .borrow_mut()
         .insert(draft_id.clone());
-    window.flush_dirty_drafts();
+    window
+        .flush_dirty_drafts()
+        .expect("discarded draft flush should succeed");
 
     assert_eq!(
         draft_service::read_draft(&data_dir, &draft_id).expect("read draft"),
@@ -2232,6 +2234,46 @@ fn test_flush_dirty_drafts_skips_close_discarded_editors() {
         window.imp().drafts.close_discard_ids.borrow().is_empty(),
         "close discard state should be cleared after the flush",
     );
+}
+
+#[test]
+fn test_flush_dirty_drafts_fails_when_manifest_cannot_be_saved() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("keep me");
+    editor.buffer().set_modified(true);
+
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    let drafts_dir = draft_service::drafts_dir(&data_dir);
+    let manifest_path = drafts_dir.join("manifest.json");
+    if manifest_path.is_dir() {
+        std::fs::remove_dir_all(&manifest_path).expect("remove stale manifest dir");
+    } else {
+        let _ = std::fs::remove_file(&manifest_path);
+    }
+    std::fs::create_dir_all(&manifest_path).expect("create manifest path as directory");
+
+    let error = window
+        .flush_dirty_drafts()
+        .expect_err("manifest failure should block close-time draft flush");
+
+    assert!(
+        error.to_string().contains("failed to save draft manifest"),
+        "unexpected error: {error}",
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read draft"),
+        Some("keep me".to_string()),
+        "draft bytes already written must be visible for recovery",
+    );
+
+    std::fs::remove_dir_all(&manifest_path).expect("remove manifest dir");
+    draft_service::delete_draft_file(&data_dir, &draft_id).expect("delete draft file");
 }
 
 #[test]

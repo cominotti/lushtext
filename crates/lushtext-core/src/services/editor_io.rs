@@ -711,6 +711,11 @@ fn encode_text(
 
 /// Write already-prepared bytes to disk atomically.
 fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
+    let _path_lock =
+        durable_write::FileWriteLock::acquire(path).map_err(|source| SaveError::WriteTemp {
+            path: path.to_path_buf(),
+            source,
+        })?;
     let tmp_path = durable_write::unique_temp_path(path, "save");
     let file = std::fs::File::create(&tmp_path).map_err(|source| SaveError::WriteTemp {
         path: tmp_path.clone(),

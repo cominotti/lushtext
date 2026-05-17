@@ -68,6 +68,70 @@ pub fn atomic_write_bytes(path: &Path, tmp_tag: &str, bytes: &[u8]) -> std::io::
     sync_parent_dir(path)
 }
 
+/// Exclusive advisory lock for one existing file path.
+///
+/// LushText's own save and Replace All paths both acquire this before replacing
+/// file bytes, so an in-app save cannot race a workspace-wide replacement for
+/// the same path. The lock is advisory: external editors that ignore `flock`
+/// can still write concurrently, so callers must keep their own content
+/// validation where stale search results matter.
+#[cfg(unix)]
+pub struct FileWriteLock(std::fs::File);
+
+#[cfg(unix)]
+impl FileWriteLock {
+    /// Acquire an exclusive advisory lock on `path`.
+    ///
+    /// Returns `Ok(None)` when the file does not exist yet. New Save As targets
+    /// have no existing search result to coordinate with, and creating the final
+    /// path just to lock it would break atomic-save semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the existing file cannot be opened or locked.
+    pub fn acquire(path: &Path) -> std::io::Result<Option<Self>> {
+        use std::fs::OpenOptions;
+        use std::os::unix::io::AsRawFd;
+
+        let file = match OpenOptions::new().read(true).write(true).open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+
+        // SAFETY: `fd` comes from a live `File` owned by the returned lock, and
+        // `flock` only borrows that descriptor for the duration of the syscall.
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Some(Self(file)))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FileWriteLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+
+        // SAFETY: the descriptor still belongs to `self.0`, and releasing the
+        // advisory lock is valid while that file handle remains open in `Drop`.
+        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+/// No-op advisory lock for non-Unix builds.
+#[cfg(not(unix))]
+pub struct FileWriteLock;
+
+#[cfg(not(unix))]
+impl FileWriteLock {
+    /// Keep call sites portable; non-Unix builds do not participate in locking.
+    pub fn acquire(_path: &Path) -> std::io::Result<Option<Self>> {
+        Ok(Some(Self))
+    }
+}
+
 /// Rename a file or directory and sync both affected parent directories.
 ///
 /// `rename()` changes directory entries, so syncing only the moved file or
@@ -216,6 +280,27 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(first.parent(), Some(dir.path()));
         assert_eq!(second.parent(), Some(dir.path()));
+    }
+
+    #[test]
+    fn file_write_lock_accepts_existing_file() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("locked.txt");
+        std::fs::write(&path, "content").expect("expected operation to succeed");
+
+        let lock = FileWriteLock::acquire(&path).expect("expected operation to succeed");
+
+        assert!(lock.is_some());
+    }
+
+    #[test]
+    fn file_write_lock_skips_missing_file() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("missing.txt");
+
+        let lock = FileWriteLock::acquire(&path).expect("expected operation to succeed");
+
+        assert!(lock.is_none());
     }
 
     #[test]

@@ -8,5 +8,7 @@
 mod replace;
 mod search;
 
-pub use replace::{apply_replacements, undo_replacements};
+pub use replace::{
+    ReplaceUndoBackup, ReplaceUndoEntry, UndoReplaceOutcome, apply_replacements, undo_replacements,
+};
 pub use search::search;

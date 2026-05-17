@@ -15,10 +15,10 @@ mod replace;
 mod results;
 mod runtime;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::model::content_search::{Replacement, SearchQuerySpec};
+use crate::services::content_search::ReplaceUndoBackup;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -93,12 +93,11 @@ impl LushtextSearchPanel {
         self.imp().search_entry.grab_focus();
     }
 
-    /// Called when the panel is being hidden. Preserves the undo backup so it
-    /// does not outlive the panel-close safety boundary.
+    /// Called when the panel is being hidden.
     pub fn close(&self) {
-        // Don't cancel the search — preserve results for when the panel reopens.
-        // The polling timer is self-managing (stops when Done is received).
-        self.clear_undo_backup();
+        // Don't cancel the search or clear Replace All undo state. The polling
+        // timer is self-managing, and undo recovery now survives panel close so
+        // hiding the panel cannot discard the user's rollback path.
     }
 
     /// Pre-fill the search entry with text (e.g., editor selection).
@@ -184,7 +183,7 @@ impl LushtextSearchPanel {
     }
 
     /// Register a callback invoked when "Undo" is clicked with the backup to restore.
-    pub fn connect_undo_all<F: Fn(HashMap<PathBuf, Vec<u8>>) + 'static>(&self, f: F) {
+    pub fn connect_undo_all<F: Fn(ReplaceUndoBackup) + 'static>(&self, f: F) {
         self.imp()
             .callbacks
             .undo_callback

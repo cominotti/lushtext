@@ -249,6 +249,16 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > Tree: Backup stored only in widget state (RefCell/Cell on imp struct)? → Persisted to disk? → Yes: SAFE. Cleared on panel close, app exit, or new search?
 > FLAG HIGH: "Replace All undo backup is in-memory only. Crash or close after Replace All = original file content permanently lost."
 >
+> **RS-1b: Undo journal persisted after file mutation**
+> Grep: `apply_replacements` and backup persistence calls (`search_backup::save`, `set_undo_backup`, or similar)
+> Tree: Is the durable undo journal written before the first file rename? → Yes: SAFE. If journal persistence fails, does Replace All abort before mutating that file?
+> FLAG HIGH: "Replace All mutates files before the undo journal is durable. Crash or backup-save failure after mutation loses the only rollback copy."
+>
+> **RS-1c: Undo journal dropped after ambiguous write failure**
+> Grep: `sync_parent_dir` or post-`rename` durability errors in the Replace All write path
+> Tree: Can the write helper return an error after `rename` may already have replaced the destination? → No: skip. Does the backup entry stay durable for that path? → Yes: SAFE.
+> FLAG MEDIUM: "Post-rename fsync failure removes the undo journal for a file that may already contain replaced bytes."
+>
 > **RS-2: Stale skip_paths snapshot across async boundary**
 > Grep: `skip_paths` in replace/replacement context
 > Tree: Set of "modified tabs to skip" built on main thread and sent to background thread? → No: skip. Can source data (tab modified state) change between snapshot and background use?
