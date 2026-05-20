@@ -40,6 +40,10 @@ const MIN_EDITOR_CONTENT_WIDTH_SP: f64 = 620.0;
 const DUAL_PANE_LAYOUT_OVERHEAD_SP: f64 = 32.0;
 /// Collapse the left workspace pane on narrower windows.
 const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: &str = "max-width: 860sp";
+/// Wide document-properties presentation in the multi-layout view.
+const PROPERTIES_LAYOUT_PANE: &str = "pane";
+/// Compact document-properties presentation in the multi-layout view.
+const PROPERTIES_LAYOUT_SHEET: &str = "sheet";
 
 /// Secondary surfaces that can compete for the compact-width slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +52,31 @@ pub enum SecondarySurface {
     Workspace,
     /// The document-properties surface.
     DocumentProperties,
+}
+
+/// Adaptive presentation currently used for document properties.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PropertiesPresentation {
+    /// Properties render as the right sidebar of the inner split view.
+    Pane,
+    /// Properties render as the sheet of the compact bottom sheet.
+    Sheet,
+}
+
+impl PropertiesPresentation {
+    fn layout_name(self) -> &'static str {
+        match self {
+            Self::Pane => PROPERTIES_LAYOUT_PANE,
+            Self::Sheet => PROPERTIES_LAYOUT_SHEET,
+        }
+    }
+
+    fn from_layout_name(name: Option<&str>) -> Self {
+        match name {
+            Some(PROPERTIES_LAYOUT_SHEET) => Self::Sheet,
+            _ => Self::Pane,
+        }
+    }
 }
 
 /// Requested-versus-rendered visibility state for compact secondary-surface arbitration.
@@ -171,6 +200,8 @@ pub struct LushtextWindow {
     #[template_child]
     pub workspace_split_view: TemplateChild<libadwaita::OverlaySplitView>,
     #[template_child]
+    pub properties_layout_view: TemplateChild<libadwaita::MultiLayoutView>,
+    #[template_child]
     pub properties_bottom_sheet: TemplateChild<libadwaita::BottomSheet>,
     #[template_child]
     pub properties_split_view: TemplateChild<libadwaita::OverlaySplitView>,
@@ -283,6 +314,7 @@ impl Default for LushtextWindow {
             tab_bar: TemplateChild::default(),
             window_overlay: TemplateChild::default(),
             workspace_split_view: TemplateChild::default(),
+            properties_layout_view: TemplateChild::default(),
             properties_bottom_sheet: TemplateChild::default(),
             properties_split_view: TemplateChild::default(),
             tab_view: TemplateChild::default(),
@@ -373,6 +405,7 @@ impl ObjectImpl for LushtextWindow {
 
         configure_split_views(
             &self.workspace_split_view,
+            &self.properties_layout_view,
             &self.properties_split_view,
             &self.properties_bottom_sheet,
         );
@@ -515,16 +548,18 @@ impl ObjectImpl for LushtextWindow {
 
         {
             let window_weak = obj.downgrade();
-            self.properties_split_view
-                .connect_notify_local(Some("collapsed"), move |split, _| {
+            self.properties_layout_view.connect_notify_local(
+                Some("layout-name"),
+                move |_layout_view, _| {
                     let Some(window) = window_weak.upgrade() else {
                         return;
                     };
                     sync_secondary_surfaces(&window);
-                    if split.is_collapsed() && window.rendered_document_properties_visible() {
+                    if window.rendered_document_properties_visible() {
                         window.restore_focus_after_breakpoint_collapse();
                     }
-                });
+                },
+            );
         }
 
         let window_weak = obj.downgrade();
@@ -793,6 +828,7 @@ impl AdwApplicationWindowImpl for LushtextWindow {}
 
 fn configure_split_views(
     workspace_split_view: &libadwaita::OverlaySplitView,
+    properties_layout_view: &libadwaita::MultiLayoutView,
     properties_split_view: &libadwaita::OverlaySplitView,
     properties_bottom_sheet: &libadwaita::BottomSheet,
 ) {
@@ -803,6 +839,8 @@ fn configure_split_views(
     workspace_split_view.set_pin_sidebar(true);
     workspace_split_view.set_enable_show_gesture(false);
     workspace_split_view.set_enable_hide_gesture(false);
+
+    properties_layout_view.set_layout_name(PropertiesPresentation::Pane.layout_name());
 
     properties_split_view.set_sidebar_position(gtk4::PackType::End);
     properties_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
@@ -905,10 +943,10 @@ fn install_split_view_breakpoints(window: &super::LushtextWindow) {
     properties_bp.add_setter(
         window
             .imp()
-            .properties_split_view
+            .properties_layout_view
             .upcast_ref::<glib::Object>(),
-        "collapsed",
-        Some(&true.to_value()),
+        "layout-name",
+        Some(&PropertiesPresentation::Sheet.layout_name().to_value()),
     );
     window
         .imp()
@@ -1041,8 +1079,13 @@ fn workspace_sidebar_consumes_width(window: &super::LushtextWindow) -> bool {
     split.shows_sidebar() && !split.is_collapsed()
 }
 
+fn properties_presentation(window: &super::LushtextWindow) -> PropertiesPresentation {
+    let layout_name = window.imp().properties_layout_view.layout_name();
+    PropertiesPresentation::from_layout_name(layout_name.as_deref())
+}
+
 fn properties_surface_is_compact(window: &super::LushtextWindow) -> bool {
-    window.imp().properties_split_view.is_collapsed()
+    properties_presentation(window) == PropertiesPresentation::Sheet
 }
 
 fn secondary_surface_requested(state: &SecondarySurfaceState, surface: SecondarySurface) -> bool {
@@ -1077,31 +1120,6 @@ fn focus_is_within(window: &super::LushtextWindow, root: &gtk4::Widget) -> bool 
         focus = widget.parent();
     }
     false
-}
-
-fn rehost_document_properties_panel(window: &super::LushtextWindow, compact: bool) {
-    let imp = window.imp();
-    if compact {
-        imp.properties_split_view.set_show_sidebar(false);
-        if imp.properties_split_view.sidebar().is_some() {
-            imp.properties_split_view.set_sidebar(gtk4::Widget::NONE);
-        }
-        if imp.properties_bottom_sheet.sheet().is_none() {
-            imp.properties_bottom_sheet
-                .set_sheet(Some(imp.properties_panel.upcast_ref::<gtk4::Widget>()));
-        }
-    } else {
-        if imp.properties_bottom_sheet.is_open() {
-            imp.properties_bottom_sheet.set_open(false);
-        }
-        if imp.properties_bottom_sheet.sheet().is_some() {
-            imp.properties_bottom_sheet.set_sheet(gtk4::Widget::NONE);
-        }
-        if imp.properties_split_view.sidebar().is_none() {
-            imp.properties_split_view
-                .set_sidebar(Some(imp.properties_panel.upcast_ref::<gtk4::Widget>()));
-        }
-    }
 }
 
 fn set_workspace_sidebar_preset(
@@ -1141,7 +1159,8 @@ fn sync_properties_breakpoint(window: &super::LushtextWindow) {
 
 fn sync_secondary_surfaces(window: &super::LushtextWindow) {
     let imp = window.imp();
-    let compact = properties_surface_is_compact(window);
+    let presentation = properties_presentation(window);
+    let compact = presentation == PropertiesPresentation::Sheet;
     let was_workspace_visible = imp.workspace_split_view.shows_sidebar();
     let was_properties_visible = window.rendered_document_properties_visible();
     let focus_in_workspace = focus_is_within(window, imp.sidebar.upcast_ref::<gtk4::Widget>());
@@ -1174,8 +1193,6 @@ fn sync_secondary_surfaces(window: &super::LushtextWindow) {
     } else {
         imp.secondary_surfaces.properties_requested_visible.get()
     };
-
-    rehost_document_properties_panel(window, compact);
 
     if imp.workspace_split_view.shows_sidebar() != render_workspace {
         imp.workspace_split_view.set_show_sidebar(render_workspace);
@@ -1274,11 +1291,16 @@ impl super::LushtextWindow {
 
     /// Return whether document properties are currently rendered on screen.
     pub(super) fn rendered_document_properties_visible(&self) -> bool {
-        if properties_surface_is_compact(self) {
+        if self.document_properties_uses_bottom_sheet() {
             self.imp().properties_bottom_sheet.is_open()
         } else {
             self.imp().properties_split_view.shows_sidebar()
         }
+    }
+
+    /// Return whether document properties currently use the compact sheet presentation.
+    pub(super) fn document_properties_uses_bottom_sheet(&self) -> bool {
+        properties_surface_is_compact(self)
     }
 
     /// Recompute the adaptive properties host after any explicit visibility change.

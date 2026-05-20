@@ -226,7 +226,7 @@ impl LushtextWindow {
     fn set_workspace_sidebar_requested_visible(&self, visible: bool) {
         let state = &self.imp().secondary_surfaces;
         state.workspace_requested_visible.set(visible);
-        if self.imp().properties_split_view.is_collapsed() {
+        if self.document_properties_uses_bottom_sheet() {
             if visible {
                 state
                     .compact_surface
@@ -247,7 +247,7 @@ impl LushtextWindow {
     fn set_document_properties_requested_visible(&self, visible: bool) {
         let state = &self.imp().secondary_surfaces;
         state.properties_requested_visible.set(visible);
-        if self.imp().properties_split_view.is_collapsed() {
+        if self.document_properties_uses_bottom_sheet() {
             if visible {
                 state
                     .compact_surface
