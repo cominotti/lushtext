@@ -711,6 +711,30 @@ fn write_long_document(editor: &LushtextEditorPage, line_count: usize, needle_ev
     flush_events();
 }
 
+fn write_document_with_long_lines(
+    editor: &LushtextEditorPage,
+    line_count: usize,
+    long_every: usize,
+    needle_every: usize,
+) {
+    let mut text = String::new();
+    let long_tail = "x".repeat(140);
+    for line in 0..line_count {
+        let marker = if needle_every != 0 && line % needle_every == 0 {
+            " needle"
+        } else {
+            ""
+        };
+        if long_every != 0 && line % long_every == 0 {
+            text.push_str(&format!("line {line:04}{marker} {long_tail}\n"));
+        } else {
+            text.push_str(&format!("line {line:04}{marker}\n"));
+        }
+    }
+    editor.buffer().set_text(&text);
+    flush_events();
+}
+
 fn properties_total_fraction(window: &LushtextWindow) -> f64 {
     let properties_fraction = window.imp().properties_split_view.sidebar_width_fraction();
     if workspace_sidebar_visible(window) && !window.imp().workspace_split_view.is_collapsed() {
@@ -1887,6 +1911,96 @@ fn test_modified_markers_clear_after_save() {
     wait_until(Duration::from_secs(2), || {
         editor.minimap_marker_count(MinimapMarkerKind::Modified) == 0
     });
+}
+
+#[test]
+fn test_long_line_markers_hidden_by_default_when_minimap_is_enabled() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings.reset(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    write_document_with_long_lines(&editor, 300, 3, 0);
+
+    wait_until(Duration::from_secs(2), || editor.is_minimap_visible());
+    flush_after_delay(Duration::from_millis(120));
+
+    assert!(!settings.boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE));
+    assert_eq!(editor.minimap_marker_count(MinimapMarkerKind::LongLine), 0);
+}
+
+#[test]
+fn test_long_line_markers_appear_when_preference_is_enabled() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+    settings
+        .set_boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE, true)
+        .expect("enable long-line minimap markers");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    write_document_with_long_lines(&editor, 300, 3, 0);
+
+    wait_until(Duration::from_secs(2), || editor.is_minimap_visible());
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::LongLine) > 0
+    });
+}
+
+#[test]
+fn test_disabling_long_line_markers_preserves_other_minimap_markers() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+    settings
+        .set_boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE, true)
+        .expect("enable long-line minimap markers");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    write_document_with_long_lines(&editor, 360, 4, 6);
+
+    wait_until(Duration::from_secs(2), || editor.is_minimap_visible());
+
+    let line = editor.buffer().iter_at_line(120).expect("line 120");
+    editor.buffer().place_cursor(&line);
+    let _ = editor.toggle_bookmark_at_cursor();
+    editor.show_search();
+    editor.search_bar().search_entry().set_text("needle");
+
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::Bookmark) == 1
+            && editor.minimap_marker_count(MinimapMarkerKind::Search) > 0
+            && editor.minimap_marker_count(MinimapMarkerKind::Modified) > 0
+            && editor.minimap_marker_count(MinimapMarkerKind::LongLine) > 0
+    });
+
+    settings
+        .set_boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE, false)
+        .expect("disable long-line minimap markers");
+    flush_events();
+
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::LongLine) == 0
+    });
+    assert_eq!(editor.minimap_marker_count(MinimapMarkerKind::Bookmark), 1);
+    assert!(editor.minimap_marker_count(MinimapMarkerKind::Search) > 0);
+    assert!(editor.minimap_marker_count(MinimapMarkerKind::Modified) > 0);
 }
 
 #[test]

@@ -17,6 +17,7 @@ pub mod keys {
     pub const SHOW_LINE_NUMBERS: &str = "show-line-numbers";
     pub const HIGHLIGHT_CURRENT_LINE: &str = "highlight-current-line";
     pub const SHOW_MINIMAP: &str = "show-minimap";
+    pub const MINIMAP_LONG_LINE_MARKERS_VISIBLE: &str = "minimap-long-line-markers-visible";
     pub const MINIMAP_WIDTH: &str = "minimap-width";
     pub const INVISIBLE_CHARACTERS_MODE: &str = "invisible-characters-mode";
     pub const BOOKMARK_GUTTER_VISIBLE: &str = "bookmark-gutter-visible";

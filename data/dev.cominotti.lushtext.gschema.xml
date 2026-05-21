@@ -34,6 +34,11 @@
       <summary>Show Minimap</summary>
       <description>Whether an editor minimap appears on supported documents.</description>
     </key>
+    <key name="minimap-long-line-markers-visible" type="b">
+      <default>false</default>
+      <summary>Show Long-Line Markers</summary>
+      <description>Whether the minimap marks lines that exceed the long-line warning threshold.</description>
+    </key>
     <key name="invisible-characters-mode" type="s">
       <default>'off'</default>
       <summary>Invisible Characters Mode</summary>

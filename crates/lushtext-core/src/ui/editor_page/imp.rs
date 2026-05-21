@@ -63,6 +63,8 @@ pub struct PreferenceBindingState {
     pub annotation_visibility_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `show-minimap`. Disconnected in `Drop`.
     pub show_minimap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Handler ID for GSettings `minimap-long-line-markers-visible`. Disconnected in `Drop`.
+    pub minimap_long_line_markers_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `minimap-width`. Disconnected in `Drop`.
     pub minimap_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `focus-mode-target-columns`. Disconnected in `Drop`.
@@ -668,6 +670,20 @@ impl ObjectImpl for LushtextEditorPage {
         }
         {
             let editor_weak = self.obj().downgrade();
+            let id = settings.connect_changed(
+                Some(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE),
+                move |_, _| {
+                    if let Some(editor) = editor_weak.upgrade() {
+                        editor.refresh_minimap();
+                    }
+                },
+            );
+            self.preference_bindings
+                .minimap_long_line_markers_handler_id
+                .replace(Some(id));
+        }
+        {
+            let editor_weak = self.obj().downgrade();
             let id = settings.connect_changed(Some(keys::MINIMAP_WIDTH), move |_, _| {
                 if let Some(editor) = editor_weak.upgrade() {
                     editor.apply_minimap_width_from_settings();
@@ -806,6 +822,13 @@ impl Drop for LushtextEditorPage {
             self.settings.disconnect(handler_id);
         }
         if let Some(handler_id) = self.preference_bindings.show_minimap_handler_id.take() {
+            self.settings.disconnect(handler_id);
+        }
+        if let Some(handler_id) = self
+            .preference_bindings
+            .minimap_long_line_markers_handler_id
+            .take()
+        {
             self.settings.disconnect(handler_id);
         }
         if let Some(handler_id) = self.preference_bindings.minimap_width_handler_id.take() {

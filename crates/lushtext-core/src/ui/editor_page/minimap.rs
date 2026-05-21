@@ -411,10 +411,16 @@ fn collect_markers(editor: &LushtextEditorPage) -> Vec<MinimapMarker> {
         MinimapMarkerKind::Modified,
         collect_modified_lines(editor),
     ));
-    markers.extend(markers_from_lines(
-        MinimapMarkerKind::LongLine,
-        collect_long_line_warnings(editor),
-    ));
+    if editor
+        .imp()
+        .settings
+        .boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE)
+    {
+        markers.extend(markers_from_lines(
+            MinimapMarkerKind::LongLine,
+            collect_long_line_warnings(editor),
+        ));
+    }
     markers
 }
 
