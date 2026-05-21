@@ -67,7 +67,7 @@ fn search_commands_zoom_finds_all_zoom_entries() {
         .iter()
         .filter_map(|result| match &result.item {
             SearchResultItem::Command(command) => Some(command.label),
-            SearchResultItem::File(_) => None,
+            SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => None,
         })
         .collect();
     assert!(labels.contains(&"Zoom In"));

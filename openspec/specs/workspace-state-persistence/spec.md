@@ -30,12 +30,12 @@ The system SHALL restore workspace state to a usable current workspace scope eve
 - **AND** the restored scope becomes `All workspaces`
 
 ### Requirement: Persisted workspace roots are deduplicated and latest-state wins
-The system SHALL persist at most one root directory per workspace, and rapid workspace mutations MUST persist the latest in-memory state rather than an older snapshot. Replacing a workspace root MUST overwrite the previous root for that workspace instead of accumulating additional roots.
+The system SHALL persist at most one root directory per workspace, and rapid workspace mutations MUST persist the latest in-memory state rather than an older snapshot. Persisted workspace roots MUST change only through supported workspace lifecycle operations that add, remove, or rename workspaces, or update the current workspace scope. The system MUST NOT support replacing one existing workspace's root directory in place.
 
-#### Scenario: Replacing a root persists only the newest root
-- **WHEN** the user replaces a workspace root and later restarts the app after persistence completes
-- **THEN** the restored workspace contains only the newest root directory for that workspace
-- **AND** the previous root is not retained as an additional workspace entry in that same workspace
+#### Scenario: Removing and adding a different root creates a different workspace entry
+- **WHEN** the user removes a workspace and then creates a workspace for a different root directory
+- **THEN** persisted workspace state stores the new root as its own workspace entry
+- **AND** the removed workspace's root is not retained as an additional root inside that new workspace
 
 #### Scenario: Rapid workspace edits restore the newest state after restart
 - **WHEN** the user makes several workspace mutations in quick succession and then restarts the app after persistence completes

@@ -7,6 +7,7 @@ use std::time::Duration;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
+use crate::model::palette::PaletteFileEntry;
 use crate::services::async_task;
 use crate::services::palette::FileIndex;
 use crate::ui::editor_page::LushtextEditorPage;
@@ -66,6 +67,7 @@ impl LushtextWindow {
             }
             imp.saved_focus.replace(Some(weak));
 
+            self.refresh_command_palette_sources();
             imp.palette_revealer.set_reveal_child(true);
             imp.command_palette.open();
         }
@@ -241,5 +243,45 @@ impl LushtextWindow {
                 },
             );
         });
+    }
+
+    /// Refresh command-palette source metadata owned by the window shell.
+    pub(super) fn refresh_command_palette_sources(&self) {
+        let open_tabs = self.open_file_palette_entries();
+        let workspace_group_label = self.command_palette_workspace_group_label();
+        self.imp()
+            .command_palette
+            .set_sources(open_tabs, workspace_group_label);
+    }
+
+    /// Snapshot file-backed tabs so the palette can search active documents.
+    fn open_file_palette_entries(&self) -> Vec<PaletteFileEntry> {
+        let tab_view = &self.imp().tab_view;
+        let mut entries =
+            Vec::with_capacity(usize::try_from(tab_view.n_pages()).unwrap_or_default());
+
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+                && let Some(path) = editor.file_path()
+            {
+                entries.push(PaletteFileEntry::new(
+                    editor.title(),
+                    path.display().to_string(),
+                    path,
+                ));
+            }
+        }
+
+        entries
+    }
+
+    /// Name the workspace file group according to the sidebar's current scope.
+    fn command_palette_workspace_group_label(&self) -> &'static str {
+        if self.current_workspace_scope().is_all() {
+            "All Workspaces"
+        } else {
+            "Selected Workspace"
+        }
     }
 }

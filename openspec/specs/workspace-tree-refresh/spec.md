@@ -29,12 +29,12 @@ The system SHALL keep each workspace section's visible tree aligned with files a
 - **AND** the user can still use the manual `Refresh` control for broader reloads
 
 ### Requirement: Workspace sections expose a manual refresh control
-The system SHALL show a `Refresh` button in each workspace-section header immediately to the left of the existing `Replace Workspace Root` button, and invoking it MUST refresh that workspace section using the same tree-reload behavior as automatic refresh.
+The system SHALL show a `Refresh` button in each workspace-section header as the rightmost header-control button, and invoking it MUST refresh that workspace section using the same tree-reload behavior as automatic refresh. The refresh control MUST remain available without any adjacent replace-root control.
 
 #### Scenario: Refresh button placement in the header
 - **WHEN** a workspace section header is rendered
-- **THEN** it shows a `Refresh` control immediately to the left of the replace-root control
-- **AND** the existing replace-root control remains available to the right of it
+- **THEN** it shows a `Refresh` control in the rightmost header-control position
+- **AND** no replace-root control appears to the right of it
 
 #### Scenario: Manual refresh reloads stale content
 - **WHEN** the user activates the `Refresh` control for a workspace section whose tree is stale

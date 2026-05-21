@@ -50,8 +50,16 @@
 }
 
 .command-palette-mode {
-  color: @accent_color;
-  font-weight: bold;
+  min-width: 132px;
+}
+
+.command-palette-section-header {
+  color: @dim_label_color;
+  font-weight: 700;
+}
+
+.command-palette-section-row {
+  margin-top: 4px;
 }
 
 /* Theme selector: colored circles matching GNOME Text Editor */

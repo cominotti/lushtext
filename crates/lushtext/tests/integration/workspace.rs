@@ -64,19 +64,22 @@ fn test_remove_selected_workspace_falls_back_to_all_scope() {
 }
 
 #[test]
-fn test_replace_root_persists_only_newest_root() {
+fn test_remove_and_add_different_root_persists_new_workspace_entry() {
     let ctx = TestContext::new();
     let old_root = ctx.mkdir("old-root");
     let new_root = ctx.mkdir("new-root");
 
     let mut file = WorkspacesFile::default();
-    let workspace_id = file.add_workspace("old", old_root.clone());
-    file.replace_root(&workspace_id, new_root.clone(), "new");
+    let old_id = file.add_workspace("old", old_root.clone());
+    file.remove_workspace(&old_id);
+    let new_id = file.add_workspace("new", new_root.clone());
 
     workspace_manager::save(ctx.data_dir(), &file).expect("expected operation to succeed");
     let restored = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(restored.workspaces.len(), 1);
+    assert_eq!(restored.workspaces[0].id, new_id);
+    assert_ne!(restored.workspaces[0].id, old_id);
     assert_eq!(restored.workspaces[0].root, new_root);
     assert_ne!(restored.workspaces[0].root, old_root);
     assert_eq!(restored.workspaces[0].name, "new");

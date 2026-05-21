@@ -10,7 +10,7 @@ mod commands;
 mod fuzzy;
 mod index;
 
-pub use commands::{all_commands, search_all, search_commands};
+pub use commands::{all_commands, search_all, search_commands, search_open_files};
 pub use fuzzy::fuzzy_score;
 pub use index::FileIndex;
 

@@ -70,6 +70,7 @@ impl LushtextWindow {
 
         tab_view.set_selected_page(&page);
         self.update_content_stack();
+        self.refresh_command_palette_sources();
         self.refresh_status_bar();
     }
 
@@ -509,6 +510,7 @@ impl LushtextWindow {
             }
         }
         self.refresh_header_bar();
+        self.refresh_command_palette_sources();
         self.refresh_status_bar();
     }
 
@@ -531,6 +533,7 @@ impl LushtextWindow {
             }
         }
         self.update_content_stack();
+        self.refresh_command_palette_sources();
         self.refresh_status_bar();
     }
 }

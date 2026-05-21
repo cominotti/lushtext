@@ -113,8 +113,6 @@ pub struct LushtextWorkspaceSection {
     #[template_child]
     pub refresh_button: TemplateChild<gtk4::Button>,
     #[template_child]
-    pub add_folder_button: TemplateChild<gtk4::Button>,
-    #[template_child]
     pub drilldown_header_box: TemplateChild<gtk4::Box>,
     #[template_child]
     pub drilldown_back_button: TemplateChild<gtk4::Button>,
@@ -190,7 +188,6 @@ pub struct LushtextWorkspaceSection {
     pub message_callback: RefCell<Option<MessageCallback>>,
 
     // Workspace-level callbacks (handled by sidebar)
-    pub add_folder_callback: RefCell<Option<WorkspaceCallback>>,
     pub rename_workspace_callback: RefCell<Option<WorkspaceCallback>>,
     pub unlist_workspace_callback: RefCell<Option<WorkspaceCallback>>,
     pub folder_focused_callback: RefCell<Option<WorkspaceCallback>>,
@@ -226,14 +223,6 @@ impl ObjectImpl for LushtextWorkspaceSection {
         self.refresh_button.connect_clicked(move |_| {
             if let Some(section) = obj_weak.upgrade() {
                 section.request_manual_refresh();
-            }
-        });
-
-        // Wire add-folder button
-        let obj_weak = self.obj().downgrade();
-        self.add_folder_button.connect_clicked(move |_| {
-            if let Some(section) = obj_weak.upgrade() {
-                section.notify_add_folder_requested();
             }
         });
 

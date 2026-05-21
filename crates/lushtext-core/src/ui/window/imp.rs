@@ -741,6 +741,7 @@ impl ObjectImpl for LushtextWindow {
                     editor.stop_file_monitor();
                 }
                 window.update_content_stack();
+                window.refresh_command_palette_sources();
                 window.refresh_status_bar();
                 window.save_session_debounced();
             }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use crate::model::palette::{SearchMode, SearchResultItem};
+use crate::model::palette::{PaletteFileEntry, SearchMode, SearchResultItem};
 use crate::services::palette::{self, FileIndex};
 use crate::ui::command_palette::item::PaletteItem;
 use glib::prelude::*;
@@ -8,6 +8,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,6 +16,9 @@ use std::sync::Arc;
 /// Created on the background thread, converted to `PaletteItem` GObjects
 /// on the main thread. At max=50 results, total clone cost is ~15KB — negligible.
 enum SearchHit {
+    Header {
+        label: String,
+    },
     File {
         display_name: String,
         subtitle: String,
@@ -28,6 +32,22 @@ enum SearchHit {
 }
 
 impl SearchHit {
+    /// Create a presentation-only source header for grouped result sections.
+    fn header(label: impl Into<String>) -> Self {
+        Self::Header {
+            label: label.into(),
+        }
+    }
+
+    /// Convert an open file-backed tab entry into the same row shape as indexed files.
+    fn from_open_file(f: &PaletteFileEntry) -> Self {
+        Self::File {
+            display_name: f.display_name.clone(),
+            subtitle: f.subtitle.clone(),
+            file_path: f.path.clone(),
+        }
+    }
+
     fn from_file(f: &crate::model::palette::IndexedFile) -> Self {
         Self::File {
             display_name: f.name.clone(),
@@ -41,6 +61,23 @@ impl SearchHit {
             display_name: c.label.to_string(),
             subtitle: c.display_subtitle(),
             action_id: c.id.to_string(),
+        }
+    }
+
+    /// Convert the background-thread hit into a `PaletteItem` for the GTK list model.
+    fn into_item(self) -> PaletteItem {
+        match self {
+            Self::Header { label } => PaletteItem::new_header_raw(label),
+            Self::File {
+                display_name,
+                subtitle,
+                file_path,
+            } => PaletteItem::new_file_raw(display_name, subtitle, file_path),
+            Self::Command {
+                display_name,
+                subtitle,
+                action_id,
+            } => PaletteItem::new_command_raw(display_name, subtitle, action_id),
         }
     }
 }
@@ -60,9 +97,9 @@ type CloseCallback = Box<dyn Fn()>;
 pub struct LushtextCommandPalette {
     #[template_child]
     pub search_entry: TemplateChild<gtk4::SearchEntry>,
-    /// Label showing the current search mode ("All", "Files", "Commands").
+    /// Dropdown showing the current search mode ("All", "Files", "Commands").
     #[template_child]
-    pub mode_label: TemplateChild<gtk4::Label>,
+    pub mode_dropdown: TemplateChild<gtk4::DropDown>,
     #[template_child]
     pub results_view: TemplateChild<gtk4::ListView>,
     /// "No results" message shown when a non-empty query has zero matches.
@@ -76,6 +113,12 @@ pub struct LushtextCommandPalette {
     /// Shared file index for fuzzy search. `Arc` allows cloning to background
     /// threads without copying the index.
     pub file_index: RefCell<Arc<FileIndex>>,
+    /// Open file-backed tabs supplied by the window shell.
+    pub open_tabs: RefCell<Vec<PaletteFileEntry>>,
+    /// Label for the workspace-indexed file group.
+    pub workspace_group_label: RefCell<String>,
+    /// Guard used while programmatically syncing the mode dropdown.
+    pub syncing_mode_selector: Cell<bool>,
     /// Callback invoked when the user activates a result (Enter or click).
     pub activate_callback: RefCell<Option<ActivateCallback>>,
     /// Callback invoked when the palette should close (Escape key).
@@ -93,12 +136,15 @@ impl Default for LushtextCommandPalette {
     fn default() -> Self {
         Self {
             search_entry: TemplateChild::default(),
-            mode_label: TemplateChild::default(),
+            mode_dropdown: TemplateChild::default(),
             results_view: TemplateChild::default(),
             no_results_label: TemplateChild::default(),
             mode: Cell::new(SearchMode::All),
             results_store: gio::ListStore::new::<PaletteItem>(),
             file_index: RefCell::new(Arc::new(FileIndex::default())),
+            open_tabs: RefCell::default(),
+            workspace_group_label: RefCell::new("All Workspaces".to_string()),
+            syncing_mode_selector: Cell::new(false),
             activate_callback: RefCell::default(),
             close_callback: RefCell::default(),
             search_generation: Cell::new(0),
@@ -136,6 +182,7 @@ impl ObjectImpl for LushtextCommandPalette {
         self.results_view.set_model(Some(&selection));
 
         self.setup_factory();
+        self.setup_mode_selector();
         self.setup_search();
         self.setup_key_controller();
         self.setup_list_activation();
@@ -165,6 +212,10 @@ impl LushtextCommandPalette {
             name_label.set_hexpand(true);
             name_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
 
+            let section_separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+            section_separator.set_hexpand(true);
+            section_separator.set_visible(false);
+
             let subtitle_label = gtk4::Label::new(None);
             subtitle_label.set_halign(gtk4::Align::End);
             subtitle_label.add_css_class("dim-label");
@@ -172,6 +223,7 @@ impl LushtextCommandPalette {
             subtitle_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
 
             row.append(&name_label);
+            row.append(&section_separator);
             row.append(&subtitle_label);
 
             list_item.set_child(Some(&row));
@@ -194,16 +246,59 @@ impl LushtextCommandPalette {
                 .first_child()
                 .and_downcast::<gtk4::Label>()
                 .expect("palette row should start with the title label");
-            let subtitle_label = name_label
+            let section_separator = name_label
+                .next_sibling()
+                .and_downcast::<gtk4::Separator>()
+                .expect("palette row title should be followed by the section separator");
+            let subtitle_label = section_separator
                 .next_sibling()
                 .and_downcast::<gtk4::Label>()
-                .expect("palette row title should be followed by the subtitle label");
+                .expect("palette row separator should be followed by the subtitle label");
 
+            list_item.set_activatable(item.is_activatable());
+            list_item.set_selectable(item.is_activatable());
             name_label.set_label(&item.display_name());
-            subtitle_label.set_label(&item.subtitle());
+            if item.is_header() {
+                row.add_css_class("command-palette-section-row");
+                name_label.add_css_class("command-palette-section-header");
+                name_label.set_hexpand(false);
+                name_label.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+                section_separator.set_visible(true);
+                subtitle_label.set_visible(false);
+            } else {
+                row.remove_css_class("command-palette-section-row");
+                name_label.remove_css_class("command-palette-section-header");
+                name_label.set_hexpand(true);
+                name_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+                section_separator.set_visible(false);
+                subtitle_label.set_visible(true);
+                subtitle_label.set_label(&item.subtitle());
+            }
         });
 
         self.results_view.set_factory(Some(&factory));
+    }
+
+    /// Wire the dropdown to the same mode state that Tab cycling uses.
+    fn setup_mode_selector(&self) {
+        let model = gtk4::StringList::new(SearchMode::labels());
+        self.mode_dropdown.set_model(Some(&model));
+        self.mode_dropdown.set_selected(self.mode.get().position());
+
+        let obj_weak = self.obj().downgrade();
+        self.mode_dropdown.connect_selected_notify(move |dropdown| {
+            let Some(obj) = obj_weak.upgrade() else {
+                return;
+            };
+            let imp = obj.imp();
+            if imp.syncing_mode_selector.get() {
+                return;
+            }
+            imp.set_mode(SearchMode::from_position(dropdown.selected()));
+            let query = imp.search_entry.text();
+            imp.rebuild_results(&query);
+            imp.search_entry.grab_focus();
+        });
     }
 
     fn setup_search(&self) {
@@ -248,8 +343,14 @@ impl LushtextCommandPalette {
             };
             let imp = obj.imp();
             match keyval {
-                gdk4::Key::Tab | gdk4::Key::ISO_Left_Tab => {
+                gdk4::Key::Tab => {
                     imp.set_mode(imp.mode.get().next());
+                    let query = imp.search_entry.text();
+                    imp.rebuild_results(&query);
+                    glib::Propagation::Stop
+                }
+                gdk4::Key::ISO_Left_Tab => {
+                    imp.set_mode(imp.mode.get().previous());
                     let query = imp.search_entry.text();
                     imp.rebuild_results(&query);
                     glib::Propagation::Stop
@@ -312,18 +413,20 @@ impl LushtextCommandPalette {
 
         let mode = self.mode.get();
         let index = Arc::clone(&self.file_index.borrow());
+        let open_tabs = self.open_tabs.borrow().clone();
+        let workspace_group_label = self.workspace_group_label.borrow().clone();
 
         crate::services::async_task::spawn_blocking_then(
             self.obj().clone(),
             move || {
-                let results = palette::search_all(&index, &query, mode, 50);
-                let hits: Vec<SearchHit> = results
-                    .iter()
-                    .map(|r| match &r.item {
-                        SearchResultItem::File(f) => SearchHit::from_file(f),
-                        SearchResultItem::Command(c) => SearchHit::from_command(c),
-                    })
-                    .collect();
+                let hits = grouped_hits(
+                    &index,
+                    &open_tabs,
+                    &workspace_group_label,
+                    &query,
+                    mode,
+                    MAX_RESULTS_PER_SOURCE,
+                );
                 (hits, query)
             },
             move |obj, (hits, query)| {
@@ -332,33 +435,21 @@ impl LushtextCommandPalette {
                     return; // superseded by a newer search
                 }
 
-                let items: Vec<PaletteItem> = hits
-                    .into_iter()
-                    .map(|hit| match hit {
-                        SearchHit::File {
-                            display_name,
-                            subtitle,
-                            file_path,
-                        } => PaletteItem::new_file_raw(display_name, subtitle, file_path),
-                        SearchHit::Command {
-                            display_name,
-                            subtitle,
-                            action_id,
-                        } => PaletteItem::new_command_raw(display_name, subtitle, action_id),
-                    })
-                    .collect();
+                let items: Vec<PaletteItem> = hits.into_iter().map(SearchHit::into_item).collect();
 
                 // splice() replaces items in a single operation (one items-changed
                 // signal) instead of N append/remove calls (N relayout passes).
                 let old_count = imp.results_store.n_items();
                 imp.results_store.splice(0, old_count, &items);
 
-                let has_results = !items.is_empty();
+                let has_results = items.iter().any(PaletteItem::is_activatable);
                 imp.no_results_label
                     .set_visible(!has_results && !query.is_empty());
 
-                if has_results && let Some(selection) = imp.selection_model() {
-                    selection.set_selected(0);
+                if let Some(first_result) = imp.first_activatable_position()
+                    && let Some(selection) = imp.selection_model()
+                {
+                    selection.set_selected(first_result);
                 }
             },
         );
@@ -373,10 +464,8 @@ impl LushtextCommandPalette {
             return;
         }
         let current = selection.selected();
-        let new_pos = if delta > 0 {
-            (current + 1).min(n - 1)
-        } else {
-            current.saturating_sub(1)
+        let Some(new_pos) = self.next_activatable_position(current, delta) else {
+            return;
         };
         selection.set_selected(new_pos);
         self.results_view
@@ -397,17 +486,69 @@ impl LushtextCommandPalette {
         let Some(palette_item) = item.downcast_ref::<PaletteItem>() else {
             return;
         };
+        if !palette_item.is_activatable() {
+            return;
+        }
         if let Some(ref cb) = *self.activate_callback.borrow() {
             cb(palette_item);
         }
     }
 
-    /// Update the active search mode and sync all dependent widgets (label, placeholder).
+    /// Update the active search mode and sync all dependent widgets.
     pub fn set_mode(&self, mode: SearchMode) {
         self.mode.set(mode);
-        self.mode_label.set_label(mode.label());
+        self.syncing_mode_selector.set(true);
+        self.mode_dropdown.set_selected(mode.position());
+        self.syncing_mode_selector.set(false);
         self.search_entry
             .set_placeholder_text(Some(mode.placeholder()));
+    }
+
+    /// Find the first row that can actually be opened or executed.
+    fn first_activatable_position(&self) -> Option<u32> {
+        (0..self.results_store.n_items()).find(|position| self.position_is_activatable(*position))
+    }
+
+    /// Move keyboard selection across result rows while skipping source headers.
+    fn next_activatable_position(&self, current: u32, delta: i32) -> Option<u32> {
+        let n = self.results_store.n_items();
+        if n == 0 {
+            return None;
+        }
+        if current >= n {
+            return self.first_activatable_position();
+        }
+
+        if delta > 0 {
+            let mut position = current.saturating_add(1);
+            while position < n {
+                if self.position_is_activatable(position) {
+                    return Some(position);
+                }
+                position = position.saturating_add(1);
+            }
+        } else {
+            let mut position = current.saturating_sub(1);
+            loop {
+                if self.position_is_activatable(position) {
+                    return Some(position);
+                }
+                if position == 0 {
+                    break;
+                }
+                position = position.saturating_sub(1);
+            }
+        }
+
+        Some(current).filter(|position| self.position_is_activatable(*position))
+    }
+
+    /// Check whether a row should receive keyboard focus and activation.
+    fn position_is_activatable(&self, position: u32) -> bool {
+        self.results_store
+            .item(position)
+            .and_downcast_ref::<PaletteItem>()
+            .is_some_and(PaletteItem::is_activatable)
     }
 
     fn selection_model(&self) -> Option<gtk4::SingleSelection> {
@@ -416,3 +557,118 @@ impl LushtextCommandPalette {
             .and_then(|m| m.downcast::<gtk4::SingleSelection>().ok())
     }
 }
+
+/// Assemble grouped palette rows in the priority order required for each mode.
+fn grouped_hits(
+    index: &FileIndex,
+    open_tabs: &[PaletteFileEntry],
+    workspace_group_label: &str,
+    query: &str,
+    mode: SearchMode,
+    max_per_source: usize,
+) -> Vec<SearchHit> {
+    let mut hits = Vec::new();
+    let mut seen_file_paths = HashSet::new();
+
+    match mode {
+        SearchMode::Files => {
+            append_file_groups(
+                &mut hits,
+                &mut seen_file_paths,
+                index,
+                open_tabs,
+                workspace_group_label,
+                query,
+                max_per_source,
+            );
+        }
+        SearchMode::Commands => {
+            append_command_group(&mut hits, query, max_per_source, false);
+        }
+        SearchMode::All => {
+            append_file_groups(
+                &mut hits,
+                &mut seen_file_paths,
+                index,
+                open_tabs,
+                workspace_group_label,
+                query,
+                max_per_source,
+            );
+            append_command_group(&mut hits, query, max_per_source, true);
+        }
+    }
+
+    hits
+}
+
+/// Append file-oriented groups and remember open-tab paths for de-duplication.
+fn append_file_groups(
+    hits: &mut Vec<SearchHit>,
+    seen_file_paths: &mut HashSet<PathBuf>,
+    index: &FileIndex,
+    open_tabs: &[PaletteFileEntry],
+    workspace_group_label: &str,
+    query: &str,
+    max_per_source: usize,
+) {
+    let open_file_hits = palette::search_open_files(open_tabs, query, max_per_source);
+    let open_file_hits: Vec<_> = open_file_hits
+        .into_iter()
+        .filter_map(|result| match result.item {
+            SearchResultItem::OpenFile(file) => {
+                seen_file_paths.insert(file.path.clone());
+                Some(SearchHit::from_open_file(file))
+            }
+            SearchResultItem::File(_) | SearchResultItem::Command(_) => None,
+        })
+        .collect();
+    append_group(hits, "Open Tabs", open_file_hits);
+
+    let workspace_hits: Vec<_> = index
+        .search(query, max_per_source)
+        .into_iter()
+        .filter_map(|result| match result.item {
+            SearchResultItem::File(file) if !seen_file_paths.contains(&file.path) => {
+                seen_file_paths.insert(file.path.clone());
+                Some(SearchHit::from_file(file))
+            }
+            SearchResultItem::File(_)
+            | SearchResultItem::OpenFile(_)
+            | SearchResultItem::Command(_) => None,
+        })
+        .collect();
+    append_group(hits, workspace_group_label, workspace_hits);
+}
+
+/// Append command results, optionally with a header for mixed `All` mode.
+fn append_command_group(hits: &mut Vec<SearchHit>, query: &str, max: usize, include_header: bool) {
+    let command_hits: Vec<_> = palette::search_commands(query, max)
+        .into_iter()
+        .filter_map(|result| match result.item {
+            SearchResultItem::Command(command) => Some(SearchHit::from_command(command)),
+            SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => None,
+        })
+        .collect();
+    if include_header {
+        append_group(hits, "Commands", command_hits);
+    } else {
+        hits.extend(command_hits);
+    }
+}
+
+/// Add a section only when that source has matching activatable rows.
+fn append_group(hits: &mut Vec<SearchHit>, label: &str, group_hits: Vec<SearchHit>) {
+    if group_hits.is_empty() {
+        return;
+    }
+    hits.push(SearchHit::header(label));
+    hits.extend(group_hits);
+}
+
+/// Maximum fuzzy matches to show from any one source group.
+///
+/// The palette already caps visible results at a small, scannable list; keeping
+/// the same cap per source prevents one group from monopolizing mixed results
+/// while staying cheap for list-model replacement and keyboard navigation.
+const MAX_RESULTS_PER_SOURCE: usize = 50;

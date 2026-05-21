@@ -27,7 +27,7 @@ LushtextWindow (AdwApplicationWindow)
 │   │       └── GtkBox [sections_box]
 │   │           └── LushtextWorkspaceSection (per workspace)
 │   │               ├── GtkSeparator
-│   │               ├── GtkBox [header: label + add_folder_button]
+│   │               ├── GtkBox [header: label + refresh_button]
 │   │               └── GtkScrolledWindow (inner, propagate-natural-height=true, propagate-natural-width=false)
 │   │                   └── GtkListView + TreeListModel
 │   └── [content] AdwMultiLayoutView [properties_layout_view]
@@ -82,7 +82,7 @@ LushtextWindow (AdwApplicationWindow)
 - **Pinned top row**: The "New Workspace" affordance sits above the outer ScrolledWindow and stays fixed while the workspace list scrolls.
 - **No horizontal sidebar scrollbar**: workspace headers and file-tree labels still avoid ellipsizing, but the left sidebar must not expose a horizontal scrollbar. Overflow is clipped by the viewport instead of enabling sideways scrolling.
 - **Width presets drive the shell**: `Preferences > Workspace` exposes compact `Small`, `Comfy`, and `Large` options that keep their `20%`, `30%`, and `40%` identities while clamping the visible sidebar width to a comfortable desktop range. The window layer owns the split-view math; the sidebar does not expose a duplicate width control.
-- **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder, rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
+- **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
 - **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation saves to disk via `workspace_manager::save()`.
 
 ## File Context Menu (per WorkspaceSection)

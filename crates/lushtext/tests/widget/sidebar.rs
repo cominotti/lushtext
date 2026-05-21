@@ -69,6 +69,10 @@ fn test_sidebar_selector_row_uses_workspace_tree_left_inset() {
 fn test_sidebar_new_workspace_button_carries_vertical_spacing() {
     ensure_gtk_init();
     let sidebar = LushtextSidebar::new();
+    assert_eq!(
+        sidebar.imp().new_workspace_button.icon_name().as_deref(),
+        Some("folder-new-symbolic")
+    );
     assert_eq!(sidebar.imp().new_workspace_button.valign(), gtk4::Align::Center);
     assert_eq!(sidebar.imp().new_workspace_button.margin_top(), 6);
     assert_eq!(sidebar.imp().new_workspace_button.margin_bottom(), 6);

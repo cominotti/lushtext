@@ -4,7 +4,7 @@
 //!
 //! Workspace notes are keyed by the canonical workspace root rather than by a
 //! transient UI slot identifier, so removing and re-adding the same root can
-//! restore the same note while `Replace Workspace Root` still starts fresh.
+//! restore the same note.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

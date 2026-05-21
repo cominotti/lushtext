@@ -71,13 +71,6 @@ impl LushtextSidebar {
         });
 
         let sidebar_weak = self.downgrade();
-        section.connect_add_folder_requested(move |workspace_id| {
-            if let Some(sidebar) = sidebar_weak.upgrade() {
-                sidebar.handle_add_folder(workspace_id);
-            }
-        });
-
-        let sidebar_weak = self.downgrade();
         section.connect_rename_workspace_requested(move |workspace_id| {
             if let Some(sidebar) = sidebar_weak.upgrade() {
                 sidebar.show_rename_workspace_dialog(workspace_id);

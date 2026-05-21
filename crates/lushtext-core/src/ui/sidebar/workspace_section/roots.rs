@@ -228,17 +228,9 @@ impl LushtextWorkspaceSection {
         }
     }
 
-    /// Update the add-folder button icon and tooltip based on whether roots exist.
+    /// Enable manual refresh once the section has a workspace root to reload.
     fn update_button_state(&self) {
-        let button = &self.imp().add_folder_button;
         self.imp().refresh_button.set_sensitive(self.has_roots());
-        if self.has_roots() {
-            button.set_icon_name("folder-open-symbolic");
-            button.set_tooltip_text(Some("Replace Workspace Root"));
-        } else {
-            button.set_icon_name("folder-new-symbolic");
-            button.set_tooltip_text(Some("Add Folder to Workspace"));
-        }
     }
 
     fn root_rows(&self) -> Vec<gtk4::TreeListRow> {

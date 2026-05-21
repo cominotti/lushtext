@@ -7,7 +7,7 @@
 mod imp;
 pub mod item;
 
-use crate::model::palette::{IndexedFile, SearchMode};
+use crate::model::palette::{IndexedFile, PaletteFileEntry, SearchMode};
 use crate::services::palette::FileIndex;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -61,6 +61,38 @@ impl LushtextCommandPalette {
         // Re-run search if the palette is currently showing results
         let query = self.imp().search_entry.text();
         self.imp().rebuild_results(&query);
+    }
+
+    /// Replace the open file-backed tab source used by grouped file results.
+    pub fn set_open_tabs(&self, open_tabs: Vec<PaletteFileEntry>) {
+        *self.imp().open_tabs.borrow_mut() = open_tabs;
+        if self.is_visible() {
+            let query = self.imp().search_entry.text();
+            self.imp().rebuild_results(&query);
+        }
+    }
+
+    /// Set the label for the workspace-indexed file group.
+    pub fn set_workspace_group_label(&self, label: impl Into<String>) {
+        let label = label.into();
+        if *self.imp().workspace_group_label.borrow() == label {
+            return;
+        }
+        *self.imp().workspace_group_label.borrow_mut() = label;
+        if self.is_visible() {
+            let query = self.imp().search_entry.text();
+            self.imp().rebuild_results(&query);
+        }
+    }
+
+    /// Refresh all source metadata that is owned by the window shell.
+    pub fn set_sources(&self, open_tabs: Vec<PaletteFileEntry>, workspace_group_label: &str) {
+        *self.imp().open_tabs.borrow_mut() = open_tabs;
+        *self.imp().workspace_group_label.borrow_mut() = workspace_group_label.to_string();
+        if self.is_visible() {
+            let query = self.imp().search_entry.text();
+            self.imp().rebuild_results(&query);
+        }
     }
 
     /// Open the palette: focus the search entry and show initial results.

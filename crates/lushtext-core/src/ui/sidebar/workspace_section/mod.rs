@@ -88,10 +88,6 @@ impl LushtextWorkspaceSection {
         *self.imp().peek_promote_callback.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_add_folder_requested<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
-        *self.imp().add_folder_callback.borrow_mut() = Some(Box::new(f));
-    }
-
     pub fn connect_rename_workspace_requested<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
         *self.imp().rename_workspace_callback.borrow_mut() = Some(Box::new(f));
     }
@@ -102,13 +98,6 @@ impl LushtextWorkspaceSection {
 
     pub fn connect_folder_focused<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
         *self.imp().folder_focused_callback.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn notify_add_folder_requested(&self) {
-        let workspace_id = self.workspace_id();
-        if let Some(ref callback) = *self.imp().add_folder_callback.borrow() {
-            callback(&workspace_id);
-        }
     }
 
     pub fn notify_rename_workspace_requested(&self) {
