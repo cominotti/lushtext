@@ -52,7 +52,11 @@ pub struct LushtextPreferences {
     #[template_child]
     pub highlight_line_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
+    pub minimap_group: TemplateChild<libadwaita::PreferencesGroup>,
+    #[template_child]
     pub show_minimap_row: TemplateChild<libadwaita::SwitchRow>,
+    #[template_child]
+    pub minimap_long_line_markers_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
     pub bookmark_gutter_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
@@ -85,7 +89,9 @@ impl Default for LushtextPreferences {
             insert_spaces_row: TemplateChild::default(),
             show_line_numbers_row: TemplateChild::default(),
             highlight_line_row: TemplateChild::default(),
+            minimap_group: TemplateChild::default(),
             show_minimap_row: TemplateChild::default(),
+            minimap_long_line_markers_row: TemplateChild::default(),
             bookmark_gutter_row: TemplateChild::default(),
             annotation_highlights_row: TemplateChild::default(),
             workspace_auto_collapse_row: TemplateChild::default(),
@@ -137,6 +143,12 @@ impl ObjectImpl for LushtextPreferences {
         .build();
         s.bind(keys::SHOW_MINIMAP, &*self.show_minimap_row, "active")
             .build();
+        s.bind(
+            keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE,
+            &*self.minimap_long_line_markers_row,
+            "active",
+        )
+        .build();
         s.bind(
             keys::BOOKMARK_GUTTER_VISIBLE,
             &*self.bookmark_gutter_row,

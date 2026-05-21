@@ -16,6 +16,7 @@ LushText should look and feel like GNOME Text Editor, with these differences:
 ```
 LushtextWindow (AdwApplicationWindow)
 ├── AdwHeaderBar
+│   └── GtkToggleButton [document_properties_toggle_button] — toggle properties (action: win.toggle-properties)
 ├── AdwTabBar → bound to AdwTabView
 ├── GtkRevealer [palette_revealer] → LushtextCommandPalette (Ctrl+P)
 ├── AdwOverlaySplitView [workspace_split_view]
@@ -27,10 +28,10 @@ LushtextWindow (AdwApplicationWindow)
 │   │           └── LushtextWorkspaceSection (per workspace)
 │   │               ├── GtkSeparator
 │   │               ├── GtkBox [header: label + add_folder_button]
-│   │               └── GtkScrolledWindow (inner, propagate-natural-height=true, propagate-natural-width=true)
+│   │               └── GtkScrolledWindow (inner, propagate-natural-height=true, propagate-natural-width=false)
 │   │                   └── GtkListView + TreeListModel
-│   └── [content] AdwOverlaySplitView [properties_split_view]
-│       ├── [content] GtkBox [content_box] (vertical)
+│   └── [content] AdwMultiLayoutView [properties_layout_view]
+│       ├── [slot: primary] GtkBox [content_box] (vertical)
 │       │   ├── GtkStack [content_stack] (vexpand)
 │       │   │   ├── "tabs": GtkPaned [preview_paned]
 │       │   │   │   ├── [start] GtkBox [editor_box] → AdwTabView → LushtextEditorPage per tab
@@ -38,12 +39,17 @@ LushtextWindow (AdwApplicationWindow)
 │       │   │   └── "empty": AdwStatusPage
 │       │   └── GtkRevealer [search_panel_revealer] (slide-up, 250ms)
 │       │       └── LushtextSearchPanel (Ctrl+Shift+F workspace search)
-│       └── [sidebar/end] LushtextPropertiesPanel
+│       ├── [slot: properties] LushtextPropertiesPanel
+│       ├── [layout: pane] AdwOverlaySplitView [properties_split_view]
+│       │   ├── [content] AdwLayoutSlot "primary"
+│       │   └── [sidebar/end] AdwLayoutSlot "properties"
+│       └── [layout: sheet] AdwBottomSheet [properties_bottom_sheet]
+│           ├── [content] AdwLayoutSlot "primary"
+│           └── [sheet] AdwLayoutSlot "properties"
 └── LushtextStatusBar (always visible, full width)
     ├── GtkToggleButton [sidebar_toggle_button] — toggle sidebar (action: win.toggle-sidebar)
     ├── GtkLabel [message_label] — feedback messages (left, hexpand)
-    ├── GtkBox [metadata_box] — EditorConfig + file size + encoding (right, hidden when no tabs)
-    └── GtkToggleButton [properties_toggle_button] — toggle properties (action: win.toggle-properties)
+    └── GtkBox [metadata_box] — EditorConfig + line ending + encoding (right, hidden when no tabs)
 ```
 
 ## Libadwaita Widgets to Use
@@ -55,6 +61,8 @@ LushtextWindow (AdwApplicationWindow)
 - `AdwSidebar` for shallow, sectioned dialog browse rails such as Notes and Local History where each item activates or previews one record
 - `AdwAboutDialog` for the about dialog
 - `AdwWindowTitle` for header title/subtitle
+- `AdwMultiLayoutView` + `AdwLayoutSlot` for adaptive secondary surfaces that need the same child in multiple presentations
+- `AdwBottomSheet` for compact utility surfaces such as document properties on narrow windows
 
 ## File Tree
 
@@ -104,8 +112,8 @@ LushtextWindow (AdwApplicationWindow)
 ## Status Bar
 
 - Per-window, below the split-view shell, always visible regardless of tab count.
-- The left workspace toggle stays at the far left and the properties toggle stays at the far right so both pane controls remain visually mirrored in the bottom bar.
-- `metadata_box` (EditorConfig + file size + encoding) is hidden via `set_visible(false)` when no tabs are open; the message area and both pane toggles remain available.
+- The left workspace toggle stays at the far left. The document-properties toggle lives in the header bar with the `win.toggle-properties` action and `F9` accelerator.
+- `metadata_box` (EditorConfig + line ending + encoding) is hidden via `set_visible(false)` when no tabs are open; the message area and workspace toggle remain available.
 - Messages use Adwaita semantic color tokens: `@accent_color` (Info), `@warning_color` (Warning), `@error_color` (Error). These adapt to light/dark mode automatically — no Rust-side dark mode handling needed.
 - Background uses `@headerbar_bg_color` to visually distinguish from the editor area.
 - Use the `caption` Adwaita CSS class for status bar text (small font, standard GNOME HIG for secondary UI).
@@ -154,11 +162,13 @@ Window geometry and split-view state are persisted via GSettings (not JSON sessi
 
 ## Split-View Rules
 
-- Use nested `AdwOverlaySplitView`s for the window shell instead of an outer `GtkPaned`.
+- Use `AdwOverlaySplitView` for the outer workspace shell and `AdwMultiLayoutView` for the adaptive document-properties surface instead of an outer `GtkPaned`.
 - `workspace_split_view` owns the left workspace pane and stays bound to `win.toggle-sidebar` in the status bar.
-- `properties_split_view` owns the right properties pane and stays bound to `win.toggle-properties` in the status bar.
+- `properties_layout_view` owns the document-properties presentation. `properties_split_view` is the wide right-pane layout, `properties_bottom_sheet` is the compact bottom-sheet layout, and both consume the same `properties` layout slot containing the single `LushtextPropertiesPanel`.
+- Do not manually rehost `LushtextPropertiesPanel` with `set_sidebar(None)`, `set_sheet(None)`, or equivalent child moves. Add or adjust `AdwLayoutSlot` presentations instead.
+- `win.toggle-properties` is exposed through the header-bar toggle and `F9`, not through the status bar.
 - The left pane restores one of the Preferences-driven presets (`20%`, `30%`, `40%`) whenever it is shown, then clamps that preset to the active desktop width before deriving the effective split fraction, while the right pane keeps its quarter-width target.
-- Breakpoints collapse the properties pane before the workspace pane so medium-width windows keep the file tree visible longer.
+- Breakpoints switch `properties_layout_view.layout-name` to the compact sheet before collapsing the workspace pane so medium-width windows keep the file tree visible longer.
 - The properties-pane breakpoint should be tuned from the workspace pane's effective visible width when the workspace pane consumes width so the center editor width stays protected for restored-document infobars and other editor chrome.
 - Allocation-time split-view sync is for live geometry only. `size_allocate()` can clamp the current fractions and update a cached properties breakpoint threshold, but it must not write `workspace-sidebar-width-fraction` / `properties-sidebar-width-fraction` to GSettings or call `AdwBreakpoint::set_condition()` with a newly parsed condition on every animation frame. Persist only explicit user intent or settled animation state, and cache derived thresholds so opening/closing sidebars stays monitor-refresh smooth in the installed Flatpak too.
 - When a utility pane closes, return focus to the active editor rather than leaving focus stranded on a toggle button.

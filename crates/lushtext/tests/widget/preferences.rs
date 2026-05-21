@@ -61,6 +61,38 @@ fn test_show_minimap_row_bound_to_settings() {
 }
 
 #[test]
+fn test_minimap_long_line_markers_row_defaults_off_and_updates_setting() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(config::APP_ID);
+    settings.reset(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE);
+
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    assert!(!settings.boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE));
+    assert!(!imp.minimap_long_line_markers_row.is_active());
+
+    imp.minimap_long_line_markers_row.set_active(true);
+    while glib::MainContext::default().iteration(false) {}
+
+    assert!(settings.boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE));
+}
+
+#[test]
+fn test_minimap_controls_are_grouped_on_editor_page() {
+    ensure_gtk_init();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    assert_eq!(imp.minimap_group.title().as_str(), "Minimap");
+    assert!(imp.show_minimap_row.is_ancestor(&*imp.minimap_group));
+    assert!(
+        imp.minimap_long_line_markers_row
+            .is_ancestor(&*imp.minimap_group)
+    );
+}
+
+#[test]
 fn test_focus_mode_column_width_row_bound_to_settings() {
     ensure_gtk_init();
     let prefs = LushtextPreferences::new();

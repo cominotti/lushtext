@@ -131,6 +131,29 @@
           </object>
         </child>
 
+        <!-- Minimap group -->
+        <child>
+          <object class="AdwPreferencesGroup" id="minimap_group">
+            <property name="title" translatable="yes">Minimap</property>
+
+            <child>
+              <object class="AdwSwitchRow" id="show_minimap_row">
+                <property name="title" translatable="yes">Show Minimap</property>
+                <property name="subtitle" translatable="yes">Display a document overview on supported editor pages</property>
+                <property name="active">false</property>
+              </object>
+            </child>
+
+            <child>
+              <object class="AdwSwitchRow" id="minimap_long_line_markers_row">
+                <property name="title" translatable="yes">Show Long-Line Markers</property>
+                <property name="subtitle" translatable="yes">Opt in to marking lines over the minimap warning threshold</property>
+                <property name="active">false</property>
+              </object>
+            </child>
+          </object>
+        </child>
+
         <!-- Behavior group -->
         <child>
           <object class="AdwPreferencesGroup">
@@ -183,14 +206,6 @@
               <object class="AdwSwitchRow" id="highlight_line_row">
                 <property name="title" translatable="yes">Highlight Current Line</property>
                 <property name="active">true</property>
-              </object>
-            </child>
-
-            <child>
-              <object class="AdwSwitchRow" id="show_minimap_row">
-                <property name="title" translatable="yes">Show Minimap</property>
-                <property name="subtitle" translatable="yes">Display a document overview on supported editor pages</property>
-                <property name="active">false</property>
               </object>
             </child>
 
