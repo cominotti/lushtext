@@ -118,7 +118,7 @@
   <style name="def:error"                  underline="error" underline-color="red_4"/>
   <style name="def:floating-point"         foreground="violet_2"/>
   <style name="def:function"               foreground="blue_2"/>
-  <style name="def:heading"                foreground="teal_3" bold="true"/>
+  <style name="def:heading"                foreground="teal_3" bold="true" scale="1.28"/>
   <style name="def:identifier"             foreground="chameleon_3"/>
   <style name="def:inline-code"            foreground="violet_2"/>
   <style name="def:link-destination"       foreground="blue_2" italic="true" underline="low"/>

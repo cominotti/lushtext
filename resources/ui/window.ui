@@ -22,7 +22,7 @@
             <child type="start">
               <object class="GtkButton" id="new_tab_button">
                 <property name="icon-name">tab-new-symbolic</property>
-                <property name="tooltip-text" translatable="yes">New Tab</property>
+                <property name="tooltip-text" translatable="yes">New File</property>
                 <property name="action-name">win.new-tab</property>
               </object>
             </child>
@@ -331,6 +331,10 @@
       <item>
         <attribute name="label" translatable="yes">Toggle _Minimap</attribute>
         <attribute name="action">win.toggle-minimap</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">Markdown Preview</attribute>
+        <attribute name="action">win.toggle-preview-mode</attribute>
       </item>
     </section>
     <section>

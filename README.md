@@ -28,7 +28,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Buffer eviction** -- background tabs evicted when total memory exceeds 256MB, transparently reloaded on focus
 - **Dark mode** -- automatic GtkSourceView scheme switching via Libadwaita StyleManager
 - **Customizable font** -- system monospace or custom font, applied via CSS provider
-- **Markdown preview** -- side-by-side or full-width preview pane with native GTK rendering for headings, emphasis, code, links, ordered and unordered lists, task lists, blockquotes, GitHub alert callouts, footnotes, and Markdown tables; Alt+P toggles full-width preview
+- **Markdown support** -- editable source headings are visually emphasized, plus side-by-side or full-width native preview rendering for headings, emphasis, code, links, ordered and unordered lists, task lists, blockquotes, GitHub alert callouts, footnotes, and Markdown tables; use Main Menu > Markdown Preview or Alt+P for full-width preview
 - **File monitoring** -- detects external changes and offers reload
 
 ## Installation and Running
@@ -168,7 +168,7 @@ The full shortcut list is available in **Main Menu > Keyboard Shortcuts**.
 
 | Workflow | Shortcut |
 |----------|----------|
-| New tab | `Ctrl+T` |
+| New file | `Ctrl+N` |
 | Open file | `Ctrl+O` |
 | Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
 | Close tab | `Ctrl+W` |
@@ -389,8 +389,10 @@ LushText includes a focused local-history MVP for saved documents.
 LushText can render Markdown files in a read-only preview pane instead of just
 showing the raw source text.
 
-- `Alt+P` toggles **preview-only mode**, where the editor hides and the rendered
-  Markdown takes the full content area.
+- Markdown heading lines stay editable as source text but use a larger bold
+  source style so document structure is visible while writing.
+- **Main Menu > Markdown Preview** or `Alt+P` toggles **preview-only mode**,
+  where the editor hides and the rendered Markdown takes the full content area.
 - A separate side-by-side preview pane is also available through the existing
   preview action surfaces, giving you editor text on the left and rendered
   output on the right.

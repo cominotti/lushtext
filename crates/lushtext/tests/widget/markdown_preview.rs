@@ -67,17 +67,6 @@ fn test_show_placeholder_switches_to_placeholder_mode() {
 }
 
 #[test]
-fn test_render_heading_inserts_text() {
-    ensure_gtk_init();
-    let preview = LushtextMarkdownPreview::new();
-    preview.render_markdown("# Hello World");
-    assert!(
-        preview.buffer_text().contains("Hello World"),
-        "Expected heading text in buffer"
-    );
-}
-
-#[test]
 fn test_render_bold_inserts_text() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
@@ -264,13 +253,72 @@ fn test_render_footnote_reference_and_definition() {
 }
 
 #[test]
-fn test_heading_tag_exists_after_render() {
+fn test_render_atx_heading_levels_apply_matching_tags_and_hide_markers() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
-    preview.render_markdown("# Title");
+    preview.render_markdown(
+        "# Alpha\n## Beta\n### Gamma\n#### Delta\n##### Epsilon\n###### Zeta",
+    );
+
+    for (text, tag) in [
+        ("Alpha", "heading1"),
+        ("Beta", "heading2"),
+        ("Gamma", "heading3"),
+        ("Delta", "heading4"),
+        ("Epsilon", "heading5"),
+        ("Zeta", "heading6"),
+    ] {
+        let tags = tags_for_rendered_text(&preview, text);
+        assert!(
+            tags.iter().any(|name| name == tag),
+            "Expected '{text}' to carry the {tag} text tag, got {tags:?}"
+        );
+    }
+
+    let rendered = preview.buffer_text();
+    for marker in ["# Alpha", "## Beta", "### Gamma", "#### Delta", "##### Epsilon", "###### Zeta"]
+    {
+        assert!(
+            !rendered.contains(marker),
+            "Expected rendered ATX heading to hide raw marker '{marker}'"
+        );
+    }
+}
+
+#[test]
+fn test_render_setext_heading_levels_apply_matching_tags_and_hide_underlines() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("Setext Alpha\n============\n\nSetext Beta\n-----------");
+
+    for (text, tag) in [("Setext Alpha", "heading1"), ("Setext Beta", "heading2")] {
+        let tags = tags_for_rendered_text(&preview, text);
+        assert!(
+            tags.iter().any(|name| name == tag),
+            "Expected '{text}' to carry the {tag} text tag, got {tags:?}"
+        );
+    }
+
+    let rendered = preview.buffer_text();
     assert!(
-        preview.has_tag("heading1"),
-        "Expected heading1 tag in tag table"
+        !rendered.contains("============"),
+        "Expected Setext H1 underline to be omitted from rendered text"
+    );
+    assert!(
+        !rendered.contains("-----------"),
+        "Expected Setext H2 underline to be omitted from rendered text"
+    );
+}
+
+#[test]
+fn test_render_heading_flow_preserves_source_order() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("Before\n\n# First Heading\n\nBetween\n\n## Second Heading\n\nAfter");
+
+    assert_rendered_text_order(
+        &preview.buffer_text(),
+        &["Before", "First Heading", "Between", "Second Heading", "After"],
     );
 }
 
@@ -602,6 +650,17 @@ fn find_label_with_text(root: &impl IsA<gtk4::Widget>, text: &str) -> Option<gtk
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk4::Label>().ok())
         .find(|label| label.text() == text || label.label().contains(text))
+}
+
+fn assert_rendered_text_order(rendered: &str, expected: &[&str]) {
+    let mut previous = 0usize;
+    for text in expected {
+        let offset = rendered[previous..].find(text).map_or_else(
+            || panic!("expected rendered text to contain '{text}' after byte {previous}"),
+            |relative| previous + relative,
+        );
+        previous = offset + text.len();
+    }
 }
 
 fn emit_preview_click_for_text(preview: &LushtextMarkdownPreview, text: &str) {

@@ -686,6 +686,7 @@ fn test_command_palette_results_view_single_click_disabled() {
 // ---------------------------------------------------------------------------
 
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
+use lushtext_core::ui::editor_page::LushtextEditorPage;
 use lushtext_core::ui::window::LushtextWindow;
 
 fn test_window() -> LushtextWindow {
@@ -702,6 +703,23 @@ fn action_enabled(window: &LushtextWindow, name: &str) -> bool {
 fn activate_action(window: &LushtextWindow, name: &str) {
     ActionGroupExt::activate_action(window, name, None);
     flush_events();
+}
+
+fn active_editor(window: &LushtextWindow) -> Option<LushtextEditorPage> {
+    window
+        .imp()
+        .tab_view
+        .selected_page()
+        .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok())
+}
+
+fn active_editor_has_focus(window: &LushtextWindow) -> bool {
+    let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) else {
+        return false;
+    };
+    active_editor(window).is_some_and(|editor| {
+        focus.as_ptr() == editor.source_view().upcast_ref::<gtk4::Widget>().as_ptr()
+    })
 }
 
 #[test]
@@ -802,6 +820,35 @@ fn test_palette_activation_closes_palette() {
     flush_events();
 
     assert!(!window.imp().palette_revealer.reveals_child());
+}
+
+#[test]
+fn test_palette_new_file_command_focuses_new_editor_after_close() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+
+    activate_action(&window, "toggle-command-palette");
+    let palette = window.imp().command_palette.clone();
+    rebuild_and_wait_for_label(&palette, "new file", "New File");
+
+    let labels = palette_labels(&palette);
+    let position = u32::try_from(row_position(&labels, "New File"))
+        .expect("palette row position should fit GTK selection index");
+    let selection = palette
+        .imp()
+        .results_view
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+        .expect("results should use a SingleSelection model");
+    selection.set_selected(position);
+
+    palette.imp().activate_selected();
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().palette_revealer.reveals_child() && active_editor_has_focus(&window)
+    });
+
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
 }
 
 #[test]
@@ -990,6 +1037,18 @@ fn test_all_commands_contains_fullscreen() {
     assert_eq!(cmd.label, "Fullscreen");
     assert_eq!(cmd.shortcut, Some("F11"));
     assert_eq!(cmd.category, CommandCategory::View);
+}
+
+#[test]
+fn test_all_commands_new_file_uses_ctrl_n() {
+    ensure_gtk_init();
+    let commands = lushtext_core::services::palette::all_commands();
+    let cmd = commands.iter().find(|c| c.id == "win.new-tab");
+    assert!(cmd.is_some(), "all_commands() should include New File");
+    let cmd = cmd.expect("expected operation to succeed");
+    assert_eq!(cmd.label, "New File");
+    assert_eq!(cmd.shortcut, Some("Ctrl+N"));
+    assert_eq!(cmd.category, CommandCategory::File);
 }
 
 #[test]

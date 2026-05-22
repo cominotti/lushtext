@@ -219,6 +219,18 @@ fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
         .expect("expected operation to succeed")
 }
 
+fn active_editor_has_focus(window: &LushtextWindow) -> bool {
+    let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) else {
+        return false;
+    };
+    let editor = active_editor(window);
+    focus.as_ptr() == editor.source_view().upcast_ref::<gtk4::Widget>().as_ptr()
+}
+
+fn wait_for_active_editor_focus(window: &LushtextWindow) {
+    wait_until(Duration::from_secs(2), || active_editor_has_focus(window));
+}
+
 fn editor_text(editor: &LushtextEditorPage) -> String {
     let buffer = editor.buffer();
     buffer
@@ -510,6 +522,47 @@ fn menu_model_labels(model: &gio::MenuModel) -> Vec<String> {
     labels
 }
 
+fn menu_model_label_actions(model: &gio::MenuModel) -> Vec<(String, Option<String>)> {
+    let mut entries = Vec::new();
+    for index in 0..model.n_items() {
+        let label = model
+            .item_attribute_value(index, "label", Some(glib::VariantTy::STRING))
+            .and_then(|variant| variant.get::<String>());
+        let action = model
+            .item_attribute_value(index, "action", Some(glib::VariantTy::STRING))
+            .and_then(|variant| variant.get::<String>());
+        if let Some(label) = label {
+            entries.push((label, action));
+        }
+        for link_name in ["section", "submenu"] {
+            if let Some(link) = model.item_link(index, link_name) {
+                entries.extend(menu_model_label_actions(&link));
+            }
+        }
+    }
+    entries
+}
+
+fn primary_menu_action_for_label(window: &LushtextWindow, label: &str) -> Option<String> {
+    let primary_menu = window
+        .imp()
+        .primary_menu_button
+        .menu_model()
+        .expect("primary menu model");
+    menu_model_label_actions(&primary_menu)
+        .into_iter()
+        .find_map(|(entry_label, action)| (entry_label == label).then_some(action).flatten())
+}
+
+fn activate_primary_menu_item(window: &LushtextWindow, label: &str) {
+    let action = primary_menu_action_for_label(window, label)
+        .unwrap_or_else(|| panic!("primary menu item '{label}' should have an action"));
+    let action_name = action
+        .strip_prefix("win.")
+        .unwrap_or_else(|| panic!("expected '{action}' to be a window action"));
+    activate_action(window, action_name);
+}
+
 fn click_alert_extra_button(dialog: &libadwaita::AlertDialog, label: &str) {
     let extra = dialog.extra_child().expect("alert dialog extra child");
     click_labeled_widget(&extra, label);
@@ -598,6 +651,9 @@ fn properties_sidebar_visible(window: &LushtextWindow) -> bool {
 }
 
 fn shortcut_bound(window: &LushtextWindow, action_name: &str, trigger_string: &str) -> bool {
+    let expected_trigger = gtk4::ShortcutTrigger::parse_string(trigger_string)
+        .unwrap_or_else(|| panic!("shortcut trigger '{trigger_string}' should parse"));
+    let expected_trigger = expected_trigger.to_str();
     let controllers = window.observe_controllers();
     let shortcut_controller = (0..controllers.n_items())
         .filter_map(|index| controllers.item(index))
@@ -615,7 +671,7 @@ fn shortcut_bound(window: &LushtextWindow, action_name: &str, trigger_string: &s
                 .is_some_and(|action| action.action_name().as_str() == action_name);
             let trigger_matches = shortcut
                 .trigger()
-                .is_some_and(|trigger| trigger.to_str().as_str() == trigger_string);
+                .is_some_and(|trigger| trigger.to_str() == expected_trigger);
             action_matches && trigger_matches
         })
 }
@@ -1177,6 +1233,66 @@ fn test_f9_toggles_document_properties_instead_of_workspace_sidebar() {
     assert!(
         shortcut_bound(&window, "win.toggle-properties", "F9"),
         "F9 should be bound to win.toggle-properties"
+    );
+}
+
+#[test]
+fn test_new_document_shortcut_is_ctrl_n_only() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert!(
+        shortcut_bound(&window, "win.new-tab", "<Control>n"),
+        "Ctrl+N should create a new file"
+    );
+    assert!(
+        !shortcut_bound(&window, "win.new-tab", "<Control>t"),
+        "Ctrl+T should no longer create a new file"
+    );
+}
+
+#[test]
+fn test_new_document_action_focuses_new_editor() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+
+    window.imp().primary_menu_button.grab_focus();
+    flush_events();
+    activate_action(&window, "new-tab");
+
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
+    wait_for_active_editor_focus(&window);
+}
+
+#[test]
+fn test_new_document_focus_handoff_ignores_stale_selection() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    let original_page = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("initial tab should be selected");
+    let original_editor = active_editor(&window);
+    original_editor.source_view().grab_focus();
+    flush_events();
+
+    activate_action(&window, "new-tab");
+    window.imp().tab_view.set_selected_page(&original_page);
+    flush_after_delay(Duration::from_millis(250));
+
+    assert!(
+        window.imp().tab_view.selected_page().as_ref() == Some(&original_page),
+        "stale delayed focus should not reselect the newer tab"
+    );
+    assert_eq!(
+        gtk4::prelude::GtkWindowExt::focus(&window).map(|widget| widget.as_ptr()),
+        Some(original_editor.source_view().upcast_ref::<gtk4::Widget>().as_ptr()),
+        "stale delayed focus should not steal focus from the restored tab"
     );
 }
 
@@ -3517,6 +3633,80 @@ fn test_primary_menu_button_exists() {
     ensure_gtk_init();
     let window = test_window();
     assert!(window.imp().primary_menu_button.popover().is_some());
+}
+
+#[test]
+fn test_primary_menu_exposes_markdown_preview_action() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert_eq!(
+        primary_menu_action_for_label(&window, "Markdown Preview").as_deref(),
+        Some("win.toggle-preview-mode"),
+        "primary menu should expose the rendered Markdown preview action"
+    );
+}
+
+#[test]
+fn test_markdown_preview_shortcut_remains_alt_p() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert!(
+        shortcut_bound(&window, "win.toggle-preview-mode", "<Alt>p"),
+        "Alt+P should keep toggling Markdown preview-only mode"
+    );
+}
+
+#[test]
+fn test_primary_menu_markdown_preview_renders_active_markdown_buffer() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("markdown preview tempdir");
+    let editor = active_editor(&window);
+    editor.set_file_path(&dir.path().join("menu-preview.md"));
+    editor
+        .buffer()
+        .set_text("# Menu Heading\n\nCurrent buffer body");
+
+    activate_primary_menu_item(&window, "Markdown Preview");
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get() && window.imp().markdown_preview.is_showing_content()
+    });
+    let rendered = window.imp().markdown_preview.buffer_text();
+    assert!(
+        rendered.contains("Menu Heading"),
+        "preview should render the active Markdown buffer"
+    );
+    assert!(
+        rendered.contains("Current buffer body"),
+        "preview should include body text from the active buffer"
+    );
+    assert!(
+        !rendered.contains("# Menu Heading"),
+        "preview should hide raw heading markers"
+    );
+}
+
+#[test]
+fn test_primary_menu_markdown_preview_shows_placeholder_for_non_markdown() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("plain preview tempdir");
+    let editor = active_editor(&window);
+    editor.set_file_path(&dir.path().join("plain.txt"));
+    editor.buffer().set_text("# Plain text heading-shaped line");
+
+    activate_primary_menu_item(&window, "Markdown Preview");
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get() && !window.imp().markdown_preview.is_showing_content()
+    });
 }
 
 #[test]

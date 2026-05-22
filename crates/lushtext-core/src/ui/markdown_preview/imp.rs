@@ -47,8 +47,12 @@ const ALERT_TITLE_IMPORTANT_DARK: &str = "#dc8add";
 const ALERT_TITLE_WARNING_DARK: &str = "#f8e45c";
 const ALERT_TITLE_CAUTION_DARK: &str = "#ff7b63";
 
-/// Font scale factors for heading levels (h1=1.6x down to h6=1.05x).
-const HEADING_SCALES: [f64; 6] = [1.6, 1.4, 1.2, 1.1, 1.05, 1.0];
+/// Font scale factors for heading levels (h1=2.0x down to h6=1.0x).
+const HEADING_SCALES: [f64; 6] = [2.0, 1.65, 1.35, 1.2, 1.1, 1.0];
+/// Vertical space before each heading level, in text-buffer pixels.
+const HEADING_PIXELS_ABOVE: [i32; 6] = [24, 20, 16, 12, 10, 8];
+/// Vertical space after each heading level, in text-buffer pixels.
+const HEADING_PIXELS_BELOW: [i32; 6] = [10, 8, 6, 5, 4, 4];
 /// Base left margin for top-level list items in the preview.
 const LIST_ITEM_BASE_MARGIN: i32 = 24;
 /// Extra indentation applied for each additional nested list level.
@@ -240,9 +244,13 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
         tag.set_scale(scale);
         tag.set_weight(pango::Weight::Bold.into_glib());
         tag.set_foreground(Some(accent));
-        // Add vertical spacing above headings for visual separation.
-        tag.set_pixels_above_lines(if i == 0 { 12 } else { 8 });
-        tag.set_pixels_below_lines(4);
+        tag.set_pixels_above_lines(HEADING_PIXELS_ABOVE[i]);
+        tag.set_pixels_below_lines(HEADING_PIXELS_BELOW[i]);
+        tag.set_underline(if i < 2 {
+            pango::Underline::Single
+        } else {
+            pango::Underline::None
+        });
     }
 
     // Inline style tags.

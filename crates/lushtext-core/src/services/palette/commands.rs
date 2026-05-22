@@ -20,7 +20,7 @@ pub fn all_commands() -> &'static [CommandDef] {
             id: "win.new-tab",
             label: "New File",
             category: CommandCategory::File,
-            shortcut: Some("Ctrl+T"),
+            shortcut: Some("Ctrl+N"),
         },
         CommandDef {
             id: "win.open-file",

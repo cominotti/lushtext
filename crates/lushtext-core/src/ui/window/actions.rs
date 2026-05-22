@@ -15,7 +15,10 @@ impl LushtextWindow {
     pub(super) fn setup_actions(&self) {
         self.add_action_entries([
             gio::ActionEntry::builder("new-tab")
-                .activate(|window: &Self, _, _| window.new_tab())
+                .activate(|window: &Self, _, _| {
+                    window.new_tab();
+                    window.focus_selected_editor_after_action();
+                })
                 .build(),
             gio::ActionEntry::builder("open-file")
                 .activate(|window: &Self, _, _| window.show_open_file_dialog())
@@ -344,7 +347,7 @@ impl LushtextWindow {
         controller.set_scope(gtk4::ShortcutScope::Managed);
 
         let shortcuts = [
-            ("win.new-tab", "<Control>t"),
+            ("win.new-tab", "<Control>n"),
             ("win.open-file", "<Control>o"),
             ("win.save", "<Control>s"),
             ("win.save-as", "<Control><Shift>s"),
