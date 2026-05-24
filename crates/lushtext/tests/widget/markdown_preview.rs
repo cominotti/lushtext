@@ -10,11 +10,13 @@ use lushtext_core::config::{self, keys};
 use lushtext_core::ui::markdown_preview::{
     LushtextMarkdownPreview, MarkdownPreviewRenderContext,
 };
+use sourceview5::prelude::*;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tempfile::TempDir;
 
 #[test]
 fn test_new() {
@@ -89,17 +91,6 @@ fn test_render_italic_inserts_text() {
 }
 
 #[test]
-fn test_render_code_block_inserts_text() {
-    ensure_gtk_init();
-    let preview = LushtextMarkdownPreview::new();
-    preview.render_markdown("```\nlet x = 42;\n```");
-    assert!(
-        preview.buffer_text().contains("let x = 42;"),
-        "Expected code block text in buffer"
-    );
-}
-
-#[test]
 fn test_render_inline_code_inserts_text() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
@@ -107,6 +98,16 @@ fn test_render_inline_code_inserts_text() {
     assert!(
         preview.buffer_text().contains("cargo build"),
         "Expected inline code in buffer"
+    );
+    assert!(
+        widgets_with_css_class::<sourceview5::View>(&preview, "markdown-code-block-view")
+            .is_empty(),
+        "Expected inline code to stay in the text buffer instead of creating a block widget"
+    );
+    let tags = tags_for_rendered_text(&preview, "cargo build");
+    assert!(
+        tags.iter().any(|name| name == "code"),
+        "Expected inline code text to keep the inline code tag, got {tags:?}"
     );
 }
 
@@ -844,6 +845,234 @@ fn test_render_markdown_cleans_up_table_widgets_on_rerender() {
     );
 }
 
+#[test]
+fn test_render_fenced_code_block_adds_embedded_source_view() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+
+    preview.render_markdown("```\nlet x = 42;\n```");
+    wait_until(Duration::from_secs(2), || source_views(&preview).len() == 1);
+
+    let source_view = source_views(&preview).pop().expect("source view");
+    assert_eq!(
+        source_view_buffer_text(&source_view),
+        "let x = 42;\n",
+        "Expected code block text to live in one embedded source buffer"
+    );
+    assert!(
+        !preview.buffer_text().contains("let x = 42;"),
+        "Expected code block text to no longer be duplicated in the parent preview buffer"
+    );
+}
+
+#[test]
+fn test_render_indented_code_block_adds_embedded_source_view() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+
+    preview.render_markdown("Indented code\n\n    line one\n    line two");
+    wait_until(Duration::from_secs(2), || source_views(&preview).len() == 1);
+
+    let source_view = source_views(&preview).pop().expect("source view");
+    let source_text = source_view_buffer_text(&source_view);
+    assert!(
+        source_text.contains("line one\nline two"),
+        "Expected indented Markdown code to render inside one embedded source buffer, got {source_text:?}"
+    );
+    assert!(
+        source_view_source_buffer(&source_view).language().is_none(),
+        "Expected indented code blocks to render as plain code without a fenced language hint"
+    );
+}
+
+#[test]
+fn test_render_code_block_with_blank_line_uses_one_embedded_block() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+
+    preview.render_markdown("```js\nvar foo = function (bar) {\n  return bar++;\n};\n\nconsole.log(foo(5));\n```");
+    wait_until(Duration::from_secs(2), || {
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-code-block").len() == 1
+            && source_views(&preview).len() == 1
+    });
+
+    let source_view = source_views(&preview).pop().expect("source view");
+    let text = source_view_buffer_text(&source_view);
+    assert!(
+        text.contains("};\n\nconsole.log"),
+        "Expected the blank line to remain inside one continuous code buffer, got {text:?}"
+    );
+    assert_eq!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-code-block").len(),
+        1,
+        "Expected one visual code block instead of splitting around blank lines"
+    );
+}
+
+#[test]
+fn test_render_supported_fenced_language_applies_source_language() {
+    ensure_gtk_init();
+    let _language_dir = install_test_source_language("lush-test");
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+
+    preview.render_markdown("```lush-test\nvar value = 1;\n```");
+    wait_until(Duration::from_secs(2), || source_views(&preview).len() == 1);
+
+    let source_view = source_views(&preview).pop().expect("source view");
+    let source_buffer = source_view_source_buffer(&source_view);
+    assert_eq!(
+        source_buffer.language().map(|language| language.id().to_string()),
+        Some("lush-test".to_string()),
+        "Expected the fenced language to be applied to the embedded source buffer"
+    );
+    assert!(
+        source_buffer.is_highlight_syntax(),
+        "Expected syntax highlighting to be enabled when a language resolves"
+    );
+}
+
+#[test]
+fn test_render_unsupported_fenced_language_falls_back_to_plain_source_view() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+
+    preview.render_markdown("```definitely-not-lush\nplain text\n```");
+    wait_until(Duration::from_secs(2), || source_views(&preview).len() == 1);
+
+    let source_view = source_views(&preview).pop().expect("source view");
+    let source_buffer = source_view_source_buffer(&source_view);
+    assert_eq!(
+        source_view_buffer_text(&source_view),
+        "plain text\n",
+        "Expected unsupported languages to still render readable code text"
+    );
+    assert!(
+        source_buffer.language().is_none(),
+        "Expected unsupported language hints to fall back without a source language"
+    );
+    assert!(
+        !source_buffer.is_highlight_syntax(),
+        "Expected syntax highlighting to remain disabled for unsupported languages"
+    );
+}
+
+#[test]
+fn test_render_code_block_text_has_nonzero_inset() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview_with_size(&preview, 420, 260);
+
+    preview.render_markdown("```\nlet padded = true;\n```");
+    wait_until(Duration::from_secs(2), || {
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-code-block").len() == 1
+            && widgets_with_css_class::<gtk4::ScrolledWindow>(
+                &preview,
+                "markdown-code-block-scroller",
+            )
+            .len()
+                == 1
+    });
+
+    let block = widgets_with_css_class::<gtk4::Box>(&preview, "markdown-code-block")
+        .pop()
+        .expect("code block container");
+    let scroller =
+        widgets_with_css_class::<gtk4::ScrolledWindow>(&preview, "markdown-code-block-scroller")
+            .pop()
+            .expect("code block scroller");
+
+    wait_until(Duration::from_secs(2), || {
+        scroller
+            .compute_bounds(&block)
+            .is_some_and(|bounds| bounds.x() > 0.0 && bounds.y() > 0.0)
+    });
+    let bounds = scroller
+        .compute_bounds(&block)
+        .expect("scroller should have bounds inside code block");
+    assert!(
+        bounds.x() > 0.0 && bounds.y() > 0.0,
+        "Expected code text scroller to be inset from block edges, got bounds {bounds:?}"
+    );
+}
+
+#[test]
+fn test_render_code_block_without_false_horizontal_overflow_when_line_fits() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview_with_size(&preview, 640, 260);
+
+    preview.render_markdown("```js\nconst readable = true;\n```");
+    wait_for_code_block_layout(&preview);
+
+    let scroller = code_block_scrollers(&preview).pop().expect("code scroller");
+    let overflow = horizontal_overflow(&scroller);
+    assert!(
+        overflow <= 1.0,
+        "Expected short code to fit without horizontal overflow, got {overflow}"
+    );
+}
+
+#[test]
+fn test_render_code_block_allows_horizontal_overflow_for_long_line() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview_with_size(&preview, 220, 260);
+    let long_line = "const veryLongIdentifier = ".to_string() + &"x".repeat(240);
+
+    preview.render_markdown(&format!("```js\n{long_line}\n```"));
+    wait_for_code_block_layout(&preview);
+
+    let scroller = code_block_scrollers(&preview).pop().expect("code scroller");
+    let overflow = horizontal_overflow(&scroller);
+    assert!(
+        overflow > 1.0,
+        "Expected a genuinely long code line to expose horizontal overflow"
+    );
+}
+
+#[test]
+fn test_render_code_block_width_updates_after_late_allocation() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown("```\nallocated later\n```");
+    let _window = present_preview_with_size(&preview, 620, 260);
+    wait_for_code_block_width(&preview);
+
+    let block = code_block_containers(&preview)
+        .pop()
+        .expect("code block container");
+    let expected_width = preview_text_column_width(&preview);
+    assert_eq!(
+        block.width_request(),
+        expected_width,
+        "Expected code block width to refresh after the preview receives its allocation"
+    );
+}
+
+#[test]
+fn test_render_markdown_cleans_up_code_block_widgets_on_rerender() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+
+    preview.render_markdown("```\nstale\n```");
+    wait_until(Duration::from_secs(2), || source_views(&preview).len() == 1);
+
+    preview.render_markdown("# No Code");
+    wait_until(Duration::from_secs(2), || source_views(&preview).is_empty());
+
+    assert!(
+        source_views(&preview).is_empty(),
+        "Expected rerender without code blocks to remove the old anchored source view"
+    );
+}
+
 fn present_preview(preview: &LushtextMarkdownPreview) -> gtk4::ApplicationWindow {
     let window = gtk4::ApplicationWindow::new(&test_application());
     window.set_child(Some(preview));
@@ -891,6 +1120,118 @@ where
         .filter(|widget| widget.has_css_class(css_class))
         .filter_map(|widget| widget.downcast::<T>().ok())
         .collect()
+}
+
+fn source_views(preview: &LushtextMarkdownPreview) -> Vec<sourceview5::View> {
+    widgets_with_css_class::<sourceview5::View>(preview, "markdown-code-block-view")
+}
+
+fn code_block_containers(preview: &LushtextMarkdownPreview) -> Vec<gtk4::Box> {
+    widgets_with_css_class::<gtk4::Box>(preview, "markdown-code-block")
+}
+
+fn code_block_scrollers(preview: &LushtextMarkdownPreview) -> Vec<gtk4::ScrolledWindow> {
+    widgets_with_css_class::<gtk4::ScrolledWindow>(preview, "markdown-code-block-scroller")
+}
+
+fn preview_text_column_width(preview: &LushtextMarkdownPreview) -> i32 {
+    let text_view = preview.text_view();
+    text_view.width() - text_view.left_margin() - text_view.right_margin()
+}
+
+fn horizontal_overflow(scroller: &gtk4::ScrolledWindow) -> f64 {
+    let adjustment = scroller.hadjustment();
+    (adjustment.upper() - adjustment.page_size()).max(0.0)
+}
+
+fn wait_for_code_block_layout(preview: &LushtextMarkdownPreview) {
+    wait_until(Duration::from_secs(2), || {
+        let Some(block) = code_block_containers(preview).first().cloned() else {
+            return false;
+        };
+        let Some(scroller) = code_block_scrollers(preview).first().cloned() else {
+            return false;
+        };
+        let column_width = preview_text_column_width(preview);
+        column_width > 0
+            && block.width_request() == column_width
+            && scroller.width() > 0
+            && scroller.hadjustment().page_size() > 0.0
+    });
+}
+
+fn wait_for_code_block_width(preview: &LushtextMarkdownPreview) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut last = None;
+    while Instant::now() < deadline {
+        let block = code_block_containers(preview).first().cloned();
+        let column_width = preview_text_column_width(preview);
+        let width_request = block.as_ref().map(gtk4::prelude::WidgetExt::width_request);
+        if column_width > 0 && width_request == Some(column_width) {
+            return;
+        }
+        last = Some((column_width, width_request));
+        std::thread::sleep(Duration::from_millis(20));
+        while glib::MainContext::default().iteration(false) {}
+    }
+    panic!("code block width did not settle; last column/request: {last:?}");
+}
+
+fn source_view_source_buffer(source_view: &sourceview5::View) -> sourceview5::Buffer {
+    source_view
+        .buffer()
+        .downcast::<sourceview5::Buffer>()
+        .expect("embedded code block should use a GtkSourceBuffer")
+}
+
+fn source_view_buffer_text(source_view: &sourceview5::View) -> String {
+    let buffer = source_view.buffer();
+    buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string()
+}
+
+fn install_test_source_language(id: &str) -> TempDir {
+    let tempdir = tempfile::tempdir().expect("language tempdir");
+    let language_path = tempdir.path().join(format!("{id}.lang"));
+    std::fs::write(
+        &language_path,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<language id="{id}" name="Lush Test" version="2.0" _section="Sources">
+  <metadata>
+    <property name="mimetypes">text/x-{id}</property>
+    <property name="globs">*.{id}</property>
+  </metadata>
+  <styles>
+    <style id="keyword" name="Keyword" map-to="def:keyword"/>
+  </styles>
+  <definitions>
+    <context id="{id}">
+      <include>
+        <context id="keyword" style-ref="keyword">
+          <keyword>var</keyword>
+        </context>
+      </include>
+    </context>
+  </definitions>
+</language>
+"#
+        ),
+    )
+    .expect("write test GtkSourceView language spec");
+
+    let manager = sourceview5::LanguageManager::default();
+    let mut search_paths = vec![tempdir.path().to_string_lossy().to_string()];
+    search_paths.extend(manager.search_path().iter().map(ToString::to_string));
+    let search_path_refs = search_paths.iter().map(String::as_str).collect::<Vec<_>>();
+    manager.set_search_path(&search_path_refs);
+    assert!(
+        manager.language(id).is_some(),
+        "Expected test source language '{id}' to load from {}",
+        language_path.display()
+    );
+    tempdir
 }
 
 fn find_label_with_text(root: &impl IsA<gtk4::Widget>, text: &str) -> Option<gtk4::Label> {

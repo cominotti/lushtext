@@ -241,10 +241,32 @@ impl ObjectImpl for LushtextMarkdownPreview {
                 create_or_update_tags(&obj.imp().text_view.buffer(), sm.is_dark());
             }
         });
+
+        // Code blocks are embedded as child-anchor widgets, so they need to
+        // follow the final text-view column width rather than the outer box.
+        let obj_weak = self.obj().downgrade();
+        self.text_view
+            .connect_notify_local(Some("width"), move |_, _| {
+                if let Some(obj) = obj_weak.upgrade() {
+                    obj.queue_code_block_width_refresh();
+                }
+            });
+
+        let obj_weak = self.obj().downgrade();
+        self.obj().connect_map(move |_| {
+            if let Some(obj) = obj_weak.upgrade() {
+                obj.queue_code_block_width_refresh();
+            }
+        });
     }
 }
 
-impl WidgetImpl for LushtextMarkdownPreview {}
+impl WidgetImpl for LushtextMarkdownPreview {
+    fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+        self.parent_size_allocate(width, height, baseline);
+        self.obj().queue_code_block_width_refresh();
+    }
+}
 impl BoxImpl for LushtextMarkdownPreview {}
 
 /// Create (or update in-place) all TextTags used by the Markdown renderer.

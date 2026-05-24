@@ -145,6 +145,14 @@ Dialogs, popovers, and browsers that use `GtkStack`, `GtkStackSwitcher`, or anot
 - Do not rely only on `set_size_request()` on an outer scroller when the inner visible child changes from placeholder to content.
 - Add widget coverage for the first Edit -> Render activation, comparing dialog/content natural sizes and text-surface padding before and after activation.
 
+## TextView Child Anchors
+
+`GtkTextView` child anchors do not automatically make embedded widgets fill the visible text column. For anchored Markdown preview widgets that should read as full-width blocks, compute the target width from the text view's allocated `width()` minus left/right margins and apply it to the embedded container with `set_width_request()`.
+
+- Refresh after render, on the preview widget's `size_allocate()`, after readable-column margin changes, and when the text view is mapped or reports a width change.
+- Queue one idle refresh after immediate refreshes so code rendered before the preview is mapped can catch the final allocation.
+- Keep horizontal scrolling inside the embedded block only for real content overflow; do not let the block's natural width create narrow boxes or false scrollbars.
+
 ## GSettings Bindings
 
 Editor preferences use GSettings (`dev.cominotti.lushtext` schema) with `gio::Settings::bind()`:

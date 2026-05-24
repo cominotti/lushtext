@@ -3,10 +3,11 @@
 //! Markdown preview widget — read-only rendered view of Markdown content.
 //!
 //! Most Markdown blocks render directly into a `GtkTextBuffer` with
-//! `GtkTextTag`s so the preview stays lightweight and native. Tables and local
-//! image blocks are the main exceptions: GTK already supports embedding widgets
-//! inside a `GtkTextView` via `GtkTextChildAnchor`, so we use anchored GTK
-//! widgets for the cases where plain styled text is not expressive enough.
+//! `GtkTextTag`s so the preview stays lightweight and native. Tables, local
+//! image blocks, and Markdown code blocks are the main exceptions: GTK already
+//! supports embedding widgets inside a `GtkTextView` via `GtkTextChildAnchor`,
+//! so we use anchored GTK widgets for cases where plain styled text is not
+//! expressive enough.
 //!
 //! Two display states:
 //! - **Content mode**: scrolled text view with rendered Markdown
@@ -18,18 +19,18 @@ use gio::prelude::FileExt;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
-use gtk4::prelude::*;
 use gtk4::{self, gdk};
-use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use sourceview5::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
 
 use imp::{
-    TAG_ALERT_BODY, TAG_BLOCKQUOTE, TAG_BOLD, TAG_CODE, TAG_CODE_BLOCK, TAG_FOOTNOTE_DEF,
-    TAG_FOOTNOTE_DEF_LABEL, TAG_FOOTNOTE_REF, TAG_HRULE, TAG_ITALIC, TAG_LINK, TAG_LIST_ITEM,
-    TAG_STRIKETHROUGH, TAG_TASK_MARKER, alert_title, alert_title_tag_name, blockquote_rail_prefix,
+    TAG_ALERT_BODY, TAG_BLOCKQUOTE, TAG_BOLD, TAG_CODE, TAG_FOOTNOTE_DEF, TAG_FOOTNOTE_DEF_LABEL,
+    TAG_FOOTNOTE_REF, TAG_HRULE, TAG_ITALIC, TAG_LINK, TAG_LIST_ITEM, TAG_STRIKETHROUGH,
+    TAG_TASK_MARKER, alert_title, alert_title_tag_name, blockquote_rail_prefix,
     ensure_blockquote_depth_tag, ensure_list_item_depth_tag, heading_tag_name,
 };
 
@@ -46,6 +47,20 @@ const MAX_PREVIEW_IMAGE_WIDTH: i32 = 640;
 /// A modest floor keeps them legible without pretending the preview is a full
 /// graphics viewer.
 const MIN_PREVIEW_IMAGE_SIZE: i32 = 72;
+/// Interior horizontal inset for native code-block widgets.
+///
+/// The old text-tag renderer painted the block background directly behind the
+/// glyphs. Keeping padding on the embedded scroller makes the source text read
+/// as one deliberate surface instead of text stuck to a highlight edge.
+const CODE_BLOCK_HORIZONTAL_PADDING: i32 = 12;
+/// Interior vertical inset for native code-block widgets.
+const CODE_BLOCK_VERTICAL_PADDING: i32 = 8;
+/// CSS priority for per-render code-block palette fixes.
+///
+/// The bundled stylesheet gives code blocks their shape, while this provider
+/// supplies the active GtkSourceView background after the user-selected scheme
+/// is known. A slightly higher priority keeps the two layers from fighting.
+const CODE_BLOCK_BACKGROUND_CSS_PRIORITY: u32 = gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION + 2;
 
 /// Extra render context supplied by the window when previewing a real Markdown file.
 ///
@@ -105,6 +120,27 @@ struct ActiveTextLink {
     target: Option<PreviewLaunchTarget>,
     /// Whether this link pushed the preview's link text tag onto the stack.
     pushed_tag: bool,
+}
+
+/// Visual inputs shared by all code blocks in one render pass.
+#[derive(Debug, Clone)]
+struct CodeBlockTheme {
+    /// GtkSourceView scheme used for syntax token colors.
+    style_scheme: Option<sourceview5::StyleScheme>,
+    /// CSS background applied to both the outer block and inner text area.
+    background_css: String,
+}
+
+impl CodeBlockTheme {
+    /// Resolve the current editor palette once so many code blocks stay cheap.
+    fn from_settings(settings: &gtk4::gio::Settings) -> Self {
+        let style_scheme = crate::active_sourceview_scheme(settings);
+        let palette = crate::resolve_tab_content_palette(settings);
+        Self {
+            style_scheme,
+            background_css: crate::css_rgba_with_alpha(&palette.text_bg, 1.0),
+        }
+    }
 }
 
 /// Marker style for the current Markdown list frame.
@@ -213,6 +249,45 @@ impl BufferedImage {
             Event::Text(text) | Event::Code(text) => self.alt_text.push_str(&text),
             Event::SoftBreak | Event::HardBreak => self.alt_text.push(' '),
             _ => {}
+        }
+    }
+}
+
+/// Buffered Markdown code block collected before we create an anchored source view.
+#[derive(Debug, Clone, PartialEq)]
+struct BufferedCodeBlock {
+    /// Original pulldown-cmark block kind, including fenced info string.
+    kind: CodeBlockKind<'static>,
+    /// Literal code text emitted between code-block start and end tags.
+    text: String,
+}
+
+impl BufferedCodeBlock {
+    /// Start buffering one code block from pulldown-cmark's borrowed event data.
+    fn new(kind: CodeBlockKind<'_>) -> Self {
+        Self {
+            kind: kind.into_static(),
+            text: String::new(),
+        }
+    }
+
+    /// Fold one event inside the code block into literal text.
+    fn push_event(&mut self, event: Event<'_>) {
+        match event {
+            Event::Text(text) | Event::Code(text) => self.text.push_str(&text),
+            Event::SoftBreak | Event::HardBreak => self.text.push('\n'),
+            _ => {}
+        }
+    }
+
+    /// Return the first info-string word from a fenced block, if present.
+    fn language_hint(&self) -> Option<&str> {
+        match &self.kind {
+            CodeBlockKind::Fenced(info) => info
+                .split_whitespace()
+                .next()
+                .filter(|hint| !hint.is_empty()),
+            CodeBlockKind::Indented => None,
         }
     }
 }
@@ -534,6 +609,8 @@ impl LushtextMarkdownPreview {
         options.insert(Options::ENABLE_GFM);
         let parser = Parser::new_ext(markdown, options);
         let mut iter = buffer.end_iter();
+        let code_block_theme =
+            CodeBlockTheme::from_settings(&gtk4::gio::Settings::new(crate::config::APP_ID));
 
         // Tag stack: tracks which TextTag names are currently active.
         // When we insert text, all tags in the stack are applied.
@@ -557,9 +634,11 @@ impl LushtextMarkdownPreview {
         // Track whether we need a paragraph separator before the next block.
         let mut needs_block_separator = false;
 
-        // Tables need one complete buffered pass before GTK can lay out rows and
-        // columns correctly, so we accumulate them separately from text blocks.
+        // Tables and code blocks need one complete buffered pass before GTK can
+        // lay out their embedded widgets, so we accumulate them separately from
+        // text blocks.
         let mut active_table: Option<BufferedTableBuilder> = None;
+        let mut active_code_block: Option<BufferedCodeBlock> = None;
         // Images become anchored GTK widgets, so we buffer their alt text until
         // pulldown-cmark closes the image span.
         let mut active_image: Option<BufferedImage> = None;
@@ -579,6 +658,27 @@ impl LushtextMarkdownPreview {
                         needs_block_separator = true;
                     }
                     other => table.push_event(other),
+                }
+                continue;
+            }
+
+            if let Some(code_block) = &mut active_code_block {
+                match event {
+                    Event::End(TagEnd::CodeBlock) => {
+                        let code_block = active_code_block
+                            .take()
+                            .expect("active code block should exist");
+                        self.insert_code_block_widget(
+                            &buffer,
+                            &mut iter,
+                            &code_block,
+                            &code_block_theme,
+                        );
+                        buffer.insert(&mut iter, "\n");
+                        mark_current_list_item_content(&mut list_item_stack);
+                        needs_block_separator = true;
+                    }
+                    other => code_block.push_event(other),
                 }
                 continue;
             }
@@ -664,11 +764,11 @@ impl LushtextMarkdownPreview {
                         }
                         needs_block_separator = false;
                     }
-                    Tag::CodeBlock(_kind) => {
+                    Tag::CodeBlock(kind) => {
                         if needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         }
-                        tag_stack.push(TAG_CODE_BLOCK.to_string());
+                        active_code_block = Some(BufferedCodeBlock::new(kind));
                         needs_block_separator = false;
                     }
                     Tag::List(start_num) => {
@@ -774,13 +874,6 @@ impl LushtextMarkdownPreview {
                         needs_block_separator = true;
                     }
                     TagEnd::FootnoteDefinition => {
-                        pop_tag(&mut tag_stack);
-                        needs_block_separator = true;
-                    }
-                    TagEnd::CodeBlock => {
-                        let tags: Vec<&str> =
-                            tag_stack.iter().map(std::string::String::as_str).collect();
-                        insert_with_tags(&buffer, &mut iter, "\n", &tags);
                         pop_tag(&mut tag_stack);
                         needs_block_separator = true;
                     }
@@ -914,6 +1007,7 @@ impl LushtextMarkdownPreview {
                 _ => {}
             }
         }
+        self.queue_code_block_width_refresh();
     }
 
     /// Register one callback that overrides the default external link launcher.
@@ -962,6 +1056,7 @@ impl LushtextMarkdownPreview {
             text_view.set_left_margin(16);
             text_view.set_right_margin(16);
         }
+        self.queue_code_block_width_refresh();
     }
 
     #[must_use]
@@ -1162,6 +1257,19 @@ impl LushtextMarkdownPreview {
         self.insert_embedded_widget(buffer, iter, grid.upcast_ref::<gtk4::Widget>());
     }
 
+    /// Insert one buffered Markdown code block into the preview flow.
+    fn insert_code_block_widget(
+        &self,
+        buffer: &gtk4::TextBuffer,
+        iter: &mut gtk4::TextIter,
+        code_block: &BufferedCodeBlock,
+        theme: &CodeBlockTheme,
+    ) {
+        let widget = build_code_block_widget(code_block, theme);
+        self.insert_embedded_widget(buffer, iter, widget.upcast_ref::<gtk4::Widget>());
+        self.queue_code_block_width_refresh();
+    }
+
     /// Insert one buffered Markdown image into the preview flow.
     fn insert_image_widget(
         &self,
@@ -1198,6 +1306,34 @@ impl LushtextMarkdownPreview {
         let anchor = buffer.create_child_anchor(iter);
         self.imp().text_view.add_child_at_anchor(widget, &anchor);
         self.imp().rendered_embeds.borrow_mut().push(widget.clone());
+    }
+
+    /// Refresh anchored code blocks after GTK has allocated the preview text view.
+    ///
+    /// `GtkTextView` child anchors do not expand anchored widgets to the text
+    /// column automatically, so code-block containers need an explicit width
+    /// request based on the current visible text column.
+    fn refresh_code_block_widths(&self) {
+        let Some(width) = preview_text_column_width(&self.imp().text_view.get()) else {
+            return;
+        };
+
+        for widget in self.imp().rendered_embeds.borrow().iter() {
+            if widget.has_css_class("markdown-code-block") && widget.width_request() != width {
+                widget.set_width_request(width);
+            }
+        }
+    }
+
+    /// Refresh code-block widths now and once more after GTK drains layout work.
+    pub(super) fn queue_code_block_width_refresh(&self) {
+        self.refresh_code_block_widths();
+        let preview_weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(preview) = preview_weak.upgrade() {
+                preview.refresh_code_block_widths();
+            }
+        });
     }
 }
 
@@ -1326,6 +1462,60 @@ fn insert_task_list_marker(
     tags.push(TAG_TASK_MARKER);
     let marker = if checked { "\u{2611} " } else { "\u{2610} " };
     insert_with_tags(buffer, iter, marker, &tags);
+}
+
+/// Return the current Markdown text column width inside the preview text view.
+fn preview_text_column_width(text_view: &gtk4::TextView) -> Option<i32> {
+    let width = text_view.width();
+    if width <= 0 {
+        return None;
+    }
+
+    let column_width = width.saturating_sub(text_view.left_margin() + text_view.right_margin());
+    (column_width > 0).then_some(column_width)
+}
+
+/// Resolve one code-block language hint using IDs, common aliases, and filename guessing.
+fn resolve_code_block_language_hint(raw_hint: &str) -> Option<sourceview5::Language> {
+    let hint = normalize_code_block_language_hint(raw_hint)?;
+    let manager = sourceview5::LanguageManager::default();
+    if let Some(language) = manager.language(&hint) {
+        return Some(language);
+    }
+
+    let alias = code_block_language_alias(&hint);
+    if alias != hint
+        && let Some(language) = manager.language(alias)
+    {
+        return Some(language);
+    }
+
+    let filename = format!("sample.{alias}");
+    manager
+        .guess_language(Some(Path::new(&filename)), None)
+        .or_else(|| manager.guess_language(Some(Path::new(&format!("sample.{hint}"))), None))
+}
+
+/// Normalize Markdown renderer language classes and casing into source IDs.
+fn normalize_code_block_language_hint(raw_hint: &str) -> Option<String> {
+    let hint = raw_hint.trim().trim_start_matches("language-").trim();
+    if hint.is_empty() {
+        None
+    } else {
+        Some(hint.to_ascii_lowercase())
+    }
+}
+
+/// Map common Markdown fence aliases to GtkSourceView language IDs.
+fn code_block_language_alias(hint: &str) -> &str {
+    match hint {
+        "bash" | "zsh" | "shell" => "sh",
+        "cjs" | "js" | "mjs" => "javascript",
+        "py" => "python3",
+        "rs" => "rust",
+        "ts" => "typescript",
+        other => other,
+    }
 }
 
 /// Resolve one Markdown link destination into a launchable target, if possible.
@@ -1463,6 +1653,98 @@ fn footnote_number(
     *next_footnote_number += 1;
     footnote_numbers.insert(label.to_string(), number);
     number
+}
+
+/// Build one native source-view widget for a buffered Markdown code block.
+fn build_code_block_widget(code_block: &BufferedCodeBlock, theme: &CodeBlockTheme) -> gtk4::Widget {
+    let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    container.set_margin_top(8);
+    container.set_margin_bottom(8);
+    container.set_hexpand(true);
+    container.set_halign(gtk4::Align::Fill);
+    container.add_css_class("markdown-code-block");
+
+    let source_buffer = sourceview5::Buffer::new(None);
+    let language = code_block
+        .language_hint()
+        .and_then(resolve_code_block_language_hint);
+    source_buffer.set_language(language.as_ref());
+    source_buffer.set_highlight_syntax(language.is_some());
+    source_buffer.set_style_scheme(theme.style_scheme.as_ref());
+    source_buffer.set_text(&code_block.text);
+
+    let source_view = sourceview5::View::with_buffer(&source_buffer);
+    source_view.set_editable(false);
+    source_view.set_cursor_visible(false);
+    source_view.set_show_line_numbers(false);
+    source_view.set_highlight_current_line(false);
+    source_view.set_monospace(true);
+    source_view.set_wrap_mode(gtk4::WrapMode::None);
+    source_view.set_left_margin(0);
+    source_view.set_right_margin(0);
+    source_view.set_top_margin(0);
+    source_view.set_bottom_margin(0);
+    source_view.set_hexpand(true);
+    source_view.set_halign(gtk4::Align::Fill);
+    source_view.add_css_class("monospace");
+    source_view.add_css_class("markdown-code-block-view");
+    apply_code_block_background_css(
+        container.upcast_ref::<gtk4::Widget>(),
+        &source_view,
+        &theme.background_css,
+    );
+
+    let scroller = gtk4::ScrolledWindow::new();
+    scroller.set_child(Some(&source_view));
+    scroller.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Never);
+    scroller.set_propagate_natural_height(true);
+    scroller.set_propagate_natural_width(false);
+    scroller.set_hexpand(true);
+    scroller.set_halign(gtk4::Align::Fill);
+    scroller.set_margin_top(CODE_BLOCK_VERTICAL_PADDING);
+    scroller.set_margin_bottom(CODE_BLOCK_VERTICAL_PADDING);
+    scroller.set_margin_start(CODE_BLOCK_HORIZONTAL_PADDING);
+    scroller.set_margin_end(CODE_BLOCK_HORIZONTAL_PADDING);
+    scroller.add_css_class("markdown-code-block-scroller");
+
+    container.append(&scroller);
+    container.upcast()
+}
+
+/// Apply one resolved background to both layers of the embedded code surface.
+#[expect(
+    deprecated,
+    reason = "GTK4's non-deprecated provider API is display-wide, but this preview needs a widget-scoped palette override."
+)]
+fn apply_code_block_background_css(
+    container: &gtk4::Widget,
+    source_view: &sourceview5::View,
+    background: &str,
+) {
+    let provider = gtk4::CssProvider::new();
+    provider.load_from_string(&code_block_background_css(background));
+    container
+        .style_context()
+        .add_provider(&provider, CODE_BLOCK_BACKGROUND_CSS_PRIORITY);
+    source_view
+        .style_context()
+        .add_provider(&provider, CODE_BLOCK_BACKGROUND_CSS_PRIORITY);
+}
+
+/// Build the CSS that keeps the block frame and source text on one surface.
+fn code_block_background_css(background: &str) -> String {
+    format!(
+        r#"
+.markdown-code-block {{
+  background-color: {background};
+}}
+
+.markdown-code-block-view,
+.markdown-code-block-view text {{
+  background-color: {background};
+}}
+"#
+    )
 }
 
 /// Build the anchored `GtkGrid` used for one rendered Markdown table.
@@ -1825,6 +2107,19 @@ mod tests {
         assert_eq!(bounded_image_size(1280, 640), (640, 320));
         assert_eq!(bounded_image_size(16, 16), (72, 72));
         assert_eq!(bounded_image_size(0, 0), (320, 180));
+    }
+
+    #[test]
+    fn test_code_block_background_css_uses_one_surface_color() {
+        let css = code_block_background_css("rgb(1, 2, 3)");
+
+        assert_eq!(
+            css.matches("background-color: rgb(1, 2, 3);").count(),
+            2,
+            "Expected the generated CSS to apply the same background to the outer block and inner source text area"
+        );
+        assert!(css.contains(".markdown-code-block {"));
+        assert!(css.contains(".markdown-code-block-view text"));
     }
 
     #[test]
