@@ -48,6 +48,11 @@ default external handler when activated.
 2. Toggle the preview pane
 3. Compare source and rendered output
 
+### Offset Ordered List
+
+57. Offset numbering keeps the rendered marker attached to the item text.
+58. Multi-digit markers still wrap with continuation text under the item text column rather than under the marker column.
+
 ### Nested Mixed Lists
 
 1. First ordered item
@@ -57,6 +62,7 @@ default external handler when activated.
      2. Another grandchild
 2. Second ordered item
    - Nested child after returning to the parent list
+   - A longer nested child wraps cleanly under the child item text instead of drifting back into the marker column.
 
 ### Task List
 

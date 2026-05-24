@@ -1,8 +1,5 @@
-# markdown-preview-nested-lists Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change markdown-preview-followups. Update Purpose after archive.
-## Requirements
 ### Requirement: Markdown preview preserves nested list hierarchy
 The system SHALL render nested ordered and unordered Markdown lists with depth-aware indentation and correct marker sequencing so parent-child relationships remain readable in the native preview. Nested list blocks MUST begin on their own rendered row beneath the parent item, even when the parent item already contains prose before the nested list.
 
@@ -17,6 +14,8 @@ The system SHALL render nested ordered and unordered Markdown lists with depth-a
 - **THEN** the preview preserves each item's source order and marker type at every level
 - **AND** ordered items keep readable numbering without collapsing nested levels into plain paragraphs
 - **AND** child list items keep their own visual row flow instead of inheriting a parent paragraph separator
+
+## ADDED Requirements
 
 ### Requirement: Markdown preview preserves list item line flow and spacing
 The system SHALL render tight and loose Markdown lists with visible row flow matching rendered Markdown semantics. Tight lists MUST show consecutive items without unintended blank rows, and loose lists MUST preserve intentional paragraph spacing without duplicating empty rows around list item boundaries.

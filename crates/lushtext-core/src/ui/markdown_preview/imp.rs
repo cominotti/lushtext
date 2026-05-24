@@ -53,10 +53,12 @@ const HEADING_SCALES: [f64; 6] = [2.0, 1.65, 1.35, 1.2, 1.1, 1.0];
 const HEADING_PIXELS_ABOVE: [i32; 6] = [24, 20, 16, 12, 10, 8];
 /// Vertical space after each heading level, in text-buffer pixels.
 const HEADING_PIXELS_BELOW: [i32; 6] = [10, 8, 6, 5, 4, 4];
-/// Base left margin for top-level list items in the preview.
-const LIST_ITEM_BASE_MARGIN: i32 = 24;
+/// Marker-column margin for top-level list items in the preview.
+const LIST_ITEM_MARKER_MARGIN: i32 = 24;
+/// Space reserved between a list marker and the wrapped item text column.
+const LIST_ITEM_MARKER_SLOT: i32 = 36;
 /// Extra indentation applied for each additional nested list level.
-const LIST_ITEM_DEPTH_STEP: i32 = 20;
+const LIST_ITEM_DEPTH_STEP: i32 = 28;
 /// Base left margin for generic blockquotes once the rail glyph is inserted.
 const BLOCKQUOTE_BASE_MARGIN: i32 = 18;
 /// Extra indentation applied for each additional nested generic blockquote.
@@ -94,14 +96,19 @@ pub(super) fn list_item_tag_name(depth: usize) -> String {
     format!("list-item-depth-{depth}")
 }
 
-/// Return the left margin used for one list nesting depth.
-pub(super) fn list_item_left_margin(depth: usize) -> i32 {
+/// Return the marker-column margin used for one list nesting depth.
+pub(super) fn list_item_marker_margin(depth: usize) -> i32 {
     let extra_depth = depth.saturating_sub(1);
     let extra_margin = i32::try_from(extra_depth)
         .ok()
         .and_then(|depth| depth.checked_mul(LIST_ITEM_DEPTH_STEP))
-        .unwrap_or(i32::MAX - LIST_ITEM_BASE_MARGIN);
-    LIST_ITEM_BASE_MARGIN.saturating_add(extra_margin)
+        .unwrap_or(i32::MAX - LIST_ITEM_MARKER_MARGIN);
+    LIST_ITEM_MARKER_MARGIN.saturating_add(extra_margin)
+}
+
+/// Return the wrapped-text margin used for one list nesting depth.
+pub(super) fn list_item_text_margin(depth: usize) -> i32 {
+    list_item_marker_margin(depth).saturating_add(LIST_ITEM_MARKER_SLOT)
 }
 
 /// Returns the dynamic tag name used for one generic blockquote depth.
@@ -319,9 +326,11 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     blockquote.set_pixels_above_lines(2);
     blockquote.set_pixels_below_lines(2);
 
-    // List items: top-level left indent for bullet/number alignment.
+    // List items: depth-specific tags own list layout; this shared tag remains
+    // a semantic grouping point for item-wide styling and tests.
     let list_item = get_or_create(TAG_LIST_ITEM);
-    list_item.set_left_margin(LIST_ITEM_BASE_MARGIN);
+    list_item.set_left_margin(0);
+    list_item.set_indent(0);
 
     // Task list markers use a monospaced accent so checked and unchecked state
     // stays readable even when the surrounding item text uses proportional fonts.
@@ -401,13 +410,15 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
 /// Ensure the tag used for a given list nesting depth exists and return its name.
 pub(super) fn ensure_list_item_depth_tag(buffer: &gtk4::TextBuffer, depth: usize) -> String {
     let name = list_item_tag_name(depth);
-    if buffer.tag_table().lookup(&name).is_some() {
-        return name;
-    }
-
-    let tag = gtk4::TextTag::new(Some(&name));
-    tag.set_left_margin(list_item_left_margin(depth));
-    buffer.tag_table().add(&tag);
+    let tag = if let Some(tag) = buffer.tag_table().lookup(&name) {
+        tag
+    } else {
+        let tag = gtk4::TextTag::new(Some(&name));
+        buffer.tag_table().add(&tag);
+        tag
+    };
+    tag.set_left_margin(list_item_text_margin(depth));
+    tag.set_indent(-LIST_ITEM_MARKER_SLOT);
     name
 }
 

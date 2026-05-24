@@ -161,6 +161,81 @@ fn test_render_ordered_list_inserts_numbers() {
 }
 
 #[test]
+fn test_render_tight_unordered_list_has_no_blank_rows() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("- alpha\n- beta\n- gamma");
+
+    assert_eq!(
+        preview.buffer_text(),
+        "\u{2022} alpha\n\u{2022} beta\n\u{2022} gamma\n",
+        "Expected tight unordered lists to render one row per item"
+    );
+}
+
+#[test]
+fn test_render_tight_ordered_list_has_no_blank_rows() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("1. first\n2. second\n3. third");
+
+    assert_eq!(
+        preview.buffer_text(),
+        "1. first\n2. second\n3. third\n",
+        "Expected tight ordered lists to render one row per item"
+    );
+}
+
+#[test]
+fn test_render_nested_list_after_parent_prose_starts_on_child_row() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("- parent text\n  - child text\n- next parent");
+    let text = preview.buffer_text();
+
+    assert_eq!(
+        text,
+        "\u{2022} parent text\n\u{2022} child text\n\u{2022} next parent\n",
+        "Expected nested child markers to start on their own rendered row"
+    );
+    assert!(
+        !text.contains("parent text\u{2022}"),
+        "Expected parent prose and child marker to never share one rendered row"
+    );
+}
+
+#[test]
+fn test_render_loose_list_preserves_item_paragraph_break_only() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("- first paragraph\n\n  second paragraph\n- next item");
+    let text = preview.buffer_text();
+
+    assert_eq!(
+        text,
+        "\u{2022} first paragraph\n\nsecond paragraph\n\u{2022} next item\n",
+        "Expected loose-list paragraph spacing without an extra blank row before the next item"
+    );
+    assert!(
+        !text.contains("\n\n\n"),
+        "Expected loose list rendering to avoid duplicated empty rows"
+    );
+}
+
+#[test]
+fn test_render_task_list_uses_one_row_per_item() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("- [x] done\n- [ ] todo");
+
+    assert_eq!(
+        preview.buffer_text(),
+        "\u{2611} done\n\u{2610} todo\n",
+        "Expected task-list marker replacement to follow ordinary list row flow"
+    );
+}
+
+#[test]
 fn test_render_nested_list_uses_deeper_margin_tag() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
@@ -171,6 +246,51 @@ fn test_render_nested_list_uses_deeper_margin_tag() {
         child_tags.iter().any(|name| name == "list-item-depth-2"),
         "Expected nested list items to carry a deeper indentation tag"
     );
+}
+
+#[test]
+fn test_ordered_list_markers_share_rendered_row_with_item_text() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("1. Alpha row\n2. Beta row\n3. Gamma row");
+    let _window = present_preview_with_size(&preview, 420, 300);
+
+    assert_same_rendered_row(&preview, "2.", "Beta");
+    assert_same_rendered_row(&preview, "3.", "Gamma");
+
+    let offset_preview = LushtextMarkdownPreview::new();
+    offset_preview.render_markdown("57. Offset row\n58. After offset row");
+    let _offset_window = present_preview_with_size(&offset_preview, 420, 300);
+
+    assert_same_rendered_row(&offset_preview, "57.", "Offset");
+    assert_same_rendered_row(&offset_preview, "58.", "After");
+}
+
+#[test]
+fn test_ordered_list_wrapped_lines_align_under_item_text() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown(
+        "1. Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda markerend",
+    );
+    let _window = present_preview_with_size(&preview, 220, 240);
+
+    assert_same_rendered_row(&preview, "1.", "Alpha");
+    assert_wrapped_under_item_text(&preview, "1.", "Alpha", "markerend");
+}
+
+#[test]
+fn test_nested_unordered_wrapped_lines_align_under_child_item_text() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown(
+        "- Parent row\n  - Child alpha beta gamma delta epsilon zeta eta theta iota markerend",
+    );
+    let _window = present_preview_with_size(&preview, 240, 260);
+
+    assert_same_rendered_row(&preview, "\u{2022}", "Parent");
+    assert_same_rendered_row_nth(&preview, "\u{2022}", 1, "Child", 0);
+    assert_wrapped_under_item_text_nth(&preview, "\u{2022}", 1, "Child", 0, "markerend", 0);
 }
 
 #[test]
@@ -731,6 +851,21 @@ fn present_preview(preview: &LushtextMarkdownPreview) -> gtk4::ApplicationWindow
     window
 }
 
+fn present_preview_with_size(
+    preview: &LushtextMarkdownPreview,
+    width: i32,
+    height: i32,
+) -> gtk4::ApplicationWindow {
+    let window = gtk4::ApplicationWindow::new(&test_application());
+    window.set_default_size(width, height);
+    window.set_child(Some(preview));
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || {
+        preview.text_view().width() > 0 && preview.text_view().height() > 0
+    });
+    window
+}
+
 fn descendants(root: &impl IsA<gtk4::Widget>) -> Vec<gtk4::Widget> {
     let mut widgets = Vec::new();
     let mut stack = vec![root.as_ref().clone()];
@@ -810,14 +945,108 @@ fn tags_for_rendered_text(preview: &LushtextMarkdownPreview, text: &str) -> Vec<
         .collect()
 }
 
+fn assert_same_rendered_row(preview: &LushtextMarkdownPreview, marker: &str, text: &str) {
+    assert_same_rendered_row_nth(preview, marker, 0, text, 0);
+}
+
+fn assert_same_rendered_row_nth(
+    preview: &LushtextMarkdownPreview,
+    marker: &str,
+    marker_occurrence: usize,
+    text: &str,
+    text_occurrence: usize,
+) {
+    let marker_rect = rendered_text_location_nth(preview, marker, marker_occurrence);
+    let text_rect = rendered_text_location_nth(preview, text, text_occurrence);
+    assert_eq!(
+        marker_rect.y(),
+        text_rect.y(),
+        "Expected marker '{marker}' occurrence {marker_occurrence} and text '{text}' occurrence {text_occurrence} to share a rendered row"
+    );
+    assert!(
+        marker_rect.x() < text_rect.x(),
+        "Expected marker '{marker}' to remain visually before item text '{text}'"
+    );
+}
+
+fn assert_wrapped_under_item_text(
+    preview: &LushtextMarkdownPreview,
+    marker: &str,
+    first_text: &str,
+    wrapped_text: &str,
+) {
+    assert_wrapped_under_item_text_nth(preview, marker, 0, first_text, 0, wrapped_text, 0);
+}
+
+fn assert_wrapped_under_item_text_nth(
+    preview: &LushtextMarkdownPreview,
+    marker: &str,
+    marker_occurrence: usize,
+    first_text: &str,
+    first_text_occurrence: usize,
+    wrapped_text: &str,
+    wrapped_text_occurrence: usize,
+) {
+    let marker_rect = rendered_text_location_nth(preview, marker, marker_occurrence);
+    let first_text_rect = rendered_text_location_nth(preview, first_text, first_text_occurrence);
+    let wrapped_rect = rendered_text_location_nth(preview, wrapped_text, wrapped_text_occurrence);
+
+    assert!(
+        wrapped_rect.y() > first_text_rect.y(),
+        "Expected '{wrapped_text}' to wrap onto a later rendered row"
+    );
+    assert!(
+        wrapped_rect.x() >= first_text_rect.x() - 2,
+        "Expected wrapped text x={} to align under item text x={} rather than marker x={}",
+        wrapped_rect.x(),
+        first_text_rect.x(),
+        marker_rect.x()
+    );
+    assert!(
+        wrapped_rect.x() > marker_rect.x() + 8,
+        "Expected wrapped text to stay out of the marker column"
+    );
+}
+
+fn rendered_text_location_nth(
+    preview: &LushtextMarkdownPreview,
+    text: &str,
+    occurrence: usize,
+) -> gtk4::gdk::Rectangle {
+    let text_view = preview.text_view();
+    let offset = rendered_text_char_offset_nth(preview, text, occurrence);
+    let iter = text_view.buffer().iter_at_offset(offset);
+    text_view.iter_location(&iter)
+}
+
 /// Return a GTK text offset for rendered text found through Rust string APIs.
 ///
 /// `str::find` reports byte offsets, while `TextBuffer::iter_at_offset` expects
 /// character offsets. Rendered Markdown can contain Unicode rails and bullets,
 /// so tests must convert before probing tags or click locations.
 fn rendered_text_char_offset(preview: &LushtextMarkdownPreview, text: &str) -> i32 {
+    rendered_text_char_offset_nth(preview, text, 0)
+}
+
+/// Return the character offset for one occurrence of rendered text.
+fn rendered_text_char_offset_nth(
+    preview: &LushtextMarkdownPreview,
+    text: &str,
+    occurrence: usize,
+) -> i32 {
     let rendered = preview.buffer_text();
-    let byte_offset = rendered.find(text).expect("rendered text should exist");
+    let mut search_start = 0usize;
+    let mut byte_offset = None;
+
+    for _ in 0..=occurrence {
+        let relative = rendered[search_start..]
+            .find(text)
+            .unwrap_or_else(|| panic!("rendered text should contain occurrence {occurrence} of '{text}'"));
+        byte_offset = Some(search_start + relative);
+        search_start += relative + text.len();
+    }
+
+    let byte_offset = byte_offset.expect("occurrence loop should run at least once");
     i32::try_from(rendered[..byte_offset].chars().count())
         .expect("rendered text offset should fit in i32")
 }

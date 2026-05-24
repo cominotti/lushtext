@@ -107,6 +107,68 @@ struct ActiveTextLink {
     pushed_tag: bool,
 }
 
+/// Marker style for the current Markdown list frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListMarker {
+    /// Unordered list items render with a native bullet glyph.
+    Unordered,
+    /// Ordered list items render with the next number from the source list.
+    Ordered(u64),
+}
+
+impl ListMarker {
+    /// Return the visible marker prefix for the next item in this list frame.
+    fn prefix(self) -> String {
+        match self {
+            Self::Unordered => "\u{2022} ".to_string(),
+            Self::Ordered(number) => format!("{number}. "),
+        }
+    }
+
+    /// Advance ordered list counters after one item has finished rendering.
+    fn advance(&mut self) {
+        if let Self::Ordered(number) = self {
+            *number += 1;
+        }
+    }
+}
+
+/// One active Markdown list level in the streaming renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ListFrame {
+    /// Marker and counter state for this nesting depth.
+    marker: ListMarker,
+}
+
+impl ListFrame {
+    /// Create a list frame from pulldown-cmark's optional ordered-list start.
+    fn new(start_num: Option<u64>) -> Self {
+        Self {
+            marker: start_num.map_or(ListMarker::Unordered, ListMarker::Ordered),
+        }
+    }
+
+    /// Return the marker prefix for the next list item.
+    fn prefix(self) -> String {
+        self.marker.prefix()
+    }
+
+    /// Advance this list's counter after one item.
+    fn advance(&mut self) {
+        self.marker.advance();
+    }
+}
+
+/// Per-item row-flow state for Markdown lists.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ListItemRenderState {
+    /// Whether this item has emitted any visible marker or content.
+    has_content: bool,
+    /// Whether the previous paragraph ended and a following paragraph should
+    /// keep the intentional loose-list blank row.
+    paragraph_ended: bool,
+}
+
 /// Result of trying to resolve a local filesystem path from Markdown content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LocalPathResolution {
@@ -481,9 +543,10 @@ impl LushtextMarkdownPreview {
         // nested quotes get depth-aware rail glyphs.
         let mut generic_blockquote_depth = 0usize;
 
-        // Track list nesting: None = not in a list, Some(None) = unordered,
-        // Some(Some(n)) = ordered starting at n.
-        let mut list_stack: Vec<Option<u64>> = Vec::new();
+        // Track list nesting and the active list items separately so paragraph
+        // row-flow inside lists cannot leak into top-level block spacing.
+        let mut list_stack: Vec<ListFrame> = Vec::new();
+        let mut list_item_stack: Vec<ListItemRenderState> = Vec::new();
         // List markers need one event of lookahead because task list state
         // arrives after `Tag::Item`; delay insertion until real item content.
         let mut pending_list_prefix: Option<String> = None;
@@ -540,7 +603,14 @@ impl LushtextMarkdownPreview {
                     &tag_stack,
                     generic_blockquote_depth,
                 );
-                flush_pending_list_prefix(&buffer, &mut iter, &tag_stack, &mut pending_list_prefix);
+                if flush_pending_list_prefix(
+                    &buffer,
+                    &mut iter,
+                    &tag_stack,
+                    &mut pending_list_prefix,
+                ) {
+                    mark_current_list_item_content(&mut list_item_stack);
+                }
             }
 
             match event {
@@ -561,7 +631,10 @@ impl LushtextMarkdownPreview {
                         needs_block_separator = false;
                     }
                     Tag::Paragraph => {
-                        if needs_block_separator {
+                        if current_list_item_needs_paragraph_separator(&list_item_stack) {
+                            buffer.insert(&mut iter, "\n");
+                            clear_current_list_item_paragraph_end(&mut list_item_stack);
+                        } else if list_item_stack.is_empty() && needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         }
                         needs_block_separator = false;
@@ -599,21 +672,33 @@ impl LushtextMarkdownPreview {
                         needs_block_separator = false;
                     }
                     Tag::List(start_num) => {
-                        if needs_block_separator {
+                        if !list_item_stack.is_empty() {
+                            if flush_pending_list_prefix(
+                                &buffer,
+                                &mut iter,
+                                &tag_stack,
+                                &mut pending_list_prefix,
+                            ) {
+                                mark_current_list_item_content(&mut list_item_stack);
+                            }
+                            ensure_rendered_line_break(&buffer, &mut iter);
+                            clear_current_list_item_paragraph_end(&mut list_item_stack);
+                        } else if needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         }
-                        list_stack.push(start_num);
+                        list_stack.push(ListFrame::new(start_num));
                         needs_block_separator = false;
                     }
                     Tag::Item => {
                         pending_list_prefix = Some(match list_stack.last() {
-                            Some(Some(start)) => format!("{start}. "),
-                            _ => "\u{2022} ".to_string(),
+                            Some(frame) => frame.prefix(),
+                            None => ListMarker::Unordered.prefix(),
                         });
                         let depth_tag =
                             ensure_list_item_depth_tag(&buffer, list_stack.len().max(1));
                         tag_stack.push(TAG_LIST_ITEM.to_string());
                         tag_stack.push(depth_tag);
+                        list_item_stack.push(ListItemRenderState::default());
                     }
                     Tag::FootnoteDefinition(label) => {
                         if needs_block_separator {
@@ -669,8 +754,14 @@ impl LushtextMarkdownPreview {
                         needs_block_separator = true;
                     }
                     TagEnd::Paragraph => {
-                        buffer.insert(&mut iter, "\n");
-                        needs_block_separator = true;
+                        if list_item_stack.is_empty() {
+                            buffer.insert(&mut iter, "\n");
+                            needs_block_separator = true;
+                        } else {
+                            ensure_rendered_line_break(&buffer, &mut iter);
+                            mark_current_list_item_paragraph_end(&mut list_item_stack);
+                            needs_block_separator = false;
+                        }
                     }
                     TagEnd::BlockQuote(kind) => {
                         if kind.is_some() {
@@ -695,20 +786,28 @@ impl LushtextMarkdownPreview {
                     }
                     TagEnd::List(_) => {
                         list_stack.pop();
-                        needs_block_separator = true;
+                        if list_stack.is_empty() {
+                            needs_block_separator = true;
+                        } else {
+                            mark_current_list_item_content(&mut list_item_stack);
+                            needs_block_separator = false;
+                        }
                     }
                     TagEnd::Item => {
-                        flush_pending_list_prefix(
+                        if flush_pending_list_prefix(
                             &buffer,
                             &mut iter,
                             &tag_stack,
                             &mut pending_list_prefix,
-                        );
+                        ) {
+                            mark_current_list_item_content(&mut list_item_stack);
+                        }
                         pop_tag(&mut tag_stack);
                         pop_tag(&mut tag_stack);
-                        buffer.insert(&mut iter, "\n");
-                        if let Some(Some(n)) = list_stack.last_mut() {
-                            *n += 1;
+                        ensure_rendered_line_break(&buffer, &mut iter);
+                        list_item_stack.pop();
+                        if let Some(frame) = list_stack.last_mut() {
+                            frame.advance();
                         }
                     }
                     TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
@@ -742,6 +841,7 @@ impl LushtextMarkdownPreview {
                     let tags: Vec<&str> =
                         tag_stack.iter().map(std::string::String::as_str).collect();
                     insert_with_tags(&buffer, &mut iter, &text, &tags);
+                    mark_current_list_item_content(&mut list_item_stack);
                 }
                 Event::Code(code) => {
                     insert_blockquote_rail_if_needed(
@@ -754,6 +854,7 @@ impl LushtextMarkdownPreview {
                         tag_stack.iter().map(std::string::String::as_str).collect();
                     tags.push(TAG_CODE);
                     insert_with_tags(&buffer, &mut iter, &code, &tags);
+                    mark_current_list_item_content(&mut list_item_stack);
                 }
                 Event::FootnoteReference(label) => {
                     insert_blockquote_rail_if_needed(
@@ -771,6 +872,7 @@ impl LushtextMarkdownPreview {
                         tag_stack.iter().map(std::string::String::as_str).collect();
                     tags.push(TAG_FOOTNOTE_REF);
                     insert_with_tags(&buffer, &mut iter, &format!("[{number}]"), &tags);
+                    mark_current_list_item_content(&mut list_item_stack);
                 }
                 Event::TaskListMarker(checked) => {
                     insert_blockquote_rail_if_needed(
@@ -786,12 +888,14 @@ impl LushtextMarkdownPreview {
                         &mut pending_list_prefix,
                         checked,
                     );
+                    mark_current_list_item_content(&mut list_item_stack);
                 }
                 Event::SoftBreak => {
                     buffer.insert(&mut iter, " ");
                 }
                 Event::HardBreak => {
                     buffer.insert(&mut iter, "\n");
+                    mark_current_list_item_content(&mut list_item_stack);
                 }
                 Event::Rule => {
                     if needs_block_separator {
@@ -1149,6 +1253,41 @@ fn insert_blockquote_rail_if_needed(
     insert_with_tags(buffer, iter, &blockquote_rail_prefix(depth), &tags);
 }
 
+/// Insert one newline only when the current rendered position is mid-row.
+fn ensure_rendered_line_break(buffer: &gtk4::TextBuffer, iter: &mut gtk4::TextIter) {
+    if iter.offset() > 0 && !iter.starts_line() {
+        buffer.insert(iter, "\n");
+    }
+}
+
+/// Mark the current list item as having emitted visible content.
+fn mark_current_list_item_content(items: &mut [ListItemRenderState]) {
+    if let Some(item) = items.last_mut() {
+        item.has_content = true;
+    }
+}
+
+/// Record that a paragraph ended inside the current list item.
+fn mark_current_list_item_paragraph_end(items: &mut [ListItemRenderState]) {
+    if let Some(item) = items.last_mut() {
+        item.paragraph_ended = true;
+    }
+}
+
+/// Clear the pending loose-list paragraph separator for the current item.
+fn clear_current_list_item_paragraph_end(items: &mut [ListItemRenderState]) {
+    if let Some(item) = items.last_mut() {
+        item.paragraph_ended = false;
+    }
+}
+
+/// Return whether the next paragraph in this list item should be separated.
+fn current_list_item_needs_paragraph_separator(items: &[ListItemRenderState]) -> bool {
+    items
+        .last()
+        .is_some_and(|item| item.has_content && item.paragraph_ended)
+}
+
 /// Return whether the current event should force any delayed list marker to be
 /// inserted before the renderer processes the event itself.
 fn should_flush_pending_list_prefix(event: &Event<'_>) -> bool {
@@ -1162,13 +1301,14 @@ fn flush_pending_list_prefix(
     iter: &mut gtk4::TextIter,
     tag_stack: &[String],
     pending_list_prefix: &mut Option<String>,
-) {
+) -> bool {
     let Some(prefix) = pending_list_prefix.take() else {
-        return;
+        return false;
     };
 
     let tags: Vec<&str> = tag_stack.iter().map(std::string::String::as_str).collect();
     insert_with_tags(buffer, iter, &prefix, &tags);
+    true
 }
 
 /// Insert the checked or unchecked marker for a task list item and clear the
@@ -1544,7 +1684,7 @@ fn pop_tag(stack: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::markdown_preview::imp::list_item_left_margin;
+    use crate::ui::markdown_preview::imp::list_item_text_margin;
     use pulldown_cmark::LinkType;
     use tempfile::tempdir;
 
@@ -1688,10 +1828,10 @@ mod tests {
     }
 
     #[test]
-    fn test_list_item_left_margin_increases_with_depth() {
-        assert_eq!(list_item_left_margin(1), 24);
-        assert_eq!(list_item_left_margin(2), 44);
-        assert_eq!(list_item_left_margin(3), 64);
+    fn test_list_item_text_margin_increases_with_depth() {
+        assert_eq!(list_item_text_margin(1), 60);
+        assert_eq!(list_item_text_margin(2), 88);
+        assert_eq!(list_item_text_margin(3), 116);
     }
 
     #[test]
