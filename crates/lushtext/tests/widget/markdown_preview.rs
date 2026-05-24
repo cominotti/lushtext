@@ -185,13 +185,126 @@ fn test_render_horizontal_rule() {
 }
 
 #[test]
-fn test_render_blockquote_inserts_text() {
+fn test_render_blockquote_inserts_rail_without_raw_marker() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
     preview.render_markdown("> quoted text");
+    let text = preview.buffer_text();
+
+    assert_rendered_text_order(&text, &["\u{2502}", "quoted text"]);
     assert!(
-        preview.buffer_text().contains("quoted text"),
-        "Expected blockquote text in buffer"
+        text.contains("\u{2502} quoted text"),
+        "Expected visible quote rail before blockquote text"
+    );
+    assert!(
+        !text.contains("> quoted"),
+        "Expected rendered blockquote to hide raw source marker"
+    );
+    let tags = tags_for_rendered_text(&preview, "quoted text");
+    assert!(
+        tags.iter().any(|name| name == "blockquote-depth-1"),
+        "Expected top-level blockquote text to carry depth tag, got {tags:?}"
+    );
+}
+
+#[test]
+fn test_render_nested_blockquotes_from_adjacent_markers() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown(
+        "> parent quote\n>> child quote\n>>> grandchild quote",
+    );
+    let text = preview.buffer_text();
+
+    assert_rendered_text_order(&text, &["parent quote", "child quote", "grandchild quote"]);
+    assert!(
+        text.contains("\u{2502} parent quote"),
+        "Expected first quote depth to use one rail"
+    );
+    assert!(
+        text.contains("\u{2502} \u{2502} child quote"),
+        "Expected second quote depth to use two rails"
+    );
+    assert!(
+        text.contains("\u{2502} \u{2502} \u{2502} grandchild quote"),
+        "Expected third quote depth to use three rails"
+    );
+
+    for (quoted_text, expected_tag) in [
+        ("parent quote", "blockquote-depth-1"),
+        ("child quote", "blockquote-depth-2"),
+        ("grandchild quote", "blockquote-depth-3"),
+    ] {
+        let tags = tags_for_rendered_text(&preview, quoted_text);
+        assert!(
+            tags.iter().any(|name| name == expected_tag),
+            "Expected '{quoted_text}' to carry {expected_tag}, got {tags:?}"
+        );
+    }
+}
+
+#[test]
+fn test_render_nested_blockquotes_from_spaced_markers() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown(
+        "> parent quote\n> > child quote\n> > > grandchild quote",
+    );
+    let text = preview.buffer_text();
+
+    assert_rendered_text_order(&text, &["parent quote", "child quote", "grandchild quote"]);
+    assert!(
+        text.contains("\u{2502} \u{2502} \u{2502} grandchild quote"),
+        "Expected spaced nested markers to render with the same three-level rail hierarchy"
+    );
+    let tags = tags_for_rendered_text(&preview, "grandchild quote");
+    assert!(
+        tags.iter().any(|name| name == "blockquote-depth-3"),
+        "Expected spaced nested blockquote to carry depth-3 tag, got {tags:?}"
+    );
+}
+
+#[test]
+fn test_render_blockquote_preserves_inline_formatting() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("> *em* **strong** `code` [link](https://example.com)");
+    let text = preview.buffer_text();
+
+    assert!(
+        text.contains("\u{2502} em strong code link"),
+        "Expected inline blockquote content to remain in one quoted line"
+    );
+    for (rendered_text, expected_tag) in [
+        ("em", "italic"),
+        ("strong", "bold"),
+        ("code", "code"),
+        ("link", "link"),
+    ] {
+        let tags = tags_for_rendered_text(&preview, rendered_text);
+        assert!(
+            tags.iter().any(|name| name == expected_tag),
+            "Expected '{rendered_text}' to carry {expected_tag}, got {tags:?}"
+        );
+    }
+}
+
+#[test]
+fn test_render_gfm_callout_stays_distinct_from_generic_blockquote() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("> [!NOTE]\n> Pay attention.");
+    let text = preview.buffer_text();
+
+    assert!(text.contains("Note"), "Expected callout title in preview text");
+    assert!(
+        !text.contains('\u{2502}'),
+        "Expected typed alert callout to avoid generic blockquote rail rendering"
+    );
+    let tags = tags_for_rendered_text(&preview, "Note");
+    assert!(
+        tags.iter().any(|name| name == "alert-title-note"),
+        "Expected callout title to keep typed alert styling, got {tags:?}"
     );
 }
 
@@ -665,13 +778,7 @@ fn assert_rendered_text_order(rendered: &str, expected: &[&str]) {
 
 fn emit_preview_click_for_text(preview: &LushtextMarkdownPreview, text: &str) {
     let text_view = preview.text_view();
-    let offset = i32::try_from(
-        preview
-        .buffer_text()
-        .find(text)
-        .expect("rendered text should exist"),
-    )
-    .expect("rendered text offset should fit in i32");
+    let offset = rendered_text_char_offset(preview, text);
     let iter = text_view.buffer().iter_at_offset(offset);
     let rect = text_view.iter_location(&iter);
     let (x, y) = text_view.buffer_to_window_coords(
@@ -693,13 +800,7 @@ fn emit_preview_click_for_text(preview: &LushtextMarkdownPreview, text: &str) {
 
 fn tags_for_rendered_text(preview: &LushtextMarkdownPreview, text: &str) -> Vec<String> {
     let text_view = preview.text_view();
-    let offset = i32::try_from(
-        preview
-        .buffer_text()
-        .find(text)
-        .expect("rendered text should exist"),
-    )
-    .expect("rendered text offset should fit in i32");
+    let offset = rendered_text_char_offset(preview, text);
     text_view
         .buffer()
         .iter_at_offset(offset)
@@ -707,4 +808,16 @@ fn tags_for_rendered_text(preview: &LushtextMarkdownPreview, text: &str) -> Vec<
         .into_iter()
         .filter_map(|tag| tag.name().map(|name| name.to_string()))
         .collect()
+}
+
+/// Return a GTK text offset for rendered text found through Rust string APIs.
+///
+/// `str::find` reports byte offsets, while `TextBuffer::iter_at_offset` expects
+/// character offsets. Rendered Markdown can contain Unicode rails and bullets,
+/// so tests must convert before probing tags or click locations.
+fn rendered_text_char_offset(preview: &LushtextMarkdownPreview, text: &str) -> i32 {
+    let rendered = preview.buffer_text();
+    let byte_offset = rendered.find(text).expect("rendered text should exist");
+    i32::try_from(rendered[..byte_offset].chars().count())
+        .expect("rendered text offset should fit in i32")
 }

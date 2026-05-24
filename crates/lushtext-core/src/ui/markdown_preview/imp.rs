@@ -57,6 +57,12 @@ const HEADING_PIXELS_BELOW: [i32; 6] = [10, 8, 6, 5, 4, 4];
 const LIST_ITEM_BASE_MARGIN: i32 = 24;
 /// Extra indentation applied for each additional nested list level.
 const LIST_ITEM_DEPTH_STEP: i32 = 20;
+/// Base left margin for generic blockquotes once the rail glyph is inserted.
+const BLOCKQUOTE_BASE_MARGIN: i32 = 18;
+/// Extra indentation applied for each additional nested generic blockquote.
+const BLOCKQUOTE_DEPTH_STEP: i32 = 20;
+/// Visible rail glyph used to replace Markdown's raw `>` source marker.
+pub(super) const BLOCKQUOTE_RAIL: &str = "\u{2502}";
 
 /// Stored override used by widget tests to observe link activation without
 /// launching an external desktop handler.
@@ -96,6 +102,30 @@ pub(super) fn list_item_left_margin(depth: usize) -> i32 {
         .and_then(|depth| depth.checked_mul(LIST_ITEM_DEPTH_STEP))
         .unwrap_or(i32::MAX - LIST_ITEM_BASE_MARGIN);
     LIST_ITEM_BASE_MARGIN.saturating_add(extra_margin)
+}
+
+/// Returns the dynamic tag name used for one generic blockquote depth.
+pub(super) fn blockquote_depth_tag_name(depth: usize) -> String {
+    format!("blockquote-depth-{depth}")
+}
+
+/// Return the left margin used for one generic blockquote depth.
+pub(super) fn blockquote_left_margin(depth: usize) -> i32 {
+    let extra_depth = depth.saturating_sub(1);
+    let extra_margin = i32::try_from(extra_depth)
+        .ok()
+        .and_then(|depth| depth.checked_mul(BLOCKQUOTE_DEPTH_STEP))
+        .unwrap_or(i32::MAX - BLOCKQUOTE_BASE_MARGIN);
+    BLOCKQUOTE_BASE_MARGIN.saturating_add(extra_margin)
+}
+
+/// Return the visible rail prefix for one generic blockquote nesting depth.
+pub(super) fn blockquote_rail_prefix(depth: usize) -> String {
+    (0..depth)
+        .map(|_| BLOCKQUOTE_RAIL)
+        .collect::<Vec<_>>()
+        .join(" ")
+        + " "
 }
 
 /// Return the tag name used for a typed alert callout title.
@@ -282,11 +312,10 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     link.set_foreground(Some(accent));
     link.set_underline(pango::Underline::Single);
 
-    // Blockquotes: dim color, italic, left indent.
+    // Blockquotes: dim color and modest paragraph spacing. Depth-specific tags
+    // own indentation so nested quotes can remain visually distinct.
     let blockquote = get_or_create(TAG_BLOCKQUOTE);
     blockquote.set_foreground(Some(dim));
-    blockquote.set_style(pango::Style::Italic);
-    blockquote.set_left_margin(24);
     blockquote.set_pixels_above_lines(2);
     blockquote.set_pixels_below_lines(2);
 
@@ -378,6 +407,19 @@ pub(super) fn ensure_list_item_depth_tag(buffer: &gtk4::TextBuffer, depth: usize
 
     let tag = gtk4::TextTag::new(Some(&name));
     tag.set_left_margin(list_item_left_margin(depth));
+    buffer.tag_table().add(&tag);
+    name
+}
+
+/// Ensure the tag used for a generic blockquote depth exists and return its name.
+pub(super) fn ensure_blockquote_depth_tag(buffer: &gtk4::TextBuffer, depth: usize) -> String {
+    let name = blockquote_depth_tag_name(depth);
+    if buffer.tag_table().lookup(&name).is_some() {
+        return name;
+    }
+
+    let tag = gtk4::TextTag::new(Some(&name));
+    tag.set_left_margin(blockquote_left_margin(depth));
     buffer.tag_table().add(&tag);
     name
 }

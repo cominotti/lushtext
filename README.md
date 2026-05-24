@@ -28,7 +28,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Buffer eviction** -- background tabs evicted when total memory exceeds 256MB, transparently reloaded on focus
 - **Dark mode** -- automatic GtkSourceView scheme switching via Libadwaita StyleManager
 - **Customizable font** -- system monospace or custom font, applied via CSS provider
-- **Markdown support** -- editable source headings are visually emphasized, plus side-by-side or full-width native preview rendering for headings, emphasis, code, links, ordered and unordered lists, task lists, blockquotes, GitHub alert callouts, footnotes, and Markdown tables; use Main Menu > Markdown Preview or Alt+P for full-width preview
+- **Markdown support** -- editable source headings are visually emphasized, plus side-by-side or full-width native preview rendering for headings, emphasis, code, links, ordered and unordered lists, task lists, nested blockquote rails, GitHub alert callouts, footnotes, and Markdown tables; use Main Menu > Markdown Preview or Alt+P for full-width preview
 - **File monitoring** -- detects external changes and offers reload
 
 ## Installation and Running
@@ -398,8 +398,8 @@ showing the raw source text.
   output on the right.
 - The renderer uses native GTK styling and widgets for headings, emphasis,
   code, activatable links, ordered and unordered lists, task lists, nested
-  list indentation, blockquotes, GitHub alert callouts, footnotes, Markdown
-  tables, and local Markdown images with explicit fallback states for
+  list indentation, nested blockquote rails, GitHub alert callouts, footnotes,
+  Markdown tables, and local Markdown images with explicit fallback states for
   unsupported or unresolved image targets.
 - Non-Markdown files show a placeholder instead of trying to render arbitrary
   text as Markdown.

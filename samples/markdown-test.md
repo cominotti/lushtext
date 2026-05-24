@@ -71,9 +71,9 @@ default external handler when activated.
 
 ## Quotes And Callouts
 
-> Plain blockquotes still render as quoted text.
->
-> They are separate from GitHub alert callouts.
+> Plain blockquotes render with quote rails.
+>> Nested blockquotes add another visible rail.
+> > > Spaced nested markers keep the same quote depth.
 
 > [!NOTE]
 > This note callout shows the typed alert styling path.
@@ -102,6 +102,7 @@ fn main() {
     let features = [
         "task lists",
         "alert callouts",
+        "nested blockquotes",
         "footnotes",
         "tables",
         "preview links",

@@ -29,8 +29,8 @@ use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
 use imp::{
     TAG_ALERT_BODY, TAG_BLOCKQUOTE, TAG_BOLD, TAG_CODE, TAG_CODE_BLOCK, TAG_FOOTNOTE_DEF,
     TAG_FOOTNOTE_DEF_LABEL, TAG_FOOTNOTE_REF, TAG_HRULE, TAG_ITALIC, TAG_LINK, TAG_LIST_ITEM,
-    TAG_STRIKETHROUGH, TAG_TASK_MARKER, alert_title, alert_title_tag_name,
-    ensure_list_item_depth_tag, heading_tag_name,
+    TAG_STRIKETHROUGH, TAG_TASK_MARKER, alert_title, alert_title_tag_name, blockquote_rail_prefix,
+    ensure_blockquote_depth_tag, ensure_list_item_depth_tag, heading_tag_name,
 };
 
 /// Maximum width for one rendered preview image before we scale it down.
@@ -476,6 +476,10 @@ impl LushtextMarkdownPreview {
         // Tag stack: tracks which TextTag names are currently active.
         // When we insert text, all tags in the stack are applied.
         let mut tag_stack: Vec<String> = Vec::new();
+        // Generic blockquote depth is tracked separately from typed GFM alerts
+        // so alert callouts can keep their card-like rendering while ordinary
+        // nested quotes get depth-aware rail glyphs.
+        let mut generic_blockquote_depth = 0usize;
 
         // Track list nesting: None = not in a list, Some(None) = unordered,
         // Some(Some(n)) = ordered starting at n.
@@ -530,6 +534,12 @@ impl LushtextMarkdownPreview {
             }
 
             if pending_list_prefix.is_some() && should_flush_pending_list_prefix(&event) {
+                insert_blockquote_rail_if_needed(
+                    &buffer,
+                    &mut iter,
+                    &tag_stack,
+                    generic_blockquote_depth,
+                );
                 flush_pending_list_prefix(&buffer, &mut iter, &tag_stack, &mut pending_list_prefix);
             }
 
@@ -573,7 +583,11 @@ impl LushtextMarkdownPreview {
                             );
                             tag_stack.push(TAG_ALERT_BODY.to_string());
                         } else {
+                            generic_blockquote_depth += 1;
                             tag_stack.push(TAG_BLOCKQUOTE.to_string());
+                            let depth_tag =
+                                ensure_blockquote_depth_tag(&buffer, generic_blockquote_depth);
+                            tag_stack.push(depth_tag);
                         }
                         needs_block_separator = false;
                     }
@@ -621,6 +635,12 @@ impl LushtextMarkdownPreview {
                     Tag::Strong => tag_stack.push(TAG_BOLD.to_string()),
                     Tag::Strikethrough => tag_stack.push(TAG_STRIKETHROUGH.to_string()),
                     Tag::Link { dest_url, .. } => {
+                        insert_blockquote_rail_if_needed(
+                            &buffer,
+                            &mut iter,
+                            &tag_stack,
+                            generic_blockquote_depth,
+                        );
                         let target = resolve_link_target(dest_url.as_ref(), context);
                         let pushed_tag = target.is_some();
                         if pushed_tag {
@@ -652,7 +672,17 @@ impl LushtextMarkdownPreview {
                         buffer.insert(&mut iter, "\n");
                         needs_block_separator = true;
                     }
-                    TagEnd::BlockQuote(_) | TagEnd::FootnoteDefinition => {
+                    TagEnd::BlockQuote(kind) => {
+                        if kind.is_some() {
+                            pop_tag(&mut tag_stack);
+                        } else {
+                            pop_tag(&mut tag_stack);
+                            pop_tag(&mut tag_stack);
+                            generic_blockquote_depth = generic_blockquote_depth.saturating_sub(1);
+                        }
+                        needs_block_separator = true;
+                    }
+                    TagEnd::FootnoteDefinition => {
                         pop_tag(&mut tag_stack);
                         needs_block_separator = true;
                     }
@@ -703,17 +733,35 @@ impl LushtextMarkdownPreview {
                     _ => {}
                 },
                 Event::Text(text) => {
+                    insert_blockquote_rail_if_needed(
+                        &buffer,
+                        &mut iter,
+                        &tag_stack,
+                        generic_blockquote_depth,
+                    );
                     let tags: Vec<&str> =
                         tag_stack.iter().map(std::string::String::as_str).collect();
                     insert_with_tags(&buffer, &mut iter, &text, &tags);
                 }
                 Event::Code(code) => {
+                    insert_blockquote_rail_if_needed(
+                        &buffer,
+                        &mut iter,
+                        &tag_stack,
+                        generic_blockquote_depth,
+                    );
                     let mut tags: Vec<&str> =
                         tag_stack.iter().map(std::string::String::as_str).collect();
                     tags.push(TAG_CODE);
                     insert_with_tags(&buffer, &mut iter, &code, &tags);
                 }
                 Event::FootnoteReference(label) => {
+                    insert_blockquote_rail_if_needed(
+                        &buffer,
+                        &mut iter,
+                        &tag_stack,
+                        generic_blockquote_depth,
+                    );
                     let number = footnote_number(
                         &mut footnote_numbers,
                         &mut next_footnote_number,
@@ -725,6 +773,12 @@ impl LushtextMarkdownPreview {
                     insert_with_tags(&buffer, &mut iter, &format!("[{number}]"), &tags);
                 }
                 Event::TaskListMarker(checked) => {
+                    insert_blockquote_rail_if_needed(
+                        &buffer,
+                        &mut iter,
+                        &tag_stack,
+                        generic_blockquote_depth,
+                    );
                     insert_task_list_marker(
                         &buffer,
                         &mut iter,
@@ -1070,6 +1124,29 @@ fn insert_with_tags(
             buffer.apply_tag(&tag, &start, iter);
         }
     }
+}
+
+/// Insert the visible generic blockquote rail when the next rendered content
+/// starts a quoted line.
+///
+/// The rail carries only quote-structure tags so a line that starts with
+/// emphasis or a link does not make the structural rail look like inline text.
+fn insert_blockquote_rail_if_needed(
+    buffer: &gtk4::TextBuffer,
+    iter: &mut gtk4::TextIter,
+    tag_stack: &[String],
+    depth: usize,
+) {
+    if depth == 0 || !iter.starts_line() {
+        return;
+    }
+
+    let tags: Vec<&str> = tag_stack
+        .iter()
+        .map(std::string::String::as_str)
+        .filter(|name| *name == TAG_BLOCKQUOTE || name.starts_with("blockquote-depth-"))
+        .collect();
+    insert_with_tags(buffer, iter, &blockquote_rail_prefix(depth), &tags);
 }
 
 /// Return whether the current event should force any delayed list marker to be

@@ -64,6 +64,10 @@ LushtextWindow (AdwApplicationWindow)
 - `AdwMultiLayoutView` + `AdwLayoutSlot` for adaptive secondary surfaces that need the same child in multiple presentations
 - `AdwBottomSheet` for compact utility surfaces such as document properties on narrow windows
 
+## Adaptive Dialog Navigation
+
+- When an `AdwSidebar` selection drives the content page of an `AdwNavigationSplitView`, user-selected rows should call `set_show_content(true)` regardless of the split view's current `is_collapsed()` value. `show-content` only affects the visible page while collapsed, but setting it before the adaptive layout settles preserves the user's navigation intent during resize transitions and widget-test collapse simulations. Back buttons can still call `set_show_content(false)` to return to the list page.
+
 ## File Tree
 
 - Use `GtkListView` + `GtkTreeListModel` + `GtkTreeExpander` (modern GTK4 pattern).
