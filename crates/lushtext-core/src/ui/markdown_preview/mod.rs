@@ -14,6 +14,7 @@
 //! - **Placeholder mode**: `AdwStatusPage` with "Not a Markdown file" message
 
 mod imp;
+mod inline_footnotes;
 
 use gio::prelude::FileExt;
 use glib::Object;
@@ -33,6 +34,7 @@ use imp::{
     TAG_TASK_MARKER, alert_title, alert_title_tag_name, blockquote_rail_prefix,
     ensure_blockquote_depth_tag, ensure_list_item_depth_tag, heading_tag_name,
 };
+use inline_footnotes::lower_inline_footnotes;
 
 /// Maximum width for one rendered preview image before we scale it down.
 ///
@@ -601,13 +603,10 @@ impl LushtextMarkdownPreview {
 
         let imp = self.imp();
         let buffer = imp.text_view.buffer();
-        let mut options = Options::empty();
-        options.insert(Options::ENABLE_TABLES);
-        options.insert(Options::ENABLE_TASKLISTS);
-        options.insert(Options::ENABLE_FOOTNOTES);
-        options.insert(Options::ENABLE_STRIKETHROUGH);
-        options.insert(Options::ENABLE_GFM);
-        let parser = Parser::new_ext(markdown, options);
+        let options = markdown_render_options();
+        let lowered_markdown = lower_inline_footnotes(markdown, options);
+        let parser_input = lowered_markdown.as_deref().unwrap_or(markdown);
+        let parser = Parser::new_ext(parser_input, options);
         let mut iter = buffer.end_iter();
         let code_block_theme =
             CodeBlockTheme::from_settings(&gtk4::gio::Settings::new(crate::config::APP_ID));
@@ -1341,6 +1340,17 @@ impl Default for LushtextMarkdownPreview {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Build the Markdown parser options shared by preview preprocessing and rendering.
+fn markdown_render_options() -> Options {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_GFM);
+    options
 }
 
 /// Insert text at the given iter with the specified tag names applied.

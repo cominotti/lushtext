@@ -68,7 +68,7 @@ default external handler when activated.
 
 - [x] Tables render as native GTK widgets
 - [x] Alert callouts render without raw markers
-- [x] Footnotes render with numbered references
+- [x] Reference-style and inline footnotes render with numbered references
 - [x] Preview links open externally
 - [x] Local Markdown images render natively
 - [x] Missing or remote images show explicit fallback states
@@ -109,7 +109,8 @@ fn main() {
         "task lists",
         "alert callouts",
         "nested blockquotes",
-        "footnotes",
+        "reference-style footnotes",
+        "inline footnotes",
         "tables",
         "preview links",
         "local images",
@@ -187,6 +188,13 @@ referenced more than once in the same document.[^overview]
 
 You can also mix a second footnote into normal prose when checking numbering
 behavior.[^details]
+
+Inline footnotes lower into the same rendered footnote flow^[This inline
+footnote includes **bold text**, a [link](https://docs.rs/), and inline `code`.]
+without changing the Markdown source.
+
+Inline and reference-style footnotes can appear together^[This inline note is
+useful for checking mixed numbering near reference-style definitions.].
 
 [^overview]: This footnote includes **bold text**, a [link](https://docs.rs/), and inline `code`.
 

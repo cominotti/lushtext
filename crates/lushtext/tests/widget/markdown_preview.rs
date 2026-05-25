@@ -487,6 +487,82 @@ fn test_render_footnote_reference_and_definition() {
 }
 
 #[test]
+fn test_render_inline_footnote_reference_and_definition() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("hello^[inline note].");
+    let text = preview.buffer_text();
+    assert!(
+        text.contains("hello[1]."),
+        "Expected inline footnote marker in preview text"
+    );
+    assert!(
+        text.contains("[1] inline note"),
+        "Expected generated inline footnote definition in preview text"
+    );
+    assert!(
+        !text.contains("^[inline note]"),
+        "Expected raw inline footnote syntax to be replaced in preview text"
+    );
+}
+
+#[test]
+fn test_render_inline_footnote_preserves_inline_formatting_in_definition() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("hello^[inline **bold** and `code`].");
+    let text = preview.buffer_text();
+    assert!(
+        text.contains("[1] inline bold and code"),
+        "Expected generated definition to contain inline footnote body text"
+    );
+
+    let bold_tags = tags_for_rendered_text(&preview, "bold");
+    assert!(
+        bold_tags.iter().any(|name| name == "bold"),
+        "Expected inline footnote definition bold text to keep bold tag, got {bold_tags:?}"
+    );
+    let code_tags = tags_for_rendered_text(&preview, "code");
+    assert!(
+        code_tags.iter().any(|name| name == "code"),
+        "Expected inline footnote definition code text to keep code tag, got {code_tags:?}"
+    );
+}
+
+#[test]
+fn test_render_mixed_inline_and_reference_style_footnotes() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("First^[Inline note].\n\nSecond[^ref].\n\n[^ref]: Reference note");
+    let text = preview.buffer_text();
+
+    assert!(
+        text.contains("First[1]."),
+        "Expected inline footnote to receive first rendered marker"
+    );
+    assert!(
+        text.contains("Second[2]."),
+        "Expected reference-style footnote marker to keep matching numbering"
+    );
+    assert!(
+        text.contains("[1] Inline note"),
+        "Expected inline footnote definition to match marker number"
+    );
+    assert!(
+        text.contains("[2] Reference note"),
+        "Expected reference-style definition to match marker number"
+    );
+    assert!(
+        !text.contains("__lush_inline_footnote_") && !text.contains("^[Inline note]"),
+        "Expected generated labels and raw inline footnote syntax to stay hidden"
+    );
+    assert!(
+        !text.contains("[^ref]"),
+        "Expected existing reference-style source marker to remain rendered, not raw"
+    );
+}
+
+#[test]
 fn test_render_atx_heading_levels_apply_matching_tags_and_hide_markers() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
