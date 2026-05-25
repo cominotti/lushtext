@@ -7,7 +7,6 @@ use std::path::Path;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
-use libadwaita::prelude::AnimationExt;
 
 use crate::config::keys;
 use crate::services::async_task;
@@ -167,6 +166,7 @@ impl LushtextWindow {
         self.configure_tab_page(&page);
         self.track_editor_memory(&editor_page);
         self.imp().tab_view.set_selected_page(&page);
+        self.exit_preview_only_mode_now();
         self.update_content_stack();
         self.refresh_status_bar();
     }
@@ -313,13 +313,7 @@ impl LushtextWindow {
         } else {
             imp.content_stack.set_visible_child_name("empty");
             if imp.preview_mode.get() {
-                imp.preview_mode.set(false);
-                imp.editor_box.set_visible(true);
-                imp.markdown_preview.set_visible(false);
-                if let Some(anim) = imp.preview_animation.take() {
-                    anim.pause();
-                }
-                imp.preview_paned.set_shrink_start_child(false);
+                self.exit_preview_only_mode_now();
             }
         }
 

@@ -26,6 +26,8 @@ Any UI element that displays per-tab state (status bar metadata, title bar subti
 
 **Pair every structural tab operation** (`new_tab`, `open_document`, `close-tab`) with explicit refresh calls for all tab-dependent UI. Do not rely solely on GTK property notifications — signal ordering during `close_page()` is not guaranteed, and `selected-page` may not fire when closing a non-selected tab.
 
+If a structural tab operation selects an editable document, it must also clear window-level projections that can hide or replace the editor surface, such as Markdown preview-only mode. These projections can outlive the previous selected tab, so reset their action state and visible pane before scheduling editor focus restoration.
+
 ## Size-Dependent Constraints (size_allocate vs notify)
 
 When a widget's behavior depends on its parent's size (e.g., sidebar ≤ 1/3 window width), use `WidgetImpl::size_allocate()` — NOT property notifications:

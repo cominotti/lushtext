@@ -23,7 +23,7 @@ Keep this index in sync with `.agents/rules/*.md`. When a new rule file is added
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, module-splitting, and state-grouping conventions
 - `ui.md` — UI, theming, adaptive dialog navigation, TextView child-anchor geometry, and GTK paned geometry/animation conventions
-- `widget-wiring.md` — GTK widget composition, signal wiring, live paned-validation, and allocation-frame animation rules
+- `widget-wiring.md` — GTK widget composition, signal wiring, tab projection state, live paned-validation, and allocation-frame animation rules
 
 ## Architecture
 

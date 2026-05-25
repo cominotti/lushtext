@@ -1266,6 +1266,56 @@ fn test_new_document_action_focuses_new_editor() {
 }
 
 #[test]
+fn test_new_document_exits_markdown_preview_only_mode() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("new document preview tempdir");
+    let original_editor = active_editor(&window);
+    original_editor.set_file_path(&dir.path().join("preview-source.md"));
+    original_editor.buffer().set_text("# Preview\n\nBody");
+
+    activate_action(&window, "toggle-preview-mode");
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get()
+            && window.imp().markdown_preview.property::<bool>("visible")
+            && action_state_bool(&window, "toggle-preview-mode")
+    });
+
+    activate_action(&window, "new-tab");
+
+    assert_eq!(window.imp().tab_view.n_pages(), 2);
+    let new_editor = active_editor(&window);
+    assert!(
+        new_editor.file_path().is_none(),
+        "New Document should select the new untitled tab"
+    );
+    assert_ne!(
+        new_editor.as_ptr(),
+        original_editor.as_ptr(),
+        "New Document should not leave the Markdown tab selected"
+    );
+    assert!(
+        !window.imp().preview_mode.get(),
+        "New Document should clear preview-only mode"
+    );
+    assert!(
+        !action_state_bool(&window, "toggle-preview-mode"),
+        "preview-only action state should match the cleared shell state"
+    );
+    assert!(
+        window.imp().editor_box.property::<bool>("visible"),
+        "source editor shell should be visible for the new tab"
+    );
+    assert!(
+        !window.imp().markdown_preview.property::<bool>("visible"),
+        "preview widget should not remain visible after creating a new document"
+    );
+    wait_for_active_editor_focus(&window);
+}
+
+#[test]
 fn test_new_document_focus_handoff_ignores_stale_selection() {
     ensure_gtk_init();
     let window = test_window();
