@@ -173,7 +173,7 @@ If you add another nested `AGENTS.md`, keep it local, non-duplicative, and worth
 ```
 make build       # Release build
 make build-debug # Debug build
-make run         # Debug build + run with temporary GNOME desktop staging
+make run         # Debug build + force a fresh run with temporary GNOME desktop staging
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
 make test        # All tests (unit + integration + widget)
 make test-unit   # Unit tests only

@@ -60,8 +60,10 @@ make cargo-sources
 make run
 ```
 
-`make run` builds the debug binary and temporarily stages a GNOME desktop entry
-and app icon so the running development copy appears correctly in GNOME Shell.
+`make run` builds the debug binary, asks any already-running LushText instance
+to quit, and temporarily stages a GNOME desktop entry and app icon so the fresh
+development copy appears correctly in GNOME Shell. If the existing app refuses
+to close, the launcher fails instead of activating stale code.
 
 ## First Run
 
@@ -224,7 +226,7 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libglib2.0
 ```sh
 make build       # Release build
 make build-debug # Debug build
-make run         # Debug build + run with temporary GNOME desktop staging for dock icon matching
+make run         # Debug build + force a fresh run with temporary GNOME desktop staging
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
 make test        # All tests (unit + integration + widget)
 make check       # clippy + fmt check
@@ -236,7 +238,18 @@ LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hoo
 
 The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel non-widget execution (optional), but it always runs widget tests explicitly through the shared `scripts/run-widget-tests.sh` runner so `make test` still means the full suite. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 
-On GNOME Shell, `make run` temporarily stages a user-local desktop entry plus `hicolor` app icons while the debug binary is running. The staged desktop entry points at a content-addressed absolute icon file so Shell reloads icon changes reliably during development instead of reusing a stale themed-icon cache entry. The launcher also repairs any stale user-local LushText desktop entry whose absolute `Icon=` path no longer exists. If you changed the app icon artwork, use `make refresh-dock-icon`: it regenerates the shipped PNG fallbacks from `data/icons/dev.cominotti.lushtext.svg`, then restarts the current dev instance against a fresh file-backed icon so the dock updates immediately.
+On GNOME Shell, `make run` asks any already-running `dev.cominotti.lushtext`
+owner to quit before it temporarily stages a user-local desktop entry plus
+`hicolor` app icons and launches the freshly built debug binary. If the existing
+owner refuses to close, the launcher fails instead of activating stale code. The
+staged desktop entry points at a content-addressed absolute icon file so Shell
+reloads icon changes reliably during development instead of reusing a stale
+themed-icon cache entry. The launcher also repairs any stale user-local LushText
+desktop entry whose absolute `Icon=` path no longer exists. If you changed the
+app icon artwork, use `make refresh-dock-icon`: it regenerates the shipped PNG
+fallbacks from `data/icons/dev.cominotti.lushtext.svg`, then restarts the
+current dev instance against a fresh file-backed icon so the dock updates
+immediately.
 
 ### Flatpak
 

@@ -63,6 +63,37 @@ const LIST_ITEM_DEPTH_STEP: i32 = 28;
 const BLOCKQUOTE_BASE_MARGIN: i32 = 18;
 /// Extra indentation applied for each additional nested generic blockquote.
 const BLOCKQUOTE_DEPTH_STEP: i32 = 20;
+/// Left inset for typed alert callout bodies.
+///
+/// This matches the readable card-like indent used for alert text. If it is too
+/// small, alert bodies blend into surrounding prose; too large wastes preview
+/// width in narrow panes.
+pub(super) const ALERT_BODY_LEFT_MARGIN: i32 = 24;
+/// Right inset for typed alert callout bodies.
+///
+/// A modest right margin keeps wrapped alert text from touching the preview
+/// edge while leaving enough width for code and links.
+pub(super) const ALERT_BODY_RIGHT_MARGIN: i32 = 16;
+/// Left inset for rendered footnote definitions.
+///
+/// Footnotes use the same visual column as definition bodies so their generated
+/// labels and wrapped prose stay compact but still distinct from normal text.
+pub(super) const FOOTNOTE_DEF_LEFT_MARGIN: i32 = 32;
+/// Right inset for rendered footnote definitions.
+///
+/// This mirrors other indented preview blocks to keep wrapped content off the
+/// far edge without making the footnote column feel cramped.
+pub(super) const FOOTNOTE_DEF_RIGHT_MARGIN: i32 = 16;
+/// Left inset for rendered definition-list bodies.
+///
+/// Definition bodies need enough offset to read as content under a term, while
+/// preserving room for nested paragraphs, lists, quotes, and code blocks.
+pub(super) const DEFINITION_DEF_LEFT_MARGIN: i32 = 32;
+/// Right inset for rendered definition-list bodies.
+///
+/// This balances the left definition offset so nested wrapped content keeps a
+/// comfortable line length in both side-by-side and preview-only modes.
+pub(super) const DEFINITION_DEF_RIGHT_MARGIN: i32 = 16;
 /// Visible rail glyph used to replace Markdown's raw `>` source marker.
 pub(super) const BLOCKQUOTE_RAIL: &str = "\u{2502}";
 
@@ -85,6 +116,8 @@ pub(super) const TAG_ALERT_BODY: &str = "alert-body";
 pub(super) const TAG_FOOTNOTE_REF: &str = "footnote-ref";
 pub(super) const TAG_FOOTNOTE_DEF: &str = "footnote-def";
 pub(super) const TAG_FOOTNOTE_DEF_LABEL: &str = "footnote-def-label";
+pub(super) const TAG_DEFINITION_TERM: &str = "definition-term";
+pub(super) const TAG_DEFINITION_DEF: &str = "definition-definition";
 
 /// Returns a heading tag name for the given level (0-indexed).
 pub(super) fn heading_tag_name(level_idx: usize) -> String {
@@ -173,9 +206,10 @@ pub struct LushtextMarkdownPreview {
     ///
     /// `GtkTextChildAnchor` makes tables and image blocks pleasantly native,
     /// but GTK does not manage rerender cleanup for us at the application
-    /// level. We keep strong refs here so `render_markdown`, `clear`, and
-    /// `show_placeholder` can remove stale embeds before rebuilding.
-    pub(super) rendered_embeds: RefCell<Vec<gtk4::Widget>>,
+    /// level. We keep strong refs plus the layout context captured at insertion
+    /// time so `render_markdown`, `clear`, and `show_placeholder` can remove
+    /// stale embeds and resize code blocks after later allocations.
+    pub(super) rendered_embeds: RefCell<Vec<super::RenderedEmbed>>,
     /// Launchable link spans rendered directly into the text buffer.
     ///
     /// The preview rerenders whole documents, so this list is rebuilt from
@@ -244,13 +278,15 @@ impl ObjectImpl for LushtextMarkdownPreview {
 
         // Code blocks are embedded as child-anchor widgets, so they need to
         // follow the final text-view column width rather than the outer box.
-        let obj_weak = self.obj().downgrade();
-        self.text_view
-            .connect_notify_local(Some("width"), move |_, _| {
-                if let Some(obj) = obj_weak.upgrade() {
-                    obj.queue_code_block_width_refresh();
-                }
-            });
+        for property_name in ["width", "left-margin", "right-margin"] {
+            let obj_weak = self.obj().downgrade();
+            self.text_view
+                .connect_notify_local(Some(property_name), move |_, _| {
+                    if let Some(obj) = obj_weak.upgrade() {
+                        obj.queue_code_block_width_refresh();
+                    }
+                });
+        }
 
         let obj_weak = self.obj().downgrade();
         self.obj().connect_map(move |_| {
@@ -371,8 +407,8 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     // Alert callouts stay on the text-buffer path, so the body tag provides the
     // native card-like spacing while per-kind title tags carry the alert identity.
     let alert_body = get_or_create(TAG_ALERT_BODY);
-    alert_body.set_left_margin(24);
-    alert_body.set_right_margin(16);
+    alert_body.set_left_margin(ALERT_BODY_LEFT_MARGIN);
+    alert_body.set_right_margin(ALERT_BODY_RIGHT_MARGIN);
     alert_body.set_paragraph_background(Some(alert_bg));
     alert_body.set_pixels_above_lines(4);
     alert_body.set_pixels_below_lines(4);
@@ -418,8 +454,8 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     footnote_ref.set_weight(pango::Weight::Bold.into_glib());
 
     let footnote_def = get_or_create(TAG_FOOTNOTE_DEF);
-    footnote_def.set_left_margin(32);
-    footnote_def.set_right_margin(16);
+    footnote_def.set_left_margin(FOOTNOTE_DEF_LEFT_MARGIN);
+    footnote_def.set_right_margin(FOOTNOTE_DEF_RIGHT_MARGIN);
     footnote_def.set_pixels_above_lines(2);
     footnote_def.set_pixels_below_lines(2);
 
@@ -427,6 +463,20 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     footnote_def_label.set_family(Some("Monospace"));
     footnote_def_label.set_foreground(Some(accent));
     footnote_def_label.set_weight(pango::Weight::Bold.into_glib());
+
+    // Definition lists are parser-native pulldown-cmark blocks. Terms need to
+    // read like labels, while definitions need a stable text column that can
+    // also host nested paragraphs, lists, quotes, and code anchors.
+    let definition_term = get_or_create(TAG_DEFINITION_TERM);
+    definition_term.set_weight(pango::Weight::Bold.into_glib());
+    definition_term.set_pixels_above_lines(4);
+    definition_term.set_pixels_below_lines(1);
+
+    let definition_def = get_or_create(TAG_DEFINITION_DEF);
+    definition_def.set_left_margin(DEFINITION_DEF_LEFT_MARGIN);
+    definition_def.set_right_margin(DEFINITION_DEF_RIGHT_MARGIN);
+    definition_def.set_pixels_above_lines(1);
+    definition_def.set_pixels_below_lines(2);
 }
 
 /// Ensure the tag used for a given list nesting depth exists and return its name.

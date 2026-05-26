@@ -237,6 +237,258 @@ fn test_render_task_list_uses_one_row_per_item() {
 }
 
 #[test]
+fn test_render_simple_definition_list_hides_colon_marker() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("Term\n: Definition");
+
+    assert_eq!(
+        preview.buffer_text(),
+        "Term\nDefinition\n",
+        "Expected pulldown-cmark definition lists to render term and definition rows"
+    );
+    assert!(
+        preview.has_tag("definition-term") && preview.has_tag("definition-definition"),
+        "Expected definition-list tags to be registered"
+    );
+    assert!(
+        tags_for_rendered_text(&preview, "Term")
+            .iter()
+            .any(|name| name == "definition-term"),
+        "Expected term text to carry definition-term styling"
+    );
+    assert!(
+        tags_for_rendered_text(&preview, "Definition")
+            .iter()
+            .any(|name| name == "definition-definition"),
+        "Expected definition text to carry definition-definition styling"
+    );
+}
+
+#[test]
+fn test_render_definition_list_preserves_multiple_definitions_order() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("Term\n: First definition\n: Second definition\n\nNext\n: Another");
+    let text = preview.buffer_text();
+
+    assert_rendered_text_order(
+        &text,
+        &[
+            "Term",
+            "First definition",
+            "Second definition",
+            "Next",
+            "Another",
+        ],
+    );
+    assert!(
+        !text.contains(": First") && !text.contains(": Second") && !text.contains(": Another"),
+        "Expected raw definition markers to stay out of rendered text, got {text:?}"
+    );
+}
+
+#[test]
+fn test_render_definition_list_preserves_inline_formatting() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("*Inline Term*\n: Definition with **strong** and `code`");
+
+    for (rendered_text, expected_tags) in [
+        ("Inline Term", ["definition-term", "italic"]),
+        ("strong", ["definition-definition", "bold"]),
+        ("code", ["definition-definition", "code"]),
+    ] {
+        let tags = tags_for_rendered_text(&preview, rendered_text);
+        for expected_tag in expected_tags {
+            assert!(
+                tags.iter().any(|name| name == expected_tag),
+                "Expected '{rendered_text}' to carry {expected_tag}, got {tags:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_render_definition_list_preserves_nested_paragraphs() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("Term\n\n:   First paragraph\n\n    Second paragraph");
+    let text = preview.buffer_text();
+
+    assert_rendered_text_order(&text, &["Term", "First paragraph", "Second paragraph"]);
+    assert!(
+        text.contains("First paragraph\n\nSecond paragraph"),
+        "Expected definition paragraphs to keep readable separation, got {text:?}"
+    );
+    assert!(
+        !text.contains("\n\n\n"),
+        "Expected definition paragraph rendering to avoid duplicated blank rows, got {text:?}"
+    );
+}
+
+#[test]
+fn test_render_definition_list_preserves_nested_lists() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("Term\n\n:   Intro\n\n    - child one\n    - child two");
+    let text = preview.buffer_text();
+
+    assert_rendered_text_order(&text, &["Term", "Intro", "child one", "child two"]);
+    assert!(
+        text.contains("\u{2022} child one\n\u{2022} child two"),
+        "Expected nested ordinary lists to keep their list markers inside definitions, got {text:?}"
+    );
+    let tags = tags_for_rendered_text(&preview, "child one");
+    assert!(
+        tags.iter().any(|name| name == "definition-definition")
+            && tags.iter().any(|name| name == "list-item-depth-1"),
+        "Expected nested list text to keep both definition and list tags, got {tags:?}"
+    );
+}
+
+#[test]
+fn test_render_definition_list_preserves_nested_blockquote() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("Term\n\n:   Intro\n\n    > quoted definition");
+    let text = preview.buffer_text();
+
+    assert_rendered_text_order(&text, &["Term", "Intro", "\u{2502}", "quoted definition"]);
+    let tags = tags_for_rendered_text(&preview, "quoted definition");
+    assert!(
+        tags.iter().any(|name| name == "definition-definition")
+            && tags.iter().any(|name| name == "blockquote-depth-1"),
+        "Expected nested blockquote text to keep definition and blockquote tags, got {tags:?}"
+    );
+}
+
+#[test]
+fn test_render_definition_list_code_block_without_false_horizontal_overflow() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview_with_size(&preview, 640, 300);
+
+    preview.render_markdown(
+        "Term\n\n:   Definition\n\n        const readable = true;\n\n    Third paragraph",
+    );
+    wait_for_code_block_layout(&preview);
+
+    let source_view = source_views(&preview).pop().expect("source view");
+    assert_eq!(
+        source_view_buffer_text(&source_view),
+        "const readable = true;\n",
+        "Expected definition-list code block text to live in one embedded source buffer"
+    );
+    assert_nested_code_block_geometry(&preview);
+    let scroller = code_block_scrollers(&preview).pop().expect("code scroller");
+    let overflow = horizontal_overflow(&scroller);
+    assert!(
+        overflow <= 1.0,
+        "Expected nested definition-list code to fit without false horizontal overflow, got {overflow}"
+    );
+    assert!(
+        preview.buffer_text().contains("Third paragraph"),
+        "Expected prose after the nested code block to keep rendering"
+    );
+}
+
+#[test]
+fn test_render_definition_list_screenshot_code_block_without_false_horizontal_overflow() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview_with_size(&preview, 720, 360);
+
+    preview.render_markdown(concat!(
+        "Term 2 with *inline markup*\n",
+        "\n",
+        ":   Definition 2\n",
+        "\n",
+        "        { some code, part of Definition 2 }\n",
+        "\n",
+        "    Third paragraph of definition 2.",
+    ));
+    wait_for_code_block_layout(&preview);
+
+    let source_view = source_views(&preview).pop().expect("source view");
+    assert_eq!(
+        source_view_buffer_text(&source_view),
+        "{ some code, part of Definition 2 }\n",
+        "Expected screenshot-style definition-list code to stay in one source buffer"
+    );
+    assert_nested_code_block_geometry(&preview);
+    let scroller = code_block_scrollers(&preview).pop().expect("code scroller");
+    let overflow = horizontal_overflow(&scroller);
+    assert!(
+        overflow <= 1.0,
+        "Expected screenshot-style definition-list code to fit without horizontal overflow, got {overflow}"
+    );
+}
+
+#[test]
+fn test_render_definition_list_code_block_width_updates_after_late_allocation() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown("Term\n\n:   Definition\n\n        allocated later\n");
+    let _window = present_preview_with_size(&preview, 620, 280);
+    wait_for_code_block_layout(&preview);
+
+    assert_nested_code_block_geometry(&preview);
+}
+
+#[test]
+fn test_render_definition_list_code_block_allows_horizontal_overflow_for_long_line() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview_with_size(&preview, 280, 300);
+    let long_line = "{ ".to_string() + &"definition_code_segment ".repeat(16) + "}";
+
+    preview.render_markdown(&format!("Term\n\n:   Definition\n\n        {long_line}\n"));
+    wait_for_code_block_layout(&preview);
+
+    assert_nested_code_block_geometry(&preview);
+    let scroller = code_block_scrollers(&preview).pop().expect("code scroller");
+    let overflow = horizontal_overflow(&scroller);
+    assert!(
+        overflow > 1.0,
+        "Expected genuinely long nested definition-list code to expose horizontal overflow"
+    );
+}
+
+#[test]
+fn test_render_tilde_definition_marker_syntax_stays_plain_text() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("Term ~ Definition");
+    let text = preview.buffer_text();
+
+    assert_eq!(text, "Term ~ Definition\n");
+    let tags = tags_for_rendered_text(&preview, "Term");
+    assert!(
+        tags.iter()
+            .all(|name| name != "definition-term" && name != "definition-definition"),
+        "Expected markdown-it tilde syntax to stay outside definition-list styling, got {tags:?}"
+    );
+}
+
+#[test]
+fn test_render_ordinary_colon_prose_stays_plain_text() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("Status: Ready");
+    let text = preview.buffer_text();
+
+    assert_eq!(text, "Status: Ready\n");
+    let tags = tags_for_rendered_text(&preview, "Status");
+    assert!(
+        tags.iter()
+            .all(|name| name != "definition-term" && name != "definition-definition"),
+        "Expected ordinary colon prose to stay outside definition-list styling, got {tags:?}"
+    );
+}
+
+#[test]
 fn test_render_nested_list_uses_deeper_margin_tag() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
@@ -1220,6 +1472,45 @@ fn horizontal_overflow(scroller: &gtk4::ScrolledWindow) -> f64 {
     (adjustment.upper() - adjustment.page_size()).max(0.0)
 }
 
+fn expected_code_block_width(preview: &LushtextMarkdownPreview, block: &gtk4::Box) -> i32 {
+    preview_text_column_width(preview)
+        .saturating_sub(block.margin_start() + block.margin_end())
+        .max(1)
+}
+
+fn code_block_width_is_settled(actual_width: i32, expected_width: i32) -> bool {
+    (actual_width - expected_width).abs() <= 3
+}
+
+fn assert_nested_code_block_geometry(preview: &LushtextMarkdownPreview) {
+    let block = code_block_containers(preview)
+        .pop()
+        .expect("code block container");
+    let scroller = code_block_scrollers(preview).pop().expect("code scroller");
+    let expected_width = expected_code_block_width(preview, &block);
+    let actual_width = block.width();
+
+    assert!(
+        block.margin_start() > 0,
+        "Expected nested code block to carry a visible context offset, got margin-start {}",
+        block.margin_start()
+    );
+    assert_eq!(
+        block.width_request(),
+        expected_width,
+        "Expected nested code block width request to account for context margins"
+    );
+    assert!(
+        code_block_width_is_settled(actual_width, expected_width),
+        "Expected nested code block allocation to settle near {expected_width}, got {actual_width}"
+    );
+    assert!(
+        scroller.width() <= actual_width,
+        "Expected code scroller to stay inside nested block allocation, block={actual_width} scroller={}",
+        scroller.width()
+    );
+}
+
 fn wait_for_code_block_layout(preview: &LushtextMarkdownPreview) {
     wait_until(Duration::from_secs(2), || {
         let Some(block) = code_block_containers(preview).first().cloned() else {
@@ -1229,8 +1520,10 @@ fn wait_for_code_block_layout(preview: &LushtextMarkdownPreview) {
             return false;
         };
         let column_width = preview_text_column_width(preview);
+        let expected_width = expected_code_block_width(preview, &block);
         column_width > 0
-            && block.width_request() == column_width
+            && block.width_request() == expected_width
+            && code_block_width_is_settled(block.width(), expected_width)
             && scroller.width() > 0
             && scroller.hadjustment().page_size() > 0.0
     });

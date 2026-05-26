@@ -29,10 +29,13 @@ use std::path::{Path, PathBuf};
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
 
 use imp::{
-    TAG_ALERT_BODY, TAG_BLOCKQUOTE, TAG_BOLD, TAG_CODE, TAG_FOOTNOTE_DEF, TAG_FOOTNOTE_DEF_LABEL,
-    TAG_FOOTNOTE_REF, TAG_HRULE, TAG_ITALIC, TAG_LINK, TAG_LIST_ITEM, TAG_STRIKETHROUGH,
-    TAG_TASK_MARKER, alert_title, alert_title_tag_name, blockquote_rail_prefix,
-    ensure_blockquote_depth_tag, ensure_list_item_depth_tag, heading_tag_name,
+    ALERT_BODY_LEFT_MARGIN, ALERT_BODY_RIGHT_MARGIN, DEFINITION_DEF_LEFT_MARGIN,
+    DEFINITION_DEF_RIGHT_MARGIN, FOOTNOTE_DEF_LEFT_MARGIN, FOOTNOTE_DEF_RIGHT_MARGIN,
+    TAG_ALERT_BODY, TAG_BLOCKQUOTE, TAG_BOLD, TAG_CODE, TAG_DEFINITION_DEF, TAG_DEFINITION_TERM,
+    TAG_FOOTNOTE_DEF, TAG_FOOTNOTE_DEF_LABEL, TAG_FOOTNOTE_REF, TAG_HRULE, TAG_ITALIC, TAG_LINK,
+    TAG_LIST_ITEM, TAG_STRIKETHROUGH, TAG_TASK_MARKER, alert_title, alert_title_tag_name,
+    blockquote_left_margin, blockquote_rail_prefix, ensure_blockquote_depth_tag,
+    ensure_list_item_depth_tag, heading_tag_name, list_item_text_margin,
 };
 use inline_footnotes::lower_inline_footnotes;
 
@@ -111,6 +114,49 @@ struct RenderedTextLink {
     end_offset: i32,
     /// Launch target associated with this rendered range.
     target: PreviewLaunchTarget,
+}
+
+/// Captured horizontal context for one embedded Markdown block.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EmbeddedBlockLayout {
+    /// Outer offset before the embedded widget, matching the active text column.
+    margin_start: i32,
+    /// Outer offset after the embedded widget, matching the active text column.
+    margin_end: i32,
+}
+
+impl EmbeddedBlockLayout {
+    /// Fold one active text-tag margin into the embedded-widget context.
+    fn include_margin(&mut self, margin_start: i32, margin_end: i32) {
+        // GtkTextTag block margins act like competing paragraph properties, not
+        // nested boxes. Use the widest active margin so child anchors stay in
+        // the same effective column as nearby tagged text.
+        self.margin_start = self.margin_start.max(margin_start);
+        self.margin_end = self.margin_end.max(margin_end);
+    }
+
+    /// Return the width a code block can use inside this context.
+    fn code_block_width(self, preview_text_column_width: i32) -> i32 {
+        preview_text_column_width
+            .saturating_sub(self.margin_start.saturating_add(self.margin_end))
+            .max(1)
+    }
+}
+
+/// One widget anchored into the preview plus the layout context active at insertion.
+#[derive(Clone)]
+pub(super) struct RenderedEmbed {
+    /// Widget added to the `GtkTextView` at a child anchor.
+    widget: gtk4::Widget,
+    /// Captured block context used by later allocation refreshes.
+    layout: EmbeddedBlockLayout,
+}
+
+impl RenderedEmbed {
+    /// Store one child-anchor widget and its insertion-time layout context.
+    fn new(widget: gtk4::Widget, layout: EmbeddedBlockLayout) -> Self {
+        Self { widget, layout }
+    }
 }
 
 /// One link tag currently open while the parser is streaming inline events.
@@ -207,6 +253,16 @@ struct ListItemRenderState {
     paragraph_ended: bool,
 }
 
+/// Per-definition row-flow state for Markdown definition lists.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct DefinitionRenderState {
+    /// Whether this definition has emitted any visible text or anchored block.
+    has_content: bool,
+    /// Whether a paragraph ended and the next paragraph needs the visible
+    /// separation pulldown-cmark represents inside a loose definition body.
+    paragraph_ended: bool,
+}
+
 /// Result of trying to resolve a local filesystem path from Markdown content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LocalPathResolution {
@@ -291,6 +347,29 @@ impl BufferedCodeBlock {
                 .filter(|hint| !hint.is_empty()),
             CodeBlockKind::Indented => None,
         }
+    }
+}
+
+/// Code block being collected together with the layout context active at its start.
+struct ActiveCodeBlock {
+    /// Literal code block data collected from pulldown-cmark events.
+    code_block: BufferedCodeBlock,
+    /// Text-column context captured before child-anchor insertion.
+    layout: EmbeddedBlockLayout,
+}
+
+impl ActiveCodeBlock {
+    /// Start buffering one code block and remember where it should be laid out.
+    fn new(kind: CodeBlockKind<'_>, layout: EmbeddedBlockLayout) -> Self {
+        Self {
+            code_block: BufferedCodeBlock::new(kind),
+            layout,
+        }
+    }
+
+    /// Fold one parser event into the underlying literal code buffer.
+    fn push_event(&mut self, event: Event<'_>) {
+        self.code_block.push_event(event);
     }
 }
 
@@ -623,6 +702,9 @@ impl LushtextMarkdownPreview {
         // row-flow inside lists cannot leak into top-level block spacing.
         let mut list_stack: Vec<ListFrame> = Vec::new();
         let mut list_item_stack: Vec<ListItemRenderState> = Vec::new();
+        // Definition entries have no markers, so they track paragraph flow
+        // separately from ordinary lists while sharing the same inline tag path.
+        let mut definition_stack: Vec<DefinitionRenderState> = Vec::new();
         // List markers need one event of lookahead because task list state
         // arrives after `Tag::Item`; delay insertion until real item content.
         let mut pending_list_prefix: Option<String> = None;
@@ -637,7 +719,7 @@ impl LushtextMarkdownPreview {
         // lay out their embedded widgets, so we accumulate them separately from
         // text blocks.
         let mut active_table: Option<BufferedTableBuilder> = None;
-        let mut active_code_block: Option<BufferedCodeBlock> = None;
+        let mut active_code_block: Option<ActiveCodeBlock> = None;
         // Images become anchored GTK widgets, so we buffer their alt text until
         // pulldown-cmark closes the image span.
         let mut active_image: Option<BufferedImage> = None;
@@ -654,6 +736,7 @@ impl LushtextMarkdownPreview {
                         let table = table.finish();
                         self.insert_table_widget(&buffer, &mut iter, &table);
                         buffer.insert(&mut iter, "\n");
+                        mark_current_definition_content(&mut definition_stack);
                         needs_block_separator = true;
                     }
                     other => table.push_event(other),
@@ -664,17 +747,19 @@ impl LushtextMarkdownPreview {
             if let Some(code_block) = &mut active_code_block {
                 match event {
                     Event::End(TagEnd::CodeBlock) => {
-                        let code_block = active_code_block
+                        let active_code_block = active_code_block
                             .take()
                             .expect("active code block should exist");
                         self.insert_code_block_widget(
                             &buffer,
                             &mut iter,
-                            &code_block,
+                            &active_code_block.code_block,
                             &code_block_theme,
+                            active_code_block.layout,
                         );
                         buffer.insert(&mut iter, "\n");
                         mark_current_list_item_content(&mut list_item_stack);
+                        mark_current_definition_content(&mut definition_stack);
                         needs_block_separator = true;
                     }
                     other => code_block.push_event(other),
@@ -688,6 +773,7 @@ impl LushtextMarkdownPreview {
                         let image = active_image.take().expect("active image should exist");
                         self.insert_image_widget(&buffer, &mut iter, &image, context);
                         buffer.insert(&mut iter, "\n");
+                        mark_current_definition_content(&mut definition_stack);
                         needs_block_separator = true;
                     }
                     other => image.push_event(other),
@@ -733,9 +819,39 @@ impl LushtextMarkdownPreview {
                         if current_list_item_needs_paragraph_separator(&list_item_stack) {
                             buffer.insert(&mut iter, "\n");
                             clear_current_list_item_paragraph_end(&mut list_item_stack);
-                        } else if list_item_stack.is_empty() && needs_block_separator {
+                        } else if current_definition_needs_paragraph_separator(&definition_stack) {
+                            buffer.insert(&mut iter, "\n");
+                            clear_current_definition_paragraph_end(&mut definition_stack);
+                        } else if needs_block_separator
+                            && (list_item_stack.is_empty() || !definition_stack.is_empty())
+                        {
                             buffer.insert(&mut iter, "\n");
                         }
+                        needs_block_separator = false;
+                    }
+                    Tag::DefinitionList => {
+                        if needs_block_separator {
+                            buffer.insert(&mut iter, "\n");
+                        }
+                        needs_block_separator = false;
+                    }
+                    Tag::DefinitionListTitle => {
+                        if needs_block_separator {
+                            buffer.insert(&mut iter, "\n");
+                        } else {
+                            ensure_rendered_line_break(&buffer, &mut iter);
+                        }
+                        tag_stack.push(TAG_DEFINITION_TERM.to_string());
+                        needs_block_separator = false;
+                    }
+                    Tag::DefinitionListDefinition => {
+                        if needs_block_separator {
+                            buffer.insert(&mut iter, "\n");
+                        } else {
+                            ensure_rendered_line_break(&buffer, &mut iter);
+                        }
+                        tag_stack.push(TAG_DEFINITION_DEF.to_string());
+                        definition_stack.push(DefinitionRenderState::default());
                         needs_block_separator = false;
                     }
                     Tag::BlockQuote(kind) => {
@@ -767,7 +883,14 @@ impl LushtextMarkdownPreview {
                         if needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         }
-                        active_code_block = Some(BufferedCodeBlock::new(kind));
+                        let layout = embedded_block_layout(
+                            &tag_stack,
+                            &list_stack,
+                            &list_item_stack,
+                            generic_blockquote_depth,
+                            &definition_stack,
+                        );
+                        active_code_block = Some(ActiveCodeBlock::new(kind, layout));
                         needs_block_separator = false;
                     }
                     Tag::List(start_num) => {
@@ -854,8 +977,13 @@ impl LushtextMarkdownPreview {
                     }
                     TagEnd::Paragraph => {
                         if list_item_stack.is_empty() {
-                            buffer.insert(&mut iter, "\n");
-                            needs_block_separator = true;
+                            ensure_rendered_line_break(&buffer, &mut iter);
+                            if definition_stack.is_empty() {
+                                needs_block_separator = true;
+                            } else {
+                                mark_current_definition_paragraph_end(&mut definition_stack);
+                                needs_block_separator = false;
+                            }
                         } else {
                             ensure_rendered_line_break(&buffer, &mut iter);
                             mark_current_list_item_paragraph_end(&mut list_item_stack);
@@ -875,6 +1003,21 @@ impl LushtextMarkdownPreview {
                     TagEnd::FootnoteDefinition => {
                         pop_tag(&mut tag_stack);
                         needs_block_separator = true;
+                    }
+                    TagEnd::DefinitionList => {
+                        ensure_rendered_line_break(&buffer, &mut iter);
+                        needs_block_separator = true;
+                    }
+                    TagEnd::DefinitionListTitle => {
+                        pop_tag(&mut tag_stack);
+                        ensure_rendered_line_break(&buffer, &mut iter);
+                        needs_block_separator = false;
+                    }
+                    TagEnd::DefinitionListDefinition => {
+                        pop_tag(&mut tag_stack);
+                        ensure_rendered_line_break(&buffer, &mut iter);
+                        definition_stack.pop();
+                        needs_block_separator = false;
                     }
                     TagEnd::List(_) => {
                         list_stack.pop();
@@ -934,6 +1077,7 @@ impl LushtextMarkdownPreview {
                         tag_stack.iter().map(std::string::String::as_str).collect();
                     insert_with_tags(&buffer, &mut iter, &text, &tags);
                     mark_current_list_item_content(&mut list_item_stack);
+                    mark_current_definition_content(&mut definition_stack);
                 }
                 Event::Code(code) => {
                     insert_blockquote_rail_if_needed(
@@ -947,6 +1091,7 @@ impl LushtextMarkdownPreview {
                     tags.push(TAG_CODE);
                     insert_with_tags(&buffer, &mut iter, &code, &tags);
                     mark_current_list_item_content(&mut list_item_stack);
+                    mark_current_definition_content(&mut definition_stack);
                 }
                 Event::FootnoteReference(label) => {
                     insert_blockquote_rail_if_needed(
@@ -965,6 +1110,7 @@ impl LushtextMarkdownPreview {
                     tags.push(TAG_FOOTNOTE_REF);
                     insert_with_tags(&buffer, &mut iter, &format!("[{number}]"), &tags);
                     mark_current_list_item_content(&mut list_item_stack);
+                    mark_current_definition_content(&mut definition_stack);
                 }
                 Event::TaskListMarker(checked) => {
                     insert_blockquote_rail_if_needed(
@@ -981,6 +1127,7 @@ impl LushtextMarkdownPreview {
                         checked,
                     );
                     mark_current_list_item_content(&mut list_item_stack);
+                    mark_current_definition_content(&mut definition_stack);
                 }
                 Event::SoftBreak => {
                     buffer.insert(&mut iter, " ");
@@ -988,6 +1135,7 @@ impl LushtextMarkdownPreview {
                 Event::HardBreak => {
                     buffer.insert(&mut iter, "\n");
                     mark_current_list_item_content(&mut list_item_stack);
+                    mark_current_definition_content(&mut definition_stack);
                 }
                 Event::Rule => {
                     if needs_block_separator {
@@ -1237,8 +1385,8 @@ impl LushtextMarkdownPreview {
         let imp = self.imp();
         {
             let mut rendered_embeds = imp.rendered_embeds.borrow_mut();
-            for widget in rendered_embeds.drain(..) {
-                imp.text_view.remove(&widget);
+            for embed in rendered_embeds.drain(..) {
+                imp.text_view.remove(&embed.widget);
             }
         }
         imp.text_link_targets.borrow_mut().clear();
@@ -1253,7 +1401,12 @@ impl LushtextMarkdownPreview {
         table: &BufferedTable,
     ) {
         let grid = build_table_grid(self, table);
-        self.insert_embedded_widget(buffer, iter, grid.upcast_ref::<gtk4::Widget>());
+        self.insert_embedded_widget(
+            buffer,
+            iter,
+            grid.upcast_ref::<gtk4::Widget>(),
+            EmbeddedBlockLayout::default(),
+        );
     }
 
     /// Insert one buffered Markdown code block into the preview flow.
@@ -1263,9 +1416,12 @@ impl LushtextMarkdownPreview {
         iter: &mut gtk4::TextIter,
         code_block: &BufferedCodeBlock,
         theme: &CodeBlockTheme,
+        layout: EmbeddedBlockLayout,
     ) {
         let widget = build_code_block_widget(code_block, theme);
-        self.insert_embedded_widget(buffer, iter, widget.upcast_ref::<gtk4::Widget>());
+        widget.set_margin_start(layout.margin_start);
+        widget.set_margin_end(layout.margin_end);
+        self.insert_embedded_widget(buffer, iter, widget.upcast_ref::<gtk4::Widget>(), layout);
         self.queue_code_block_width_refresh();
     }
 
@@ -1285,12 +1441,22 @@ impl LushtextMarkdownPreview {
                         "Image could not be loaded",
                         &format!("{}\n{error}", path.display()),
                     );
-                    self.insert_embedded_widget(buffer, iter, widget.upcast_ref::<gtk4::Widget>());
+                    self.insert_embedded_widget(
+                        buffer,
+                        iter,
+                        widget.upcast_ref::<gtk4::Widget>(),
+                        EmbeddedBlockLayout::default(),
+                    );
                 }
             },
             ResolvedImageTarget::Fallback { title, body } => {
                 let widget = build_image_fallback_widget(title, &body);
-                self.insert_embedded_widget(buffer, iter, widget.upcast_ref::<gtk4::Widget>());
+                self.insert_embedded_widget(
+                    buffer,
+                    iter,
+                    widget.upcast_ref::<gtk4::Widget>(),
+                    EmbeddedBlockLayout::default(),
+                );
             }
         }
     }
@@ -1301,10 +1467,14 @@ impl LushtextMarkdownPreview {
         buffer: &gtk4::TextBuffer,
         iter: &mut gtk4::TextIter,
         widget: &gtk4::Widget,
+        layout: EmbeddedBlockLayout,
     ) {
         let anchor = buffer.create_child_anchor(iter);
         self.imp().text_view.add_child_at_anchor(widget, &anchor);
-        self.imp().rendered_embeds.borrow_mut().push(widget.clone());
+        self.imp()
+            .rendered_embeds
+            .borrow_mut()
+            .push(RenderedEmbed::new(widget.clone(), layout));
     }
 
     /// Refresh anchored code blocks after GTK has allocated the preview text view.
@@ -1313,14 +1483,25 @@ impl LushtextMarkdownPreview {
     /// column automatically, so code-block containers need an explicit width
     /// request based on the current visible text column.
     fn refresh_code_block_widths(&self) {
-        let Some(width) = preview_text_column_width(&self.imp().text_view.get()) else {
+        let Some(column_width) = preview_text_column_width(&self.imp().text_view.get()) else {
             return;
         };
 
-        for widget in self.imp().rendered_embeds.borrow().iter() {
-            if widget.has_css_class("markdown-code-block") && widget.width_request() != width {
-                widget.set_width_request(width);
+        let mut changed = false;
+        for embed in self.imp().rendered_embeds.borrow().iter() {
+            if embed.widget.has_css_class("markdown-code-block") {
+                let width = embed.layout.code_block_width(column_width);
+                if embed.widget.width_request() != width {
+                    embed.widget.set_width_request(width);
+                    embed.widget.queue_resize();
+                    changed = true;
+                }
             }
+        }
+
+        if changed {
+            self.imp().text_view.queue_resize();
+            self.queue_resize();
         }
     }
 
@@ -1333,6 +1514,16 @@ impl LushtextMarkdownPreview {
                 preview.refresh_code_block_widths();
             }
         });
+    }
+
+    /// Recheck embedded code-block widths after an outer preview-shell transition.
+    ///
+    /// The main window can reveal the preview from a hidden `GtkPaned` child or
+    /// move the pane through an animation after Markdown has already rendered.
+    /// Calling this at shell boundaries keeps child-anchor code blocks tied to
+    /// the final text column rather than to an intermediate allocation.
+    pub(crate) fn refresh_embedded_code_block_layouts(&self) {
+        self.queue_code_block_width_refresh();
     }
 }
 
@@ -1350,7 +1541,41 @@ fn markdown_render_options() -> Options {
     options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_GFM);
+    options.insert(Options::ENABLE_DEFINITION_LIST);
     options
+}
+
+/// Derive the effective text column for an embedded block from active Markdown state.
+fn embedded_block_layout(
+    tag_stack: &[String],
+    list_stack: &[ListFrame],
+    list_item_stack: &[ListItemRenderState],
+    generic_blockquote_depth: usize,
+    definition_stack: &[DefinitionRenderState],
+) -> EmbeddedBlockLayout {
+    let mut layout = EmbeddedBlockLayout::default();
+
+    if !definition_stack.is_empty() {
+        layout.include_margin(DEFINITION_DEF_LEFT_MARGIN, DEFINITION_DEF_RIGHT_MARGIN);
+    }
+
+    if !list_item_stack.is_empty() {
+        layout.include_margin(list_item_text_margin(list_stack.len().max(1)), 0);
+    }
+
+    if generic_blockquote_depth > 0 {
+        layout.include_margin(blockquote_left_margin(generic_blockquote_depth), 0);
+    }
+
+    if tag_stack.iter().any(|tag| tag == TAG_ALERT_BODY) {
+        layout.include_margin(ALERT_BODY_LEFT_MARGIN, ALERT_BODY_RIGHT_MARGIN);
+    }
+
+    if tag_stack.iter().any(|tag| tag == TAG_FOOTNOTE_DEF) {
+        layout.include_margin(FOOTNOTE_DEF_LEFT_MARGIN, FOOTNOTE_DEF_RIGHT_MARGIN);
+    }
+
+    layout
 }
 
 /// Insert text at the given iter with the specified tag names applied.
@@ -1432,6 +1657,34 @@ fn current_list_item_needs_paragraph_separator(items: &[ListItemRenderState]) ->
     items
         .last()
         .is_some_and(|item| item.has_content && item.paragraph_ended)
+}
+
+/// Mark the current definition as having emitted visible content.
+fn mark_current_definition_content(definitions: &mut [DefinitionRenderState]) {
+    if let Some(definition) = definitions.last_mut() {
+        definition.has_content = true;
+    }
+}
+
+/// Record that a paragraph ended inside the current definition body.
+fn mark_current_definition_paragraph_end(definitions: &mut [DefinitionRenderState]) {
+    if let Some(definition) = definitions.last_mut() {
+        definition.paragraph_ended = true;
+    }
+}
+
+/// Clear the pending loose-definition paragraph separator for the current body.
+fn clear_current_definition_paragraph_end(definitions: &mut [DefinitionRenderState]) {
+    if let Some(definition) = definitions.last_mut() {
+        definition.paragraph_ended = false;
+    }
+}
+
+/// Return whether the next paragraph in this definition should be separated.
+fn current_definition_needs_paragraph_separator(definitions: &[DefinitionRenderState]) -> bool {
+    definitions
+        .last()
+        .is_some_and(|definition| definition.has_content && definition.paragraph_ended)
 }
 
 /// Return whether the current event should force any delayed list marker to be
@@ -1981,6 +2234,75 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn test_definition_list_parser_events_for_colon_syntax() {
+        let events = parser_event_labels("Term\n: Definition");
+
+        assert_event_order(
+            &events,
+            &[
+                "Start::DefinitionList",
+                "Start::DefinitionListTitle",
+                "Text::Term",
+                "End::DefinitionListTitle",
+                "Start::DefinitionListDefinition",
+                "Text::Definition",
+                "End::DefinitionListDefinition",
+                "End::DefinitionList",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_definition_list_parser_events_cover_inline_and_nested_blocks() {
+        let events = parser_event_labels(
+            "*Term*\n\n:   Definition with **strong** text\n\n        let nested = true;\n\n    > quoted",
+        );
+
+        assert_event_order(
+            &events,
+            &[
+                "Start::DefinitionList",
+                "Start::DefinitionListTitle",
+                "Start::Emphasis",
+                "Text::Term",
+                "End::Emphasis",
+                "Start::DefinitionListDefinition",
+                "Start::Paragraph",
+                "Start::Strong",
+                "Text::strong",
+                "End::Strong",
+                "End::Paragraph",
+                "Start::CodeBlock",
+                "Text::let nested = true;\n",
+                "End::CodeBlock",
+                "Start::BlockQuote",
+                "Text::quoted",
+                "End::BlockQuote",
+                "End::DefinitionListDefinition",
+                "End::DefinitionList",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_definition_list_parser_ignores_tilde_marker_syntax() {
+        let events = parser_event_labels("Term ~ Definition");
+
+        assert!(
+            events.iter().all(|event| !event.contains("DefinitionList")),
+            "Expected markdown-it tilde syntax to stay outside pulldown-cmark definition-list events, got {events:?}"
+        );
+        assert_event_order(
+            &events,
+            &[
+                "Start::Paragraph",
+                "Text::Term ~ Definition",
+                "End::Paragraph",
+            ],
+        );
+    }
+
+    #[test]
     fn test_table_cell_markup_builder_supports_inline_subset() {
         let mut builder = TableCellMarkupBuilder::new(MarkdownPreviewRenderContext::default());
         builder.push_event(Event::Start(Tag::Strong));
@@ -2157,5 +2479,48 @@ mod tests {
             1
         );
         assert_eq!(next_footnote_number, 3);
+    }
+
+    fn parser_event_labels(markdown: &str) -> Vec<String> {
+        Parser::new_ext(markdown, markdown_render_options())
+            .map(|event| match event {
+                Event::Start(tag) => match tag {
+                    Tag::BlockQuote(_) => "Start::BlockQuote".to_string(),
+                    Tag::CodeBlock(_) => "Start::CodeBlock".to_string(),
+                    other => format!("Start::{other:?}"),
+                },
+                Event::End(tag) => match tag {
+                    TagEnd::BlockQuote(_) => "End::BlockQuote".to_string(),
+                    TagEnd::CodeBlock => "End::CodeBlock".to_string(),
+                    other => format!("End::{other:?}"),
+                },
+                Event::Text(text) => format!("Text::{text}"),
+                Event::Code(code) => format!("Code::{code}"),
+                Event::SoftBreak => "SoftBreak".to_string(),
+                Event::HardBreak => "HardBreak".to_string(),
+                Event::Rule => "Rule".to_string(),
+                Event::FootnoteReference(label) => format!("FootnoteReference::{label}"),
+                Event::TaskListMarker(checked) => format!("TaskListMarker::{checked}"),
+                Event::Html(html) => format!("Html::{html}"),
+                Event::InlineHtml(html) => format!("InlineHtml::{html}"),
+                Event::InlineMath(math) => format!("InlineMath::{math}"),
+                Event::DisplayMath(math) => format!("DisplayMath::{math}"),
+            })
+            .collect()
+    }
+
+    fn assert_event_order(events: &[String], expected: &[&str]) {
+        let mut previous = 0usize;
+        for expected_event in expected {
+            let offset = events[previous..]
+                .iter()
+                .position(|event| event == expected_event)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "expected event '{expected_event}' after index {previous}, got {events:?}"
+                    )
+                });
+            previous += offset + 1;
+        }
     }
 }

@@ -6,8 +6,8 @@
 
 LushText's native Markdown preview now covers the highest-value GitHub-flavored
 basics that fit the existing renderer cleanly: task lists, alert callouts,
-footnotes, tables, headings, lists, links, blockquotes, rules, and fenced and
-inline code.
+footnotes, definition lists, tables, headings, lists, links, blockquotes,
+rules, and fenced and inline code.
 
 This note captures the next follow-up items that still fit the same guiding
 constraint:

@@ -33,7 +33,7 @@ After the reproduction, inspect the generated `summary.md`, then open the raw `a
 
 ## Choose the Right Mode
 
-- **Fresh launch**: Use when stdout and stderr from startup matter. First check whether the app is already running. For `gio::Application` or `adw::Application` apps, a second launch may only activate the existing instance and exit immediately. Do not treat `cargo run` or `make run` printing `Running target/debug/...` as proof that a new GUI process or a new window was created.
+- **Fresh launch**: Use when stdout and stderr from startup matter. First check whether the app is already running because `make run` intentionally asks the existing LushText owner to quit before relaunching the fresh debug binary, and fails if that owner refuses to close. Do not treat `cargo run` printing `Running target/debug/...` as proof that a new GUI process or a new window was created.
 - **Existing instance watch**: Use when the app is already open and the user can reproduce the bug in that window. This is usually the safer and more truthful mode for single-instance GTK apps. Keep the capture session open, collect journal and D-Bus output, and let the human drive the UI.
 - **Screenshot assist**: Use when you need to confirm what the human sees on screen. Run `scripts/capture-screenshot.py` and be ready for a desktop permission prompt or timeout.
 - **Log triage only**: Use `scripts/summarize-runtime-logs.py` on an existing artifact directory when the session has already been recorded.
@@ -72,10 +72,10 @@ This is the preferred workflow over broad speculative code changes. For geometry
 ## Required Habits
 
 - Prefer `tty: true` for the live runner. PTY-backed sessions are the most reliable way to preserve stdout and stderr ordering.
-- Tell the human before starting a fresh capture if an existing app instance may need to be closed. Do **not** kill an existing GUI instance unless the human explicitly asks for that.
+- Tell the human before starting a fresh capture if an existing app instance may need to be closed. `make run` is now a fresh-run path that asks the existing LushText instance to quit and refuses to activate stale code; use an existing-instance watch instead when the human has unsaved work.
 - Treat `pid-pattern` choice as part of the evidence chain. A bad pattern can make a single-instance handoff look like a fresh launch, or can make the helper appear to be the target process.
 - Validate the helper's process snapshots before trusting the launch note. If `process-before.txt` or `process-after.txt` contains `run-gtk-debug-session.sh` or `pgrep`, the PID heuristic is not trustworthy yet.
-- For unique GTK apps, distinguish "launcher command ran" from "new instance exists". `make run` may rebuild and invoke the launcher while the already-running app window is the one still being observed.
+- For unique GTK apps, distinguish "launcher command ran" from "new instance exists". `cargo run` may still hand off to an existing owner; `make run` should either relaunch the fresh debug binary or fail if the existing owner refuses to close.
 - Prefer human-driven reproduction over synthetic action triggering when the user can reproduce the issue reliably. Synthetic actions are useful for narrowing once the live symptom is already understood, not as the default first proof.
 - After the first confirmed repro, check whether the app exports `org.gtk.Actions` on a `/.../window/N` object. If it does, use `gdbus call ... org.gtk.Actions.SetState` or `Activate` to replay the exact window action path across fresh launches.
 - For geometry warnings during paned animations, do not assume the widget named in the warning is the true root cause. A snapshot wrapper that replaced the opposite pane can under-report the live child's minimum width and make GTK complain while measuring the other side.

@@ -151,6 +151,7 @@ Dialogs, popovers, and browsers that use `GtkStack`, `GtkStackSwitcher`, or anot
 
 - Refresh after render, on the preview widget's `size_allocate()`, after readable-column margin changes, and when the text view is mapped or reports a width change.
 - Queue one idle refresh after immediate refreshes so code rendered before the preview is mapped can catch the final allocation.
+- When the preview lives inside a shell that starts hidden or animates through `GtkPaned`, refresh anchored block widths again after the shell transition settles. Standalone preview-widget tests are primitive coverage; acceptance for hidden-to-visible bugs belongs in window-level tests that assert final allocation and horizontal adjustment state.
 - Keep horizontal scrolling inside the embedded block only for real content overflow; do not let the block's natural width create narrow boxes or false scrollbars.
 
 ## GSettings Bindings

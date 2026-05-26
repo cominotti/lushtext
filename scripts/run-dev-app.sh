@@ -19,6 +19,8 @@ build_target="${CARGO_BUILD_TARGET:-}"
 keep_staged="${LUSHTEXT_DEV_RUN_KEEP_STAGED:-0}"
 no_exec="${LUSHTEXT_DEV_RUN_NO_EXEC:-0}"
 force_restart="${LUSHTEXT_DEV_RUN_FORCE_RESTART:-0}"
+terminate_stale="${LUSHTEXT_DEV_RUN_TERMINATE_STALE:-0}"
+restart_timeout_seconds="${LUSHTEXT_DEV_RUN_RESTART_TIMEOUT_SECONDS:-5}"
 desktop_app_id="$app_id"
 
 if [[ "$keep_staged" == "1" ]]; then
@@ -32,6 +34,11 @@ fi
 
 if [[ "$desktop_app_id" =~ [[:space:]/] ]]; then
     echo "Error: desktop application ID '$desktop_app_id' is not safe for a desktop filename." >&2
+    exit 1
+fi
+
+if [[ ! "$restart_timeout_seconds" =~ ^[0-9]+$ ]]; then
+    echo "Error: LUSHTEXT_DEV_RUN_RESTART_TIMEOUT_SECONDS must be a non-negative integer." >&2
     exit 1
 fi
 
@@ -153,43 +160,53 @@ matching_binary_pids() {
     done
 }
 
-wait_for_pids_to_exit() {
+app_is_registered() {
+    command -v gapplication >/dev/null 2>&1 || return 1
+
+    gapplication list-apps 2>/dev/null | grep -Fxq "$app_id"
+}
+
+wait_for_existing_instance_to_exit() {
     local deadline="$1"
 
     while (( SECONDS < deadline )); do
         mapfile -t current_pids < <(matching_binary_pids | sort -u)
-        if (( ${#current_pids[@]} == 0 )); then
+        if (( ${#current_pids[@]} == 0 )) && ! app_is_registered; then
             return 0
         fi
         sleep 0.1
     done
 
     mapfile -t current_pids < <(matching_binary_pids | sort -u)
-    (( ${#current_pids[@]} == 0 ))
+    (( ${#current_pids[@]} == 0 )) && ! app_is_registered
 }
 
 stop_existing_instance() {
-    echo "Stopping existing LushText instance so GNOME Shell picks up the refreshed dock icon." >&2
+    echo "Stopping existing LushText instance so the fresh debug binary is launched." >&2
 
     if command -v gapplication >/dev/null 2>&1; then
         gapplication action "$app_id" quit >/dev/null 2>&1 || true
     fi
 
-    if wait_for_pids_to_exit $((SECONDS + 5)); then
+    if wait_for_existing_instance_to_exit $((SECONDS + restart_timeout_seconds)); then
         return 0
     fi
 
     mapfile -t current_pids < <(matching_binary_pids | sort -u)
-    if (( ${#current_pids[@]} > 0 )); then
-        echo "Existing instance ignored app.quit; sending SIGTERM to refresh the dock icon cleanly." >&2
+    if (( ${#current_pids[@]} > 0 )) && [[ "$terminate_stale" == "1" ]]; then
+        echo "Existing debug instance ignored app.quit; sending SIGTERM before relaunch." >&2
         kill "${current_pids[@]}" 2>/dev/null || true
     fi
 
-    if wait_for_pids_to_exit $((SECONDS + 5)); then
+    if wait_for_existing_instance_to_exit $((SECONDS + restart_timeout_seconds)); then
         return 0
     fi
 
-    echo "Error: existing LushText instance is still running; close it manually and retry." >&2
+    if app_is_registered; then
+        echo "Error: a LushText application is still registered under $app_id; close it manually and retry." >&2
+    else
+        echo "Error: existing LushText debug instance is still running; close it manually and retry." >&2
+    fi
     exit 1
 }
 
@@ -247,14 +264,14 @@ if [[ "$no_exec" == "1" ]]; then
 fi
 
 mapfile -t before_pids < <(matching_binary_pids | sort -u)
-if (( ${#before_pids[@]} > 0 )); then
-    if [[ "$force_restart" == "1" ]]; then
+if [[ "$force_restart" == "1" ]]; then
+    if (( ${#before_pids[@]} > 0 )) || app_is_registered; then
         stop_existing_instance
-        before_pids=()
-    else
-        echo "Existing LushText instance detected; activating it through the staged desktop entry." >&2
-        echo "If the dock item came from an older direct launch, close all LushText windows once and rerun make refresh-dock-icon for a fresh Shell association." >&2
     fi
+    before_pids=()
+elif (( ${#before_pids[@]} > 0 )); then
+    echo "Existing LushText instance detected; activating it through the staged desktop entry." >&2
+    echo "Set LUSHTEXT_DEV_RUN_FORCE_RESTART=1 to force a fresh debug relaunch." >&2
 fi
 gtk-launch "$desktop_app_id" "$@"
 

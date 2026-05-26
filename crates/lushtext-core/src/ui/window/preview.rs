@@ -226,6 +226,9 @@ impl LushtextWindow {
             }
             imp.preview_paned.set_shrink_end_child(false);
             imp.preview_animation_active.set(false);
+            if imp.preview_visible.get() {
+                imp.markdown_preview.refresh_embedded_code_block_layouts();
+            }
             window.persist_preview_position_preference();
         });
 
@@ -382,6 +385,9 @@ impl LushtextWindow {
             }
             imp.preview_paned.set_shrink_start_child(false);
             imp.preview_animation_active.set(false);
+            if imp.preview_mode.get() {
+                imp.markdown_preview.refresh_embedded_code_block_layouts();
+            }
             window.persist_preview_position_preference();
         });
 
@@ -415,6 +421,7 @@ impl LushtextWindow {
                     self.current_workspace_directory_roots(),
                 );
                 preview.render_markdown_with_context(&text, &context);
+                preview.refresh_embedded_code_block_layouts();
             }
             Some(_) => {
                 preview.show_placeholder("Not a Markdown file");

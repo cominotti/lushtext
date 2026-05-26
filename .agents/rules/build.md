@@ -10,7 +10,7 @@ globs: "{Cargo.toml,Makefile,.cargo/**,.config/**,build.rs,meson.build,meson_opt
 Use `make` targets for development. The Makefile auto-detects nextest for non-widget tests across the workspace, while full-suite widget coverage in `make test` flows through the shared headless `scripts/run-widget-tests.sh` path so local verification matches CI. `make test-widget` still uses the same runner in auto/native mode for interactive debugging.
 
 ```
-make run        # build + launch the app with temporary GNOME desktop staging for dock icon matching
+make run        # build + force a fresh launch with temporary GNOME desktop staging
 make refresh-dock-icon # regenerate icon assets + force a fresh GNOME Shell dock icon reload
 make verify-flatpak-identity # verify Flatpak export identity, permissions, and MIME registration
 make test       # all tests
@@ -24,7 +24,7 @@ Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-lin
 
 The repo-managed Git hooks live under `.githooks/`. Install them with `make install-git-hooks`, which sets `core.hooksPath` for this checkout. The pre-commit hook runs `make pre-commit`, which must stay aligned with the formatting and Clippy gates enforced in CI.
 
-On GNOME Shell, `make run` stages a desktop file plus `hicolor` icons and writes the desktop entry with a content-addressed absolute icon file path. This avoids Shell holding onto a stale themed-icon cache entry when the app icon bytes change between dev runs while keeping the icon file alive for as long as a restored user-local desktop entry might reference it. The launcher must repair any stale absolute `Icon=` path before backing up or restoring an existing `dev.cominotti.lushtext.desktop` override. Because the staged desktop file also carries `MimeType` associations, the launcher must refresh the applications desktop database after staging or restoring it so GNOME Settings and `gio mime` see current handler metadata.
+On GNOME Shell, `make run` asks any already-running `dev.cominotti.lushtext` owner to quit before staging a desktop file plus `hicolor` icons and launching the freshly built debug binary. If the existing owner refuses to close, the launcher must fail instead of activating stale code. The staged desktop entry uses a content-addressed absolute icon file path. This avoids Shell holding onto a stale themed-icon cache entry when the app icon bytes change between dev runs while keeping the icon file alive for as long as a restored user-local desktop entry might reference it. The launcher must repair any stale absolute `Icon=` path before backing up or restoring an existing `dev.cominotti.lushtext.desktop` override. Because the staged desktop file also carries `MimeType` associations, the launcher must refresh the applications desktop database after staging or restoring it so GNOME Settings and `gio mime` see current handler metadata.
 
 Normal dev staging is temporary and may use the production desktop ID only while the debug process is running. Persistent dev staging (`LUSHTEXT_DEV_RUN_KEEP_STAGED=1`) must use a non-production ID such as `dev.cominotti.lushtext.Devel`; leaving a same-ID non-Flatpak `~/.local/share/applications/dev.cominotti.lushtext.desktop` shadows the Flatpak export and makes GNOME Settings treat LushText as unsandboxed. Use `make verify-flatpak-identity` after Flatpak or desktop-entry work to confirm the exported desktop entry has `X-Flatpak=dev.cominotti.lushtext`, no same-ID dev shadow exists, effective Flatpak permissions are reported, and required MIME handlers remain registered.
 

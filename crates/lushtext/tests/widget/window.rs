@@ -8,7 +8,7 @@
 
 use crate::common::{emit_key_pressed_on_focus, ensure_gtk_init};
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
-use glib::prelude::ObjectExt;
+use glib::prelude::{Cast, IsA, ObjectExt};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{
@@ -33,6 +33,7 @@ use lushtext_core::services::{
 use lushtext_core::ui::editor_page::{
     LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
 };
+use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::window::LushtextWindow;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,21 @@ use std::time::{Duration, Instant};
 fn test_window() -> LushtextWindow {
     crate::common::test_window()
 }
+
+const DEFINITION_LIST_CODE_BLOCK_SAMPLE: &str = concat!(
+    "## Definition lists\n\n",
+    "Term 1\n",
+    ": Definition 1 with lazy continuation.\n\n",
+    "Term 2 with *inline markup*\n\n",
+    ":   Definition 2\n\n",
+    "        { some code, part of Definition 2 }\n\n",
+    "    Third paragraph of definition 2.\n\n",
+    "Compact style:\n\n",
+    "Term 1 ~ Definition 1\n\n",
+    "Term 2 ~ Definition 2a ~ Definition 2b\n",
+);
+
+const CODE_BLOCK_HORIZONTAL_PADDING: i32 = 12;
 
 fn test_window_with_split_view_state(
     workspace_visible: bool,
@@ -217,6 +233,162 @@ fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
         .child()
         .downcast::<LushtextEditorPage>()
         .expect("expected operation to succeed")
+}
+
+// Keep hidden-to-visible preview-shell regressions in this suite: a directly
+// mounted `LushtextMarkdownPreview` can pass while the real `GtkPaned` shell
+// leaves child-anchor code blocks with stale allocations.
+fn prepare_markdown_preview_window(
+    markdown: &str,
+    width: i32,
+    height: i32,
+) -> (LushtextWindow, tempfile::TempDir) {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(width, height);
+    window.new_tab();
+    let dir = tempfile::tempdir().expect("markdown preview tempdir");
+    let editor = active_editor(&window);
+    editor.set_file_path(&dir.path().join("gh-markdown-sample.md"));
+    editor.buffer().set_text(markdown);
+    present_window(&window);
+    (window, dir)
+}
+
+fn descendants(root: &impl IsA<gtk4::Widget>) -> Vec<gtk4::Widget> {
+    let mut widgets = Vec::new();
+    let mut stack = vec![root.as_ref().clone()];
+
+    while let Some(widget) = stack.pop() {
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            stack.push(current.clone());
+            child = current.next_sibling();
+        }
+        widgets.push(widget);
+    }
+
+    widgets
+}
+
+fn widgets_with_css_class<T>(root: &impl IsA<gtk4::Widget>, css_class: &str) -> Vec<T>
+where
+    T: IsA<gtk4::Widget> + glib::object::ObjectType + Clone + 'static,
+{
+    descendants(root)
+        .into_iter()
+        .filter(|widget| widget.has_css_class(css_class))
+        .filter_map(|widget| widget.downcast::<T>().ok())
+        .collect()
+}
+
+fn source_views(preview: &LushtextMarkdownPreview) -> Vec<sourceview5::View> {
+    widgets_with_css_class::<sourceview5::View>(preview, "markdown-code-block-view")
+}
+
+fn code_block_containers(preview: &LushtextMarkdownPreview) -> Vec<gtk4::Box> {
+    widgets_with_css_class::<gtk4::Box>(preview, "markdown-code-block")
+}
+
+fn code_block_scrollers(preview: &LushtextMarkdownPreview) -> Vec<gtk4::ScrolledWindow> {
+    widgets_with_css_class::<gtk4::ScrolledWindow>(preview, "markdown-code-block-scroller")
+}
+
+fn preview_text_column_width(preview: &LushtextMarkdownPreview) -> i32 {
+    let text_view = preview.text_view();
+    text_view.width() - text_view.left_margin() - text_view.right_margin()
+}
+
+fn expected_code_block_width(preview: &LushtextMarkdownPreview, block: &gtk4::Box) -> i32 {
+    preview_text_column_width(preview)
+        .saturating_sub(block.margin_start() + block.margin_end())
+        .max(1)
+}
+
+fn horizontal_overflow(scroller: &gtk4::ScrolledWindow) -> f64 {
+    let adjustment = scroller.hadjustment();
+    (adjustment.upper() - adjustment.page_size()).max(0.0)
+}
+
+fn source_view_buffer_text(source_view: &sourceview5::View) -> String {
+    let buffer = source_view.buffer();
+    buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string()
+}
+
+fn wait_for_markdown_preview_shell(window: &LushtextWindow) {
+    wait_until(Duration::from_secs(3), || {
+        let preview = &window.imp().markdown_preview;
+        let Some(scroller) = code_block_scrollers(preview).first().cloned() else {
+            return false;
+        };
+
+        !window.imp().preview_animation_active.get()
+            && preview.is_showing_content()
+            && preview.text_view().width() > 0
+            && !code_block_containers(preview).is_empty()
+            && !source_views(preview).is_empty()
+            && scroller.hadjustment().page_size() > 0.0
+    });
+    flush_after_delay(Duration::from_millis(40));
+}
+
+fn assert_live_code_block_uses_preview_column(window: &LushtextWindow) {
+    let preview = &window.imp().markdown_preview;
+    let text_view = preview.text_view();
+    let block = code_block_containers(preview)
+        .pop()
+        .expect("code block container");
+    let scroller = code_block_scrollers(preview).pop().expect("code scroller");
+    let source_view = source_views(preview).pop().expect("code source view");
+    let expected_width = expected_code_block_width(preview, &block);
+    let actual_width = block.width();
+    let minimum_inner_width =
+        (expected_width - (CODE_BLOCK_HORIZONTAL_PADDING * 2) - 8).max(1) as f32;
+    let block_bounds = block
+        .compute_bounds(&text_view)
+        .expect("code block bounds in preview text view");
+    let scroller_bounds = scroller
+        .compute_bounds(&block)
+        .expect("scroller bounds in code block");
+    let overflow = horizontal_overflow(&scroller);
+
+    assert_eq!(
+        source_view_buffer_text(&source_view),
+        "{ some code, part of Definition 2 }\n",
+        "preview should preserve the fenced code text from the definition body"
+    );
+    assert!(
+        block.margin_start() > 0,
+        "definition-list code blocks should keep their definition-body offset"
+    );
+    assert_eq!(
+        block.width_request(),
+        expected_width,
+        "definition-list code block width request should follow the live text column"
+    );
+    assert!(
+        (actual_width - expected_width).abs() <= 4,
+        "definition-list code block allocation should settle near {expected_width}, got {actual_width}"
+    );
+    assert!(
+        block_bounds.width() >= (expected_width - 4).max(1) as f32,
+        "code block bounds should span the preview column after definition margins; expected at least {}, got {}",
+        (expected_width - 4).max(1),
+        block_bounds.width()
+    );
+    assert!(
+        scroller_bounds.width() >= minimum_inner_width,
+        "inner code scroller should receive the block width minus padding; expected at least {minimum_inner_width}, got {}",
+        scroller_bounds.width()
+    );
+    assert!(
+        overflow <= 1.0,
+        "short definition-list code block should not expose false horizontal overflow, got upper={} page_size={} overflow={overflow}",
+        scroller.hadjustment().upper(),
+        scroller.hadjustment().page_size()
+    );
 }
 
 fn active_editor_has_focus(window: &LushtextWindow) -> bool {
@@ -3739,6 +3911,34 @@ fn test_primary_menu_markdown_preview_renders_active_markdown_buffer() {
         !rendered.contains("# Menu Heading"),
         "preview should hide raw heading markers"
     );
+}
+
+#[test]
+fn test_preview_only_definition_list_code_block_uses_live_column() {
+    let (window, _dir) =
+        prepare_markdown_preview_window(DEFINITION_LIST_CODE_BLOCK_SAMPLE, 1180, 720);
+
+    activate_action(&window, "toggle-preview-mode");
+
+    wait_until(Duration::from_secs(2), || window.imp().preview_mode.get());
+    wait_for_markdown_preview_shell(&window);
+    assert_live_code_block_uses_preview_column(&window);
+}
+
+#[test]
+fn test_side_by_side_definition_list_code_block_uses_live_column() {
+    ensure_gtk_init();
+    gio::Settings::new(lushtext_core::config::APP_ID)
+        .set_int(keys::PREVIEW_PANE_POSITION, 520)
+        .expect("set wide preview pane for definition-list code block regression");
+    let (window, _dir) =
+        prepare_markdown_preview_window(DEFINITION_LIST_CODE_BLOCK_SAMPLE, 1800, 720);
+
+    activate_action(&window, "toggle-preview-pane");
+
+    wait_until(Duration::from_secs(2), || window.imp().preview_visible.get());
+    wait_for_markdown_preview_shell(&window);
+    assert_live_code_block_uses_preview_column(&window);
 }
 
 #[test]

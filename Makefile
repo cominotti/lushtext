@@ -5,7 +5,7 @@
 # Targets:
 #   make build       - Release build
 #   make build-debug - Debug build
-#   make run         - Debug build + run with temporary GNOME desktop staging
+#   make run         - Debug build + force a fresh dev run with GNOME desktop staging
 #   make refresh-dock-icon - Regenerate app icon assets and restart dev run so GNOME Shell reloads the app icon
 #   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
@@ -60,10 +60,10 @@ build-debug:
 	@echo "Building LushText (debug)..."
 	cargo build
 
-# Debug build and run
+# Debug build and force a fresh dev run
 run: build-debug
 	@echo "Running LushText..."
-	./scripts/run-dev-app.sh
+	LUSHTEXT_DEV_RUN_FORCE_RESTART=1 ./scripts/run-dev-app.sh
 
 # Force a fresh dev relaunch so GNOME Shell reloads the dock icon
 refresh-dock-icon:
@@ -73,7 +73,7 @@ refresh-dock-icon:
 	rsvg-convert -w 128 -h 128 data/icons/dev.cominotti.lushtext.svg -o data/icons/hicolor/128x128/apps/dev.cominotti.lushtext.png
 	@$(MAKE) build-debug
 	@echo "Refreshing the LushText GNOME Shell dock icon..."
-	LUSHTEXT_DEV_RUN_FORCE_RESTART=1 ./scripts/run-dev-app.sh
+	LUSHTEXT_DEV_RUN_FORCE_RESTART=1 LUSHTEXT_DEV_RUN_TERMINATE_STALE=1 ./scripts/run-dev-app.sh
 
 # Run all tests
 test:
@@ -208,7 +208,7 @@ help:
 	@echo "Build targets:"
 	@echo "  build        Release build (optimized)"
 	@echo "  build-debug  Debug build"
-	@echo "  run          Debug build and run with temporary GNOME desktop staging"
+	@echo "  run          Debug build and force a fresh dev run with GNOME desktop staging"
 	@echo "  refresh-dock-icon Regenerate app icon assets + force a fresh dock icon reload in GNOME Shell"
 	@echo ""
 	@echo "Test targets:"
