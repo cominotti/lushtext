@@ -6,7 +6,7 @@
 //! command results with file-index matches.
 
 use crate::model::palette::{
-    CommandCategory, CommandDef, ScoredResult, SearchMode, SearchResultItem,
+    CommandCategory, CommandDef, PaletteFileEntry, ScoredResult, SearchMode, SearchResultItem,
 };
 
 use super::fuzzy::search_items;
@@ -20,7 +20,7 @@ pub fn all_commands() -> &'static [CommandDef] {
             id: "win.new-tab",
             label: "New File",
             category: CommandCategory::File,
-            shortcut: Some("Ctrl+T"),
+            shortcut: Some("Ctrl+N"),
         },
         CommandDef {
             id: "win.open-file",
@@ -212,6 +212,21 @@ pub fn search_commands(query: &str, max: usize) -> Vec<ScoredResult<'static>> {
         all_commands().iter(),
         |command| command.label,
         SearchResultItem::Command,
+        query,
+        max,
+    )
+}
+
+/// Search open file-backed tab entries with the same fuzzy matcher as indexed files.
+pub fn search_open_files<'a>(
+    files: &'a [PaletteFileEntry],
+    query: &str,
+    max: usize,
+) -> Vec<ScoredResult<'a>> {
+    search_items(
+        files.iter(),
+        |file| file.display_name.as_str(),
+        SearchResultItem::OpenFile,
         query,
         max,
     )

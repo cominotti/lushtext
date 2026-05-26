@@ -9,7 +9,7 @@
       <class name="command-palette-container"/>
     </style>
 
-    <!-- Header row: mode label + search entry -->
+    <!-- Header row: mode selector + search entry -->
     <child>
       <object class="GtkBox">
         <property name="orientation">horizontal</property>
@@ -19,12 +19,11 @@
         <property name="margin-top">8</property>
 
         <child>
-          <object class="GtkLabel" id="mode_label">
-            <property name="label">All ⇥</property>
+          <object class="GtkDropDown" id="mode_dropdown">
             <property name="halign">start</property>
-            <property name="width-chars">14</property>
+            <property name="valign">center</property>
+            <property name="width-request">132</property>
             <style>
-              <class name="caption"/>
               <class name="command-palette-mode"/>
             </style>
           </object>

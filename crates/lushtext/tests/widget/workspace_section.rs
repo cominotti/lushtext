@@ -331,30 +331,30 @@ fn test_workspace_section_header_button_carries_vertical_spacing() {
     assert_eq!(section.imp().refresh_button.valign(), gtk4::Align::Center);
     assert_eq!(section.imp().refresh_button.margin_top(), 6);
     assert_eq!(section.imp().refresh_button.margin_bottom(), 6);
-    assert_eq!(section.imp().add_folder_button.valign(), gtk4::Align::Center);
-    assert_eq!(section.imp().add_folder_button.margin_top(), 6);
-    assert_eq!(section.imp().add_folder_button.margin_bottom(), 6);
 }
 
 #[test]
-fn test_workspace_section_refresh_button_sits_left_of_replace_root_button() {
+fn test_workspace_section_refresh_button_is_rightmost_header_control() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
-    let second_child = section
+    let refresh_child = section
         .imp()
         .header_box
         .first_child()
         .and_then(|child| child.next_sibling())
         .and_downcast::<gtk4::Button>()
         .expect("second header child should be the refresh button");
-    let third_child = second_child
-        .next_sibling()
-        .and_downcast::<gtk4::Button>()
-        .expect("third header child should be the replace-root button");
 
-    assert_eq!(second_child.as_ptr(), section.imp().refresh_button.as_ptr());
-    assert_eq!(third_child.as_ptr(), section.imp().add_folder_button.as_ptr());
+    assert_eq!(refresh_child.as_ptr(), section.imp().refresh_button.as_ptr());
+    let mut trailing_child = refresh_child.next_sibling();
+    while let Some(child) = trailing_child {
+        assert!(
+            !child.is::<gtk4::Button>(),
+            "no workspace-section header button should appear to the right of refresh"
+        );
+        trailing_child = child.next_sibling();
+    }
 }
 
 #[test]
@@ -426,18 +426,42 @@ fn test_workspace_section_chrome_icons_remain_symbolic() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let nested = dir.path().join("nested");
+    std::fs::create_dir(&nested).expect("expected operation to succeed");
+    section.load_roots(&[WorkspaceEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+
     assert_eq!(
         section.imp().refresh_button.icon_name().as_deref(),
         Some("view-refresh-symbolic")
     );
     assert_eq!(
-        section.imp().add_folder_button.icon_name().as_deref(),
-        Some("folder-new-symbolic")
-    );
-    assert_eq!(
         section.imp().drilldown_back_button.icon_name().as_deref(),
         Some("go-previous-symbolic")
     );
+
+    let window = present_section_window(&section);
+    wait_until(Duration::from_secs(2), || {
+        section.imp().file_tree_view.first_child().is_some()
+    });
+    let row_widget = section
+        .imp()
+        .file_tree_view
+        .first_child()
+        .expect("list view should realize the first row");
+    let overlay = row_widget
+        .first_child()
+        .and_downcast::<gtk4::Overlay>()
+        .expect("row child should be the factory overlay");
+    let focus_button = overlay
+        .first_child()
+        .and_then(|child| child.next_sibling())
+        .and_downcast::<gtk4::Button>()
+        .expect("focus-folder overlay control should be a button");
+    assert_eq!(focus_button.icon_name().as_deref(), Some("go-next-symbolic"));
+    window.close();
 }
 
 #[test]
@@ -706,29 +730,6 @@ fn test_create_callback_fires() {
     assert_eq!(path_seen.take(), PathBuf::from("/tmp/new_file.txt"));
 }
 
-// --- Add folder callback ---
-
-#[test]
-fn test_add_folder_callback_fires() {
-    ensure_gtk_init();
-    let section = LushtextWorkspaceSection::new(WorkspaceId::new("test-ws"));
-
-    let called = Rc::new(Cell::new(false));
-    let id_seen = Rc::new(Cell::new(String::new()));
-
-    let called_c = called.clone();
-    let id_c = id_seen.clone();
-    section.connect_add_folder_requested(move |ws_id| {
-        called_c.set(true);
-        id_c.set(ws_id.as_str().to_string());
-    });
-
-    section.notify_add_folder_requested();
-
-    assert!(called.get());
-    assert_eq!(id_seen.take(), "test-ws");
-}
-
 // --- Workspace header callbacks ---
 
 #[test]
@@ -849,35 +850,17 @@ fn test_add_root_appends_multiple() {
 // --- Button state toggle ---
 
 #[test]
-fn test_button_shows_add_icon_when_no_roots() {
+fn test_refresh_button_stays_disabled_when_no_roots() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
     assert!(
         !section.imp().refresh_button.is_sensitive(),
         "refresh should stay disabled until the section has roots"
     );
-    assert_eq!(
-        section
-            .imp()
-            .add_folder_button
-            .icon_name()
-            .expect("expected operation to succeed")
-            .as_str(),
-        "folder-new-symbolic"
-    );
-    assert_eq!(
-        section
-            .imp()
-            .add_folder_button
-            .tooltip_text()
-            .expect("expected operation to succeed")
-            .as_str(),
-        "Add Folder to Workspace"
-    );
 }
 
 #[test]
-fn test_button_switches_to_replace_icon_after_load_roots() {
+fn test_refresh_button_becomes_enabled_after_load_roots() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
@@ -890,28 +873,10 @@ fn test_button_switches_to_replace_icon_after_load_roots() {
         section.imp().refresh_button.is_sensitive(),
         "refresh should become available once the section has roots"
     );
-    assert_eq!(
-        section
-            .imp()
-            .add_folder_button
-            .icon_name()
-            .expect("expected operation to succeed")
-            .as_str(),
-        "folder-open-symbolic"
-    );
-    assert_eq!(
-        section
-            .imp()
-            .add_folder_button
-            .tooltip_text()
-            .expect("expected operation to succeed")
-            .as_str(),
-        "Replace Workspace Root"
-    );
 }
 
 #[test]
-fn test_button_switches_to_replace_icon_after_add_root() {
+fn test_refresh_button_becomes_enabled_after_add_root() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
@@ -919,15 +884,6 @@ fn test_button_switches_to_replace_icon_after_add_root() {
     section.add_root(dir.path(), true);
 
     assert!(section.imp().refresh_button.is_sensitive());
-    assert_eq!(
-        section
-            .imp()
-            .add_folder_button
-            .icon_name()
-            .expect("expected operation to succeed")
-            .as_str(),
-        "folder-open-symbolic"
-    );
 }
 
 #[test]

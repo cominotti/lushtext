@@ -14,8 +14,8 @@
             <property name="title" translatable="yes">General</property>
             <child>
               <object class="GtkShortcutsShortcut">
-                <property name="title" translatable="yes">New Tab</property>
-                <property name="accelerator">&lt;Control&gt;t</property>
+                <property name="title" translatable="yes">New File</property>
+                <property name="accelerator">&lt;Control&gt;n</property>
               </object>
             </child>
             <child>

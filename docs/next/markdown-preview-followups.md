@@ -6,8 +6,8 @@
 
 LushText's native Markdown preview now covers the highest-value GitHub-flavored
 basics that fit the existing renderer cleanly: task lists, alert callouts,
-footnotes, tables, headings, lists, links, blockquotes, rules, and fenced and
-inline code.
+footnotes, definition lists, tables, headings, lists, links, blockquotes,
+rules, and fenced and inline code.
 
 This note captures the next follow-up items that still fit the same guiding
 constraint:
@@ -55,11 +55,12 @@ Why this still fits:
 - The scope can stay narrow by explicitly excluding raw HTML image handling,
   responsive layout, captions, and remote-fetch complexity
 
-### 4. Nested list fidelity
+### 4. Advanced list fidelity
 
-The current list rendering covers basic ordered and unordered lists well, but it
-is still worth tightening nested list indentation and mixed list structures so
-more complex documents keep their hierarchy clearly.
+The current list rendering covers tight and loose list row flow, offset ordered
+markers, task-list markers, and nested hanging indents. Future refinements
+should focus on rarer mixed CommonMark structures and visual polish rather than
+rebuilding the renderer.
 
 Why this still fits:
 - It stays on the existing text-and-tag path

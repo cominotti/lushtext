@@ -4,14 +4,22 @@
 
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use glib::prelude::ToValue;
 use gtk4::prelude::*;
-use lushtext_core::model::palette::{CommandCategory, CommandDef, IndexedFile, SearchMode};
+use lushtext_core::model::palette::{
+    CommandCategory, CommandDef, IndexedFile, PaletteFileEntry, SearchMode,
+};
+use lushtext_core::model::workspace::{
+    WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
+};
+use lushtext_core::services::{json_store, workspace_manager};
 use lushtext_core::services::palette::FileIndex;
 use lushtext_core::ui::command_palette::LushtextCommandPalette;
 use lushtext_core::ui::command_palette::item::PaletteItem;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 /// Drain all pending events from the GTK main loop.
 fn flush_events() {
@@ -29,6 +37,107 @@ fn spin_until(predicate: impl Fn() -> bool) {
         );
         glib::MainContext::default().iteration(true);
     }
+}
+
+fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        flush_events();
+    }
+    panic!("condition was not met within {timeout:?}");
+}
+
+fn present_window(window: &LushtextWindow) {
+    window.present();
+    wait_until(Duration::from_secs(2), || {
+        window.width() > 0 && window.height() > 0
+    });
+    flush_events();
+}
+
+fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    ensure_gtk_init();
+    let roots_dir = tempfile::tempdir().expect("scoped workspace roots tempdir");
+    let left_root = roots_dir.path().join("left");
+    let right_root = roots_dir.path().join("right");
+    std::fs::create_dir_all(&left_root).expect("create left workspace root");
+    std::fs::create_dir_all(&right_root).expect("create right workspace root");
+    std::fs::write(left_root.join("alpha.rs"), "fn alpha() {}\n").expect("write alpha");
+    std::fs::write(right_root.join("beta.rs"), "fn beta() {}\n").expect("write beta");
+
+    let workspaces = WorkspacesFile {
+        current_scope: initial_scope,
+        workspaces: vec![
+            WorkspaceConfig {
+                id: WorkspaceId::new("ws-left"),
+                name: "left".to_string(),
+                root: left_root.clone(),
+            },
+            WorkspaceConfig {
+                id: WorkspaceId::new("ws-right"),
+                name: "right".to_string(),
+                root: right_root.clone(),
+            },
+        ],
+    };
+    workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save scoped workspaces");
+    (roots_dir, left_root, right_root)
+}
+
+fn wait_for_palette_index(window: &LushtextWindow, expected_index: usize) {
+    wait_until(Duration::from_secs(3), || {
+        window.imp().command_palette.file_index_len() == expected_index
+    });
+}
+
+fn emit_key(widget: &gtk4::Widget, key: gtk4::gdk::Key) -> glib::Propagation {
+    let controllers = widget.observe_controllers();
+    for index in 0..controllers.n_items() {
+        if let Some(controller) = controllers
+            .item(index)
+            .and_then(|object| object.downcast::<gtk4::EventControllerKey>().ok())
+        {
+            let args: [&dyn ToValue; 3] = [&key, &0u32, &gtk4::gdk::ModifierType::empty()];
+            let stopped: bool =
+                glib::object::ObjectExt::emit_by_name(&controller, "key-pressed", &args);
+            return if stopped {
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            };
+        }
+    }
+    panic!("widget had no EventControllerKey");
+}
+
+fn palette_rows(palette: &LushtextCommandPalette) -> Vec<PaletteItem> {
+    let store = palette.imp().results_store.clone();
+    (0..store.n_items())
+        .filter_map(|index| store.item(index).and_downcast::<PaletteItem>())
+        .collect()
+}
+
+fn palette_labels(palette: &LushtextCommandPalette) -> Vec<String> {
+    palette_rows(palette)
+        .iter()
+        .map(PaletteItem::display_name)
+        .collect()
+}
+
+fn row_position(labels: &[String], label: &str) -> usize {
+    labels
+        .iter()
+        .position(|candidate| candidate == label)
+        .unwrap_or_else(|| panic!("expected label '{label}' in {labels:?}"))
+}
+
+fn rebuild_and_wait_for_label(palette: &LushtextCommandPalette, query: &str, label: &str) {
+    palette.imp().rebuild_results(query);
+    spin_until(|| palette_labels(palette).iter().any(|item| item == label));
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +207,17 @@ fn test_palette_item_file_at_root() {
     assert_eq!(item.subtitle(), "Cargo.toml");
 }
 
+#[test]
+fn test_palette_item_header_is_not_activatable() {
+    ensure_gtk_init();
+    let item = PaletteItem::new_header_raw("Open Tabs");
+    assert_eq!(item.display_name(), "Open Tabs");
+    assert!(item.is_header());
+    assert!(!item.is_file());
+    assert!(!item.is_command());
+    assert!(!item.is_activatable());
+}
+
 // ---------------------------------------------------------------------------
 // LushtextCommandPalette widget
 // ---------------------------------------------------------------------------
@@ -122,10 +242,69 @@ fn test_command_palette_starts_with_all_mode() {
 }
 
 #[test]
-fn test_command_palette_mode_label_initial() {
+fn test_command_palette_mode_dropdown_initial() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
-    assert_eq!(palette.imp().mode_label.label().as_str(), "All ⇥");
+    let dropdown = &palette.imp().mode_dropdown;
+    let model = dropdown
+        .model()
+        .and_downcast::<gtk4::StringList>()
+        .expect("mode dropdown should use a StringList model");
+    assert_eq!(model.n_items(), 3);
+    assert_eq!(model.string(0).as_deref(), Some("All"));
+    assert_eq!(model.string(1).as_deref(), Some("Files"));
+    assert_eq!(model.string(2).as_deref(), Some("Commands"));
+    assert_eq!(dropdown.selected(), SearchMode::All.position());
+}
+
+#[test]
+fn test_command_palette_mode_dropdown_changes_mode() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    palette.open();
+    flush_events();
+
+    palette.imp().mode_dropdown.set_selected(SearchMode::Files.position());
+    flush_events();
+
+    assert_eq!(palette.mode(), SearchMode::Files);
+    assert_eq!(
+        palette
+            .imp()
+            .search_entry
+            .placeholder_text()
+            .expect("expected operation to succeed")
+            .as_str(),
+        SearchMode::Files.placeholder(),
+    );
+}
+
+#[test]
+fn test_command_palette_tab_syncs_mode_dropdown() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    palette.open();
+    flush_events();
+
+    assert_eq!(
+        emit_key(
+            palette.imp().search_entry.upcast_ref::<gtk4::Widget>(),
+            gtk4::gdk::Key::Tab,
+        ),
+        glib::Propagation::Stop,
+    );
+    assert_eq!(palette.mode(), SearchMode::Files);
+    assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::Files.position());
+
+    assert_eq!(
+        emit_key(
+            palette.imp().search_entry.upcast_ref::<gtk4::Widget>(),
+            gtk4::gdk::Key::ISO_Left_Tab,
+        ),
+        glib::Propagation::Stop,
+    );
+    assert_eq!(palette.mode(), SearchMode::All);
+    assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::All.position());
 }
 
 #[test]
@@ -157,6 +336,7 @@ fn test_command_palette_placeholder_changes_with_mode() {
     // Cycle All → Files
     imp.set_mode(imp.mode.get().next());
     assert_eq!(palette.mode(), SearchMode::Files);
+    assert_eq!(imp.mode_dropdown.selected(), SearchMode::Files.position());
     assert_eq!(
         imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
         SearchMode::Files.placeholder(),
@@ -165,6 +345,7 @@ fn test_command_palette_placeholder_changes_with_mode() {
     // Cycle Files → Commands
     imp.set_mode(imp.mode.get().next());
     assert_eq!(palette.mode(), SearchMode::Commands);
+    assert_eq!(imp.mode_dropdown.selected(), SearchMode::Commands.position());
     assert_eq!(
         imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
         SearchMode::Commands.placeholder(),
@@ -173,6 +354,7 @@ fn test_command_palette_placeholder_changes_with_mode() {
     // Cycle Commands → All
     imp.set_mode(imp.mode.get().next());
     assert_eq!(palette.mode(), SearchMode::All);
+    assert_eq!(imp.mode_dropdown.selected(), SearchMode::All.position());
     assert_eq!(
         imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
         SearchMode::All.placeholder(),
@@ -294,6 +476,128 @@ fn test_command_palette_search_filters_results() {
 }
 
 #[test]
+fn test_command_palette_files_mode_groups_open_tabs_before_workspace_files() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let duplicate = dir.path().join("alpha.rs");
+    let workspace_only = dir.path().join("workspace_alpha.rs");
+    std::fs::write(&duplicate, "").expect("expected operation to succeed");
+    std::fs::write(&workspace_only, "").expect("expected operation to succeed");
+
+    palette.set_workspace_group_label("Selected Workspace");
+    palette.set_open_tabs(vec![PaletteFileEntry::new(
+        "alpha.rs".to_string(),
+        duplicate.display().to_string(),
+        duplicate.clone(),
+    )]);
+    palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
+    palette.imp().set_mode(SearchMode::Files);
+
+    rebuild_and_wait_for_label(&palette, "alpha", "Selected Workspace");
+    let labels = palette_labels(&palette);
+
+    assert!(
+        row_position(&labels, "Open Tabs") < row_position(&labels, "Selected Workspace"),
+        "Open Tabs should precede workspace files: {labels:?}",
+    );
+    assert_eq!(
+        labels.iter().filter(|label| label.as_str() == "alpha.rs").count(),
+        1,
+        "duplicate open/workspace file should only appear once: {labels:?}",
+    );
+    assert!(
+        labels.iter().any(|label| label == "workspace_alpha.rs"),
+        "workspace-only file should remain visible: {labels:?}",
+    );
+}
+
+#[test]
+fn test_command_palette_files_mode_uses_all_workspaces_label() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("alpha.rs"), "").expect("expected operation to succeed");
+
+    palette.set_workspace_group_label("All Workspaces");
+    palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
+    palette.imp().set_mode(SearchMode::Files);
+
+    rebuild_and_wait_for_label(&palette, "alpha", "All Workspaces");
+    let labels = palette_labels(&palette);
+    assert!(labels.iter().any(|label| label == "All Workspaces"));
+    assert!(!labels.iter().any(|label| label == "Selected Workspace"));
+}
+
+#[test]
+fn test_command_palette_all_mode_groups_sources_by_priority() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("save_workspace.rs"), "").expect("expected operation to succeed");
+
+    palette.set_workspace_group_label("Selected Workspace");
+    palette.set_open_tabs(vec![PaletteFileEntry::new(
+        "save_open.rs".to_string(),
+        "/tmp/save_open.rs".to_string(),
+        PathBuf::from("/tmp/save_open.rs"),
+    )]);
+    palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
+    palette.imp().set_mode(SearchMode::All);
+
+    rebuild_and_wait_for_label(&palette, "save", "Commands");
+    let labels = palette_labels(&palette);
+
+    let open_tabs = row_position(&labels, "Open Tabs");
+    let workspace = row_position(&labels, "Selected Workspace");
+    let commands = row_position(&labels, "Commands");
+    assert!(
+        open_tabs < workspace && workspace < commands,
+        "All mode groups should preserve priority: {labels:?}",
+    );
+    assert!(labels.iter().any(|label| label == "save_open.rs"));
+    assert!(labels.iter().any(|label| label == "save_workspace.rs"));
+    assert!(labels.iter().any(|label| label == "Save"));
+}
+
+#[test]
+fn test_command_palette_headers_do_not_activate() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    palette.set_open_tabs(vec![PaletteFileEntry::new(
+        "alpha.rs".to_string(),
+        "/tmp/alpha.rs".to_string(),
+        PathBuf::from("/tmp/alpha.rs"),
+    )]);
+    palette.imp().set_mode(SearchMode::Files);
+    rebuild_and_wait_for_label(&palette, "alpha", "Open Tabs");
+
+    let activated = Rc::new(Cell::new(false));
+    let activated_clone = activated.clone();
+    palette.connect_item_activated(move |_| {
+        activated_clone.set(true);
+    });
+
+    let selection = palette
+        .imp()
+        .results_view
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+        .expect("results should use a SingleSelection model");
+    selection.set_selected(0);
+    palette.imp().activate_selected();
+    assert!(!activated.get(), "source header must not activate");
+
+    selection.set_selected(1);
+    palette.imp().activate_selected();
+    assert!(activated.get(), "file row should still activate");
+}
+
+#[test]
 fn test_command_palette_connect_item_activated() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
@@ -382,6 +686,7 @@ fn test_command_palette_results_view_single_click_disabled() {
 // ---------------------------------------------------------------------------
 
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
+use lushtext_core::ui::editor_page::LushtextEditorPage;
 use lushtext_core::ui::window::LushtextWindow;
 
 fn test_window() -> LushtextWindow {
@@ -398,6 +703,23 @@ fn action_enabled(window: &LushtextWindow, name: &str) -> bool {
 fn activate_action(window: &LushtextWindow, name: &str) {
     ActionGroupExt::activate_action(window, name, None);
     flush_events();
+}
+
+fn active_editor(window: &LushtextWindow) -> Option<LushtextEditorPage> {
+    window
+        .imp()
+        .tab_view
+        .selected_page()
+        .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok())
+}
+
+fn active_editor_has_focus(window: &LushtextWindow) -> bool {
+    let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) else {
+        return false;
+    };
+    active_editor(window).is_some_and(|editor| {
+        focus.as_ptr() == editor.source_view().upcast_ref::<gtk4::Widget>().as_ptr()
+    })
 }
 
 #[test]
@@ -501,6 +823,35 @@ fn test_palette_activation_closes_palette() {
 }
 
 #[test]
+fn test_palette_new_file_command_focuses_new_editor_after_close() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+
+    activate_action(&window, "toggle-command-palette");
+    let palette = window.imp().command_palette.clone();
+    rebuild_and_wait_for_label(&palette, "new file", "New File");
+
+    let labels = palette_labels(&palette);
+    let position = u32::try_from(row_position(&labels, "New File"))
+        .expect("palette row position should fit GTK selection index");
+    let selection = palette
+        .imp()
+        .results_view
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+        .expect("results should use a SingleSelection model");
+    selection.set_selected(position);
+
+    palette.imp().activate_selected();
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().palette_revealer.reveals_child() && active_editor_has_focus(&window)
+    });
+
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
+}
+
+#[test]
 fn test_palette_width_request_set() {
     ensure_gtk_init();
     let window = test_window();
@@ -508,6 +859,84 @@ fn test_palette_width_request_set() {
     // Width request should be set by size_allocate; before realization
     // we can at least verify the command_palette widget is accessible
     let _cp = &window.imp().command_palette;
+}
+
+#[test]
+fn test_palette_workspace_group_label_follows_concrete_workspace_scope() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) =
+        seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-left")));
+    let window = test_window();
+    present_window(&window);
+    wait_for_palette_index(&window, 1);
+
+    activate_action(&window, "toggle-command-palette");
+    let palette = window.imp().command_palette.clone();
+    palette.imp().set_mode(SearchMode::Files);
+    rebuild_and_wait_for_label(&palette, "alpha", "Selected Workspace");
+
+    let labels = palette_labels(&palette);
+    assert!(labels.iter().any(|label| label == "Selected Workspace"));
+    assert!(labels.iter().any(|label| label == "alpha.rs"));
+    assert_eq!(
+        window
+            .imp()
+            .sidebar
+            .root_paths_for_scope(&WorkspaceScope::workspace(WorkspaceId::new("ws-left"))),
+        vec![left_root],
+    );
+}
+
+#[test]
+fn test_palette_workspace_group_label_follows_aggregate_workspace_scope() {
+    ensure_gtk_init();
+    let (_roots_dir, _left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let window = test_window();
+    present_window(&window);
+    wait_for_palette_index(&window, 2);
+
+    activate_action(&window, "toggle-command-palette");
+    let palette = window.imp().command_palette.clone();
+    palette.imp().set_mode(SearchMode::Files);
+    rebuild_and_wait_for_label(&palette, "alpha", "All Workspaces");
+
+    let labels = palette_labels(&palette);
+    assert!(labels.iter().any(|label| label == "All Workspaces"));
+    assert!(!labels.iter().any(|label| label == "Selected Workspace"));
+}
+
+#[test]
+fn test_palette_open_tabs_can_appear_outside_selected_workspace() {
+    ensure_gtk_init();
+    let roots_dir = tempfile::tempdir().expect("outer roots tempdir");
+    let outside_file = roots_dir.path().join("beta.rs");
+    std::fs::write(&outside_file, "fn beta() {}\n").expect("write outside file");
+
+    let (_workspace_roots_dir, _left_root, _right_root) =
+        seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-left")));
+    let window = test_window();
+    present_window(&window);
+    wait_for_palette_index(&window, 1);
+    window.open_document(&outside_file);
+    flush_events();
+
+    activate_action(&window, "toggle-command-palette");
+    let palette = window.imp().command_palette.clone();
+    palette.imp().set_mode(SearchMode::Files);
+    palette.imp().rebuild_results("beta");
+    spin_until(|| {
+        let labels = palette_labels(&palette);
+        labels.iter().any(|label| label == "beta.rs")
+            && !labels.iter().any(|label| label == "Commands")
+    });
+
+    let labels = palette_labels(&palette);
+    assert!(labels.iter().any(|label| label == "Open Tabs"));
+    assert!(labels.iter().any(|label| label == "beta.rs"));
+    assert!(
+        !labels.iter().any(|label| label == "Selected Workspace"),
+        "selected workspace should not claim an out-of-scope open tab: {labels:?}",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -608,6 +1037,18 @@ fn test_all_commands_contains_fullscreen() {
     assert_eq!(cmd.label, "Fullscreen");
     assert_eq!(cmd.shortcut, Some("F11"));
     assert_eq!(cmd.category, CommandCategory::View);
+}
+
+#[test]
+fn test_all_commands_new_file_uses_ctrl_n() {
+    ensure_gtk_init();
+    let commands = lushtext_core::services::palette::all_commands();
+    let cmd = commands.iter().find(|c| c.id == "win.new-tab");
+    assert!(cmd.is_some(), "all_commands() should include New File");
+    let cmd = cmd.expect("expected operation to succeed");
+    assert_eq!(cmd.label, "New File");
+    assert_eq!(cmd.shortcut, Some("Ctrl+N"));
+    assert_eq!(cmd.category, CommandCategory::File);
 }
 
 #[test]

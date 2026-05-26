@@ -12,8 +12,9 @@ Use this playbook when the failure only becomes visible while a GTK app is runni
 2. **Decide between fresh launch and existing-instance watch**
    - Fresh launch is best when startup logs matter.
    - Existing-instance watch is safer when the user already has unsaved work in the app.
-   - If a unique `gio::Application` instance is already running, a second `make run` may return immediately after activating the existing window.
-   - Do not treat `cargo run` or `make run` printing `Running target/debug/...` as proof that you are observing a newly launched GUI process.
+   - `make run` is the fresh-launch path for LushText: it asks any already-running `dev.cominotti.lushtext` owner to quit before launching the freshly built debug binary, and fails if that owner refuses to close.
+   - If the user may have unsaved work, prefer existing-instance watch mode instead of starting a fresh `make run`.
+   - Do not treat `cargo run` printing `Running target/debug/...` as proof that you are observing a newly launched GUI process.
 3. **Keep the launcher in a PTY**
    - Prefer `functions.exec_command` with `tty: true`.
    - Poll the session with `write_stdin` instead of restarting the app for every question.
@@ -64,7 +65,7 @@ This workflow is usually superior to broad speculative edits. It is also usually
 
 - If the launcher exits and `pid-pattern` still matches a process:
   - Compare the PID set before and after launch.
-  - If the sets are identical, treat it as a likely unique-app handoff to an existing instance.
+  - If the sets are identical, inspect launcher output for a handoff, failed relaunch, or stale pid pattern before deciding what happened.
   - If the post-launch set includes a new PID, treat it as a newly launched app that detached from the launcher.
 - These heuristics are only trustworthy if the pattern matched the app and not the debugging machinery. A contaminated `pid-pattern` can make the helper shell look like the target process.
 - Do not kill matching processes automatically. Surface the finding and let the human choose.

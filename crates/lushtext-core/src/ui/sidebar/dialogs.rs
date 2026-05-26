@@ -9,9 +9,8 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 
-use crate::model::workspace::WorkspaceId;
-
 use super::LushtextSidebar;
+use crate::model::workspace::WorkspaceId;
 
 impl LushtextSidebar {
     /// Create a new workspace by opening a folder dialog.
@@ -35,38 +34,6 @@ impl LushtextSidebar {
                 && let Some(sidebar) = sidebar_weak.upgrade()
             {
                 sidebar.handle_new_workspace(&path);
-            }
-        });
-    }
-
-    /// Handle "Replace Workspace Root" or "Add Folder to Workspace".
-    pub(super) fn handle_add_folder(&self, workspace_id: &WorkspaceId) {
-        let Some(window) = self.parent_window() else {
-            return;
-        };
-
-        let dialog = gtk4::FileDialog::builder()
-            .title("Replace Workspace Root")
-            .modal(true)
-            .build();
-
-        let sidebar_weak = self.downgrade();
-        let workspace_id = workspace_id.clone();
-        dialog.select_folder(Some(&window), gtk4::gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result
-                && let Some(path) = file.path()
-                && let Some(sidebar) = sidebar_weak.upgrade()
-            {
-                let name = super::workspaces::folder_display_name(&path);
-
-                sidebar.imp().workspaces_file.borrow_mut().replace_root(
-                    &workspace_id,
-                    path.clone(),
-                    &name,
-                );
-                sidebar.persist();
-                sidebar.rebuild_sections_from_state();
-                sidebar.notify_workspace_structure_changed();
             }
         });
     }
@@ -164,10 +131,5 @@ impl LushtextSidebar {
         });
 
         dialog.present(Some(&root));
-    }
-
-    fn parent_window(&self) -> Option<gtk4::Window> {
-        self.root()
-            .and_then(|root| root.downcast::<gtk4::Window>().ok())
     }
 }

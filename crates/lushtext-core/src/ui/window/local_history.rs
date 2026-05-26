@@ -504,7 +504,10 @@ impl LocalHistoryBrowserState {
         self.restore_button.set_sensitive(false);
         self.copy_button.set_sensitive(false);
 
-        if user_selected && self.split_view.is_collapsed() {
+        if user_selected {
+            // `show-content` is only visible while collapsed, but setting it
+            // before the adaptive layout settles preserves the user's
+            // navigation request during resize and widget-test transitions.
             self.split_view.set_show_content(true);
         }
 

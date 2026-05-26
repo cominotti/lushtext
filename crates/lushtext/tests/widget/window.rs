@@ -8,7 +8,7 @@
 
 use crate::common::{emit_key_pressed_on_focus, ensure_gtk_init};
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
-use glib::prelude::ObjectExt;
+use glib::prelude::{Cast, IsA, ObjectExt};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{
@@ -33,6 +33,7 @@ use lushtext_core::services::{
 use lushtext_core::ui::editor_page::{
     LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
 };
+use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::window::LushtextWindow;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,21 @@ use std::time::{Duration, Instant};
 fn test_window() -> LushtextWindow {
     crate::common::test_window()
 }
+
+const DEFINITION_LIST_CODE_BLOCK_SAMPLE: &str = concat!(
+    "## Definition lists\n\n",
+    "Term 1\n",
+    ": Definition 1 with lazy continuation.\n\n",
+    "Term 2 with *inline markup*\n\n",
+    ":   Definition 2\n\n",
+    "        { some code, part of Definition 2 }\n\n",
+    "    Third paragraph of definition 2.\n\n",
+    "Compact style:\n\n",
+    "Term 1 ~ Definition 1\n\n",
+    "Term 2 ~ Definition 2a ~ Definition 2b\n",
+);
+
+const CODE_BLOCK_HORIZONTAL_PADDING: i32 = 12;
 
 fn test_window_with_split_view_state(
     workspace_visible: bool,
@@ -217,6 +233,174 @@ fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
         .child()
         .downcast::<LushtextEditorPage>()
         .expect("expected operation to succeed")
+}
+
+// Keep hidden-to-visible preview-shell regressions in this suite: a directly
+// mounted `LushtextMarkdownPreview` can pass while the real `GtkPaned` shell
+// leaves child-anchor code blocks with stale allocations.
+fn prepare_markdown_preview_window(
+    markdown: &str,
+    width: i32,
+    height: i32,
+) -> (LushtextWindow, tempfile::TempDir) {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(width, height);
+    window.new_tab();
+    let dir = tempfile::tempdir().expect("markdown preview tempdir");
+    let editor = active_editor(&window);
+    editor.set_file_path(&dir.path().join("gh-markdown-sample.md"));
+    editor.buffer().set_text(markdown);
+    present_window(&window);
+    (window, dir)
+}
+
+fn descendants(root: &impl IsA<gtk4::Widget>) -> Vec<gtk4::Widget> {
+    let mut widgets = Vec::new();
+    let mut stack = vec![root.as_ref().clone()];
+
+    while let Some(widget) = stack.pop() {
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            stack.push(current.clone());
+            child = current.next_sibling();
+        }
+        widgets.push(widget);
+    }
+
+    widgets
+}
+
+fn widgets_with_css_class<T>(root: &impl IsA<gtk4::Widget>, css_class: &str) -> Vec<T>
+where
+    T: IsA<gtk4::Widget> + glib::object::ObjectType + Clone + 'static,
+{
+    descendants(root)
+        .into_iter()
+        .filter(|widget| widget.has_css_class(css_class))
+        .filter_map(|widget| widget.downcast::<T>().ok())
+        .collect()
+}
+
+fn source_views(preview: &LushtextMarkdownPreview) -> Vec<sourceview5::View> {
+    widgets_with_css_class::<sourceview5::View>(preview, "markdown-code-block-view")
+}
+
+fn code_block_containers(preview: &LushtextMarkdownPreview) -> Vec<gtk4::Box> {
+    widgets_with_css_class::<gtk4::Box>(preview, "markdown-code-block")
+}
+
+fn code_block_scrollers(preview: &LushtextMarkdownPreview) -> Vec<gtk4::ScrolledWindow> {
+    widgets_with_css_class::<gtk4::ScrolledWindow>(preview, "markdown-code-block-scroller")
+}
+
+fn preview_text_column_width(preview: &LushtextMarkdownPreview) -> i32 {
+    let text_view = preview.text_view();
+    text_view.width() - text_view.left_margin() - text_view.right_margin()
+}
+
+fn expected_code_block_width(preview: &LushtextMarkdownPreview, block: &gtk4::Box) -> i32 {
+    preview_text_column_width(preview)
+        .saturating_sub(block.margin_start() + block.margin_end())
+        .max(1)
+}
+
+fn horizontal_overflow(scroller: &gtk4::ScrolledWindow) -> f64 {
+    let adjustment = scroller.hadjustment();
+    (adjustment.upper() - adjustment.page_size()).max(0.0)
+}
+
+fn source_view_buffer_text(source_view: &sourceview5::View) -> String {
+    let buffer = source_view.buffer();
+    buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string()
+}
+
+fn wait_for_markdown_preview_shell(window: &LushtextWindow) {
+    wait_until(Duration::from_secs(3), || {
+        let preview = &window.imp().markdown_preview;
+        let Some(scroller) = code_block_scrollers(preview).first().cloned() else {
+            return false;
+        };
+
+        !window.imp().preview_animation_active.get()
+            && preview.is_showing_content()
+            && preview.text_view().width() > 0
+            && !code_block_containers(preview).is_empty()
+            && !source_views(preview).is_empty()
+            && scroller.hadjustment().page_size() > 0.0
+    });
+    flush_after_delay(Duration::from_millis(40));
+}
+
+fn assert_live_code_block_uses_preview_column(window: &LushtextWindow) {
+    let preview = &window.imp().markdown_preview;
+    let text_view = preview.text_view();
+    let block = code_block_containers(preview)
+        .pop()
+        .expect("code block container");
+    let scroller = code_block_scrollers(preview).pop().expect("code scroller");
+    let source_view = source_views(preview).pop().expect("code source view");
+    let expected_width = expected_code_block_width(preview, &block);
+    let actual_width = block.width();
+    let minimum_inner_width =
+        (expected_width - (CODE_BLOCK_HORIZONTAL_PADDING * 2) - 8).max(1) as f32;
+    let block_bounds = block
+        .compute_bounds(&text_view)
+        .expect("code block bounds in preview text view");
+    let scroller_bounds = scroller
+        .compute_bounds(&block)
+        .expect("scroller bounds in code block");
+    let overflow = horizontal_overflow(&scroller);
+
+    assert_eq!(
+        source_view_buffer_text(&source_view),
+        "{ some code, part of Definition 2 }\n",
+        "preview should preserve the fenced code text from the definition body"
+    );
+    assert!(
+        block.margin_start() > 0,
+        "definition-list code blocks should keep their definition-body offset"
+    );
+    assert_eq!(
+        block.width_request(),
+        expected_width,
+        "definition-list code block width request should follow the live text column"
+    );
+    assert!(
+        (actual_width - expected_width).abs() <= 4,
+        "definition-list code block allocation should settle near {expected_width}, got {actual_width}"
+    );
+    assert!(
+        block_bounds.width() >= (expected_width - 4).max(1) as f32,
+        "code block bounds should span the preview column after definition margins; expected at least {}, got {}",
+        (expected_width - 4).max(1),
+        block_bounds.width()
+    );
+    assert!(
+        scroller_bounds.width() >= minimum_inner_width,
+        "inner code scroller should receive the block width minus padding; expected at least {minimum_inner_width}, got {}",
+        scroller_bounds.width()
+    );
+    assert!(
+        overflow <= 1.0,
+        "short definition-list code block should not expose false horizontal overflow, got upper={} page_size={} overflow={overflow}",
+        scroller.hadjustment().upper(),
+        scroller.hadjustment().page_size()
+    );
+}
+
+fn active_editor_has_focus(window: &LushtextWindow) -> bool {
+    let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) else {
+        return false;
+    };
+    let editor = active_editor(window);
+    focus.as_ptr() == editor.source_view().upcast_ref::<gtk4::Widget>().as_ptr()
+}
+
+fn wait_for_active_editor_focus(window: &LushtextWindow) {
+    wait_until(Duration::from_secs(2), || active_editor_has_focus(window));
 }
 
 fn editor_text(editor: &LushtextEditorPage) -> String {
@@ -510,6 +694,47 @@ fn menu_model_labels(model: &gio::MenuModel) -> Vec<String> {
     labels
 }
 
+fn menu_model_label_actions(model: &gio::MenuModel) -> Vec<(String, Option<String>)> {
+    let mut entries = Vec::new();
+    for index in 0..model.n_items() {
+        let label = model
+            .item_attribute_value(index, "label", Some(glib::VariantTy::STRING))
+            .and_then(|variant| variant.get::<String>());
+        let action = model
+            .item_attribute_value(index, "action", Some(glib::VariantTy::STRING))
+            .and_then(|variant| variant.get::<String>());
+        if let Some(label) = label {
+            entries.push((label, action));
+        }
+        for link_name in ["section", "submenu"] {
+            if let Some(link) = model.item_link(index, link_name) {
+                entries.extend(menu_model_label_actions(&link));
+            }
+        }
+    }
+    entries
+}
+
+fn primary_menu_action_for_label(window: &LushtextWindow, label: &str) -> Option<String> {
+    let primary_menu = window
+        .imp()
+        .primary_menu_button
+        .menu_model()
+        .expect("primary menu model");
+    menu_model_label_actions(&primary_menu)
+        .into_iter()
+        .find_map(|(entry_label, action)| (entry_label == label).then_some(action).flatten())
+}
+
+fn activate_primary_menu_item(window: &LushtextWindow, label: &str) {
+    let action = primary_menu_action_for_label(window, label)
+        .unwrap_or_else(|| panic!("primary menu item '{label}' should have an action"));
+    let action_name = action
+        .strip_prefix("win.")
+        .unwrap_or_else(|| panic!("expected '{action}' to be a window action"));
+    activate_action(window, action_name);
+}
+
 fn click_alert_extra_button(dialog: &libadwaita::AlertDialog, label: &str) {
     let extra = dialog.extra_child().expect("alert dialog extra child");
     click_labeled_widget(&extra, label);
@@ -598,6 +823,9 @@ fn properties_sidebar_visible(window: &LushtextWindow) -> bool {
 }
 
 fn shortcut_bound(window: &LushtextWindow, action_name: &str, trigger_string: &str) -> bool {
+    let expected_trigger = gtk4::ShortcutTrigger::parse_string(trigger_string)
+        .unwrap_or_else(|| panic!("shortcut trigger '{trigger_string}' should parse"));
+    let expected_trigger = expected_trigger.to_str();
     let controllers = window.observe_controllers();
     let shortcut_controller = (0..controllers.n_items())
         .filter_map(|index| controllers.item(index))
@@ -615,7 +843,7 @@ fn shortcut_bound(window: &LushtextWindow, action_name: &str, trigger_string: &s
                 .is_some_and(|action| action.action_name().as_str() == action_name);
             let trigger_matches = shortcut
                 .trigger()
-                .is_some_and(|trigger| trigger.to_str().as_str() == trigger_string);
+                .is_some_and(|trigger| trigger.to_str() == expected_trigger);
             action_matches && trigger_matches
         })
 }
@@ -1177,6 +1405,116 @@ fn test_f9_toggles_document_properties_instead_of_workspace_sidebar() {
     assert!(
         shortcut_bound(&window, "win.toggle-properties", "F9"),
         "F9 should be bound to win.toggle-properties"
+    );
+}
+
+#[test]
+fn test_new_document_shortcut_is_ctrl_n_only() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert!(
+        shortcut_bound(&window, "win.new-tab", "<Control>n"),
+        "Ctrl+N should create a new file"
+    );
+    assert!(
+        !shortcut_bound(&window, "win.new-tab", "<Control>t"),
+        "Ctrl+T should no longer create a new file"
+    );
+}
+
+#[test]
+fn test_new_document_action_focuses_new_editor() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+
+    window.imp().primary_menu_button.grab_focus();
+    flush_events();
+    activate_action(&window, "new-tab");
+
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
+    wait_for_active_editor_focus(&window);
+}
+
+#[test]
+fn test_new_document_exits_markdown_preview_only_mode() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("new document preview tempdir");
+    let original_editor = active_editor(&window);
+    original_editor.set_file_path(&dir.path().join("preview-source.md"));
+    original_editor.buffer().set_text("# Preview\n\nBody");
+
+    activate_action(&window, "toggle-preview-mode");
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get()
+            && window.imp().markdown_preview.property::<bool>("visible")
+            && action_state_bool(&window, "toggle-preview-mode")
+    });
+
+    activate_action(&window, "new-tab");
+
+    assert_eq!(window.imp().tab_view.n_pages(), 2);
+    let new_editor = active_editor(&window);
+    assert!(
+        new_editor.file_path().is_none(),
+        "New Document should select the new untitled tab"
+    );
+    assert_ne!(
+        new_editor.as_ptr(),
+        original_editor.as_ptr(),
+        "New Document should not leave the Markdown tab selected"
+    );
+    assert!(
+        !window.imp().preview_mode.get(),
+        "New Document should clear preview-only mode"
+    );
+    assert!(
+        !action_state_bool(&window, "toggle-preview-mode"),
+        "preview-only action state should match the cleared shell state"
+    );
+    assert!(
+        window.imp().editor_box.property::<bool>("visible"),
+        "source editor shell should be visible for the new tab"
+    );
+    assert!(
+        !window.imp().markdown_preview.property::<bool>("visible"),
+        "preview widget should not remain visible after creating a new document"
+    );
+    wait_for_active_editor_focus(&window);
+}
+
+#[test]
+fn test_new_document_focus_handoff_ignores_stale_selection() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    let original_page = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("initial tab should be selected");
+    let original_editor = active_editor(&window);
+    original_editor.source_view().grab_focus();
+    flush_events();
+
+    activate_action(&window, "new-tab");
+    window.imp().tab_view.set_selected_page(&original_page);
+    flush_after_delay(Duration::from_millis(250));
+
+    assert!(
+        window.imp().tab_view.selected_page().as_ref() == Some(&original_page),
+        "stale delayed focus should not reselect the newer tab"
+    );
+    assert_eq!(
+        gtk4::prelude::GtkWindowExt::focus(&window).map(|widget| widget.as_ptr()),
+        Some(original_editor.source_view().upcast_ref::<gtk4::Widget>().as_ptr()),
+        "stale delayed focus should not steal focus from the restored tab"
     );
 }
 
@@ -3517,6 +3855,108 @@ fn test_primary_menu_button_exists() {
     ensure_gtk_init();
     let window = test_window();
     assert!(window.imp().primary_menu_button.popover().is_some());
+}
+
+#[test]
+fn test_primary_menu_exposes_markdown_preview_action() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert_eq!(
+        primary_menu_action_for_label(&window, "Markdown Preview").as_deref(),
+        Some("win.toggle-preview-mode"),
+        "primary menu should expose the rendered Markdown preview action"
+    );
+}
+
+#[test]
+fn test_markdown_preview_shortcut_remains_alt_p() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert!(
+        shortcut_bound(&window, "win.toggle-preview-mode", "<Alt>p"),
+        "Alt+P should keep toggling Markdown preview-only mode"
+    );
+}
+
+#[test]
+fn test_primary_menu_markdown_preview_renders_active_markdown_buffer() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("markdown preview tempdir");
+    let editor = active_editor(&window);
+    editor.set_file_path(&dir.path().join("menu-preview.md"));
+    editor
+        .buffer()
+        .set_text("# Menu Heading\n\nCurrent buffer body");
+
+    activate_primary_menu_item(&window, "Markdown Preview");
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get() && window.imp().markdown_preview.is_showing_content()
+    });
+    let rendered = window.imp().markdown_preview.buffer_text();
+    assert!(
+        rendered.contains("Menu Heading"),
+        "preview should render the active Markdown buffer"
+    );
+    assert!(
+        rendered.contains("Current buffer body"),
+        "preview should include body text from the active buffer"
+    );
+    assert!(
+        !rendered.contains("# Menu Heading"),
+        "preview should hide raw heading markers"
+    );
+}
+
+#[test]
+fn test_preview_only_definition_list_code_block_uses_live_column() {
+    let (window, _dir) =
+        prepare_markdown_preview_window(DEFINITION_LIST_CODE_BLOCK_SAMPLE, 1180, 720);
+
+    activate_action(&window, "toggle-preview-mode");
+
+    wait_until(Duration::from_secs(2), || window.imp().preview_mode.get());
+    wait_for_markdown_preview_shell(&window);
+    assert_live_code_block_uses_preview_column(&window);
+}
+
+#[test]
+fn test_side_by_side_definition_list_code_block_uses_live_column() {
+    ensure_gtk_init();
+    gio::Settings::new(lushtext_core::config::APP_ID)
+        .set_int(keys::PREVIEW_PANE_POSITION, 520)
+        .expect("set wide preview pane for definition-list code block regression");
+    let (window, _dir) =
+        prepare_markdown_preview_window(DEFINITION_LIST_CODE_BLOCK_SAMPLE, 1800, 720);
+
+    activate_action(&window, "toggle-preview-pane");
+
+    wait_until(Duration::from_secs(2), || window.imp().preview_visible.get());
+    wait_for_markdown_preview_shell(&window);
+    assert_live_code_block_uses_preview_column(&window);
+}
+
+#[test]
+fn test_primary_menu_markdown_preview_shows_placeholder_for_non_markdown() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("plain preview tempdir");
+    let editor = active_editor(&window);
+    editor.set_file_path(&dir.path().join("plain.txt"));
+    editor.buffer().set_text("# Plain text heading-shaped line");
+
+    activate_primary_menu_item(&window, "Markdown Preview");
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get() && !window.imp().markdown_preview.is_showing_content()
+    });
 }
 
 #[test]

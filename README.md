@@ -28,7 +28,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Buffer eviction** -- background tabs evicted when total memory exceeds 256MB, transparently reloaded on focus
 - **Dark mode** -- automatic GtkSourceView scheme switching via Libadwaita StyleManager
 - **Customizable font** -- system monospace or custom font, applied via CSS provider
-- **Markdown preview** -- side-by-side or full-width preview pane with native GTK rendering for headings, emphasis, code, links, ordered and unordered lists, task lists, blockquotes, GitHub alert callouts, footnotes, and Markdown tables; Alt+P toggles full-width preview
+- **Markdown support** -- editable source headings are visually emphasized, plus side-by-side or full-width native preview rendering for headings, emphasis, code, links, ordered and unordered lists with nested hanging indents, task lists, nested blockquote rails, GitHub alert callouts, reference-style and inline footnotes, and Markdown tables; use Main Menu > Markdown Preview or Alt+P for full-width preview
 - **File monitoring** -- detects external changes and offers reload
 
 ## Installation and Running
@@ -60,8 +60,10 @@ make cargo-sources
 make run
 ```
 
-`make run` builds the debug binary and temporarily stages a GNOME desktop entry
-and app icon so the running development copy appears correctly in GNOME Shell.
+`make run` builds the debug binary, asks any already-running LushText instance
+to quit, and temporarily stages a GNOME desktop entry and app icon so the fresh
+development copy appears correctly in GNOME Shell. If the existing app refuses
+to close, the launcher fails instead of activating stale code.
 
 ## First Run
 
@@ -168,7 +170,7 @@ The full shortcut list is available in **Main Menu > Keyboard Shortcuts**.
 
 | Workflow | Shortcut |
 |----------|----------|
-| New tab | `Ctrl+T` |
+| New file | `Ctrl+N` |
 | Open file | `Ctrl+O` |
 | Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
 | Close tab | `Ctrl+W` |
@@ -224,7 +226,7 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libglib2.0
 ```sh
 make build       # Release build
 make build-debug # Debug build
-make run         # Debug build + run with temporary GNOME desktop staging for dock icon matching
+make run         # Debug build + force a fresh run with temporary GNOME desktop staging
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
 make test        # All tests (unit + integration + widget)
 make check       # clippy + fmt check
@@ -236,7 +238,18 @@ LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hoo
 
 The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel non-widget execution (optional), but it always runs widget tests explicitly through the shared `scripts/run-widget-tests.sh` runner so `make test` still means the full suite. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 
-On GNOME Shell, `make run` temporarily stages a user-local desktop entry plus `hicolor` app icons while the debug binary is running. The staged desktop entry points at a content-addressed absolute icon file so Shell reloads icon changes reliably during development instead of reusing a stale themed-icon cache entry. The launcher also repairs any stale user-local LushText desktop entry whose absolute `Icon=` path no longer exists. If you changed the app icon artwork, use `make refresh-dock-icon`: it regenerates the shipped PNG fallbacks from `data/icons/dev.cominotti.lushtext.svg`, then restarts the current dev instance against a fresh file-backed icon so the dock updates immediately.
+On GNOME Shell, `make run` asks any already-running `dev.cominotti.lushtext`
+owner to quit before it temporarily stages a user-local desktop entry plus
+`hicolor` app icons and launches the freshly built debug binary. If the existing
+owner refuses to close, the launcher fails instead of activating stale code. The
+staged desktop entry points at a content-addressed absolute icon file so Shell
+reloads icon changes reliably during development instead of reusing a stale
+themed-icon cache entry. The launcher also repairs any stale user-local LushText
+desktop entry whose absolute `Icon=` path no longer exists. If you changed the
+app icon artwork, use `make refresh-dock-icon`: it regenerates the shipped PNG
+fallbacks from `data/icons/dev.cominotti.lushtext.svg`, then restarts the
+current dev instance against a fresh file-backed icon so the dock updates
+immediately.
 
 ### Flatpak
 
@@ -389,16 +402,19 @@ LushText includes a focused local-history MVP for saved documents.
 LushText can render Markdown files in a read-only preview pane instead of just
 showing the raw source text.
 
-- `Alt+P` toggles **preview-only mode**, where the editor hides and the rendered
-  Markdown takes the full content area.
+- Markdown heading lines stay editable as source text but use a larger bold
+  source style so document structure is visible while writing.
+- **Main Menu > Markdown Preview** or `Alt+P` toggles **preview-only mode**,
+  where the editor hides and the rendered Markdown takes the full content area.
 - A separate side-by-side preview pane is also available through the existing
   preview action surfaces, giving you editor text on the left and rendered
   output on the right.
 - The renderer uses native GTK styling and widgets for headings, emphasis,
-  code, activatable links, ordered and unordered lists, task lists, nested
-  list indentation, blockquotes, GitHub alert callouts, footnotes, Markdown
-  tables, and local Markdown images with explicit fallback states for
-  unsupported or unresolved image targets.
+  inline code, syntax-highlighted code blocks, activatable links, ordered and
+  unordered lists, task lists, nested hanging list indentation, nested blockquote
+  rails, GitHub alert callouts, reference-style and inline footnotes, Markdown
+  tables, and local Markdown images with explicit fallback states for unsupported
+  or unresolved image targets.
 - Non-Markdown files show a placeholder instead of trying to render arbitrary
   text as Markdown.
 - Canonical preview sample content lives under `samples/`. The file

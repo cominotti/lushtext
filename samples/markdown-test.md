@@ -48,6 +48,11 @@ default external handler when activated.
 2. Toggle the preview pane
 3. Compare source and rendered output
 
+### Offset Ordered List
+
+57. Offset numbering keeps the rendered marker attached to the item text.
+58. Multi-digit markers still wrap with continuation text under the item text column rather than under the marker column.
+
 ### Nested Mixed Lists
 
 1. First ordered item
@@ -57,12 +62,13 @@ default external handler when activated.
      2. Another grandchild
 2. Second ordered item
    - Nested child after returning to the parent list
+   - A longer nested child wraps cleanly under the child item text instead of drifting back into the marker column.
 
 ### Task List
 
 - [x] Tables render as native GTK widgets
 - [x] Alert callouts render without raw markers
-- [x] Footnotes render with numbered references
+- [x] Reference-style and inline footnotes render with numbered references
 - [x] Preview links open externally
 - [x] Local Markdown images render natively
 - [x] Missing or remote images show explicit fallback states
@@ -71,9 +77,9 @@ default external handler when activated.
 
 ## Quotes And Callouts
 
-> Plain blockquotes still render as quoted text.
->
-> They are separate from GitHub alert callouts.
+> Plain blockquotes render with quote rails.
+>> Nested blockquotes add another visible rail.
+> > > Spaced nested markers keep the same quote depth.
 
 > [!NOTE]
 > This note callout shows the typed alert styling path.
@@ -102,7 +108,9 @@ fn main() {
     let features = [
         "task lists",
         "alert callouts",
-        "footnotes",
+        "nested blockquotes",
+        "reference-style footnotes",
+        "inline footnotes",
         "tables",
         "preview links",
         "local images",
@@ -180,6 +188,13 @@ referenced more than once in the same document.[^overview]
 
 You can also mix a second footnote into normal prose when checking numbering
 behavior.[^details]
+
+Inline footnotes lower into the same rendered footnote flow^[This inline
+footnote includes **bold text**, a [link](https://docs.rs/), and inline `code`.]
+without changing the Markdown source.
+
+Inline and reference-style footnotes can appear together^[This inline note is
+useful for checking mixed numbering near reference-style definitions.].
 
 [^overview]: This footnote includes **bold text**, a [link](https://docs.rs/), and inline `code`.
 

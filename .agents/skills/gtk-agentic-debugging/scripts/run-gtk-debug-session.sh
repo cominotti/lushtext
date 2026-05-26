@@ -232,7 +232,7 @@ fi
 
 if [[ -n "$pid_pattern" ]] && [[ -n "$after_pids" ]]; then
   if [[ "$before_pids" == "$after_pids" ]]; then
-    echo "launcher_note=launcher returned without a new matching pid; likely a unique-app handoff to an existing instance" \
+    echo "launcher_note=launcher returned without a new matching pid; inspect launcher output for a handoff, failed relaunch, or stale pid pattern" \
       | tee -a "$status_log"
   else
     echo "launcher_note=matching pid set changed after launch" | tee -a "$status_log"

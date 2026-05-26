@@ -7,11 +7,20 @@ use std::time::Duration;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
+use crate::model::palette::PaletteFileEntry;
 use crate::services::async_task;
 use crate::services::palette::FileIndex;
 use crate::ui::editor_page::LushtextEditorPage;
 
 use super::{BUFFER_MEMORY_BUDGET, LushtextWindow};
+
+/// Delay between focus retries after tab selection or adaptive layout changes.
+/// Thirty milliseconds keeps retries below perceptible interaction latency while
+/// giving GTK a frame to settle newly mapped or reparented editor widgets.
+const EDITOR_FOCUS_RETRY_INTERVAL: Duration = Duration::from_millis(30);
+/// Maximum retry count for editor focus handoffs before giving control back to
+/// GTK's normal focus model. Six attempts covers roughly 180ms of settling.
+const EDITOR_FOCUS_MAX_ATTEMPTS: u8 = 6;
 
 impl LushtextWindow {
     pub(super) fn track_editor_memory(&self, editor: &LushtextEditorPage) {
@@ -66,6 +75,7 @@ impl LushtextWindow {
             }
             imp.saved_focus.replace(Some(weak));
 
+            self.refresh_command_palette_sources();
             imp.palette_revealer.set_reveal_child(true);
             imp.command_palette.open();
         }
@@ -76,6 +86,59 @@ impl LushtextWindow {
         imp.command_palette.close();
         imp.palette_revealer.set_reveal_child(false);
         self.restore_saved_focus();
+    }
+
+    /// Move keyboard focus to the editor that is selected when an action runs.
+    ///
+    /// Command-palette activation restores its saved focus after running the
+    /// action, so this schedules the editor handoff for a later main-loop tick
+    /// and retries briefly while GTK finishes selecting or mapping the tab.
+    pub(super) fn focus_selected_editor_after_action(&self) {
+        let Some(page) = self.imp().tab_view.selected_page() else {
+            return;
+        };
+        let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>().cloned() else {
+            return;
+        };
+
+        let window_weak = self.downgrade();
+        let page_weak = page.downgrade();
+        let editor_weak = editor.downgrade();
+        let attempts = std::rc::Rc::new(std::cell::Cell::new(0u8));
+
+        glib::timeout_add_local(EDITOR_FOCUS_RETRY_INTERVAL, move || {
+            let Some(window) = window_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let Some(editor) = editor_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if window.imp().tab_view.selected_page().as_ref() != Some(&page) {
+                return glib::ControlFlow::Break;
+            }
+
+            let source_view = editor.source_view();
+            let source_ptr = source_view.upcast_ref::<gtk4::Widget>().as_ptr();
+            gtk4::prelude::GtkWindowExt::set_focus(
+                &window,
+                Some(source_view.upcast_ref::<gtk4::Widget>()),
+            );
+            source_view.grab_focus();
+
+            let focused = gtk4::prelude::GtkWindowExt::focus(&window).map(|widget| widget.as_ptr())
+                == Some(source_ptr);
+            let next_attempt = attempts.get().saturating_add(1);
+            attempts.set(next_attempt);
+
+            if focused || next_attempt >= EDITOR_FOCUS_MAX_ATTEMPTS {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
     }
 
     /// Return focus to the active editor after a split-view pane closes.
@@ -105,7 +168,7 @@ impl LushtextWindow {
         let attempts = std::rc::Rc::new(std::cell::Cell::new(0u8));
         let attempts_clone = attempts.clone();
 
-        glib::timeout_add_local(Duration::from_millis(30), move || {
+        glib::timeout_add_local(EDITOR_FOCUS_RETRY_INTERVAL, move || {
             let Some(window) = window_weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
@@ -128,7 +191,7 @@ impl LushtextWindow {
             let next_attempt = attempts_clone.get().saturating_add(1);
             attempts_clone.set(next_attempt);
 
-            if focused || next_attempt >= 6 {
+            if focused || next_attempt >= EDITOR_FOCUS_MAX_ATTEMPTS {
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
@@ -241,5 +304,45 @@ impl LushtextWindow {
                 },
             );
         });
+    }
+
+    /// Refresh command-palette source metadata owned by the window shell.
+    pub(super) fn refresh_command_palette_sources(&self) {
+        let open_tabs = self.open_file_palette_entries();
+        let workspace_group_label = self.command_palette_workspace_group_label();
+        self.imp()
+            .command_palette
+            .set_sources(open_tabs, workspace_group_label);
+    }
+
+    /// Snapshot file-backed tabs so the palette can search active documents.
+    fn open_file_palette_entries(&self) -> Vec<PaletteFileEntry> {
+        let tab_view = &self.imp().tab_view;
+        let mut entries =
+            Vec::with_capacity(usize::try_from(tab_view.n_pages()).unwrap_or_default());
+
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+                && let Some(path) = editor.file_path()
+            {
+                entries.push(PaletteFileEntry::new(
+                    editor.title(),
+                    path.display().to_string(),
+                    path,
+                ));
+            }
+        }
+
+        entries
+    }
+
+    /// Name the workspace file group according to the sidebar's current scope.
+    fn command_palette_workspace_group_label(&self) -> &'static str {
+        if self.current_workspace_scope().is_all() {
+            "All Workspaces"
+        } else {
+            "Selected Workspace"
+        }
     }
 }

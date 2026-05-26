@@ -96,15 +96,14 @@ pages would be stable and page-like.
 ### Current Fit
 
 The Markdown preview already enables tables, task lists, footnotes,
-strikethrough, and GFM blockquote kinds. The current renderer is deliberately
-GTK-native: most content goes through `GtkTextBuffer` tags, while tables and
-local images use child anchors.
+strikethrough, definition lists, and GFM blockquote kinds. The current renderer
+is deliberately GTK-native: most content goes through `GtkTextBuffer` tags,
+while tables and local images use child anchors.
 
 `pulldown-cmark` 0.13 exposes more parser options that can improve preview
 fidelity:
 
 - `ENABLE_SMART_PUNCTUATION`
-- `ENABLE_DEFINITION_LIST`
 - `ENABLE_SUPERSCRIPT`
 - `ENABLE_SUBSCRIPT`
 - `ENABLE_HEADING_ATTRIBUTES`
@@ -123,14 +122,12 @@ the current renderer's text-and-tag model.
 Add:
 
 - `ENABLE_SMART_PUNCTUATION`
-- `ENABLE_DEFINITION_LIST`
 - `ENABLE_SUPERSCRIPT`
 - `ENABLE_SUBSCRIPT`
 
 Rendering strategy:
 
 - Smart punctuation needs no renderer state beyond enabling the option.
-- Definition lists map to a term line plus an indented definition line.
 - Superscript and subscript use dedicated text tags with smaller scale and
   baseline offset.
 
@@ -138,7 +135,6 @@ Acceptance:
 
 - Add event-stream tests before renderer changes so the exact 0.13 event shape
   is locked down.
-- Add unit tests for definition-list text order and nested inline markup.
 - Add widget tests for readable superscript/subscript in normal paragraphs and
   table cells if table-cell parsing receives the same inline subset.
 

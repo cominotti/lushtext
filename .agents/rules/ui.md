@@ -27,7 +27,7 @@ LushtextWindow (AdwApplicationWindow)
 │   │       └── GtkBox [sections_box]
 │   │           └── LushtextWorkspaceSection (per workspace)
 │   │               ├── GtkSeparator
-│   │               ├── GtkBox [header: label + add_folder_button]
+│   │               ├── GtkBox [header: label + refresh_button]
 │   │               └── GtkScrolledWindow (inner, propagate-natural-height=true, propagate-natural-width=false)
 │   │                   └── GtkListView + TreeListModel
 │   └── [content] AdwMultiLayoutView [properties_layout_view]
@@ -64,6 +64,10 @@ LushtextWindow (AdwApplicationWindow)
 - `AdwMultiLayoutView` + `AdwLayoutSlot` for adaptive secondary surfaces that need the same child in multiple presentations
 - `AdwBottomSheet` for compact utility surfaces such as document properties on narrow windows
 
+## Adaptive Dialog Navigation
+
+- When an `AdwSidebar` selection drives the content page of an `AdwNavigationSplitView`, user-selected rows should call `set_show_content(true)` regardless of the split view's current `is_collapsed()` value. `show-content` only affects the visible page while collapsed, but setting it before the adaptive layout settles preserves the user's navigation intent during resize transitions and widget-test collapse simulations. Back buttons can still call `set_show_content(false)` to return to the list page.
+
 ## File Tree
 
 - Use `GtkListView` + `GtkTreeListModel` + `GtkTreeExpander` (modern GTK4 pattern).
@@ -82,7 +86,7 @@ LushtextWindow (AdwApplicationWindow)
 - **Pinned top row**: The "New Workspace" affordance sits above the outer ScrolledWindow and stays fixed while the workspace list scrolls.
 - **No horizontal sidebar scrollbar**: workspace headers and file-tree labels still avoid ellipsizing, but the left sidebar must not expose a horizontal scrollbar. Overflow is clipped by the viewport instead of enabling sideways scrolling.
 - **Width presets drive the shell**: `Preferences > Workspace` exposes compact `Small`, `Comfy`, and `Large` options that keep their `20%`, `30%`, and `40%` identities while clamping the visible sidebar width to a comfortable desktop range. The window layer owns the split-view math; the sidebar does not expose a duplicate width control.
-- **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder, rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
+- **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
 - **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation saves to disk via `workspace_manager::save()`.
 
 ## File Context Menu (per WorkspaceSection)
@@ -140,6 +144,15 @@ Dialogs, popovers, and browsers that use `GtkStack`, `GtkStackSwitcher`, or anot
 - If pre-rendering is not appropriate, make the placeholder and rendered content advertise the same natural size contract.
 - Do not rely only on `set_size_request()` on an outer scroller when the inner visible child changes from placeholder to content.
 - Add widget coverage for the first Edit -> Render activation, comparing dialog/content natural sizes and text-surface padding before and after activation.
+
+## TextView Child Anchors
+
+`GtkTextView` child anchors do not automatically make embedded widgets fill the visible text column. For anchored Markdown preview widgets that should read as full-width blocks, compute the target width from the text view's allocated `width()` minus left/right margins and apply it to the embedded container with `set_width_request()`.
+
+- Refresh after render, on the preview widget's `size_allocate()`, after readable-column margin changes, and when the text view is mapped or reports a width change.
+- Queue one idle refresh after immediate refreshes so code rendered before the preview is mapped can catch the final allocation.
+- When the preview lives inside a shell that starts hidden or animates through `GtkPaned`, refresh anchored block widths again after the shell transition settles. Standalone preview-widget tests are primitive coverage; acceptance for hidden-to-visible bugs belongs in window-level tests that assert final allocation and horizontal adjustment state.
+- Keep horizontal scrolling inside the embedded block only for real content overflow; do not let the block's natural width create narrow boxes or false scrollbars.
 
 ## GSettings Bindings
 

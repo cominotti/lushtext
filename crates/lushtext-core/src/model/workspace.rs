@@ -153,18 +153,6 @@ impl WorkspacesFile {
         }
     }
 
-    /// Replace a workspace root while preserving the same workspace identity.
-    pub fn replace_root(&mut self, ws_id: &WorkspaceId, root: PathBuf, name: &str) {
-        if let Some(workspace) = self
-            .workspaces
-            .iter_mut()
-            .find(|workspace| &workspace.id == ws_id)
-        {
-            workspace.root = root;
-            workspace.name = name.to_string();
-        }
-    }
-
     /// Persist a new current scope, falling back to `All` if the target is gone.
     pub fn set_current_scope(&mut self, scope: WorkspaceScope) {
         self.current_scope = self.normalized_scope(scope);
@@ -273,12 +261,16 @@ mod tests {
     }
 
     #[test]
-    fn replace_root_updates_root_and_name() {
+    fn remove_and_add_different_root_creates_distinct_workspace_identity() {
         let mut file = WorkspacesFile::default();
-        let workspace_id = file.add_workspace("old", "/tmp/old".into());
+        let old_id = file.add_workspace("old", "/tmp/old".into());
 
-        file.replace_root(&workspace_id, "/tmp/new".into(), "new");
+        file.remove_workspace(&old_id);
+        let new_id = file.add_workspace("new", "/tmp/new".into());
 
+        assert_ne!(old_id, new_id);
+        assert_eq!(file.workspaces.len(), 1);
+        assert_eq!(file.workspaces[0].id, new_id);
         assert_eq!(file.workspaces[0].root, Path::new("/tmp/new"));
         assert_eq!(file.workspaces[0].name, "new");
     }

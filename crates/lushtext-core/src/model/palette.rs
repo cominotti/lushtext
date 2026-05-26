@@ -45,6 +45,32 @@ impl IndexedFile {
     }
 }
 
+/// File-like palette entry that is not necessarily part of the workspace index.
+///
+/// Open file-backed tabs use this value object so the palette can search active
+/// documents without pretending they belong to the current workspace index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteFileEntry {
+    /// Primary row text shown in the palette.
+    pub display_name: String,
+    /// Secondary row text, usually a path used to disambiguate duplicates.
+    pub subtitle: String,
+    /// Absolute path opened when the row is activated.
+    pub path: PathBuf,
+}
+
+impl PaletteFileEntry {
+    /// Build a file-like palette entry from already prepared display fields.
+    #[must_use]
+    pub fn new(display_name: String, subtitle: String, path: PathBuf) -> Self {
+        Self {
+            display_name,
+            subtitle,
+            path,
+        }
+    }
+}
+
 /// A command that can be invoked from the palette.
 #[derive(Debug, Clone)]
 pub struct CommandDef {
@@ -99,6 +125,9 @@ pub enum SearchMode {
 }
 
 impl SearchMode {
+    /// All search modes in selector order.
+    pub const ALL: [Self; 3] = [Self::All, Self::Files, Self::Commands];
+
     /// Cycle to the next mode: All → Files → Commands → All.
     #[must_use]
     pub fn next(self) -> Self {
@@ -109,12 +138,47 @@ impl SearchMode {
         }
     }
 
+    /// Cycle to the previous mode: All → Commands → Files → All.
+    #[must_use]
+    pub fn previous(self) -> Self {
+        match self {
+            Self::All => Self::Commands,
+            Self::Files => Self::All,
+            Self::Commands => Self::Files,
+        }
+    }
+
+    /// Convert a dropdown position into a search mode.
+    #[must_use]
+    pub fn from_position(position: u32) -> Self {
+        usize::try_from(position)
+            .ok()
+            .and_then(|index| Self::ALL.get(index).copied())
+            .unwrap_or_default()
+    }
+
+    /// Return the dropdown position for this mode.
+    #[must_use]
+    pub fn position(self) -> u32 {
+        match self {
+            Self::All => 0,
+            Self::Files => 1,
+            Self::Commands => 2,
+        }
+    }
+
+    /// Mode labels in dropdown order.
+    #[must_use]
+    pub fn labels() -> &'static [&'static str] {
+        &["All", "Files", "Commands"]
+    }
+
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::All => "All ⇥",
-            Self::Files => "Files ⇥",
-            Self::Commands => "Commands ⇥",
+            Self::All => "All",
+            Self::Files => "Files",
+            Self::Commands => "Commands",
         }
     }
 
@@ -139,6 +203,7 @@ pub struct ScoredResult<'a> {
 /// The kind of item in a search result.
 #[derive(Debug)]
 pub enum SearchResultItem<'a> {
+    OpenFile(&'a PaletteFileEntry),
     File(&'a IndexedFile),
     Command(&'a CommandDef),
 }
@@ -188,10 +253,29 @@ mod tests {
     }
 
     #[test]
+    fn test_search_mode_reverse_cycle() {
+        assert_eq!(SearchMode::All.previous(), SearchMode::Commands);
+        assert_eq!(SearchMode::Commands.previous(), SearchMode::Files);
+        assert_eq!(SearchMode::Files.previous(), SearchMode::All);
+    }
+
+    #[test]
+    fn test_search_mode_selector_positions() {
+        assert_eq!(SearchMode::from_position(0), SearchMode::All);
+        assert_eq!(SearchMode::from_position(1), SearchMode::Files);
+        assert_eq!(SearchMode::from_position(2), SearchMode::Commands);
+        assert_eq!(SearchMode::from_position(99), SearchMode::All);
+        assert_eq!(SearchMode::All.position(), 0);
+        assert_eq!(SearchMode::Files.position(), 1);
+        assert_eq!(SearchMode::Commands.position(), 2);
+    }
+
+    #[test]
     fn test_search_mode_labels() {
-        assert_eq!(SearchMode::All.label(), "All ⇥");
-        assert_eq!(SearchMode::Files.label(), "Files ⇥");
-        assert_eq!(SearchMode::Commands.label(), "Commands ⇥");
+        assert_eq!(SearchMode::All.label(), "All");
+        assert_eq!(SearchMode::Files.label(), "Files");
+        assert_eq!(SearchMode::Commands.label(), "Commands");
+        assert_eq!(SearchMode::labels(), &["All", "Files", "Commands"]);
     }
 
     #[test]

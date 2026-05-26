@@ -46,6 +46,7 @@ impl LushtextWindow {
         *self.imp().workspace_scope.borrow_mut() = self.imp().sidebar.current_scope();
         let roots = self.current_workspace_directory_roots();
         self.imp().search_panel.set_workspace_roots(roots);
+        self.refresh_command_palette_sources();
         self.rebuild_file_index();
         self.refresh_notes_menu_state();
     }

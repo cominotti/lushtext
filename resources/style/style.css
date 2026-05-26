@@ -50,8 +50,16 @@
 }
 
 .command-palette-mode {
-  color: @accent_color;
-  font-weight: bold;
+  min-width: 132px;
+}
+
+.command-palette-section-header {
+  color: @dim_label_color;
+  font-weight: 700;
+}
+
+.command-palette-section-row {
+  margin-top: 4px;
 }
 
 /* Theme selector: colored circles matching GNOME Text Editor */
@@ -172,6 +180,24 @@
 .markdown-table-header-separator {
   margin-top: 2px;
   margin-bottom: 4px;
+}
+
+/* Markdown preview code blocks: one continuous source-view surface with
+   explicit interior space so highlighted text never touches the block edge. */
+.markdown-code-block {
+  background-color: alpha(@headerbar_bg_color, 0.9);
+  border: 1px solid alpha(@borders, 0.9);
+  border-radius: 8px;
+}
+
+.markdown-code-block-scroller {
+  background: transparent;
+  border: none;
+}
+
+.markdown-code-block-view,
+.markdown-code-block-view text {
+  background: transparent;
 }
 
 /* Markdown preview image fallbacks: readable card-style blocks with enough

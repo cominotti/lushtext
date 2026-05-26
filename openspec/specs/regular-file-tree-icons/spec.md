@@ -34,7 +34,7 @@ The system SHALL derive file-row icons from platform content-type metadata when 
 The system SHALL keep symbolic icons for sidebar controls and non-content status rows. The regular themed icon behavior MUST apply only to actual filesystem content rows in the file tree.
 
 #### Scenario: Sidebar controls remain symbolic
-- **WHEN** the sidebar renders controls such as New Workspace, Refresh, Replace Workspace Root, drill-down back, or Focus Folder
+- **WHEN** the sidebar renders controls such as New Workspace, Refresh, drill-down back, or Focus Folder
 - **THEN** those controls continue to use symbolic icons
 - **AND** their actions, tooltips, visibility, and placement remain unchanged
 

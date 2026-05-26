@@ -117,6 +117,7 @@ impl super::LushtextWindow {
                     }
                 }
                 self.publish_status_message(&format!("Saved as {path_display}"), MessageKind::Info);
+                self.refresh_command_palette_sources();
                 self.refresh_status_bar();
             }
             Err(crate::ui::editor_page::SaveError::LossyEncoding { preview, .. }) => {

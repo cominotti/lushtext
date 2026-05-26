@@ -50,16 +50,8 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
                     window.mark_focus_mode_preview_changed();
                     return;
                 }
-                // If entering side-by-side while preview-only is active, exit preview-only first.
-                // Must also cancel any in-flight animation and reset shrink-start-child
-                // which animate_preview_mode(true) set to true temporarily.
                 if new_visible && window.imp().preview_mode.get() {
-                    window.imp().preview_mode.set(false);
-                    window.imp().editor_box.set_visible(true);
-                    if let Some(anim) = window.imp().preview_animation.take() {
-                        anim.pause();
-                    }
-                    window.imp().preview_paned.set_shrink_start_child(false);
+                    window.exit_preview_only_mode_now();
                 }
                 window.imp().preview_visible.set(new_visible);
                 window.animate_preview_pane(new_visible);
@@ -234,6 +226,9 @@ impl LushtextWindow {
             }
             imp.preview_paned.set_shrink_end_child(false);
             imp.preview_animation_active.set(false);
+            if imp.preview_visible.get() {
+                imp.markdown_preview.refresh_embedded_code_block_layouts();
+            }
             window.persist_preview_position_preference();
         });
 
@@ -252,8 +247,7 @@ impl LushtextWindow {
             return;
         }
         if show && imp.preview_mode.get() {
-            imp.preview_mode.set(false);
-            imp.editor_box.set_visible(true);
+            self.exit_preview_only_mode_now();
         }
         imp.preview_visible.set(show);
         self.set_preview_action_state("toggle-preview-pane", show);
@@ -289,6 +283,35 @@ impl LushtextWindow {
             return;
         };
         action.set_state(&enabled.to_variant());
+    }
+
+    /// Leave preview-only mode immediately and restore the source-editor shell.
+    ///
+    /// New-document creation and side-by-side preview transitions need a synchronous
+    /// reset because the delayed focus handoff can run before a preview exit
+    /// animation finishes. Keeping this in the preview workflow prevents action
+    /// state, animation state, and widget visibility from drifting apart.
+    pub(super) fn exit_preview_only_mode_now(&self) {
+        let imp = self.imp();
+        if !imp.preview_mode.get() {
+            return;
+        }
+
+        imp.preview_mode.set(false);
+        self.set_preview_action_state("toggle-preview-mode", false);
+        if let Some(anim) = imp.preview_animation.take() {
+            anim.pause();
+        }
+        imp.preview_animation_active.set(false);
+        imp.editor_box.set_visible(true);
+        imp.markdown_preview.set_visible(imp.preview_visible.get());
+        imp.preview_paned.set_shrink_start_child(false);
+
+        let paned_width = imp.preview_paned.width();
+        if paned_width > 0 && !imp.preview_visible.get() {
+            imp.preview_paned.set_position(paned_width);
+        }
+        self.refresh_focus_mode_preview_column();
     }
 
     /// Animate the preview-only mode (Alt+P): editor hidden, preview full-width.
@@ -362,6 +385,9 @@ impl LushtextWindow {
             }
             imp.preview_paned.set_shrink_start_child(false);
             imp.preview_animation_active.set(false);
+            if imp.preview_mode.get() {
+                imp.markdown_preview.refresh_embedded_code_block_layouts();
+            }
             window.persist_preview_position_preference();
         });
 
@@ -395,6 +421,7 @@ impl LushtextWindow {
                     self.current_workspace_directory_roots(),
                 );
                 preview.render_markdown_with_context(&text, &context);
+                preview.refresh_embedded_code_block_layouts();
             }
             Some(_) => {
                 preview.show_placeholder("Not a Markdown file");

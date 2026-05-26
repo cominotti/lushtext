@@ -2,8 +2,8 @@
 
 //! GObject adapter for palette search results.
 //!
-//! Wraps domain types (`IndexedFile`, `CommandDef`) into a GObject suitable
-//! for `gio::ListStore`. Contains no domain logic — pure data carrier.
+//! Wraps palette row data into a GObject suitable for `gio::ListStore`.
+//! Contains no domain logic — pure data carrier for the GTK adapter.
 
 use crate::model::palette::{CommandDef, IndexedFile};
 use glib::subclass::prelude::*;
@@ -26,7 +26,7 @@ mod imp {
         pub action_id: RefCell<String>,
         /// For files: the absolute path to open. `None` for commands.
         pub file_path: RefCell<Option<PathBuf>>,
-        /// Discriminant: `KIND_FILE` (0) or `KIND_COMMAND` (1).
+        /// Discriminant: header, file, or command.
         pub kind: Cell<u8>,
     }
 
@@ -51,8 +51,20 @@ glib::wrapper! {
 const KIND_FILE: u8 = 0;
 /// Discriminant value for command search results.
 const KIND_COMMAND: u8 = 1;
+/// Discriminant value for non-activatable source headers.
+const KIND_HEADER: u8 = 2;
 
 impl PaletteItem {
+    /// Create a non-activatable group header row.
+    #[must_use]
+    pub fn new_header_raw(label: impl Into<String>) -> Self {
+        let obj: Self = glib::Object::builder().build();
+        let imp = obj.imp();
+        imp.display_name.replace(label.into());
+        imp.kind.set(KIND_HEADER);
+        obj
+    }
+
     /// Create a palette item for a file search result.
     #[must_use]
     pub fn new_file_raw(display_name: String, subtitle: String, file_path: PathBuf) -> Self {
@@ -124,5 +136,17 @@ impl PaletteItem {
     #[must_use]
     pub fn is_command(&self) -> bool {
         self.imp().kind.get() == KIND_COMMAND
+    }
+
+    /// Return whether this row is a presentation-only source header.
+    #[must_use]
+    pub fn is_header(&self) -> bool {
+        self.imp().kind.get() == KIND_HEADER
+    }
+
+    /// Return whether this row can activate a file or command.
+    #[must_use]
+    pub fn is_activatable(&self) -> bool {
+        self.is_file() || self.is_command()
     }
 }

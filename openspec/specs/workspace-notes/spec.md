@@ -35,7 +35,7 @@ The system SHALL let users switch a workspace note between editable text mode an
 - **AND** the note returns to an editable text surface without losing content
 
 ### Requirement: Workspace-note persistence follows workspace-root identity
-The system SHALL persist workspace notes under app data using a stable identity derived from the workspace root's canonical path. Renaming a workspace label MUST keep the same workspace note. Renaming the workspace root through LushText's in-app rename workflow MUST migrate the workspace note to the renamed root identity. Replacing a workspace root with a different directory MUST start a fresh workspace-note identity instead of carrying the previous workspace note forward.
+The system SHALL persist workspace notes under app data using a stable identity derived from the workspace root's canonical path. Renaming a workspace label MUST keep the same workspace note. Renaming the workspace root through LushText's in-app rename workflow MUST migrate the workspace note to the renamed root identity. Removing a workspace MUST NOT delete the workspace note for that root, so re-adding the same root MUST restore the same workspace note. Adding a different root MUST use that different root's own workspace-note identity.
 
 #### Scenario: Renaming a workspace label keeps the same workspace note
 - **WHEN** the user renames a workspace label without changing its root directory
@@ -47,15 +47,15 @@ The system SHALL persist workspace notes under app data using a stable identity 
 - **THEN** the persisted workspace note is migrated to the renamed root identity
 - **AND** reopening that renamed workspace restores the same workspace note
 
-#### Scenario: Replace Workspace Root starts a new workspace-note identity
-- **WHEN** the user replaces one workspace root with a different directory through `Replace Workspace Root`
-- **THEN** the newly selected root starts without a copied workspace note by default
-- **AND** the previous root keeps its existing workspace note data
-
 #### Scenario: Remove and re-add the same root restores the same workspace note
 - **WHEN** the user removes a workspace that has a workspace note and later adds the same root directory again
 - **THEN** the system restores the same workspace note for that root
 - **AND** the note does not depend on the old workspace slot identifier
+
+#### Scenario: Adding a different root uses that root's workspace-note identity
+- **WHEN** the user removes one workspace and later creates a workspace for a different root directory
+- **THEN** the different root uses its own workspace-note identity
+- **AND** the previous root keeps its existing workspace note data for a future remove-and-readd flow
 
 ### Requirement: Users can browse notes within the current workspace scope
 The system SHALL provide a workspace-scoped `Browse Notes…` surface that lists workspace notes together with document notes and range notes that fall inside the current shared workspace scope. In a concrete workspace scope, the browser MUST be limited to that workspace. In `All workspaces`, the browser MUST aggregate notes across restored workspace roots while preserving each note's scope in the list presentation.

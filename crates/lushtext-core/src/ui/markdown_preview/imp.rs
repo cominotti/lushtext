@@ -47,12 +47,55 @@ const ALERT_TITLE_IMPORTANT_DARK: &str = "#dc8add";
 const ALERT_TITLE_WARNING_DARK: &str = "#f8e45c";
 const ALERT_TITLE_CAUTION_DARK: &str = "#ff7b63";
 
-/// Font scale factors for heading levels (h1=1.6x down to h6=1.05x).
-const HEADING_SCALES: [f64; 6] = [1.6, 1.4, 1.2, 1.1, 1.05, 1.0];
-/// Base left margin for top-level list items in the preview.
-const LIST_ITEM_BASE_MARGIN: i32 = 24;
+/// Font scale factors for heading levels (h1=2.0x down to h6=1.0x).
+const HEADING_SCALES: [f64; 6] = [2.0, 1.65, 1.35, 1.2, 1.1, 1.0];
+/// Vertical space before each heading level, in text-buffer pixels.
+const HEADING_PIXELS_ABOVE: [i32; 6] = [24, 20, 16, 12, 10, 8];
+/// Vertical space after each heading level, in text-buffer pixels.
+const HEADING_PIXELS_BELOW: [i32; 6] = [10, 8, 6, 5, 4, 4];
+/// Marker-column margin for top-level list items in the preview.
+const LIST_ITEM_MARKER_MARGIN: i32 = 24;
+/// Space reserved between a list marker and the wrapped item text column.
+const LIST_ITEM_MARKER_SLOT: i32 = 36;
 /// Extra indentation applied for each additional nested list level.
-const LIST_ITEM_DEPTH_STEP: i32 = 20;
+const LIST_ITEM_DEPTH_STEP: i32 = 28;
+/// Base left margin for generic blockquotes once the rail glyph is inserted.
+const BLOCKQUOTE_BASE_MARGIN: i32 = 18;
+/// Extra indentation applied for each additional nested generic blockquote.
+const BLOCKQUOTE_DEPTH_STEP: i32 = 20;
+/// Left inset for typed alert callout bodies.
+///
+/// This matches the readable card-like indent used for alert text. If it is too
+/// small, alert bodies blend into surrounding prose; too large wastes preview
+/// width in narrow panes.
+pub(super) const ALERT_BODY_LEFT_MARGIN: i32 = 24;
+/// Right inset for typed alert callout bodies.
+///
+/// A modest right margin keeps wrapped alert text from touching the preview
+/// edge while leaving enough width for code and links.
+pub(super) const ALERT_BODY_RIGHT_MARGIN: i32 = 16;
+/// Left inset for rendered footnote definitions.
+///
+/// Footnotes use the same visual column as definition bodies so their generated
+/// labels and wrapped prose stay compact but still distinct from normal text.
+pub(super) const FOOTNOTE_DEF_LEFT_MARGIN: i32 = 32;
+/// Right inset for rendered footnote definitions.
+///
+/// This mirrors other indented preview blocks to keep wrapped content off the
+/// far edge without making the footnote column feel cramped.
+pub(super) const FOOTNOTE_DEF_RIGHT_MARGIN: i32 = 16;
+/// Left inset for rendered definition-list bodies.
+///
+/// Definition bodies need enough offset to read as content under a term, while
+/// preserving room for nested paragraphs, lists, quotes, and code blocks.
+pub(super) const DEFINITION_DEF_LEFT_MARGIN: i32 = 32;
+/// Right inset for rendered definition-list bodies.
+///
+/// This balances the left definition offset so nested wrapped content keeps a
+/// comfortable line length in both side-by-side and preview-only modes.
+pub(super) const DEFINITION_DEF_RIGHT_MARGIN: i32 = 16;
+/// Visible rail glyph used to replace Markdown's raw `>` source marker.
+pub(super) const BLOCKQUOTE_RAIL: &str = "\u{2502}";
 
 /// Stored override used by widget tests to observe link activation without
 /// launching an external desktop handler.
@@ -73,6 +116,8 @@ pub(super) const TAG_ALERT_BODY: &str = "alert-body";
 pub(super) const TAG_FOOTNOTE_REF: &str = "footnote-ref";
 pub(super) const TAG_FOOTNOTE_DEF: &str = "footnote-def";
 pub(super) const TAG_FOOTNOTE_DEF_LABEL: &str = "footnote-def-label";
+pub(super) const TAG_DEFINITION_TERM: &str = "definition-term";
+pub(super) const TAG_DEFINITION_DEF: &str = "definition-definition";
 
 /// Returns a heading tag name for the given level (0-indexed).
 pub(super) fn heading_tag_name(level_idx: usize) -> String {
@@ -84,14 +129,43 @@ pub(super) fn list_item_tag_name(depth: usize) -> String {
     format!("list-item-depth-{depth}")
 }
 
-/// Return the left margin used for one list nesting depth.
-pub(super) fn list_item_left_margin(depth: usize) -> i32 {
+/// Return the marker-column margin used for one list nesting depth.
+pub(super) fn list_item_marker_margin(depth: usize) -> i32 {
     let extra_depth = depth.saturating_sub(1);
     let extra_margin = i32::try_from(extra_depth)
         .ok()
         .and_then(|depth| depth.checked_mul(LIST_ITEM_DEPTH_STEP))
-        .unwrap_or(i32::MAX - LIST_ITEM_BASE_MARGIN);
-    LIST_ITEM_BASE_MARGIN.saturating_add(extra_margin)
+        .unwrap_or(i32::MAX - LIST_ITEM_MARKER_MARGIN);
+    LIST_ITEM_MARKER_MARGIN.saturating_add(extra_margin)
+}
+
+/// Return the wrapped-text margin used for one list nesting depth.
+pub(super) fn list_item_text_margin(depth: usize) -> i32 {
+    list_item_marker_margin(depth).saturating_add(LIST_ITEM_MARKER_SLOT)
+}
+
+/// Returns the dynamic tag name used for one generic blockquote depth.
+pub(super) fn blockquote_depth_tag_name(depth: usize) -> String {
+    format!("blockquote-depth-{depth}")
+}
+
+/// Return the left margin used for one generic blockquote depth.
+pub(super) fn blockquote_left_margin(depth: usize) -> i32 {
+    let extra_depth = depth.saturating_sub(1);
+    let extra_margin = i32::try_from(extra_depth)
+        .ok()
+        .and_then(|depth| depth.checked_mul(BLOCKQUOTE_DEPTH_STEP))
+        .unwrap_or(i32::MAX - BLOCKQUOTE_BASE_MARGIN);
+    BLOCKQUOTE_BASE_MARGIN.saturating_add(extra_margin)
+}
+
+/// Return the visible rail prefix for one generic blockquote nesting depth.
+pub(super) fn blockquote_rail_prefix(depth: usize) -> String {
+    (0..depth)
+        .map(|_| BLOCKQUOTE_RAIL)
+        .collect::<Vec<_>>()
+        .join(" ")
+        + " "
 }
 
 /// Return the tag name used for a typed alert callout title.
@@ -132,9 +206,10 @@ pub struct LushtextMarkdownPreview {
     ///
     /// `GtkTextChildAnchor` makes tables and image blocks pleasantly native,
     /// but GTK does not manage rerender cleanup for us at the application
-    /// level. We keep strong refs here so `render_markdown`, `clear`, and
-    /// `show_placeholder` can remove stale embeds before rebuilding.
-    pub(super) rendered_embeds: RefCell<Vec<gtk4::Widget>>,
+    /// level. We keep strong refs plus the layout context captured at insertion
+    /// time so `render_markdown`, `clear`, and `show_placeholder` can remove
+    /// stale embeds and resize code blocks after later allocations.
+    pub(super) rendered_embeds: RefCell<Vec<super::RenderedEmbed>>,
     /// Launchable link spans rendered directly into the text buffer.
     ///
     /// The preview rerenders whole documents, so this list is rebuilt from
@@ -200,10 +275,34 @@ impl ObjectImpl for LushtextMarkdownPreview {
                 create_or_update_tags(&obj.imp().text_view.buffer(), sm.is_dark());
             }
         });
+
+        // Code blocks are embedded as child-anchor widgets, so they need to
+        // follow the final text-view column width rather than the outer box.
+        for property_name in ["width", "left-margin", "right-margin"] {
+            let obj_weak = self.obj().downgrade();
+            self.text_view
+                .connect_notify_local(Some(property_name), move |_, _| {
+                    if let Some(obj) = obj_weak.upgrade() {
+                        obj.queue_code_block_width_refresh();
+                    }
+                });
+        }
+
+        let obj_weak = self.obj().downgrade();
+        self.obj().connect_map(move |_| {
+            if let Some(obj) = obj_weak.upgrade() {
+                obj.queue_code_block_width_refresh();
+            }
+        });
     }
 }
 
-impl WidgetImpl for LushtextMarkdownPreview {}
+impl WidgetImpl for LushtextMarkdownPreview {
+    fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+        self.parent_size_allocate(width, height, baseline);
+        self.obj().queue_code_block_width_refresh();
+    }
+}
 impl BoxImpl for LushtextMarkdownPreview {}
 
 /// Create (or update in-place) all TextTags used by the Markdown renderer.
@@ -240,9 +339,13 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
         tag.set_scale(scale);
         tag.set_weight(pango::Weight::Bold.into_glib());
         tag.set_foreground(Some(accent));
-        // Add vertical spacing above headings for visual separation.
-        tag.set_pixels_above_lines(if i == 0 { 12 } else { 8 });
-        tag.set_pixels_below_lines(4);
+        tag.set_pixels_above_lines(HEADING_PIXELS_ABOVE[i]);
+        tag.set_pixels_below_lines(HEADING_PIXELS_BELOW[i]);
+        tag.set_underline(if i < 2 {
+            pango::Underline::Single
+        } else {
+            pango::Underline::None
+        });
     }
 
     // Inline style tags.
@@ -274,17 +377,18 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     link.set_foreground(Some(accent));
     link.set_underline(pango::Underline::Single);
 
-    // Blockquotes: dim color, italic, left indent.
+    // Blockquotes: dim color and modest paragraph spacing. Depth-specific tags
+    // own indentation so nested quotes can remain visually distinct.
     let blockquote = get_or_create(TAG_BLOCKQUOTE);
     blockquote.set_foreground(Some(dim));
-    blockquote.set_style(pango::Style::Italic);
-    blockquote.set_left_margin(24);
     blockquote.set_pixels_above_lines(2);
     blockquote.set_pixels_below_lines(2);
 
-    // List items: top-level left indent for bullet/number alignment.
+    // List items: depth-specific tags own list layout; this shared tag remains
+    // a semantic grouping point for item-wide styling and tests.
     let list_item = get_or_create(TAG_LIST_ITEM);
-    list_item.set_left_margin(LIST_ITEM_BASE_MARGIN);
+    list_item.set_left_margin(0);
+    list_item.set_indent(0);
 
     // Task list markers use a monospaced accent so checked and unchecked state
     // stays readable even when the surrounding item text uses proportional fonts.
@@ -303,8 +407,8 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     // Alert callouts stay on the text-buffer path, so the body tag provides the
     // native card-like spacing while per-kind title tags carry the alert identity.
     let alert_body = get_or_create(TAG_ALERT_BODY);
-    alert_body.set_left_margin(24);
-    alert_body.set_right_margin(16);
+    alert_body.set_left_margin(ALERT_BODY_LEFT_MARGIN);
+    alert_body.set_right_margin(ALERT_BODY_RIGHT_MARGIN);
     alert_body.set_paragraph_background(Some(alert_bg));
     alert_body.set_pixels_above_lines(4);
     alert_body.set_pixels_below_lines(4);
@@ -350,8 +454,8 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     footnote_ref.set_weight(pango::Weight::Bold.into_glib());
 
     let footnote_def = get_or_create(TAG_FOOTNOTE_DEF);
-    footnote_def.set_left_margin(32);
-    footnote_def.set_right_margin(16);
+    footnote_def.set_left_margin(FOOTNOTE_DEF_LEFT_MARGIN);
+    footnote_def.set_right_margin(FOOTNOTE_DEF_RIGHT_MARGIN);
     footnote_def.set_pixels_above_lines(2);
     footnote_def.set_pixels_below_lines(2);
 
@@ -359,17 +463,46 @@ fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     footnote_def_label.set_family(Some("Monospace"));
     footnote_def_label.set_foreground(Some(accent));
     footnote_def_label.set_weight(pango::Weight::Bold.into_glib());
+
+    // Definition lists are parser-native pulldown-cmark blocks. Terms need to
+    // read like labels, while definitions need a stable text column that can
+    // also host nested paragraphs, lists, quotes, and code anchors.
+    let definition_term = get_or_create(TAG_DEFINITION_TERM);
+    definition_term.set_weight(pango::Weight::Bold.into_glib());
+    definition_term.set_pixels_above_lines(4);
+    definition_term.set_pixels_below_lines(1);
+
+    let definition_def = get_or_create(TAG_DEFINITION_DEF);
+    definition_def.set_left_margin(DEFINITION_DEF_LEFT_MARGIN);
+    definition_def.set_right_margin(DEFINITION_DEF_RIGHT_MARGIN);
+    definition_def.set_pixels_above_lines(1);
+    definition_def.set_pixels_below_lines(2);
 }
 
 /// Ensure the tag used for a given list nesting depth exists and return its name.
 pub(super) fn ensure_list_item_depth_tag(buffer: &gtk4::TextBuffer, depth: usize) -> String {
     let name = list_item_tag_name(depth);
+    let tag = if let Some(tag) = buffer.tag_table().lookup(&name) {
+        tag
+    } else {
+        let tag = gtk4::TextTag::new(Some(&name));
+        buffer.tag_table().add(&tag);
+        tag
+    };
+    tag.set_left_margin(list_item_text_margin(depth));
+    tag.set_indent(-LIST_ITEM_MARKER_SLOT);
+    name
+}
+
+/// Ensure the tag used for a generic blockquote depth exists and return its name.
+pub(super) fn ensure_blockquote_depth_tag(buffer: &gtk4::TextBuffer, depth: usize) -> String {
+    let name = blockquote_depth_tag_name(depth);
     if buffer.tag_table().lookup(&name).is_some() {
         return name;
     }
 
     let tag = gtk4::TextTag::new(Some(&name));
-    tag.set_left_margin(list_item_left_margin(depth));
+    tag.set_left_margin(blockquote_left_margin(depth));
     buffer.tag_table().add(&tag);
     name
 }
