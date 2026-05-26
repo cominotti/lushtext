@@ -115,6 +115,8 @@ Code that "looks wired correctly" can silently fail if GTK4's internal gesture s
 
 **First-activation rendering paths:** Signals such as `notify::visible-child-name` often do more work on the first activation than on later toggles. If the handler renders Markdown, replaces placeholders, mounts scrollers, or otherwise changes the active page's child tree, verify the first user activation as its own path. A mode switch that looks wired correctly can still be wrong if the first activation changes dialog geometry, focus, or content padding.
 
+**MenuButton popup lifecycle:** Do not rebuild, clear, or replace a `GtkMenuButton`'s `menu-model` from `notify::active` or any other popup-open path. GTK is actively creating the popover at that point, and replacing the model can cancel the visible popup even though the menu model looks correct in tests. Keep the model ready from ordinary state refreshes, skip no-op `set_menu_model()` calls, and cover regressions with a widget test that calls `MenuButton::popup()` / `popdown()` and asserts active or popover-visible state rather than only inspecting `GMenuModel`.
+
 ## Testing
 
 Every wired signal must have a widget test that asserts the expected state change (button click hides widget, entry propagates value, toggle flips state). Tests must also cover the action enabled/disabled lifecycle (disabled when no tabs, enabled after tab creation, disabled again after closing all tabs).

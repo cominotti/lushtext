@@ -2,6 +2,10 @@
 
 > **Load order:** Agents must always load [SOUL.md](./SOUL.md) first and immediately, before reading the rest of [AGENTS.md](./AGENTS.md), so it can inform how the agent should behave while applying the project guidance below.
 
+## Critical: Subagent Approval
+
+Subagents can and MUST ALWAYS be used whenever a skill or command asks for them. Approval to use subagents is already EXPLICITLY GRANTED by default; do not wait for additional per-turn confirmation when a skill or command requires delegation.
+
 A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text Editor but with a left workspace pane, an optional right properties pane, and workspace support.
 
 ## Tech Stack
@@ -23,7 +27,7 @@ Keep this index in sync with `.agents/rules/*.md`. When a new rule file is added
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, module-splitting, and state-grouping conventions
 - `ui.md` — UI, theming, adaptive dialog navigation, TextView child-anchor geometry, and GTK paned geometry/animation conventions
-- `widget-wiring.md` — GTK widget composition, signal wiring, tab projection state, live paned-validation, and allocation-frame animation rules
+- `widget-wiring.md` — GTK widget composition, signal wiring, menu popup lifecycle, tab projection state, live paned-validation, and allocation-frame animation rules
 
 ## Architecture
 

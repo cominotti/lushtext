@@ -158,6 +158,12 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes">Edit Range Note</property>
+                <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;m</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
                 <property name="title" translatable="yes">Browse Notes</property>
                 <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;a</property>
               </object>

@@ -577,6 +577,13 @@ impl ObjectImpl for LushtextWindow {
         });
 
         let window_weak = obj.downgrade();
+        self.sidebar.connect_document_note_requested(move |path| {
+            if let Some(window) = window_weak.upgrade() {
+                window.open_document_note_for_path(path);
+            }
+        });
+
+        let window_weak = obj.downgrade();
         self.sidebar
             .connect_file_renamed(move |old_path, new_path| {
                 if let Some(window) = window_weak.upgrade() {
@@ -620,6 +627,14 @@ impl ObjectImpl for LushtextWindow {
         });
 
         let window_weak = obj.downgrade();
+        self.sidebar
+            .connect_workspace_note_requested(move |workspace_id| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.open_workspace_note_for_id(&workspace_id);
+                }
+            });
+
+        let window_weak = obj.downgrade();
         self.sidebar.connect_workspace_structure_changed(move || {
             if let Some(window) = window_weak.upgrade() {
                 window.refresh_workspace_scope_consumers();
@@ -661,16 +676,6 @@ impl ObjectImpl for LushtextWindow {
                 window.close_command_palette();
             }
         });
-
-        let window_weak = obj.downgrade();
-        self.notes_menu_button
-            .connect_notify_local(Some("active"), move |button, _| {
-                if button.is_active()
-                    && let Some(window) = window_weak.upgrade()
-                {
-                    window.refresh_notes_menu_state();
-                }
-            });
 
         let window_weak = obj.downgrade();
         self.tab_view

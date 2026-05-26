@@ -12,6 +12,10 @@
 //! Two display states:
 //! - **Content mode**: scrolled text view with rendered Markdown
 //! - **Placeholder mode**: `AdwStatusPage` with "Not a Markdown file" message
+//!
+//! Dialog note editors can also ask for a placeholder rendered inside content
+//! mode so an Edit/Render stack measures the same text surface before and
+//! after the first user-visible render.
 
 mod imp;
 mod inline_footnotes;
@@ -1321,6 +1325,18 @@ impl LushtextMarkdownPreview {
         imp.placeholder.set_visible(true);
         self.clear_rendered_state();
         imp.showing_content.set(false);
+    }
+
+    /// Show placeholder copy inside the rendered text surface.
+    ///
+    /// Note editors use this while their Render page is hidden inside a
+    /// `GtkStack`: the final scrolled text surface must be part of the first
+    /// measurement pass, otherwise a later placeholder-to-content swap can make
+    /// the surrounding dialog resize by a pixel when Render is clicked.
+    pub(crate) fn show_content_placeholder(&self, description: &str) {
+        self.show_content_view();
+        self.clear_rendered_state();
+        self.imp().text_view.buffer().set_text(description);
     }
 
     /// Clear the rendered content without showing the placeholder.

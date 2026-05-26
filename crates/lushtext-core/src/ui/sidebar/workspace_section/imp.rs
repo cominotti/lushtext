@@ -182,6 +182,8 @@ pub struct LushtextWorkspaceSection {
     pub create_callback: RefCell<Option<FileCallback>>,
     /// Callback used when a file row should open the local-history browser.
     pub local_history_callback: RefCell<Option<FileCallback>>,
+    /// Callback used when a file row should open its document note.
+    pub document_note_callback: RefCell<Option<FileCallback>>,
     /// Callback used when a peek should be promoted into the normal open flow.
     pub peek_promote_callback: RefCell<Option<FileCallback>>,
     /// Callback used for lightweight status-bar messages owned by the window.
@@ -191,6 +193,7 @@ pub struct LushtextWorkspaceSection {
     pub rename_workspace_callback: RefCell<Option<WorkspaceCallback>>,
     pub unlist_workspace_callback: RefCell<Option<WorkspaceCallback>>,
     pub folder_focused_callback: RefCell<Option<WorkspaceCallback>>,
+    pub workspace_note_callback: RefCell<Option<WorkspaceCallback>>,
 }
 
 #[glib::object_subclass]
@@ -292,16 +295,18 @@ impl LushtextWorkspaceSection {
             focus_btn.set_margin_end(6);
             focus_btn.set_visible(false);
 
-            let list_item_clone = list_item.clone();
-            let overlay_clone = overlay.clone();
+            let list_item_weak = list_item.downgrade();
+            let overlay_weak = overlay.downgrade();
             focus_btn.connect_clicked(move |_| {
-                if let Some(tree_row) = list_item_clone.item().and_downcast::<gtk4::TreeListRow>()
+                if let Some(list_item) = list_item_weak.upgrade()
+                    && let Some(overlay) = overlay_weak.upgrade()
+                    && let Some(tree_row) = list_item.item().and_downcast::<gtk4::TreeListRow>()
                     && let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>()
                     && let Some(path) = file_item.path()
                 {
                     // Find the WorkspaceSection by walking up the widget tree
                     let mut current: Option<gtk4::Widget> =
-                        Some(overlay_clone.clone().upcast::<gtk4::Widget>());
+                        Some(overlay.clone().upcast::<gtk4::Widget>());
                     while let Some(w) = current {
                         if let Some(section) = w.downcast_ref::<super::LushtextWorkspaceSection>() {
                             section.focus_folder(&path);
@@ -548,6 +553,7 @@ impl LushtextWorkspaceSection {
         let nav_section = gio::Menu::new();
         nav_section.append(Some("Focus Folder"), Some("section.focus-folder"));
         nav_section.append(Some("Local History…"), Some("section.local-history"));
+        nav_section.append(Some("Open Document Note…"), Some("section.document-note"));
         menu.append_section(None, &nav_section);
 
         let create_section = gio::Menu::new();
@@ -595,6 +601,18 @@ impl LushtextWorkspaceSection {
         });
         action_group.add_action(&local_history_action);
 
+        let document_note_action = gio::SimpleAction::new("document-note", None);
+        let section_weak = obj.downgrade();
+        document_note_action.connect_activate(move |_, _| {
+            if let Some(section) = section_weak.upgrade()
+                && let Some(path) = section.imp().context_path.borrow().clone()
+                && !section.imp().context_is_dir.get()
+            {
+                section.notify_document_note_requested(&path);
+            }
+        });
+        action_group.add_action(&document_note_action);
+
         let new_file_action = gio::SimpleAction::new("new-file", None);
         let section_weak = obj.downgrade();
         new_file_action.connect_activate(move |_, _| {
@@ -640,6 +658,7 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         let focus_folder_action_clone = focus_folder_action.clone();
         let local_history_action_clone = local_history_action.clone();
+        let document_note_action_clone = document_note_action.clone();
         gesture.connect_pressed(move |gesture, _n_press, x, y| {
             let Some(section) = section_weak.upgrade() else {
                 return;
@@ -672,10 +691,12 @@ impl LushtextWorkspaceSection {
             focus_folder_action_clone.set_enabled(
                 file_item.is_dir() && !file_item.is_placeholder() && tree_row.depth() > 0,
             );
-            let local_history_enabled = !file_item.is_dir()
-                && !file_item.is_placeholder()
-                && file_item.path().as_deref().is_some_and(can_show_local_history_for_path);
+            // Avoid filesystem metadata checks on the right-click path; the
+            // window-level local-history workflow validates file size on
+            // activation and reports a warning if the file is too large.
+            let local_history_enabled = !file_item.is_dir() && !file_item.is_placeholder();
             local_history_action_clone.set_enabled(local_history_enabled);
+            document_note_action_clone.set_enabled(!file_item.is_dir() && !file_item.is_placeholder());
 
             let popover = imp.context_menu.borrow().clone();
             if let Some(popover) = popover {
@@ -691,11 +712,15 @@ impl LushtextWorkspaceSection {
         self.file_tree_view.add_controller(gesture);
     }
 
-    /// Build right-click context menu for the workspace header (Rename / Remove).
+    /// Build right-click context menu for the workspace header.
     fn setup_header_context_menu(&self) {
         let obj = self.obj();
 
         let menu = gio::Menu::new();
+        menu.append(
+            Some("Open Workspace Note…"),
+            Some("ws-header.open-workspace-note"),
+        );
         menu.append(Some("Rename Workspace"), Some("ws-header.rename"));
         menu.append(Some("Remove Workspace"), Some("ws-header.unlist"));
 
@@ -706,6 +731,15 @@ impl LushtextWorkspaceSection {
         *self.header_context_menu.borrow_mut() = Some(popover.clone());
 
         let action_group = gio::SimpleActionGroup::new();
+
+        let workspace_note_action = gio::SimpleAction::new("open-workspace-note", None);
+        let section_weak = obj.downgrade();
+        workspace_note_action.connect_activate(move |_, _| {
+            if let Some(section) = section_weak.upgrade() {
+                section.notify_workspace_note_requested();
+            }
+        });
+        action_group.add_action(&workspace_note_action);
 
         let rename_action = gio::SimpleAction::new("rename", None);
         let section_weak = obj.downgrade();
@@ -771,15 +805,6 @@ fn click_target_is_header_background(gesture: &gtk4::GestureClick, x: f64, y: f6
         return true;
     };
     target.ancestor(gtk4::Button::static_type()).is_none()
-}
-
-fn can_show_local_history_for_path(path: &Path) -> bool {
-    std::fs::metadata(path).ok().is_some_and(|metadata| {
-        crate::services::local_history_service::availability_for_size_check(
-            crate::services::file_limits::FileSizeCheck::classify(metadata.len()),
-        )
-        .allows_browsing()
-    })
 }
 
 /// Match Builder's "Files" root row only for the normal single-directory workspace root.

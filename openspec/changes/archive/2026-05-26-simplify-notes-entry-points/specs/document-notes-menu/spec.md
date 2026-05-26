@@ -1,8 +1,5 @@
-# document-notes-menu Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change notes-menu-organization. Update Purpose after archive.
-## Requirements
 ### Requirement: Notes workflows use a dedicated secondary menu
 The system SHALL expose bookmark workflows together with range-note, document-note, and workspace-note workflows through a dedicated `Notes` secondary menu in the window header bar. Once the `Notes` menu is available, the primary menu MUST not list bookmark or note commands, and the notes surface MUST not rely on nested submenus. The `Notes` menu MUST act as a concise entry-point surface rather than a complete list of every bookmark and note command.
 
@@ -11,15 +8,6 @@ The system SHALL expose bookmark workflows together with range-note, document-no
 - **THEN** the header bar shows a dedicated `Notes` menu button
 - **AND** opening that menu reveals high-level bookmark and note entry points
 - **AND** opening the primary menu does not reveal bookmark or note commands
-
-### Requirement: Notes placement follows the header-bar menu hierarchy
-While the app-wide `Main Menu` remains in the header bar, it SHALL stay the outermost end-aligned menu button. When both `Notes` and `Main Menu` are visible in the header bar, the `Notes` menu MUST appear immediately to the left of `Main Menu` and MUST NOT appear to its right.
-
-#### Scenario: Render both Notes and Main Menu in the header bar
-- **WHEN** the window shows both the `Notes` secondary menu and the app-wide `Main Menu`
-- **THEN** `Main Menu` is the outermost end-aligned header-bar menu
-- **AND** `Notes` appears immediately to its left
-- **AND** `Notes` does not appear to the right of `Main Menu`
 
 ### Requirement: Notes menu groups actions by scope
 The system SHALL organize the `Notes` menu into a short set of high-level entry points. The menu MUST contain `Browse Notes…`, a context-sensitive bookmark toggle labeled `Add Bookmark` or `Remove Bookmark`, `Add Range Note…`, `Open Document Note…`, `Open Workspace Note…`, and `Export Range Notes…`. The menu MUST NOT contain separate `Browse Bookmarks…`, `Edit Bookmark Label…`, or `Edit Range Note…` entries.
@@ -57,20 +45,7 @@ The system SHALL keep the `Notes` menu surface aligned with the current window c
 - **WHEN** the window has no active editor and no current workspace scope
 - **THEN** the header bar does not show the `Notes` menu button
 
-### Requirement: Notes menu popup activation is stable
-The system SHALL open a visible `Notes` menu popup when the user activates the visible header-bar `Notes` button. The system MUST NOT rebuild, replace, or clear the menu model during the popup activation path in a way that prevents GTK from showing the popover.
-
-#### Scenario: Click the Notes button opens the menu
-- **WHEN** the window context makes the `Notes` menu button visible
-- **AND** the user activates the `Notes` menu button
-- **THEN** the `Notes` menu popup becomes open
-- **AND** the popup exposes the current note entry points
-
-#### Scenario: Dynamic bookmark label does not cancel popup opening
-- **WHEN** the active saved document changes the bookmark-toggle label between `Add Bookmark` and `Remove Bookmark`
-- **AND** the user activates the `Notes` menu button after that state refresh
-- **THEN** the `Notes` menu popup opens normally
-- **AND** the bookmark-toggle label reflects the current cursor state
+## ADDED Requirements
 
 ### Requirement: Context menus expose note actions for clear targets
 The system SHALL expose note workflows in context menus only when the context identifies a clear target. Contextual note actions MUST reuse the same bookmark, range-note, document-note, and workspace-note workflows as the header menu and command palette.

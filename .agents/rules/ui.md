@@ -141,9 +141,9 @@ Any `GtkTextView`, `GtkSourceView`, or similar document surface placed inside a 
 Dialogs, popovers, and browsers that use `GtkStack`, `GtkStackSwitcher`, or another multiplexer for Edit/Render modes must keep the first user-visible mode switch geometry-stable. Hidden stack pages can still participate in measurement, and a Render page that starts as a placeholder can change the parent dialog's natural size by a few pixels when it first renders real content.
 
 - For existing non-empty notes or similar records, pre-render the hidden Render page before presenting the dialog while keeping Edit as the visible mode. The first click on Render must reveal already-measured content, not swap placeholder geometry for content geometry.
-- If pre-rendering is not appropriate, make the placeholder and rendered content advertise the same natural size contract.
+- If pre-rendering is not appropriate, make the placeholder and rendered content advertise the same natural size contract. For note-editor `LushtextMarkdownPreview` instances, use the content-surface placeholder path so the final scrolled text surface is visible to measurement before first Render.
 - Do not rely only on `set_size_request()` on an outer scroller when the inner visible child changes from placeholder to content.
-- Add widget coverage for the first Edit -> Render activation, comparing dialog/content natural sizes and text-surface padding before and after activation.
+- Add widget coverage for the first Edit -> Render activation, comparing dialog/content natural sizes, text-origin bounds, and text-surface padding before and after activation. Cover both existing non-empty content and the initially-empty path where the user types note text before clicking Render.
 
 ## TextView Child Anchors
 

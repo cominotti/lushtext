@@ -5,7 +5,7 @@
 //! Manages workspace sections, the fixed workspace selector row, and debounced
 //! persistence of workspace state to disk.
 
-use crate::model::workspace::{WorkspaceScope, WorkspacesFile};
+use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -18,6 +18,7 @@ use super::workspace_section::LushtextWorkspaceSection;
 type FileCallback = Box<dyn Fn(&Path)>;
 type MessageCallback = Box<dyn Fn(&str, NotificationSeverity)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
+type WorkspaceCallback = Box<dyn Fn(WorkspaceId)>;
 type WorkspaceScopeCallback = Box<dyn Fn(WorkspaceScope)>;
 
 // CompositeTemplate loads the UI layout from a compiled XML file.
@@ -58,11 +59,15 @@ pub struct LushtextSidebar {
     pub file_activated_callback: RefCell<Option<FileCallback>>,
     /// Callback for file-row local-history requests, forwarded to the window.
     pub local_history_callback: RefCell<Option<FileCallback>>,
+    /// Callback for file-row document-note requests, forwarded to the window.
+    pub document_note_callback: RefCell<Option<FileCallback>>,
     pub rename_callback: RefCell<Option<RenameCallback>>,
     pub delete_callback: RefCell<Option<FileCallback>>,
     pub create_callback: RefCell<Option<FileCallback>>,
     /// Callback forwarding workspace-section status messages to the window.
     pub message_callback: RefCell<Option<MessageCallback>>,
+    /// Callback for workspace-header note requests, forwarded to the window.
+    pub workspace_note_callback: RefCell<Option<WorkspaceCallback>>,
     /// Callback notifying the window that workspace structure changed.
     pub workspace_structure_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
     /// Callback notifying the window that the shared workspace scope changed.
@@ -95,10 +100,12 @@ impl Default for LushtextSidebar {
             workspace_filter_animation_active: Cell::default(),
             file_activated_callback: RefCell::default(),
             local_history_callback: RefCell::default(),
+            document_note_callback: RefCell::default(),
             rename_callback: RefCell::default(),
             delete_callback: RefCell::default(),
             create_callback: RefCell::default(),
             message_callback: RefCell::default(),
+            workspace_note_callback: RefCell::default(),
             workspace_structure_changed_callback: RefCell::default(),
             workspace_scope_changed_callback: RefCell::default(),
             persist_generation: Cell::default(),

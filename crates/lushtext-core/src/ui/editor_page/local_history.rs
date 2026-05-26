@@ -22,10 +22,25 @@ use super::LushtextEditorPage;
 const DEFAULT_PERIODIC_CAPTURE_INTERVAL_MS: u64 = 5 * 60 * 1000;
 
 impl LushtextEditorPage {
-    /// Extend the editor's native context menu with local-history browsing.
+    /// Extend the editor's native context menu with note and local-history actions.
     pub(crate) fn setup_local_history_context_menu(&self) {
         let menu = gio::Menu::new();
-        menu.append(Some("Local History…"), Some("win.show-local-history"));
+
+        let notes_section = gio::Menu::new();
+        notes_section.append(Some("Toggle Bookmark"), Some("win.toggle-bookmark"));
+        notes_section.append(
+            Some("Edit Bookmark Label…"),
+            Some("win.edit-bookmark-label"),
+        );
+        notes_section.append(Some("Add Range Note…"), Some("win.add-annotation"));
+        notes_section.append(Some("Edit Range Note…"), Some("win.edit-annotation"));
+        notes_section.append(Some("Open Document Note…"), Some("win.open-document-note"));
+        menu.append_section(None, &notes_section);
+
+        let history_section = gio::Menu::new();
+        history_section.append(Some("Local History…"), Some("win.show-local-history"));
+        menu.append_section(None, &history_section);
+
         self.source_view().set_extra_menu(Some(&menu));
     }
 

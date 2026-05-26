@@ -109,9 +109,6 @@ impl LushtextWindow {
             gio::ActionEntry::builder("edit-bookmark-label")
                 .activate(|window: &Self, _, _| window.edit_bookmark_label())
                 .build(),
-            gio::ActionEntry::builder("notes-edit-bookmark-label")
-                .activate(|window: &Self, _, _| window.edit_bookmark_label())
-                .build(),
             gio::ActionEntry::builder("next-bookmark")
                 .activate(|window: &Self, _, _| {
                     window.navigate_bookmark_action(BookmarkNavigationDirection::Next);
@@ -125,9 +122,6 @@ impl LushtextWindow {
             gio::ActionEntry::builder("show-bookmarks")
                 .activate(|window: &Self, _, _| window.show_bookmarks_dialog())
                 .build(),
-            gio::ActionEntry::builder("notes-show-bookmarks")
-                .activate(|window: &Self, _, _| window.show_bookmarks_dialog())
-                .build(),
             gio::ActionEntry::builder("add-annotation")
                 .activate(|window: &Self, _, _| window.add_annotation())
                 .build(),
@@ -135,9 +129,6 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| window.add_annotation())
                 .build(),
             gio::ActionEntry::builder("edit-annotation")
-                .activate(|window: &Self, _, _| window.edit_annotation())
-                .build(),
-            gio::ActionEntry::builder("notes-edit-annotation")
                 .activate(|window: &Self, _, _| window.edit_annotation())
                 .build(),
             gio::ActionEntry::builder("open-document-note")

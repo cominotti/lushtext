@@ -33,6 +33,13 @@ impl LushtextSidebar {
         });
 
         let sidebar_weak = self.downgrade();
+        section.connect_document_note_requested(move |path| {
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                sidebar.emit_document_note_requested(path);
+            }
+        });
+
+        let sidebar_weak = self.downgrade();
         section.connect_file_renamed(move |old, new| {
             if let Some(sidebar) = sidebar_weak.upgrade() {
                 sidebar.emit_file_renamed(old, new);
@@ -90,6 +97,13 @@ impl LushtextSidebar {
                 sidebar.handle_folder_focused(workspace_id);
             }
         });
+
+        let sidebar_weak = self.downgrade();
+        section.connect_workspace_note_requested(move |workspace_id| {
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                sidebar.emit_workspace_note_requested(workspace_id);
+            }
+        });
     }
 
     fn emit_file_activated(&self, path: &Path) {
@@ -100,6 +114,12 @@ impl LushtextSidebar {
 
     fn emit_local_history_requested(&self, path: &Path) {
         if let Some(ref callback) = *self.imp().local_history_callback.borrow() {
+            callback(path);
+        }
+    }
+
+    fn emit_document_note_requested(&self, path: &Path) {
+        if let Some(ref callback) = *self.imp().document_note_callback.borrow() {
             callback(path);
         }
     }
@@ -125,6 +145,12 @@ impl LushtextSidebar {
     fn emit_message(&self, text: &str, severity: NotificationSeverity) {
         if let Some(ref callback) = *self.imp().message_callback.borrow() {
             callback(text, severity);
+        }
+    }
+
+    fn emit_workspace_note_requested(&self, workspace_id: &crate::model::workspace::WorkspaceId) {
+        if let Some(ref callback) = *self.imp().workspace_note_callback.borrow() {
+            callback(workspace_id.clone());
         }
     }
 }

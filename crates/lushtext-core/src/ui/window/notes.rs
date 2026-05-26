@@ -5,7 +5,7 @@
 //! This module keeps note-specific action handling, dialogs, persistence
 //! scheduling, and workspace export logic out of the generic document shell.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -64,6 +64,13 @@ const NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP: i32 = 10;
 /// One entry shown in the unified notes browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NotesBrowserEntry {
+    Bookmark {
+        workspace_name: String,
+        workspace_root: PathBuf,
+        path: PathBuf,
+        line: u32,
+        label: Option<String>,
+    },
     Workspace {
         workspace_name: String,
         root: PathBuf,
@@ -85,6 +92,15 @@ enum NotesBrowserEntry {
         note_text: String,
         style: AnnotationStyle,
     },
+}
+
+/// Lowercased search query plus a small prefix table for allocation-light matching.
+struct NotesBrowserQuery {
+    /// Query represented as Unicode scalar values so note bodies do not need to
+    /// allocate their own lowercased copies on every keystroke.
+    needle: Vec<char>,
+    /// Knuth-Morris-Pratt prefix table for streaming substring matching.
+    prefix: Vec<usize>,
 }
 
 /// State for one open unified notes browser dialog.
@@ -111,8 +127,10 @@ struct NotesBrowserState {
     back_button: gtk4::Button,
     /// Complete set of notes covered by this browser session.
     all_entries: Vec<NotesBrowserEntry>,
-    /// Current filtered entries in the same order as the sidebar items.
-    filtered_entries: RefCell<Vec<NotesBrowserEntry>>,
+    /// Entry indexes currently shown in the sidebar's grouped visual order.
+    filtered_indices: RefCell<Vec<usize>>,
+    /// Generation counter used to debounce search rebuilds without stale work.
+    search_generation: Cell<u32>,
 }
 
 impl LushtextWindow {
@@ -422,10 +440,12 @@ impl LushtextWindow {
         let Some(path) = editor.file_path() else {
             return;
         };
-        self.open_document_note_for_path_with_roots(
-            &path,
-            self.current_workspace_directory_roots(),
-        );
+        self.open_document_note_for_path(&path);
+    }
+
+    /// Open the document note for a concrete saved file path.
+    pub(super) fn open_document_note_for_path(&self, path: &Path) {
+        self.open_document_note_for_path_with_roots(path, self.current_workspace_directory_roots());
     }
 
     /// Open the workspace note for the current concrete workspace scope.
@@ -433,6 +453,28 @@ impl LushtextWindow {
         let Some(workspace) = self.current_workspace_note_target() else {
             self.publish_status_message(
                 "Select one workspace before opening a workspace note",
+                MessageKind::Warning,
+            );
+            return;
+        };
+        self.open_workspace_note_for_root(&workspace.name, &workspace.root);
+    }
+
+    /// Open the workspace note for a concrete workspace selected from the sidebar.
+    pub(super) fn open_workspace_note_for_id(
+        &self,
+        workspace_id: &crate::model::workspace::WorkspaceId,
+    ) {
+        let Some(workspace) = self
+            .imp()
+            .sidebar
+            .workspaces_file()
+            .workspaces
+            .into_iter()
+            .find(|workspace| &workspace.id == workspace_id)
+        else {
+            self.publish_status_message(
+                "Workspace note target was not found",
                 MessageKind::Warning,
             );
             return;
@@ -473,12 +515,15 @@ impl LushtextWindow {
                     &visible_workspaces,
                     &scope,
                 )?;
+                let bookmarks =
+                    bookmark_service::list_workspace_bookmarks(&data_dir, &scope_roots)?;
                 let document_notes =
                     document_note_service::list_workspace_document_notes(&data_dir, &scope_roots)?;
                 let range_notes =
                     annotation_service::list_workspace_annotations(&data_dir, &scope_roots)?;
                 Ok::<_, anyhow::Error>(build_notes_browser_entries(
                     &visible_workspaces,
+                    bookmarks,
                     workspace_notes,
                     document_notes,
                     range_notes,
@@ -1076,29 +1121,103 @@ impl LushtextWindow {
         let saved_editor = active_editor
             .as_ref()
             .filter(|editor| editor.file_path().is_some());
+        let bookmark_label = if saved_editor
+            .as_ref()
+            .is_some_and(|editor| editor.current_bookmark().is_some())
+        {
+            "Remove Bookmark"
+        } else {
+            "Add Bookmark"
+        };
+
+        if !self.notes_menu_uses_bookmark_label(bookmark_label) {
+            self.rebuild_notes_menu(bookmark_label);
+        }
 
         self.imp()
             .notes_menu_button
             .set_visible(active_editor.is_some() || workspace_actions_available);
 
         self.set_notes_menu_action_enabled("notes-toggle-bookmark", saved_editor.is_some());
-        self.set_notes_menu_action_enabled(
-            "notes-edit-bookmark-label",
-            saved_editor.is_some_and(|editor| editor.current_bookmark().is_some()),
-        );
         self.set_notes_menu_action_enabled("notes-add-annotation", saved_editor.is_some());
-        self.set_notes_menu_action_enabled(
-            "notes-edit-annotation",
-            saved_editor.is_some_and(|editor| editor.current_annotation().is_some()),
-        );
         self.set_notes_menu_action_enabled("notes-open-document-note", saved_editor.is_some());
         self.set_notes_menu_action_enabled(
             "notes-open-workspace-note",
             self.current_workspace_note_target().is_some(),
         );
-        self.set_notes_menu_action_enabled("notes-show-bookmarks", workspace_actions_available);
         self.set_notes_menu_action_enabled("notes-show-annotations", workspace_actions_available);
         self.set_notes_menu_action_enabled("notes-export-annotations", workspace_actions_available);
+    }
+
+    /// Check the existing menu model before replacing it during ordinary state refreshes.
+    ///
+    /// The menu is small, and avoiding no-op replacements keeps GTK's popup
+    /// lifecycle stable if a refresh races with user activation.
+    fn notes_menu_uses_bookmark_label(&self, bookmark_label: &'static str) -> bool {
+        let Some(menu) = self.imp().notes_menu_button.menu_model() else {
+            return false;
+        };
+
+        Self::menu_label_for_action(&menu, "win.notes-toggle-bookmark")
+            .is_some_and(|label| label == bookmark_label)
+    }
+
+    /// Find the label for one action in a possibly sectioned menu model.
+    ///
+    /// Searching by action keeps the bookmark-label guard independent from the
+    /// visual section order, which is allowed to change as the menu evolves.
+    fn menu_label_for_action(model: &gio::MenuModel, action_name: &str) -> Option<String> {
+        for index in 0..model.n_items() {
+            let action = model
+                .item_attribute_value(index, "action", Some(glib::VariantTy::STRING))
+                .and_then(|variant| variant.get::<String>());
+            if action.as_deref() == Some(action_name) {
+                return model
+                    .item_attribute_value(index, "label", Some(glib::VariantTy::STRING))
+                    .and_then(|variant| variant.get::<String>());
+            }
+
+            for link_name in ["section", "submenu"] {
+                if let Some(link) = model.item_link(index, link_name)
+                    && let Some(label) = Self::menu_label_for_action(&link, action_name)
+                {
+                    return Some(label);
+                }
+            }
+        }
+        None
+    }
+
+    /// Rebuild the small header-bar Notes menu so its bookmark row can use
+    /// the active cursor context without disabling the expert command actions.
+    fn rebuild_notes_menu(&self, bookmark_label: &'static str) {
+        let menu = gio::Menu::new();
+
+        let browse_section = gio::Menu::new();
+        browse_section.append(Some("Browse Notes…"), Some("win.notes-show-annotations"));
+        menu.append_section(None, &browse_section);
+
+        let document_section = gio::Menu::new();
+        document_section.append(Some(bookmark_label), Some("win.notes-toggle-bookmark"));
+        document_section.append(Some("Add Range Note…"), Some("win.notes-add-annotation"));
+        document_section.append(
+            Some("Open Document Note…"),
+            Some("win.notes-open-document-note"),
+        );
+        menu.append_section(None, &document_section);
+
+        let workspace_section = gio::Menu::new();
+        workspace_section.append(
+            Some("Open Workspace Note…"),
+            Some("win.notes-open-workspace-note"),
+        );
+        workspace_section.append(
+            Some("Export Range Notes…"),
+            Some("win.notes-export-annotations"),
+        );
+        menu.append_section(None, &workspace_section);
+
+        self.imp().notes_menu_button.set_menu_model(Some(&menu));
     }
 
     /// Return whether the current shared workspace scope exposes any roots.
@@ -1305,7 +1424,7 @@ impl LushtextWindow {
         preview_title.add_css_class("title-4");
 
         let preview_meta = gtk4::Label::new(Some(
-            "Choose a workspace, document, or range note to preview it here.",
+            "Choose a bookmark, workspace, document, or range note to preview it here.",
         ));
         preview_meta.set_halign(gtk4::Align::Start);
         preview_meta.set_xalign(0.0);
@@ -1315,7 +1434,7 @@ impl LushtextWindow {
         let preview = LushtextMarkdownPreview::new();
         preview.set_hexpand(true);
         preview.set_vexpand(true);
-        preview.show_placeholder("Select a note to preview its rendered markdown.");
+        preview.show_placeholder("Select a note to preview its details.");
 
         let open_button = gtk4::Button::with_label("Open");
         open_button.add_css_class("suggested-action");
@@ -1358,46 +1477,71 @@ impl LushtextWindow {
             preview,
             open_button,
             back_button,
-            filtered_entries: RefCell::new(entries.clone()),
+            filtered_indices: RefCell::new(Vec::new()),
+            search_generation: Cell::new(0),
             all_entries: entries,
         });
 
         rebuild_notes_browser_sidebar(&state, "");
         state.search_entry.connect_search_changed({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |entry| {
-                rebuild_notes_browser_sidebar(&state, entry.text().as_str());
+                if let Some(state) = state.upgrade() {
+                    schedule_notes_browser_search(&state, entry.text().to_string());
+                }
             }
         });
         state.sidebar.connect_selected_item_notify({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |sidebar| {
-                state.refresh_preview(sidebar_item_index(sidebar.selected_item()), true);
+                if let Some(state) = state.upgrade() {
+                    state.refresh_preview(sidebar_item_index(sidebar.selected_item()), true);
+                }
             }
         });
         state.sidebar.connect_activated({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |sidebar, index| {
-                sidebar.set_selected(index);
-                state.refresh_preview(usize::try_from(index).ok(), true);
+                if let Some(state) = state.upgrade() {
+                    sidebar.set_selected(index);
+                    state.refresh_preview(usize::try_from(index).ok(), true);
+                }
             }
         });
         state.open_button.connect_clicked({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |_| {
-                state.open_selected();
+                if let Some(state) = state.upgrade() {
+                    state.open_selected();
+                }
             }
         });
         state.back_button.connect_clicked({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |_| {
-                state.split_view.set_show_content(false);
+                if let Some(state) = state.upgrade() {
+                    state.split_view.set_show_content(false);
+                }
             }
         });
         state.split_view.connect_collapsed_notify({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |split| {
-                state.back_button.set_visible(split.is_collapsed());
+                if let Some(state) = state.upgrade() {
+                    state.back_button.set_visible(split.is_collapsed());
+                }
+            }
+        });
+
+        // The dialog owns this holder while it is visible, keeping browser
+        // state alive without child-widget signal closures strongly owning the
+        // whole dialog subtree. The `closed` signal drops the state and breaks
+        // the temporary dialog -> holder -> state -> dialog cycle.
+        let state_holder = Rc::new(RefCell::new(Some(Rc::clone(&state))));
+        state.dialog.connect_closed({
+            let state_holder = Rc::clone(&state_holder);
+            move |_| {
+                state_holder.borrow_mut().take();
             }
         });
 
@@ -1475,7 +1619,7 @@ fn build_note_editor_surface(
     preview
         .text_view()
         .set_bottom_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
-    preview.show_placeholder(empty_preview_description);
+    preview.show_content_placeholder(empty_preview_description);
     // Existing notes open in Edit mode, but the hidden Render page still
     // participates in stack measurement. Render once up front so the first
     // click on Render does not swap placeholder geometry into content geometry.
@@ -1531,7 +1675,7 @@ fn render_note_preview(
         .text(&buffer.start_iter(), &buffer.end_iter(), true)
         .to_string();
     if text.trim().is_empty() {
-        preview.show_placeholder(empty_preview_description);
+        preview.show_content_placeholder(empty_preview_description);
     } else {
         preview.render_markdown_with_context(&text, render_context);
     }
@@ -1550,7 +1694,7 @@ fn build_empty_notes_dialog() -> libadwaita::Dialog {
         .icon_name("text-x-generic-symbolic")
         .title("No notes yet")
         .description(
-            "Range notes, document notes, and workspace notes will appear here once you save one.",
+            "Bookmarks, range notes, document notes, and workspace notes will appear here once you save one.",
         )
         .build();
     dialog.set_child(Some(&status));
@@ -1624,6 +1768,12 @@ impl NotesBrowserEntry {
     #[must_use]
     fn row_title(&self) -> String {
         match self {
+            Self::Bookmark { line, label, .. } => {
+                format!(
+                    "Bookmark · {}",
+                    bookmark_display_label(label.as_deref(), *line)
+                )
+            }
             Self::Workspace { workspace_name, .. } => format!("Workspace Note · {workspace_name}"),
             Self::Document { path, .. } => {
                 let file_name = path.file_name().map_or_else(
@@ -1649,6 +1799,16 @@ impl NotesBrowserEntry {
     #[must_use]
     fn row_subtitle(&self) -> String {
         match self {
+            Self::Bookmark {
+                workspace_name,
+                path,
+                line,
+                ..
+            } => format!(
+                "{workspace_name} · {} · {}",
+                path.display(),
+                format_line_label(*line)
+            ),
             Self::Workspace {
                 workspace_name,
                 root,
@@ -1676,14 +1836,24 @@ impl NotesBrowserEntry {
     /// Optional row detail showing the first meaningful line of note text.
     #[must_use]
     fn row_detail(&self) -> Option<String> {
-        let preview = note_preview_line(self.note_text());
-        (!preview.is_empty()).then_some(preview)
+        if let Self::Bookmark { .. } = self {
+            None
+        } else {
+            let preview = note_preview_line(self.note_text());
+            (!preview.is_empty()).then_some(preview)
+        }
     }
 
     /// Title shown in the preview header for the selected note.
     #[must_use]
     fn preview_title(&self) -> String {
         match self {
+            Self::Bookmark { line, label, .. } => {
+                format!(
+                    "Bookmark · {}",
+                    bookmark_display_label(label.as_deref(), *line)
+                )
+            }
             Self::Workspace { workspace_name, .. } => format!("Workspace Note · {workspace_name}"),
             Self::Document { path, .. } => {
                 let file_name = path.file_name().map_or_else(
@@ -1709,6 +1879,16 @@ impl NotesBrowserEntry {
     #[must_use]
     fn preview_meta(&self) -> String {
         match self {
+            Self::Bookmark {
+                workspace_name,
+                path,
+                line,
+                ..
+            } => format!(
+                "{workspace_name} · {} · {}",
+                path.display(),
+                format_line_label(*line)
+            ),
             Self::Workspace {
                 workspace_name,
                 root,
@@ -1731,8 +1911,29 @@ impl NotesBrowserEntry {
     #[must_use]
     fn note_text(&self) -> &str {
         match self {
+            Self::Bookmark { .. } => "",
             Self::Workspace { note, .. } | Self::Document { note, .. } => &note.text,
             Self::Range { note_text, .. } => note_text,
+        }
+    }
+
+    /// Placeholder copy shown in the preview body for bookmark entries.
+    #[must_use]
+    fn bookmark_preview_text(&self) -> String {
+        match self {
+            Self::Bookmark {
+                workspace_name,
+                path,
+                line,
+                label,
+                ..
+            } => format!(
+                "{} in {workspace_name} at {} · {}",
+                bookmark_display_label(label.as_deref(), *line),
+                format_line_label(*line),
+                path.display()
+            ),
+            _ => String::new(),
         }
     }
 
@@ -1743,7 +1944,12 @@ impl NotesBrowserEntry {
             Self::Workspace { root, .. } => {
                 MarkdownPreviewRenderContext::new(None, vec![root.clone()])
             }
-            Self::Document {
+            Self::Bookmark {
+                path,
+                workspace_root,
+                ..
+            }
+            | Self::Document {
                 path,
                 workspace_root,
                 ..
@@ -1762,23 +1968,70 @@ impl NotesBrowserEntry {
     #[must_use]
     fn sidebar_icon_name(&self) -> &'static str {
         match self {
+            Self::Bookmark { .. } => "bookmark-new-symbolic",
             Self::Workspace { .. } => "folder-symbolic",
             Self::Document { .. } => "text-x-generic-symbolic",
             Self::Range { .. } => "insert-text-symbolic",
         }
     }
 
-    /// Return whether this entry matches one search query.
+    /// Return whether this entry matches one prepared search query.
+    fn matches_query(&self, query: &NotesBrowserQuery) -> bool {
+        query.matches(&self.row_title())
+            || query.matches(&self.row_subtitle())
+            || query.matches(self.note_text())
+    }
+}
+
+impl NotesBrowserQuery {
+    /// Prepare one non-empty query for repeated row checks.
     #[must_use]
-    fn matches_query(&self, query: &str) -> bool {
-        let query = query.trim().to_lowercase();
-        if query.is_empty() {
-            return true;
+    fn new(query: &str) -> Option<Self> {
+        let lower_text = query.trim().to_lowercase();
+        if lower_text.is_empty() {
+            return None;
         }
 
-        self.row_title().to_lowercase().contains(&query)
-            || self.row_subtitle().to_lowercase().contains(&query)
-            || self.note_text().to_lowercase().contains(&query)
+        let needle: Vec<_> = lower_text.chars().collect();
+        let prefix = Self::prefix_table(&needle);
+        Some(Self { needle, prefix })
+    }
+
+    /// Build the KMP prefix table once per query instead of once per note body.
+    fn prefix_table(needle: &[char]) -> Vec<usize> {
+        let mut prefix = vec![0; needle.len()];
+        let mut matched = 0;
+        for index in 1..needle.len() {
+            while matched > 0 && needle[index] != needle[matched] {
+                matched = prefix[matched - 1];
+            }
+            if needle[index] == needle[matched] {
+                matched += 1;
+                prefix[index] = matched;
+            }
+        }
+        prefix
+    }
+
+    /// Match without allocating a lowercased copy of large note bodies.
+    fn matches(&self, haystack: &str) -> bool {
+        if haystack.is_empty() {
+            return false;
+        }
+
+        let mut matched = 0;
+        for character in haystack.chars().flat_map(char::to_lowercase) {
+            while matched > 0 && character != self.needle[matched] {
+                matched = self.prefix[matched - 1];
+            }
+            if character == self.needle[matched] {
+                matched += 1;
+                if matched == self.needle.len() {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 
@@ -1787,27 +2040,42 @@ impl NotesBrowserState {
     fn refresh_preview(&self, index: Option<usize>, user_selected: bool) {
         let Some(index) = index else {
             self.preview_title.set_label("Select a note");
-            self.preview_meta
-                .set_label("Choose a workspace, document, or range note to preview it here.");
+            self.preview_meta.set_label(
+                "Choose a bookmark, workspace, document, or range note to preview it here.",
+            );
             self.preview
-                .show_placeholder("Select a note to preview its rendered markdown.");
+                .show_placeholder("Select a note to preview its details.");
             self.open_button.set_sensitive(false);
             return;
         };
 
-        let Some(entry) = self.filtered_entries.borrow().get(index).cloned() else {
+        let Some(entry_index) = self.filtered_indices.borrow().get(index).copied() else {
             self.preview_title.set_label("Select a note");
-            self.preview_meta
-                .set_label("Choose a workspace, document, or range note to preview it here.");
+            self.preview_meta.set_label(
+                "Choose a bookmark, workspace, document, or range note to preview it here.",
+            );
             self.preview
-                .show_placeholder("Select a note to preview its rendered markdown.");
+                .show_placeholder("Select a note to preview its details.");
+            self.open_button.set_sensitive(false);
+            return;
+        };
+        let Some(entry) = self.all_entries.get(entry_index) else {
+            self.preview_title.set_label("Select a note");
+            self.preview_meta.set_label(
+                "Choose a bookmark, workspace, document, or range note to preview it here.",
+            );
+            self.preview
+                .show_placeholder("Select a note to preview its details.");
             self.open_button.set_sensitive(false);
             return;
         };
 
         self.preview_title.set_label(&entry.preview_title());
         self.preview_meta.set_label(&entry.preview_meta());
-        if entry.note_text().trim().is_empty() {
+        if matches!(entry, &NotesBrowserEntry::Bookmark { .. }) {
+            self.preview
+                .show_placeholder(&entry.bookmark_preview_text());
+        } else if entry.note_text().trim().is_empty() {
             self.preview.show_placeholder("This note is empty.");
         } else {
             self.preview
@@ -1828,34 +2096,60 @@ impl NotesBrowserState {
         let Some(index) = sidebar_item_index(self.sidebar.selected_item()) else {
             return;
         };
-        let Some(entry) = self.filtered_entries.borrow().get(index).cloned() else {
+        let Some(entry_index) = self.filtered_indices.borrow().get(index).copied() else {
+            return;
+        };
+        let Some(entry) = self.all_entries.get(entry_index) else {
             return;
         };
 
         self.dialog.close();
-        activate_notes_browser_entry(&self.window, &entry);
+        activate_notes_browser_entry(&self.window, entry);
     }
+}
+
+/// Debounce browser search so large note sets do not rebuild on every keystroke.
+fn schedule_notes_browser_search(state: &Rc<NotesBrowserState>, query: String) {
+    let generation = state.search_generation.get().wrapping_add(1);
+    state.search_generation.set(generation);
+    let state = Rc::downgrade(state);
+    glib::timeout_add_local_once(Duration::from_millis(150), move || {
+        let Some(state) = state.upgrade() else {
+            return;
+        };
+        if state.search_generation.get() != generation {
+            return;
+        }
+        rebuild_notes_browser_sidebar(&state, &query);
+    });
 }
 
 /// Rebuild the sectioned sidebar items shown by the unified notes browser.
 fn rebuild_notes_browser_sidebar(state: &Rc<NotesBrowserState>, query: &str) {
     state.sidebar.remove_all();
 
-    let matching_entries: Vec<_> = state
+    let prepared_query = NotesBrowserQuery::new(query);
+    let matching_indices: Vec<_> = state
         .all_entries
         .iter()
-        .filter(|entry| entry.matches_query(query))
-        .cloned()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            prepared_query
+                .as_ref()
+                .is_none_or(|query| entry.matches_query(query))
+                .then_some(index)
+        })
         .collect();
 
-    if matching_entries.is_empty() {
-        *state.filtered_entries.borrow_mut() = Vec::new();
+    if matching_indices.is_empty() {
+        *state.filtered_indices.borrow_mut() = Vec::new();
         state.refresh_preview(None, false);
         return;
     }
 
-    let grouped_entries = append_notes_sidebar_sections(&state.sidebar, &matching_entries);
-    *state.filtered_entries.borrow_mut() = grouped_entries;
+    let grouped_indices =
+        append_notes_sidebar_sections(&state.sidebar, &state.all_entries, &matching_indices);
+    *state.filtered_indices.borrow_mut() = grouped_indices;
 
     state.sidebar.set_selected(0);
     state.refresh_preview(Some(0), false);
@@ -1865,53 +2159,78 @@ fn rebuild_notes_browser_sidebar(state: &Rc<NotesBrowserState>, query: &str) {
 /// exact flat order used for selection lookup.
 fn append_notes_sidebar_sections(
     sidebar: &libadwaita::Sidebar,
-    entries: &[NotesBrowserEntry],
-) -> Vec<NotesBrowserEntry> {
-    let mut ordered_entries = Vec::with_capacity(entries.len());
+    all_entries: &[NotesBrowserEntry],
+    matching_indices: &[usize],
+) -> Vec<usize> {
+    let mut ordered_indices = Vec::with_capacity(matching_indices.len());
+    append_note_sidebar_section(
+        sidebar,
+        "Bookmarks",
+        matching_indices.iter().copied().filter(|index| {
+            all_entries
+                .get(*index)
+                .is_some_and(|entry| matches!(entry, NotesBrowserEntry::Bookmark { .. }))
+        }),
+        all_entries,
+        &mut ordered_indices,
+    );
     append_note_sidebar_section(
         sidebar,
         "Workspace Notes",
-        entries
-            .iter()
-            .filter(|entry| matches!(entry, NotesBrowserEntry::Workspace { .. })),
-        &mut ordered_entries,
+        matching_indices.iter().copied().filter(|index| {
+            all_entries
+                .get(*index)
+                .is_some_and(|entry| matches!(entry, NotesBrowserEntry::Workspace { .. }))
+        }),
+        all_entries,
+        &mut ordered_indices,
     );
     append_note_sidebar_section(
         sidebar,
         "Document Notes",
-        entries
-            .iter()
-            .filter(|entry| matches!(entry, NotesBrowserEntry::Document { .. })),
-        &mut ordered_entries,
+        matching_indices.iter().copied().filter(|index| {
+            all_entries
+                .get(*index)
+                .is_some_and(|entry| matches!(entry, NotesBrowserEntry::Document { .. }))
+        }),
+        all_entries,
+        &mut ordered_indices,
     );
     append_note_sidebar_section(
         sidebar,
         "Range Notes",
-        entries
-            .iter()
-            .filter(|entry| matches!(entry, NotesBrowserEntry::Range { .. })),
-        &mut ordered_entries,
+        matching_indices.iter().copied().filter(|index| {
+            all_entries
+                .get(*index)
+                .is_some_and(|entry| matches!(entry, NotesBrowserEntry::Range { .. }))
+        }),
+        all_entries,
+        &mut ordered_indices,
     );
-    ordered_entries
+    ordered_indices
 }
 
 /// Add one non-empty Notes browser section to the sidebar.
-fn append_note_sidebar_section<'a>(
+fn append_note_sidebar_section(
     sidebar: &libadwaita::Sidebar,
     title: &str,
-    entries: impl Iterator<Item = &'a NotesBrowserEntry>,
-    ordered_entries: &mut Vec<NotesBrowserEntry>,
+    indices: impl Iterator<Item = usize>,
+    all_entries: &[NotesBrowserEntry],
+    ordered_indices: &mut Vec<usize>,
 ) {
     let section = libadwaita::SidebarSection::new();
     section.set_title(Some(title));
 
-    let start_len = ordered_entries.len();
-    for entry in entries {
+    let start_len = ordered_indices.len();
+    for index in indices {
+        let Some(entry) = all_entries.get(index) else {
+            continue;
+        };
         section.append(build_notes_sidebar_item(entry));
-        ordered_entries.push(entry.clone());
+        ordered_indices.push(index);
     }
 
-    if ordered_entries.len() > start_len {
+    if ordered_indices.len() > start_len {
         sidebar.append(section);
     }
 }
@@ -1939,6 +2258,9 @@ fn sidebar_item_index(item: Option<libadwaita::SidebarItem>) -> Option<usize> {
 /// Route one browser row back through the appropriate window workflow.
 fn activate_notes_browser_entry(window: &LushtextWindow, entry: &NotesBrowserEntry) {
     match entry {
+        NotesBrowserEntry::Bookmark { path, line, .. } => {
+            open_editor_at_line(window, path, line.saturating_add(1));
+        }
         NotesBrowserEntry::Workspace {
             workspace_name,
             root,
@@ -1967,14 +2289,27 @@ fn activate_notes_browser_entry(window: &LushtextWindow, entry: &NotesBrowserEnt
     }
 }
 
-/// Merge workspace, document, and range notes into one browser entry list.
+/// Merge bookmarks plus workspace, document, and range notes into one browser entry list.
 fn build_notes_browser_entries(
     visible_workspaces: &[WorkspaceConfig],
+    bookmarks: Vec<bookmark_service::WorkspaceBookmark>,
     workspace_notes: Vec<workspace_note_service::ListedWorkspaceNote>,
     document_notes: Vec<document_note_service::WorkspaceDocumentNote>,
     range_notes: Vec<annotation_service::WorkspaceAnnotation>,
 ) -> Vec<NotesBrowserEntry> {
     let mut entries = Vec::new();
+
+    for bookmark in bookmarks {
+        if let Some(workspace) = workspace_for_path(visible_workspaces, &bookmark.path) {
+            entries.push(NotesBrowserEntry::Bookmark {
+                workspace_name: workspace.name.clone(),
+                workspace_root: workspace.root.clone(),
+                path: bookmark.path,
+                line: bookmark.line,
+                label: bookmark.label,
+            });
+        }
+    }
 
     entries.extend(
         workspace_notes
@@ -2041,6 +2376,20 @@ fn format_range_label(start_line: u32, end_line: u32) -> String {
     } else {
         format!("Lines {start}-{end}")
     }
+}
+
+/// Display one zero-based bookmark line in the 1-based form users expect.
+#[must_use]
+fn format_line_label(line: u32) -> String {
+    format!("Line {}", line.saturating_add(1))
+}
+
+/// Return the bookmark's explicit label or its stable line fallback.
+#[must_use]
+fn bookmark_display_label(label: Option<&str>, line: u32) -> String {
+    label
+        .filter(|label| !label.trim().is_empty())
+        .map_or_else(|| format_line_label(line), ToOwned::to_owned)
 }
 
 /// Build the base dialog used by the bookmark and annotation browsers.
@@ -2238,15 +2587,22 @@ fn open_editor_at_line(window: &LushtextWindow, path: &Path, line: u32) {
     };
 
     let line_zero_based = line.saturating_sub(1);
-    let buffer = editor.buffer();
-    let iter = buffer
-        .iter_at_line(i32::try_from(line_zero_based).unwrap_or(i32::MAX))
-        .unwrap_or_else(|| buffer.end_iter());
-    buffer.place_cursor(&iter);
-    let mark = buffer.create_mark(None, &iter, true);
-    editor
-        .source_view()
-        .scroll_to_mark(&mark, 0.2, true, 0.0, 0.0);
-    buffer.delete_mark(&mark);
+    if editor.is_evicted() {
+        editor.set_restore_position(line_zero_based, 0, line_zero_based.saturating_sub(3));
+        window.reload_if_evicted();
+    } else if editor.buffer().char_count() > 0 {
+        let buffer = editor.buffer();
+        let iter = buffer
+            .iter_at_line(i32::try_from(line_zero_based).unwrap_or(i32::MAX))
+            .unwrap_or_else(|| buffer.end_iter());
+        buffer.place_cursor(&iter);
+        let mark = buffer.create_mark(None, &iter, true);
+        editor
+            .source_view()
+            .scroll_to_mark(&mark, 0.2, true, 0.0, 0.0);
+        buffer.delete_mark(&mark);
+    } else {
+        editor.set_restore_position(line_zero_based, 0, line_zero_based.saturating_sub(3));
+    }
     editor.source_view().grab_focus();
 }

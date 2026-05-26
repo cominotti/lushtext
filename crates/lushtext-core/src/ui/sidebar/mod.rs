@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 
-use crate::model::workspace::{WorkspaceScope, WorkspacesFile};
+use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
 
 pub use file_tree_item::FileTreeItem;
@@ -160,6 +160,10 @@ impl LushtextSidebar {
         *self.imp().local_history_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_document_note_requested<F: Fn(&Path) + 'static>(&self, f: F) {
+        *self.imp().document_note_callback.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn connect_file_renamed<F: Fn(&Path, &Path) + 'static>(&self, f: F) {
         *self.imp().rename_callback.borrow_mut() = Some(Box::new(f));
     }
@@ -174,6 +178,10 @@ impl LushtextSidebar {
 
     pub fn connect_message<F: Fn(&str, NotificationSeverity) + 'static>(&self, f: F) {
         *self.imp().message_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_workspace_note_requested<F: Fn(WorkspaceId) + 'static>(&self, f: F) {
+        *self.imp().workspace_note_callback.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_workspace_structure_changed<F: Fn() + 'static>(&self, f: F) {
