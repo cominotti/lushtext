@@ -221,6 +221,23 @@ pub struct LushtextMarkdownPreview {
     pub(super) link_activation_callback: RefCell<Option<LinkActivationCallback>>,
     /// Current document-surface opacity used for the preview background.
     pub background_opacity: Cell<f64>,
+    /// Generation counter for deferred code-block width refreshes.
+    ///
+    /// Preview shell transitions can emit several allocation and margin changes
+    /// before the embedded `GtkTextView` column settles. The counter lets later
+    /// refresh requests supersede older idle/timer callbacks so only the most
+    /// recent layout pass can resize anchored code blocks.
+    pub(super) code_block_refresh_generation: Cell<u32>,
+    /// Pending idle refresh for child-anchor code-block widths.
+    ///
+    /// Layout and render paths can request many refreshes in one GTK turn. Keep
+    /// only the newest idle callback so resize storms do not queue no-op work.
+    pub(super) code_block_idle_source_id: RefCell<Option<glib::SourceId>>,
+    /// Pending timed refresh for child-anchor code-block widths.
+    ///
+    /// The timed pass catches preview shell allocations that settle just after
+    /// idle callbacks while still letting newer refresh requests replace it.
+    pub(super) code_block_timeout_source_id: RefCell<Option<glib::SourceId>>,
 }
 
 #[glib::object_subclass]
@@ -294,6 +311,15 @@ impl ObjectImpl for LushtextMarkdownPreview {
                 obj.queue_code_block_width_refresh();
             }
         });
+    }
+
+    fn dispose(&self) {
+        if let Some(source_id) = self.code_block_idle_source_id.take() {
+            source_id.remove();
+        }
+        if let Some(source_id) = self.code_block_timeout_source_id.take() {
+            source_id.remove();
+        }
     }
 }
 

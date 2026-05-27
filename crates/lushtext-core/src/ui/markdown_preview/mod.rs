@@ -1438,7 +1438,6 @@ impl LushtextMarkdownPreview {
         widget.set_margin_start(layout.margin_start);
         widget.set_margin_end(layout.margin_end);
         self.insert_embedded_widget(buffer, iter, widget.upcast_ref::<gtk4::Widget>(), layout);
-        self.queue_code_block_width_refresh();
     }
 
     /// Insert one buffered Markdown image into the preview flow.
@@ -1521,15 +1520,63 @@ impl LushtextMarkdownPreview {
         }
     }
 
-    /// Refresh code-block widths now and once more after GTK drains layout work.
+    /// Refresh code-block widths across the current GTK layout turn.
     pub(super) fn queue_code_block_width_refresh(&self) {
+        let generation = self
+            .imp()
+            .code_block_refresh_generation
+            .get()
+            .wrapping_add(1);
+        self.imp().code_block_refresh_generation.set(generation);
         self.refresh_code_block_widths();
-        let preview_weak = self.downgrade();
-        glib::idle_add_local_once(move || {
-            if let Some(preview) = preview_weak.upgrade() {
+        self.replace_deferred_code_block_width_refresh(generation);
+    }
+
+    /// Replace any queued deferred refresh with the latest layout generation.
+    fn replace_deferred_code_block_width_refresh(&self, generation: u32) {
+        if let Some(source_id) = self.imp().code_block_idle_source_id.take() {
+            source_id.remove();
+        }
+        if let Some(source_id) = self.imp().code_block_timeout_source_id.take() {
+            source_id.remove();
+        }
+
+        let idle_preview_weak = self.downgrade();
+        let idle_source_id = glib::idle_add_local_once(move || {
+            let Some(preview) = idle_preview_weak.upgrade() else {
+                return;
+            };
+
+            let _ = preview.imp().code_block_idle_source_id.take();
+            if preview.imp().code_block_refresh_generation.get() == generation {
                 preview.refresh_code_block_widths();
             }
         });
+        let _ = self
+            .imp()
+            .code_block_idle_source_id
+            .replace(Some(idle_source_id));
+
+        // `GtkPaned` and `GtkTextView` can settle their final child-anchor
+        // column one frame after the idle pass in Fedora's headless CI stack.
+        // A short replaceable timer keeps production preview geometry honest
+        // without accumulating stale callbacks during active resizing.
+        let timed_preview_weak = self.downgrade();
+        let timeout_source_id =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+                let Some(preview) = timed_preview_weak.upgrade() else {
+                    return;
+                };
+
+                let _ = preview.imp().code_block_timeout_source_id.take();
+                if preview.imp().code_block_refresh_generation.get() == generation {
+                    preview.refresh_code_block_widths();
+                }
+            });
+        let _ = self
+            .imp()
+            .code_block_timeout_source_id
+            .replace(Some(timeout_source_id));
     }
 
     /// Recheck embedded code-block widths after an outer preview-shell transition.

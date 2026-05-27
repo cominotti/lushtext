@@ -338,7 +338,6 @@ fn wait_for_markdown_preview_shell(window: &LushtextWindow) {
             && code_block_width_is_settled(&block, expected_width)
             && scroller.hadjustment().page_size() > 0.0
     });
-    flush_after_delay(Duration::from_millis(40));
 }
 
 fn assert_live_code_block_uses_preview_column(window: &LushtextWindow) {
