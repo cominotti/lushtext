@@ -14,7 +14,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Focus Folder** -- re-root a workspace section into a deep subfolder so the sidebar can drill into nested trees without wasting width on clipped ancestors
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)
 - **EditorConfig support** -- per-file formatting overrides from `.editorconfig` files (`indent_style`, `tab_width`, `indent_size`); toggle in Preferences
-- **Bookmarks and rich notes** -- saved-file bookmark gutter marks with labels and F2 navigation, plus markdown-capable range notes, document notes, workspace notes, and a unified notes browser
+- **Bookmarks and rich notes** -- saved-file bookmark gutter marks with labels and F2 navigation, plus markdown-capable document notes, workspace notes, and a unified notes browser
 - **Local history** -- saved-file snapshot browser with automatic baseline, periodic, and save-boundary restore points, an adaptive Adwaita browse/preview UI, restore safety snapshots, and one-click undo of a restore
 - **Minimap** -- toggleable right-edge document overview with semantic markers for bookmarks, active in-tab search matches, modified-since-save regions, and long-line warnings on supported files
 - **Session persistence** -- tabs, pinned state, cursor positions, and scroll offsets restored on restart
@@ -94,8 +94,7 @@ Preferences are stored with GSettings under `dev.cominotti.lushtext`.
   scrolling.
 - **Use EditorConfig**, **Word Wrap**, **Tab Width**, **Insert Spaces Instead of
   Tabs**, **Show Line Numbers**, **Highlight Current Line**, **Show Minimap**,
-  **Show Bookmark Gutter**, and **Show Annotation Highlights** control editing
-  behavior and editor decorations.
+  and **Show Bookmark Gutter** control editing behavior and editor decorations.
 
 ### Workspace
 
@@ -134,7 +133,6 @@ Stored state can include document text:
 | `workspaces.json` | Saved workspace roots and names |
 | `drafts/` | Plain-text autosaved drafts for unsaved changes |
 | `bookmarks/` | Saved-file bookmark metadata |
-| `annotations/` | Range-note metadata and note text |
 | `document-notes/` | Per-file document notes |
 | `workspace-notes/` | Per-workspace-root notes |
 | `local-history/` | Local-history snapshots for saved files |
@@ -285,15 +283,14 @@ The feature can be toggled in **Preferences > Use EditorConfig** (enabled by def
 
 `end_of_line`, `charset`, `trim_trailing_whitespace`, `insert_final_newline`, and `max_line_length` are not yet supported. See `docs/next/editorconfig-future.md` for details and implementation priorities.
 
-## Bookmarks and Annotations
+## Bookmarks and Notes
 
 LushText includes non-destructive notes for saved files and explicit workspace roots:
 
 - **Bookmarks** live in the GtkSourceView gutter, can carry an optional label, and support next/previous navigation with `F2` / `Shift+F2`.
-- **Range notes** store markdown-capable note text plus a presentation style for one or more lines without modifying the file on disk.
 - **Document notes** store one markdown-capable note for a saved file as a whole.
 - **Workspace notes** store one markdown-capable note for each workspace root.
-- **Browse and export** flows operate on the currently selected workspace scope, so the bookmark browser, unified notes browser, and range-note markdown export stay aligned with the sidebar filter.
+- **Browse** flows operate on the currently selected workspace scope, so the bookmark browser and unified notes browser stay aligned with the sidebar filter.
 
 ### Shortcuts
 
@@ -303,10 +300,7 @@ LushText includes non-destructive notes for saved files and explicit workspace r
 | Edit bookmark label | `Ctrl+Shift+F2` |
 | Next / previous bookmark | `F2` / `Shift+F2` |
 | Browse bookmarks | `Ctrl+Alt+B` |
-| Add range note | `Ctrl+Alt+N` |
-| Edit range note at cursor | `Ctrl+Alt+M` |
 | Browse notes | `Ctrl+Alt+A` |
-| Export range notes | `Ctrl+Alt+Shift+A` |
 
 ### Manual test checklist
 
@@ -322,46 +316,34 @@ Use this checklist to exercise the full shipped bookmark and rich-note flow:
    Expected: the cursor jumps forward and backward through bookmarks in the active file.
 6. Press `Ctrl+Alt+B`.
    Expected: the bookmark browser opens for the current workspace scope, supports search, and clicking a row opens or focuses the bookmarked file and jumps to its line.
-7. Select one or more lines and press `Ctrl+Alt+N`.
-   Expected: the range-note dialog opens, lets you choose a style and note text, and saving it does not modify the file bytes.
-8. Move the cursor onto the annotated range and press `Ctrl+Alt+M`.
-   Expected: the existing range note opens for editing, supports Edit/Render switching, and Delete removes it cleanly.
-9. Press `Ctrl+Alt+A`.
-   Expected: the unified notes browser opens for the current workspace scope, previews workspace/document/range notes, and clicking Open on a row routes to the right note surface.
-10. Insert and delete lines above an annotation while the file stays open.
-    Expected: the range-note span follows the content; deleting the whole range removes the range note.
-11. Open **Document Note…** for the active saved file.
+7. Press `Ctrl+Alt+A`.
+   Expected: the unified notes browser opens for the current workspace scope, previews bookmarks, document notes, and workspace notes, and clicking Open on a row routes to the right surface.
+8. Open **Document Note…** for the active saved file.
     Expected: the file-level note opens, supports Edit/Render switching, and Save persists it without changing the file bytes.
-12. Select one concrete workspace and open **Workspace Note…**.
+9. Select one concrete workspace and open **Workspace Note…**.
     Expected: the workspace-level note opens for that root; in `All workspaces`, the single-workspace action stays disabled and the unified browser remains available.
-13. Toggle **Preferences > Show Bookmark Gutter**.
+10. Toggle **Preferences > Show Bookmark Gutter**.
     Expected: bookmark gutter indicators hide and reappear without losing stored bookmarks.
-14. Toggle **Preferences > Show Annotation Highlights**.
-    Expected: range-note highlighting hides and reappears without losing stored range notes.
-15. Close and reopen the file, then restart the app and open it again.
-    Expected: bookmarks, range notes, and document notes restore automatically; workspace notes return when the same workspace root is restored.
-16. Rename the file from the LushText sidebar.
-    Expected: reopening the renamed file keeps the same bookmarks, range notes, and document note.
-17. Use **Save As** to write the file to a new path.
-    Expected: the new file opens without copied range notes or document notes, while the original file keeps its existing notes.
-18. Press `Ctrl+Alt+Shift+A`.
-    Expected: the export dialog writes a markdown report grouped by file, including range-note line ranges, note text, and source excerpts.
-19. Try steps 3, 7, and 11 in an untitled tab.
-    Expected: LushText refuses to create bookmarks, range notes, or document notes and shows clear feedback that a saved file is required.
+11. Close and reopen the file, then restart the app and open it again.
+    Expected: bookmarks and document notes restore automatically; workspace notes return when the same workspace root is restored.
+12. Rename the file from the LushText sidebar.
+    Expected: reopening the renamed file keeps the same bookmarks and document note.
+13. Use **Save As** to write the file to a new path.
+    Expected: the new file opens without copied document notes, while the original file keeps its existing notes.
+14. Try steps 3 and 8 in an untitled tab.
+    Expected: LushText refuses to create bookmarks or document notes and shows clear feedback that a saved file is required.
 
 ### Persistence rules
 
-- Bookmarks, range notes, and document notes require a **saved file path**. Untitled tabs show feedback instead of creating note state.
+- Bookmarks and document notes require a **saved file path**. Untitled tabs show feedback instead of creating note state.
 - Workspace notes require a **concrete workspace root**. `All workspaces` keeps the browser available, but the single-workspace note action stays disabled until one workspace is selected.
-- Sidecars live under `$XDG_DATA_HOME/lushtext/bookmarks/`, `$XDG_DATA_HOME/lushtext/annotations/`, `$XDG_DATA_HOME/lushtext/document-notes/`, and `$XDG_DATA_HOME/lushtext/workspace-notes/`.
-- **Save As** creates a new file-backed note identity and does not copy the old file's bookmarks, range notes, or document notes by default.
+- Sidecars live under `$XDG_DATA_HOME/lushtext/bookmarks/`, `$XDG_DATA_HOME/lushtext/document-notes/`, and `$XDG_DATA_HOME/lushtext/workspace-notes/`.
+- **Save As** creates a new file-backed note identity and does not copy the old file's bookmarks or document notes by default.
 - **Sidebar rename inside LushText** migrates file-backed and workspace-root note sidecars to the new path automatically.
 
 ### First-release limitations
 
 - Path-based identity does not automatically follow **external** filesystem moves or copies performed outside LushText.
-- Range-note indicators are currently **highlight-based**, not clickable gutter popovers or inline rendered note blocks.
-- Note export is limited to **range notes only** in the first release.
 
 ## Local History
 
@@ -472,7 +454,6 @@ lushtext-core/src/
     draft.rs         Draft persistence metadata
     note.rs          Shared note-body primitives
     bookmark.rs      Bookmark sidecar model
-    annotation.rs    Annotation sidecar model and styles
     document_note.rs Saved-file document-note model
     local_history.rs Local-history snapshot metadata
     content_search.rs  Content search types (SearchMatch, SearchEvent, etc.)
@@ -482,7 +463,6 @@ lushtext-core/src/
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
     bookmark_service.rs  Bookmark sidecar load/save/move/list helpers
-    annotation_service.rs  Annotation sidecar load/save/move/export helpers
     document_note_service.rs  Saved-file document-note load/save/move/list helpers
     local_history_service.rs  Local-history capture/list/load/prune/move helpers
     note_storage.rs  Shared sidecar identity/load/filter helpers for note workflows
@@ -505,7 +485,7 @@ lushtext-core/src/
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
     window/          Main window shell plus actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, session persistence, tab management, print, and zoom wiring
-    editor_page/     GtkSourceView tab plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark/annotation projection, load/save, monitor, and in-tab search helpers
+    editor_page/     GtkSourceView tab plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark projection, load/save, monitor, and in-tab search helpers
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows

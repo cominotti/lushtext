@@ -369,17 +369,13 @@
     <section>
       <item>
         <attribute name="label" translatable="yes">Browse Notes…</attribute>
-        <attribute name="action">win.notes-show-annotations</attribute>
+        <attribute name="action">win.notes-show-notes</attribute>
       </item>
     </section>
     <section>
       <item>
         <attribute name="label" translatable="yes">Add Bookmark</attribute>
         <attribute name="action">win.notes-toggle-bookmark</attribute>
-      </item>
-      <item>
-        <attribute name="label" translatable="yes">Add Range Note…</attribute>
-        <attribute name="action">win.notes-add-annotation</attribute>
       </item>
       <item>
         <attribute name="label" translatable="yes">Open Document Note…</attribute>
@@ -390,10 +386,6 @@
       <item>
         <attribute name="label" translatable="yes">Open Workspace Note…</attribute>
         <attribute name="action">win.notes-open-workspace-note</attribute>
-      </item>
-      <item>
-        <attribute name="label" translatable="yes">Export Range Notes…</attribute>
-        <attribute name="action">win.notes-export-annotations</attribute>
       </item>
     </section>
   </menu>

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Stable document identity helpers for bookmark, annotation, and history sidecars.
+//! Stable document identity helpers for bookmark, note, and history sidecars.
 //!
 //! The UI and services reason about notes as "belonging to a saved file path",
 //! but persistence needs a filesystem-safe filename that survives restarts.
@@ -67,7 +67,7 @@ pub fn stable_bytes_hash(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
-/// Generate a stable-enough record ID for bookmark and annotation entries.
+/// Generate a stable-enough record ID for bookmark and note entries.
 ///
 /// The timestamp keeps IDs roughly time ordered for debugging, while the
 /// monotonic counter avoids collisions when several records are created in the
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn next_record_id_uses_requested_prefix() {
         assert!(next_record_id("bookmark").starts_with("bookmark-"));
-        assert!(next_record_id("annotation").starts_with("annotation-"));
+        assert!(next_record_id("document-note").starts_with("document-note-"));
     }
 
     #[test]

@@ -326,8 +326,6 @@ impl LushtextWindow {
             "edit-bookmark-label",
             "next-bookmark",
             "prev-bookmark",
-            "add-annotation",
-            "edit-annotation",
             "save",
             "save-as",
             "show-local-history",

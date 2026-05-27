@@ -27,7 +27,7 @@
       <li>Native Markdown preview with tables, task lists, callouts, footnotes, and local images</li>
       <li>Syntax highlighting via GtkSourceView</li>
       <li>EditorConfig-aware indentation settings</li>
-      <li>Bookmarks, range notes, document notes, workspace notes, and note export</li>
+      <li>Bookmarks, document notes, and workspace notes</li>
       <li>Local history snapshots for saved files</li>
       <li>Workspace search and safe multi-file Replace All with undo</li>
       <li>Session restore, autosaved drafts, and external file change monitoring</li>

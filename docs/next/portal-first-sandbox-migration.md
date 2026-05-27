@@ -201,7 +201,7 @@ Likely scope:
   permissions.
 - Ensure session restore and draft recovery handle portal paths and
   reauthorization states.
-- Ensure document notes, workspace notes, annotations, bookmarks, and local
+- Ensure document notes, workspace notes, bookmarks, and local
   history keep stable identities through in-app rename and Save As flows.
 - Decide how symlinks that leave the granted tree should behave.
 - Keep unsupported or degraded behavior visible in the UI rather than hidden in
@@ -213,7 +213,7 @@ Acceptance shape:
   refreshed without relying on broad host access for its own operations.
 - Search and replace can operate inside a granted workspace and can preserve the
   existing undo/backup safety contract.
-- Notes, bookmarks, annotations, and local history still attach to the expected
+- Notes, bookmarks, and local history still attach to the expected
   documents after restart.
 - External changes under a portal-backed root are either event-driven on the
   target stack or honestly reflected through a documented degraded mode such as

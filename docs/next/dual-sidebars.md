@@ -155,7 +155,7 @@ Child:
   - document metadata
   - formatting controls
   - file statistics
-  - future outline/bookmarks/annotations hooks as appropriate
+  - future outline/bookmarks hooks as appropriate
 
 ## Toggle Model
 

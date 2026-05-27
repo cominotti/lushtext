@@ -223,7 +223,7 @@ pub struct LushtextWindow {
     pub focus_mode_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
     pub focus_mode_affordance: TemplateChild<gtk4::Box>,
-    /// Dedicated secondary menu for bookmark and annotation workflows.
+    /// Dedicated secondary menu for bookmark and note workflows.
     #[template_child]
     pub notes_menu_button: TemplateChild<gtk4::MenuButton>,
     #[template_child]

@@ -16,7 +16,6 @@ use libadwaita::prelude::{
     ComboRowExt, SidebarItemExt,
 };
 use lushtext_core::config::keys;
-use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::encoding::{DocumentEncoding, FileHealthFindingKind, LineEnding};
 use lushtext_core::model::note::RichNoteBody;
@@ -27,8 +26,8 @@ use lushtext_core::model::workspace::{
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::{
-    annotation_service, bookmark_service, document_note_service, draft_service, editor_io,
-    json_store, local_history_service, session_service, workspace_manager, workspace_note_service,
+    bookmark_service, document_note_service, draft_service, editor_io, json_store,
+    local_history_service, session_service, workspace_manager, workspace_note_service,
 };
 use lushtext_core::ui::editor_page::{
     LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
@@ -1180,7 +1179,7 @@ fn seed_named_tab_files(names: &[&str]) -> (tempfile::TempDir, Vec<PathBuf>) {
 }
 
 #[test]
-fn test_open_document_restores_bookmarks_and_annotations() {
+fn test_open_document_restores_bookmarks() {
     let tempdir = tempfile::tempdir().expect("notes tempdir");
     let file_path = tempdir.path().join("src/main.rs");
     std::fs::create_dir_all(file_path.parent().expect("expected operation to succeed"))
@@ -1199,34 +1198,18 @@ fn test_open_document_restores_bookmarks_and_annotations() {
         )],
     )
     .expect("save bookmarks");
-    annotation_service::save_for_path(
-        &data_dir,
-        &file_path,
-        &[AnnotationRecord::new(
-            2,
-            2,
-            "restore annotation",
-            AnnotationStyle::Question,
-        )],
-    )
-    .expect("save annotations");
 
     present_window(&window);
     window.open_document(&file_path);
 
     wait_until(Duration::from_secs(2), || {
         active_editor(&window).bookmark_records().len() == 1
-            && active_editor(&window).annotation_records().len() == 1
     });
 
     let editor = active_editor(&window);
     assert_eq!(
         editor.bookmark_records()[0].label.as_deref(),
         Some("bookmark")
-    );
-    assert_eq!(
-        editor.annotation_records()[0].note_text,
-        "restore annotation"
     );
 }
 
@@ -1566,21 +1549,21 @@ fn test_f9_toggles_document_properties_instead_of_workspace_sidebar() {
 }
 
 #[test]
-fn test_edit_range_note_shortcut_is_registered_and_documented() {
+fn test_browse_notes_shortcut_is_registered_and_documented() {
     ensure_gtk_init();
     let window = test_window();
 
     assert!(
-        shortcut_bound(&window, "win.edit-annotation", "<Control><Alt>m"),
-        "Ctrl+Alt+M should remain bound to Edit Range Note"
+        shortcut_bound(&window, "win.show-notes", "<Control><Alt>a"),
+        "Ctrl+Alt+A should remain bound to Browse Notes"
     );
 
     let shortcuts_ui = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../resources/ui/shortcuts.ui"
     ));
-    assert!(shortcuts_ui.contains("Edit Range Note"));
-    assert!(shortcuts_ui.contains("&lt;Control&gt;&lt;Alt&gt;m"));
+    assert!(shortcuts_ui.contains("Browse Notes"));
+    assert!(shortcuts_ui.contains("&lt;Control&gt;&lt;Alt&gt;a"));
 }
 
 #[test]
@@ -3218,8 +3201,6 @@ fn test_active_editor_extra_menu_includes_contextual_notes_and_local_history() {
     for label in [
         "Toggle Bookmark",
         "Edit Bookmark Label…",
-        "Add Range Note…",
-        "Edit Range Note…",
         "Open Document Note…",
         "Local History…",
     ] {
@@ -4192,10 +4173,8 @@ fn test_notes_menu_exists_and_primary_menu_excludes_note_actions() {
         vec![
             "Browse Notes…".to_string(),
             "Add Bookmark".to_string(),
-            "Add Range Note…".to_string(),
             "Open Document Note…".to_string(),
             "Open Workspace Note…".to_string(),
-            "Export Range Notes…".to_string(),
         ]
     );
 
@@ -4207,13 +4186,10 @@ fn test_notes_menu_exists_and_primary_menu_excludes_note_actions() {
     let primary_labels = menu_model_labels(&primary_menu);
     for label in [
         "Add Bookmark",
-        "Add Range Note…",
         "Open Document Note…",
         "Open Workspace Note…",
         "Browse Notes…",
-        "Export Range Notes…",
         "Edit Bookmark Label…",
-        "Edit Range Note…",
         "Browse Bookmarks…",
     ] {
         assert!(
@@ -4243,7 +4219,6 @@ fn test_notes_menu_state_for_workspace_without_saved_file() {
 
     for name in [
         "notes-toggle-bookmark",
-        "notes-add-annotation",
         "notes-open-document-note",
         "notes-open-workspace-note",
     ] {
@@ -4252,18 +4227,12 @@ fn test_notes_menu_state_for_workspace_without_saved_file() {
             "expected '{name}' to stay disabled without a saved document",
         );
     }
-    for name in ["notes-show-annotations", "notes-export-annotations"] {
-        assert!(
-            action_enabled(&window, name),
-            "expected '{name}' to stay enabled when a workspace scope exists",
-        );
-    }
+    assert!(action_enabled(&window, "notes-show-notes"));
 
     activate_action(&window, "new-tab");
     assert!(notes_menu_button_visible(&window));
     for name in [
         "notes-toggle-bookmark",
-        "notes-add-annotation",
         "notes-open-document-note",
         "notes-open-workspace-note",
     ] {
@@ -4286,8 +4255,7 @@ fn test_notes_menu_workspace_note_action_enables_for_concrete_scope() {
     wait_for_workspace_consumers(&window, 1, 1);
     assert!(notes_menu_button_visible(&window));
     assert!(action_enabled(&window, "notes-open-workspace-note"));
-    assert!(action_enabled(&window, "notes-show-annotations"));
-    assert!(action_enabled(&window, "notes-export-annotations"));
+    assert!(action_enabled(&window, "notes-show-notes"));
 }
 
 #[test]
@@ -4624,7 +4592,7 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
     wait_for_workspace_roots(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
-    activate_action(&window, "show-annotations");
+    activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
@@ -4683,7 +4651,7 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
     wait_for_workspace_roots(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
-    activate_action(&window, "show-annotations");
+    activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
@@ -4749,7 +4717,7 @@ fn test_browse_notes_filters_bookmarks_to_current_workspace_scope() {
     wait_for_workspace_roots(&window, 2);
     wait_for_workspace_consumers(&window, 1, 2);
 
-    activate_action(&window, "show-annotations");
+    activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
@@ -4799,33 +4767,21 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         &RichNoteBody::new("document needle"),
     )
     .expect("save document note");
-    annotation_service::save_for_path(
-        &data_dir,
-        &path,
-        &[AnnotationRecord::new(
-            0,
-            1,
-            "range body needle",
-            AnnotationStyle::Question,
-        )],
-    )
-    .expect("save range note");
-
     let window = test_window();
     present_window(&window);
     wait_for_workspace_roots(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
-    activate_action(&window, "show-annotations");
+    activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
     let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
-    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 4);
+    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 3);
     let notes_browser_size = settled_widget_outer_size(&dialog);
 
-    for index in 0u32..4 {
+    for index in 0u32..3 {
         sidebar.emit_by_name::<()>("activated", &[&index]);
         flush_events();
         assert!(
@@ -4849,7 +4805,7 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         .collect();
     assert_eq!(
         section_titles,
-        ["Bookmarks", "Workspace Notes", "Document Notes", "Range Notes"],
+        ["Bookmarks", "Workspace Notes", "Document Notes"],
         "notes browser should expose semantic Adwaita sidebar sections"
     );
 
@@ -4889,20 +4845,20 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     );
 
     let search_entry = find_search_entry(&child).expect("notes search entry");
-    search_entry.set_text("range body");
+    search_entry.set_text("document needle");
     flush_events();
     wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 1);
     assert_settled_widget_outer_size(
         &dialog,
         notes_browser_size,
-        "notes browser range-note filtering",
+        "notes browser document-note filtering",
     );
     assert!(
         sidebar
             .item(0)
             .and_then(|item| item.title())
-            .is_some_and(|title| title.contains("Question")),
-        "notes search should match range-note body text, not only visible metadata"
+            .is_some_and(|title| title == "Document Note · sectioned-notes.md"),
+        "notes search should match document note body text, not only visible metadata"
     );
 
     search_entry.set_text("bookmark needle");
@@ -4949,90 +4905,45 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
 }
 
 #[test]
-fn test_range_note_dialog_keeps_edit_render_geometry_and_padding() {
+fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("range-note-layout.md");
-    std::fs::write(&path, "one\ntwo\nthree\n").expect("write range note layout source");
+    let path = left_root.join("many-bookmarks.rs");
+    let content = (0..510)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    std::fs::write(&path, content).expect("write many bookmark source");
 
-    let data_dir = json_store::data_dir();
-    annotation_service::save_for_path(
-        &data_dir,
-        &path,
-        &[AnnotationRecord::new(
-            0,
-            1,
-            "# Range note\n\nRender me",
-            AnnotationStyle::Question,
-        )],
-    )
-    .expect("save range note");
+    let bookmarks = (0..510)
+        .map(|line| {
+            lushtext_core::model::bookmark::BookmarkRecord::new(
+                line,
+                Some(format!("bookmark {line}")),
+            )
+        })
+        .collect::<Vec<_>>();
+    bookmark_service::save_for_path(&json_store::data_dir(), &path, &bookmarks)
+        .expect("save many bookmarks");
 
     let window = test_window();
     present_window(&window);
     wait_for_workspace_roots(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
-    window.open_document(&path);
-    wait_until(Duration::from_secs(2), || {
-        active_editor(&window).file_path() == Some(path.clone())
-            && active_editor(&window).annotation_records().len() == 1
-            && action_enabled(&window, "edit-annotation")
-    });
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
 
-    activate_action(&window, "edit-annotation");
-    wait_until(Duration::from_secs(2), || {
-        visible_alert_dialog(&window)
-            .and_then(|dialog| dialog.heading())
-            .as_deref()
-            == Some("Edit Range Note")
-    });
-
-    let dialog = visible_alert_dialog(&window).expect("range note dialog");
-    let extra = dialog.extra_child().expect("range note extra child");
-    let switcher = find_stack_switcher(&extra).expect("range note switcher");
-    let stack = find_note_editor_stack(&extra).expect("range note editor stack");
-    assert_eq!(switcher.stack(), Some(stack.clone()));
-
-    assert_note_editor_text_margins_match(&extra);
-    assert_note_editor_render_keeps_modal_geometry(&dialog, &extra, &stack);
-}
-
-#[test]
-fn test_new_range_note_first_render_keeps_modal_geometry_after_typing() {
-    ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("new-range-note-layout.md");
-    std::fs::write(&path, "one\ntwo\nthree\n").expect("write range note layout source");
-
-    let window = test_window();
-    present_window(&window);
-    wait_for_workspace_roots(&window, 2);
-    wait_for_workspace_consumers(&window, 2, 3);
-
-    window.open_document(&path);
-    wait_until(Duration::from_secs(2), || {
-        active_editor(&window).file_path() == Some(path.clone())
-            && action_enabled(&window, "add-annotation")
-    });
-
-    activate_action(&window, "add-annotation");
-    wait_until(Duration::from_secs(2), || {
-        visible_alert_dialog(&window)
-            .and_then(|dialog| dialog.heading())
-            .as_deref()
-            == Some("New Range Note")
-    });
-
-    let dialog = visible_alert_dialog(&window).expect("new range note dialog");
-    let extra = dialog.extra_child().expect("new range note extra child");
-    let stack = find_note_editor_stack(&extra).expect("new range note editor stack");
-    assert_note_editor_text_margins_match(&extra);
-    assert_typed_note_editor_first_render_keeps_modal_geometry(
-        &dialog,
-        &extra,
-        &stack,
-        "# Typed range note\n\nPreview me",
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 500);
+    assert!(
+        find_label_by_text(
+            &child,
+            "Showing first 500 matches. Refine search to narrow results."
+        )
+        .is_some(),
+        "large note sets should explain that the sidebar result set is capped"
     );
 }
 
@@ -5087,13 +4998,6 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
         )],
     )
     .expect("save bookmark sidecar");
-    annotation_service::save_for_path(
-        &data_dir,
-        &path,
-        &[AnnotationRecord::new(0, 0, "annotation", AnnotationStyle::Note)],
-    )
-    .expect("save annotation sidecar");
-
     let window = test_window();
     present_window(&window);
     wait_for_workspace_roots(&window, 2);
@@ -5103,7 +5007,6 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
     wait_until(Duration::from_secs(2), || {
         let editor = active_editor(&window);
         editor.bookmark_records().len() == 1
-            && editor.annotation_records().len() == 1
             && menu_model_labels(
                 &window
                     .imp()
@@ -5116,11 +5019,9 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
     });
 
     assert!(action_enabled(&window, "notes-toggle-bookmark"));
-    assert!(action_enabled(&window, "notes-add-annotation"));
     assert!(action_enabled(&window, "notes-open-document-note"));
     assert!(!action_enabled(&window, "notes-open-workspace-note"));
     assert!(action_enabled(&window, "edit-bookmark-label"));
-    assert!(action_enabled(&window, "edit-annotation"));
 
     let editor = active_editor(&window);
     let line_two = editor.buffer().iter_at_line(1).expect("line two");
@@ -5139,7 +5040,6 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
         .any(|label| label == "Add Bookmark")
     });
     assert!(action_enabled(&window, "notes-toggle-bookmark"));
-    assert!(action_enabled(&window, "notes-add-annotation"));
     assert!(action_enabled(&window, "notes-open-document-note"));
 }
 

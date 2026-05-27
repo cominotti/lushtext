@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Integration tests for bookmark and annotation sidecar services.
+//! Integration tests for bookmark and note sidecar services.
 
-use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
 use lushtext_core::model::bookmark::BookmarkRecord;
 use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspaceScope};
-use lushtext_core::services::{
-    annotation_service, bookmark_service, document_note_service, workspace_note_service,
-};
+use lushtext_core::services::{bookmark_service, document_note_service, workspace_note_service};
 
 use crate::common::TestContext;
 
@@ -48,31 +45,16 @@ fn note_sidecars_follow_in_app_rename_migration() {
         &[BookmarkRecord::new(1, Some("bookmark".to_string()))],
     )
     .expect("expected operation to succeed");
-    annotation_service::save_for_path(
-        ctx.data_dir(),
-        &old_file,
-        &[AnnotationRecord::new(
-            0,
-            0,
-            "carry this annotation",
-            AnnotationStyle::Warning,
-        )],
-    )
-    .expect("expected operation to succeed");
     document_note_service::save_for_path(ctx.data_dir(), &old_file, &RichNoteBody::new("doc note"))
         .expect("expected operation to succeed");
 
     std::fs::rename(&old_file, &new_file).expect("expected operation to succeed");
     bookmark_service::move_path_tree(ctx.data_dir(), &old_file, &new_file)
         .expect("expected operation to succeed");
-    annotation_service::move_path_tree(ctx.data_dir(), &old_file, &new_file)
-        .expect("expected operation to succeed");
     document_note_service::move_path_tree(ctx.data_dir(), &old_file, &new_file)
         .expect("expected operation to succeed");
 
     let loaded_bookmarks = bookmark_service::load_for_path(ctx.data_dir(), &new_file)
-        .expect("expected operation to succeed");
-    let loaded_annotations = annotation_service::load_for_path(ctx.data_dir(), &new_file)
         .expect("expected operation to succeed");
     let loaded_document_note = document_note_service::load_for_path(ctx.data_dir(), &new_file)
         .expect("expected operation to succeed")
@@ -83,45 +65,7 @@ fn note_sidecars_follow_in_app_rename_migration() {
         loaded_bookmarks.bookmarks[0].label.as_deref(),
         Some("bookmark")
     );
-    assert_eq!(loaded_annotations.annotations.len(), 1);
-    assert_eq!(
-        loaded_annotations.annotations[0].note_text,
-        "carry this annotation"
-    );
     assert_eq!(loaded_document_note.note.text, "doc note");
-}
-
-#[test]
-fn annotation_export_groups_by_file_and_includes_excerpt() {
-    let ctx = TestContext::new();
-    let file_path = ctx.write_file(
-        "workspace/src/lib.rs",
-        "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\n",
-    );
-
-    annotation_service::save_for_path(
-        ctx.data_dir(),
-        &file_path,
-        &[AnnotationRecord::new(
-            1,
-            4,
-            "Explain this block",
-            AnnotationStyle::Todo,
-        )],
-    )
-    .expect("expected operation to succeed");
-
-    let markdown = annotation_service::export_workspace_markdown(
-        ctx.data_dir(),
-        &[ctx.path().join("workspace")],
-    )
-    .expect("expected operation to succeed");
-
-    assert!(markdown.contains("# Workspace Range Notes"));
-    assert!(markdown.contains("## "));
-    assert!(markdown.contains("Lines 2-5 · Todo"));
-    assert!(markdown.contains("Explain this block"));
-    assert!(markdown.contains("line 2\nline 3\nline 4\nline 5"));
 }
 
 #[test]

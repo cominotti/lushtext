@@ -208,9 +208,10 @@ max_attempts=$((RETRIES + 1))
 while (( attempt <= max_attempts )); do
     if run_once; then
         exit 0
+    else
+        status=$?
     fi
 
-    status=$?
     if (( attempt == max_attempts )); then
         exit "$status"
     fi

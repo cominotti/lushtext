@@ -93,7 +93,7 @@ If `GtkSourceMap` doesn't support the semantic overlay we need, build a custom w
 ## Dependencies
 - `GtkSourceMap` (built into GtkSourceView 5) for Phase 1-2
 - `GtkSourceMark` for semantic markers
-- Bookmarks feature (docs/next/bookmarks-annotations.md) for bookmark marks
+- Bookmarks feature (docs/next/bookmarks.md) for bookmark marks
 - Change tracking infrastructure (Phase 4) — useful independently
 - GSettings keys: `show-minimap` (b), `minimap-width` (i, default 80)
 

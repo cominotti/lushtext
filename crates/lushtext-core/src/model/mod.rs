@@ -6,7 +6,6 @@
 //! All types in this layer are pure Rust with no GTK dependencies, making
 //! them fully unit-testable and usable from background threads.
 
-pub mod annotation;
 pub mod bookmark;
 pub mod content_search;
 pub mod document_note;

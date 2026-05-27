@@ -89,18 +89,6 @@ pub fn all_commands() -> &'static [CommandDef] {
             shortcut: Some("Shift+F2"),
         },
         CommandDef {
-            id: "win.add-annotation",
-            label: "Add Range Note",
-            category: CommandCategory::Edit,
-            shortcut: Some("Ctrl+Alt+N"),
-        },
-        CommandDef {
-            id: "win.edit-annotation",
-            label: "Edit Range Note",
-            category: CommandCategory::Edit,
-            shortcut: Some("Ctrl+Alt+M"),
-        },
-        CommandDef {
             id: "win.open-document-note",
             label: "Open Document Note",
             category: CommandCategory::View,
@@ -125,16 +113,10 @@ pub fn all_commands() -> &'static [CommandDef] {
             shortcut: Some("Ctrl+Alt+B"),
         },
         CommandDef {
-            id: "win.show-annotations",
+            id: "win.show-notes",
             label: "Browse Notes",
             category: CommandCategory::View,
             shortcut: Some("Ctrl+Alt+A"),
-        },
-        CommandDef {
-            id: "win.export-annotations",
-            label: "Export Range Notes",
-            category: CommandCategory::File,
-            shortcut: Some("Ctrl+Alt+Shift+A"),
         },
         CommandDef {
             id: "win.toggle-sidebar",

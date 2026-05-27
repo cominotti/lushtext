@@ -2,7 +2,7 @@
 
 //! Shared sidecar persistence helpers for note-like workflows.
 //!
-//! Bookmarks, range notes, and the richer document/workspace note flows all use
+//! Bookmarks and the richer document/workspace note flows all use
 //! the same patterns: canonical-path identity resolution, JSON sidecar loading,
 //! workspace-root filtering, and in-app rename migration. Keeping those helpers
 //! here avoids subtle drift between the different persistence services.

@@ -152,26 +152,8 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
-                <property name="title" translatable="yes">Add Range Note</property>
-                <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;n</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title" translatable="yes">Edit Range Note</property>
-                <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;m</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
                 <property name="title" translatable="yes">Browse Notes</property>
                 <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;a</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title" translatable="yes">Export Range Notes</property>
-                <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;&lt;Shift&gt;a</property>
               </object>
             </child>
           </object>

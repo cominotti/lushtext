@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Bookmark and annotation workflows for the main window shell.
+//! Bookmark and note workflows for the main window shell.
 //!
 //! This module keeps note-specific action handling, dialogs, persistence
-//! scheduling, and workspace export logic out of the generic document shell.
+//! scheduling, and workspace browse logic out of the generic document shell.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -15,22 +15,20 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, AlertDialogExtManual, SidebarItemExt};
 
-use crate::model::annotation::{AnnotationId, AnnotationRecord, AnnotationStyle};
 use crate::model::note::{NoteViewMode, RichNoteBody, note_preview_line};
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScope};
 use crate::services::{
-    annotation_service, async_task, bookmark_service, document_note_service, editor_io, json_store,
-    workspace_note_service,
+    async_task, bookmark_service, document_note_service, json_store, workspace_note_service,
 };
 use crate::ui::editor_page::{
-    AnnotationEditSelection, BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
+    BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
 };
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
 use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
 
-/// Debounce interval for bookmark and annotation sidecar saves.
+/// Debounce interval for bookmark sidecar saves.
 ///
 /// 200ms coalesces rapid line-shift edits into one filesystem write without
 /// letting note state drift for long after the user pauses typing.
@@ -39,10 +37,9 @@ const NOTES_SAVE_DEBOUNCE_MS: u64 = 200;
 /// Alert-dialog response IDs reused by the note workflows.
 const RESPONSE_CANCEL: &str = "cancel";
 const RESPONSE_SAVE: &str = "save";
-const RESPONSE_DELETE: &str = "delete";
 const RESPONSE_CLEAR: &str = "clear";
 
-/// Search scope title used by bookmark and annotation browse dialogs.
+/// Search scope title used by bookmark and notes browse dialogs.
 const WORKSPACE_SCOPE_TITLE: &str = "Current Workspace";
 
 /// Fixed notes browser width keeps the preview usable without turning the dialog
@@ -50,6 +47,12 @@ const WORKSPACE_SCOPE_TITLE: &str = "Current Workspace";
 const NOTES_BROWSER_WIDTH_SP: i32 = 980;
 /// Fixed notes browser height leaves room for the list, preview, and action row.
 const NOTES_BROWSER_HEIGHT_SP: i32 = 700;
+/// Maximum note rows materialized into the Adwaita sidebar at once.
+///
+/// The full notes set is still loaded and searched, but building thousands of
+/// GTK sidebar items in one pass can stall the main loop. Search refinements
+/// let users narrow beyond this first responsive slice.
+const NOTES_BROWSER_RENDER_LIMIT: usize = 500;
 
 /// Stable width for the shared edit/render note surface inside note dialogs.
 const NOTE_EDITOR_SURFACE_WIDTH_SP: i32 = 520;
@@ -82,16 +85,6 @@ enum NotesBrowserEntry {
         path: PathBuf,
         note: RichNoteBody,
     },
-    Range {
-        workspace_name: String,
-        workspace_root: PathBuf,
-        path: PathBuf,
-        annotation_id: AnnotationId,
-        start_line: u32,
-        end_line: u32,
-        note_text: String,
-        style: AnnotationStyle,
-    },
 }
 
 /// Lowercased search query plus a small prefix table for allocation-light matching.
@@ -113,8 +106,10 @@ struct NotesBrowserState {
     split_view: libadwaita::NavigationSplitView,
     /// Search field driving the current filtered row set.
     search_entry: gtk4::SearchEntry,
-    /// Adwaita browse rail for workspace, document, and range notes.
+    /// Adwaita browse rail for bookmarks, workspace notes, and document notes.
     sidebar: libadwaita::Sidebar,
+    /// Visible notice when the current result set is capped for responsiveness.
+    limit_label: gtk4::Label,
     /// Header label for the selected note.
     preview_title: gtk4::Label,
     /// Secondary metadata label for the selected note.
@@ -134,7 +129,7 @@ struct NotesBrowserState {
 }
 
 impl LushtextWindow {
-    /// Wire bookmark and annotation callbacks for a newly created editor page.
+    /// Wire bookmark and note callbacks for a newly created editor page.
     pub(super) fn wire_note_callbacks(&self, editor: &LushtextEditorPage) {
         let window_weak = self.downgrade();
         let editor_weak = editor.downgrade();
@@ -162,19 +157,6 @@ impl LushtextWindow {
 
         let window_weak = self.downgrade();
         let editor_weak = editor.downgrade();
-        editor.connect_annotations_changed(move || {
-            if let Some(window) = window_weak.upgrade()
-                && let Some(editor) = editor_weak.upgrade()
-            {
-                window.save_annotations_debounced(&editor);
-                if window.is_active_editor(&editor) {
-                    window.refresh_notes_menu_state();
-                }
-            }
-        });
-
-        let window_weak = self.downgrade();
-        let editor_weak = editor.downgrade();
         editor.buffer().connect_mark_set(move |_, _, _| {
             if let Some(window) = window_weak.upgrade()
                 && let Some(editor) = editor_weak.upgrade()
@@ -194,28 +176,22 @@ impl LushtextWindow {
             editor.clone(),
             move || {
                 let data_dir = json_store::data_dir();
-                let bookmarks =
-                    bookmark_service::load_for_path(&data_dir, &path_for_load)?.bookmarks;
-                let annotations =
-                    annotation_service::load_for_path(&data_dir, &path_for_load)?.annotations;
-                Ok::<_, anyhow::Error>((bookmarks, annotations))
+                bookmark_service::load_for_path(&data_dir, &path_for_load)
+                    .map(|document| document.bookmarks)
             },
             move |editor, result| match result {
-                Ok((bookmarks, annotations)) => {
+                Ok(bookmarks) => {
                     editor.load_bookmarks(&bookmarks);
-                    editor.load_annotations(&annotations);
                     if let Some(window) = window_weak.upgrade() {
-                        window.open_pending_annotation_if_ready(&editor);
                         window.refresh_status_bar();
                     }
                 }
                 Err(error) => {
                     tracing::error!("Failed to load notes for {}: {error}", path.display());
                     editor.clear_bookmarks();
-                    editor.clear_annotations();
                     if let Some(window) = window_weak.upgrade() {
                         window.publish_status_message(
-                            "Bookmarks or range notes could not be loaded",
+                            "Bookmarks could not be loaded",
                             MessageKind::Warning,
                         );
                     }
@@ -227,7 +203,6 @@ impl LushtextWindow {
     /// Reset live note state after Save As so the new path starts from its own identity.
     pub(super) fn reset_notes_after_save_as(&self, editor: &LushtextEditorPage, path: &Path) {
         editor.clear_bookmarks();
-        editor.clear_annotations();
         self.resolve_notes_for_editor(editor, path);
     }
 
@@ -247,11 +222,6 @@ impl LushtextWindow {
                     &old_path_for_move,
                     &new_path_for_move,
                 )?;
-                let annotation_count = annotation_service::move_path_tree(
-                    &data_dir,
-                    &old_path_for_move,
-                    &new_path_for_move,
-                )?;
                 let document_note_count = document_note_service::move_path_tree(
                     &data_dir,
                     &old_path_for_move,
@@ -262,12 +232,7 @@ impl LushtextWindow {
                     &old_path_for_move,
                     &new_path_for_move,
                 )?;
-                Ok::<_, anyhow::Error>((
-                    bookmark_count,
-                    annotation_count,
-                    document_note_count,
-                    workspace_note_count,
-                ))
+                Ok::<_, anyhow::Error>((bookmark_count, document_note_count, workspace_note_count))
             },
             move |(), result| {
                 if let Err(error) = result {
@@ -278,7 +243,7 @@ impl LushtextWindow {
                     );
                     if let Some(window) = window_weak.upgrade() {
                         window.publish_status_message(
-                            "Rename succeeded, but bookmarks/annotations could not be moved",
+                            "Rename succeeded, but note sidecars could not be moved",
                             MessageKind::Warning,
                         );
                     }
@@ -409,29 +374,6 @@ impl LushtextWindow {
         );
     }
 
-    /// Create a new annotation for the current selection (or current line).
-    pub(super) fn add_annotation(&self) {
-        let Some(editor) = self.require_saved_editor("Range notes require a saved file") else {
-            return;
-        };
-        self.present_annotation_editor(&editor, None);
-    }
-
-    /// Edit the annotation under the current cursor line.
-    pub(super) fn edit_annotation(&self) {
-        let Some(editor) = self.require_saved_editor("Range notes require a saved file") else {
-            return;
-        };
-        let Some(annotation) = editor.current_annotation() else {
-            self.publish_status_message(
-                "Move the cursor onto a range note first",
-                MessageKind::Warning,
-            );
-            return;
-        };
-        self.present_annotation_editor(&editor, Some(&annotation));
-    }
-
     /// Open the document note for the active saved file.
     pub(super) fn open_document_note(&self) {
         let Some(editor) = self.require_saved_editor("Document notes require a saved file") else {
@@ -483,7 +425,7 @@ impl LushtextWindow {
     }
 
     /// Browse notes across the current workspace scope.
-    pub(super) fn show_annotations_dialog(&self) {
+    pub(super) fn show_notes_dialog(&self) {
         let workspaces_file = self.imp().sidebar.workspaces_file();
         let scope = workspaces_file.current_scope();
         let visible_workspaces: Vec<WorkspaceConfig> = match &scope {
@@ -519,14 +461,11 @@ impl LushtextWindow {
                     bookmark_service::list_workspace_bookmarks(&data_dir, &scope_roots)?;
                 let document_notes =
                     document_note_service::list_workspace_document_notes(&data_dir, &scope_roots)?;
-                let range_notes =
-                    annotation_service::list_workspace_annotations(&data_dir, &scope_roots)?;
                 Ok::<_, anyhow::Error>(build_notes_browser_entries(
                     &visible_workspaces,
                     bookmarks,
                     workspace_notes,
                     document_notes,
-                    range_notes,
                 ))
             },
             |window, result| match result {
@@ -547,72 +486,6 @@ impl LushtextWindow {
                 }
             },
         );
-    }
-
-    /// Export range notes for the current workspace scope to a markdown file.
-    pub(super) fn export_annotations(&self) {
-        let scope_paths = self.workspace_note_scope_paths();
-        if scope_paths.is_empty() {
-            self.publish_status_message(
-                "Add a workspace before exporting range notes",
-                MessageKind::Warning,
-            );
-            return;
-        }
-
-        let dialog = gtk4::FileDialog::builder()
-            .title("Export Range Notes")
-            .modal(true)
-            .build();
-        dialog.set_initial_name(Some("range-notes.md"));
-
-        let window = self.clone();
-        dialog.save(Some(self), gio::Cancellable::NONE, move |result| {
-            let Ok(file) = result else {
-                return;
-            };
-            let Some(path) = file.path() else {
-                return;
-            };
-
-            let save_path = path.clone();
-            let scope_paths = scope_paths.clone();
-            async_task::spawn_blocking_then(
-                window.clone(),
-                move || {
-                    let data_dir = json_store::data_dir();
-                    let markdown =
-                        annotation_service::export_workspace_markdown(&data_dir, &scope_paths)?;
-                    editor_io::write_snapshot_to_path(&save_path, &markdown)
-                        .map(|_| ())
-                        .map_err(anyhow::Error::from)
-                },
-                move |window, result| match result {
-                    Ok(()) => window.publish_status_message(
-                        &format!("Range-note report saved to {}", path.display()),
-                        MessageKind::Info,
-                    ),
-                    Err(error) => {
-                        tracing::error!("Failed to export range notes: {error}");
-                        window
-                            .publish_status_message("Range-note export failed", MessageKind::Error);
-                    }
-                },
-            );
-        });
-    }
-
-    /// If a pending annotation was requested from a browse surface, open it now.
-    pub(super) fn open_pending_annotation_if_ready(&self, editor: &LushtextEditorPage) {
-        let Some(annotation_id) = editor.imp().annotations.pending_focus_id.borrow().clone() else {
-            return;
-        };
-        let Some(annotation) = editor.annotation_by_id(&annotation_id) else {
-            return;
-        };
-
-        editor.set_pending_annotation_focus(None);
-        self.present_annotation_editor(editor, Some(&annotation));
     }
 
     /// Load and present the document note attached to one saved file.
@@ -972,43 +845,6 @@ impl LushtextWindow {
         });
     }
 
-    /// Debounce annotation persistence so range-tracking edits do not spam the filesystem.
-    fn save_annotations_debounced(&self, editor: &LushtextEditorPage) {
-        let generation = editor
-            .imp()
-            .annotations
-            .persistence
-            .save_generation
-            .get()
-            .wrapping_add(1);
-        editor
-            .imp()
-            .annotations
-            .persistence
-            .save_generation
-            .set(generation);
-
-        let editor_weak = editor.downgrade();
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(NOTES_SAVE_DEBOUNCE_MS), move || {
-            let Some(editor) = editor_weak.upgrade() else {
-                return;
-            };
-            if editor.imp().annotations.persistence.save_generation.get() != generation {
-                return;
-            }
-
-            if editor.imp().annotations.persistence.save_inflight.get() {
-                editor.imp().annotations.persistence.save_dirty.set(true);
-                return;
-            }
-
-            if let Some(window) = window_weak.upgrade() {
-                window.persist_annotations_now(&editor);
-            }
-        });
-    }
-
     /// Write the current bookmark snapshot to disk.
     fn persist_bookmarks_now(&self, editor: &LushtextEditorPage) {
         let Some(path) = editor.file_path() else {
@@ -1040,48 +876,6 @@ impl LushtextWindow {
         );
     }
 
-    /// Write the current annotation snapshot to disk.
-    fn persist_annotations_now(&self, editor: &LushtextEditorPage) {
-        let Some(path) = editor.file_path() else {
-            return;
-        };
-        let annotations = editor.annotation_records();
-        let data_dir = json_store::data_dir();
-        editor.imp().annotations.persistence.save_inflight.set(true);
-        editor.imp().annotations.persistence.save_dirty.set(false);
-
-        let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
-            editor.clone(),
-            move || annotation_service::save_for_path(&data_dir, &path, &annotations).map(|_| ()),
-            move |editor, result| {
-                editor
-                    .imp()
-                    .annotations
-                    .persistence
-                    .save_inflight
-                    .set(false);
-                if let Err(error) = result {
-                    tracing::error!("Failed to save annotations: {error}");
-                    if let Some(window) = window_weak.upgrade() {
-                        window
-                            .publish_status_message("Range-note save failed", MessageKind::Warning);
-                    }
-                }
-                if editor
-                    .imp()
-                    .annotations
-                    .persistence
-                    .save_dirty
-                    .replace(false)
-                    && let Some(window) = window_weak.upgrade()
-                {
-                    window.persist_annotations_now(&editor);
-                }
-            },
-        );
-    }
-
     /// Return the active editor only when it has a stable saved file path.
     fn require_saved_editor(&self, missing_path_message: &str) -> Option<LushtextEditorPage> {
         let editor = self.active_editor()?;
@@ -1093,7 +887,7 @@ impl LushtextWindow {
         None
     }
 
-    /// Collect the current workspace scope for bookmark, annotation, and export workflows.
+    /// Collect the current workspace scope for bookmark and note workflows.
     fn workspace_note_scope_paths(&self) -> Vec<PathBuf> {
         self.current_workspace_scope_paths()
     }
@@ -1139,14 +933,12 @@ impl LushtextWindow {
             .set_visible(active_editor.is_some() || workspace_actions_available);
 
         self.set_notes_menu_action_enabled("notes-toggle-bookmark", saved_editor.is_some());
-        self.set_notes_menu_action_enabled("notes-add-annotation", saved_editor.is_some());
         self.set_notes_menu_action_enabled("notes-open-document-note", saved_editor.is_some());
         self.set_notes_menu_action_enabled(
             "notes-open-workspace-note",
             self.current_workspace_note_target().is_some(),
         );
-        self.set_notes_menu_action_enabled("notes-show-annotations", workspace_actions_available);
-        self.set_notes_menu_action_enabled("notes-export-annotations", workspace_actions_available);
+        self.set_notes_menu_action_enabled("notes-show-notes", workspace_actions_available);
     }
 
     /// Check the existing menu model before replacing it during ordinary state refreshes.
@@ -1194,12 +986,11 @@ impl LushtextWindow {
         let menu = gio::Menu::new();
 
         let browse_section = gio::Menu::new();
-        browse_section.append(Some("Browse Notes…"), Some("win.notes-show-annotations"));
+        browse_section.append(Some("Browse Notes…"), Some("win.notes-show-notes"));
         menu.append_section(None, &browse_section);
 
         let document_section = gio::Menu::new();
         document_section.append(Some(bookmark_label), Some("win.notes-toggle-bookmark"));
-        document_section.append(Some("Add Range Note…"), Some("win.notes-add-annotation"));
         document_section.append(
             Some("Open Document Note…"),
             Some("win.notes-open-document-note"),
@@ -1210,10 +1001,6 @@ impl LushtextWindow {
         workspace_section.append(
             Some("Open Workspace Note…"),
             Some("win.notes-open-workspace-note"),
-        );
-        workspace_section.append(
-            Some("Export Range Notes…"),
-            Some("win.notes-export-annotations"),
         );
         menu.append_section(None, &workspace_section);
 
@@ -1274,128 +1061,6 @@ impl LushtextWindow {
         dialog.present(Some(self));
     }
 
-    /// Present the create/edit dialog for a single saved-file range note.
-    fn present_annotation_editor(
-        &self,
-        editor: &LushtextEditorPage,
-        existing: Option<&AnnotationRecord>,
-    ) {
-        let selection = existing.cloned().map_or_else(
-            || editor.annotation_edit_selection(),
-            AnnotationEditSelection::Existing,
-        );
-        let body = match &selection {
-            AnnotationEditSelection::Existing(annotation) => {
-                format!(
-                    "Update the range note for {}.",
-                    annotation.line_range_label()
-                )
-            }
-            AnnotationEditSelection::NewRange {
-                start_line,
-                end_line,
-            } => format!(
-                "Add a range note for {}.",
-                AnnotationRecord::new(*start_line, *end_line, "", AnnotationStyle::Note,)
-                    .line_range_label()
-            ),
-        };
-
-        let dialog = libadwaita::AlertDialog::new(
-            Some(if existing.is_some() {
-                "Edit Range Note"
-            } else {
-                "New Range Note"
-            }),
-            Some(&body),
-        );
-        dialog.add_response(RESPONSE_CANCEL, "Cancel");
-        if existing.is_some() {
-            dialog.add_response(RESPONSE_DELETE, "Delete");
-            dialog.set_response_appearance(
-                RESPONSE_DELETE,
-                libadwaita::ResponseAppearance::Destructive,
-            );
-        }
-        dialog.add_response(RESPONSE_SAVE, "Save");
-        dialog.set_response_appearance(RESPONSE_SAVE, libadwaita::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some(RESPONSE_SAVE));
-        dialog.set_close_response(RESPONSE_CANCEL);
-
-        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-        content.set_margin_start(6);
-        content.set_margin_end(6);
-        content.set_margin_top(6);
-        content.set_margin_bottom(6);
-
-        let style_label = gtk4::Label::new(Some("Style"));
-        style_label.set_halign(gtk4::Align::Start);
-        content.append(&style_label);
-
-        let style_dropdown = gtk4::DropDown::from_strings(&["Note", "Todo", "Warning", "Question"]);
-        style_dropdown.set_selected(annotation_style_index(
-            existing.map_or(AnnotationStyle::Note, |annotation| annotation.style),
-        ));
-        content.append(&style_dropdown);
-
-        let note_label = gtk4::Label::new(Some("Note"));
-        note_label.set_halign(gtk4::Align::Start);
-        content.append(&note_label);
-
-        let initial_text = existing.map_or("", |annotation| annotation.note_text.as_str());
-        let render_context = MarkdownPreviewRenderContext::new(
-            editor.file_path(),
-            self.current_workspace_directory_roots(),
-        );
-        let (surface, note_view) = build_note_editor_surface(
-            initial_text,
-            &render_context,
-            NoteViewMode::Edit,
-            "Write some note text to preview rendered markdown.",
-        );
-        content.append(&surface);
-        dialog.set_extra_child(Some(&content));
-
-        let window = self.clone();
-        let editor = editor.clone();
-        let existing = existing.cloned();
-        dialog.choose(Some(self), gio::Cancellable::NONE, move |response| {
-            if response == RESPONSE_DELETE {
-                if let Some(annotation) = existing.as_ref()
-                    && editor.delete_annotation(&annotation.id)
-                {
-                    window.publish_status_message("Range note deleted", MessageKind::Info);
-                }
-                return;
-            }
-
-            if response == RESPONSE_SAVE {
-                let buffer = note_view.buffer();
-                let note_text = buffer
-                    .text(&buffer.start_iter(), &buffer.end_iter(), true)
-                    .to_string();
-                if note_text.trim().is_empty() {
-                    window
-                        .publish_status_message("Range notes need note text", MessageKind::Warning);
-                    return;
-                }
-
-                let style = annotation_style_from_index(style_dropdown.selected());
-                if let Some(annotation) = existing.as_ref() {
-                    if editor
-                        .update_annotation(&annotation.id, &note_text, style)
-                        .is_some()
-                    {
-                        window.publish_status_message("Range note updated", MessageKind::Info);
-                    }
-                } else {
-                    let _ = editor.create_annotation_from_selection(&note_text, style);
-                    window.publish_status_message("Range note added", MessageKind::Info);
-                }
-            }
-        });
-    }
-
     /// Present the unified notes browser for the current workspace scope.
     fn present_notes_browser(&self, entries: Vec<NotesBrowserEntry>) {
         if entries.is_empty() {
@@ -1417,6 +1082,13 @@ impl LushtextWindow {
         sidebar.set_mode(libadwaita::SidebarMode::Sidebar);
         sidebar.set_vexpand(true);
         sidebar.set_placeholder(Some(&empty_browser_label("No notes match that search")));
+        let limit_label = gtk4::Label::new(None);
+        limit_label.set_halign(gtk4::Align::Start);
+        limit_label.set_xalign(0.0);
+        limit_label.set_wrap(true);
+        limit_label.add_css_class("caption");
+        limit_label.add_css_class("dim-label");
+        limit_label.set_visible(false);
 
         let preview_title = gtk4::Label::new(Some("Select a note"));
         preview_title.set_halign(gtk4::Align::Start);
@@ -1424,7 +1096,7 @@ impl LushtextWindow {
         preview_title.add_css_class("title-4");
 
         let preview_meta = gtk4::Label::new(Some(
-            "Choose a bookmark, workspace, document, or range note to preview it here.",
+            "Choose a bookmark, workspace note, or document note to preview it here.",
         ));
         preview_meta.set_halign(gtk4::Align::Start);
         preview_meta.set_xalign(0.0);
@@ -1450,7 +1122,7 @@ impl LushtextWindow {
         split_view.set_min_sidebar_width(260.0);
         split_view.set_max_sidebar_width(340.0);
         split_view.set_sidebar(Some(&libadwaita::NavigationPage::new(
-            &build_notes_sidebar(&search_entry, &sidebar),
+            &build_notes_sidebar(&search_entry, &sidebar, &limit_label),
             "Notes",
         )));
         split_view.set_content(Some(&libadwaita::NavigationPage::new(
@@ -1472,6 +1144,7 @@ impl LushtextWindow {
             split_view,
             search_entry,
             sidebar,
+            limit_label,
             preview_title,
             preview_meta,
             preview,
@@ -1549,7 +1222,7 @@ impl LushtextWindow {
     }
 }
 
-/// Build the shared edit/render note surface used by range, document, and workspace notes.
+/// Build the shared edit/render note surface used by document and workspace notes.
 #[must_use]
 fn build_note_editor_surface(
     initial_text: &str,
@@ -1694,7 +1367,7 @@ fn build_empty_notes_dialog() -> libadwaita::Dialog {
         .icon_name("text-x-generic-symbolic")
         .title("No notes yet")
         .description(
-            "Bookmarks, range notes, document notes, and workspace notes will appear here once you save one.",
+            "Bookmarks, document notes, and workspace notes will appear here once you save one.",
         )
         .build();
     dialog.set_child(Some(&status));
@@ -1705,6 +1378,7 @@ fn build_empty_notes_dialog() -> libadwaita::Dialog {
 fn build_notes_sidebar(
     search_entry: &gtk4::SearchEntry,
     sidebar: &libadwaita::Sidebar,
+    limit_label: &gtk4::Label,
 ) -> gtk4::Box {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
     content.set_margin_start(18);
@@ -1725,6 +1399,7 @@ fn build_notes_sidebar(
         .child(sidebar)
         .build();
     content.append(&scroll);
+    content.append(limit_label);
 
     content
 }
@@ -1782,16 +1457,6 @@ impl NotesBrowserEntry {
                 );
                 format!("Document Note · {file_name}")
             }
-            Self::Range {
-                start_line,
-                end_line,
-                style,
-                ..
-            } => format!(
-                "{} · {}",
-                style.label(),
-                format_range_label(*start_line, *end_line)
-            ),
         }
     }
 
@@ -1819,17 +1484,6 @@ impl NotesBrowserEntry {
                 path,
                 ..
             } => format!("{workspace_name} · {}", path.display()),
-            Self::Range {
-                workspace_name,
-                path,
-                start_line,
-                end_line,
-                ..
-            } => format!(
-                "{workspace_name} · {} · {}",
-                path.display(),
-                format_range_label(*start_line, *end_line)
-            ),
         }
     }
 
@@ -1862,16 +1516,6 @@ impl NotesBrowserEntry {
                 );
                 format!("Document Note · {file_name}")
             }
-            Self::Range {
-                start_line,
-                end_line,
-                style,
-                ..
-            } => format!(
-                "Range Note · {} · {}",
-                style.label(),
-                format_range_label(*start_line, *end_line)
-            ),
         }
     }
 
@@ -1898,11 +1542,6 @@ impl NotesBrowserEntry {
                 workspace_name,
                 path,
                 ..
-            }
-            | Self::Range {
-                workspace_name,
-                path,
-                ..
             } => format!("{workspace_name} · {}", path.display()),
         }
     }
@@ -1913,7 +1552,6 @@ impl NotesBrowserEntry {
         match self {
             Self::Bookmark { .. } => "",
             Self::Workspace { note, .. } | Self::Document { note, .. } => &note.text,
-            Self::Range { note_text, .. } => note_text,
         }
     }
 
@@ -1953,11 +1591,6 @@ impl NotesBrowserEntry {
                 path,
                 workspace_root,
                 ..
-            }
-            | Self::Range {
-                path,
-                workspace_root,
-                ..
             } => {
                 MarkdownPreviewRenderContext::new(Some(path.clone()), vec![workspace_root.clone()])
             }
@@ -1971,7 +1604,6 @@ impl NotesBrowserEntry {
             Self::Bookmark { .. } => "bookmark-new-symbolic",
             Self::Workspace { .. } => "folder-symbolic",
             Self::Document { .. } => "text-x-generic-symbolic",
-            Self::Range { .. } => "insert-text-symbolic",
         }
     }
 
@@ -2041,7 +1673,7 @@ impl NotesBrowserState {
         let Some(index) = index else {
             self.preview_title.set_label("Select a note");
             self.preview_meta.set_label(
-                "Choose a bookmark, workspace, document, or range note to preview it here.",
+                "Choose a bookmark, workspace note, or document note to preview it here.",
             );
             self.preview
                 .show_placeholder("Select a note to preview its details.");
@@ -2052,7 +1684,7 @@ impl NotesBrowserState {
         let Some(entry_index) = self.filtered_indices.borrow().get(index).copied() else {
             self.preview_title.set_label("Select a note");
             self.preview_meta.set_label(
-                "Choose a bookmark, workspace, document, or range note to preview it here.",
+                "Choose a bookmark, workspace note, or document note to preview it here.",
             );
             self.preview
                 .show_placeholder("Select a note to preview its details.");
@@ -2062,7 +1694,7 @@ impl NotesBrowserState {
         let Some(entry) = self.all_entries.get(entry_index) else {
             self.preview_title.set_label("Select a note");
             self.preview_meta.set_label(
-                "Choose a bookmark, workspace, document, or range note to preview it here.",
+                "Choose a bookmark, workspace note, or document note to preview it here.",
             );
             self.preview
                 .show_placeholder("Select a note to preview its details.");
@@ -2129,23 +1761,35 @@ fn rebuild_notes_browser_sidebar(state: &Rc<NotesBrowserState>, query: &str) {
     state.sidebar.remove_all();
 
     let prepared_query = NotesBrowserQuery::new(query);
-    let matching_indices: Vec<_> = state
-        .all_entries
-        .iter()
-        .enumerate()
-        .filter_map(|(index, entry)| {
-            prepared_query
-                .as_ref()
-                .is_none_or(|query| entry.matches_query(query))
-                .then_some(index)
-        })
-        .collect();
+    let mut matching_indices =
+        Vec::with_capacity(state.all_entries.len().min(NOTES_BROWSER_RENDER_LIMIT));
+    let mut truncated = false;
+    for (index, entry) in state.all_entries.iter().enumerate() {
+        if prepared_query
+            .as_ref()
+            .is_some_and(|query| !entry.matches_query(query))
+        {
+            continue;
+        }
+        if matching_indices.len() == NOTES_BROWSER_RENDER_LIMIT {
+            truncated = true;
+            break;
+        }
+        matching_indices.push(index);
+    }
 
     if matching_indices.is_empty() {
+        state.limit_label.set_visible(false);
         *state.filtered_indices.borrow_mut() = Vec::new();
         state.refresh_preview(None, false);
         return;
     }
+    if truncated {
+        state.limit_label.set_label(&format!(
+            "Showing first {NOTES_BROWSER_RENDER_LIMIT} matches. Refine search to narrow results."
+        ));
+    }
+    state.limit_label.set_visible(truncated);
 
     let grouped_indices =
         append_notes_sidebar_sections(&state.sidebar, &state.all_entries, &matching_indices);
@@ -2192,17 +1836,6 @@ fn append_notes_sidebar_sections(
             all_entries
                 .get(*index)
                 .is_some_and(|entry| matches!(entry, NotesBrowserEntry::Document { .. }))
-        }),
-        all_entries,
-        &mut ordered_indices,
-    );
-    append_note_sidebar_section(
-        sidebar,
-        "Range Notes",
-        matching_indices.iter().copied().filter(|index| {
-            all_entries
-                .get(*index)
-                .is_some_and(|entry| matches!(entry, NotesBrowserEntry::Range { .. }))
         }),
         all_entries,
         &mut ordered_indices,
@@ -2274,28 +1907,15 @@ fn activate_notes_browser_entry(window: &LushtextWindow, entry: &NotesBrowserEnt
             window.open_document(path);
             window.open_document_note_for_path_with_roots(path, vec![workspace_root.clone()]);
         }
-        NotesBrowserEntry::Range {
-            path,
-            annotation_id,
-            start_line,
-            ..
-        } => {
-            open_editor_at_line(window, path, start_line.saturating_add(1));
-            if let Some(editor) = window.active_editor() {
-                editor.set_pending_annotation_focus(Some(annotation_id.clone()));
-                window.open_pending_annotation_if_ready(&editor);
-            }
-        }
     }
 }
 
-/// Merge bookmarks plus workspace, document, and range notes into one browser entry list.
+/// Merge bookmarks plus workspace and document notes into one browser entry list.
 fn build_notes_browser_entries(
     visible_workspaces: &[WorkspaceConfig],
     bookmarks: Vec<bookmark_service::WorkspaceBookmark>,
     workspace_notes: Vec<workspace_note_service::ListedWorkspaceNote>,
     document_notes: Vec<document_note_service::WorkspaceDocumentNote>,
-    range_notes: Vec<annotation_service::WorkspaceAnnotation>,
 ) -> Vec<NotesBrowserEntry> {
     let mut entries = Vec::new();
 
@@ -2332,21 +1952,6 @@ fn build_notes_browser_entries(
         }
     }
 
-    for note in range_notes {
-        if let Some(workspace) = workspace_for_path(visible_workspaces, &note.path) {
-            entries.push(NotesBrowserEntry::Range {
-                workspace_name: workspace.name.clone(),
-                workspace_root: workspace.root.clone(),
-                path: note.path,
-                annotation_id: note.annotation_id,
-                start_line: note.start_line,
-                end_line: note.end_line,
-                note_text: note.note_text,
-                style: note.style,
-            });
-        }
-    }
-
     entries.sort_by(|left, right| {
         left.row_title()
             .cmp(&right.row_title())
@@ -2366,18 +1971,6 @@ fn workspace_for_path<'a>(
         .max_by_key(|workspace| workspace.root.components().count())
 }
 
-/// Display one inclusive zero-based line range in the 1-based form users expect.
-#[must_use]
-fn format_range_label(start_line: u32, end_line: u32) -> String {
-    let start = start_line.saturating_add(1);
-    let end = end_line.saturating_add(1);
-    if start == end {
-        format!("Line {start}")
-    } else {
-        format!("Lines {start}-{end}")
-    }
-}
-
 /// Display one zero-based bookmark line in the 1-based form users expect.
 #[must_use]
 fn format_line_label(line: u32) -> String {
@@ -2392,7 +1985,7 @@ fn bookmark_display_label(label: Option<&str>, line: u32) -> String {
         .map_or_else(|| format_line_label(line), ToOwned::to_owned)
 }
 
-/// Build the base dialog used by the bookmark and annotation browsers.
+/// Build the base dialog used by bookmark browsers.
 fn build_browser_dialog(title: &str) -> libadwaita::Dialog {
     let dialog = libadwaita::Dialog::builder()
         .title(title)
@@ -2488,7 +2081,7 @@ fn rebuild_bookmark_rows(
     }
 }
 
-/// Build the content widget used inside bookmark and annotation browser rows.
+/// Build the content widget used inside bookmark browser rows.
 #[must_use]
 fn browser_row_content(title: &str, subtitle: &str, detail: Option<&str>) -> gtk4::Box {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
@@ -2554,28 +2147,6 @@ fn bookmark_matches_query(bookmark: &bookmark_service::WorkspaceBookmark, query:
             .to_lowercase()
             .contains(&query)
         || bookmark.line.saturating_add(1).to_string().contains(&query)
-}
-
-/// Map an annotation style to the matching dropdown row.
-#[must_use]
-fn annotation_style_index(style: AnnotationStyle) -> u32 {
-    match style {
-        AnnotationStyle::Note => 0,
-        AnnotationStyle::Todo => 1,
-        AnnotationStyle::Warning => 2,
-        AnnotationStyle::Question => 3,
-    }
-}
-
-/// Map the selected dropdown row back to a persisted annotation style.
-#[must_use]
-fn annotation_style_from_index(index: u32) -> AnnotationStyle {
-    match index {
-        1 => AnnotationStyle::Todo,
-        2 => AnnotationStyle::Warning,
-        3 => AnnotationStyle::Question,
-        _ => AnnotationStyle::Note,
-    }
 }
 
 /// Open a file at a specific 1-based line number and focus the editor.

@@ -216,14 +216,6 @@
                 <property name="active">true</property>
               </object>
             </child>
-
-            <child>
-              <object class="AdwSwitchRow" id="annotation_highlights_row">
-                <property name="title" translatable="yes">Show Annotation Highlights</property>
-                <property name="subtitle" translatable="yes">Highlight annotated line ranges in the editor</property>
-                <property name="active">true</property>
-              </object>
-            </child>
           </object>
         </child>
       </object>

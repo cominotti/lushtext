@@ -46,7 +46,7 @@ Instead, use the new Adwaita sidebar family for shallow browse rails where the
 data is naturally sectioned and activation-oriented:
 
 1. Replace the unified Notes browser's hand-built `GtkListBox` rail with
-   `AdwSidebar` sections for workspace notes, document notes, and range notes.
+   `AdwSidebar` sections for bookmarks, workspace notes, and document notes.
 2. Preserve the current Notes browser contract: dialog sizing, Markdown preview,
    search behavior, Open action, compact `AdwNavigationSplitView` handoff, and
    all existing note activation flows.
@@ -75,8 +75,8 @@ pages would be stable and page-like.
 - Widget tests cover selecting every Notes and Local History section/item,
   search/filter behavior, compact-width allocation, and active item state after
   page changes.
-- The change does not regress existing bookmark, annotation, document-note,
-  workspace-note, or local-history flows.
+- The change does not regress existing bookmark, document-note, workspace-note,
+  or local-history flows.
 
 ### Risks
 

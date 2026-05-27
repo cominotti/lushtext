@@ -6,7 +6,6 @@ use crate::common::{ensure_gtk_init, present_window, test_application, wait_unti
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::annotation::{AnnotationRecord, AnnotationStyle};
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::editor_page::{
     BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
@@ -19,10 +18,6 @@ fn button_label(button: &gtk4::Button) -> gtk4::Label {
         .expect("button child")
         .downcast::<gtk4::Label>()
         .expect("button label")
-}
-
-fn flush_events() {
-    while glib::MainContext::default().iteration(false) {}
 }
 
 fn minimap_controller_types(widget: &impl IsA<gtk4::Widget>) -> Vec<String> {
@@ -486,62 +481,6 @@ fn test_bookmark_toggle_and_navigation() {
         .expect("expected operation to succeed");
     assert_eq!(wrapped.line, 4);
     assert_eq!(page.cursor_position().0, 4);
-}
-
-#[test]
-fn test_load_annotations_restores_current_annotation() {
-    ensure_gtk_init();
-    let page = LushtextEditorPage::new();
-    let buffer = page.buffer();
-    buffer.set_text("one\ntwo\nthree\nfour\n");
-
-    let annotation = AnnotationRecord::new(1, 2, "remember this", AnnotationStyle::Warning);
-    page.load_annotations(std::slice::from_ref(&annotation));
-
-    let line_three = buffer.iter_at_line(2).expect("expected operation to succeed");
-    buffer.place_cursor(&line_three);
-
-    let restored = page.current_annotation().expect("expected operation to succeed");
-    assert_eq!(restored.id, annotation.id);
-    assert_eq!(restored.note_text, "remember this");
-    assert_eq!(restored.style, AnnotationStyle::Warning);
-    assert_eq!(restored.start_line, 1);
-    assert_eq!(restored.end_line, 2);
-}
-
-#[test]
-fn test_annotation_range_tracks_user_edits_and_removes_deleted_ranges() {
-    ensure_gtk_init();
-    let page = LushtextEditorPage::new();
-    let buffer = page.buffer();
-    buffer.set_text("one\ntwo\nthree\nfour\n");
-
-    page.load_annotations(&[AnnotationRecord::new(
-        1,
-        2,
-        "track me",
-        AnnotationStyle::Todo,
-    )]);
-
-    let mut insert_at_start = buffer.start_iter();
-    buffer.begin_user_action();
-    buffer.insert(&mut insert_at_start, "zero\n");
-    buffer.end_user_action();
-    flush_events();
-
-    let shifted = page.annotation_records();
-    assert_eq!(shifted.len(), 1);
-    assert_eq!(shifted[0].start_line, 2);
-    assert_eq!(shifted[0].end_line, 3);
-
-    let mut delete_start = buffer.iter_at_line(2).expect("expected operation to succeed");
-    let mut delete_end = buffer.iter_at_line(4).expect("expected operation to succeed");
-    buffer.begin_user_action();
-    buffer.delete(&mut delete_start, &mut delete_end);
-    buffer.end_user_action();
-    flush_events();
-
-    assert!(page.annotation_records().is_empty());
 }
 
 // --- Search bar integration ---

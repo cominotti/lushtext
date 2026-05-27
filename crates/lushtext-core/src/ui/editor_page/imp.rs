@@ -7,7 +7,6 @@
 //! GSettings bindings keep all editor pages in sync with user preferences.
 
 use crate::config::keys;
-use crate::model::annotation::{AnnotationId, AnnotationRecord};
 use crate::model::bookmark::BookmarkRecord;
 use crate::model::encoding::{DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode};
 use crate::model::formatting_overrides::FormattingOverrides;
@@ -59,8 +58,6 @@ pub struct PreferenceBindingState {
     pub tab_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `insert-spaces` change. Disconnected in `Drop`.
     pub insert_spaces_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `annotation-highlights-visible`. Disconnected in `Drop`.
-    pub annotation_visibility_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `show-minimap`. Disconnected in `Drop`.
     pub show_minimap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
     /// Handler ID for GSettings `minimap-long-line-markers-visible`. Disconnected in `Drop`.
@@ -156,7 +153,7 @@ pub struct RestoreState {
     pub scroll_line: Cell<Option<u32>>,
 }
 
-/// Debounced persistence state shared by bookmark and annotation projections.
+/// Debounced persistence state shared by note-sidecar projections.
 #[derive(Default)]
 pub struct NotesPersistenceState {
     /// Generation counter used to debounce background sidecar saves.
@@ -184,38 +181,6 @@ pub struct BookmarkState {
     /// Callback invoked when bookmark state changes and should be persisted.
     pub changed_callback: RefCell<Option<NotesChangedCallback>>,
     /// Debounced sidecar persistence state for bookmark saves.
-    pub persistence: NotesPersistenceState,
-}
-
-/// One live annotation projected into range anchors and a text tag.
-#[derive(Clone)]
-pub struct LiveAnnotation {
-    /// Current persisted annotation fields mirrored from the sidecar model.
-    pub record: AnnotationRecord,
-    /// Start anchor with right gravity so inserts at the boundary land before the range.
-    pub start_mark: gtk4::TextMark,
-    /// Exclusive end anchor with left gravity so inserts at the boundary stay outside.
-    pub end_mark: gtk4::TextMark,
-    /// Stable tag name used to keep the highlight tied to this annotation ID.
-    pub tag_name: String,
-    /// Native GtkSourceView end-of-line annotation shown beside the source text.
-    pub source_annotation: sourceview5::Annotation,
-}
-
-/// Live annotation projection state scoped to one editor tab.
-#[derive(Default)]
-pub struct AnnotationState {
-    /// Current annotation range anchors projected into the buffer.
-    pub entries: RefCell<Vec<LiveAnnotation>>,
-    /// GtkSourceView provider that renders native end-of-line annotations.
-    pub source_provider: RefCell<Option<sourceview5::AnnotationProvider>>,
-    /// Callback invoked when annotation state changes and should be persisted.
-    pub changed_callback: RefCell<Option<NotesChangedCallback>>,
-    /// Pending annotation ID that should reopen once the file load completes.
-    pub pending_focus_id: RefCell<Option<AnnotationId>>,
-    /// Whether annotations have been loaded for the current file content.
-    pub loaded: Cell<bool>,
-    /// Debounced sidecar persistence state for annotation saves.
     pub persistence: NotesPersistenceState,
 }
 
@@ -362,8 +327,6 @@ pub struct LushtextEditorPage {
     pub overscroll: OverscrollState,
     /// Live bookmark mark projection and persistence state.
     pub bookmarks: BookmarkState,
-    /// Live annotation range projection and persistence state.
-    pub annotations: AnnotationState,
     /// Automatic local-history capture lifecycle state.
     pub local_history: LocalHistoryState,
     /// Minimap widget state, marker projections, and refresh bookkeeping.
@@ -405,7 +368,6 @@ impl Default for LushtextEditorPage {
             restore: RestoreState::default(),
             overscroll: OverscrollState::default(),
             bookmarks: BookmarkState::default(),
-            annotations: AnnotationState::default(),
             local_history: LocalHistoryState::default(),
             minimap: MinimapState::default(),
             focus_mode: FocusModeEditorState::default(),
@@ -474,9 +436,6 @@ impl ObjectImpl for LushtextEditorPage {
         }
         if let Some(handler_id) = self.focus_mode.changed_handler_id.take() {
             buffer.disconnect(handler_id);
-        }
-        if let Some(provider) = self.annotations.source_provider.take() {
-            self.source_view.annotations().remove_provider(&provider);
         }
         self.minimap.source_map.borrow_mut().take();
         self.minimap.marker_strip.borrow_mut().take();
@@ -634,7 +593,6 @@ impl ObjectImpl for LushtextEditorPage {
                         .imp()
                         .document_surface_opacity
                         .set(s.double(keys::TAB_CONTENT_OPACITY).clamp(0.0, 1.0));
-                    editor.refresh_annotation_highlights();
                     editor.queue_minimap_draw();
                 }
             });
@@ -643,20 +601,6 @@ impl ObjectImpl for LushtextEditorPage {
                 .replace(Some(handler_id));
         }
 
-        {
-            let editor_weak = self.obj().downgrade();
-            let id =
-                settings.connect_changed(Some(keys::ANNOTATION_HIGHLIGHTS_VISIBLE), move |s, _| {
-                    if let Some(editor) = editor_weak.upgrade() {
-                        editor.set_annotation_highlights_visible(
-                            s.boolean(keys::ANNOTATION_HIGHLIGHTS_VISIBLE),
-                        );
-                    }
-                });
-            self.preference_bindings
-                .annotation_visibility_handler_id
-                .replace(Some(id));
-        }
         {
             let editor_weak = self.obj().downgrade();
             let id = settings.connect_changed(Some(keys::SHOW_MINIMAP), move |_, _| {
@@ -725,12 +669,8 @@ impl ObjectImpl for LushtextEditorPage {
         }
 
         self.obj().setup_bookmark_projection();
-        self.obj().setup_native_annotation_projection();
         self.obj().setup_local_history_context_menu();
         self.obj().setup_local_history_tracking();
-        self.obj().set_annotation_highlights_visible(
-            settings.boolean(keys::ANNOTATION_HIGHLIGHTS_VISIBLE),
-        );
 
         {
             let editor_weak = self.obj().downgrade();
@@ -738,9 +678,6 @@ impl ObjectImpl for LushtextEditorPage {
                 if let Some(editor) = editor_weak.upgrade() {
                     if editor.reconcile_bookmarks_after_edit() {
                         editor.emit_bookmarks_changed();
-                    }
-                    if editor.reconcile_annotations_after_edit() {
-                        editor.emit_annotations_changed();
                     }
                     editor.schedule_minimap_refresh();
                 }
@@ -812,13 +749,6 @@ impl Drop for LushtextEditorPage {
             self.settings.disconnect(handler_id);
         }
         if let Some(handler_id) = self.preference_bindings.insert_spaces_handler_id.take() {
-            self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self
-            .preference_bindings
-            .annotation_visibility_handler_id
-            .take()
-        {
             self.settings.disconnect(handler_id);
         }
         if let Some(handler_id) = self.preference_bindings.show_minimap_handler_id.take() {

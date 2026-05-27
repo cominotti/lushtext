@@ -58,16 +58,16 @@ The system SHALL persist workspace notes under app data using a stable identity 
 - **AND** the previous root keeps its existing workspace note data for a future remove-and-readd flow
 
 ### Requirement: Users can browse notes within the current workspace scope
-The system SHALL provide a workspace-scoped `Browse Notes…` surface that lists bookmarks, workspace notes, document notes, and range notes that fall inside the current shared workspace scope. In a concrete workspace scope, the browser MUST be limited to that workspace. In `All workspaces`, the browser MUST aggregate bookmarks and notes across restored workspace roots while preserving each item's scope in the list presentation.
+The system SHALL provide a workspace-scoped `Browse Notes…` surface that lists bookmarks, workspace notes, and document notes that fall inside the current shared workspace scope. In a concrete workspace scope, the browser MUST be limited to that workspace. In `All workspaces`, the browser MUST aggregate bookmarks and notes across restored workspace roots while preserving each item's scope in the list presentation.
 
 #### Scenario: Browse notes inside one workspace
 - **WHEN** a concrete workspace is the current shared scope and the user opens `Browse Notes…`
-- **THEN** the browser lists that workspace's bookmarks and workspace note together with document and range notes that belong to files inside that workspace root
+- **THEN** the browser lists that workspace's bookmarks and workspace note together with document notes that belong to files inside that workspace root
 - **AND** bookmarks and notes from other workspaces are excluded
 
 #### Scenario: Browse notes across all workspaces
 - **WHEN** the current shared scope is `All workspaces` and the user opens `Browse Notes…`
-- **THEN** the browser aggregates bookmarks, workspace notes, document notes, and range notes from every restored workspace root
+- **THEN** the browser aggregates bookmarks, workspace notes, and document notes from every restored workspace root
 - **AND** each row preserves enough scope metadata for the user to tell which workspace it belongs to
 
 #### Scenario: Open a workspace note from the notes browser
