@@ -506,7 +506,7 @@ make test-widget # Widget tests with shared native/headless runner
 make test-widget-headless # Widget tests with the CI mutter/dbus setup
 ```
 
-Widget tests require a display server. `make test` and `make test-widget-headless` use the CI-style `mutter --headless` path for deterministic full-suite runs. `make test-widget` uses `scripts/run-widget-tests.sh`, which runs against the current display session when one is available and otherwise falls back to headless mode if the required tools are installed.
+Widget tests require a display server. `make test` and `make test-widget-headless` use the CI-style `mutter --headless` path for deterministic full-suite runs. `make test-widget` uses `scripts/run-widget-tests.sh`, which runs against the current display session when one is available and otherwise falls back to headless mode if the required tools are installed. The runner defaults to GTK's Cairo renderer so headless containers do not fail the warning gate while probing unavailable GPU devices; set `GSK_RENDERER` explicitly when debugging a renderer-specific issue.
 
 GTK widget tests run through the custom harness in [`crates/lushtext/tests/widget.rs`](./crates/lushtext/tests/widget.rs), which executes each widget test in its own process so GTK objects stay on a real main thread and test state cannot leak across cases. Because that binary is not owned by nextest, the shared runner keeps the native and headless `cargo test --test widget` paths aligned in one place.
 

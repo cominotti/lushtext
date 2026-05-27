@@ -8,7 +8,7 @@ RETRIES=0
 MONITOR="2560x1600"
 TEST_ARGS=()
 BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|Gtk-CRITICAL \*\*: .*org\.a11y\.atspi\.Registry|Gdk-Message: .*Broken pipe$|rm: cannot remove '\''/tmp/.*/doc'\'': Is a directory$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$)'
-WIDGET_WARNING_REGEX='(warning:|WARNING|CRITICAL|Gdk-Message:|Broken pipe|cannot remove)'
+WIDGET_WARNING_REGEX='(warning:|WARNING|CRITICAL|Gdk-Message:|Broken pipe|cannot remove|^MESA: error:)'
 
 usage() {
     cat <<'EOF'
@@ -47,7 +47,11 @@ export_widget_test_env() {
     export NO_AT_BRIDGE=1
     export GDK_DEBUG=no-portals
     export GTK_USE_PORTAL=0
-    export GSK_RENDERER=gl
+    # Cairo keeps widget tests on GTK's CPU fallback renderer. That avoids
+    # headless Mesa/EGL device probing in containers while still letting a
+    # caller override GSK_RENDERER when intentionally debugging a GPU renderer.
+    : "${GSK_RENDERER:=cairo}"
+    export GSK_RENDERER
 }
 
 emit_sanitized_widget_log() {

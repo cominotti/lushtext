@@ -26,15 +26,18 @@ fn configure_widget_test_environment() {
     //   the headless mutter session and otherwise emits AT-SPI warnings.
     // - `GDK_DEBUG=no-portals` and `GTK_USE_PORTAL=0` keep GTK from starting
     //   xdg-desktop-portal just to discover headless settings.
-    // - `GSK_RENDERER=gl` keeps GTK on the OpenGL renderer path so Mesa's
-    //   test-only Vulkan warning never pollutes widget-test output.
+    // - `GSK_RENDERER=cairo` keeps GTK on the CPU fallback renderer so
+    //   headless containers do not probe missing Mesa/EGL devices. The runner
+    //   can still override this when a renderer-specific bug is being chased.
     // SAFETY: the widget harness sets these variables before any test code
     // initializes GTK, and they stay local to the per-test child process.
     unsafe {
         std::env::set_var("NO_AT_BRIDGE", "1");
         std::env::set_var("GDK_DEBUG", "no-portals");
         std::env::set_var("GTK_USE_PORTAL", "0");
-        std::env::set_var("GSK_RENDERER", "gl");
+        if std::env::var_os("GSK_RENDERER").is_none() {
+            std::env::set_var("GSK_RENDERER", "cairo");
+        }
     }
 }
 

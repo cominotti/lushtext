@@ -218,7 +218,7 @@ Replicated from invowk-rust:
 
 - Unit tests: `#[cfg(test)]` modules across models, services, and selected GTK-free UI helper modules
 - Integration tests: `crates/lushtext/tests/integration.rs` with `#[path]` split binary pattern
-- Widget tests: `crates/lushtext/tests/widget.rs` uses a custom single-threaded harness so GTK tests stay on one stable thread for the life of the process; run it via `scripts/run-widget-tests.sh`, `make test-widget`, or `make test-widget-headless`, not nextest. Presented widget tests do not reliably advance `AdwTimedAnimation` frame clocks, so animation-dependent assertions should use deterministic end-state checks or a narrow `LUSHTEXT_WIDGET_CHILD` immediate-completion path.
+- Widget tests: `crates/lushtext/tests/widget.rs` uses a custom single-threaded harness so GTK tests stay on one stable thread for the life of the process; run it via `scripts/run-widget-tests.sh`, `make test-widget`, or `make test-widget-headless`, not nextest. The runner defaults to `GSK_RENDERER=cairo` to avoid headless Mesa/EGL device-probe warnings in CI while still allowing explicit renderer overrides. Presented widget tests do not reliably advance `AdwTimedAnimation` frame clocks, so animation-dependent assertions should use deterministic end-state checks or a narrow `LUSHTEXT_WIDGET_CHILD` immediate-completion path.
 - `TestContext` struct: isolated tempdir with simulated XDG data directory
 - Non-widget tests exercise models, services, and GTK-free helper code with no display server required; widget tests cover real GTK flows and require a display server plus the custom harness
 

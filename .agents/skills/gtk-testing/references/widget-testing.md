@@ -39,6 +39,12 @@ dbus-run-session -- \
 
 Use `make test-widget` when a display server is already available.
 
+The shared runner and widget harness default `GSK_RENDERER` to `cairo`. This
+keeps CI on GTK's CPU fallback renderer so a headless Fedora container does not
+emit Mesa/EGL GPU-probe warnings just because no render device is available.
+Override `GSK_RENDERER` explicitly only when the test run is meant to chase a
+renderer-specific GTK bug.
+
 ## Waiting for Async UI State
 
 Many widget changes land through idle callbacks, timeouts, or `spawn_blocking_then`. Use a local wait helper with a timeout instead of hard-coded sleeps:
