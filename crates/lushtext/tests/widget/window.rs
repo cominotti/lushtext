@@ -304,6 +304,10 @@ fn expected_code_block_width(preview: &LushtextMarkdownPreview, block: &gtk4::Bo
         .max(1)
 }
 
+fn code_block_width_is_settled(block: &gtk4::Box, expected_width: i32) -> bool {
+    block.width_request() == expected_width && (block.width() - expected_width).abs() <= 4
+}
+
 fn horizontal_overflow(scroller: &gtk4::ScrolledWindow) -> f64 {
     let adjustment = scroller.hadjustment();
     (adjustment.upper() - adjustment.page_size()).max(0.0)
@@ -319,15 +323,19 @@ fn source_view_buffer_text(source_view: &sourceview5::View) -> String {
 fn wait_for_markdown_preview_shell(window: &LushtextWindow) {
     wait_until(Duration::from_secs(3), || {
         let preview = &window.imp().markdown_preview;
+        let Some(block) = code_block_containers(preview).first().cloned() else {
+            return false;
+        };
         let Some(scroller) = code_block_scrollers(preview).first().cloned() else {
             return false;
         };
+        let expected_width = expected_code_block_width(preview, &block);
 
         !window.imp().preview_animation_active.get()
             && preview.is_showing_content()
             && preview.text_view().width() > 0
-            && !code_block_containers(preview).is_empty()
             && !source_views(preview).is_empty()
+            && code_block_width_is_settled(&block, expected_width)
             && scroller.hadjustment().page_size() > 0.0
     });
     flush_after_delay(Duration::from_millis(40));

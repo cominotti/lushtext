@@ -7,7 +7,7 @@ MODE="auto"
 RETRIES=0
 MONITOR="2560x1600"
 TEST_ARGS=()
-BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|Gtk-CRITICAL \*\*: .*org\.a11y\.atspi\.Registry|Gdk-Message: .*Broken pipe$|rm: cannot remove '\''/tmp/.*/doc'\'': Is a directory$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$)'
+BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|^\(xdg-desktop-portal-gtk:[0-9]+\): xdg-desktop-portal-gtk-WARNING \*\*: error: Could not connect: No such file or directory$|Gtk-CRITICAL \*\*: .*org\.a11y\.atspi\.Registry|Gdk-Message: .*Broken pipe$|rm: cannot remove '\''/tmp/.*/doc'\'': Is a directory$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\(mutter:[0-9]+\): mutter-WARNING \*\*: .*Failed to acquire org\.freedesktop\.locale1 proxy: Could not connect: No such file or directory$|^\(mutter:[0-9]+\): libmutter-WARNING \*\*: .*Failed to connect to colord daemon: Could not connect: No such file or directory$|^WARNING: Glycin running without sandbox\.$)'
 WIDGET_WARNING_REGEX='(warning:|WARNING|CRITICAL|Gdk-Message:|Broken pipe|cannot remove|^MESA: error:)'
 
 usage() {
