@@ -1,38 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Private implementation for the editor info bar widget.
+//! Private implementation for the editor inline alert widget.
 //!
-//! Contains two `GtkInfoBar` sub-bars for different notification scenarios:
+//! Contains one GTK5-safe alert row for different notification scenarios:
 //! - Access error ("Could Not Open File") with a Retry button
 //! - Draft/external change ("Draft Changes Restored" / "File Has Changed on Disk")
 //!   with Discard and Save buttons
 //!
-//! Each sub-bar starts with `revealed=false` and is shown via the public API
-//! methods in `mod.rs`. The yellow/amber and red colors come from the Adwaita
-//! theme's built-in `GtkInfoBar` styling — no custom CSS needed.
-//!
-//! GtkInfoBar was deprecated in GTK 4.10, but its replacement (AdwBanner)
-//! doesn't support multi-button action areas. GNOME Text Editor still uses
-//! GtkInfoBar in its latest code for the same reason.
+//! The row is wrapped in `GtkRevealer` for the same inline placement as
+//! `GtkInfoBar`, while ordinary labels and buttons keep the widget compatible
+//! with GTK5.
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use std::cell::RefCell;
 
-/// Stored callback for info bar button actions.
+/// Stored callback for inline alert button actions.
 /// Same pattern as `SearchBar::connect_close` and `Sidebar::connect_file_activated`.
 type Callback = Box<dyn Fn()>;
 
-// GtkInfoBar is deprecated since GTK 4.10 but has no multi-button replacement.
-// GNOME Text Editor still uses GtkInfoBar in its latest code for the same reason.
-#[expect(
-    deprecated,
-    reason = "GtkInfoBar still provides the only multi-action infobar pattern that matches GNOME Text Editor for this UI"
-)]
-type GtkInfoBar = gtk4::InfoBar;
-
-/// Allow a button's internal label to wrap so `GtkInfoBar` actions stay
+/// Allow a button's internal label to wrap so inline alert actions stay
 /// visible when the editor column gets narrow instead of collapsing away.
 fn wrap_button_label(button: &gtk4::Button) {
     let Some(child) = button.child() else {
@@ -50,47 +38,56 @@ fn wrap_button_label(button: &gtk4::Button) {
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/info-bar.ui")]
 pub struct LushtextInfoBar {
-    // --- Access error bar (red, message-type=error) ---
+    /// Reveals and hides the alert row above the editor content.
     #[template_child]
-    pub access_infobar: TemplateChild<GtkInfoBar>,
+    pub alert_revealer: TemplateChild<gtk4::Revealer>,
+    /// Styled alert surface that receives the `warning` or `error` class.
     #[template_child]
-    pub access_title: TemplateChild<gtk4::Label>,
+    pub alert_box: TemplateChild<gtk4::Box>,
+    /// Title text for the currently rendered inline notification.
     #[template_child]
-    pub access_subtitle: TemplateChild<gtk4::Label>,
+    pub alert_title: TemplateChild<gtk4::Label>,
+    /// Body text for the currently rendered inline notification.
+    #[template_child]
+    pub alert_body: TemplateChild<gtk4::Label>,
+    /// Holds workflow buttons plus the dismiss affordance in one grouped row.
+    #[template_child]
+    pub actions_box: TemplateChild<gtk4::Box>,
+    /// Error-primary action used for retryable file access failures.
     #[template_child]
     pub retry_button: TemplateChild<gtk4::Button>,
-
-    // --- Discard/draft bar (yellow, message-type=warning) ---
-    #[template_child]
-    pub discard_infobar: TemplateChild<GtkInfoBar>,
-    #[template_child]
-    pub discard_title: TemplateChild<gtk4::Label>,
-    #[template_child]
-    pub discard_subtitle: TemplateChild<gtk4::Label>,
+    /// Warning-primary action used for discard, reload, normalize, or undo flows.
     #[template_child]
     pub discard_button: TemplateChild<gtk4::Button>,
+    /// Warning-secondary action used for save and save-as flows.
     #[template_child]
     pub save_button: TemplateChild<gtk4::Button>,
+    /// Explicit close affordance that clears the owning editor notification.
+    #[template_child]
+    pub dismiss_button: TemplateChild<gtk4::Button>,
 
-    // --- Button callbacks ---
+    /// Callback invoked by the retry action.
     pub retry_callback: RefCell<Option<Callback>>,
+    /// Callback invoked by the save action.
     pub save_callback: RefCell<Option<Callback>>,
+    /// Callback invoked by the warning primary action.
     pub discard_callback: RefCell<Option<Callback>>,
+    /// Callback invoked when the user explicitly dismisses the alert.
     pub dismissed_callback: RefCell<Option<Callback>>,
 }
 
 impl Default for LushtextInfoBar {
     fn default() -> Self {
         Self {
-            access_infobar: TemplateChild::default(),
-            access_title: TemplateChild::default(),
-            access_subtitle: TemplateChild::default(),
+            alert_revealer: TemplateChild::default(),
+            alert_box: TemplateChild::default(),
+            alert_title: TemplateChild::default(),
+            alert_body: TemplateChild::default(),
+            actions_box: TemplateChild::default(),
             retry_button: TemplateChild::default(),
-            discard_infobar: TemplateChild::default(),
-            discard_title: TemplateChild::default(),
-            discard_subtitle: TemplateChild::default(),
             discard_button: TemplateChild::default(),
             save_button: TemplateChild::default(),
+            dismiss_button: TemplateChild::default(),
             retry_callback: RefCell::new(None),
             save_callback: RefCell::new(None),
             discard_callback: RefCell::new(None),
@@ -115,22 +112,22 @@ impl ObjectSubclass for LushtextInfoBar {
 }
 
 impl ObjectImpl for LushtextInfoBar {
-    #[expect(
-        deprecated,
-        reason = "GtkInfoBar still provides the only multi-action infobar pattern that matches GNOME Text Editor for this UI"
-    )]
     fn constructed(&self) {
         self.parent_constructed();
 
-        // GNOME Text Editor wraps its infobar action labels so restored-file
+        self.obj().set_visible(false);
+        self.alert_box
+            .set_accessible_role(gtk4::AccessibleRole::Alert);
+
+        // GNOME Text Editor wraps its inline alert action labels so restored-file
         // banners stay readable on narrow windows. LushText follows the same
         // pattern instead of hiding actions behind a larger window minimum.
         wrap_button_label(&self.retry_button);
         wrap_button_label(&self.discard_button);
         wrap_button_label(&self.save_button);
 
-        // Wire button clicks to invoke stored callbacks.
-        // Each button fires its callback and then hides the parent info bar.
+        // GObject signals can outlive the Rust stack frame that installed them,
+        // so closures keep only weak references back to the wrapper object.
         {
             let obj_weak = self.obj().downgrade();
             self.retry_button.connect_clicked(move |_| {
@@ -162,26 +159,14 @@ impl ObjectImpl for LushtextInfoBar {
             });
         }
 
-        // Wire the close button on each GtkInfoBar to dismiss it.
-        // GtkInfoBar emits `response` with GTK_RESPONSE_CLOSE when the
-        // built-in close button is clicked.
         {
             let obj_weak = self.obj().downgrade();
-            self.access_infobar.connect_response(move |_, _| {
-                if let Some(obj) = obj_weak.upgrade()
-                    && let Some(ref cb) = *obj.imp().dismissed_callback.borrow()
-                {
-                    cb();
-                }
-            });
-        }
-        {
-            let obj_weak = self.obj().downgrade();
-            self.discard_infobar.connect_response(move |_, _| {
-                if let Some(obj) = obj_weak.upgrade()
-                    && let Some(ref cb) = *obj.imp().dismissed_callback.borrow()
-                {
-                    cb();
+            self.dismiss_button.connect_clicked(move |_| {
+                if let Some(obj) = obj_weak.upgrade() {
+                    obj.render_notification(None);
+                    if let Some(ref cb) = *obj.imp().dismissed_callback.borrow() {
+                        cb();
+                    }
                 }
             });
         }

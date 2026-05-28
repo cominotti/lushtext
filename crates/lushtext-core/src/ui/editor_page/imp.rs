@@ -103,7 +103,7 @@ pub struct SaveState {
     pub inflight: Cell<bool>,
 }
 
-/// One editor-scoped warning action routed through the shared info bar buttons.
+/// One editor-scoped warning action routed through the shared inline alert buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingWarningAction {
     /// Open the line-ending chooser so mixed endings can be normalized.

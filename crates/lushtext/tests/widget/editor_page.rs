@@ -11,6 +11,8 @@ use lushtext_core::ui::editor_page::{
     BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
 };
 use sourceview5::prelude::*;
+use std::cell::Cell;
+use std::rc::Rc;
 
 fn button_label(button: &gtk4::Button) -> gtk4::Label {
     button
@@ -18,6 +20,51 @@ fn button_label(button: &gtk4::Button) -> gtk4::Label {
         .expect("button child")
         .downcast::<gtk4::Label>()
         .expect("button label")
+}
+
+fn same_widget(widget: &gtk4::Widget, target: &impl IsA<gtk4::Widget>) -> bool {
+    widget.as_ptr() == target.as_ref().as_ptr()
+}
+
+fn visible_alert_action_order(page: &LushtextEditorPage) -> Vec<&'static str> {
+    let imp = page.info_bar().imp();
+    let mut order = Vec::new();
+    let mut child = imp.actions_box.first_child();
+
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if !widget.is_visible() {
+            continue;
+        }
+
+        if same_widget(&widget, &*imp.retry_button) {
+            order.push("retry");
+        } else if same_widget(&widget, &*imp.discard_button) {
+            order.push("discard");
+        } else if same_widget(&widget, &*imp.save_button) {
+            order.push("save");
+        } else if same_widget(&widget, &*imp.dismiss_button) {
+            order.push("dismiss");
+        } else {
+            panic!("unexpected visible inline-alert action: {}", widget.type_().name());
+        }
+    }
+
+    order
+}
+
+fn descendants(root: &impl IsA<gtk4::Widget>) -> Vec<gtk4::Widget> {
+    let mut result = Vec::new();
+    let mut stack = vec![root.clone().upcast::<gtk4::Widget>()];
+    while let Some(widget) = stack.pop() {
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            result.push(current.clone());
+            stack.push(current.clone());
+            child = current.next_sibling();
+        }
+    }
+    result
 }
 
 fn minimap_controller_types(widget: &impl IsA<gtk4::Widget>) -> Vec<String> {
@@ -73,6 +120,68 @@ fn present_editor_page(page: &LushtextEditorPage) -> gtk4::ApplicationWindow {
 fn test_new() {
     ensure_gtk_init();
     let _page = LushtextEditorPage::new();
+}
+
+#[test]
+fn test_inline_alert_uses_supported_widgets() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let widget_types: Vec<_> = descendants(page.info_bar())
+        .into_iter()
+        .map(|widget| widget.type_().name().to_string())
+        .collect();
+
+    assert!(
+        widget_types.iter().any(|name| name == "GtkRevealer"),
+        "inline alert should use a supported GtkRevealer"
+    );
+    assert!(
+        !widget_types.iter().any(|name| name == "GtkInfoBar"),
+        "inline alert must not instantiate deprecated GtkInfoBar"
+    );
+    assert_eq!(
+        page.info_bar().imp().alert_box.accessible_role(),
+        gtk4::AccessibleRole::Alert,
+        "inline alert should keep alert semantics for assistive technology"
+    );
+}
+
+#[test]
+fn test_inline_alert_buttons_use_scoped_contrast_class() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let imp = page.info_bar().imp();
+
+    for (name, button) in [
+        ("retry", &*imp.retry_button),
+        ("discard", &*imp.discard_button),
+        ("save", &*imp.save_button),
+        ("dismiss", &*imp.dismiss_button),
+    ] {
+        assert!(
+            button.has_css_class("inline-alert-button"),
+            "{name} inline-alert button should opt into scoped contrast styling"
+        );
+    }
+
+    assert_eq!(
+        imp.dismiss_button.tooltip_text().as_deref(),
+        Some("Dismiss"),
+        "icon-only dismiss action should keep an accessible text affordance"
+    );
+
+    let css = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../resources/style/style.css"
+    ));
+    assert!(
+        css.contains(".editor-inline-alert .inline-alert-button"),
+        "inline-alert contrast styling should be scoped through the alert button class"
+    );
+    assert!(
+        !css.contains(".editor-inline-alert button {"),
+        "inline-alert contrast styling should not target every nested button"
+    );
 }
 
 #[test]
@@ -540,7 +649,7 @@ fn test_close_button_hides_search() {
 }
 
 #[test]
-fn test_warning_infobar_wraps_titles_and_action_labels() {
+fn test_warning_inline_alert_wraps_titles_and_action_labels() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
@@ -554,17 +663,16 @@ fn test_warning_infobar_wraps_titles_and_action_labels() {
 
     let imp = page.info_bar().imp();
     assert!(
-        imp.discard_infobar.property::<bool>("revealed"),
-        "warning infobar should be shown"
+        imp.alert_revealer.reveals_child(),
+        "warning inline alert should be shown"
     );
-    assert!(imp.discard_title.wraps(), "warning title should wrap");
+    assert!(imp.alert_box.has_css_class("warning"));
+    assert!(!imp.alert_box.has_css_class("error"));
+    assert!(imp.alert_title.wraps(), "warning title should wrap");
+    assert_eq!(imp.alert_title.wrap_mode(), gtk4::pango::WrapMode::WordChar);
+    assert!(imp.alert_body.wraps(), "warning body should wrap");
     assert_eq!(
-        imp.discard_title.wrap_mode(),
-        gtk4::pango::WrapMode::WordChar
-    );
-    assert!(imp.discard_subtitle.wraps(), "warning subtitle should wrap");
-    assert_eq!(
-        imp.discard_subtitle.wrap_mode(),
+        imp.alert_body.wrap_mode(),
         gtk4::pango::WrapMode::WordChar
     );
 
@@ -587,7 +695,65 @@ fn test_warning_infobar_wraps_titles_and_action_labels() {
 }
 
 #[test]
-fn test_document_restored_infobar_keeps_save_as_visible() {
+fn test_warning_inline_alert_groups_workflow_actions_and_dismiss() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "Draft Changes Restored".to_string(),
+        body: "Unsaved changes to the document have been restored.".to_string(),
+        primary_button: Some("_Discard...".to_string()),
+        secondary_button: Some("_Save...".to_string()),
+    });
+
+    let imp = page.info_bar().imp();
+    assert!(imp.actions_box.property::<bool>("visible"));
+    assert!(
+        same_widget(
+            &imp.dismiss_button.parent().expect("dismiss button parent"),
+            &*imp.actions_box,
+        ),
+        "dismiss should be part of the same horizontal action row"
+    );
+    assert_eq!(
+        visible_alert_action_order(&page),
+        vec!["discard", "save", "dismiss"],
+        "Draft Changes Restored should group Discard, Save, and dismiss in order"
+    );
+}
+
+#[test]
+fn test_error_inline_alert_groups_retry_and_dismiss() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Error,
+        title: "Could Not Open File".to_string(),
+        body: "Permission denied".to_string(),
+        primary_button: Some("_Retry".to_string()),
+        secondary_button: None,
+    });
+
+    let imp = page.info_bar().imp();
+    assert!(imp.actions_box.property::<bool>("visible"));
+    assert!(
+        same_widget(
+            &imp.dismiss_button.parent().expect("dismiss button parent"),
+            &*imp.actions_box,
+        ),
+        "dismiss should stay in the same horizontal action row for errors"
+    );
+    assert_eq!(
+        visible_alert_action_order(&page),
+        vec!["retry", "dismiss"],
+        "error alerts should group Retry and dismiss in order"
+    );
+}
+
+#[test]
+fn test_document_restored_inline_alert_keeps_save_as_visible() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
@@ -601,8 +767,8 @@ fn test_document_restored_infobar_keeps_save_as_visible() {
 
     let imp = page.info_bar().imp();
     assert!(
-        imp.discard_infobar.property::<bool>("revealed"),
-        "restored-document infobar should be shown"
+        imp.alert_revealer.reveals_child(),
+        "restored-document inline alert should be shown"
     );
     assert!(
         !imp.discard_button.property::<bool>("visible"),
@@ -618,6 +784,77 @@ fn test_document_restored_infobar_keeps_save_as_visible() {
     assert!(
         save_label.wraps(),
         "Save As label should wrap instead of disappearing"
+    );
+}
+
+#[test]
+fn test_inline_alert_action_callbacks_are_routed() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let retry_clicked = Rc::new(Cell::new(false));
+    let discard_clicked = Rc::new(Cell::new(false));
+    let save_clicked = Rc::new(Cell::new(false));
+
+    page.info_bar().connect_retry({
+        let retry_clicked = retry_clicked.clone();
+        move || retry_clicked.set(true)
+    });
+    page.info_bar().connect_discard({
+        let discard_clicked = discard_clicked.clone();
+        move || discard_clicked.set(true)
+    });
+    page.info_bar().connect_save({
+        let save_clicked = save_clicked.clone();
+        move || save_clicked.set(true)
+    });
+
+    page.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Error,
+        title: "Could Not Open File".to_string(),
+        body: "Permission denied".to_string(),
+        primary_button: Some("_Retry".to_string()),
+        secondary_button: None,
+    });
+    page.info_bar().imp().retry_button.emit_clicked();
+    assert!(retry_clicked.get(), "retry callback should fire");
+
+    page.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "Draft Changes Restored".to_string(),
+        body: "Unsaved changes were restored.".to_string(),
+        primary_button: Some("_Discard...".to_string()),
+        secondary_button: Some("_Save...".to_string()),
+    });
+    page.info_bar().imp().discard_button.emit_clicked();
+    page.info_bar().imp().save_button.emit_clicked();
+    assert!(discard_clicked.get(), "discard callback should fire");
+    assert!(save_clicked.get(), "save callback should fire");
+}
+
+#[test]
+fn test_warning_inline_alert_without_workflow_actions_keeps_only_dismiss_action() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "Draft Not Restored".to_string(),
+        body: "The file changed on disk.".to_string(),
+        primary_button: None,
+        secondary_button: None,
+    });
+
+    let imp = page.info_bar().imp();
+    assert!(imp.alert_revealer.reveals_child());
+    assert!(imp.actions_box.property::<bool>("visible"));
+    assert!(!imp.retry_button.property::<bool>("visible"));
+    assert!(!imp.discard_button.property::<bool>("visible"));
+    assert!(!imp.save_button.property::<bool>("visible"));
+    assert!(imp.dismiss_button.property::<bool>("visible"));
+    assert_eq!(
+        visible_alert_action_order(&page),
+        vec!["dismiss"],
+        "warnings without workflow actions should still expose dismiss in the action row"
     );
 }
 

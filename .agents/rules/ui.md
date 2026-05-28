@@ -122,11 +122,13 @@ LushtextWindow (AdwApplicationWindow)
 - Background uses `@headerbar_bg_color` to visually distinguish from the editor area.
 - Use the `caption` Adwaita CSS class for status bar text (small font, standard GNOME HIG for secondary UI).
 
-## Info Bars
+## Inline Alerts
 
 - `LushtextInfoBar` remains the inline notification surface above each editor page; do not replace it with a global status message for restored-file or access-error actions.
-- Titles, subtitles, and infobar action labels must stay readable on narrow windows by wrapping instead of disappearing or being truncated.
+- Titles, subtitles, and inline-alert action labels must stay readable on narrow windows by wrapping instead of disappearing or being truncated.
+- Workflow actions and the dismiss affordance must share one trailing horizontal action row, with dismiss ordered last. A restored-draft warning should read as `Discard...`, `Save...`, then the close icon in the same group.
 - Save/Discard action widths should stay visually balanced so restored-document banners do not jitter while the window is being resized.
+- Button contrast changes must use the scoped `.inline-alert-button` class under `.editor-inline-alert`; do not target every nested `button` in the alert.
 
 ## Dialog Text Surface Padding (CRITICAL)
 
@@ -182,7 +184,7 @@ Window geometry and split-view state are persisted via GSettings (not JSON sessi
 - `win.toggle-properties` is exposed through the header-bar toggle and `F9`, not through the status bar.
 - The left pane restores one of the Preferences-driven presets (`20%`, `30%`, `40%`) whenever it is shown, then clamps that preset to the active desktop width before deriving the effective split fraction, while the right pane keeps its quarter-width target.
 - Breakpoints switch `properties_layout_view.layout-name` to the compact sheet before collapsing the workspace pane so medium-width windows keep the file tree visible longer.
-- The properties-pane breakpoint should be tuned from the workspace pane's effective visible width when the workspace pane consumes width so the center editor width stays protected for restored-document infobars and other editor chrome.
+- The properties-pane breakpoint should be tuned from the workspace pane's effective visible width when the workspace pane consumes width so the center editor width stays protected for restored-document inline alerts and other editor chrome.
 - Allocation-time split-view sync is for live geometry only. `size_allocate()` can clamp the current fractions and update a cached properties breakpoint threshold, but it must not write `workspace-sidebar-width-fraction` / `properties-sidebar-width-fraction` to GSettings or call `AdwBreakpoint::set_condition()` with a newly parsed condition on every animation frame. Persist only explicit user intent or settled animation state, and cache derived thresholds so opening/closing sidebars stays monitor-refresh smooth in the installed Flatpak too.
 - When a utility pane closes, return focus to the active editor rather than leaving focus stranded on a toggle button.
 

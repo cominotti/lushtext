@@ -690,6 +690,42 @@ fn measured_natural_outer_size(widget: &impl IsA<gtk4::Widget>) -> WidgetOuterSi
     }
 }
 
+fn assert_positive_allocation(widget: &impl IsA<gtk4::Widget>, context: &str) {
+    let widget = widget.as_ref();
+    assert!(
+        widget.width() > 0 && widget.height() > 0,
+        "{context} should have a positive allocation, got {}x{}",
+        widget.width(),
+        widget.height()
+    );
+}
+
+fn wait_for_positive_allocation(widget: &impl IsA<gtk4::Widget>, context: &str) {
+    let widget = widget.as_ref();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if widget.width() > 0 && widget.height() > 0 {
+            return;
+        }
+        flush_after_delay(Duration::from_millis(20));
+    }
+
+    panic!(
+        "{context} did not receive a positive allocation; final size was {}x{}, visible={}, mapped={}",
+        widget.width(),
+        widget.height(),
+        widget.is_visible(),
+        widget.is_mapped()
+    );
+}
+
+fn allocate_widget_for_test(widget: &impl IsA<gtk4::Widget>, width: i32) {
+    let widget = widget.as_ref();
+    let (_, natural_height, _, _) = widget.measure(gtk4::Orientation::Vertical, width);
+    widget.allocate(width, natural_height.max(1), -1, None);
+    flush_events();
+}
+
 #[expect(
     clippy::cast_possible_truncation,
     reason = "Widget tests round allocated f32 bounds back to device pixels for exact geometry assertions"
@@ -2849,14 +2885,27 @@ fn test_closed_properties_state_survives_adaptive_presentation_changes() {
 }
 
 #[test]
-fn test_warning_infobar_actions_stay_allocated_in_a_narrow_window() {
+fn test_warning_inline_alert_actions_stay_allocated_in_a_narrow_window() {
     ensure_gtk_init();
     let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
     window.set_default_size(1000, 900);
     window.new_tab();
     present_window(&window);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).source_view().width() > 0
+    });
 
     let editor = active_editor(&window);
+    editor
+        .info_bar()
+        .imp()
+        .alert_revealer
+        .set_transition_type(gtk4::RevealerTransitionType::None);
+    editor
+        .info_bar()
+        .imp()
+        .alert_revealer
+        .set_transition_duration(0);
     editor.emit_inline_notification(InlineActionNotification {
         style: InlineNotificationStyle::Warning,
         title: "Draft Changes Restored".to_string(),
@@ -2867,22 +2916,46 @@ fn test_warning_infobar_actions_stay_allocated_in_a_narrow_window() {
     flush_after_delay(Duration::from_millis(50));
 
     let info_bar = editor.info_bar().imp();
+    assert!(info_bar.alert_revealer.reveals_child());
+    assert!(info_bar.alert_revealer.is_child_revealed());
+    assert!(info_bar.alert_box.has_css_class("warning"));
     assert!(info_bar.discard_button.property::<bool>("visible"));
     assert!(info_bar.save_button.property::<bool>("visible"));
-    // Width allocation requires a full compositor layout pass which is not
-    // guaranteed in the subprocess widget harness. Verify the property-level
-    // visibility, which is what the application code controls.
+    assert!(info_bar.dismiss_button.property::<bool>("visible"));
+    allocate_widget_for_test(editor.info_bar(), 700);
+    wait_for_positive_allocation(editor.info_bar(), "editor inline alert host");
+    wait_for_positive_allocation(&*info_bar.alert_box, "inline alert row");
+    wait_for_positive_allocation(&*info_bar.actions_box, "alert actions row");
+    wait_for_positive_allocation(&*info_bar.discard_button, "discard alert action");
+    wait_for_positive_allocation(&*info_bar.save_button, "save alert action");
+    wait_for_positive_allocation(&*info_bar.dismiss_button, "dismiss alert action");
+    assert_positive_allocation(&*info_bar.discard_button, "discard alert action");
+    assert_positive_allocation(&*info_bar.save_button, "save alert action");
+    assert_positive_allocation(&*info_bar.dismiss_button, "dismiss alert action");
 }
 
 #[test]
-fn test_access_error_infobar_action_stays_allocated_in_a_narrow_window() {
+fn test_access_error_inline_alert_action_stays_allocated_in_a_narrow_window() {
     ensure_gtk_init();
     let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
     window.set_default_size(1000, 900);
     window.new_tab();
     present_window(&window);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).source_view().width() > 0
+    });
 
     let editor = active_editor(&window);
+    editor
+        .info_bar()
+        .imp()
+        .alert_revealer
+        .set_transition_type(gtk4::RevealerTransitionType::None);
+    editor
+        .info_bar()
+        .imp()
+        .alert_revealer
+        .set_transition_duration(0);
     editor.emit_inline_notification(InlineActionNotification {
         style: InlineNotificationStyle::Error,
         title: "Could Not Open File".to_string(),
@@ -2893,7 +2966,58 @@ fn test_access_error_infobar_action_stays_allocated_in_a_narrow_window() {
     flush_after_delay(Duration::from_millis(50));
 
     let info_bar = editor.info_bar().imp();
+    assert!(info_bar.alert_revealer.reveals_child());
+    assert!(info_bar.alert_revealer.is_child_revealed());
+    assert!(info_bar.alert_box.has_css_class("error"));
     assert!(info_bar.retry_button.property::<bool>("visible"));
+    assert!(info_bar.dismiss_button.property::<bool>("visible"));
+    allocate_widget_for_test(editor.info_bar(), 700);
+    wait_for_positive_allocation(editor.info_bar(), "editor inline alert host");
+    wait_for_positive_allocation(&*info_bar.alert_box, "inline alert row");
+    wait_for_positive_allocation(&*info_bar.actions_box, "alert actions row");
+    wait_for_positive_allocation(&*info_bar.retry_button, "retry alert action");
+    wait_for_positive_allocation(&*info_bar.dismiss_button, "dismiss alert action");
+    assert_positive_allocation(&*info_bar.retry_button, "retry alert action");
+    assert_positive_allocation(&*info_bar.dismiss_button, "dismiss alert action");
+}
+
+#[test]
+fn test_dismissing_one_editor_inline_alert_preserves_other_editor_alert() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    let first_editor = active_editor(&window);
+    window.new_tab();
+    let second_editor = active_editor(&window);
+
+    first_editor.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "First Alert".to_string(),
+        body: "First editor warning".to_string(),
+        primary_button: Some("_Discard...".to_string()),
+        secondary_button: None,
+    });
+    second_editor.emit_inline_notification(InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "Second Alert".to_string(),
+        body: "Second editor warning".to_string(),
+        primary_button: Some("_Discard...".to_string()),
+        secondary_button: None,
+    });
+
+    assert!(first_editor.info_bar().imp().alert_revealer.reveals_child());
+    assert!(second_editor.info_bar().imp().alert_revealer.reveals_child());
+
+    first_editor.info_bar().imp().dismiss_button.emit_clicked();
+
+    assert!(
+        !first_editor.info_bar().imp().alert_revealer.reveals_child(),
+        "dismissed editor alert should be hidden"
+    );
+    assert!(
+        second_editor.info_bar().imp().alert_revealer.reveals_child(),
+        "other editor alert should remain visible"
+    );
 }
 
 #[test]
@@ -3879,11 +4003,7 @@ fn test_mixed_line_endings_warning_opens_normalization_picker_and_updates_status
 
     let editor = active_editor(&window);
     wait_until(Duration::from_secs(2), || {
-        editor
-            .info_bar()
-            .imp()
-            .discard_infobar
-            .property::<bool>("revealed")
+        editor.info_bar().imp().alert_revealer.reveals_child()
     });
     assert_eq!(
         editor.info_bar().imp().discard_button.label().as_deref(),

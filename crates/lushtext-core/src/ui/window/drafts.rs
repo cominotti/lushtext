@@ -160,7 +160,7 @@ impl super::LushtextWindow {
         );
     }
 
-    /// Apply restored draft content to the editor buffer and show the infobar action.
+    /// Apply restored draft content to the editor buffer and show the inline alert action.
     fn apply_draft(editor: &LushtextEditorPage, content: &str) {
         let buffer = editor.buffer();
         // Seed local history before mutating the buffer because `set_text()`

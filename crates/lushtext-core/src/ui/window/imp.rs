@@ -32,7 +32,7 @@ const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 1.0;
 const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 260.0;
 /// Target total-window width for the visible right properties pane.
 const FIXED_PROPERTIES_SIDEBAR_FRACTION: f64 = 0.25;
-/// Minimum center-column width that keeps restored-document info bars stable
+/// Minimum center-column width that keeps restored-document inline alerts stable
 /// once their titles and actions are allowed to wrap on narrow windows.
 const MIN_EDITOR_CONTENT_WIDTH_SP: f64 = 620.0;
 /// Extra width budget for split separators, padding, and rounding noise that

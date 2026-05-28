@@ -5,95 +5,111 @@
   <template class="LushtextInfoBar" parent="GtkBox">
     <property name="orientation">vertical</property>
 
-    <!-- Error bar: "Could Not Open File" with Retry button -->
+    <!-- Editor-scoped inline alert replacing GtkInfoBar with GTK5-safe widgets. -->
     <child>
-      <object class="GtkInfoBar" id="access_infobar">
-        <property name="message-type">error</property>
-        <property name="revealed">false</property>
-        <property name="show-close-button">true</property>
-        <child>
-          <object class="GtkBox">
+      <object class="GtkRevealer" id="alert_revealer">
+        <property name="visible">false</property>
+        <property name="reveal-child">false</property>
+        <property name="transition-type">slide-down</property>
+        <property name="child">
+          <object class="GtkBox" id="alert_box">
             <property name="orientation">vertical</property>
-            <property name="spacing">2</property>
-            <child>
-              <object class="GtkLabel" id="access_title">
-                <property name="label" translatable="yes">Could Not Open File</property>
-                <property name="xalign">0</property>
-                <property name="wrap">true</property>
-                <property name="wrap-mode">word-char</property>
-                <style>
-                  <class name="heading"/>
-                </style>
-              </object>
-            </child>
-            <child>
-              <object class="GtkLabel" id="access_subtitle">
-                <property name="label"></property>
-                <property name="xalign">0</property>
-                <property name="wrap">true</property>
-                <property name="wrap-mode">word-char</property>
-                <style>
-                  <class name="body"/>
-                </style>
-              </object>
-            </child>
-          </object>
-        </child>
-        <child type="action">
-          <object class="GtkButton" id="retry_button">
-            <property name="label" translatable="yes">_Retry</property>
-            <property name="use-underline">true</property>
-          </object>
-        </child>
-      </object>
-    </child>
+            <property name="spacing">8</property>
+            <property name="valign">start</property>
+            <style>
+              <class name="editor-inline-alert"/>
+            </style>
 
-    <!-- Discard bar: "Draft Changes Restored" / "File Has Changed on Disk" -->
-    <child>
-      <object class="GtkInfoBar" id="discard_infobar">
-        <property name="message-type">warning</property>
-        <property name="revealed">false</property>
-        <property name="show-close-button">true</property>
-        <child>
-          <object class="GtkBox">
-            <property name="orientation">vertical</property>
-            <property name="spacing">2</property>
             <child>
-              <object class="GtkLabel" id="discard_title">
-                <property name="label"></property>
-                <property name="xalign">0</property>
-                <property name="wrap">true</property>
-                <property name="wrap-mode">word-char</property>
-                <style>
-                  <class name="heading"/>
-                </style>
+              <object class="GtkBox" id="header_box">
+                <property name="orientation">horizontal</property>
+                <property name="spacing">12</property>
+                <child>
+                  <object class="GtkBox" id="message_box">
+                    <property name="orientation">vertical</property>
+                    <property name="spacing">2</property>
+                    <property name="hexpand">true</property>
+                    <child>
+                      <object class="GtkLabel" id="alert_title">
+                        <property name="label"></property>
+                        <property name="xalign">0</property>
+                        <property name="wrap">true</property>
+                        <property name="wrap-mode">word-char</property>
+                        <style>
+                          <class name="heading"/>
+                        </style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel" id="alert_body">
+                        <property name="label"></property>
+                        <property name="xalign">0</property>
+                        <property name="wrap">true</property>
+                        <property name="wrap-mode">word-char</property>
+                        <style>
+                          <class name="body"/>
+                        </style>
+                      </object>
+                    </child>
+                  </object>
+                </child>
               </object>
             </child>
+
             <child>
-              <object class="GtkLabel" id="discard_subtitle">
-                <property name="label"></property>
-                <property name="xalign">0</property>
-                <property name="wrap">true</property>
-                <property name="wrap-mode">word-char</property>
-                <style>
-                  <class name="body"/>
-                </style>
+              <object class="GtkBox" id="actions_box">
+                <property name="orientation">horizontal</property>
+                <property name="spacing">6</property>
+                <property name="halign">end</property>
+                <property name="valign">center</property>
+                <child>
+                  <object class="GtkButton" id="retry_button">
+                    <property name="visible">false</property>
+                    <property name="label" translatable="yes">_Retry</property>
+                    <property name="use-underline">true</property>
+                    <style>
+                      <class name="inline-alert-button"/>
+                    </style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkButton" id="discard_button">
+                    <property name="visible">false</property>
+                    <property name="label" translatable="yes">_Discard...</property>
+                    <property name="use-underline">true</property>
+                    <style>
+                      <class name="inline-alert-button"/>
+                    </style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkButton" id="save_button">
+                    <property name="visible">false</property>
+                    <property name="label" translatable="yes">_Save...</property>
+                    <property name="use-underline">true</property>
+                    <style>
+                      <class name="inline-alert-button"/>
+                    </style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkButton" id="dismiss_button">
+                    <property name="icon-name">window-close-symbolic</property>
+                    <property name="valign">center</property>
+                    <property name="tooltip-text" translatable="yes">Dismiss</property>
+                    <style>
+                      <class name="circular"/>
+                      <class name="inline-alert-button"/>
+                    </style>
+                    <accessibility>
+                      <property name="label" translatable="yes">Dismiss</property>
+                    </accessibility>
+                  </object>
+                </child>
               </object>
             </child>
           </object>
-        </child>
-        <child type="action">
-          <object class="GtkButton" id="discard_button">
-            <property name="label" translatable="yes">_Discard...</property>
-            <property name="use-underline">true</property>
-          </object>
-        </child>
-        <child type="action">
-          <object class="GtkButton" id="save_button">
-            <property name="label" translatable="yes">_Save...</property>
-            <property name="use-underline">true</property>
-          </object>
-        </child>
+        </property>
       </object>
     </child>
   </template>

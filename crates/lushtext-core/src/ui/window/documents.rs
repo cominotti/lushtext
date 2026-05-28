@@ -224,7 +224,7 @@ impl LushtextWindow {
             .replace(Some(changed_handler_id));
     }
 
-    /// Wire info bar button callbacks for a newly created editor page.
+    /// Wire inline alert button callbacks for a newly created editor page.
     fn wire_info_bar(&self, editor: &LushtextEditorPage) {
         let window_weak = self.downgrade();
         let editor_weak = editor.downgrade();
