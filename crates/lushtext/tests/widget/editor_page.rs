@@ -184,6 +184,182 @@ fn test_inline_alert_buttons_use_scoped_contrast_class() {
     );
 }
 
+// --- Adaptive inline-alert layout (AdwWrapBox) -----------------------------
+
+fn warning_notification() -> InlineActionNotification {
+    InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "Draft Changes Restored".to_string(),
+        body: "Unsaved changes from a previous session have been restored.".to_string(),
+        primary_button: Some("_Discard…".to_string()),
+        secondary_button: Some("_Save…".to_string()),
+    }
+}
+
+fn present_editor_page_sized(page: &LushtextEditorPage, width: i32) -> gtk4::ApplicationWindow {
+    let app = test_application();
+    let window = gtk4::ApplicationWindow::builder()
+        .application(&app)
+        .default_width(width)
+        .default_height(700)
+        .child(page)
+        .build();
+    present_window(&window);
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.source_view().is_mapped() && page.source_view().visible_rect().height() > 0
+    });
+    window
+}
+
+/// Bounds of `widget` expressed in the coordinate space of `ancestor`.
+fn rect_within(
+    widget: &impl IsA<gtk4::Widget>,
+    ancestor: &impl IsA<gtk4::Widget>,
+) -> gtk4::graphene::Rect {
+    widget
+        .compute_bounds(ancestor)
+        .expect("widget should have computable bounds within the ancestor")
+}
+
+#[test]
+fn test_inline_alert_uses_adw_wrap_box_container() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let imp = page.info_bar().imp();
+
+    // The message and action group are the two children of one AdwWrapBox.
+    assert_eq!(
+        imp.content_wrap.get().type_().name(),
+        "AdwWrapBox",
+        "inline alert should host its content in an AdwWrapBox"
+    );
+    assert!(
+        same_widget(
+            &imp.actions_box.parent().expect("actions parent"),
+            &imp.content_wrap.get(),
+        ),
+        "action group should be a single direct (atomic) child of the wrap box"
+    );
+
+    let names: Vec<_> = descendants(page.info_bar())
+        .into_iter()
+        .map(|w| w.type_().name().to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "AdwWrapBox"),
+        "adaptive layout should use the AdwWrapBox container"
+    );
+    assert!(
+        !names.iter().any(|n| n == "GtkInfoBar"),
+        "adaptive layout must not reintroduce GtkInfoBar"
+    );
+}
+
+#[test]
+fn test_inline_alert_message_and_actions_share_row_when_wide() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present_editor_page_sized(&page, 1000);
+
+    let imp = page.info_bar().imp();
+    // The widget harness does not advance the revealer's slide-animation frame
+    // clock, so reveal instantly to obtain a real allocation for geometry checks.
+    imp.alert_revealer.set_transition_duration(0);
+    page.emit_inline_notification(warning_notification());
+    wait_until(std::time::Duration::from_secs(2), || {
+        imp.actions_box.width() > 0 && imp.discard_button.width() > 0
+    });
+
+    let wrap = imp.content_wrap.get();
+    let message_box = wrap.first_child().expect("message box");
+    let msg = rect_within(&message_box, &wrap);
+    let act = rect_within(&*imp.actions_box, &wrap);
+
+    // Same row: the action group overlaps the message vertically instead of
+    // sitting on its own line beneath it.
+    assert!(
+        act.y() < msg.y() + msg.height(),
+        "wide editor: actions should share the message row (msg y={} h={}, act y={})",
+        msg.y(),
+        msg.height(),
+        act.y()
+    );
+    // Trailing: the action group sits to the right of the message.
+    assert!(
+        act.x() >= msg.x() + msg.width() - 1.0,
+        "wide editor: actions should trail the message (msg x={} w={}, act x={})",
+        msg.x(),
+        msg.width(),
+        act.x()
+    );
+
+    // Action buttons stay grouped with positive allocation.
+    for (name, button) in [
+        ("discard", &*imp.discard_button),
+        ("save", &*imp.save_button),
+        ("dismiss", &*imp.dismiss_button),
+    ] {
+        assert!(button.property::<bool>("visible"), "{name} should be visible");
+        assert!(
+            button.width() > 0 && button.height() > 0,
+            "{name} should have a positive allocation"
+        );
+        assert!(
+            same_widget(&button.parent().expect("button parent"), &*imp.actions_box),
+            "{name} should stay in the single horizontal action group"
+        );
+    }
+}
+
+#[test]
+fn test_inline_alert_actions_wrap_below_message_when_narrow() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present_editor_page_sized(&page, 360);
+
+    let imp = page.info_bar().imp();
+    // The widget harness does not advance the revealer's slide-animation frame
+    // clock, so reveal instantly to obtain a real allocation for geometry checks.
+    imp.alert_revealer.set_transition_duration(0);
+    page.emit_inline_notification(warning_notification());
+    wait_until(std::time::Duration::from_secs(2), || {
+        imp.actions_box.width() > 0 && imp.discard_button.width() > 0
+    });
+
+    let wrap = imp.content_wrap.get();
+    let message_box = wrap.first_child().expect("message box");
+    let msg = rect_within(&message_box, &wrap);
+    let act = rect_within(&*imp.actions_box, &wrap);
+
+    // Wrapped: the action group sits on its own row beneath the message.
+    assert!(
+        act.y() >= msg.y() + msg.height() - 1.0,
+        "narrow editor: actions should wrap beneath the message (msg y={} h={}, act y={})",
+        msg.y(),
+        msg.height(),
+        act.y()
+    );
+
+    // The action group stays one horizontal row with positive per-button
+    // allocation even after wrapping (AdwWrapBox treats it as one atomic child).
+    let discard = rect_within(&*imp.discard_button, &*imp.actions_box);
+    let save = rect_within(&*imp.save_button, &*imp.actions_box);
+    let dismiss = rect_within(&*imp.dismiss_button, &*imp.actions_box);
+    for (name, r) in [("discard", discard), ("save", save), ("dismiss", dismiss)] {
+        assert!(
+            r.width() > 0.0 && r.height() > 0.0,
+            "{name} should have a positive allocation"
+        );
+    }
+    assert!(
+        (discard.y() - save.y()).abs() < 1.0 && (save.y() - dismiss.y()).abs() < 1.0,
+        "wrapped action buttons must stay on a single row (discard y={}, save y={}, dismiss y={})",
+        discard.y(),
+        save.y(),
+        dismiss.y()
+    );
+}
+
 #[test]
 fn test_starts_unmodified() {
     ensure_gtk_init();

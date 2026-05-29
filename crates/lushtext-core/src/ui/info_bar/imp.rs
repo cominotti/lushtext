@@ -44,6 +44,11 @@ pub struct LushtextInfoBar {
     /// Styled alert surface that receives the `warning` or `error` class.
     #[template_child]
     pub alert_box: TemplateChild<gtk4::Box>,
+    /// Wrapping container that keeps the message and action group on one line
+    /// when the editor column is wide and drops the action group onto its own
+    /// row beneath the message when the column is too narrow.
+    #[template_child]
+    pub content_wrap: TemplateChild<libadwaita::WrapBox>,
     /// Title text for the currently rendered inline notification.
     #[template_child]
     pub alert_title: TemplateChild<gtk4::Label>,
@@ -81,6 +86,7 @@ impl Default for LushtextInfoBar {
         Self {
             alert_revealer: TemplateChild::default(),
             alert_box: TemplateChild::default(),
+            content_wrap: TemplateChild::default(),
             alert_title: TemplateChild::default(),
             alert_body: TemplateChild::default(),
             actions_box: TemplateChild::default(),
@@ -103,6 +109,12 @@ impl ObjectSubclass for LushtextInfoBar {
     type ParentType = gtk4::Box;
 
     fn class_init(klass: &mut Self::Class) {
+        // The template hosts the message and action group inside an AdwWrapBox so
+        // the toolkit drops the trailing action cluster onto its own row beneath
+        // the message when the editor column is too narrow. Register the
+        // libadwaita type before binding the template so the builder can
+        // instantiate `AdwWrapBox`.
+        libadwaita::WrapBox::ensure_type();
         klass.bind_template();
     }
 

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <interface>
   <requires lib="gtk" version="4.14"/>
+  <requires lib="libadwaita" version="1.7"/>
 
   <template class="LushtextInfoBar" parent="GtkBox">
     <property name="orientation">vertical</property>
@@ -14,21 +15,28 @@
         <property name="child">
           <object class="GtkBox" id="alert_box">
             <property name="orientation">vertical</property>
-            <property name="spacing">8</property>
             <property name="valign">start</property>
             <style>
               <class name="editor-inline-alert"/>
             </style>
 
+            <!-- AdwWrapBox keeps the message and the trailing action group on one
+                 line when the editor column is wide enough, and wraps the action
+                 group (as one atomic child) onto its own row beneath the message
+                 when the column is too narrow. justify=spread + justify-last-line
+                 pins the action group to the trailing edge on the shared line. -->
             <child>
-              <object class="GtkBox" id="header_box">
-                <property name="orientation">horizontal</property>
-                <property name="spacing">12</property>
+              <object class="AdwWrapBox" id="content_wrap">
+                <property name="child-spacing">12</property>
+                <property name="line-spacing">8</property>
+                <property name="justify">spread</property>
+                <property name="justify-last-line">true</property>
                 <child>
                   <object class="GtkBox" id="message_box">
                     <property name="orientation">vertical</property>
                     <property name="spacing">2</property>
                     <property name="hexpand">true</property>
+                    <property name="valign">center</property>
                     <child>
                       <object class="GtkLabel" id="alert_title">
                         <property name="label"></property>
@@ -53,57 +61,56 @@
                     </child>
                   </object>
                 </child>
-              </object>
-            </child>
 
-            <child>
-              <object class="GtkBox" id="actions_box">
-                <property name="orientation">horizontal</property>
-                <property name="spacing">6</property>
-                <property name="halign">end</property>
-                <property name="valign">center</property>
                 <child>
-                  <object class="GtkButton" id="retry_button">
-                    <property name="visible">false</property>
-                    <property name="label" translatable="yes">_Retry</property>
-                    <property name="use-underline">true</property>
-                    <style>
-                      <class name="inline-alert-button"/>
-                    </style>
-                  </object>
-                </child>
-                <child>
-                  <object class="GtkButton" id="discard_button">
-                    <property name="visible">false</property>
-                    <property name="label" translatable="yes">_Discard...</property>
-                    <property name="use-underline">true</property>
-                    <style>
-                      <class name="inline-alert-button"/>
-                    </style>
-                  </object>
-                </child>
-                <child>
-                  <object class="GtkButton" id="save_button">
-                    <property name="visible">false</property>
-                    <property name="label" translatable="yes">_Save...</property>
-                    <property name="use-underline">true</property>
-                    <style>
-                      <class name="inline-alert-button"/>
-                    </style>
-                  </object>
-                </child>
-                <child>
-                  <object class="GtkButton" id="dismiss_button">
-                    <property name="icon-name">window-close-symbolic</property>
+                  <object class="GtkBox" id="actions_box">
+                    <property name="orientation">horizontal</property>
+                    <property name="spacing">6</property>
                     <property name="valign">center</property>
-                    <property name="tooltip-text" translatable="yes">Dismiss</property>
-                    <style>
-                      <class name="circular"/>
-                      <class name="inline-alert-button"/>
-                    </style>
-                    <accessibility>
-                      <property name="label" translatable="yes">Dismiss</property>
-                    </accessibility>
+                    <child>
+                      <object class="GtkButton" id="retry_button">
+                        <property name="visible">false</property>
+                        <property name="label" translatable="yes">_Retry</property>
+                        <property name="use-underline">true</property>
+                        <style>
+                          <class name="inline-alert-button"/>
+                        </style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="discard_button">
+                        <property name="visible">false</property>
+                        <property name="label" translatable="yes">_Discard...</property>
+                        <property name="use-underline">true</property>
+                        <style>
+                          <class name="inline-alert-button"/>
+                        </style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="save_button">
+                        <property name="visible">false</property>
+                        <property name="label" translatable="yes">_Save...</property>
+                        <property name="use-underline">true</property>
+                        <style>
+                          <class name="inline-alert-button"/>
+                        </style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="dismiss_button">
+                        <property name="icon-name">window-close-symbolic</property>
+                        <property name="valign">center</property>
+                        <property name="tooltip-text" translatable="yes">Dismiss</property>
+                        <style>
+                          <class name="circular"/>
+                          <class name="inline-alert-button"/>
+                        </style>
+                        <accessibility>
+                          <property name="label" translatable="yes">Dismiss</property>
+                        </accessibility>
+                      </object>
+                    </child>
                   </object>
                 </child>
               </object>
