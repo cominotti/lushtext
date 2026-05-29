@@ -1,0 +1,223 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to validate (e.g. v0.2.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run: validate and build without publishing release or Flathub PR'
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref_name || github.event.inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Release Metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dry-run: ${{ steps.version.outputs.dry-run }}
+      checkout-ref: ${{ steps.version.outputs.checkout-ref }}
+    steps:
+      - name: Determine version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            version="$INPUT_VERSION"
+            dry_run="$INPUT_DRY_RUN"
+            checkout_ref="main"
+          else
+            version="$REF_NAME"
+            dry_run="false"
+            checkout_ref="$REF_NAME"
+          fi
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+(\.[A-Za-z0-9]+)*)?$ ]]; then
+            echo "::error::Invalid version: $version"
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "dry-run=$dry_run"
+            echo "checkout-ref=$checkout_ref"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.version.outputs.checkout-ref }}
+          fetch-depth: 0
+
+      - name: Install release tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y appstream desktop-file-utils flatpak flatpak-builder jq python3-pip
+          python3 -m pip install --user --break-system-packages aiohttp PyYAML tomlkit || \
+            python3 -m pip install --user aiohttp PyYAML tomlkit
+          curl -fsSL \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
+            -o "$RUNNER_TEMP/flatpak-cargo-generator.py"
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 "$RUNNER_TEMP/flatpak-cargo-generator.py" "$HOME/.local/bin/flatpak-cargo-generator"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Validate release metadata
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DRY_RUN: ${{ steps.version.outputs.dry-run }}
+        run: |
+          set -euo pipefail
+          if [[ "$DRY_RUN" == "true" ]]; then
+            make release VERSION="$VERSION" DRY_RUN=1
+          else
+            ./scripts/release.sh validate-tag "$VERSION" 1
+          fi
+
+      - name: Generate Flathub update artifact
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./scripts/generate-flathub-manifest.sh "$VERSION" "$GITHUB_SHA" "$RUNNER_TEMP/flathub"
+          ./scripts/verify-flathub-manifest.sh "$RUNNER_TEMP/flathub/dev.cominotti.lushtext.json"
+
+      - name: Upload Flathub update artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flathub-update
+          path: |
+            ${{ runner.temp }}/flathub/dev.cominotti.lushtext.json
+            ${{ runner.temp }}/flathub/cargo-sources.json
+
+  flatpak:
+    name: Release Flatpak Build
+    needs: metadata
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.checkout-ref }}
+          fetch-depth: 0
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: build-aux/dev.cominotti.lushtext.Flatpak.json
+          bundle: lushtext-${{ needs.metadata.outputs.version }}.flatpak
+          cache-key: release-flatpak-builder-gnome-50-${{ hashFiles('build-aux/dev.cominotti.lushtext.Flatpak.json', 'build-aux/cargo-sources.json', 'Cargo.lock', 'meson.build', 'meson_options.txt', 'build-aux/cargo.sh', 'data/meson.build', 'resources/meson.build') }}
+
+  publish-context:
+    name: GitHub Release And Flathub PR
+    needs: [metadata, flatpak]
+    if: needs.metadata.outputs.dry-run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.version }}
+          fetch-depth: 0
+
+      - name: Download Flathub update artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flathub-update
+          path: flathub-update
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release edit "$VERSION" --title "LushText $VERSION"
+          else
+            gh release create "$VERSION" --verify-tag --title "LushText $VERSION" --generate-notes
+          fi
+
+      - name: Create Flathub manifest PR
+        env:
+          GH_TOKEN: ${{ secrets.FLATHUB_TOKEN }}
+          FLATHUB_REPOSITORY: ${{ vars.FLATHUB_REPOSITORY }}
+          FLATHUB_BASE_BRANCH: ${{ vars.FLATHUB_BASE_BRANCH || 'master' }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" || -z "${FLATHUB_REPOSITORY:-}" ]]; then
+            echo "::notice::Skipping Flathub PR because FLATHUB_TOKEN or FLATHUB_REPOSITORY is not configured. Flathub publication is not complete."
+            exit 0
+          fi
+
+          branch="release/${VERSION}"
+          gh repo clone "$FLATHUB_REPOSITORY" flathub-repo
+          cd flathub-repo
+          git checkout -B "$branch"
+          cp ../flathub-update/dev.cominotti.lushtext.json ./dev.cominotti.lushtext.json
+          cp ../flathub-update/cargo-sources.json ./cargo-sources.json
+          git add dev.cominotti.lushtext.json cargo-sources.json
+          if git diff --cached --quiet; then
+            echo "No Flathub manifest changes to publish."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update LushText to ${VERSION}"
+          git push --force-with-lease origin "$branch"
+
+          body="$(mktemp)"
+          cat > "$body" <<EOF
+          Updates LushText to ${VERSION}.
+
+          Source commit: ${GITHUB_SHA}
+
+          Validation:
+          - Release metadata validation passed.
+          - Release Flatpak build passed.
+          - Generated manifest was checked for Flathub invariants.
+
+          Manual checks before merge:
+          - Install the Flathub build artifact from the PR.
+          - Launch LushText and open a local workspace.
+          - Confirm document editing, save, workspace search, and Markdown preview still work.
+
+          Flathub automerge is intentionally not enabled by this workflow.
+          EOF
+
+          gh pr create \
+            --repo "$FLATHUB_REPOSITORY" \
+            --base "$FLATHUB_BASE_BRANCH" \
+            --head "$branch" \
+            --title "Update LushText to ${VERSION}" \
+            --body-file "$body" || \
+          {
+            pr_url="$(gh pr list --repo "$FLATHUB_REPOSITORY" --head "$branch" --json url --jq '.[0].url')"
+            if [[ -z "$pr_url" ]]; then
+              echo "::error::Failed to create Flathub PR and no existing PR was found for $branch"
+              exit 1
+            fi
+            gh pr edit \
+              --repo "$FLATHUB_REPOSITORY" \
+              "$pr_url" \
+              --title "Update LushText to ${VERSION}" \
+              --body-file "$body"
+          }

@@ -34,7 +34,8 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 ## Installation and Running
 
 LushText is packaged as a GNOME Flatpak and can also be run directly from a
-source checkout for development.
+source checkout for development. An Ubuntu Snap is in preparation (see
+[Snap (preparation)](#snap-preparation)).
 
 ### Flatpak from this checkout
 
@@ -52,6 +53,82 @@ If dependencies change, regenerate the vendored Cargo sources before building:
 
 ```sh
 make cargo-sources
+```
+
+### Flathub release preparation
+
+Release automation follows the same Makefile style as the development and
+packaging commands. Preview the next computed version without changing files:
+
+```sh
+make release-bump TYPE=patch DRY_RUN=1
+```
+
+Create a real release only from a clean `main` checkout, with release notes that
+will be inserted into AppStream metadata:
+
+```sh
+make release-bump TYPE=minor RELEASE_NOTES_FILE=release-notes.md
+make release VERSION=v0.2.0 RELEASE_NOTES_FILE=release-notes.md
+```
+
+The release helper updates the Cargo package versions, Meson project version,
+`Cargo.lock`, AppStream release history, and Flatpak vendored Cargo sources,
+then validates metadata and the Flatpak build before creating the release commit
+and signed tag. `PRERELEASE=alpha|beta|rc` starts or continues a prerelease
+stream, and `PROMOTE=1` is required before promoting a prerelease stream to a
+stable tag.
+
+The repository's local Flatpak manifest stays at
+`build-aux/dev.cominotti.lushtext.Flatpak.json` and uses the current checkout.
+For Flathub, generate a tag-based manifest update artifact:
+
+```sh
+make flathub-manifest VERSION=v0.2.0
+make verify-flathub-manifest
+```
+
+Flathub publication remains a reviewable pull request by default. The release
+workflow can open or update that PR when `FLATHUB_TOKEN` and
+`FLATHUB_REPOSITORY` are configured, but it does not enable Flathub automerge.
+
+Flathub verification for `dev.cominotti.lushtext` is domain-based. A linked
+GitHub account does not verify this custom-domain app ID. After Flathub provides
+the app's verification token, publish it at:
+
+```text
+https://cominotti.dev/.well-known/org.flathub.VerifiedApps.txt
+```
+
+Then verify the endpoint locally:
+
+```sh
+make verify-flathub-domain FLATHUB_VERIFICATION_TOKEN=<token>
+```
+
+### Snap (preparation)
+
+An Ubuntu Snap (`snap/snapcraft.yaml`) is scaffolded but **not yet buildable**.
+LushText targets the GNOME 50 platform (GTK 4.22, Libadwaita 1.9), and the Snap
+`gnome` extension currently provides only GTK 4.14 (`gnome-46-2404`, base
+`core24`). A real build is gated on the `core26` / GNOME 50 platform snap
+(`gnome-50-2604` or equivalent), which is not published yet — the `core26` base
+itself already is. The Snap reuses the existing Meson → Cargo build via the
+`meson` plugin, so no Rust changes are needed; a snap `layout:` bind-mounts the
+baked `LUSHTEXT_PKGDATADIR` path into confinement.
+
+Once the platform snap lands and `snap/snapcraft.yaml` is switched to `core26`:
+
+```sh
+make snap          # build (LXD backend)
+make snap-smoke    # confined smoke test (skips cleanly until then)
+```
+
+It will be released **Unlisted on the `edge` channel** — omitted from store
+search and installable only with an explicit command:
+
+```sh
+snap install lushtext --edge
 ```
 
 ### Development run
@@ -162,6 +239,13 @@ only under the home directory. It does not request network access.
 | `--socket=fallback-x11` and `--share=ipc` | X11 fallback support |
 | `--device=dri` | GTK hardware-accelerated rendering |
 
+The planned Snap uses **strict confinement plus xdg portals** instead — a
+narrower posture than the Flatpak's `--filesystem=host`. It declares only the
+`home` and `removable-media` interfaces (the `gnome` extension supplies Wayland,
+X11 fallback, GPU, and portals). Workspace roots and files outside those
+locations are reached through portals; the app surfaces an access error rather
+than crashing or losing data when a path is out of scope.
+
 ## Common Shortcuts
 
 The full shortcut list is available in **Main Menu > Keyboard Shortcuts**.
@@ -256,6 +340,10 @@ make flatpak-deps    # Install Flatpak runtime/SDK deps into the user installati
 make flatpak         # Build Flatpak (sets up missing runtime/SDK deps)
 make flatpak-install # Build and install Flatpak into the user installation
 make cargo-sources   # Regenerate cargo-sources.json after dependency changes
+make flathub-manifest VERSION=v0.2.0 # Generate Flathub tag-based manifest
+make verify-flathub-manifest         # Check generated Flathub manifest invariants
+make verify-flathub-domain           # Check cominotti.dev verification endpoint
+make release-bump TYPE=patch DRY_RUN=1 # Preview the next release tag
 ```
 
 ## EditorConfig

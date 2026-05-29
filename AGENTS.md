@@ -200,7 +200,20 @@ make flatpak-deps    # Install Flatpak runtime/SDK deps into the user installati
 make flatpak         # Build Flatpak (sets up missing runtime/SDK deps)
 make flatpak-install # Build and install Flatpak into the user installation
 make cargo-sources   # Regenerate cargo-sources.json
+make flathub-manifest VERSION=v0.2.0 # Generate Flathub tag-based manifest
+make verify-flathub-manifest # Verify generated Flathub manifest invariants
+make verify-flathub-domain   # Verify cominotti.dev Flathub verification endpoint
+make release-bump TYPE=patch DRY_RUN=1 # Preview next release version
+make snap            # Build the Snap (LXD); GATED on the GNOME 50 platform snap
+make snap-smoke      # Confined smoke test of the built Snap (skips if unavailable)
+make verify-snap-identity # Verify Snap confinement, plugs, and common-id
 ```
+
+LushText ships as a Flatpak and is being prepared as an Ubuntu Snap
+(`snap/snapcraft.yaml`). The Snap reuses the Meson/Cargo build, uses strict
+confinement + portals, and is gated on the `core26` / GNOME 50 platform snap
+(GTK 4.22) — see `.agents/rules/build.md` (Snap section). It will release
+Unlisted on the `edge` channel.
 
 ## Build Optimizations
 
@@ -246,7 +259,9 @@ Meson wraps Cargo for installed/Flatpak builds. `build-aux/cargo.sh` bridges Mes
 - **GResource dual-path**: Meson compiles and installs `.gresource` to `$(pkgdatadir)/`. `cargo.sh` exports `LUSHTEXT_PKGDATADIR` env var. `config.rs` reads it via `option_env!()`. `lib.rs` loads from installed path first, falls back to `include_bytes!` (dev).
 - **GSettings**: `data/meson.build` installs schema to system path. `gnome.post_install()` compiles schemas. `build.rs` skips schema compilation when `LUSHTEXT_PKGDATADIR` is set.
 - **Flatpak manifest**: `build-aux/dev.cominotti.lushtext.Flatpak.json` for local builds. `cargo-sources.json` (same dir) vendors all Cargo dependencies for offline builds.
-- **CI**: `.github/workflows/ci.yml` now covers rustfmt, Clippy, the rustdoc lint gate, non-widget tests, widget tests, benchmark compilation, and `cargo deny check advisories bans sources`; `.github/workflows/flatpak.yml` still owns Flatpak build validation.
+- **Flathub release lane**: `scripts/release.sh` owns release version computation, AppStream release-note insertion, metadata validation, release commit creation, and signed tag creation. Real releases require `RELEASE_NOTES_FILE` and a clean `main`; use `make release-bump TYPE=patch DRY_RUN=1` before mutating anything. The local Flatpak manifest remains checkout-based, while `scripts/generate-flathub-manifest.sh` produces a Flathub-facing `dev.cominotti.lushtext.json` with a public Git tag/commit source and copied `cargo-sources.json`. `scripts/verify-flathub-manifest.sh` checks generated manifest invariants. `scripts/verify-flathub-domain.sh` checks the `cominotti.dev` well-known Flathub token endpoint; linked GitHub accounts do not verify this custom-domain app ID. Flathub publication defaults to a reviewable PR, not automerge.
+- **Snap manifest**: `snap/snapcraft.yaml` reuses the same Meson/Cargo build via the `meson` plugin. A `layout:` bind-mounts the baked `LUSHTEXT_PKGDATADIR` into `$SNAP`, so the GResource/GSettings dual-path needs no Rust changes. Strict confinement + portals. GATED on the GNOME 50 platform snap (GTK 4.22); not buildable until `base:` → `core26`. No `cargo-sources.json` needed (snap builds are online). See `.agents/rules/build.md`.
+- **CI**: `.github/workflows/ci.yml` now covers rustfmt, Clippy, the rustdoc lint gate, non-widget tests, widget tests, benchmark compilation, and `cargo deny check advisories bans sources`; `.github/workflows/flatpak.yml` owns Flatpak build validation; `.github/workflows/release-dry-run.yml` exercises release helper behavior, current release metadata validation, and Flathub manifest generation changes; `.github/workflows/release.yml` validates `v*` tag releases, builds the Flatpak, creates/updates the GitHub Release, and opens a Flathub PR when configured; `.github/workflows/snap.yml` validates `snapcraft.yaml` (always) and builds/publishes to `edge` (gated on the `SNAP_PLATFORM_AVAILABLE` variable).
 
 ## GTK Initialization Order
 
@@ -282,4 +297,6 @@ This rule is mandatory and has no exceptions.
 - Local workspace files for read-only snapshot reads; transient in-memory peek state only; no new XDG, draft, session, or GSettings persistence (001-file-peek)
 
 ## Recent Changes
+- automate-flathub-releases: Added an Invowk-style release command surface, release metadata synchronization, generated Flathub manifest updates, domain-verification checks for `cominotti.dev`, and release workflows that keep Flathub publication as a reviewable PR by default.
+- add-snap-packaging: Scaffolded the Ubuntu Snap (`snap/snapcraft.yaml`, `scripts/run-snap-smoke.sh`, `scripts/verify-snap-identity.sh`, `.github/workflows/snap.yml`, Snap Makefile targets). Strict confinement + portals, reuses the Meson/Cargo build via a `layout:` bind-mount, Unlisted + edge-only release. Build is gated on the unpublished GNOME 50 platform snap (`core26`).
 - 001-file-peek: Added Rust 1.95.0 (Edition 2024) + GTK4 0.11, Libadwaita 0.9, GtkSourceView 5 0.11, gio/glib/pango 0.22, existing `spawn_blocking_then` background executor

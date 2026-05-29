@@ -19,6 +19,85 @@ Flathub remote with `flatpak remote-add --if-not-exists --user` and asks
 extensions from that remote before building. `make flatpak` uses the same
 dependency setup path for build-only validation.
 
+## Flathub Publication
+
+The local manifest at `build-aux/dev.cominotti.lushtext.Flatpak.json` is a
+checkout-build manifest and intentionally keeps a local `type: "dir"` source.
+Flathub publication uses a generated manifest under `build-aux/flathub/` that
+replaces that source with an immutable public Git source:
+
+```bash
+make flathub-manifest VERSION=v0.2.0
+make verify-flathub-manifest
+```
+
+The generated Flathub manifest preserves the reviewed local packaging contract:
+app ID, command, GNOME runtime/SDK version, Rust SDK extension, Meson release
+profile, finish arguments, cleanup rules, and vendored Cargo sources. It also
+sets `CARGO_NET_OFFLINE=true` and copies `build-aux/cargo-sources.json` beside
+the generated manifest so Flathub builds do not fetch Cargo dependencies during
+the build.
+
+The release workflow opens or updates a pull request against the configured
+Flathub manifest repository when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are
+available. Human review and manual smoke testing remain the default publication
+gate. Do not add `flathub.json` with `automerge-flathubbot-prs` unless a later
+explicit policy change accepts the risk that a successful build does not prove
+the app launches or preserves workspace behavior.
+
+## Release Automation
+
+Use dry runs while planning a release:
+
+```bash
+make release-bump TYPE=patch DRY_RUN=1
+```
+
+Use real release commands only from a clean `main` branch:
+
+```bash
+make release VERSION=v0.2.0 RELEASE_NOTES_FILE=release-notes.md
+make release-bump TYPE=minor RELEASE_NOTES_FILE=release-notes.md
+```
+
+The release helper updates:
+
+1. `meson.build`
+2. `crates/lushtext/Cargo.toml`
+3. `crates/lushtext-core/Cargo.toml`
+4. `Cargo.lock`
+5. `data/dev.cominotti.lushtext.metainfo.xml.in`
+6. `build-aux/cargo-sources.json`
+
+Real releases require deterministic release notes via `RELEASE_NOTES_FILE`; the
+notes become the new AppStream release description. The helper validates version
+surface consistency, AppStream metadata, generated desktop metadata, vendored
+Cargo sources, and the Flatpak build before creating the release commit and
+signed tag.
+
+## Flathub Verification
+
+The app ID `dev.cominotti.lushtext` is a custom-domain reverse-DNS ID. Flathub
+therefore verifies the domain `cominotti.dev`; linking a GitHub account does not
+verify this app ID.
+
+After the app exists in Flathub's Developer Portal, request the verification
+token there and publish it at:
+
+```text
+https://cominotti.dev/.well-known/org.flathub.VerifiedApps.txt
+```
+
+The file may contain multiple tokens, one per line, and comments beginning with
+`#` are ignored by Flathub. Verify readiness locally with:
+
+```bash
+make verify-flathub-domain FLATHUB_VERIFICATION_TOKEN=<token>
+```
+
+This check fails on DNS/TLS problems, unreachable well-known files, or missing
+tokens before the maintainer asks Flathub to verify the app.
+
 ## Desktop Identity
 
 The production desktop identity is `dev.cominotti.lushtext.desktop`. The

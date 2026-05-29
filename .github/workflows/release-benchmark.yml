@@ -71,6 +71,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.name }}
         run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "LushText $TAG" --generate-notes
+          fi
           REPORT=$(find bench-output -name '*.md' | head -1)
           if [[ -z "$REPORT" ]]; then
             echo "Error: no report found" >&2

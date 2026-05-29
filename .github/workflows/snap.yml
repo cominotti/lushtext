@@ -1,0 +1,55 @@
+name: Snap
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: snap-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Always-on: validate the Snap definition WITHOUT a full build. A full build
+  # cannot succeed until the GNOME 50 platform snap exists (LushText needs GTK
+  # 4.22; the gnome extension currently provides only GTK 4.14), so this job must
+  # never attempt to compile the app. `snapcraft expand-extensions` parses the
+  # manifest and applies the extension, catching malformed definitions fast.
+  validate:
+    name: Validate snapcraft.yaml
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install snapcraft
+        run: sudo snap install snapcraft --classic
+
+      - name: Expand and validate the Snap definition
+        run: snapcraft expand-extensions
+
+  # Gated: build the strict-confined snap and publish it to the EDGE channel.
+  # Skipped while the GNOME 50 platform snap is unavailable so the missing
+  # dependency never reds the pipeline. Flip `vars.SNAP_PLATFORM_AVAILABLE` to
+  # 'true' (repository variable) once gnome-50-2604 (or equivalent) publishes and
+  # task 8.1 switches the base to core26.
+  build-publish:
+    name: Build & publish (edge)
+    needs: validate
+    if: vars.SNAP_PLATFORM_AVAILABLE == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build the snap
+        id: build
+        uses: snapcore/action-build@v1
+
+      - name: Publish to edge
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: edge
