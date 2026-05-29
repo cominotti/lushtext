@@ -44,6 +44,11 @@ pub fn ensure_gtk_init() {
         lushtext_core::init_schema_dir();
         gtk4::init()
             .expect("GTK4 init failed — is a display server available? Try mutter --headless.");
+        // Initialize libadwaita so widget templates can instantiate Adw widgets
+        // (e.g. AdwWrapBox in the inline alert) in tests that construct widgets
+        // directly without going through AdwApplication startup. adw_init is
+        // idempotent, so later AdwApplication startups remain safe.
+        libadwaita::init().expect("libadwaita init failed");
         sourceview5::init();
         lushtext_core::register_resources();
     });

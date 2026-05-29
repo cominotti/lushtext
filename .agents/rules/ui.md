@@ -129,6 +129,7 @@ LushtextWindow (AdwApplicationWindow)
 - Workflow actions and the dismiss affordance must share one trailing horizontal action row, with dismiss ordered last. A restored-draft warning should read as `Discard...`, `Save...`, then the close icon in the same group.
 - Save/Discard action widths should stay visually balanced so restored-document banners do not jitter while the window is being resized.
 - Button contrast changes must use the scoped `.inline-alert-button` class under `.editor-inline-alert`; do not target every nested `button` in the alert.
+- The message (`message_box`) and the trailing action row (`actions_box`) are the two children of an `AdwWrapBox` (`content_wrap`). When the editor column is wide enough they share one line with the action group pinned to the trailing edge (`justify=spread` + `justify-last-line`); when the column is too narrow the action group wraps as one atomic unit onto its own row beneath the message. Keep `actions_box` a single `GtkBox` child of the wrap box so its buttons can never be split across rows — `AdwWrapBox` only wraps whole children. `AdwWrapBox` (libadwaita 1.7, available under the `v1_9` feature) must be `ensure_type()`-registered in `class_init` before `bind_template()`.
 
 ## Dialog Text Surface Padding (CRITICAL)
 
