@@ -65,9 +65,35 @@
   </screenshots>
 
   <releases>
-    <release version="0.1.0" date="2026-04-02">
+    <release version="0.1.0" date="2026-05-29">
       <description>
-        <p>Initial release of LushText.</p>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Folger Shakespeare Library, "Shakespeare's Sonnets - Sonnet 18", final rhyming couplet.</p>
+        <p>Selection: Complete final couplet.</p>
+        <p>Complete couplet:</p>
+        <p>&gt; So long as men can breathe, or eyes can see,</p>
+        <p>&gt; So long lives this, and this gives life to thee.</p>
+        <p>William Shakespeare, "Sonnet 18"</p>
+        <p>## What's Changed</p>
+        <p>LushText's first public release is here: a fast, native GNOME text editor built with GTK4, Libadwaita, GtkSourceView, and a workspace-first shape. You can open files directly, keep multiple tabs restored across launches, pin useful tabs, save and print documents, and tune the editor with dark-mode-aware syntax schemes, custom fonts, line numbers, wrapping, zoom, and GSettings-backed preferences.</p>
+        <p>Workspace support is the heart of this release. You can add named workspace roots, switch between a single workspace and `All workspaces`, browse files in the persistent sidebar, inspect files with quick peek, drill into deep folders with Focus Folder, and let visible folders refresh as the filesystem changes.</p>
+        <p>Editing is paired with recovery and safety work. LushText autosaves drafts, restores sessions, detects external file changes, uses durable atomic saves, offers explicit save/discard close flows, preserves line-ending and encoding state, and degrades intentionally on very large files instead of freezing or risking data loss.</p>
+        <p>Search and navigation cover both the current tab and the current workspace scope. The command palette searches files and commands, per-tab find/replace handles local edits, and workspace search supports streaming results, regex or literal modes, whole-word matching, glob filters, search history, saved searches, match navigation, and a previewable multi-file Replace All flow with undo.</p>
+        <p>Markdown files get a native preview alongside the source editor or as a focused full-width view. The renderer covers headings, emphasis, code, links, ordered and unordered lists, task lists, nested blockquotes, GitHub alert callouts, footnotes, definition lists, tables, and local images with clear fallback states.</p>
+        <p>LushText also ships line bookmarks, document notes, workspace notes, a unified notes browser, local history snapshots with preview and restore undo, a minimap with useful document markers, adaptive document properties, and Focus Mode for a quieter writing surface.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for this first release.</p>
+        <p>Maintainers publishing through Flathub should still review the generated Flathub pull request before merging. The workflow intentionally does not enable Flathub automerge.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>There are no upgrade deprecations because this is the first public GitHub release.</p>
+        <p>Large files intentionally lose some editor features as they grow: files above 10 MB disable syntax highlighting, files above 50 MB disable undo and local-history browsing, and files above 500 MB are refused.</p>
+        <p>The Flatpak uses broad host filesystem access because workspace editing, search, rename, delete, file monitoring, notes, and local history all need normal local-file behavior. LushText does not request network access.</p>
+        <p>Bookmark, note, and local-history sidecars follow saved file paths and in-app renames, but they do not automatically follow external moves or copies performed outside LushText.</p>
+        <p>EditorConfig support currently covers indentation settings only. Line endings, charset, trailing-whitespace trimming, final-newline insertion, and max-line-length handling are not applied yet.</p>
+        <p>Snap packaging is scaffolded, but it is not ready for users until the GNOME 50 Snap platform is available.</p>
+        <p>## Bug Fixes</p>
+        <p>This first release includes the reliability fixes that made the public cut: durable save ordering, draft/session recovery hardening, safer close flows, and preservation of modified state when a save fails.</p>
+        <p>It also includes polish and correctness fixes across the workspace sidebar, search panel, Markdown preview layout, inline alerts, desktop identity, Flatpak packaging, and headless widget-test harness.</p>
       </description>
     </release>
   </releases>
