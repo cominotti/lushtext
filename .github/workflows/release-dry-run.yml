@@ -1,0 +1,77 @@
+name: Release Dry Run
+
+on:
+  pull_request:
+    paths:
+      - 'Makefile'
+      - 'scripts/release.sh'
+      - 'scripts/test-release.sh'
+      - 'scripts/generate-flathub-manifest.sh'
+      - 'scripts/verify-flathub-manifest.sh'
+      - 'scripts/test-flathub-manifest.sh'
+      - 'scripts/verify-flathub-domain.sh'
+      - 'build-aux/**'
+      - 'data/*.desktop.in'
+      - 'data/*.metainfo.xml.in'
+      - '.github/workflows/release*.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Makefile'
+      - 'scripts/release.sh'
+      - 'scripts/test-release.sh'
+      - 'scripts/generate-flathub-manifest.sh'
+      - 'scripts/verify-flathub-manifest.sh'
+      - 'scripts/test-flathub-manifest.sh'
+      - 'scripts/verify-flathub-domain.sh'
+      - 'build-aux/**'
+      - 'data/*.desktop.in'
+      - 'data/*.metainfo.xml.in'
+      - '.github/workflows/release*.yml'
+
+concurrency:
+  group: release-dry-run-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-dry-run:
+    name: Release Dry Run
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install release tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y appstream curl desktop-file-utils flatpak jq python3-pip
+          python3 -m pip install --user --break-system-packages aiohttp PyYAML tomlkit || \
+            python3 -m pip install --user aiohttp PyYAML tomlkit
+          curl -fsSL \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
+            -o "$RUNNER_TEMP/flatpak-cargo-generator.py"
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 "$RUNNER_TEMP/flatpak-cargo-generator.py" "$HOME/.local/bin/flatpak-cargo-generator"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run release helper tests
+        run: ./scripts/test-release.sh
+
+      - name: Run Flathub manifest tests
+        run: ./scripts/test-flathub-manifest.sh
+
+      - name: Preview next patch release
+        run: make release-bump TYPE=patch DRY_RUN=1
+
+      - name: Validate current release metadata
+        run: |
+          set -euo pipefail
+          version="$(sed -n -E "s/^[[:space:]]*version:[[:space:]]*'([^']+)'.*/\1/p" meson.build | head -1)"
+          ./scripts/release.sh validate-tag "v${version}" 1
+
+      - name: Generate and verify CI Flathub manifest
+        run: |
+          ./scripts/generate-flathub-manifest.sh v0.0.1 "$GITHUB_SHA" "$RUNNER_TEMP/flathub"
+          ./scripts/verify-flathub-manifest.sh "$RUNNER_TEMP/flathub/dev.cominotti.lushtext.json"

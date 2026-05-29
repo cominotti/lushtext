@@ -55,6 +55,57 @@ If dependencies change, regenerate the vendored Cargo sources before building:
 make cargo-sources
 ```
 
+### Flathub release preparation
+
+Release automation follows the same Makefile style as the development and
+packaging commands. Preview the next computed version without changing files:
+
+```sh
+make release-bump TYPE=patch DRY_RUN=1
+```
+
+Create a real release only from a clean `main` checkout, with release notes that
+will be inserted into AppStream metadata:
+
+```sh
+make release-bump TYPE=minor RELEASE_NOTES_FILE=release-notes.md
+make release VERSION=v0.2.0 RELEASE_NOTES_FILE=release-notes.md
+```
+
+The release helper updates the Cargo package versions, Meson project version,
+`Cargo.lock`, AppStream release history, and Flatpak vendored Cargo sources,
+then validates metadata and the Flatpak build before creating the release commit
+and signed tag. `PRERELEASE=alpha|beta|rc` starts or continues a prerelease
+stream, and `PROMOTE=1` is required before promoting a prerelease stream to a
+stable tag.
+
+The repository's local Flatpak manifest stays at
+`build-aux/dev.cominotti.lushtext.Flatpak.json` and uses the current checkout.
+For Flathub, generate a tag-based manifest update artifact:
+
+```sh
+make flathub-manifest VERSION=v0.2.0
+make verify-flathub-manifest
+```
+
+Flathub publication remains a reviewable pull request by default. The release
+workflow can open or update that PR when `FLATHUB_TOKEN` and
+`FLATHUB_REPOSITORY` are configured, but it does not enable Flathub automerge.
+
+Flathub verification for `dev.cominotti.lushtext` is domain-based. A linked
+GitHub account does not verify this custom-domain app ID. After Flathub provides
+the app's verification token, publish it at:
+
+```text
+https://cominotti.dev/.well-known/org.flathub.VerifiedApps.txt
+```
+
+Then verify the endpoint locally:
+
+```sh
+make verify-flathub-domain FLATHUB_VERIFICATION_TOKEN=<token>
+```
+
 ### Snap (preparation)
 
 An Ubuntu Snap (`snap/snapcraft.yaml`) is scaffolded but **not yet buildable**.
@@ -289,6 +340,10 @@ make flatpak-deps    # Install Flatpak runtime/SDK deps into the user installati
 make flatpak         # Build Flatpak (sets up missing runtime/SDK deps)
 make flatpak-install # Build and install Flatpak into the user installation
 make cargo-sources   # Regenerate cargo-sources.json after dependency changes
+make flathub-manifest VERSION=v0.2.0 # Generate Flathub tag-based manifest
+make verify-flathub-manifest         # Check generated Flathub manifest invariants
+make verify-flathub-domain           # Check cominotti.dev verification endpoint
+make release-bump TYPE=patch DRY_RUN=1 # Preview the next release tag
 ```
 
 ## EditorConfig

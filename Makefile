@@ -17,6 +17,9 @@
 #   make flatpak-deps - Install Flatpak runtime/SDK deps into the user installation
 #   make flatpak-install - Build and install Flatpak into the user installation
 #   make verify-flatpak-identity - Verify Flatpak desktop identity and MIME registration
+#   make verify-flathub-domain - Verify cominotti.dev is ready for Flathub app verification
+#   make release     - Prepare, validate, commit, tag, and push an explicit release version
+#   make release-bump - Compute the next release version, then release it
 #   make install-git-hooks - configure this repo to use .githooks/
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
@@ -24,6 +27,7 @@
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless \
        check-fmt check-clippy check pre-commit install-git-hooks clean help \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
+       flathub-manifest verify-flathub-manifest verify-flathub-domain test-release-helper test-flathub-manifest release release-bump \
        snap snap-smoke verify-snap-identity \
        bench bench-report bench-report-full bench-baseline bench-compare
 
@@ -50,6 +54,8 @@ FLATPAK_BUILD_DIR := build-flatpak
 FLATPAK_MANIFEST := build-aux/dev.cominotti.lushtext.Flatpak.json
 FLATPAK_BUILDER_FLAGS := --disable-rofiles-fuse --force-clean --user
 FLATPAK_BUILDER_DEPS_FLAGS := --assumeyes --install-deps-from=$(FLATPAK_REMOTE)
+FLATHUB_MANIFEST_OUT_DIR ?= build-aux/flathub
+FLATHUB_MANIFEST_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 
 # Build the project (release, optimized)
 build:
@@ -200,6 +206,52 @@ cargo-sources: Cargo.lock
 	@echo "Generating cargo-sources.json..."
 	flatpak-cargo-generator Cargo.lock -o build-aux/cargo-sources.json
 
+# Generate a Flathub-facing manifest from an immutable Git release source.
+# Usage: make flathub-manifest VERSION=v0.2.0 [FLATHUB_MANIFEST_COMMIT=<sha>]
+flathub-manifest:
+ifndef VERSION
+	$(error VERSION is required. Usage: make flathub-manifest VERSION=v0.2.0)
+endif
+	@echo "Generating Flathub manifest for $(VERSION)..."
+	./scripts/generate-flathub-manifest.sh "$(VERSION)" "$(FLATHUB_MANIFEST_COMMIT)" "$(FLATHUB_MANIFEST_OUT_DIR)"
+
+# Verify the generated Flathub-facing manifest preserves the local packaging contract.
+verify-flathub-manifest:
+	@echo "Verifying Flathub manifest..."
+	./scripts/verify-flathub-manifest.sh "$(FLATHUB_MANIFEST_OUT_DIR)/dev.cominotti.lushtext.json"
+
+# Verify cominotti.dev is ready for Flathub app-id verification.
+# Pass FLATHUB_VERIFICATION_TOKEN=<token> after Flathub gives you a token.
+verify-flathub-domain:
+	@echo "Verifying Flathub domain ownership endpoint..."
+	./scripts/verify-flathub-domain.sh "$(FLATHUB_VERIFICATION_TOKEN)"
+
+# Unit-style shell checks for release helper behavior.
+test-release-helper:
+	@echo "Testing release helper..."
+	./scripts/test-release.sh
+
+# Unit-style shell checks for Flathub manifest generation.
+test-flathub-manifest:
+	@echo "Testing Flathub manifest generation..."
+	./scripts/test-flathub-manifest.sh
+
+# Release: prepare metadata, validate, commit, create a signed tag, and push.
+# Usage: make release VERSION=v0.2.0 RELEASE_NOTES_FILE=release-notes.md [YES=1] [DRY_RUN=1]
+release:
+ifeq ($(filter command line,$(origin VERSION)),)
+	$(error VERSION is required. Usage: make release VERSION=v0.2.0 RELEASE_NOTES_FILE=release-notes.md)
+endif
+	@./scripts/release.sh tag "$(VERSION)" "$(YES)" "$(DRY_RUN)"
+
+# Release bump: compute next version and run the release flow.
+# Usage: make release-bump TYPE=minor [PRERELEASE=alpha] [PROMOTE=1] [YES=1] [DRY_RUN=1]
+release-bump:
+ifndef TYPE
+	$(error TYPE is required (major, minor, or patch). Usage: make release-bump TYPE=minor)
+endif
+	@./scripts/release.sh bump "$(TYPE)" "$(PRERELEASE)" "$(PROMOTE)" "$(YES)" "$(DRY_RUN)"
+
 # Build the Snap (LXD backend). GATED: needs the GNOME 50 platform snap to
 # satisfy the GTK 4.22 floor; expected to fail against core24 (GTK 4.14) today.
 snap:
@@ -256,6 +308,13 @@ help:
 	@echo "  test-flatpak-identity-verifier Test the Flatpak identity verifier"
 	@echo "  test-dev-desktop-staging Test dev-run desktop staging behavior"
 	@echo "  cargo-sources   Regenerate cargo-sources.json"
+	@echo "  flathub-manifest Generate a Flathub-facing manifest for VERSION=vX.Y.Z"
+	@echo "  verify-flathub-manifest Verify generated Flathub manifest invariants"
+	@echo "  verify-flathub-domain Verify cominotti.dev Flathub verification endpoint"
+	@echo "  test-release-helper Test release versioning and metadata helper"
+	@echo "  test-flathub-manifest Test Flathub manifest generation"
+	@echo "  release         Prepare, validate, commit, signed-tag, and push VERSION=vX.Y.Z"
+	@echo "  release-bump    Compute next version from TYPE=major|minor|patch, then release"
 	@echo "  snap            Build the Snap (LXD); gated on the GNOME 50 platform snap"
 	@echo "  snap-smoke      Confined smoke test of the built Snap (skips if unavailable)"
 	@echo "  verify-snap-identity Verify Snap confinement, plugs, and common-id"
@@ -270,3 +329,13 @@ help:
 	@echo "Optional build accelerators (auto-detected):"
 	@echo "  cargo-nextest    : parallel test execution"
 	@echo "  cargo-hakari     : unified dependency features"
+	@echo ""
+	@echo "Release variables:"
+	@echo "  VERSION                 Explicit release version, e.g. v0.2.0"
+	@echo "  TYPE                    Bump type for release-bump: major, minor, or patch"
+	@echo "  PRERELEASE              Pre-release label: alpha, beta, or rc"
+	@echo "  PROMOTE                 Set to 1 to promote a prerelease stream to stable"
+	@echo "  RELEASE_NOTES_FILE      Required for real releases; inserted into AppStream"
+	@echo "  YES                     Set to 1 to skip release confirmation"
+	@echo "  DRY_RUN                 Set to 1 to preview without mutating the repo"
+	@echo "  FLATHUB_VERIFICATION_TOKEN Token from Flathub Developer Portal"

@@ -83,6 +83,17 @@ Meson wraps Cargo for installed and Flatpak builds:
 - Regenerate after dependency changes: `make cargo-sources` (requires `flatpak-cargo-generator`)
 - Dependency update chain: `cargo update` → `cargo hakari generate` → `make cargo-sources`
 
+## Flathub Release Automation
+
+- Release command surface: `make release VERSION=vX.Y.Z RELEASE_NOTES_FILE=...` for explicit releases and `make release-bump TYPE=major|minor|patch` for computed releases. Use `DRY_RUN=1` before real releases. `PRERELEASE=alpha|beta|rc` starts or continues prerelease streams, and `PROMOTE=1` is required to promote a prerelease stream to stable.
+- Real release commands must run from a clean `main` branch. The release helper stages only intended release metadata and packaging files, commits with `chore(release): vX.Y.Z`, creates a signed tag, and pushes `main` plus the tag only after validation passes.
+- `RELEASE_NOTES_FILE` is mandatory for real releases because the notes are inserted into `data/dev.cominotti.lushtext.metainfo.xml.in` as the AppStream release description.
+- Version surfaces that move together: `meson.build`, `crates/lushtext/Cargo.toml`, `crates/lushtext-core/Cargo.toml`, `Cargo.lock`, AppStream releases, and `build-aux/cargo-sources.json`.
+- The local Flatpak manifest remains checkout-oriented with `type: "dir"`. Flathub updates are generated with `make flathub-manifest VERSION=vX.Y.Z`, producing `build-aux/flathub/dev.cominotti.lushtext.json` plus `cargo-sources.json` with a public Git tag/commit source and `CARGO_NET_OFFLINE=true`.
+- Always run `make verify-flathub-manifest` after generating a Flathub-facing manifest. It rejects local `type: "dir"` sources and checks that app ID, runtime, SDK, Rust extension, command, finish args, cleanup rules, Meson profile, and Cargo sources match the reviewed local manifest.
+- Flathub app verification for `dev.cominotti.lushtext` is domain-based on `cominotti.dev`; linked GitHub accounts do not verify this custom-domain ID. Use `make verify-flathub-domain FLATHUB_VERIFICATION_TOKEN=<token>` after publishing the Flathub token to `https://cominotti.dev/.well-known/org.flathub.VerifiedApps.txt`.
+- Flathub publication stays reviewable by default. Do not enable `flathub.json` automerge unless a later explicit policy change accepts that successful Flathub builds do not prove runtime behavior.
+
 ## Snap
 
 - Manifest: `snap/snapcraft.yaml`. Strict confinement + `home` / `removable-media` plugs; the `gnome` extension supplies Wayland/X11/GPU/portals. Identity stays `dev.cominotti.lushtext` via `common-id`; the snap NAME (`lushtext`) lives in Snap's flat namespace.
@@ -122,6 +133,8 @@ All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but thi
 
 - `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, Clippy, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. The `Dependency Policy` job runs `cargo deny check advisories bans sources`.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
+- `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, a no-mutation release preview, and current metadata validation.
+- `.github/workflows/release.yml` — `v*` tag release validation and manual dry-run workflow. It validates release metadata, builds the Flatpak from the release source, creates or updates the GitHub Release context, and opens a Flathub manifest PR when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.
 - `.github/workflows/release-benchmark.yml` — full benchmark run + markdown report uploaded as release asset on `v*` tags, same `fedora:44` container
 - `.github/workflows/snap.yml` — always-on `validate` job runs `snapcraft expand-extensions` (structural/extension validation only; a full build cannot succeed until the GNOME 50 platform snap exists). The `build-publish` job (`snapcore/action-build` + `snapcore/action-publish`, release `edge`) is gated behind the `SNAP_PLATFORM_AVAILABLE` repository variable so the missing platform never reds the pipeline; it uses the `SNAPCRAFT_STORE_CREDENTIALS` secret.
 
