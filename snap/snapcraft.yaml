@@ -1,0 +1,111 @@
+# Snap packaging for LushText.
+#
+# STATUS: SCAFFOLD, GATED ON THE GNOME 50 PLATFORM SNAP.
+# LushText's floor is the GNOME 50 platform (GTK 4.22, Libadwaita 1.9,
+# GtkSourceView v5_18). The Snap `gnome` extension currently provides only
+# `gnome-46-2404` (GTK 4.14, base core24), which CANNOT compile this app. The
+# matching `core26` / GNOME 50 platform snap (`gnome-50-2604` or equivalent) is
+# not published yet, so a real build is expected to fail until task 8.1 flips
+# `base:` to core26 and the extension (or a manual content plug — Path 1.5)
+# targets the GNOME 50 platform. See openspec/changes/add-snap-packaging/design.md.
+name: lushtext
+# core24 is a placeholder so the manifest is parseable / extension-valid today.
+# Flip to `core26` once the GNOME 50 platform snap publishes (task 8.1).
+base: core24
+# Pull version/summary/description from the AppStream metainfo so the snap stays
+# in sync with the single source of truth used by the Flatpak.
+adopt-info: lushtext
+# `stable` (not `devel`) so promotion from edge to stable is a store action, not
+# a rebuild (design D4). The release CHANNEL — not the grade — keeps it edge-only.
+grade: stable
+confinement: strict
+license: GPL-3.0-or-later
+
+platforms:
+  amd64:
+  # arm64 is an open question (design); enable after a successful amd64 build.
+
+apps:
+  lushtext:
+    command: usr/bin/lushtext
+    # The gnome extension wires Wayland, X11 fallback, GPU/dri, and xdg desktop
+    # portals, and sets GTK/GSettings/library environment for the GNOME platform.
+    extensions: [gnome]
+    # Keep the AppStream/desktop identity as dev.cominotti.lushtext (the snap
+    # NAME lives in Snap's flat namespace; the common-id links to the metainfo).
+    common-id: dev.cominotti.lushtext
+    desktop: usr/share/applications/dev.cominotti.lushtext.desktop
+    plugs:
+      # Read/write non-hidden files under the user's home directory. This is the
+      # primary workspace-root access path and is auto-connected.
+      - home
+      # Workspace roots / files on mounted media (/media, /mnt). Manual-connect.
+      - removable-media
+    # NOTE on confinement boundary (design + snap-sandbox-identity spec):
+    # strict confinement is NARROWER than the Flatpak's --filesystem=host.
+    # Paths outside home/removable-media (e.g. /opt, /etc, dotfiles, arbitrary
+    # CLI args) are reachable only via xdg portals. The app must surface an
+    # access error or route through a portal for such paths — never crash or
+    # lose data silently.
+
+parts:
+  # Ubuntu 24.04 packages rustc ~1.75, below LushText's 1.95 MSRV (edition 2024).
+  # Bootstrap the pinned toolchain via rustup so the meson part can compile.
+  # CARGO_HOME/RUSTUP_HOME use a fixed shared path so the toolchain survives into
+  # the lushtext part's build environment.
+  rust-toolchain:
+    plugin: nil
+    build-packages:
+      - curl
+      - ca-certificates
+      - gcc
+    override-build: |
+      export RUSTUP_HOME=/root/.rustup
+      export CARGO_HOME=/root/.cargo
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.95.0
+    prime: []
+
+  lushtext:
+    after: [rust-toolchain]
+    # The meson plugin drives the project meson.build, which calls
+    # build-aux/cargo.sh → cargo build. No separate cargo invocation here, so the
+    # Snap and Flatpak share one build definition (snap-packaging spec).
+    plugin: meson
+    source: .
+    meson-parameters:
+      - --prefix=/usr
+      - -Dprofile=release
+    parse-info:
+      # Path (relative to the part install dir) where the metainfo lands, so
+      # adopt-info can read version/summary/description from it.
+      - usr/share/metainfo/dev.cominotti.lushtext.metainfo.xml
+    build-environment:
+      - PATH: "/root/.cargo/bin:$PATH"
+      - CARGO_HOME: "/root/.cargo"
+      - RUSTUP_HOME: "/root/.rustup"
+      # Snap builds are online by default, so crates are fetched normally — the
+      # Flatpak's build-aux/cargo-sources.json vendoring is NOT required here.
+      - CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
+    build-packages:
+      - gettext
+      - pkg-config
+      # GTK/Libadwaita/GtkSourceView dev headers come from the GNOME SDK provided
+      # by the extension. When base flips to core26, the SDK supplies GTK 4.22.
+    # stage-packages: most runtime libs come from the GNOME platform snap. Add
+    # any that turn out to be missing after the first real build against the
+    # GNOME 50 platform (left out entirely rather than declared empty/null).
+    override-build: |
+      craftctl default
+      # meson's gnome.post_install() skips glib-compile-schemas under DESTDIR
+      # staging, and the gnome extension does not compile the app's OWN schema.
+      # Compile it explicitly so confined GSettings reads resolve (task 1.5).
+      glib-compile-schemas "$CRAFT_PART_INSTALL/usr/share/glib-2.0/schemas"
+
+# The binary bakes LUSHTEXT_PKGDATADIR=/usr/share/lushtext at compile time (Meson
+# pkgdatadir). Under strict confinement, /usr is the BASE snap's /usr, so the
+# baked path would not resolve. Bind-mount it to the real location under $SNAP so
+# register_resources() / init_schema_dir() work with NO Rust changes (design D1).
+layout:
+  /usr/share/lushtext:
+    bind: $SNAP/usr/share/lushtext

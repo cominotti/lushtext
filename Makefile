@@ -24,6 +24,7 @@
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless \
        check-fmt check-clippy check pre-commit install-git-hooks clean help \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
+       snap snap-smoke verify-snap-identity \
        bench bench-report bench-report-full bench-baseline bench-compare
 
 .DEFAULT_GOAL := help
@@ -199,6 +200,25 @@ cargo-sources: Cargo.lock
 	@echo "Generating cargo-sources.json..."
 	flatpak-cargo-generator Cargo.lock -o build-aux/cargo-sources.json
 
+# Build the Snap (LXD backend). GATED: needs the GNOME 50 platform snap to
+# satisfy the GTK 4.22 floor; expected to fail against core24 (GTK 4.14) today.
+snap:
+	@echo "Building Snap (LXD backend)..."
+	snapcraft pack --use-lxd
+
+# Local confined smoke test of the built Snap. Skips cleanly when snapcraft or
+# the GNOME 50 platform snap is unavailable.
+snap-smoke:
+	@echo "Running Snap confined smoke test..."
+	./scripts/run-snap-smoke.sh
+
+# Verify the Snap's confinement, plug connections, and common-id linkage.
+# Pass a built artifact (make verify-snap-identity ARGS=./lushtext_*.snap) or run
+# with no args against the installed snap.
+verify-snap-identity:
+	@echo "Verifying Snap identity and permissions..."
+	./scripts/verify-snap-identity.sh $(ARGS)
+
 # Show available targets
 help:
 	@echo "LushText Build System"
@@ -236,6 +256,9 @@ help:
 	@echo "  test-flatpak-identity-verifier Test the Flatpak identity verifier"
 	@echo "  test-dev-desktop-staging Test dev-run desktop staging behavior"
 	@echo "  cargo-sources   Regenerate cargo-sources.json"
+	@echo "  snap            Build the Snap (LXD); gated on the GNOME 50 platform snap"
+	@echo "  snap-smoke      Confined smoke test of the built Snap (skips if unavailable)"
+	@echo "  verify-snap-identity Verify Snap confinement, plugs, and common-id"
 	@echo ""
 	@echo "Other targets:"
 	@echo "  check-fmt    rustfmt --check"

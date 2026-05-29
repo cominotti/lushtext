@@ -34,7 +34,8 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 ## Installation and Running
 
 LushText is packaged as a GNOME Flatpak and can also be run directly from a
-source checkout for development.
+source checkout for development. An Ubuntu Snap is in preparation (see
+[Snap (preparation)](#snap-preparation)).
 
 ### Flatpak from this checkout
 
@@ -52,6 +53,31 @@ If dependencies change, regenerate the vendored Cargo sources before building:
 
 ```sh
 make cargo-sources
+```
+
+### Snap (preparation)
+
+An Ubuntu Snap (`snap/snapcraft.yaml`) is scaffolded but **not yet buildable**.
+LushText targets the GNOME 50 platform (GTK 4.22, Libadwaita 1.9), and the Snap
+`gnome` extension currently provides only GTK 4.14 (`gnome-46-2404`, base
+`core24`). A real build is gated on the `core26` / GNOME 50 platform snap
+(`gnome-50-2604` or equivalent), which is not published yet — the `core26` base
+itself already is. The Snap reuses the existing Meson → Cargo build via the
+`meson` plugin, so no Rust changes are needed; a snap `layout:` bind-mounts the
+baked `LUSHTEXT_PKGDATADIR` path into confinement.
+
+Once the platform snap lands and `snap/snapcraft.yaml` is switched to `core26`:
+
+```sh
+make snap          # build (LXD backend)
+make snap-smoke    # confined smoke test (skips cleanly until then)
+```
+
+It will be released **Unlisted on the `edge` channel** — omitted from store
+search and installable only with an explicit command:
+
+```sh
+snap install lushtext --edge
 ```
 
 ### Development run
@@ -161,6 +187,13 @@ only under the home directory. It does not request network access.
 | `--socket=wayland` | Native Wayland display support |
 | `--socket=fallback-x11` and `--share=ipc` | X11 fallback support |
 | `--device=dri` | GTK hardware-accelerated rendering |
+
+The planned Snap uses **strict confinement plus xdg portals** instead — a
+narrower posture than the Flatpak's `--filesystem=host`. It declares only the
+`home` and `removable-media` interfaces (the `gnome` extension supplies Wayland,
+X11 fallback, GPU, and portals). Workspace roots and files outside those
+locations are reached through portals; the app surfaces an access error rather
+than crashing or losing data when a path is out of scope.
 
 ## Common Shortcuts
 
