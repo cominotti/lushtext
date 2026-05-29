@@ -287,6 +287,14 @@ assert_success "dry-run release does not mutate" run_release_script bump patch "
 after_status="$(git -C "$fixture" status --porcelain)"
 assert_eq "dry-run working tree status" "$before_status" "$after_status"
 
+with_release_lib 'prepare_release_files v0.1.0 notes.txt ""; validate_release_metadata v0.1.0'
+grep -q '<release version="0.1.0"' "$fixture/data/dev.cominotti.lushtext.metainfo.xml.in"
+grep -q 'Release notes &amp; polish' "$fixture/data/dev.cominotti.lushtext.metainfo.xml.in"
+if grep -q 'Initial release\.' "$fixture/data/dev.cominotti.lushtext.metainfo.xml.in"; then
+    printf 'FAIL: existing AppStream release was not replaced\n' >&2
+    exit 1
+fi
+
 with_release_lib 'prepare_release_files v1.2.3 notes.txt ""; validate_release_metadata v1.2.3'
 grep -q "version: '1.2.3'" "$fixture/meson.build"
 grep -q 'version = "1.2.3"' "$fixture/crates/lushtext/Cargo.toml"

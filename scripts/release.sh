@@ -223,25 +223,28 @@ set_meson_version() {
     sed -i -E "0,/version: '[^']+'/s//version: '$version'/" meson.build
 }
 
-insert_appstream_release() {
+appstream_release_block() {
     local version="$1"
     local notes_file="$2"
     local date="${LUSHTEXT_RELEASE_DATE:-$(date -u +%F)}"
-    local notes block tmp
-
-    if grep -Fq "<release version=\"$version\"" "$metainfo_file"; then
-        die "AppStream release '$version' already exists in $metainfo_file"
-    fi
+    local notes
 
     notes="$(release_notes_xml "$notes_file")"
-    block="$(cat <<EOF
+    cat <<EOF
     <release version="$version" date="$date">
       <description>
 $notes
       </description>
     </release>
 EOF
-)"
+}
+
+insert_appstream_release() {
+    local version="$1"
+    local notes_file="$2"
+    local block tmp
+
+    block="$(appstream_release_block "$version" "$notes_file")"
 
     tmp="$(mktemp)"
     awk -v block="$block" '
@@ -258,6 +261,48 @@ EOF
         die "could not insert AppStream release into $metainfo_file"
     }
     mv "$tmp" "$metainfo_file"
+}
+
+replace_appstream_release() {
+    local version="$1"
+    local notes_file="$2"
+    local block tmp
+
+    block="$(appstream_release_block "$version" "$notes_file")"
+
+    tmp="$(mktemp)"
+    awk -v version="$version" -v block="$block" '
+        $0 ~ "<release version=\"" version "\"" && !replaced {
+            print block
+            replacing = 1
+            replaced = 1
+            next
+        }
+        replacing && /^[[:space:]]*<\/release>[[:space:]]*$/ {
+            replacing = 0
+            next
+        }
+        replacing {
+            next
+        }
+        { print }
+        END { if (!replaced) exit 7 }
+    ' "$metainfo_file" > "$tmp" || {
+        rm -f "$tmp"
+        die "could not replace AppStream release '$version' in $metainfo_file"
+    }
+    mv "$tmp" "$metainfo_file"
+}
+
+upsert_appstream_release() {
+    local version="$1"
+    local notes_file="$2"
+
+    if grep -Fq "<release version=\"$version\"" "$metainfo_file"; then
+        replace_appstream_release "$version" "$notes_file"
+    else
+        insert_appstream_release "$version" "$notes_file"
+    fi
 }
 
 cargo_lock_version_for() {
@@ -410,7 +455,7 @@ prepare_release_files() {
     set_first_toml_package_version crates/lushtext/Cargo.toml "$plain"
     set_first_toml_package_version crates/lushtext-core/Cargo.toml "$plain"
     refresh_cargo_lock
-    insert_appstream_release "$plain" "$notes_file"
+    upsert_appstream_release "$plain" "$notes_file"
     refresh_cargo_sources
     verify_version_surfaces "$version"
 }
