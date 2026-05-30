@@ -6,9 +6,10 @@ use crate::common::{ensure_gtk_init, present_window, test_application, wait_unti
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use lushtext_core::config::{APP_ID, keys};
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::editor_page::{
-    BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
+    BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage, MinimapMarkerKind,
 };
 use sourceview5::prelude::*;
 use std::cell::Cell;
@@ -101,12 +102,51 @@ fn baseline_source_map_for_view(view: &sourceview5::View) -> sourceview5::Map {
     map
 }
 
+fn enable_minimap_for_tests(long_line_markers: bool) -> gio::Settings {
+    let settings = gio::Settings::new(APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+    settings
+        .set_boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE, long_line_markers)
+        .expect("set long-line minimap markers");
+    settings
+}
+
+fn minimap_source_map(page: &LushtextEditorPage) -> sourceview5::Map {
+    page.imp()
+        .minimap
+        .source_map
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("source map should be created during construction")
+}
+
+fn minimap_marker_strip(page: &LushtextEditorPage) -> gtk4::DrawingArea {
+    page.imp()
+        .minimap
+        .marker_strip
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("marker strip should be created during construction")
+}
+
 fn present_editor_page(page: &LushtextEditorPage) -> gtk4::ApplicationWindow {
+    present_editor_page_with_size(page, 1000, 800)
+}
+
+fn present_editor_page_with_size(
+    page: &LushtextEditorPage,
+    width: i32,
+    height: i32,
+) -> gtk4::ApplicationWindow {
     let app = test_application();
     let window = gtk4::ApplicationWindow::builder()
         .application(&app)
-        .default_width(1000)
-        .default_height(800)
+        .default_width(width)
+        .default_height(height)
         .child(page)
         .build();
     present_window(&window);
@@ -219,6 +259,101 @@ fn rect_within(
     widget
         .compute_bounds(ancestor)
         .expect("widget should have computable bounds within the ancestor")
+}
+
+fn wait_for_minimap_ready(page: &LushtextEditorPage) {
+    wait_until(std::time::Duration::from_secs(2), || {
+        let source_map = minimap_source_map(page);
+        let marker_strip = minimap_marker_strip(page);
+        page.is_minimap_visible()
+            && source_map.is_mapped()
+            && marker_strip.is_mapped()
+            && marker_strip.height() > 0
+            && source_map.bottom_margin() > 6
+    });
+}
+
+fn minimap_test_document(
+    line_count: usize,
+    needle_lines: &[usize],
+    long_line_lines: &[usize],
+) -> String {
+    let long_tail = "x".repeat(150);
+    (0..line_count)
+        .map(|line| {
+            let mut text = format!("line {line:03}");
+            if needle_lines.contains(&line) {
+                text.push_str(" needle");
+            }
+            if long_line_lines.contains(&line) {
+                text.push(' ');
+                text.push_str(&long_tail);
+            }
+            text
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn show_search_and_wait_for_minimap_marker(page: &LushtextEditorPage, needle: &str) {
+    page.show_search();
+    page.search_bar().search_entry().set_text(needle);
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.minimap_marker_count(MinimapMarkerKind::Search) > 0
+            && !page
+                .minimap_marker_bounds(MinimapMarkerKind::Search)
+                .is_empty()
+    });
+}
+
+fn source_map_content_bottom(page: &LushtextEditorPage) -> f64 {
+    let source_map = minimap_source_map(page);
+    let marker_strip = minimap_marker_strip(page);
+    let map_bounds = source_map
+        .compute_bounds(&marker_strip)
+        .expect("source map should have marker-strip-relative bounds");
+    let buffer = source_map.buffer();
+    let end_iter = buffer.end_iter();
+    let last_line = buffer.iter_at_line(end_iter.line()).unwrap_or(end_iter);
+    let (line_y, line_height) = source_map.line_yrange(&last_line);
+    let (_, widget_y) = source_map.buffer_to_window_coords(
+        gtk4::TextWindowType::Widget,
+        0,
+        line_y.saturating_add(line_height.max(0)),
+    );
+
+    f64::from(map_bounds.y()) + f64::from(widget_y)
+}
+
+fn assert_marker_bounds_within_source_content(
+    page: &LushtextEditorPage,
+    kind: MinimapMarkerKind,
+) -> Vec<lushtext_core::ui::editor_page::MinimapMarkerBounds> {
+    let bounds = page.minimap_marker_bounds(kind);
+    assert!(!bounds.is_empty(), "expected projected {kind:?} marker bounds");
+
+    let content_bottom = source_map_content_bottom(page);
+    let strip_height = f64::from(minimap_marker_strip(page).height());
+    for bound in &bounds {
+        assert!(
+            bound.top >= -0.5,
+            "{kind:?} marker should not start above the marker strip: {bound:?}"
+        );
+        assert!(
+            bound.bottom <= content_bottom + 0.5,
+            "{kind:?} marker should stop at rendered content bottom {content_bottom}, got {bound:?}"
+        );
+        assert!(
+            bound.bottom <= strip_height + 0.5,
+            "{kind:?} marker should remain inside strip height {strip_height}, got {bound:?}"
+        );
+        assert!(
+            bound.height() > 0.0,
+            "{kind:?} marker should have positive height: {bound:?}"
+        );
+    }
+
+    bounds
 }
 
 #[test]
@@ -715,6 +850,215 @@ fn test_minimap_source_map_inherits_dynamic_eof_tail_geometry() {
     let baseline_map = baseline_source_map_for_view(page.source_view());
     assert_eq!(source_map.bottom_margin(), baseline_map.bottom_margin());
     assert!(source_map.bottom_margin() > 6);
+}
+
+#[test]
+fn test_minimap_search_markers_stop_before_dynamic_eof_tail() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&minimap_test_document(80, &[0, 24, 79], &[]));
+    let _window = present_editor_page(&page);
+    wait_for_minimap_ready(&page);
+
+    show_search_and_wait_for_minimap_marker(&page, "needle");
+
+    let content_bottom = source_map_content_bottom(&page);
+    let strip_height = f64::from(minimap_marker_strip(&page).height());
+    assert!(
+        content_bottom + 1.0 < strip_height,
+        "test needs a visible blank EOF tail: content bottom {content_bottom}, strip {strip_height}"
+    );
+
+    let bounds = assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Search);
+    assert!(
+        bounds
+            .iter()
+            .any(|bound| (content_bottom - bound.bottom).abs() <= 0.5),
+        "a match on the last real line should project to the content bottom, not the strip bottom: {bounds:?}"
+    );
+}
+
+#[test]
+fn test_minimap_all_marker_kinds_share_source_map_content_boundary() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(true);
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&minimap_test_document(90, &[89], &[89]));
+    let _window = present_editor_page(&page);
+    wait_for_minimap_ready(&page);
+
+    let line = page.buffer().iter_at_line(89).expect("line 89");
+    page.buffer().place_cursor(&line);
+    let _ = page.toggle_bookmark_at_cursor();
+    show_search_and_wait_for_minimap_marker(&page, "needle");
+
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.minimap_marker_count(MinimapMarkerKind::Bookmark) > 0
+            && page.minimap_marker_count(MinimapMarkerKind::Modified) > 0
+            && page.minimap_marker_count(MinimapMarkerKind::LongLine) > 0
+    });
+
+    for kind in [
+        MinimapMarkerKind::Bookmark,
+        MinimapMarkerKind::Search,
+        MinimapMarkerKind::Modified,
+        MinimapMarkerKind::LongLine,
+    ] {
+        assert_marker_bounds_within_source_content(&page, kind);
+    }
+}
+
+#[test]
+fn test_minimap_search_marker_bounds_clear_when_search_closes() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&minimap_test_document(70, &[5, 35, 69], &[]));
+    let _window = present_editor_page(&page);
+    wait_for_minimap_ready(&page);
+
+    show_search_and_wait_for_minimap_marker(&page, "needle");
+    assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Search);
+
+    page.hide_search();
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.minimap_marker_count(MinimapMarkerKind::Search) == 0
+            && page
+                .minimap_marker_bounds(MinimapMarkerKind::Search)
+                .is_empty()
+    });
+}
+
+#[test]
+fn test_minimap_modified_bounds_clear_after_save_and_reproject_after_later_edit() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let page = LushtextEditorPage::new();
+    let temp = tempfile::NamedTempFile::new().expect("temp file");
+    page.set_file_path(temp.path());
+    page.buffer().set_text(&minimap_test_document(75, &[], &[]));
+    let _window = present_editor_page(&page);
+    wait_for_minimap_ready(&page);
+
+    wait_until(std::time::Duration::from_secs(2), || {
+        !page
+            .minimap_marker_bounds(MinimapMarkerKind::Modified)
+            .is_empty()
+    });
+    assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Modified);
+
+    let done = Rc::new(Cell::new(false));
+    let done_clone = done.clone();
+    page.save_file_async(move |result| {
+        result.expect("save should succeed");
+        done_clone.set(true);
+    });
+    wait_until(std::time::Duration::from_secs(2), || done.get());
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.minimap_marker_count(MinimapMarkerKind::Modified) == 0
+            && page
+                .minimap_marker_bounds(MinimapMarkerKind::Modified)
+                .is_empty()
+    });
+
+    let buffer = page.buffer();
+    let mut iter = buffer.iter_at_line(40).expect("line 40");
+    buffer.insert(&mut iter, " changed");
+    wait_until(std::time::Duration::from_secs(2), || {
+        !page
+            .minimap_marker_bounds(MinimapMarkerKind::Modified)
+            .is_empty()
+    });
+    assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Modified);
+}
+
+#[test]
+fn test_minimap_long_line_toggle_preserves_other_projected_markers() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(true);
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&minimap_test_document(85, &[42, 84], &[84]));
+    let _window = present_editor_page(&page);
+    wait_for_minimap_ready(&page);
+
+    let line = page.buffer().iter_at_line(84).expect("line 84");
+    page.buffer().place_cursor(&line);
+    let _ = page.toggle_bookmark_at_cursor();
+    show_search_and_wait_for_minimap_marker(&page, "needle");
+    wait_until(std::time::Duration::from_secs(2), || {
+        !page
+            .minimap_marker_bounds(MinimapMarkerKind::LongLine)
+            .is_empty()
+    });
+
+    let search_before =
+        assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Search);
+    let bookmark_before =
+        assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Bookmark);
+
+    settings
+        .set_boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE, false)
+        .expect("disable long-line minimap markers");
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.minimap_marker_count(MinimapMarkerKind::LongLine) == 0
+            && page
+                .minimap_marker_bounds(MinimapMarkerKind::LongLine)
+                .is_empty()
+    });
+
+    let search_after = assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Search);
+    let bookmark_after =
+        assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Bookmark);
+    assert_eq!(search_before.len(), search_after.len());
+    assert_eq!(bookmark_before.len(), bookmark_after.len());
+    assert!(
+        (search_before[0].top - search_after[0].top).abs() < 1.0,
+        "search marker should keep its projected alignment after long-line toggle"
+    );
+    assert!(
+        (bookmark_before[0].bottom - bookmark_after[0].bottom).abs() < 1.0,
+        "bookmark marker should keep its projected alignment after long-line toggle"
+    );
+}
+
+#[test]
+fn test_minimap_marker_projection_refreshes_after_taller_allocation() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&minimap_test_document(80, &[79], &[]));
+    let window = present_editor_page_with_size(&page, 1000, 520);
+    wait_for_minimap_ready(&page);
+
+    show_search_and_wait_for_minimap_marker(&page, "needle");
+    let initial_strip_height = minimap_marker_strip(&page).height();
+    let initial_tail = f64::from(initial_strip_height) - source_map_content_bottom(&page);
+    assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Search);
+
+    window.set_size_request(1000, 900);
+    window.queue_resize();
+    wait_until(std::time::Duration::from_secs(2), || {
+        minimap_marker_strip(&page).height() > initial_strip_height + 80
+    });
+    wait_until(std::time::Duration::from_secs(2), || {
+        !page
+            .minimap_marker_bounds(MinimapMarkerKind::Search)
+            .is_empty()
+    });
+
+    let resized_tail =
+        f64::from(minimap_marker_strip(&page).height()) - source_map_content_bottom(&page);
+    assert!(
+        resized_tail > initial_tail + 40.0,
+        "taller allocation should expose more EOF tail while markers remain content-bound"
+    );
+    assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Search);
 }
 
 #[test]

@@ -618,6 +618,26 @@ fn collect_text_views(root: &gtk4::Widget, text_views: &mut Vec<gtk4::TextView>)
     }
 }
 
+fn local_history_preview_text(root: &gtk4::Widget) -> Option<String> {
+    let mut text_views = Vec::new();
+    collect_text_views(root, &mut text_views);
+    text_views
+        .into_iter()
+        .find(|text_view| !text_view.is_editable())
+        .map(|text_view| {
+            let buffer = text_view.buffer();
+            buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), true)
+                .to_string()
+        })
+}
+
+fn wait_for_local_history_preview_text(root: &gtk4::Widget, expected: &str) {
+    wait_until(Duration::from_secs(2), || {
+        local_history_preview_text(root).as_deref() == Some(expected)
+    });
+}
+
 fn note_editor_text_views(root: &gtk4::Widget) -> (gtk4::TextView, gtk4::TextView) {
     let mut text_views = Vec::new();
     collect_text_views(root, &mut text_views);
@@ -3692,6 +3712,9 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     flush_events();
 
     wait_until(Duration::from_secs(2), || split_view.shows_content());
+    // The restore button may be sensitive while an older preview is still
+    // visible. Wait for the exact target snapshot text before clicking it.
+    wait_for_local_history_preview_text(&child, "version two\n");
     wait_until(Duration::from_secs(2), || {
         find_button_by_label(&child, "Restore").is_some_and(|button| button.is_sensitive())
     });

@@ -180,14 +180,16 @@ automation:
 make dev-tools
 ```
 
-`make dev-tools` runs `make flatpak-deps` first, then idempotently installs
-`ydotool`, `gnome-screenshot`, `wl-clipboard`, and the system Python AT-SPI
-bindings when they are missing. On Fedora Toolbx it uses `sudo dnf install`.
-It does not layer packages onto a Silverblue host by default; set
-`LUSHTEXT_DEV_TOOLS_ALLOW_RPM_OSTREE=1` only when host rpm-ostree mutation is
-intentional. If `/dev/uinput` is writable, the target also starts a user
-`ydotoold` socket under `$XDG_RUNTIME_DIR` for automated keyboard input during
-live GTK debugging.
+`make dev-tools` runs `make flatpak-deps` first, then idempotently installs the
+GTK debug helpers: headless Mutter/PipeWire/WirePlumber/GStreamer screenshot
+tooling, portal screenshot tools, system Python AT-SPI bindings, ydotool,
+isolated Xvfb fallback tooling, and the D-Bus/GSettings utilities used by the
+debug skills.
+On Fedora Toolbx it uses `sudo dnf install`. It does not layer packages onto a
+Silverblue host by default; set `LUSHTEXT_DEV_TOOLS_ALLOW_RPM_OSTREE=1` only
+when host rpm-ostree mutation is intentional. If `/dev/uinput` is writable, the
+target also starts a user `ydotoold` socket under `$XDG_RUNTIME_DIR` for
+automated keyboard input during live GTK debugging.
 
 ```sh
 make run

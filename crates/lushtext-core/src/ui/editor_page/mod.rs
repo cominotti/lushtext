@@ -32,7 +32,7 @@ pub use crate::services::editor_io::SaveError;
 pub use bookmarks::{BookmarkNavigationDirection, BookmarkToggleState};
 pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
 pub use imp::PendingWarningAction;
-pub use minimap::{MinimapAvailability, MinimapMarkerKind};
+pub use minimap::{MinimapAvailability, MinimapMarkerBounds, MinimapMarkerKind};
 
 glib::wrapper! {
     pub struct LushtextEditorPage(ObjectSubclass<imp::LushtextEditorPage>)

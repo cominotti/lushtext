@@ -41,6 +41,12 @@ const MINIMAP_LONG_LINE_WARNING_THRESHOLD: usize = 120;
 /// The minimap only needs a spatial hint, not every exact hit, so we stop once
 /// the marker strip is already dense enough to communicate "many matches here".
 const MINIMAP_SEARCH_MATCH_CAP: usize = 2_000;
+/// Minimum visual height for a semantic marker after projection.
+///
+/// Collapsed or sub-pixel source-map lines still need to be discoverable, but
+/// this height is clamped to the rendered document content so it cannot leak
+/// into the blank EOF overscroll tail.
+const MINIMAP_MARKER_MIN_HEIGHT: f64 = 2.0;
 /// Hidden source-mark category used to keep modified lines attached to buffer edits.
 const MINIMAP_MODIFIED_MARK_CATEGORY: &str = "lushtext-minimap-modified";
 
@@ -82,6 +88,25 @@ pub struct MinimapMarker {
     pub end_line: u32,
 }
 
+/// Current vertical bounds for a projected minimap marker segment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MinimapMarkerBounds {
+    /// Semantic category used to pick color and lane width.
+    pub kind: MinimapMarkerKind,
+    /// Marker top in marker-strip widget coordinates.
+    pub top: f64,
+    /// Marker bottom in marker-strip widget coordinates.
+    pub bottom: f64,
+}
+
+impl MinimapMarkerBounds {
+    /// Height in marker-strip widget coordinates.
+    #[must_use]
+    pub fn height(&self) -> f64 {
+        self.bottom - self.top
+    }
+}
+
 impl LushtextEditorPage {
     /// Report the current minimap availability for this editor page.
     #[must_use]
@@ -108,6 +133,27 @@ impl LushtextEditorPage {
             .iter()
             .filter(|marker| marker.kind == kind)
             .count()
+    }
+
+    /// Return currently drawable marker bounds for one semantic category.
+    ///
+    /// The bounds are projected through the real `GtkSourceMap` layout, so
+    /// widget tests can assert the marker strip follows source-map geometry
+    /// instead of a hand-rolled line-count ratio.
+    #[must_use]
+    pub fn minimap_marker_bounds(&self, kind: MinimapMarkerKind) -> Vec<MinimapMarkerBounds> {
+        let imp = self.imp();
+        let Some(source_map) = imp.minimap.source_map.borrow().as_ref().cloned() else {
+            return Vec::new();
+        };
+        let Some(marker_strip) = imp.minimap.marker_strip.borrow().as_ref().cloned() else {
+            return Vec::new();
+        };
+
+        projected_minimap_marker_bounds(self, &source_map, &marker_strip, marker_strip.height())
+            .into_iter()
+            .filter(|bounds| bounds.kind == kind)
+            .collect()
     }
 
     /// Install the per-tab minimap widgets and signal glue.
@@ -142,9 +188,9 @@ impl LushtextEditorPage {
 
         {
             let editor_weak = self.downgrade();
-            marker_strip.set_draw_func(move |_area, cr, width, height| {
+            marker_strip.set_draw_func(move |area, cr, width, height| {
                 if let Some(editor) = editor_weak.upgrade() {
-                    draw_marker_strip(&editor, cr, width, height);
+                    draw_marker_strip(&editor, area, cr, width, height);
                 }
             });
         }
@@ -530,23 +576,200 @@ fn normalize_line_runs(kind: MinimapMarkerKind, lines: &[u32]) -> Vec<MinimapMar
     markers
 }
 
-fn draw_marker_strip(editor: &LushtextEditorPage, cr: &cairo::Context, width: i32, height: i32) {
+fn draw_marker_strip(
+    editor: &LushtextEditorPage,
+    marker_strip: &gtk4::DrawingArea,
+    cr: &cairo::Context,
+    width: i32,
+    height: i32,
+) {
     let width = f64::from(width.max(1));
-    let height = f64::from(height.max(1));
-    let total_lines = f64::from(document_line_count(editor).max(1));
     let dark = libadwaita::StyleManager::default().is_dark();
+    let Some(source_map) = editor.imp().minimap.source_map.borrow().as_ref().cloned() else {
+        return;
+    };
+    let markers = projected_minimap_marker_bounds(editor, &source_map, marker_strip, height);
 
-    for marker in editor.imp().minimap.markers.borrow().iter() {
-        let top = (f64::from(marker.start_line) / total_lines) * height;
-        let bottom = (f64::from(marker.end_line.saturating_add(1)) / total_lines) * height;
-        let marker_height = (bottom - top).max(2.0);
+    for marker in &markers {
         let lane_width = marker_lane_width(marker.kind, width);
         let x = width - lane_width;
         let (red, green, blue, alpha) = marker_rgba(marker.kind, dark);
         cr.set_source_rgba(red, green, blue, alpha);
-        cr.rectangle(x, top, lane_width, marker_height);
+        cr.rectangle(x, marker.top, lane_width, marker.height());
         let _ = cr.fill();
     }
+}
+
+fn projected_minimap_marker_bounds(
+    editor: &LushtextEditorPage,
+    source_map: &sourceview5::Map,
+    marker_strip: &gtk4::DrawingArea,
+    strip_height: i32,
+) -> Vec<MinimapMarkerBounds> {
+    let Some(space) = marker_projection_space(source_map, marker_strip, strip_height) else {
+        return Vec::new();
+    };
+
+    editor
+        .imp()
+        .minimap
+        .markers
+        .borrow()
+        .iter()
+        .filter_map(|marker| project_marker_bounds(marker, source_map, space))
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MarkerProjectionSpace {
+    strip_height: f64,
+    content_top: f64,
+    content_bottom: f64,
+    map_y_in_strip: f64,
+    min_height: f64,
+}
+
+fn marker_projection_space(
+    source_map: &sourceview5::Map,
+    marker_strip: &gtk4::DrawingArea,
+    strip_height: i32,
+) -> Option<MarkerProjectionSpace> {
+    if strip_height <= 0 || !source_map.is_mapped() || !marker_strip.is_mapped() {
+        return None;
+    }
+
+    let map_bounds = source_map.compute_bounds(marker_strip)?;
+    let map_y_in_strip = f64::from(map_bounds.y());
+    let buffer = source_map.buffer();
+    let start_iter = buffer.start_iter();
+    let end_line = u32::try_from(buffer.end_iter().line()).unwrap_or_default();
+    let end_iter = text_iter_at_line_or_last(&buffer, end_line);
+    let content_top = line_top_in_strip(source_map, map_y_in_strip, &start_iter);
+    let content_bottom = line_bottom_in_strip(source_map, map_y_in_strip, &end_iter);
+
+    if !content_top.is_finite() || !content_bottom.is_finite() || content_bottom <= content_top {
+        return None;
+    }
+
+    Some(MarkerProjectionSpace {
+        strip_height: f64::from(strip_height),
+        content_top,
+        content_bottom,
+        map_y_in_strip,
+        min_height: MINIMAP_MARKER_MIN_HEIGHT,
+    })
+}
+
+fn project_marker_bounds(
+    marker: &MinimapMarker,
+    source_map: &sourceview5::Map,
+    space: MarkerProjectionSpace,
+) -> Option<MinimapMarkerBounds> {
+    let buffer = source_map.buffer();
+    let start_iter = text_iter_at_line_or_last(&buffer, marker.start_line);
+    let end_iter = text_iter_at_line_or_last(&buffer, marker.end_line);
+    let raw_top = line_top_in_strip(source_map, space.map_y_in_strip, &start_iter);
+    let raw_bottom = line_bottom_in_strip(source_map, space.map_y_in_strip, &end_iter);
+
+    fit_marker_bounds(marker.kind, raw_top, raw_bottom, space)
+}
+
+fn text_iter_at_line_or_last(buffer: &gtk4::TextBuffer, line: u32) -> gtk4::TextIter {
+    let end_iter = buffer.end_iter();
+    let end_line = u32::try_from(end_iter.line()).unwrap_or_default();
+    let clamped_line = line.min(end_line);
+
+    i32::try_from(clamped_line)
+        .ok()
+        .and_then(|line| buffer.iter_at_line(line))
+        .unwrap_or(end_iter)
+}
+
+fn line_top_in_strip(
+    source_map: &sourceview5::Map,
+    map_y_in_strip: f64,
+    iter: &gtk4::TextIter,
+) -> f64 {
+    let (line_y, _) = source_map.line_yrange(iter);
+    buffer_y_to_strip_y(source_map, map_y_in_strip, line_y)
+}
+
+fn line_bottom_in_strip(
+    source_map: &sourceview5::Map,
+    map_y_in_strip: f64,
+    iter: &gtk4::TextIter,
+) -> f64 {
+    let (line_y, line_height) = source_map.line_yrange(iter);
+    buffer_y_to_strip_y(
+        source_map,
+        map_y_in_strip,
+        line_y.saturating_add(line_height.max(0)),
+    )
+}
+
+fn buffer_y_to_strip_y(source_map: &sourceview5::Map, map_y_in_strip: f64, buffer_y: i32) -> f64 {
+    let (_, widget_y) =
+        source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
+    map_y_in_strip + f64::from(widget_y)
+}
+
+fn fit_marker_bounds(
+    kind: MinimapMarkerKind,
+    raw_top: f64,
+    raw_bottom: f64,
+    space: MarkerProjectionSpace,
+) -> Option<MinimapMarkerBounds> {
+    if !raw_top.is_finite()
+        || !raw_bottom.is_finite()
+        || !space.strip_height.is_finite()
+        || !space.content_top.is_finite()
+        || !space.content_bottom.is_finite()
+        || space.strip_height <= 0.0
+    {
+        return None;
+    }
+
+    let lower = space.content_top.max(0.0);
+    let upper = space.content_bottom.min(space.strip_height);
+    if upper <= lower {
+        return None;
+    }
+
+    let (raw_top, raw_bottom) = if raw_top <= raw_bottom {
+        (raw_top, raw_bottom)
+    } else {
+        (raw_bottom, raw_top)
+    };
+    if raw_bottom < lower || raw_top > upper {
+        return None;
+    }
+
+    let mut top = raw_top.max(lower);
+    let mut bottom = raw_bottom.min(upper);
+    if bottom < top {
+        bottom = top;
+    }
+
+    let target_height = space.min_height.max(0.0).min(upper - lower);
+    if bottom - top < target_height {
+        let center = ((top + bottom) / 2.0).clamp(lower, upper);
+        top = center - (target_height / 2.0);
+        bottom = center + (target_height / 2.0);
+
+        if top < lower {
+            bottom += lower - top;
+            top = lower;
+        }
+        if bottom > upper {
+            top -= bottom - upper;
+            bottom = upper;
+        }
+
+        top = top.max(lower);
+        bottom = bottom.min(upper);
+    }
+
+    (bottom > top).then_some(MinimapMarkerBounds { kind, top, bottom })
 }
 
 fn marker_lane_width(kind: MinimapMarkerKind, total_width: f64) -> f64 {
@@ -625,6 +848,83 @@ mod tests {
                     end_line: 9,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn test_fit_marker_bounds_keeps_min_height_above_eof_tail() {
+        let bounds = fit_marker_bounds(
+            MinimapMarkerKind::Search,
+            98.7,
+            98.8,
+            MarkerProjectionSpace {
+                strip_height: 140.0,
+                content_top: 10.0,
+                content_bottom: 100.0,
+                map_y_in_strip: 0.0,
+                min_height: 8.0,
+            },
+        )
+        .expect("bottom marker should still be drawable");
+
+        assert_eq!(bounds.kind, MinimapMarkerKind::Search);
+        assert!((bounds.top - 92.0).abs() < f64::EPSILON);
+        assert!((bounds.bottom - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_fit_marker_bounds_expands_collapsed_line_inside_content() {
+        let bounds = fit_marker_bounds(
+            MinimapMarkerKind::Bookmark,
+            40.0,
+            40.0,
+            MarkerProjectionSpace {
+                strip_height: 100.0,
+                content_top: 0.0,
+                content_bottom: 80.0,
+                map_y_in_strip: 0.0,
+                min_height: 6.0,
+            },
+        )
+        .expect("collapsed but visible line should get a minimum marker");
+
+        assert!((bounds.top - 37.0).abs() < f64::EPSILON);
+        assert!((bounds.bottom - 43.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_fit_marker_bounds_rejects_unprojectable_geometry() {
+        let space = MarkerProjectionSpace {
+            strip_height: 100.0,
+            content_top: 0.0,
+            content_bottom: 80.0,
+            map_y_in_strip: 0.0,
+            min_height: 2.0,
+        };
+
+        assert!(
+            fit_marker_bounds(MinimapMarkerKind::Modified, 90.0, 91.0, space).is_none(),
+            "markers below rendered content must not be clamped into the EOF tail"
+        );
+        assert!(
+            fit_marker_bounds(MinimapMarkerKind::Modified, f64::NAN, 10.0, space).is_none(),
+            "non-finite geometry must not revive the old full-height fallback"
+        );
+        assert!(
+            fit_marker_bounds(
+                MinimapMarkerKind::Modified,
+                10.0,
+                11.0,
+                MarkerProjectionSpace {
+                    strip_height: 0.0,
+                    content_top: 0.0,
+                    content_bottom: 80.0,
+                    map_y_in_strip: 0.0,
+                    min_height: 2.0,
+                },
+            )
+            .is_none(),
+            "unallocated marker strips should not draw semantic markers"
         );
     }
 }

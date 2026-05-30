@@ -19,6 +19,18 @@ When the captured symptom is a GTK or Adwaita warning, critical, geometry invari
 
 ## Quick Start
 
+For repeatable agent-owned inspection, make headless Mutter the first path:
+
+```bash
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py \
+  --file PATH \
+  --search needle \
+  --enable-minimap \
+  --output /tmp/lushtext-mutter.png
+```
+
+This launches LushText on a private `mutter --headless` Wayland monitor, isolates XDG data/config/cache plus keyfile GSettings, opens search through the exported `win.begin-search` D-Bus action, sets editable text through a private AT-SPI registry, and captures the monitor through Mutter's `RecordMonitor("Meta-0")` screencast stream. Prefer this before touching the human's live GNOME session or falling back to Xvfb.
+
 Prefer a capture session over ad hoc commands. Run the helper through `functions.exec_command` with `tty: true`, then keep polling with `write_stdin` while the human interacts with the app window.
 
 ```bash
@@ -29,13 +41,37 @@ Prefer a capture session over ad hoc commands. Run the helper through `functions
 
 Use a tight executable regex for `--pid-pattern`. Avoid broad alternations or loose substrings such as `target/debug/lushtext|dev.cominotti.lushtext` because they can match the helper script or even the `pgrep` probe itself, which makes the launch heuristics misleading.
 
+Before interacting with the window or taking a screenshot, prove the app is alive and that the current PID was not already present before the debug launch:
+
+```bash
+.agents/skills/gtk-agentic-debugging/scripts/check-lushtext-live.sh \
+  --session /tmp/gtk-debug-YYYYMMDD-HHMMSS \
+  --require-launched-instance \
+  --require-dbus \
+  --require-tool gdbus
+```
+
+Add the exact tool you are about to use to the same check, for example `--require-tool ydotool` before input injection or `--require-tool gnome-screenshot --require-tool python3` before snapshot capture. If this check fails because LushText is not running, the PID is not proven to belong to the debug launch, or a required tool is missing, pause and ask the human to install the tool, run `make dev-tools`, relaunch the debug session, or provide different instructions.
+
+For agent-driven input, `ydotool` is only ready when both the binary and daemon are usable. The default socket is `${XDG_RUNTIME_DIR}/.ydotool_socket` unless `YDOTOOL_SOCKET` is set. If the command runner reaps background processes after each shell command, keep `ydotoold` running in its own PTY-backed session instead of starting it as a short-lived background child.
+
+Before using `ydotool type` or `ydotool key`, ask the human to focus the specific LushText debug window you launched. Then rerun `check-lushtext-live.sh --session ... --require-launched-instance --require-tool ydotool` immediately before injection. `ydotool` targets the compositor's focused surface, so process liveness alone does not prove the keystrokes will go to LushText.
+
+Prefer D-Bus for interactions whenever LushText exports the needed behavior as a `org.gtk.Actions` action on the application or window object. For text entry into visible GTK widgets, prefer AT-SPI D-Bus editable-text automation before `ydotool`; for example, open the search UI with `org.gtk.Actions.Activate begin-search`, then set the focused/visible entry with `scripts/atspi-set-text.py`. Screenshot capture may also use D-Bus through the desktop portal or GNOME Shell, but those APIs are permission-gated and can return `AccessDenied` or wait for human approval.
+
+Prefer non-interactive portal screenshots before opening the GNOME Shell screenshot UI. In this Fedora Toolbx on Wayland, `capture-screenshot.py --portal-only --non-interactive` can save a PNG without a visible prompt, while `gnome-screenshot -f` may hang after falling back to X11. If an interactive portal UI appears, do not try to approve it with coordinate clicks; only use AT-SPI actions when the accessible exposes a real invokable action.
+
+Do not use coordinate clicks to focus LushText or any other application window. GNOME Shell can report broad or full-screen frame extents through AT-SPI, and clicking near the top of a maximized frame can activate Shell UI such as Overview or quick settings instead of the app. If D-Bus/AT-SPI activation does not focus the target window, ask the human to focus it.
+
+If headless Mutter is unavailable, use `scripts/capture-lushtext-xvfb.sh --file PATH --search TEXT --enable-minimap --output /tmp/shot.png` as the fallback isolated display. It launches the debug binary on a private Xvfb display, uses temporary XDG data/config/cache home plus keyfile GSettings, invokes `win.begin-search` through `org.gtk.Actions`, types only inside that isolated display with `xdotool`, and captures the root window with `xwd` + ImageMagick. This path is lower compositor fidelity than `mutter --headless`.
+
 After the reproduction, inspect the generated `summary.md`, then open the raw `app.typescript`, `dbus.log`, and `journal.log` files only as needed.
 
 ## Choose the Right Mode
 
 - **Fresh launch**: Use when stdout and stderr from startup matter. First check whether the app is already running because `make run` intentionally asks the existing LushText owner to quit before relaunching the fresh debug binary, and fails if that owner refuses to close. Do not treat `cargo run` printing `Running target/debug/...` as proof that a new GUI process or a new window was created.
 - **Existing instance watch**: Use when the app is already open and the user can reproduce the bug in that window. This is usually the safer and more truthful mode for single-instance GTK apps. Keep the capture session open, collect journal and D-Bus output, and let the human drive the UI.
-- **Screenshot assist**: Use when you need to confirm what the human sees on screen. Run `scripts/capture-screenshot.py` and be ready for a desktop permission prompt or timeout.
+- **Screenshot assist**: Use when you need to confirm what the human sees on screen. For agent-owned repros, first try `scripts/capture-lushtext-mutter.py` so focus, portal approval, and Shell UI cannot interfere. For the human's live desktop, run `check-lushtext-live.sh` first with `--require-tool gnome-screenshot --require-tool python3`; if anything is missing, stop and ask for installation or alternative instructions. Then run `scripts/capture-screenshot.py` and be ready for a desktop permission prompt or timeout.
 - **Log triage only**: Use `scripts/summarize-runtime-logs.py` on an existing artifact directory when the session has already been recorded.
 
 ## Workflow
@@ -43,12 +79,13 @@ After the reproduction, inspect the generated `summary.md`, then open the raw `a
 1. Read [references/runtime-debugging-playbook.md](references/runtime-debugging-playbook.md) for the live-session workflow and tool limits.
 2. Choose an exact `--pid-pattern` for the target executable before launching the helper. Prefer anchored executable matches over app IDs or loose substrings.
 3. Start `scripts/run-gtk-debug-session.sh` in a PTY-backed session.
-4. Inspect `process-before.txt`, `process-after.txt`, and `status.txt` early. If they mention `run-gtk-debug-session.sh` or `pgrep`, the capture is contaminated and you should tighten the pattern before drawing conclusions.
-5. Let the human reproduce the bug while you poll the session and read warnings as they appear.
-6. If visual confirmation matters, run `scripts/capture-screenshot.py` and note whether the desktop allowed or denied the request.
-7. Run `scripts/summarize-runtime-logs.py` or read the auto-generated `summary.md`.
-8. Use [references/log-patterns.md](references/log-patterns.md) to map the signature to likely GTK, GLib, Adwaita, or D-Bus causes.
-9. If step 8 points to a toolkit invariant rather than an app-specific state bug, hand the interpretation to `gtk4-libadwaita-internals` before proposing a fix.
+4. Before any D-Bus action, input injection, screenshot, or request for the human to type into the window, run `scripts/check-lushtext-live.sh` with `--session`, `--require-launched-instance`, and every `--require-tool` needed for the next action.
+5. Inspect `process-before.txt`, `process-after.txt` when present, and `status.txt`. If they mention `run-gtk-debug-session.sh` or `pgrep`, the capture is contaminated and you should tighten the pattern before drawing conclusions.
+6. Let the human reproduce the bug while you poll the session and read warnings as they appear.
+7. If visual confirmation matters, run `scripts/capture-screenshot.py --portal-only --non-interactive` only after the liveness/tool check succeeds, and note whether the desktop allowed or denied the request.
+8. Run `scripts/summarize-runtime-logs.py` or read the auto-generated `summary.md`.
+9. Use [references/log-patterns.md](references/log-patterns.md) to map the signature to likely GTK, GLib, Adwaita, or D-Bus causes.
+10. If step 9 points to a toolkit invariant rather than an app-specific state bug, hand the interpretation to `gtk4-libadwaita-internals` before proposing a fix.
 
 ## Preferred Investigation Loop
 
@@ -72,7 +109,18 @@ This is the preferred workflow over broad speculative code changes. For geometry
 ## Required Habits
 
 - Prefer `tty: true` for the live runner. PTY-backed sessions are the most reliable way to preserve stdout and stderr ordering.
+- For automated visual inspection, prefer the headless Mutter helper before live-desktop portal screenshots and before Xvfb. Mutter matches the CI compositor path and avoids stealing the human's focus.
 - Tell the human before starting a fresh capture if an existing app instance may need to be closed. `make run` is now a fresh-run path that asks the existing LushText instance to quit and refuses to activate stale code; use an existing-instance watch instead when the human has unsaved work.
+- Before interacting with LushText or capturing a visual snapshot, run `scripts/check-lushtext-live.sh`. For fresh debug sessions, include `--session` and `--require-launched-instance` so you do not accidentally drive a pre-existing LushText window.
+- If a required interaction or screenshot tool is missing, stop the live-debug flow and ask the human to install it, run `make dev-tools`, or give alternate instructions. Do not silently fall back to a weaker interaction path after discovering a missing tool.
+- Before `ydotool` keyboard input, ask the human to focus the LushText debug window. The liveness helper proves the process, not keyboard focus.
+- Prefer exported `org.gtk.Actions` over `ydotool` for app interactions. Fall back to `ydotool` only for missing operations such as arbitrary text entry into a focused widget.
+- Prefer `scripts/atspi-set-text.py` over `ydotool type` for visible editable GTK widgets. It uses the accessibility D-Bus bus and avoids depending on compositor keyboard focus. In restored or deeply nested window layouts, use the script's default deep scan; earlier shallow scans can miss a visible search entry.
+- If a D-Bus-only automation path is desired for LushText search, report the missing app surface: current window actions can open search but cannot set the in-tab search query. Today the headless helper uses AT-SPI editable text for that final step.
+- Before screenshot capture, tell the human a GNOME/portal prompt may appear as a blank or white dialog for a few seconds and ask them to approve it if it appears. Treat a timeout after that as a capture permission failure, not as proof of app behavior.
+- Before screenshot capture, present the debug-owned LushText instance through D-Bus when possible, then ask the human to keep that window focused. A portal prompt can flash or miss AT-SPI discovery when another window owns focus.
+- If the human wants the agent to approve a visible portal prompt, treat that as UI automation, not D-Bus permission bypass. Prefer AT-SPI button invocation only when the visible control exposes a real accessibility action.
+- Never use mouse-coordinate fallback for focus, portal approval, screenshot controls, or Shell UI. During this LushText minimap session, GNOME Shell exposed a `Take Screenshot` button through AT-SPI, but synthetic coordinate clicks on that exact accessible still activated the wrong Shell surface.
 - Treat `pid-pattern` choice as part of the evidence chain. A bad pattern can make a single-instance handoff look like a fresh launch, or can make the helper appear to be the target process.
 - Validate the helper's process snapshots before trusting the launch note. If `process-before.txt` or `process-after.txt` contains `run-gtk-debug-session.sh` or `pgrep`, the PID heuristic is not trustworthy yet.
 - For unique GTK apps, distinguish "launcher command ran" from "new instance exists". `cargo run` may still hand off to an existing owner; `make run` should either relaunch the fresh debug binary or fail if the existing owner refuses to close.
@@ -94,9 +142,33 @@ This is the preferred workflow over broad speculative code changes. For geometry
   - Captures PTY output, user journal output, and optional D-Bus traffic.
   - Detects when the launcher exits but a matching app process is still running, which is common with unique GTK applications.
   - Warns when `--pid-pattern` is broad enough to match the helper script or the probe itself, because that invalidates the fresh-launch heuristic.
+- `scripts/check-lushtext-live.sh`
+  - Checks that LushText is running before live interaction.
+  - Verifies required tools before D-Bus actions, input injection, or screenshots.
+  - Use `--require-tool pyatspi` before AT-SPI portal-dialog automation.
+  - With `--session` and `--require-launched-instance`, refuses to proceed unless the current matching PID was not present before the debug launch.
+- `scripts/atspi-click-button.py`
+  - Uses system Python AT-SPI bindings to find and invoke a visible button by accessible name.
+  - Useful for human-approved portal dialogs where the button is visible but D-Bus cannot bypass the permission prompt.
+  - Does not perform coordinate fallback. `--fallback-mouse` is kept only as a disabled compatibility flag because GNOME Shell can route exact-looking coordinates to Overview or top-bar controls.
+- `scripts/atspi-set-text.py`
+  - Uses system Python AT-SPI bindings to set text on visible editable widgets, scoped by application, role, and optional accessible-name regex.
+  - Preferred over `ydotool type` for entries such as LushText's in-tab search field because it does not require keyboard focus to move.
+- `scripts/capture-lushtext-mutter.py`
+  - First-priority automated visual inspection path.
+  - Launches LushText inside an isolated `dbus-run-session` plus `mutter --headless` Wayland monitor with temporary XDG state and keyfile GSettings.
+  - Starts PipeWire and WirePlumber in the same session, captures Mutter's existing virtual monitor with `org.gnome.Mutter.ScreenCast.Session.RecordMonitor("Meta-0")`, and saves one PNG through `gst-launch-1.0 pipewiresrc`.
+  - For search repros, starts a private AT-SPI registry and sets the search entry after opening it with the exported `win.begin-search` action.
+- `scripts/capture-lushtext-xvfb.sh`
+  - Fallback isolated display when headless Mutter or PipeWire capture is unavailable.
+  - Launches a debug-owned LushText process in an isolated `dbus-run-session` + Xvfb display with temporary XDG state.
+  - Uses D-Bus window actions for exported app behavior, then confines any `xdotool` typing to that private display.
+  - Captures screenshots with `xwd` and ImageMagick, avoiding live GNOME focus and portal permission races.
 - `scripts/capture-screenshot.py`
   - Tries the best available screenshot path.
-  - Uses the desktop portal before failing.
+  - Applies the requested timeout to both direct `gnome-screenshot` and portal capture paths.
+  - Supports `--portal-only --non-interactive` for sessions where direct `gnome-screenshot` hangs or the interactive Shell UI is unsafe to automate.
+  - Uses the desktop portal before failing and subscribes to the portal `Response` signal before sending the request to avoid missing fast responses.
   - Returns a clear error when the desktop blocks or times out the request.
 - `scripts/summarize-runtime-logs.py`
   - Groups repeated warnings and criticals.
