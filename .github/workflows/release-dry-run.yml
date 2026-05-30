@@ -9,6 +9,10 @@ on:
       - 'scripts/generate-flathub-manifest.sh'
       - 'scripts/verify-flathub-manifest.sh'
       - 'scripts/test-flathub-manifest.sh'
+      - 'scripts/generate-cominotti-flatpak-repo.sh'
+      - 'scripts/verify-cominotti-flatpak-repo.sh'
+      - 'scripts/verify-cominotti-pages-limits.sh'
+      - 'scripts/test-cominotti-flatpak-repo.sh'
       - 'scripts/verify-flathub-domain.sh'
       - 'build-aux/**'
       - 'data/*.desktop.in'
@@ -23,6 +27,10 @@ on:
       - 'scripts/generate-flathub-manifest.sh'
       - 'scripts/verify-flathub-manifest.sh'
       - 'scripts/test-flathub-manifest.sh'
+      - 'scripts/generate-cominotti-flatpak-repo.sh'
+      - 'scripts/verify-cominotti-flatpak-repo.sh'
+      - 'scripts/verify-cominotti-pages-limits.sh'
+      - 'scripts/test-cominotti-flatpak-repo.sh'
       - 'scripts/verify-flathub-domain.sh'
       - 'build-aux/**'
       - 'data/*.desktop.in'
@@ -62,6 +70,9 @@ jobs:
       - name: Run Flathub manifest tests
         run: ./scripts/test-flathub-manifest.sh
 
+      - name: Run Cominotti Flatpak repository tests
+        run: ./scripts/test-cominotti-flatpak-repo.sh
+
       - name: Preview next patch release
         run: make release-bump TYPE=patch DRY_RUN=1
 
@@ -75,3 +86,13 @@ jobs:
         run: |
           ./scripts/generate-flathub-manifest.sh v0.0.1 "$GITHUB_SHA" "$RUNNER_TEMP/flathub"
           ./scripts/verify-flathub-manifest.sh "$RUNNER_TEMP/flathub/dev.cominotti.lushtext.json"
+
+      - name: Generate and verify CI Cominotti metadata
+        run: |
+          printf 'ci metadata-only public key\n' > "$RUNNER_TEMP/cominotti-public.gpg"
+          COMINOTTI_FLATPAK_SKIP_BUILD=1 \
+          COMINOTTI_FLATPAK_PUBLIC_KEY="$RUNNER_TEMP/cominotti-public.gpg" \
+            ./scripts/generate-cominotti-flatpak-repo.sh v0.0.1 "$GITHUB_SHA" "$RUNNER_TEMP/cominotti-flatpak"
+          COMINOTTI_FLATPAK_PUBLIC_KEY="$RUNNER_TEMP/cominotti-public.gpg" \
+            ./scripts/verify-cominotti-flatpak-repo.sh "$RUNNER_TEMP/cominotti-flatpak"
+          ./scripts/verify-cominotti-pages-limits.sh "$RUNNER_TEMP/cominotti-flatpak/flatpak"

@@ -284,8 +284,15 @@ assert_failure "missing release notes fail real prep" with_release_lib 'prepare_
 
 before_status="$(git -C "$fixture" status --porcelain)"
 assert_success "dry-run release does not mutate" run_release_script bump patch "" "" "" 1
+cp "$tmpdir/assert-success.log" "$tmpdir/dry-run.log"
 after_status="$(git -C "$fixture" status --porcelain)"
 assert_eq "dry-run working tree status" "$before_status" "$after_status"
+grep -q 'Would prepare Cominotti Flatpak repository publication' "$tmpdir/dry-run.log"
+grep -q 'https://flatpak.cominotti.dev/repo/' "$tmpdir/dry-run.log"
+grep -q 'Cloudflare Pages project cominotti-flatpak' "$tmpdir/dry-run.log"
+grep -q 'Cloudflare Pages preflight' "$tmpdir/dry-run.log"
+grep -q 'Cloudflare R2 behind flatpak.cominotti.dev' "$tmpdir/dry-run.log"
+grep -q 'Would keep Flathub handoff optional' "$tmpdir/dry-run.log"
 
 with_release_lib 'prepare_release_files v0.1.0 notes.txt ""; validate_release_metadata v0.1.0'
 grep -q '<release version="0.1.0"' "$fixture/data/dev.cominotti.lushtext.metainfo.xml.in"

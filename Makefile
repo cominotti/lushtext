@@ -17,17 +17,22 @@
 #   make flatpak-deps - Install Flatpak runtime/SDK deps into the user installation
 #   make flatpak-install - Build and install Flatpak into the user installation
 #   make verify-flatpak-identity - Verify Flatpak desktop identity and MIME registration
+#   make cominotti-flatpak-repo - Build signed Cominotti Flatpak repository artifacts
+#   make verify-cominotti-pages-limits - Verify generated artifacts fit Cloudflare Pages
 #   make verify-flathub-domain - Verify cominotti.dev is ready for Flathub app verification
 #   make release     - Prepare, validate, commit, tag, and push an explicit release version
 #   make release-bump - Compute the next release version, then release it
+#   make dev-tools   - Prepare local dev tooling (Flatpak deps + GTK debug helpers)
 #   make install-git-hooks - configure this repo to use .githooks/
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless \
-       check-fmt check-clippy check pre-commit install-git-hooks clean help \
+       check-fmt check-clippy check pre-commit dev-tools install-git-hooks clean help \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
-       flathub-manifest verify-flathub-manifest verify-flathub-domain test-release-helper test-flathub-manifest release release-bump \
+       flathub-manifest verify-flathub-manifest verify-flathub-domain \
+       cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
+       test-release-helper test-flathub-manifest release release-bump \
        snap snap-smoke verify-snap-identity \
        bench bench-report bench-report-full bench-baseline bench-compare
 
@@ -56,6 +61,8 @@ FLATPAK_BUILDER_FLAGS := --disable-rofiles-fuse --force-clean --user
 FLATPAK_BUILDER_DEPS_FLAGS := --assumeyes --install-deps-from=$(FLATPAK_REMOTE)
 FLATHUB_MANIFEST_OUT_DIR ?= build-aux/flathub
 FLATHUB_MANIFEST_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+COMINOTTI_FLATPAK_OUT_DIR ?= build-aux/cominotti-flatpak
+COMINOTTI_FLATPAK_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 
 # Build the project (release, optimized)
 build:
@@ -158,6 +165,12 @@ install-git-hooks:
 	chmod +x .githooks/pre-commit
 	@echo "Git hooks installed."
 
+# Prepare local development tooling, including Flatpak runtime dependencies and
+# helper tools used by live GTK debugging sessions.
+dev-tools: flatpak-deps
+	@echo "Installing local development helper tools..."
+	./scripts/setup-dev-tools.sh
+
 # Clean all build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
@@ -225,6 +238,35 @@ verify-flathub-manifest:
 verify-flathub-domain:
 	@echo "Verifying Flathub domain ownership endpoint..."
 	./scripts/verify-flathub-domain.sh "$(FLATHUB_VERIFICATION_TOKEN)"
+
+# Build signed Cominotti-owned Flatpak repository artifacts.
+# Usage: make cominotti-flatpak-repo VERSION=v0.2.0 COMINOTTI_FLATPAK_PUBLIC_KEY=public.gpg COMINOTTI_FLATPAK_GPG_KEY=<key-id>
+cominotti-flatpak-repo:
+ifndef VERSION
+	$(error VERSION is required. Usage: make cominotti-flatpak-repo VERSION=v0.2.0)
+endif
+	@echo "Generating Cominotti Flatpak repository artifacts for $(VERSION)..."
+	./scripts/generate-cominotti-flatpak-repo.sh "$(VERSION)" "$(COMINOTTI_FLATPAK_COMMIT)" "$(COMINOTTI_FLATPAK_OUT_DIR)"
+
+# Verify generated Cominotti Flatpak repository metadata and, when present, app refs.
+verify-cominotti-flatpak-repo:
+	@echo "Verifying Cominotti Flatpak repository artifacts..."
+	./scripts/verify-cominotti-flatpak-repo.sh "$(COMINOTTI_FLATPAK_OUT_DIR)"
+
+# Verify generated Cominotti Flatpak artifacts fit Cloudflare Pages static asset limits.
+verify-cominotti-pages-limits:
+	@echo "Verifying Cominotti Flatpak Cloudflare Pages limits..."
+	./scripts/verify-cominotti-pages-limits.sh "$(COMINOTTI_FLATPAK_OUT_DIR)/flatpak"
+
+# Strict local smoke check for generated repository output.
+cominotti-flatpak-smoke:
+	@echo "Smoke-testing Cominotti Flatpak repository artifacts..."
+	COMINOTTI_FLATPAK_VERIFY_INSTALL=1 ./scripts/verify-cominotti-flatpak-repo.sh "$(COMINOTTI_FLATPAK_OUT_DIR)"
+
+# Unit-style shell checks for Cominotti Flatpak repository metadata generation.
+test-cominotti-flatpak-repo:
+	@echo "Testing Cominotti Flatpak repository tooling..."
+	./scripts/test-cominotti-flatpak-repo.sh
 
 # Unit-style shell checks for release helper behavior.
 test-release-helper:
@@ -311,6 +353,11 @@ help:
 	@echo "  flathub-manifest Generate a Flathub-facing manifest for VERSION=vX.Y.Z"
 	@echo "  verify-flathub-manifest Verify generated Flathub manifest invariants"
 	@echo "  verify-flathub-domain Verify cominotti.dev Flathub verification endpoint"
+	@echo "  cominotti-flatpak-repo Generate signed Cominotti Flatpak repo artifacts"
+	@echo "  verify-cominotti-flatpak-repo Verify Cominotti Flatpak repo artifacts"
+	@echo "  verify-cominotti-pages-limits Verify Cloudflare Pages size/count limits"
+	@echo "  cominotti-flatpak-smoke Require installable app refs in generated Cominotti repo"
+	@echo "  test-cominotti-flatpak-repo Test Cominotti Flatpak repo tooling"
 	@echo "  test-release-helper Test release versioning and metadata helper"
 	@echo "  test-flathub-manifest Test Flathub manifest generation"
 	@echo "  release         Prepare, validate, commit, signed-tag, and push VERSION=vX.Y.Z"
@@ -323,6 +370,7 @@ help:
 	@echo "  check-fmt    rustfmt --check"
 	@echo "  check-clippy clippy -D warnings"
 	@echo "  check        Clippy + format check"
+	@echo "  dev-tools    Flatpak deps + GTK debug input/screenshot helpers"
 	@echo "  clean        Remove build artifacts"
 	@echo "  help         Show this help message"
 	@echo ""
@@ -339,3 +387,7 @@ help:
 	@echo "  YES                     Set to 1 to skip release confirmation"
 	@echo "  DRY_RUN                 Set to 1 to preview without mutating the repo"
 	@echo "  FLATHUB_VERIFICATION_TOKEN Token from Flathub Developer Portal"
+	@echo "  COMINOTTI_FLATPAK_PUBLIC_KEY Public GPG key file for Cominotti Flatpak metadata"
+	@echo "  COMINOTTI_FLATPAK_GPG_KEY GPG signing key ID for Cominotti Flatpak publication"
+	@echo "  COMINOTTI_FLATPAK_PAGES_MAX_FILE_BYTES Cloudflare Pages per-asset byte limit"
+	@echo "  COMINOTTI_FLATPAK_PAGES_MAX_FILES Cloudflare Pages file-count limit"

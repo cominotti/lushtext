@@ -34,8 +34,9 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 ## Installation and Running
 
 LushText is packaged as a GNOME Flatpak and can also be run directly from a
-source checkout for development. An Ubuntu Snap is in preparation (see
-[Snap (preparation)](#snap-preparation)).
+source checkout for development. Public Flatpak releases are prepared for the
+official Cominotti remote, with Flathub handoff kept as an optional secondary
+path. An Ubuntu Snap is in preparation (see [Snap (preparation)](#snap-preparation)).
 
 ### Flatpak from this checkout
 
@@ -55,7 +56,7 @@ If dependencies change, regenerate the vendored Cargo sources before building:
 make cargo-sources
 ```
 
-### Flathub release preparation
+### Cominotti Flatpak release preparation
 
 Release automation follows the same Makefile style as the development and
 packaging commands. Preview the next computed version without changing files:
@@ -81,16 +82,54 @@ stable tag.
 
 The repository's local Flatpak manifest stays at
 `build-aux/dev.cominotti.lushtext.Flatpak.json` and uses the current checkout.
-For Flathub, generate a tag-based manifest update artifact:
+For the Cominotti remote, generate signed repository artifacts from a tag and
+commit:
+
+```sh
+make cominotti-flatpak-repo VERSION=v0.2.0 \
+  COMINOTTI_FLATPAK_PUBLIC_KEY=public.gpg \
+  COMINOTTI_FLATPAK_GPG_KEY=<key-id>
+make verify-cominotti-flatpak-repo
+```
+
+The public URL layout is:
+
+```text
+https://flatpak.cominotti.dev/repo/
+https://flatpak.cominotti.dev/cominotti.flatpakrepo
+https://flatpak.cominotti.dev/lushtext.flatpakref
+```
+
+The default hosted backend is Cloudflare Pages because static asset requests are
+free and unlimited when they do not invoke Pages Functions. Run
+`make verify-cominotti-pages-limits` before publishing; it enforces the 25 MiB
+per-asset limit and the configured file-count limit, then points maintainers to
+Cloudflare R2 if the repository outgrows Pages.
+
+Setup details live in
+[`docs/next/cominotti-flatpak-hosting.md`](docs/next/cominotti-flatpak-hosting.md).
+
+Once published, users can install the first app from the shared Cominotti
+remote with:
+
+```sh
+flatpak install --user https://flatpak.cominotti.dev/lushtext.flatpakref
+```
+
+Do not publish user-facing `--no-gpg-verify` instructions; the `.flatpakrepo`
+and `.flatpakref` include the Cominotti public GPG key.
+
+For optional Flathub handoff, generate a tag-based manifest update artifact:
 
 ```sh
 make flathub-manifest VERSION=v0.2.0
 make verify-flathub-manifest
 ```
 
-Flathub publication remains a reviewable pull request by default. The release
-workflow can open or update that PR when `FLATHUB_TOKEN` and
-`FLATHUB_REPOSITORY` are configured, but it does not enable Flathub automerge.
+Flathub publication remains a reviewable pull request when configured, but it
+is secondary to the Cominotti remote. The release workflow can open or update
+that PR when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured, but it
+does not enable Flathub automerge.
 
 Flathub verification for `dev.cominotti.lushtext` is domain-based. A linked
 GitHub account does not verify this custom-domain app ID. After Flathub provides
@@ -132,6 +171,23 @@ snap install lushtext --edge
 ```
 
 ### Development run
+
+Prepare a full local development environment, including Flatpak runtime/SDK
+dependencies plus helper tools used for live GTK input and screenshot
+automation:
+
+```sh
+make dev-tools
+```
+
+`make dev-tools` runs `make flatpak-deps` first, then idempotently installs
+`ydotool`, `gnome-screenshot`, `wl-clipboard`, and the system Python AT-SPI
+bindings when they are missing. On Fedora Toolbx it uses `sudo dnf install`.
+It does not layer packages onto a Silverblue host by default; set
+`LUSHTEXT_DEV_TOOLS_ALLOW_RPM_OSTREE=1` only when host rpm-ostree mutation is
+intentional. If `/dev/uinput` is writable, the target also starts a user
+`ydotoold` socket under `$XDG_RUNTIME_DIR` for automated keyboard input during
+live GTK debugging.
 
 ```sh
 make run
@@ -340,6 +396,9 @@ make flatpak-deps    # Install Flatpak runtime/SDK deps into the user installati
 make flatpak         # Build Flatpak (sets up missing runtime/SDK deps)
 make flatpak-install # Build and install Flatpak into the user installation
 make cargo-sources   # Regenerate cargo-sources.json after dependency changes
+make cominotti-flatpak-repo VERSION=v0.2.0 # Generate Cominotti Flatpak repo artifacts
+make verify-cominotti-flatpak-repo         # Check Cominotti Flatpak repo metadata
+make test-cominotti-flatpak-repo           # Test Cominotti Flatpak repo tooling
 make flathub-manifest VERSION=v0.2.0 # Generate Flathub tag-based manifest
 make verify-flathub-manifest         # Check generated Flathub manifest invariants
 make verify-flathub-domain           # Check cominotti.dev verification endpoint

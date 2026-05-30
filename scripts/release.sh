@@ -537,6 +537,41 @@ print_release_summary() {
     printf '\n'
 }
 
+print_cominotti_flatpak_plan() {
+    local version="$1"
+    local out_dir="${COMINOTTI_FLATPAK_OUT_DIR:-build-aux/cominotti-flatpak}"
+    local repo_url="${COMINOTTI_FLATPAK_REPO_URL:-https://flatpak.cominotti.dev/repo/}"
+    local base_url="${COMINOTTI_FLATPAK_BASE_URL:-https://flatpak.cominotti.dev}"
+    local deploy_target="${COMINOTTI_FLATPAK_DEPLOY_TARGET:-$base_url/}"
+    local public_key="${COMINOTTI_FLATPAK_PUBLIC_KEY:-}"
+    local signing_key="${COMINOTTI_FLATPAK_GPG_KEY:-}"
+    local cloudflare_project="${COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT:-cominotti-flatpak}"
+    local pages_max_file_bytes="${COMINOTTI_FLATPAK_PAGES_MAX_FILE_BYTES:-26214400}"
+    local pages_max_files="${COMINOTTI_FLATPAK_PAGES_MAX_FILES:-20000}"
+
+    printf 'Would prepare Cominotti Flatpak repository publication:\n'
+    printf '  - release tag: %s\n' "$version"
+    printf '  - output directory: %s\n' "$out_dir"
+    printf '  - repository URL: %s\n' "$repo_url"
+    printf '  - repository descriptor: %s/cominotti.flatpakrepo\n' "${base_url%/}"
+    printf '  - LushText installer: %s/lushtext.flatpakref\n' "${base_url%/}"
+    printf '  - deploy target: %s\n' "$deploy_target"
+    printf '  - default hosted backend: Cloudflare Pages project %s\n' "$cloudflare_project"
+    printf '  - Cloudflare Pages preflight: max asset %s bytes, max files %s\n' "$pages_max_file_bytes" "$pages_max_files"
+    printf '  - fallback when Pages limits are exceeded: Cloudflare R2 behind flatpak.cominotti.dev\n'
+    if [[ -n "$public_key" ]]; then
+        printf '  - public GPG key file: %s\n' "$public_key"
+    else
+        printf '  - public GPG key file: not configured; public metadata generation would fail until configured\n'
+    fi
+    if [[ -n "$signing_key" ]]; then
+        printf '  - signing key ID: %s\n' "$signing_key"
+    else
+        printf '  - signing key ID: not configured; repository signing/deploy would be skipped or fail until configured\n'
+    fi
+    printf 'Would keep Flathub handoff optional and report it separately from Cominotti publication.\n'
+}
+
 create_release_commit_and_tag() {
     local version="$1"
 
@@ -570,6 +605,7 @@ run_release() {
         echo "  - cargo-sources freshness"
         echo "  - AppStream and desktop metadata validation"
         echo "  - Flatpak release build"
+        print_cominotti_flatpak_plan "$version"
         echo "Would create commit: chore(release): $version"
         echo "Would create signed tag: $version"
         echo "Would push main and $version to origin"

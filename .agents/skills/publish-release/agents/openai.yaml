@@ -1,4 +1,4 @@
 interface:
   display_name: "Publish Release"
-  short_description: "Ship GitHub and Flathub releases"
-  default_prompt: "Use $publish-release to prepare and publish a LushText release to GitHub and Flathub."
+  short_description: "Ship GitHub and Cominotti Flatpak releases"
+  default_prompt: "Use $publish-release to prepare and publish a LushText release to GitHub and the Cominotti Flatpak repository, with Flathub as an optional handoff."

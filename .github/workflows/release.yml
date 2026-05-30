@@ -93,7 +93,9 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ./scripts/generate-flathub-manifest.sh "$VERSION" "$GITHUB_SHA" "$RUNNER_TEMP/flathub"
+          set -euo pipefail
+          source_commit="$(git rev-parse "$VERSION^{commit}")"
+          ./scripts/generate-flathub-manifest.sh "$VERSION" "$source_commit" "$RUNNER_TEMP/flathub"
           ./scripts/verify-flathub-manifest.sh "$RUNNER_TEMP/flathub/dev.cominotti.lushtext.json"
 
       - name: Upload Flathub update artifact
@@ -123,9 +125,147 @@ jobs:
           bundle: lushtext-${{ needs.metadata.outputs.version }}.flatpak
           cache-key: release-flatpak-builder-gnome-50-${{ hashFiles('build-aux/dev.cominotti.lushtext.Flatpak.json', 'build-aux/cargo-sources.json', 'Cargo.lock', 'meson.build', 'meson_options.txt', 'build-aux/cargo.sh', 'data/meson.build', 'resources/meson.build') }}
 
+  cominotti-flatpak:
+    name: Cominotti Flatpak Repository
+    needs: metadata
+    if: needs.metadata.outputs.dry-run != 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    permissions:
+      contents: read
+    outputs:
+      generated: ${{ steps.generate.outputs.generated }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.version }}
+          fetch-depth: 0
+
+      - name: Prepare Cominotti signing material
+        id: signing
+        env:
+          COMINOTTI_PRIVATE_KEY_B64: ${{ secrets.COMINOTTI_FLATPAK_PRIVATE_KEY_B64 }}
+          COMINOTTI_PUBLIC_KEY_B64: ${{ secrets.COMINOTTI_FLATPAK_PUBLIC_KEY_B64 }}
+          COMINOTTI_GPG_KEY: ${{ secrets.COMINOTTI_FLATPAK_GPG_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${COMINOTTI_PRIVATE_KEY_B64:-}" || -z "${COMINOTTI_PUBLIC_KEY_B64:-}" || -z "${COMINOTTI_GPG_KEY:-}" ]]; then
+            echo "::notice::Skipping Cominotti Flatpak repository generation because signing secrets are not configured."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          gpg_home="$RUNNER_TEMP/cominotti-gnupg"
+          mkdir -p "$gpg_home"
+          chmod 700 "$gpg_home"
+          printf '%s' "$COMINOTTI_PRIVATE_KEY_B64" | base64 -d | GNUPGHOME="$gpg_home" gpg --batch --import
+          printf '%s' "$COMINOTTI_PUBLIC_KEY_B64" | base64 -d > "$RUNNER_TEMP/cominotti-flatpak-public.gpg"
+          {
+            echo "available=true"
+            echo "gpg-home=$gpg_home"
+            echo "public-key=$RUNNER_TEMP/cominotti-flatpak-public.gpg"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate and verify Cominotti Flatpak repository
+        id: generate
+        if: steps.signing.outputs.available == 'true'
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          COMINOTTI_FLATPAK_PUBLIC_KEY: ${{ steps.signing.outputs.public-key }}
+          COMINOTTI_FLATPAK_GPG_KEY: ${{ secrets.COMINOTTI_FLATPAK_GPG_KEY }}
+          COMINOTTI_FLATPAK_GPG_HOMEDIR: ${{ steps.signing.outputs.gpg-home }}
+        run: |
+          set -euo pipefail
+          source_commit="$(git rev-parse "$VERSION^{commit}")"
+          ./scripts/generate-cominotti-flatpak-repo.sh "$VERSION" "$source_commit" "$RUNNER_TEMP/cominotti-flatpak"
+          ./scripts/verify-cominotti-flatpak-repo.sh "$RUNNER_TEMP/cominotti-flatpak"
+          ./scripts/verify-cominotti-pages-limits.sh "$RUNNER_TEMP/cominotti-flatpak/flatpak"
+          echo "generated=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Cominotti Flatpak repository artifact
+        if: steps.generate.outputs.generated == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cominotti-flatpak-repository
+          path: ${{ runner.temp }}/cominotti-flatpak/flatpak
+
+  cominotti-flatpak-deploy:
+    name: Deploy Cominotti Flatpak Repository
+    needs: [metadata, cominotti-flatpak]
+    if: needs.metadata.outputs.dry-run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.version }}
+          fetch-depth: 0
+
+      - name: Select Cominotti Flatpak deployment backend
+        id: deploy
+        env:
+          GENERATED: ${{ needs.cominotti-flatpak.outputs.generated }}
+          COMINOTTI_FLATPAK_DEPLOY_COMMAND: ${{ vars.COMINOTTI_FLATPAK_DEPLOY_COMMAND }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_PAGES_PROJECT: ${{ vars.COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT || 'cominotti-flatpak' }}
+        run: |
+          set -euo pipefail
+          if [[ "$GENERATED" != "true" ]]; then
+            echo "::notice::Skipping Cominotti Flatpak deployment because repository generation was skipped."
+            echo "backend=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -n "${COMINOTTI_FLATPAK_DEPLOY_COMMAND:-}" ]]; then
+            echo "backend=custom" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ACCOUNT_ID:-}" || -z "${CLOUDFLARE_PAGES_PROJECT:-}" ]]; then
+            echo "::notice::Skipping Cominotti Flatpak deployment because Cloudflare Pages credentials or project settings are not configured."
+            echo "backend=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "backend=cloudflare"
+            echo "cloudflare-project=$CLOUDFLARE_PAGES_PROJECT"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download Cominotti Flatpak repository artifact
+        if: steps.deploy.outputs.backend != 'none'
+        uses: actions/download-artifact@v4
+        with:
+          name: cominotti-flatpak-repository
+          path: cominotti-flatpak/flatpak
+
+      - name: Verify Cloudflare Pages limits
+        if: steps.deploy.outputs.backend == 'cloudflare'
+        run: ./scripts/verify-cominotti-pages-limits.sh cominotti-flatpak/flatpak
+
+      - name: Deploy Cominotti Flatpak repository
+        if: steps.deploy.outputs.backend == 'custom'
+        env:
+          COMINOTTI_FLATPAK_DEPLOY_COMMAND: ${{ vars.COMINOTTI_FLATPAK_DEPLOY_COMMAND }}
+          COMINOTTI_FLATPAK_STAGING_DIR: ${{ github.workspace }}/cominotti-flatpak/flatpak
+        run: |
+          set -euo pipefail
+          bash -lc "$COMINOTTI_FLATPAK_DEPLOY_COMMAND"
+
+      - name: Deploy Cominotti Flatpak repository to Cloudflare Pages
+        if: steps.deploy.outputs.backend == 'cloudflare'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy cominotti-flatpak/flatpak --project-name=${{ steps.deploy.outputs.cloudflare-project }} --branch=main
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
   publish-context:
-    name: GitHub Release And Flathub PR
-    needs: [metadata, flatpak]
+    name: GitHub Release And Optional Flathub PR
+    needs: [metadata, flatpak, cominotti-flatpak, cominotti-flatpak-deploy]
     if: needs.metadata.outputs.dry-run != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -164,11 +304,12 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${GH_TOKEN:-}" || -z "${FLATHUB_REPOSITORY:-}" ]]; then
-            echo "::notice::Skipping Flathub PR because FLATHUB_TOKEN or FLATHUB_REPOSITORY is not configured. Flathub publication is not complete."
+            echo "::notice::Skipping optional Flathub PR because FLATHUB_TOKEN or FLATHUB_REPOSITORY is not configured. Cominotti Flatpak publication is the primary channel."
             exit 0
           fi
 
           branch="release/${VERSION}"
+          source_commit="$(git rev-parse "$VERSION^{commit}")"
           gh repo clone "$FLATHUB_REPOSITORY" flathub-repo
           cd flathub-repo
           git checkout -B "$branch"
@@ -188,7 +329,7 @@ jobs:
           cat > "$body" <<EOF
           Updates LushText to ${VERSION}.
 
-          Source commit: ${GITHUB_SHA}
+          Source commit: ${source_commit}
 
           Validation:
           - Release metadata validation passed.
@@ -200,6 +341,7 @@ jobs:
           - Launch LushText and open a local workspace.
           - Confirm document editing, save, workspace search, and Markdown preview still work.
 
+          The Cominotti Flatpak repository is the primary publication channel.
           Flathub automerge is intentionally not enabled by this workflow.
           EOF
 

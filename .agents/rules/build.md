@@ -10,6 +10,7 @@ globs: "{Cargo.toml,Makefile,.cargo/**,.config/**,build.rs,meson.build,meson_opt
 Use `make` targets for development. The Makefile auto-detects nextest for non-widget tests across the workspace, while full-suite widget coverage in `make test` flows through the shared headless `scripts/run-widget-tests.sh` path so local verification matches CI. `make test-widget` still uses the same runner in auto/native mode for interactive debugging.
 
 ```
+make dev-tools  # Flatpak runtime/SDK deps + GTK debug input/screenshot helpers
 make run        # build + force a fresh launch with temporary GNOME desktop staging
 make refresh-dock-icon # regenerate icon assets + force a fresh GNOME Shell dock icon reload
 make verify-flatpak-identity # verify Flatpak export identity, permissions, and MIME registration
@@ -23,6 +24,8 @@ make install-git-hooks
 Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-linux for fast linking.
 
 The repo-managed Git hooks live under `.githooks/`. Install them with `make install-git-hooks`, which sets `core.hooksPath` for this checkout. The pre-commit hook runs `make pre-commit`, which must stay aligned with the formatting and Clippy gates enforced in CI.
+
+Use `make dev-tools` on a fresh local checkout before deep GTK debugging. It must remain idempotent and depend on `flatpak-deps` so Flatpak runtime/SDK setup and live-debug helper setup stay available through one command. The helper script installs `ydotool`, `gnome-screenshot`, `wl-clipboard`, and system Python AT-SPI bindings when missing, then starts a user `ydotoold` socket under `$XDG_RUNTIME_DIR` only when `/dev/uinput` is present and writable. Do not pollute the host/global environment: no shell-wide exports, no pip installs, no dotfile edits, and no automatic rpm-ostree host layering. Host layering requires `LUSHTEXT_DEV_TOOLS_ALLOW_RPM_OSTREE=1`.
 
 On GNOME Shell, `make run` asks any already-running `dev.cominotti.lushtext` owner to quit before staging a desktop file plus `hicolor` icons and launching the freshly built debug binary. If the existing owner refuses to close, the launcher must fail instead of activating stale code. The staged desktop entry uses a content-addressed absolute icon file path. This avoids Shell holding onto a stale themed-icon cache entry when the app icon bytes change between dev runs while keeping the icon file alive for as long as a restored user-local desktop entry might reference it. The launcher must repair any stale absolute `Icon=` path before backing up or restoring an existing `dev.cominotti.lushtext.desktop` override. Because the staged desktop file also carries `MimeType` associations, the launcher must refresh the applications desktop database after staging or restoring it so GNOME Settings and `gio mime` see current handler metadata.
 
@@ -83,16 +86,18 @@ Meson wraps Cargo for installed and Flatpak builds:
 - Regenerate after dependency changes: `make cargo-sources` (requires `flatpak-cargo-generator`)
 - Dependency update chain: `cargo update` → `cargo hakari generate` → `make cargo-sources`
 
-## Flathub Release Automation
+## Flatpak Release Automation
 
 - Release command surface: `make release VERSION=vX.Y.Z RELEASE_NOTES_FILE=...` for explicit releases and `make release-bump TYPE=major|minor|patch` for computed releases. Use `DRY_RUN=1` before real releases. `PRERELEASE=alpha|beta|rc` starts or continues prerelease streams, and `PROMOTE=1` is required to promote a prerelease stream to stable.
 - Real release commands must run from a clean `main` branch. The release helper stages only intended release metadata and packaging files, commits with `chore(release): vX.Y.Z`, creates a signed tag, and pushes `main` plus the tag only after validation passes.
 - `RELEASE_NOTES_FILE` is mandatory for real releases because the notes are inserted into `data/dev.cominotti.lushtext.metainfo.xml.in` as the AppStream release description.
 - Version surfaces that move together: `meson.build`, `crates/lushtext/Cargo.toml`, `crates/lushtext-core/Cargo.toml`, `Cargo.lock`, AppStream releases, and `build-aux/cargo-sources.json`.
+- The primary Flatpak publication channel is the Cominotti-owned remote at `https://flatpak.cominotti.dev/`. Use `make cominotti-flatpak-repo VERSION=vX.Y.Z COMINOTTI_FLATPAK_PUBLIC_KEY=... COMINOTTI_FLATPAK_GPG_KEY=...` to generate a signed repository under `build-aux/cominotti-flatpak/flatpak/repo/`, plus `cominotti.flatpakrepo` and `lushtext.flatpakref`. Always run `make verify-cominotti-flatpak-repo` and `make verify-cominotti-pages-limits`; use `make cominotti-flatpak-smoke` when a real repo summary should be present. Cloudflare Pages is the default hosted backend, `COMINOTTI_FLATPAK_DEPLOY_COMMAND` is an override, and Cloudflare R2 is the first fallback when Pages asset or file-count limits are exceeded.
+- Public Cominotti install instructions must keep GPG verification enabled. Do not publish `flatpak remote-add --no-gpg-verify` for the Cominotti remote except in clearly private local-testing notes.
 - The local Flatpak manifest remains checkout-oriented with `type: "dir"`. Flathub updates are generated with `make flathub-manifest VERSION=vX.Y.Z`, producing `build-aux/flathub/dev.cominotti.lushtext.json` plus `cargo-sources.json` with a public Git tag/commit source and `CARGO_NET_OFFLINE=true`.
 - Always run `make verify-flathub-manifest` after generating a Flathub-facing manifest. It rejects local `type: "dir"` sources and checks that app ID, runtime, SDK, Rust extension, command, finish args, cleanup rules, Meson profile, and Cargo sources match the reviewed local manifest.
 - Flathub app verification for `dev.cominotti.lushtext` is domain-based on `cominotti.dev`; linked GitHub accounts do not verify this custom-domain ID. Use `make verify-flathub-domain FLATHUB_VERIFICATION_TOKEN=<token>` after publishing the Flathub token to `https://cominotti.dev/.well-known/org.flathub.VerifiedApps.txt`.
-- Flathub publication stays reviewable by default. Do not enable `flathub.json` automerge unless a later explicit policy change accepts that successful Flathub builds do not prove runtime behavior.
+- Flathub publication is optional and stays reviewable by default. Missing Flathub credentials must be reported separately from Cominotti publication, and must not make the primary Cominotti release look incomplete. Do not enable `flathub.json` automerge unless a later explicit policy change accepts that successful Flathub builds do not prove runtime behavior.
 
 ## Snap
 
@@ -133,8 +138,8 @@ All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but thi
 
 - `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, Clippy, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. The `Dependency Policy` job runs `cargo deny check advisories bans sources`.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
-- `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, a no-mutation release preview, and current metadata validation.
-- `.github/workflows/release.yml` — `v*` tag release validation and manual dry-run workflow. It validates release metadata, builds the Flatpak from the release source, creates or updates the GitHub Release context, and opens a Flathub manifest PR when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.
+- `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, Cominotti repository metadata tests, a no-mutation release preview, and current metadata validation.
+- `.github/workflows/release.yml` — `v*` tag release validation and manual dry-run workflow. It validates release metadata, builds the Flatpak from the release source, prepares/deploys Cominotti Flatpak repository artifacts when signing and deploy configuration are available, creates or updates the GitHub Release context, and opens an optional Flathub manifest PR when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.
 - `.github/workflows/release-benchmark.yml` — full benchmark run + markdown report uploaded as release asset on `v*` tags, same `fedora:44` container
 - `.github/workflows/snap.yml` — always-on `validate` job runs `snapcraft expand-extensions` (structural/extension validation only; a full build cannot succeed until the GNOME 50 platform snap exists). The `build-publish` job (`snapcore/action-build` + `snapcore/action-publish`, release `edge`) is gated behind the `SNAP_PLATFORM_AVAILABLE` repository variable so the missing platform never reds the pipeline; it uses the `SNAPCRAFT_STORE_CREDENTIALS` secret.
 

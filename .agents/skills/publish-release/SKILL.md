@@ -1,17 +1,17 @@
 ---
 name: publish-release
-description: Publish a LushText release to GitHub and Flathub. Use when preparing, validating, tagging, pushing, monitoring, repairing, rolling back, or writing release notes for a new LushText version. Covers semantic diff analysis since the last release, warm user-facing release notes with required sections and non-repeated poem stanzas, GitHub Release publication, Flathub PR handoff, AppStream metadata, release CI, and recovery from release or packaging failures.
+description: Publish a LushText release to GitHub and the Cominotti Flatpak repository. Use when preparing, validating, tagging, pushing, monitoring, repairing, rolling back, or writing release notes for a new LushText version. Covers semantic diff analysis since the last release, warm user-facing release notes with required sections and non-repeated poem stanzas, GitHub Release publication, Cominotti Flatpak repository publication, optional Flathub PR handoff, AppStream metadata, release CI, and recovery from release or packaging failures.
 ---
 
 # Publish Release
 
-Use this skill for the public LushText release lane. Treat every release as a stateful operation across Git history, GitHub Releases, AppStream metadata, GitHub Actions, and Flathub.
+Use this skill for the public LushText release lane. Treat every release as a stateful operation across Git history, GitHub Releases, AppStream metadata, GitHub Actions, the Cominotti Flatpak repository, and optional Flathub handoff.
 
 ## Load First
 
 1. Read [references/release-workflow.md](references/release-workflow.md) before running release commands.
 2. Read [references/release-notes.md](references/release-notes.md) before drafting notes or choosing a poem stanza.
-3. Read [references/failure-recovery.md](references/failure-recovery.md) as soon as any command, CI job, GitHub Release, or Flathub PR step fails.
+3. Read [references/failure-recovery.md](references/failure-recovery.md) as soon as any command, CI job, GitHub Release, Cominotti Flatpak publication, or optional Flathub PR step fails.
 4. Use [scripts/collect-release-context.sh](scripts/collect-release-context.sh) to gather raw diff context.
 5. Use [scripts/validate-release-notes.py](scripts/validate-release-notes.py) before a real release.
 
@@ -31,8 +31,11 @@ Use this skill for the public LushText release lane. Treat every release as a st
 
 - `make release VERSION=vX.Y.Z RELEASE_NOTES_FILE=/tmp/notes.md [YES=1] [DRY_RUN=1]`
 - `make release-bump TYPE=major|minor|patch [PRERELEASE=alpha|beta|rc] [PROMOTE=1] [YES=1] [DRY_RUN=1]`
+- `make cominotti-flatpak-repo VERSION=vX.Y.Z COMINOTTI_FLATPAK_PUBLIC_KEY=/path/to/public.asc COMINOTTI_FLATPAK_GPG_KEY=<fingerprint-or-keyid>`
+- `make verify-cominotti-flatpak-repo`
 - `scripts/release.sh` updates version surfaces, inserts AppStream release notes, validates metadata, builds Flatpak, creates the release commit, creates a signed tag, and pushes `main` plus the tag.
-- `.github/workflows/release.yml` validates `v*` tag releases, builds a GNOME 50 Flatpak, creates or updates the GitHub Release, and opens a Flathub PR when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.
+- `.github/workflows/release.yml` validates `v*` tag releases, builds a GNOME 50 Flatpak, creates or updates the GitHub Release, generates and verifies the signed Cominotti Flatpak repository when signing material is configured, verifies Cloudflare Pages static asset limits, deploys to Cloudflare Pages when Cloudflare credentials are configured, supports `COMINOTTI_FLATPAK_DEPLOY_COMMAND` as an override, and opens a Flathub PR only when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.
+- `scripts/generate-cominotti-flatpak-repo.sh`, `scripts/verify-cominotti-flatpak-repo.sh`, `scripts/verify-cominotti-pages-limits.sh`, and `scripts/test-cominotti-flatpak-repo.sh` generate, verify, Pages-preflight, and regression-test the Cominotti-hosted Flatpak repository descriptors and release manifest.
 - `scripts/generate-flathub-manifest.sh` and `scripts/verify-flathub-manifest.sh` produce and verify the Flathub-facing manifest with a public Git tag/commit source and `cargo-sources.json`.
 
 ## Completion Standard
@@ -43,5 +46,6 @@ A release is complete only when:
 2. The real release command succeeded, creating and pushing the signed release commit and tag.
 3. The release workflow completed or any skipped publication step is explicitly reported.
 4. The GitHub Release body contains the authored release notes, not only generated notes.
-5. A Flathub PR exists or the exact reason it was skipped is documented with the next manual action.
-6. Any rollback or follow-up action is concrete and preserves public history unless the user approved a rewrite.
+5. The Cominotti Flatpak repository artifact or deploy result is reported, or the exact reason it was skipped is documented with the next manual action.
+6. A Flathub PR exists when optional handoff is configured, or the exact reason it was skipped is documented.
+7. Any rollback or follow-up action is concrete and preserves public history unless the user approved a rewrite.

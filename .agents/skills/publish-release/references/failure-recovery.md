@@ -1,6 +1,6 @@
 # Failure Recovery
 
-When something fails, first identify which public surfaces already changed: local files, local commit, local tag, pushed `main`, pushed tag, GitHub Release, Flathub PR, or merged Flathub update.
+When something fails, first identify which public surfaces already changed: local files, local commit, local tag, pushed `main`, pushed tag, GitHub Release, Cominotti Flatpak repository artifact/deploy, Flathub PR, or merged Flathub update.
 
 ## Before Public Push
 
@@ -57,9 +57,31 @@ gh release edit "$VERSION" --prerelease --latest=false
 
 If a bad release is already public, prefer a new fixed release and a clear warning in the old release notes. Do not silently delete public context.
 
-## Flathub Problems
+## Cominotti Flatpak Problems
 
-If the workflow skipped the Flathub PR, check whether `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured. Then either rerun the workflow or create/update the PR manually from the generated artifact.
+If the workflow skipped Cominotti repository generation, check whether `COMINOTTI_FLATPAK_PRIVATE_KEY_B64`, `COMINOTTI_FLATPAK_PUBLIC_KEY_B64`, and `COMINOTTI_FLATPAK_GPG_KEY` are configured. Missing signing material is a skipped publication step, not a completed Flatpak publish.
+
+If Cominotti repository generation succeeds but deploy is skipped, check whether Cloudflare Pages settings are configured: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and `COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT` if using a non-default project name. If `COMINOTTI_FLATPAK_DEPLOY_COMMAND` is configured, check that override instead. Use the uploaded `cominotti-flatpak-repository` artifact as the manual deployment handoff.
+
+If generated repository verification fails:
+
+- regenerate with the intended tag and commit;
+- verify `cominotti.flatpakrepo`, `lushtext.flatpakref`, and the release manifest all use the signed Cominotti remote metadata;
+- verify public install instructions do not use `--no-gpg-verify`;
+- rerun `make verify-cominotti-flatpak-repo`.
+- rerun `make verify-cominotti-pages-limits` before deploying to Cloudflare Pages.
+
+If Cloudflare Pages limit verification fails:
+
+- inspect the largest-file and file-count report;
+- prefer Cloudflare R2 behind `flatpak.cominotti.dev` before GitHub Pages or Netlify;
+- keep the `cominotti` remote name and repository signing key unchanged when moving the backend.
+
+If a deployed Cominotti repository is broken, prefer publishing a new fixed release and repository summary rather than rewriting the public release tag. If the bad repository must be withdrawn, publish an explicit user-facing warning in the GitHub Release notes and preserve enough artifact context to recover the previous state.
+
+## Optional Flathub Problems
+
+If the workflow skipped the optional Flathub PR, check whether `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured. Then either rerun the workflow or create/update the PR manually from the generated artifact.
 
 If generated manifest verification fails:
 

@@ -60,7 +60,7 @@ Then do semantic analysis:
 - Check AppStream, Flatpak, desktop, GSettings, migrations, file I/O, draft/session persistence, and user data paths for manual actions or warnings.
 - Use subagents when available:
   - Semantic diff pass: ask for user-visible changes, behavior changes, risks, manual actions, and bug fixes since the previous tag.
-  - Release packaging pass: ask for LushText-specific release blockers, Flathub/GitHub failure modes, and rollback concerns.
+  - Release packaging pass: ask for LushText-specific release blockers, Cominotti Flatpak repository/GitHub failure modes, optional Flathub handoff risks, and rollback concerns.
 
 ## Draft Notes
 
@@ -150,9 +150,33 @@ gh release edit vX.Y.Z-alpha.1 --prerelease --latest=false
 
 Stable releases can let GitHub choose `latest` automatically unless the user asks otherwise.
 
-## Flathub Handoff
+## Cominotti Flatpak Publication
 
-The release workflow opens a Flathub PR only when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured. If it skips publication, use the uploaded `flathub-update` artifact or regenerate locally:
+The release workflow treats the Cominotti Flatpak repository at `https://flatpak.cominotti.dev/` as the primary Flatpak channel. When `COMINOTTI_FLATPAK_PRIVATE_KEY_B64`, `COMINOTTI_FLATPAK_PUBLIC_KEY_B64`, and `COMINOTTI_FLATPAK_GPG_KEY` are configured, it generates and verifies the signed repository artifact for the release tag.
+
+The default hosted backend is Cloudflare Pages direct upload. Configure `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and optionally `COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT` (default `cominotti-flatpak`) for automatic deployment. If `COMINOTTI_FLATPAK_DEPLOY_COMMAND` is configured, the workflow uses that command instead with `COMINOTTI_FLATPAK_STAGING_DIR` pointing at the generated staging directory. If deploy config is missing, report the uploaded `cominotti-flatpak-repository` artifact as the manual publication handoff.
+
+Local generation uses the public Git tag and commit, produces signed remote descriptors, and should never ask users to install with `--no-gpg-verify`:
+
+```bash
+make cominotti-flatpak-repo VERSION=vX.Y.Z COMINOTTI_FLATPAK_PUBLIC_KEY=/path/to/public.asc COMINOTTI_FLATPAK_GPG_KEY=<fingerprint-or-keyid>
+make verify-cominotti-flatpak-repo
+make verify-cominotti-pages-limits
+```
+
+For CI-style metadata checks without building the full repository, use:
+
+```bash
+COMINOTTI_FLATPAK_SKIP_BUILD=1 make cominotti-flatpak-repo VERSION=vX.Y.Z COMINOTTI_FLATPAK_PUBLIC_KEY=/path/to/public.asc
+make verify-cominotti-flatpak-repo
+make verify-cominotti-pages-limits
+```
+
+If the Pages-limit check fails, use Cloudflare R2 behind `flatpak.cominotti.dev` before falling back to GitHub Pages or Netlify.
+
+## Optional Flathub Handoff
+
+The release workflow opens a Flathub PR only when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured. If it skips optional Flathub publication, use the uploaded `flathub-update` artifact or regenerate locally:
 
 ```bash
 make flathub-manifest VERSION=vX.Y.Z
@@ -170,6 +194,7 @@ Report:
 - release commit SHA and tag;
 - GitHub Release URL or exact blocker;
 - release workflow result;
-- Flathub PR URL or exact skipped/manual action;
+- Cominotti Flatpak repository artifact/deploy result or exact skipped/manual action;
+- optional Flathub PR URL or exact skipped/manual action;
 - any AppStream, Flatpak, or packaging caveats;
 - any user-facing manual actions, warnings, deprecations, or rollback notes.

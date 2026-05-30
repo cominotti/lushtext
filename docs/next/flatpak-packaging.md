@@ -19,12 +19,83 @@ Flathub remote with `flatpak remote-add --if-not-exists --user` and asks
 extensions from that remote before building. `make flatpak` uses the same
 dependency setup path for build-only validation.
 
-## Flathub Publication
+## Cominotti Flatpak Publication
 
 The local manifest at `build-aux/dev.cominotti.lushtext.Flatpak.json` is a
-checkout-build manifest and intentionally keeps a local `type: "dir"` source.
-Flathub publication uses a generated manifest under `build-aux/flathub/` that
-replaces that source with an immutable public Git source:
+checkout-build manifest and intentionally keeps a local `type: "dir"` source. A
+public Cominotti repository publication uses generated artifacts under
+`build-aux/cominotti-flatpak/`:
+
+- `flatpak/repo/` — the signed OSTree Flatpak repository
+- `flatpak/cominotti.flatpakrepo` — the shared publisher remote descriptor
+- `flatpak/lushtext.flatpakref` — the app-specific install reference
+- `build/dev.cominotti.lushtext.json` — the tag/commit-based release manifest
+- `build/cargo-sources.json` — vendored Cargo sources beside the release manifest
+
+The generated release manifest replaces the local source with an immutable
+public Git tag and commit, sets `CARGO_NET_OFFLINE=true`, preserves the reviewed
+local packaging contract, and keeps LushText as the first app in the shared
+`cominotti` remote:
+
+```bash
+make cominotti-flatpak-repo VERSION=v0.2.0 \
+  COMINOTTI_FLATPAK_PUBLIC_KEY=public.gpg \
+  COMINOTTI_FLATPAK_GPG_KEY=<key-id>
+make verify-cominotti-flatpak-repo
+```
+
+Public hosting is provider-neutral. The deploy target only needs to serve the
+staged files over HTTPS at:
+
+```text
+https://flatpak.cominotti.dev/repo/
+https://flatpak.cominotti.dev/cominotti.flatpakrepo
+https://flatpak.cominotti.dev/lushtext.flatpakref
+```
+
+The default hosted backend is Cloudflare Pages direct upload from release CI.
+Pages is preferred for the public Flatpak remote because static asset requests
+are free and unlimited when they do not invoke Pages Functions. Before deploying
+to Pages, run:
+
+```bash
+make verify-cominotti-pages-limits
+```
+
+This checks the generated `flatpak/` directory against the 25 MiB per-asset
+limit and the configured file-count limit. If the check fails, move the
+repository to Cloudflare R2 behind `flatpak.cominotti.dev` before considering
+GitHub Pages or Netlify. GitHub Pages and Netlify remain secondary options for
+small or temporary hosting.
+
+`scripts/generate-cominotti-flatpak-repo.sh` signs the exported app commit and
+repository summary with `COMINOTTI_FLATPAK_GPG_KEY`, imports
+`COMINOTTI_FLATPAK_PUBLIC_KEY` into the repository metadata, and runs
+`flatpak build-update-repo` with static deltas. `COMINOTTI_FLATPAK_SKIP_BUILD=1`
+is for metadata-only CI tests and must not be used for public publication.
+
+Public install instructions must keep GPG verification enabled:
+
+```bash
+flatpak install --user https://flatpak.cominotti.dev/lushtext.flatpakref
+```
+
+Manual setup is also supported:
+
+```bash
+flatpak remote-add --user --from cominotti https://flatpak.cominotti.dev/cominotti.flatpakrepo
+flatpak install --user cominotti dev.cominotti.lushtext
+```
+
+Do not publish `--no-gpg-verify` instructions except for private local
+experiments.
+
+## Optional Flathub Handoff
+
+Flathub is no longer the primary Flatpak publication path. It remains available
+as an optional reviewable handoff when a later policy or project decision makes
+that useful. The Flathub manifest generator under `build-aux/flathub/` replaces
+the local source with an immutable public Git source:
 
 ```bash
 make flathub-manifest VERSION=v0.2.0
@@ -39,11 +110,13 @@ the generated manifest so Flathub builds do not fetch Cargo dependencies during
 the build.
 
 The release workflow opens or updates a pull request against the configured
-Flathub manifest repository when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are
-available. Human review and manual smoke testing remain the default publication
-gate. Do not add `flathub.json` with `automerge-flathubbot-prs` unless a later
-explicit policy change accepts the risk that a successful build does not prove
-the app launches or preserves workspace behavior.
+Flathub manifest repository only when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY`
+are available. Missing Flathub configuration must be reported as an optional
+handoff skip, not as a failed Cominotti publication. Human review and manual
+smoke testing remain the default Flathub gate. Do not add `flathub.json` with
+`automerge-flathubbot-prs` unless a later explicit policy change accepts the
+risk that a successful build does not prove the app launches or preserves
+workspace behavior.
 
 ## Release Automation
 
@@ -75,7 +148,22 @@ surface consistency, AppStream metadata, generated desktop metadata, vendored
 Cargo sources, and the Flatpak build before creating the release commit and
 signed tag.
 
-## Flathub Verification
+Tagged release CI prepares reviewable Cominotti repository artifacts when
+`COMINOTTI_FLATPAK_PRIVATE_KEY_B64`, `COMINOTTI_FLATPAK_PUBLIC_KEY_B64`, and
+`COMINOTTI_FLATPAK_GPG_KEY` are configured. Deployment defaults to Cloudflare
+Pages direct upload when `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and
+`COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT` (default `cominotti-flatpak`) are
+configured. Deployment is still provider-neutral:
+`COMINOTTI_FLATPAK_DEPLOY_COMMAND`, when configured, overrides the Cloudflare
+Pages path and receives `COMINOTTI_FLATPAK_STAGING_DIR` pointing at the staged
+`flatpak/` directory.
+Missing Cominotti signing or deploy configuration must be reported honestly
+instead of claiming publication is complete.
+
+See `docs/next/cominotti-flatpak-hosting.md` for the step-by-step Cloudflare
+Pages, FastMail DNS, GitHub secrets, verification, and fallback manual.
+
+## Optional Flathub Verification
 
 The app ID `dev.cominotti.lushtext` is a custom-domain reverse-DNS ID. Flathub
 therefore verifies the domain `cominotti.dev`; linking a GitHub account does not
