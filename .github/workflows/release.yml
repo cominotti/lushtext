@@ -178,6 +178,7 @@ jobs:
           COMINOTTI_FLATPAK_GPG_HOMEDIR: ${{ steps.signing.outputs.gpg-home }}
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           source_commit="$(git rev-parse "$VERSION^{commit}")"
           ./scripts/generate-cominotti-flatpak-repo.sh "$VERSION" "$source_commit" "$RUNNER_TEMP/cominotti-flatpak"
           ./scripts/verify-cominotti-flatpak-repo.sh "$RUNNER_TEMP/cominotti-flatpak"
