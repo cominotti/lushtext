@@ -154,11 +154,14 @@ if [[ "$skip_build" == "1" ]]; then
     exit 0
 fi
 
+dependency_remote="${FLATPAK_REMOTE:-flathub}"
+flatpak --user remote-add --if-not-exists "$dependency_remote" "$runtime_repo"
+
 builder_args=(
     --disable-rofiles-fuse
     --force-clean
     --user
-    --install-deps-from="${FLATPAK_REMOTE:-flathub}"
+    --install-deps-from="$dependency_remote"
     --repo="$repo_dir"
     --collection-id="$collection_id"
     --gpg-sign="$signing_key"

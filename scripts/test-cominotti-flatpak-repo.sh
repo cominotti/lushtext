@@ -67,6 +67,33 @@ assert_failure "generator rejects missing public key" env \
     "$repo_root/scripts/generate-cominotti-flatpak-repo.sh" \
     v1.2.3 deadbeef "$tmpdir/no-key"
 
+stub_bin="$tmpdir/stub-bin"
+mkdir -p "$stub_bin"
+cat > "$stub_bin/flatpak" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'flatpak %s\n' "$*" >> "$COMINOTTI_FLATPAK_TEST_LOG"
+exit 0
+EOF
+cat > "$stub_bin/flatpak-builder" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'flatpak-builder %s\n' "$*" >> "$COMINOTTI_FLATPAK_TEST_LOG"
+exit 0
+EOF
+chmod +x "$stub_bin/flatpak" "$stub_bin/flatpak-builder"
+
+build_log="$tmpdir/full-build.log"
+assert_success "full generator configures Flathub dependency remote" env \
+    PATH="$stub_bin:$PATH" \
+    COMINOTTI_FLATPAK_PUBLIC_KEY="$fake_public_key" \
+    COMINOTTI_FLATPAK_GPG_KEY=ABCDEF1234567890 \
+    COMINOTTI_FLATPAK_TEST_LOG="$build_log" \
+    "$repo_root/scripts/generate-cominotti-flatpak-repo.sh" \
+    v1.2.3 deadbeef "$tmpdir/full-build"
+grep -q '^flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo$' "$build_log"
+grep -q -- '--install-deps-from=flathub' "$build_log"
+
 bad_collection="$tmpdir/bad-collection"
 cp -R "$out_dir" "$bad_collection"
 sed -i 's/^DeployCollectionID=.*/DeployCollectionID=dev.example.Bad/' "$bad_collection/flatpak/cominotti.flatpakrepo"
