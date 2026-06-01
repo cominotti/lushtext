@@ -140,7 +140,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.metadata.outputs.version }}
+          ref: ${{ needs.metadata.outputs.checkout-ref }}
           fetch-depth: 0
 
       - name: Prepare Cominotti signing material
