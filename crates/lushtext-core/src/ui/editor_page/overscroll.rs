@@ -35,6 +35,51 @@ fn overscroll_margin_from_visible_height(visible_height: i32) -> i32 {
 }
 
 impl LushtextEditorPage {
+    /// Restore the left text edge after passive width-only layout changes.
+    ///
+    /// GTK may preserve the previous horizontal adjustment while the editor is
+    /// being narrowed. When the user was already at the left edge, that
+    /// preservation turns into a stale right-biased viewport, so clamp after the
+    /// new allocation settles.
+    pub(crate) fn schedule_left_edge_horizontal_scroll_clamp(&self) {
+        let editor_weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(editor) = editor_weak.upgrade() else {
+                return;
+            };
+            let Some(adjustment) = editor.source_view().hadjustment() else {
+                return;
+            };
+            let lower = adjustment.lower();
+            if (adjustment.value() - lower).abs() > 0.5 {
+                adjustment.set_value(lower);
+                editor.schedule_minimap_refresh();
+            }
+        });
+    }
+
+    /// Restore the top text edge after passive height-only layout changes.
+    ///
+    /// `AdwBottomSheet` overlays can shorten the visible editor without changing
+    /// the document. When the user was already at the first line, GTK's preserved
+    /// vertical adjustment should not leave line one clipped under the chrome.
+    pub(crate) fn schedule_top_edge_vertical_scroll_clamp(&self) {
+        let editor_weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(editor) = editor_weak.upgrade() else {
+                return;
+            };
+            let Some(adjustment) = editor.source_view().vadjustment() else {
+                return;
+            };
+            let lower = adjustment.lower();
+            if (adjustment.value() - lower).abs() > 0.5 {
+                adjustment.set_value(lower);
+                editor.schedule_minimap_refresh();
+            }
+        });
+    }
+
     /// Coalesce repeated size allocations into one idle overscroll refresh.
     pub(crate) fn schedule_dynamic_overscroll_update(&self) {
         let generation = self

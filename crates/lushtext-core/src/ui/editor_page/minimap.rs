@@ -41,6 +41,18 @@ const MINIMAP_LONG_LINE_WARNING_THRESHOLD: usize = 120;
 /// The minimap only needs a spatial hint, not every exact hit, so we stop once
 /// the marker strip is already dense enough to communicate "many matches here".
 const MINIMAP_SEARCH_MATCH_CAP: usize = 2_000;
+/// Maximum document size before wrapped minimap layout needs a long-line check.
+///
+/// Ordinary prose and source files stay below this budget, while multi-megabyte
+/// minified files can make the narrow source map build a very large visual-line
+/// cache when it mirrors editor word wrap.
+const MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET: u64 = 2 * 1024 * 1024;
+/// Long logical lines above this size make wrapped source-map layout expensive.
+///
+/// The threshold is high enough for normal code/log lines but catches minified
+/// JSON or generated files before a 64-160px minimap explodes one line into
+/// thousands of visual rows.
+const MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET: usize = 8_000;
 /// Minimum visual height for a semantic marker after projection.
 ///
 /// Collapsed or sub-pixel source-map lines still need to be discoverable, but
@@ -165,7 +177,7 @@ impl LushtextEditorPage {
         source_map.set_editable(false);
         source_map.set_cursor_visible(false);
         source_map.set_can_focus(false);
-        source_map.set_wrap_mode(gtk4::WrapMode::None);
+        source_map.set_wrap_mode(self.source_view().wrap_mode());
         source_map.set_show_line_numbers(false);
         source_map.set_show_line_marks(false);
         source_map.set_highlight_current_line(false);
@@ -260,6 +272,7 @@ impl LushtextEditorPage {
                 let Some(editor) = editor_weak.upgrade() else {
                     return;
                 };
+                editor.imp().minimap.wrapped_layout_too_large.set(None);
                 if editor.imp().minimap.tracking_suspended.get() {
                     return;
                 }
@@ -287,6 +300,21 @@ impl LushtextEditorPage {
         }
 
         self.schedule_minimap_refresh();
+    }
+
+    /// Keep the source map's wrapping policy aligned with the main editor.
+    ///
+    /// The minimap viewport is a visual promise about the editor, so width
+    /// reflow from word wrap must be reflected in the map before its native
+    /// viewport slider and our marker strip settle.
+    pub(crate) fn sync_minimap_wrap_mode(&self) {
+        let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
+            return;
+        };
+        let wrap_mode = self.source_view().wrap_mode();
+        if source_map.wrap_mode() != wrap_mode {
+            source_map.set_wrap_mode(wrap_mode);
+        }
     }
 
     /// Refresh minimap visibility, markers, and any one-shot availability feedback.
@@ -430,7 +458,56 @@ fn current_availability(editor: &LushtextEditorPage) -> MinimapAvailability {
     if !editor.size_check().syntax_enabled() {
         return MinimapAvailability::TooLarge;
     }
+    if wrapped_minimap_layout_exceeds_budget(editor) {
+        return MinimapAvailability::TooLarge;
+    }
     MinimapAvailability::Visible
+}
+
+fn wrapped_minimap_layout_exceeds_budget(editor: &LushtextEditorPage) -> bool {
+    if editor.source_view().wrap_mode() == gtk4::WrapMode::None {
+        return false;
+    }
+    if let Some(cached) = editor.imp().minimap.wrapped_layout_too_large.get() {
+        return cached;
+    }
+
+    let buffer = editor.buffer();
+    let buffer_chars = u64::try_from(buffer.char_count()).unwrap_or(u64::MAX);
+    let estimated_size = editor.file_size().unwrap_or(0).max(buffer_chars);
+    let exceeds = estimated_size > MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET
+        && buffer_has_line_exceeding_char_budget(&buffer, MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET);
+    editor
+        .imp()
+        .minimap
+        .wrapped_layout_too_large
+        .set(Some(exceeds));
+    exceeds
+}
+
+fn buffer_has_line_exceeding_char_budget(
+    buffer: &sourceview5::Buffer,
+    line_char_budget: usize,
+) -> bool {
+    let mut iter = buffer.start_iter();
+    let mut current_line_chars = 0usize;
+
+    while !iter.is_end() {
+        if iter.char() == '\n' {
+            current_line_chars = 0;
+        } else {
+            current_line_chars = current_line_chars.saturating_add(1);
+            if current_line_chars > line_char_budget {
+                return true;
+            }
+        }
+
+        if !iter.forward_char() {
+            break;
+        }
+    }
+
+    false
 }
 
 fn document_line_count(editor: &LushtextEditorPage) -> u32 {

@@ -261,32 +261,38 @@ fn test_search_panel_clamp_results_height_sets_max_content_height() {
 
     // Clamp to 300px.
     panel.clamp_results_height(300);
+    assert_eq!(panel.imp().results_scroll.min_content_height(), 300);
     assert_eq!(panel.imp().results_scroll.max_content_height(), 300);
     assert_eq!(panel.imp().results_scroll.height_request(), 300);
 
     // Clamp to a smaller value.
     panel.clamp_results_height(200);
+    assert_eq!(panel.imp().results_scroll.min_content_height(), 200);
     assert_eq!(panel.imp().results_scroll.max_content_height(), 200);
     assert_eq!(panel.imp().results_scroll.height_request(), 200);
 }
 
 #[test]
-fn test_search_panel_clamp_results_height_respects_minimum() {
+fn test_search_panel_clamp_results_height_can_yield_to_short_window_budget() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
 
-    // Values below 100 are clamped to 100 (matches min-content-height in template).
+    // Optional results chrome must be able to shrink below its comfortable
+    // height so the normal status bar keeps its allocation in tiny windows.
     panel.clamp_results_height(50);
-    assert_eq!(panel.imp().results_scroll.max_content_height(), 100);
-    assert_eq!(panel.imp().results_scroll.height_request(), 100);
+    assert_eq!(panel.imp().results_scroll.min_content_height(), 50);
+    assert_eq!(panel.imp().results_scroll.max_content_height(), 50);
+    assert_eq!(panel.imp().results_scroll.height_request(), 50);
 
     panel.clamp_results_height(0);
-    assert_eq!(panel.imp().results_scroll.max_content_height(), 100);
-    assert_eq!(panel.imp().results_scroll.height_request(), 100);
+    assert_eq!(panel.imp().results_scroll.min_content_height(), 0);
+    assert_eq!(panel.imp().results_scroll.max_content_height(), 0);
+    assert_eq!(panel.imp().results_scroll.height_request(), 0);
 
     panel.clamp_results_height(-10);
-    assert_eq!(panel.imp().results_scroll.max_content_height(), 100);
-    assert_eq!(panel.imp().results_scroll.height_request(), 100);
+    assert_eq!(panel.imp().results_scroll.min_content_height(), 0);
+    assert_eq!(panel.imp().results_scroll.max_content_height(), 0);
+    assert_eq!(panel.imp().results_scroll.height_request(), 0);
 }
 
 #[test]
@@ -296,6 +302,7 @@ fn test_search_panel_clamp_results_height_guard_skips_redundant_set() {
 
     // First call sets the value.
     panel.clamp_results_height(300);
+    assert_eq!(panel.imp().results_scroll.min_content_height(), 300);
     assert_eq!(panel.imp().results_scroll.max_content_height(), 300);
 
     // Second call with the same value is a no-op (guard check).

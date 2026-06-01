@@ -154,7 +154,7 @@ Stable releases can let GitHub choose `latest` automatically unless the user ask
 
 The release workflow treats the Cominotti Flatpak repository at `https://flatpak.cominotti.dev/` as the primary Flatpak channel. When `COMINOTTI_FLATPAK_PRIVATE_KEY_B64`, `COMINOTTI_FLATPAK_PUBLIC_KEY_B64`, and `COMINOTTI_FLATPAK_GPG_KEY` are configured, it generates and verifies the signed repository artifact for the release tag.
 
-The default hosted backend is Cloudflare Pages direct upload. Configure `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and optionally `COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT` (default `cominotti-flatpak`) for automatic deployment. If `COMINOTTI_FLATPAK_DEPLOY_COMMAND` is configured, the workflow uses that command instead with `COMINOTTI_FLATPAK_STAGING_DIR` pointing at the generated staging directory. If deploy config is missing, report the uploaded `cominotti-flatpak-repository` artifact as the manual publication handoff.
+The default hosted backend is Cloudflare Pages direct upload. Configure `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and optionally `COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT` (default `cominotti-sw-flatpak`) for automatic deployment. If `COMINOTTI_FLATPAK_DEPLOY_COMMAND` is configured, the workflow uses that command instead with `COMINOTTI_FLATPAK_STAGING_DIR` pointing at the generated staging directory. If deploy config is missing, report the uploaded `cominotti-flatpak-repository` artifact as the manual publication handoff.
 
 Local generation uses the public Git tag and commit, produces signed remote descriptors, and should never ask users to install with `--no-gpg-verify`:
 

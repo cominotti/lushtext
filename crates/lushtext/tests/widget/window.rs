@@ -42,6 +42,22 @@ fn test_window() -> LushtextWindow {
     crate::common::test_window()
 }
 
+fn seed_restored_window_size(width: i32, height: i32) {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_int(keys::WINDOW_WIDTH, width)
+        .expect("set window width");
+    settings
+        .set_int(keys::WINDOW_HEIGHT, height)
+        .expect("set window height");
+}
+
+fn test_window_with_restored_size(width: i32, height: i32) -> LushtextWindow {
+    seed_restored_window_size(width, height);
+    test_window()
+}
+
 const DEFINITION_LIST_CODE_BLOCK_SAMPLE: &str = concat!(
     "## Definition lists\n\n",
     "Term 1\n",
@@ -81,6 +97,23 @@ fn test_window_with_split_view_state(
         .set_double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION, properties_fraction)
         .expect("set properties-sidebar-width-fraction");
     test_window()
+}
+
+fn test_window_with_split_view_state_and_size(
+    workspace_visible: bool,
+    workspace_fraction: f64,
+    properties_visible: bool,
+    properties_fraction: f64,
+    width: i32,
+    height: i32,
+) -> LushtextWindow {
+    seed_restored_window_size(width, height);
+    test_window_with_split_view_state(
+        workspace_visible,
+        workspace_fraction,
+        properties_visible,
+        properties_fraction,
+    )
 }
 
 fn test_window_with_legacy_sidebar_state(visible: bool, position: i32) -> LushtextWindow {
@@ -243,8 +276,7 @@ fn prepare_markdown_preview_window(
     height: i32,
 ) -> (LushtextWindow, tempfile::TempDir) {
     ensure_gtk_init();
-    let window = test_window();
-    window.set_default_size(width, height);
+    let window = test_window_with_restored_size(width, height);
     window.new_tab();
     let dir = tempfile::tempdir().expect("markdown preview tempdir");
     let editor = active_editor(&window);
@@ -997,10 +1029,28 @@ fn set_properties_surface_presentation(
     window: &LushtextWindow,
     presentation: PropertiesSurfacePresentation,
 ) {
+    let requested = window
+        .imp()
+        .secondary_surfaces
+        .properties_requested_visible
+        .get();
     window
         .imp()
         .properties_layout_view
         .set_layout_name(presentation.layout_name());
+    match presentation {
+        PropertiesSurfacePresentation::Pane => {
+            window.imp().properties_bottom_sheet.set_open(false);
+            window
+                .imp()
+                .properties_split_view
+                .set_show_sidebar(requested);
+        }
+        PropertiesSurfacePresentation::Sheet => {
+            window.imp().properties_split_view.set_show_sidebar(false);
+            window.imp().properties_bottom_sheet.set_open(requested);
+        }
+    }
     flush_events();
 }
 
@@ -1108,6 +1158,102 @@ fn properties_surface_uses_right_pane(window: &LushtextWindow) -> bool {
         && window.imp().properties_split_view.shows_sidebar()
 }
 
+fn wait_for_properties_surface(
+    window: &LushtextWindow,
+    expected: PropertiesSurfacePresentation,
+    workspace_visible: bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        let properties_ready = match expected {
+            PropertiesSurfacePresentation::Pane => properties_surface_uses_right_pane(window),
+            PropertiesSurfacePresentation::Sheet => properties_surface_uses_bottom_sheet(window),
+        };
+        if properties_ready && workspace_sidebar_visible(window) == workspace_visible {
+            return;
+        }
+        flush_after_delay(Duration::from_millis(20));
+    }
+
+    panic!(
+        "expected properties {expected:?} with workspace visible={workspace_visible}, got presentation={:?}, properties visible={}, workspace visible={}, window={}x{}, properties split={}, sheet open={}",
+        properties_surface_presentation(window),
+        properties_sidebar_visible(window),
+        workspace_sidebar_visible(window),
+        current_window_width(window),
+        current_window_height(window),
+        window.imp().properties_split_view.shows_sidebar(),
+        window.imp().properties_bottom_sheet.is_open()
+    );
+}
+
+fn adaptive_shell_change_counter(window: &LushtextWindow) -> std::rc::Rc<std::cell::Cell<u32>> {
+    let changes = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    {
+        let changes = changes.clone();
+        window
+            .imp()
+            .properties_layout_view
+            .connect_notify_local(Some("layout-name"), move |_, _| {
+                changes.set(changes.get().saturating_add(1));
+            });
+    }
+    {
+        let changes = changes.clone();
+        window
+            .imp()
+            .workspace_split_view
+            .connect_notify_local(Some("show-sidebar"), move |_, _| {
+                changes.set(changes.get().saturating_add(1));
+            });
+    }
+    {
+        let changes = changes.clone();
+        window
+            .imp()
+            .properties_split_view
+            .connect_notify_local(Some("show-sidebar"), move |_, _| {
+                changes.set(changes.get().saturating_add(1));
+            });
+    }
+    {
+        let changes = changes.clone();
+        window
+            .imp()
+            .properties_bottom_sheet
+            .connect_notify_local(Some("open"), move |_, _| {
+                changes.set(changes.get().saturating_add(1));
+            });
+    }
+    changes
+}
+
+fn assert_adaptive_shell_stays_quiet(
+    window: &LushtextWindow,
+    expected: PropertiesSurfacePresentation,
+    workspace_visible: bool,
+) {
+    let changes = adaptive_shell_change_counter(window);
+    let before = changes.get();
+    for _ in 0..8 {
+        flush_after_delay(Duration::from_millis(50));
+        assert_eq!(
+            changes.get(),
+            before,
+            "adaptive shell state kept changing after it had settled"
+        );
+        match expected {
+            PropertiesSurfacePresentation::Pane => {
+                assert!(properties_surface_uses_right_pane(window));
+            }
+            PropertiesSurfacePresentation::Sheet => {
+                assert!(properties_surface_uses_bottom_sheet(window));
+            }
+        }
+        assert_eq!(workspace_sidebar_visible(window), workspace_visible);
+    }
+}
+
 fn workspace_total_fraction(window: &LushtextWindow) -> f64 {
     window.imp().workspace_split_view.sidebar_width_fraction()
 }
@@ -1128,6 +1274,20 @@ fn current_window_height(window: &LushtextWindow) -> i32 {
         let (_, default_height) = window.default_size();
         default_height
     }
+}
+
+fn source_view_hadjustment_is_at_left(editor: &LushtextEditorPage) -> bool {
+    editor
+        .source_view()
+        .hadjustment()
+        .is_none_or(|adjustment| (adjustment.value() - adjustment.lower()).abs() <= 0.5)
+}
+
+fn source_view_vadjustment_is_at_top(editor: &LushtextEditorPage) -> bool {
+    editor
+        .source_view()
+        .vadjustment()
+        .is_none_or(|adjustment| (adjustment.value() - adjustment.lower()).abs() <= 0.5)
 }
 
 fn assert_workspace_sidebar_width_locked(window: &LushtextWindow, expected_width: f64) {
@@ -1193,6 +1353,57 @@ fn properties_total_fraction(window: &LushtextWindow) -> f64 {
 
 fn minimap_setting(window: &LushtextWindow) -> bool {
     window.imp().settings.boolean(keys::SHOW_MINIMAP)
+}
+
+fn minimap_source_map(editor: &LushtextEditorPage) -> sourceview5::Map {
+    editor
+        .imp()
+        .minimap
+        .source_map
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("source map should exist")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MinimapGeometrySnapshot {
+    editor_width: i32,
+    editor_visible_height: i32,
+    editor_wrap_mode: gtk4::WrapMode,
+    source_map_width: i32,
+    source_map_wrap_mode: gtk4::WrapMode,
+    vertical_value: f64,
+    vertical_page_size: f64,
+    vertical_upper: f64,
+    visible_start_line: i32,
+}
+
+fn minimap_geometry_snapshot(editor: &LushtextEditorPage) -> MinimapGeometrySnapshot {
+    let source_view = editor.source_view();
+    let source_map = minimap_source_map(editor);
+    let visible_rect = source_view.visible_rect();
+    let (_, buffer_y) = source_view.window_to_buffer_coords(
+        gtk4::TextWindowType::Widget,
+        visible_rect.x(),
+        visible_rect.y(),
+    );
+    let visible_start_line = source_view
+        .iter_at_location(0, buffer_y)
+        .map_or(0, |iter| iter.line());
+    let vadjustment = source_view.vadjustment().expect("source view vadjustment");
+
+    MinimapGeometrySnapshot {
+        editor_width: source_view.width(),
+        editor_visible_height: visible_rect.height(),
+        editor_wrap_mode: source_view.wrap_mode(),
+        source_map_width: source_map.width(),
+        source_map_wrap_mode: source_map.wrap_mode(),
+        vertical_value: vadjustment.value(),
+        vertical_page_size: vadjustment.page_size(),
+        vertical_upper: vadjustment.upper(),
+        visible_start_line,
+    }
 }
 
 fn tab_content_opacity_setting() -> f64 {
@@ -1450,7 +1661,11 @@ fn test_split_view_defaults_restore_on_window() {
     assert!(workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
     assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
-    assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
+    let properties_fraction = properties_total_fraction(&window);
+    assert!(
+        (properties_fraction - 0.25).abs() < 0.001,
+        "expected snapped properties total fraction near 0.25, got {properties_fraction}"
+    );
     assert_workspace_sidebar_width_locked(&window, 360.0);
 }
 
@@ -1479,11 +1694,15 @@ fn test_workspace_file_sidebar_keeps_list_view_tree_model_rail() {
 #[test]
 fn test_saved_split_view_widths_snap_to_supported_workspace_presets() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.25, true, 0.6);
+    let window = test_window_with_split_view_state_and_size(true, 0.25, true, 0.6, 1600, 800);
     let settings = &window.imp().settings;
 
-    assert!((workspace_total_fraction(&window) - 0.3).abs() < 0.001);
-    assert!((properties_total_fraction(&window) - 0.25).abs() < 0.001);
+    assert!((workspace_total_fraction(&window) - 360.0 / 1600.0).abs() < 0.001);
+    let properties_fraction = properties_total_fraction(&window);
+    assert!(
+        (properties_fraction - 0.25).abs() < 0.001,
+        "expected snapped properties total fraction near 0.25, got {properties_fraction}"
+    );
     assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.3);
     assert_eq!(
         settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION),
@@ -1763,8 +1982,7 @@ fn test_focus_mode_shortcut_is_separate_from_fullscreen_shortcut() {
 #[test]
 fn test_focus_mode_entry_exit_restores_shell_surfaces() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
-    window.set_default_size(1400, 900);
+    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1400, 900);
     window.new_tab();
     present_window(&window);
 
@@ -1793,8 +2011,7 @@ fn test_focus_mode_entry_exit_restores_shell_surfaces() {
 #[test]
 fn test_f9_changes_requested_properties_state_while_focus_mode_suppresses_rendering() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, true, 0.25);
-    window.set_default_size(1400, 900);
+    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1400, 900);
     window.new_tab();
     present_window(&window);
     assert!(
@@ -2146,7 +2363,13 @@ fn test_editor_transparency_uses_derived_scheme_and_keeps_minimap_opaque() {
     let window = test_window();
     present_window(&window);
     window.open_document(&file_path);
-    wait_until(Duration::from_secs(2), || active_editor(&window).file_size().is_some());
+    wait_until(Duration::from_secs(2), || {
+        let editor = active_editor(&window);
+        editor.file_size().is_some()
+            && editor
+                .applied_style_scheme_id()
+                .is_some_and(|id| id.starts_with("lushtext-opacity-"))
+    });
 
     let editor = active_editor(&window);
     assert!((tab_content_opacity_setting() - 0.85).abs() < f64::EPSILON);
@@ -2439,6 +2662,64 @@ fn test_search_markers_clear_when_search_closes() {
 }
 
 #[test]
+fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+
+    let window = test_window_with_split_view_state_and_size(false, 0.3, false, 0.25, 1200, 900);
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    write_document_with_long_lines(&editor, 260, 1, 13);
+    wait_until(Duration::from_secs(2), || editor.is_minimap_visible());
+
+    let mid_file = editor.buffer().iter_at_line(120).expect("line 120");
+    editor.buffer().place_cursor(&mid_file);
+    editor
+        .source_view()
+        .scroll_to_mark(&editor.buffer().get_insert(), 0.0, true, 0.0, 0.0);
+    flush_after_delay(Duration::from_millis(100));
+    let before = minimap_geometry_snapshot(&editor);
+
+    activate_action(&window, "toggle-sidebar");
+    wait_until(Duration::from_secs(2), || {
+        workspace_sidebar_visible(&window)
+            && minimap_geometry_snapshot(&editor).editor_width < before.editor_width
+    });
+    flush_after_delay(Duration::from_millis(150));
+    let after = minimap_geometry_snapshot(&editor);
+
+    assert_eq!(after.editor_wrap_mode, gtk4::WrapMode::Word);
+    assert_eq!(
+        after.source_map_wrap_mode, after.editor_wrap_mode,
+        "the minimap source map must use the same wrap policy as the editor after sidebar reflow"
+    );
+    assert!(
+        after.source_map_width > 0 && after.editor_visible_height > 0,
+        "minimap and editor should both have settled allocations: {after:?}"
+    );
+    assert!(
+        (after.visible_start_line - before.visible_start_line).abs() <= 1,
+        "showing the sidebar should not jump the editor away from the visible buffer range; before={before:?}, after={after:?}"
+    );
+    assert!(
+        after.vertical_upper > after.vertical_page_size
+            && after.vertical_value >= 0.0
+            && after.vertical_value <= after.vertical_upper,
+        "vertical adjustment should stay internally consistent after reflow: {after:?}"
+    );
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
 fn test_modified_markers_clear_after_save() {
     ensure_gtk_init();
     let settings = gio::Settings::new(lushtext_core::config::APP_ID);
@@ -2651,6 +2932,88 @@ fn test_large_workspace_preset_collapses_properties_pane_earlier() {
 }
 
 #[test]
+fn test_dual_secondary_surfaces_settle_at_all_breakpoint_edges() {
+    ensure_gtk_init();
+
+    for (workspace_visible, workspace_fraction, compact_width, spacious_width) in [
+        (false, 0.3, 920, 945),
+        (true, 0.2, 1180, 1210),
+        (true, 0.3, 1320, 1365),
+        (true, 0.4, 1440, 1470),
+    ] {
+        let compact = test_window_with_split_view_state_and_size(
+            workspace_visible,
+            workspace_fraction,
+            true,
+            0.25,
+            compact_width,
+            900,
+        );
+        present_window(&compact);
+        wait_for_properties_surface(&compact, PropertiesSurfacePresentation::Sheet, false);
+        assert_adaptive_shell_stays_quiet(
+            &compact,
+            PropertiesSurfacePresentation::Sheet,
+            false,
+        );
+        compact.destroy();
+        flush_after_delay(Duration::from_millis(50));
+
+        let spacious = test_window_with_split_view_state_and_size(
+            workspace_visible,
+            workspace_fraction,
+            true,
+            0.25,
+            spacious_width,
+            900,
+        );
+        present_window(&spacious);
+        wait_for_properties_surface(
+            &spacious,
+            PropertiesSurfacePresentation::Pane,
+            workspace_visible,
+        );
+        assert_adaptive_shell_stays_quiet(
+            &spacious,
+            PropertiesSurfacePresentation::Pane,
+            workspace_visible,
+        );
+        spacious.destroy();
+        flush_after_delay(Duration::from_millis(50));
+
+        assert!(
+            compact_width < spacious_width,
+            "representative guard pair should be ordered"
+        );
+    }
+}
+
+#[test]
+fn test_medium_width_dual_surfaces_do_not_oscillate_after_settling() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1200, 900);
+    present_window(&window);
+    wait_for_properties_surface(&window, PropertiesSurfacePresentation::Sheet, false);
+
+    assert_adaptive_shell_stays_quiet(&window, PropertiesSurfacePresentation::Sheet, false);
+    assert!(
+        window.imp().secondary_surfaces.workspace_requested_visible.get(),
+        "compact suppression must not erase the user's desktop workspace intent"
+    );
+    assert!(
+        window
+            .imp()
+            .secondary_surfaces
+            .properties_requested_visible
+            .get(),
+        "document properties should remain requested while rendered as a sheet"
+    );
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
 fn test_hiding_workspace_sidebar_relaxes_properties_breakpoint() {
     ensure_gtk_init();
     let window = test_window_with_split_view_state(false, 0.4, false, 0.25);
@@ -2691,27 +3054,152 @@ fn test_compact_layout_mutual_exclusion_switches_secondary_surface() {
 }
 
 #[test]
-fn test_widening_restores_both_requested_surfaces_after_compact_suppression() {
+fn test_short_normal_window_preserves_status_bar_with_optional_surfaces() {
     ensure_gtk_init();
     let settings = gio::Settings::new(lushtext_core::config::APP_ID);
     settings
-        .set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true)
-        .expect("set split-view-layout-migrated");
-    settings
-        .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, true)
-        .expect("set workspace-sidebar-visible");
-    settings
-        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.3)
-        .expect("set workspace-sidebar-width-fraction");
-    settings
-        .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, true)
-        .expect("set properties-sidebar-visible");
-    settings
-        .set_double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION, 0.25)
-        .expect("set properties-sidebar-width-fraction");
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
 
-    let wider_window = test_window();
-    wider_window.set_default_size(1600, 900);
+    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1190, 200);
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    write_document_with_long_lines(&editor, 180, 2, 7);
+    activate_action(&window, "toggle-search-panel");
+
+    wait_for_positive_allocation(&*window.imp().status_bar, "status bar");
+    wait_until(Duration::from_secs(2), || {
+        editor.is_minimap_visible()
+            && properties_surface_uses_bottom_sheet(&window)
+            && window.imp().properties_panel.height() >= 240
+            && source_view_vadjustment_is_at_top(&editor)
+    });
+
+    assert!(
+        current_window_height(&window) >= window.height_request(),
+        "short windows should be raised to the advertised normal-mode height request"
+    );
+    assert_positive_allocation(&*window.imp().status_bar, "status bar");
+    assert!(
+        window.imp().search_panel.imp().results_scroll.height_request()
+            <= current_window_height(&window) / 3,
+        "search results should remain inside the short-window content budget"
+    );
+    assert!(
+        window.imp().properties_panel.height() >= 240,
+        "compact document properties should render as a usable bottom sheet, got height {}",
+        window.imp().properties_panel.height()
+    );
+    let minimap = minimap_source_map(&editor);
+    let geometry = minimap_geometry_snapshot(&editor);
+    assert_eq!(
+        geometry.visible_start_line, 0,
+        "top-anchored short windows should keep the first editor line visible"
+    );
+    assert!(
+        minimap.height() > 0,
+        "the minimap should keep a positive height in short compact layouts"
+    );
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_forced_tiny_window_preserves_status_bar() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let window = test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 980, 190);
+    // Some compositors can hand the app less height than the advertised normal
+    // floor. The center editor/sidebar region must yield before the status bar.
+    window.set_height_request(1);
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    write_document_with_long_lines(&editor, 80, 2, 0);
+
+    wait_until(Duration::from_secs(2), || {
+        current_window_height(&window) <= 240 && window.imp().status_bar.height() > 0
+    });
+
+    assert_positive_allocation(&*window.imp().status_bar, "status bar");
+    let status_bounds = window
+        .imp()
+        .status_bar
+        .compute_bounds(window.upcast_ref::<gtk4::Widget>())
+        .expect("status bar bounds in window");
+    assert!(
+        status_bounds.y() + status_bounds.height() <= current_window_height(&window) as f32 + 1.0,
+        "status bar should stay inside the tiny window allocation, bounds={status_bounds:?}, window height={}",
+        current_window_height(&window)
+    );
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_passive_compact_width_does_not_open_workspace_overlay() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 837, 902);
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    write_document_with_long_lines(&editor, 60, 1, 0);
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().workspace_split_view.is_collapsed()
+    });
+
+    assert!(
+        window.imp().secondary_surfaces.workspace_requested_visible.get(),
+        "the restored desktop workspace intent should remain true"
+    );
+    assert!(
+        !workspace_sidebar_visible(&window),
+        "passive compact restore must not leave the workspace sidebar covering the editor"
+    );
+    assert!(
+        source_view_hadjustment_is_at_left(&editor),
+        "passive compact restore should leave the editor anchored at the left edge"
+    );
+    assert_positive_allocation(editor.source_view(), "active editor source view");
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_explicit_compact_sidebar_toggle_opens_workspace_overlay() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state_and_size(false, 0.3, false, 0.25, 837, 902);
+    window.new_tab();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().workspace_split_view.is_collapsed()
+            && properties_surface_presentation(&window) == PropertiesSurfacePresentation::Sheet
+    });
+
+    activate_action(&window, "toggle-sidebar");
+    wait_until(Duration::from_secs(2), || workspace_sidebar_visible(&window));
+
+    assert!(workspace_sidebar_visible(&window));
+    assert!(!properties_sidebar_visible(&window));
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_widening_restores_both_requested_surfaces_after_compact_suppression() {
+    ensure_gtk_init();
+    let wider_window =
+        test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1600, 900);
     present_window(&wider_window);
     wait_until(Duration::from_secs(2), || {
         workspace_sidebar_visible(&wider_window)
@@ -2725,8 +3213,7 @@ fn test_widening_restores_both_requested_surfaces_after_compact_suppression() {
 #[test]
 fn test_properties_visibility_preference_survives_breakpoint_changes() {
     ensure_gtk_init();
-    let narrow_window = test_window_with_split_view_state(true, 0.3, false, 0.25);
-    narrow_window.set_default_size(1300, 900);
+    let narrow_window = test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 1300, 900);
     present_window(&narrow_window);
     activate_action(&narrow_window, "toggle-properties");
     wait_until(Duration::from_secs(2), || {
@@ -2743,8 +3230,14 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
     narrow_window.destroy();
     flush_after_delay(Duration::from_millis(50));
 
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_int(keys::WINDOW_WIDTH, 1600)
+        .expect("set window width");
+    settings
+        .set_int(keys::WINDOW_HEIGHT, 900)
+        .expect("set window height");
     let wide_window = test_window();
-    wide_window.set_default_size(1600, 900);
     present_window(&wide_window);
     wait_until(Duration::from_secs(2), || properties_surface_uses_right_pane(&wide_window));
 
@@ -2760,10 +3253,9 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
 }
 
 #[test]
-fn test_open_properties_right_pane_transitions_to_open_bottom_sheet_with_active_document_state() {
+fn test_open_properties_right_pane_and_bottom_sheet_keep_active_document_state() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
-    window.set_default_size(1600, 900);
+    let window = test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 1600, 900);
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let first_path = dir.path().join("first.txt");
@@ -2801,10 +3293,24 @@ fn test_open_properties_right_pane_transitions_to_open_bottom_sheet_with_active_
         Some(expected_location.as_str())
     );
 
-    set_properties_surface_presentation(&window, PropertiesSurfacePresentation::Sheet);
+    assert!(
+        window
+            .imp()
+            .secondary_surfaces
+            .properties_requested_visible
+            .get()
+    );
+    assert!(properties_surface_uses_right_pane(&window));
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+
+    let narrow_window =
+        test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1320, 900);
+    present_window(&narrow_window);
+    narrow_window.open_document(&second_path);
     wait_until(Duration::from_secs(2), || {
-        properties_surface_uses_bottom_sheet(&window)
-            && window
+        properties_surface_uses_bottom_sheet(&narrow_window)
+            && narrow_window
                 .imp()
                 .properties_panel
                 .imp()
@@ -2815,20 +3321,19 @@ fn test_open_properties_right_pane_transitions_to_open_bottom_sheet_with_active_
     });
 
     assert!(
-        window
+        narrow_window
             .imp()
             .secondary_surfaces
             .properties_requested_visible
             .get()
     );
-    assert!(properties_surface_uses_bottom_sheet(&window));
+    assert!(properties_surface_uses_bottom_sheet(&narrow_window));
 }
 
 #[test]
-fn test_open_properties_bottom_sheet_transitions_to_open_right_pane_with_active_document_state() {
+fn test_open_properties_bottom_sheet_and_right_pane_keep_active_document_state() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
-    window.set_default_size(1600, 900);
+    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1320, 900);
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("sheet-to-pane.txt");
@@ -2847,14 +3352,25 @@ fn test_open_properties_bottom_sheet_transitions_to_open_right_pane_with_active_
             == Some(expected_location.as_str())
     });
 
-    set_properties_surface_presentation(&window, PropertiesSurfacePresentation::Sheet);
-    activate_action(&window, "toggle-properties");
     wait_until(Duration::from_secs(2), || properties_surface_uses_bottom_sheet(&window));
+    assert!(
+        window
+            .imp()
+            .secondary_surfaces
+            .properties_requested_visible
+            .get()
+    );
+    assert!(properties_surface_uses_bottom_sheet(&window));
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
 
-    set_properties_surface_presentation(&window, PropertiesSurfacePresentation::Pane);
+    let wide_window =
+        test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1600, 900);
+    present_window(&wide_window);
+    wide_window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
-        properties_surface_uses_right_pane(&window)
-            && window
+        properties_surface_uses_right_pane(&wide_window)
+            && wide_window
                 .imp()
                 .properties_panel
                 .imp()
@@ -2865,13 +3381,13 @@ fn test_open_properties_bottom_sheet_transitions_to_open_right_pane_with_active_
     });
 
     assert!(
-        window
+        wide_window
             .imp()
             .secondary_surfaces
             .properties_requested_visible
             .get()
     );
-    assert!(properties_surface_uses_right_pane(&window));
+    assert!(properties_surface_uses_right_pane(&wide_window));
 }
 
 #[test]
@@ -3333,7 +3849,8 @@ fn test_local_history_action_requires_saved_eligible_document() {
 #[test]
 fn test_active_editor_extra_menu_includes_contextual_notes_and_local_history() {
     ensure_gtk_init();
-    let window = test_window();
+    let window = test_window_with_restored_size(1400, 900);
+    present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("extra-menu.txt");
     std::fs::write(&path, "hello").expect("write file");
@@ -3665,7 +4182,8 @@ fn test_local_history_dialog_scales_from_parent_and_keeps_preview_dominant() {
 #[test]
 fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     ensure_gtk_init();
-    let window = test_window();
+    let window = test_window_with_restored_size(1400, 900);
+    present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("history-browser.txt");
     std::fs::write(&path, "current\n").expect("write file");
@@ -3787,6 +4305,7 @@ fn test_local_history_capture_policy_respects_full_save_only_and_unavailable_mod
             .expect("list local history")
             .len()
             >= 3
+            && !editor.is_saving()
     });
 
     editor.imp().size_check.set(FileSizeCheck::DisableSyntax);
@@ -3811,6 +4330,7 @@ fn test_local_history_capture_policy_respects_full_save_only_and_unavailable_mod
             .expect("list after save-only save")
             .len()
             == count_after_full + 1
+            && !editor.is_saving()
     });
 
     editor.imp().size_check.set(FileSizeCheck::DisableUndoAndSyntax);
@@ -3822,6 +4342,9 @@ fn test_local_history_capture_policy_respects_full_save_only_and_unavailable_mod
     editor.buffer().set_modified(true);
     flush_after_delay(Duration::from_millis(120));
     activate_action(&window, "save");
+    wait_until(Duration::from_secs(2), || {
+        !editor.is_saving() && !editor.is_modified()
+    });
     flush_after_delay(Duration::from_millis(120));
 
     assert_eq!(

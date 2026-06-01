@@ -22,7 +22,7 @@ serve Flatpak objects.
 ## Cloudflare Pages Setup
 
 1. Sign in to Cloudflare and open **Workers & Pages**.
-2. Create or confirm a Pages project named `cominotti-flatpak`.
+2. Create or confirm a Pages project named `cominotti-sw-flatpak`.
 3. Use direct upload, not a Git-connected website build. Release CI uploads the
    generated `flatpak/` directory with Wrangler.
 4. Add `flatpak.cominotti.dev` under the Pages project's **Custom domains**.
@@ -39,7 +39,7 @@ FastMail is authoritative for `cominotti.dev`, so DNS changes happen there.
 3. Add a CNAME record:
    - Name/Host: `flatpak`
    - Value/Target: the Cloudflare Pages CNAME target from the custom-domain
-     setup, for example `cominotti-flatpak.pages.dev`
+     setup, for example `cominotti-sw-flatpak.pages.dev`
 4. Save the DNS record.
 5. Wait for DNS propagation. Cloudflare may take additional time to provision
    HTTPS for the custom domain after the CNAME resolves.
@@ -63,12 +63,12 @@ private key outside the repository and rotate it if it is ever exposed.
 Create the Cloudflare token as a custom API token with the minimum Pages
 deployment scope available in the Cloudflare dashboard: Account-level
 Cloudflare Pages edit/deploy access for the account that owns the
-`cominotti-flatpak` project.
+`cominotti-sw-flatpak` project.
 
 Optional repository variables:
 
 ```text
-COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT=cominotti-flatpak
+COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT=cominotti-sw-flatpak
 COMINOTTI_FLATPAK_DEPLOY_COMMAND
 ```
 

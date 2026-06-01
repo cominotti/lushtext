@@ -11,7 +11,7 @@ use crate::model::bookmark::BookmarkRecord;
 use crate::model::encoding::{DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode};
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::notifications::InlineActionNotification;
-use crate::services::{durable_write, file_limits::FileSizeCheck};
+use crate::services::{async_task, durable_write, file_limits::FileSizeCheck};
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
 use gtk4::gio;
@@ -19,10 +19,10 @@ use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use super::minimap::{MinimapAvailability, MinimapMarker};
 
@@ -34,12 +34,32 @@ type LoadCompletedCallback = Box<dyn FnOnce()>;
 type FileLoadedCallback = Box<dyn Fn()>;
 type NotesChangedCallback = Box<dyn Fn()>;
 
+/// Derived style-scheme IDs currently being generated on background threads.
+///
+/// Multiple open tabs can request the same opacity/base-scheme pair at once. A
+/// process-wide registry keeps those tabs from launching duplicate durable writes
+/// while still allowing later retries if the first write fails.
+static TRANSPARENCY_STYLE_SCHEME_GENERATIONS: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
 /// Coalesced end-of-document overscroll updates for one editor tab.
 #[derive(Default)]
 pub struct OverscrollState {
     /// Generation counter used to collapse bursts of GTK allocations into one
     /// idle overscroll recomputation after the layout settles.
     pub update_generation: Cell<u32>,
+    /// Last editor-page allocation width observed by `size_allocate`.
+    ///
+    /// Width-only changes can reflow wrapped text without changing the visible
+    /// height, so the editor uses this to refresh minimap geometry and preserve
+    /// left-edge scroll anchoring after passive shell resizes.
+    pub last_allocated_width: Cell<i32>,
+    /// Last editor-page allocation height observed by `size_allocate`.
+    ///
+    /// Height changes from adaptive bottom sheets can make GTK preserve a stale
+    /// vertical adjustment. Tracking the previous value lets the editor keep the
+    /// top edge anchored only when the user was already at the top.
+    pub last_allocated_height: Cell<i32>,
 }
 
 /// Signal handlers connected to application-global preference/theme objects.
@@ -197,6 +217,11 @@ pub struct MinimapState {
     pub modified_marks: RefCell<Vec<sourceview5::Mark>>,
     /// Current availability state for the minimap on this tab.
     pub availability: Cell<MinimapAvailability>,
+    /// Cached answer for whether wrapped minimap layout would be too expensive.
+    ///
+    /// Estimating long-line wrapping can scan the buffer once after edits. Caching
+    /// keeps resize-driven refreshes from repeatedly walking large documents.
+    pub wrapped_layout_too_large: Cell<Option<bool>>,
     /// Generation counter for coalescing expensive marker refresh work.
     pub refresh_generation: Cell<u32>,
     /// Prevents programmatic loads and evictions from being recorded as user edits.
@@ -533,6 +558,7 @@ impl ObjectImpl for LushtextEditorPage {
         let id = settings.connect_changed(Some(keys::WORD_WRAP), move |s, _| {
             apply_word_wrap(&view, s);
             if let Some(editor) = editor_weak.upgrade() {
+                editor.sync_minimap_wrap_mode();
                 editor.schedule_minimap_refresh();
             }
         });
@@ -540,17 +566,14 @@ impl ObjectImpl for LushtextEditorPage {
             .word_wrap_handler_id
             .replace(Some(id));
 
-        *self.applied_style_scheme_id.borrow_mut() = apply_color_scheme(&buffer, settings);
+        apply_color_scheme_to_editor(&self.obj());
         self.document_surface_opacity
             .set(settings.double(keys::TAB_CONTENT_OPACITY).clamp(0.0, 1.0));
         {
-            let buf = buffer.clone();
-            let s = settings.clone();
             let editor_weak = self.obj().downgrade();
             let id = settings.connect_changed(Some(keys::STYLE_SCHEME), move |_, _| {
-                let applied = apply_color_scheme(&buf, &s);
                 if let Some(editor) = editor_weak.upgrade() {
-                    *editor.imp().applied_style_scheme_id.borrow_mut() = applied;
+                    apply_color_scheme_to_editor(&editor);
                 }
             });
             self.preference_bindings
@@ -558,18 +581,10 @@ impl ObjectImpl for LushtextEditorPage {
                 .replace(Some(id));
         }
         {
-            let buf = buffer.clone();
-            let s = settings.clone();
             let editor_weak = self.obj().downgrade();
             let id = settings.connect_changed(Some(keys::TAB_CONTENT_OPACITY), move |_, _| {
-                let applied = apply_color_scheme(&buf, &s);
                 if let Some(editor) = editor_weak.upgrade() {
-                    editor
-                        .imp()
-                        .document_surface_opacity
-                        .set(s.double(keys::TAB_CONTENT_OPACITY).clamp(0.0, 1.0));
-                    *editor.imp().applied_style_scheme_id.borrow_mut() = applied;
-                    editor.queue_minimap_draw();
+                    apply_color_scheme_to_editor(&editor);
                 }
             });
             self.preference_bindings
@@ -577,23 +592,11 @@ impl ObjectImpl for LushtextEditorPage {
                 .replace(Some(id));
         }
         {
-            let buf = buffer.downgrade();
             let editor_weak = self.obj().downgrade();
-            let s = settings.clone();
             let style_manager = libadwaita::StyleManager::default();
             let handler_id = style_manager.connect_dark_notify(move |_| {
-                if let Some(buf) = buf.upgrade() {
-                    let applied = apply_color_scheme(&buf, &s);
-                    if let Some(editor) = editor_weak.upgrade() {
-                        *editor.imp().applied_style_scheme_id.borrow_mut() = applied;
-                    }
-                }
                 if let Some(editor) = editor_weak.upgrade() {
-                    editor
-                        .imp()
-                        .document_surface_opacity
-                        .set(s.double(keys::TAB_CONTENT_OPACITY).clamp(0.0, 1.0));
-                    editor.queue_minimap_draw();
+                    apply_color_scheme_to_editor(&editor);
                 }
             });
             self.preference_bindings
@@ -713,11 +716,34 @@ impl ObjectImpl for LushtextEditorPage {
 
 impl WidgetImpl for LushtextEditorPage {
     fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+        let previous_width = self.overscroll.last_allocated_width.replace(width);
+        let previous_height = self.overscroll.last_allocated_height.replace(height);
+        let width_changed = previous_width > 0 && previous_width != width;
+        let height_changed = previous_height > 0 && previous_height != height;
+        let hadjustment_was_at_left = self
+            .source_view
+            .hadjustment()
+            .is_none_or(|adjustment| (adjustment.value() - adjustment.lower()).abs() <= 0.5);
+        let vadjustment_was_at_top = self
+            .source_view
+            .vadjustment()
+            .is_none_or(|adjustment| (adjustment.value() - adjustment.lower()).abs() <= 0.5);
+
         self.parent_size_allocate(width, height, baseline);
 
         // Recompute the EOF overscroll after GTK has allocated the text view so
         // `visible_rect()` reflects the real viewport height for this frame.
         self.obj().schedule_dynamic_overscroll_update();
+        if width_changed {
+            self.obj().sync_minimap_wrap_mode();
+            self.obj().schedule_minimap_refresh();
+            if hadjustment_was_at_left {
+                self.obj().schedule_left_edge_horizontal_scroll_clamp();
+            }
+        }
+        if height_changed && vadjustment_was_at_top {
+            self.obj().schedule_top_edge_vertical_scroll_clamp();
+        }
         self.obj().refresh_focus_mode_readable_column();
         self.obj().queue_focus_mode_text_origin_guide_draw();
     }
@@ -814,7 +840,22 @@ fn apply_word_wrap(view: &sourceview5::View, settings: &gio::Settings) {
     view.set_wrap_mode(mode);
 }
 
-fn apply_color_scheme(buffer: &sourceview5::Buffer, settings: &gio::Settings) -> Option<String> {
+fn apply_color_scheme_to_editor(editor: &super::LushtextEditorPage) {
+    editor.imp().document_surface_opacity.set(
+        editor
+            .imp()
+            .settings
+            .double(keys::TAB_CONTENT_OPACITY)
+            .clamp(0.0, 1.0),
+    );
+    let applied = apply_color_scheme(editor);
+    *editor.imp().applied_style_scheme_id.borrow_mut() = applied;
+    editor.queue_minimap_draw();
+}
+
+fn apply_color_scheme(editor: &super::LushtextEditorPage) -> Option<String> {
+    let buffer = editor.buffer();
+    let settings = &editor.imp().settings;
     let scheme_manager = sourceview5::StyleSchemeManager::default();
     let base_scheme = crate::active_sourceview_scheme(settings)?;
     let opacity = settings.double(keys::TAB_CONTENT_OPACITY).clamp(0.0, 1.0);
@@ -825,22 +866,47 @@ fn apply_color_scheme(buffer: &sourceview5::Buffer, settings: &gio::Settings) ->
         return Some(applied_id);
     }
 
-    let derived_id = ensure_transparency_style_scheme(&base_scheme, settings);
-    let scheme = scheme_manager
-        .scheme(&derived_id)
-        .unwrap_or_else(|| base_scheme.clone());
+    let spec = transparency_style_scheme_spec(&base_scheme, settings);
+    ensure_transparency_style_scheme_search_path(&scheme_manager, &spec.scheme_dir);
+    let scheme = scheme_manager.scheme(&spec.derived_id).or_else(|| {
+        schedule_transparency_style_scheme_generation(editor, spec);
+        Some(base_scheme.clone())
+    })?;
     let applied_id = scheme.id().to_string();
     buffer.set_style_scheme(Some(&scheme));
     Some(applied_id)
 }
 
-/// Create or reuse an opacity-aware child scheme derived from the active base scheme.
-fn ensure_transparency_style_scheme(
+/// Runtime-generated opacity style scheme that can be written off the GTK thread.
+struct TransparencyStyleSchemeSpec {
+    /// GtkSourceView style-scheme ID used after the manager rescans the file.
+    derived_id: String,
+    /// User data subdirectory that holds generated style schemes.
+    scheme_dir: PathBuf,
+    /// Destination XML file for this specific opacity/base-scheme pair.
+    file_path: PathBuf,
+    /// Complete style-scheme XML content to write atomically.
+    xml: String,
+}
+
+/// Background write result returned to the GTK main loop.
+struct TransparencyStyleSchemeWriteResult {
+    /// GtkSourceView style-scheme ID whose generation finished.
+    derived_id: String,
+    /// Directory that may need to be added to the manager search path.
+    scheme_dir: PathBuf,
+    /// Destination file, used only for precise warning messages.
+    file_path: PathBuf,
+    /// Result from the durable filesystem write.
+    result: std::io::Result<()>,
+}
+
+/// Build the opacity-aware child scheme derived from the active base scheme.
+fn transparency_style_scheme_spec(
     base_scheme: &sourceview5::StyleScheme,
     settings: &gio::Settings,
-) -> String {
+) -> TransparencyStyleSchemeSpec {
     let palette = crate::resolve_tab_content_palette(settings);
-    let manager = sourceview5::StyleSchemeManager::default();
     let base_id = base_scheme.id().to_string();
     let sanitized_base = sanitize_style_scheme_component(&base_id);
     #[expect(
@@ -850,10 +916,6 @@ fn ensure_transparency_style_scheme(
     )]
     let opacity_percent = (palette.opacity * 100.0).round() as u32;
     let derived_id = format!("lushtext-opacity-{sanitized_base}-{opacity_percent}");
-
-    if manager.scheme(&derived_id).is_some() {
-        return derived_id;
-    }
 
     let scheme_dir = crate::services::json_store::data_dir().join("style-schemes");
     let file_path = scheme_dir.join(format!("{derived_id}.xml"));
@@ -880,8 +942,18 @@ fn ensure_transparency_style_scheme(
 </style-scheme>
 "#
     );
-    write_transparency_style_scheme_if_needed(&scheme_dir, &file_path, &xml);
+    TransparencyStyleSchemeSpec {
+        derived_id,
+        scheme_dir,
+        file_path,
+        xml,
+    }
+}
 
+fn ensure_transparency_style_scheme_search_path(
+    manager: &sourceview5::StyleSchemeManager,
+    scheme_dir: &Path,
+) {
     let scheme_dir_str = scheme_dir.to_string_lossy();
     if !manager
         .search_path()
@@ -890,9 +962,6 @@ fn ensure_transparency_style_scheme(
     {
         manager.prepend_search_path(&scheme_dir_str);
     }
-    manager.force_rescan();
-
-    derived_id
 }
 
 /// Replace punctuation in runtime-generated style-scheme IDs so the file name stays stable.
@@ -909,26 +978,86 @@ fn sanitize_style_scheme_component(input: &str) -> String {
         .collect()
 }
 
-fn write_transparency_style_scheme_if_needed(scheme_dir: &Path, file_path: &Path, xml: &str) {
+fn try_mark_transparency_style_scheme_generation(derived_id: &str) -> bool {
+    TRANSPARENCY_STYLE_SCHEME_GENERATIONS
+        .lock()
+        .map_or(true, |mut generations| {
+            generations.insert(derived_id.to_string())
+        })
+}
+
+fn clear_transparency_style_scheme_generation(derived_id: &str) {
+    if let Ok(mut generations) = TRANSPARENCY_STYLE_SCHEME_GENERATIONS.lock() {
+        generations.remove(derived_id);
+    }
+}
+
+fn schedule_transparency_style_scheme_generation(
+    editor: &super::LushtextEditorPage,
+    spec: TransparencyStyleSchemeSpec,
+) {
+    if !try_mark_transparency_style_scheme_generation(&spec.derived_id) {
+        schedule_transparency_style_scheme_apply_retry(editor);
+        return;
+    }
+
+    let editor_weak = editor.downgrade();
+    async_task::spawn_blocking_then(
+        editor_weak,
+        move || {
+            let result = write_transparency_style_scheme_if_needed(
+                &spec.scheme_dir,
+                &spec.file_path,
+                &spec.xml,
+            );
+            TransparencyStyleSchemeWriteResult {
+                derived_id: spec.derived_id,
+                scheme_dir: spec.scheme_dir,
+                file_path: spec.file_path,
+                result,
+            }
+        },
+        move |editor_weak, write_result| {
+            clear_transparency_style_scheme_generation(&write_result.derived_id);
+            if let Err(error) = write_result.result {
+                tracing::warn!(
+                    "Failed to write derived style scheme {}: {error}",
+                    write_result.file_path.display()
+                );
+                return;
+            }
+
+            let manager = sourceview5::StyleSchemeManager::default();
+            ensure_transparency_style_scheme_search_path(&manager, &write_result.scheme_dir);
+            manager.force_rescan();
+
+            if let Some(editor) = editor_weak.upgrade() {
+                apply_color_scheme_to_editor(&editor);
+            }
+        },
+    );
+}
+
+fn schedule_transparency_style_scheme_apply_retry(editor: &super::LushtextEditorPage) {
+    let editor_weak = editor.downgrade();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
+        if let Some(editor) = editor_weak.upgrade() {
+            apply_color_scheme_to_editor(&editor);
+        }
+    });
+}
+
+fn write_transparency_style_scheme_if_needed(
+    scheme_dir: &Path,
+    file_path: &Path,
+    xml: &str,
+) -> std::io::Result<()> {
     if std::fs::read_to_string(file_path).is_ok_and(|existing| existing == xml) {
-        return;
+        return Ok(());
     }
 
-    if let Err(error) = durable_write::create_dir_all_durable(scheme_dir) {
-        tracing::warn!(
-            "Failed to create style-scheme directory {}: {error}",
-            scheme_dir.display()
-        );
-        return;
-    }
-
-    if let Err(error) = durable_write::atomic_write_bytes(file_path, "style-scheme", xml.as_bytes())
-    {
-        tracing::warn!(
-            "Failed to write derived style scheme {}: {error}",
-            file_path.display()
-        );
-    }
+    durable_write::create_dir_all_durable(scheme_dir)?;
+    durable_write::atomic_write_bytes(file_path, "style-scheme", xml.as_bytes())
 }
 
 #[cfg(test)]
@@ -945,7 +1074,8 @@ mod tests {
         std::fs::write(&file_path, "<truncated").expect("expected operation to succeed");
         let xml = "<?xml version=\"1.0\"?><style-scheme id=\"ok\"/>";
 
-        write_transparency_style_scheme_if_needed(&scheme_dir, &file_path, xml);
+        write_transparency_style_scheme_if_needed(&scheme_dir, &file_path, xml)
+            .expect("style-scheme rewrite should succeed");
 
         assert_eq!(
             std::fs::read_to_string(&file_path).expect("expected operation to succeed"),

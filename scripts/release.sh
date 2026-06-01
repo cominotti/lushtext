@@ -545,7 +545,7 @@ print_cominotti_flatpak_plan() {
     local deploy_target="${COMINOTTI_FLATPAK_DEPLOY_TARGET:-$base_url/}"
     local public_key="${COMINOTTI_FLATPAK_PUBLIC_KEY:-}"
     local signing_key="${COMINOTTI_FLATPAK_GPG_KEY:-}"
-    local cloudflare_project="${COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT:-cominotti-flatpak}"
+    local cloudflare_project="${COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT:-cominotti-sw-flatpak}"
     local pages_max_file_bytes="${COMINOTTI_FLATPAK_PAGES_MAX_FILE_BYTES:-26214400}"
     local pages_max_files="${COMINOTTI_FLATPAK_PAGES_MAX_FILES:-20000}"
 

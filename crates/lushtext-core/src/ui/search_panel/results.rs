@@ -79,11 +79,25 @@ impl LushtextSearchPanel {
     }
 
     /// Clamp the results scroll area to at most `max_height` pixels.
-    /// Called from the window's `size_allocate` with `window_height / 3`
-    /// so the search panel never dominates the vertical layout.
+    ///
+    /// The search panel is optional chrome, so it must be allowed to collapse
+    /// in very short windows instead of forcing the persistent status bar below
+    /// the allocation.
     pub fn clamp_results_height(&self, max_height: i32) {
         let imp = self.imp();
-        let clamped = max_height.max(100); // never below min-content-height
+        let clamped = max_height.max(0);
+
+        // GTK validates min <= max at each setter call, so update the bound
+        // that is moving outward first and the bound that is moving inward
+        // second. Otherwise a resize from 60px to 100px can briefly set
+        // min-content-height above the old max-content-height and warn.
+        let current_max = imp.results_scroll.max_content_height();
+        if current_max != -1 && clamped > current_max {
+            imp.results_scroll.set_max_content_height(clamped);
+        }
+        if imp.results_scroll.min_content_height() != clamped {
+            imp.results_scroll.set_min_content_height(clamped);
+        }
         if imp.results_scroll.max_content_height() != clamped {
             imp.results_scroll.set_max_content_height(clamped);
         }

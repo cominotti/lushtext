@@ -72,7 +72,7 @@ The system SHALL let users navigate the active document from the minimap by clic
 - **AND** the minimap viewport indicator updates continuously during the drag
 
 ### Requirement: The minimap shows semantic navigation markers
-The system SHALL render visually distinguishable semantic markers in the minimap for editor-local navigation signals. The default supported marker set SHALL include bookmarks, active in-tab search matches, and modified-since-save line regions. Lines above the minimap warning threshold SHALL be represented by long-line warning markers only when the user enables the long-line marker preference.
+The system SHALL render visually distinguishable semantic markers in the minimap for editor-local navigation signals. The default supported marker set SHALL include bookmarks, active in-tab search matches, and modified-since-save line regions. Lines above the minimap warning threshold SHALL be represented by long-line warning markers only when the user enables the long-line marker preference. Semantic marker positions SHALL be projected from the same rendered `GtkSourceMap` geometry used by the minimap content, including top margin, dynamic EOF overscroll, and allocation changes. Semantic markers MUST NOT be spread across blank EOF overscroll tail space when their corresponding document lines render above that tail.
 
 #### Scenario: Bookmarks appear in the minimap
 - **WHEN** the active editor page contains bookmarks
@@ -83,6 +83,17 @@ The system SHALL render visually distinguishable semantic markers in the minimap
 - **WHEN** the user has an active in-tab search with one or more matches in the editor
 - **THEN** the minimap shows search-match markers at the corresponding regions
 - **AND** clearing or closing the in-tab search removes those search markers
+
+#### Scenario: Search markers respect EOF overscroll geometry
+- **WHEN** the active editor page has dynamic EOF overscroll
+- **AND** an active in-tab search produces markers for document lines above the final rendered content line
+- **THEN** search-match markers align with the corresponding rendered minimap content regions
+- **AND** search-match markers do not extend into the blank EOF overscroll tail below the rendered document content
+
+#### Scenario: All semantic marker categories share source-map projection
+- **WHEN** the active editor page shows bookmark, search-match, modified-since-save, and enabled long-line warning markers
+- **THEN** each marker category is positioned using the same source-map layout geometry
+- **AND** resizing or reallocation refreshes marker positions without changing which semantic lines are marked
 
 #### Scenario: Modified-since-save markers clear after save
 - **WHEN** the user edits a document and then saves it successfully
@@ -140,3 +151,31 @@ The system SHALL suppress editor minimap rendering while Focus Mode is active, r
 - **WHEN** the user's minimap preference is disabled
 - **AND** the user enters and exits Focus Mode
 - **THEN** the minimap remains disabled
+
+### Requirement: Minimap viewport follows settled editor geometry after width changes
+The system SHALL keep the minimap viewport overlay synchronized with the active editor's settled visible buffer range after layout-driven width changes. Sidebar show/hide, compact surface arbitration, editor width-only allocation changes, word-wrap reflow, and end-of-file overscroll recalculation MUST NOT leave the minimap viewport overlay using stale pre-transition geometry. The minimap's wrapping and viewport projection policy MUST be explicit enough that the overlay corresponds to the main editor viewport even when the minimap content uses a different wrap mode from the editor view.
+
+#### Scenario: Sidebar toggle preserves viewport correspondence
+- **WHEN** the minimap is enabled for the active document
+- **AND** word wrap is enabled
+- **AND** the workspace sidebar is shown or hidden at a width where it changes the editor allocation
+- **THEN** after layout settles, the minimap viewport overlay corresponds to the active editor's visible buffer range
+- **AND** the overlay is not positioned from stale pre-toggle adjustment geometry
+
+#### Scenario: Width-only allocation refreshes the minimap viewport
+- **WHEN** the active editor's width changes without a corresponding editor height change
+- **AND** that width change can alter wrapping, visible-line geometry, or scroll adjustment ranges
+- **THEN** the minimap viewport overlay is refreshed after the new editor and source-map allocations settle
+- **AND** semantic minimap markers continue to use the refreshed source-map geometry
+
+#### Scenario: Wrapping policy does not create viewport drift
+- **WHEN** the main editor and minimap use different wrap modes
+- **AND** the window width changes enough to reflow wrapped editor lines
+- **THEN** the minimap viewport overlay still represents the main editor's settled visible buffer range under the chosen projection policy
+- **AND** the user does not see the viewport indicator jump solely because the minimap retained a stale logical-to-visual mapping
+
+#### Scenario: Word-wrap-disabled control remains stable
+- **WHEN** word wrap is disabled for the active editor
+- **AND** the workspace sidebar is shown or hidden while the minimap is visible
+- **THEN** the minimap viewport overlay remains aligned with the active editor's visible buffer range after layout settles
+- **AND** any residual viewport drift is not hidden by word-wrap-specific assumptions

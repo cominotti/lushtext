@@ -97,6 +97,26 @@ The release workflow SHALL fail closed before publishing a tag when local releas
 - **WHEN** a real release is prepared locally or by the release workflow
 - **THEN** the Flatpak manifest builds successfully from the release inputs before the release is considered publishable
 
+### Requirement: Flathub Handoff Is Secondary To Cominotti Publication
+The release workflow SHALL treat the Cominotti Flatpak repository as the primary Flatpak publication path, while keeping Flathub manifest generation or pull-request creation optional when explicitly configured.
+
+#### Scenario: Cominotti publication does not require Flathub credentials
+- **WHEN** a release completes Cominotti Flatpak repository publication
+- **AND** `FLATHUB_TOKEN` or `FLATHUB_REPOSITORY` is not configured
+- **THEN** the workflow reports the Flathub handoff as skipped
+- **AND** it still treats the Cominotti Flatpak publication result as the release's primary Flatpak publication status
+
+#### Scenario: Flathub handoff remains optional when configured
+- **WHEN** a release completes Cominotti Flatpak repository publication
+- **AND** Flathub credentials are configured
+- **THEN** the workflow may generate or update the Flathub manifest pull request
+- **AND** a Flathub handoff failure is reported separately from the Cominotti repository publication result
+
+#### Scenario: Documentation names the primary Flatpak channel
+- **WHEN** maintainers read the Flatpak packaging or release documentation
+- **THEN** the Cominotti remote is documented as the primary Flatpak publication channel
+- **AND** Flathub verification and pull-request steps are documented only as optional or secondary paths
+
 ### Requirement: Flathub Manifest Update Pull Request
 The release automation SHALL prepare a reviewable update for the Flathub manifest repository that references the immutable public GitHub release source.
 

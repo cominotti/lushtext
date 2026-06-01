@@ -9,7 +9,8 @@ use gtk4::prelude::*;
 use lushtext_core::config::{APP_ID, keys};
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::editor_page::{
-    BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage, MinimapMarkerKind,
+    BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage, MinimapAvailability,
+    MinimapMarkerKind,
 };
 use sourceview5::prelude::*;
 use std::cell::Cell;
@@ -87,7 +88,7 @@ fn baseline_source_map_for_view(view: &sourceview5::View) -> sourceview5::Map {
     map.set_editable(false);
     map.set_cursor_visible(false);
     map.set_can_focus(false);
-    map.set_wrap_mode(gtk4::WrapMode::None);
+    map.set_wrap_mode(view.wrap_mode());
     map.set_show_line_numbers(false);
     map.set_show_line_marks(false);
     map.set_highlight_current_line(false);
@@ -761,6 +762,56 @@ fn test_minimap_source_map_matches_upstream_geometry_contract() {
 }
 
 #[test]
+fn test_minimap_source_map_tracks_editor_wrap_mode_changes() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(APP_ID);
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+    let page = LushtextEditorPage::new();
+    let source_map = minimap_source_map(&page);
+
+    assert_eq!(page.source_view().wrap_mode(), gtk4::WrapMode::Word);
+    assert_eq!(source_map.wrap_mode(), page.source_view().wrap_mode());
+
+    settings
+        .set_boolean(keys::WORD_WRAP, false)
+        .expect("disable word wrap");
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.source_view().wrap_mode() == gtk4::WrapMode::None
+            && source_map.wrap_mode() == gtk4::WrapMode::None
+    });
+
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("re-enable word wrap");
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.source_view().wrap_mode() == gtk4::WrapMode::Word
+            && source_map.wrap_mode() == gtk4::WrapMode::Word
+    });
+}
+
+#[test]
+fn test_minimap_disables_wrapped_extreme_long_line_documents() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+
+    let page = LushtextEditorPage::new();
+    page.imp().file_size.set(Some(3 * 1024 * 1024));
+    page.buffer().set_text(&format!("{}\n", "x".repeat(9_000)));
+    let _window = present_editor_page_with_size(&page, 1000, 520);
+
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.minimap_availability() == MinimapAvailability::TooLarge
+    });
+
+    assert!(!page.is_minimap_visible());
+}
+
+#[test]
 fn test_minimap_source_map_keeps_native_navigation_controller_set() {
     ensure_gtk_init();
 
@@ -1058,6 +1109,25 @@ fn test_minimap_marker_projection_refreshes_after_taller_allocation() {
         resized_tail > initial_tail + 40.0,
         "taller allocation should expose more EOF tail while markers remain content-bound"
     );
+    assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Search);
+}
+
+#[test]
+fn test_minimap_markers_remain_content_bound_with_word_wrap_disabled() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, false)
+        .expect("disable word wrap");
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&minimap_test_document(80, &[10, 40, 79], &[40]));
+    let _window = present_editor_page(&page);
+    wait_for_minimap_ready(&page);
+
+    assert_eq!(page.source_view().wrap_mode(), gtk4::WrapMode::None);
+    assert_eq!(minimap_source_map(&page).wrap_mode(), gtk4::WrapMode::None);
+    show_search_and_wait_for_minimap_marker(&page, "needle");
     assert_marker_bounds_within_source_content(&page, MinimapMarkerKind::Search);
 }
 

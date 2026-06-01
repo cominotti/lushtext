@@ -15,6 +15,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
 use crate::ui::properties_panel::LushtextPropertiesPanel;
 use crate::ui::search_panel::LushtextSearchPanel;
+use crate::ui::shrinkable_bin::LushtextShrinkableBin;
 use crate::ui::sidebar::{LushtextSidebar, WorkspaceSidebarWidthPreset};
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
 use glib::prelude::*;
@@ -29,7 +30,11 @@ use std::path::PathBuf;
 /// Tiny non-zero floor used only before the first real split-view sync.
 const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 1.0;
 /// Properties sidebar minimum width in scale-independent pixels.
-const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 260.0;
+///
+/// This matches `resources/ui/properties-panel.ui`; keeping the shell budget in
+/// sync with the rendered widget avoids one-pixel GTK allocation warnings near
+/// the adaptive breakpoint.
+const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 280.0;
 /// Target total-window width for the visible right properties pane.
 const FIXED_PROPERTIES_SIDEBAR_FRACTION: f64 = 0.25;
 /// Minimum center-column width that keeps restored-document inline alerts stable
@@ -38,8 +43,18 @@ const MIN_EDITOR_CONTENT_WIDTH_SP: f64 = 620.0;
 /// Extra width budget for split separators, padding, and rounding noise that
 /// the raw `25% / 50% / 25%` fractions do not capture near the breakpoint.
 const DUAL_PANE_LAYOUT_OVERHEAD_SP: f64 = 32.0;
+/// Minimum normal-mode height that preserves persistent chrome and an editor.
+///
+/// The prior layout could be allocated around 200px tall, which clipped the
+/// status bar and later let the compact document-properties sheet exceed the
+/// available window height. This floor keeps the header, tab strip, status bar,
+/// bottom sheet, and a small editor viewport inside GTK's legal allocation budget.
+const NORMAL_MODE_MIN_HEIGHT_SP: i32 = 360;
 /// Collapse the left workspace pane on narrower windows.
-const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: &str = "max-width: 860sp";
+///
+/// This numeric value feeds both pure layout math and the Libadwaita breakpoint
+/// condition string so the declarative and imperative paths cannot drift.
+const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: i32 = 860;
 /// Wide document-properties presentation in the multi-layout view.
 const PROPERTIES_LAYOUT_PANE: &str = "pane";
 /// Compact document-properties presentation in the multi-layout view.
@@ -88,6 +103,44 @@ pub struct SecondarySurfaceState {
     pub properties_requested_visible: Cell<bool>,
     /// Which secondary surface currently owns the compact-width slot, if any.
     pub compact_surface: Cell<Option<SecondarySurface>>,
+}
+
+/// Stable inputs for the main shell's adaptive geometry decision.
+///
+/// Keeping this as a plain Rust value makes the breakpoint behavior unit
+/// testable without constructing GTK widgets or depending on transient rendered
+/// sidebar visibility.
+#[derive(Clone, Copy, Debug)]
+struct AdaptiveShellInputs {
+    /// Current allocated or restored window width in scale-independent pixels.
+    window_width: i32,
+    /// Workspace width preset selected by the user.
+    workspace_preset: WorkspaceSidebarWidthPreset,
+    /// Whether the user last requested the workspace sidebar open.
+    workspace_requested_visible: bool,
+    /// Whether the user last requested document properties open.
+    properties_requested_visible: bool,
+    /// Which surface was explicitly chosen for the compact slot, if any.
+    compact_surface: Option<SecondarySurface>,
+    /// Focus Mode suppresses secondary surfaces while preserving requests.
+    focus_mode_active: bool,
+}
+
+/// Derived shell geometry for one stable set of inputs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdaptiveShellLayout {
+    /// Document-properties breakpoint threshold for the current intent.
+    properties_breakpoint_max_width: i32,
+    /// Whether the workspace would consume side-by-side width in this layout.
+    workspace_consumes_width: bool,
+    /// Resolved document-properties presentation.
+    properties_presentation: PropertiesPresentation,
+    /// Compact surface that should render for this pass.
+    compact_surface: Option<SecondarySurface>,
+    /// Whether the workspace sidebar should be rendered now.
+    render_workspace: bool,
+    /// Whether document properties should be rendered now.
+    render_properties: bool,
 }
 
 /// Editor-memory accounting shared by the eviction helpers.
@@ -380,6 +433,7 @@ impl ObjectSubclass for LushtextWindow {
         LushtextMarkdownPreview::ensure_type();
         LushtextPropertiesPanel::ensure_type();
         LushtextSearchPanel::ensure_type();
+        LushtextShrinkableBin::ensure_type();
 
         klass.bind_template();
     }
@@ -398,6 +452,7 @@ impl ObjectImpl for LushtextWindow {
 
         let w = settings.int(keys::WINDOW_WIDTH);
         let h = settings.int(keys::WINDOW_HEIGHT);
+        obj.set_height_request(NORMAL_MODE_MIN_HEIGHT_SP);
         obj.set_default_size(w, h);
         if settings.boolean(keys::WINDOW_MAXIMIZED) {
             obj.maximize();
@@ -961,7 +1016,7 @@ fn install_split_view_breakpoints(window: &super::LushtextWindow) {
     window.add_breakpoint(properties_bp);
 
     let workspace_bp = libadwaita::Breakpoint::new(
-        libadwaita::BreakpointCondition::parse(WORKSPACE_BREAKPOINT_MAX_WIDTH_SP)
+        libadwaita::BreakpointCondition::parse(&workspace_breakpoint_condition())
             .expect("valid workspace breakpoint condition"),
     );
     workspace_bp.add_setter(
@@ -979,10 +1034,14 @@ fn properties_breakpoint_condition(max_width_sp: i32) -> String {
     format!("max-width: {max_width_sp}sp")
 }
 
+fn workspace_breakpoint_condition() -> String {
+    properties_breakpoint_condition(WORKSPACE_BREAKPOINT_MAX_WIDTH_SP)
+}
+
 /// Build the properties-pane breakpoint from the minimum center width instead
 /// of a magic number so the shell explains *why* it collapses earlier.
 fn properties_breakpoint_max_width_for_window(window: &super::LushtextWindow) -> i32 {
-    properties_breakpoint_max_width_sp(properties_breakpoint_workspace_width_sp(window))
+    derive_adaptive_shell_layout(adaptive_shell_inputs(window)).properties_breakpoint_max_width
 }
 
 /// Compute the total window width below which the properties pane should
@@ -1023,6 +1082,106 @@ fn dual_sidebar_window_width_for_center(center_width_sp: f64, workspace_width_sp
         / (1.0 - FIXED_PROPERTIES_SIDEBAR_FRACTION).max(f64::EPSILON)
 }
 
+fn adaptive_shell_inputs(window: &super::LushtextWindow) -> AdaptiveShellInputs {
+    adaptive_shell_inputs_for_width(window, current_window_width(window))
+}
+
+fn adaptive_shell_inputs_for_width(
+    window: &super::LushtextWindow,
+    window_width: i32,
+) -> AdaptiveShellInputs {
+    let imp = window.imp();
+    AdaptiveShellInputs {
+        window_width,
+        workspace_preset: workspace_sidebar_preset(window),
+        workspace_requested_visible: imp.secondary_surfaces.workspace_requested_visible.get(),
+        properties_requested_visible: imp.secondary_surfaces.properties_requested_visible.get(),
+        compact_surface: imp.secondary_surfaces.compact_surface.get(),
+        focus_mode_active: imp.focus_mode.active.get(),
+    }
+}
+
+fn workspace_consumes_width_for_intent(input: AdaptiveShellInputs) -> bool {
+    !input.focus_mode_active
+        && input.workspace_requested_visible
+        && input.window_width > WORKSPACE_BREAKPOINT_MAX_WIDTH_SP
+}
+
+fn preferred_compact_surface_for_intent(input: AdaptiveShellInputs) -> Option<SecondarySurface> {
+    if let Some(surface) = input.compact_surface
+        && secondary_surface_requested_for_intent(input, surface)
+    {
+        return Some(surface);
+    }
+
+    if input.properties_requested_visible {
+        Some(SecondarySurface::DocumentProperties)
+    } else {
+        None
+    }
+}
+
+fn secondary_surface_requested_for_intent(
+    input: AdaptiveShellInputs,
+    surface: SecondarySurface,
+) -> bool {
+    match surface {
+        SecondarySurface::Workspace => input.workspace_requested_visible,
+        SecondarySurface::DocumentProperties => input.properties_requested_visible,
+    }
+}
+
+fn derive_adaptive_shell_layout(input: AdaptiveShellInputs) -> AdaptiveShellLayout {
+    let workspace_consumes_width = workspace_consumes_width_for_intent(input);
+    let workspace_width_sp = if workspace_consumes_width {
+        input.workspace_preset.clamped_width_sp(input.window_width)
+    } else {
+        0.0
+    };
+    let properties_breakpoint_max_width = properties_breakpoint_max_width_sp(workspace_width_sp);
+    let properties_presentation = if input.window_width <= properties_breakpoint_max_width {
+        PropertiesPresentation::Sheet
+    } else {
+        PropertiesPresentation::Pane
+    };
+    let compact = properties_presentation == PropertiesPresentation::Sheet;
+    let workspace_collapsed = input.window_width <= WORKSPACE_BREAKPOINT_MAX_WIDTH_SP;
+    let compact_surface = if compact {
+        preferred_compact_surface_for_intent(input)
+    } else {
+        None
+    };
+
+    let render_workspace = if input.focus_mode_active {
+        false
+    } else if workspace_collapsed {
+        compact_surface == Some(SecondarySurface::Workspace) && input.workspace_requested_visible
+    } else if compact {
+        !(compact_surface == Some(SecondarySurface::DocumentProperties)
+            && input.properties_requested_visible)
+            && input.workspace_requested_visible
+    } else {
+        input.workspace_requested_visible
+    };
+    let render_properties = if input.focus_mode_active {
+        false
+    } else if compact {
+        compact_surface == Some(SecondarySurface::DocumentProperties)
+            && input.properties_requested_visible
+    } else {
+        input.properties_requested_visible
+    };
+
+    AdaptiveShellLayout {
+        properties_breakpoint_max_width,
+        workspace_consumes_width,
+        properties_presentation,
+        compact_surface,
+        render_workspace,
+        render_properties,
+    }
+}
+
 fn effective_workspace_sidebar_width_sp(window: &super::LushtextWindow, window_width: i32) -> f64 {
     workspace_sidebar_preset(window).clamped_width_sp(window_width)
 }
@@ -1060,7 +1219,9 @@ fn desired_properties_fraction(window_width: i32) -> f64 {
 
 fn effective_properties_fraction(window: &super::LushtextWindow, window_width: i32) -> f64 {
     let total_fraction = desired_properties_fraction(window_width);
-    if workspace_sidebar_consumes_width(window) {
+    if derive_adaptive_shell_layout(adaptive_shell_inputs_for_width(window, window_width))
+        .workspace_consumes_width
+    {
         let total_width = f64::from(window_width.max(1));
         let workspace_width = effective_workspace_sidebar_width_sp(window, window_width);
         let remaining_fraction = (1.0 - workspace_width / total_width).max(f64::EPSILON);
@@ -1072,19 +1233,6 @@ fn effective_properties_fraction(window: &super::LushtextWindow, window_width: i
     }
 }
 
-fn properties_breakpoint_workspace_width_sp(window: &super::LushtextWindow) -> f64 {
-    if workspace_sidebar_consumes_width(window) {
-        effective_workspace_sidebar_width_sp(window, current_window_width(window))
-    } else {
-        0.0
-    }
-}
-
-fn workspace_sidebar_consumes_width(window: &super::LushtextWindow) -> bool {
-    let split = &window.imp().workspace_split_view;
-    split.shows_sidebar() && !split.is_collapsed()
-}
-
 fn properties_presentation(window: &super::LushtextWindow) -> PropertiesPresentation {
     let layout_name = window.imp().properties_layout_view.layout_name();
     PropertiesPresentation::from_layout_name(layout_name.as_deref())
@@ -1092,29 +1240,6 @@ fn properties_presentation(window: &super::LushtextWindow) -> PropertiesPresenta
 
 fn properties_surface_is_compact(window: &super::LushtextWindow) -> bool {
     properties_presentation(window) == PropertiesPresentation::Sheet
-}
-
-fn secondary_surface_requested(state: &SecondarySurfaceState, surface: SecondarySurface) -> bool {
-    match surface {
-        SecondarySurface::Workspace => state.workspace_requested_visible.get(),
-        SecondarySurface::DocumentProperties => state.properties_requested_visible.get(),
-    }
-}
-
-fn preferred_compact_surface(window: &super::LushtextWindow) -> Option<SecondarySurface> {
-    let state = &window.imp().secondary_surfaces;
-    if let Some(surface) = state.compact_surface.get()
-        && secondary_surface_requested(state, surface)
-    {
-        return Some(surface);
-    }
-    if state.properties_requested_visible.get() {
-        Some(SecondarySurface::DocumentProperties)
-    } else if state.workspace_requested_visible.get() {
-        Some(SecondarySurface::Workspace)
-    } else {
-        None
-    }
 }
 
 fn focus_is_within(window: &super::LushtextWindow, root: &gtk4::Widget) -> bool {
@@ -1150,7 +1275,8 @@ fn set_workspace_sidebar_preset(
 }
 
 fn sync_properties_breakpoint(window: &super::LushtextWindow) {
-    let max_width = properties_breakpoint_max_width_for_window(window);
+    let max_width =
+        derive_adaptive_shell_layout(adaptive_shell_inputs(window)).properties_breakpoint_max_width;
     if window.imp().properties_breakpoint_max_width.get() == max_width {
         return;
     }
@@ -1165,67 +1291,55 @@ fn sync_properties_breakpoint(window: &super::LushtextWindow) {
 
 fn sync_secondary_surfaces(window: &super::LushtextWindow) {
     let imp = window.imp();
-    let presentation = properties_presentation(window);
-    let compact = presentation == PropertiesPresentation::Sheet;
+    let layout = derive_adaptive_shell_layout(adaptive_shell_inputs(window));
+    let compact = layout.properties_presentation == PropertiesPresentation::Sheet;
     let was_workspace_visible = imp.workspace_split_view.shows_sidebar();
     let was_properties_visible = window.rendered_document_properties_visible();
     let focus_in_workspace = focus_is_within(window, imp.sidebar.upcast_ref::<gtk4::Widget>());
     let focus_in_properties =
         focus_is_within(window, imp.properties_panel.upcast_ref::<gtk4::Widget>());
 
-    if !compact {
-        imp.secondary_surfaces.compact_surface.set(None);
+    if properties_presentation(window) != layout.properties_presentation {
+        imp.properties_layout_view
+            .set_layout_name(layout.properties_presentation.layout_name());
     }
 
-    let compact_surface = if compact {
-        preferred_compact_surface(window)
-    } else {
-        None
-    };
-    let focus_mode_active = imp.focus_mode.active.get();
-    let render_workspace = if focus_mode_active {
-        false
-    } else if compact {
-        compact_surface == Some(SecondarySurface::Workspace)
-            && imp.secondary_surfaces.workspace_requested_visible.get()
-    } else {
-        imp.secondary_surfaces.workspace_requested_visible.get()
-    };
-    let render_properties = if focus_mode_active {
-        false
-    } else if compact {
-        compact_surface == Some(SecondarySurface::DocumentProperties)
-            && imp.secondary_surfaces.properties_requested_visible.get()
-    } else {
-        imp.secondary_surfaces.properties_requested_visible.get()
-    };
+    if !compact {
+        imp.secondary_surfaces.compact_surface.set(None);
+    } else if imp.secondary_surfaces.compact_surface.get() != layout.compact_surface {
+        imp.secondary_surfaces
+            .compact_surface
+            .set(layout.compact_surface);
+    }
 
-    if imp.workspace_split_view.shows_sidebar() != render_workspace {
-        imp.workspace_split_view.set_show_sidebar(render_workspace);
+    if imp.workspace_split_view.shows_sidebar() != layout.render_workspace {
+        imp.workspace_split_view
+            .set_show_sidebar(layout.render_workspace);
     }
 
     if compact {
         if imp.properties_split_view.shows_sidebar() {
             imp.properties_split_view.set_show_sidebar(false);
         }
-        if imp.properties_bottom_sheet.is_open() != render_properties {
-            imp.properties_bottom_sheet.set_open(render_properties);
+        if imp.properties_bottom_sheet.is_open() != layout.render_properties {
+            imp.properties_bottom_sheet
+                .set_open(layout.render_properties);
         }
     } else {
         if imp.properties_bottom_sheet.is_open() {
             imp.properties_bottom_sheet.set_open(false);
         }
-        if imp.properties_split_view.shows_sidebar() != render_properties {
+        if imp.properties_split_view.shows_sidebar() != layout.render_properties {
             imp.properties_split_view
-                .set_show_sidebar(render_properties);
+                .set_show_sidebar(layout.render_properties);
         }
     }
 
     window.sync_secondary_surface_action_states();
 
-    if (was_workspace_visible && !render_workspace && focus_in_workspace)
+    if (was_workspace_visible && !layout.render_workspace && focus_in_workspace)
         || (was_properties_visible
-            && !render_properties
+            && !layout.render_properties
             && (focus_in_properties || window.active_editor().is_none()))
     {
         window.restore_focus_after_secondary_pane_close();
@@ -1327,8 +1441,10 @@ fn fixed_fraction(window_width: i32, min_width_sp: f64, target_fraction: f64) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP, WorkspaceSidebarWidthPreset,
-        dual_sidebar_window_width_for_center, properties_breakpoint_max_width_sp,
+        AdaptiveShellInputs, DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP,
+        PropertiesPresentation, SecondarySurface, WorkspaceSidebarWidthPreset,
+        derive_adaptive_shell_layout, dual_sidebar_window_width_for_center,
+        properties_breakpoint_max_width_sp,
     };
 
     #[test]
@@ -1337,7 +1453,75 @@ mod tests {
             properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Comfy.max_width_sp()),
             1350
         );
-        assert_eq!(properties_breakpoint_max_width_sp(0.0), 912);
+        assert_eq!(properties_breakpoint_max_width_sp(0.0), 932);
+        assert_eq!(
+            properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Small.max_width_sp()),
+            1243
+        );
+        assert_eq!(
+            properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Large.max_width_sp()),
+            1456
+        );
+    }
+
+    #[test]
+    fn adaptive_layout_budgets_requested_workspace_even_when_compact_suppresses_it() {
+        let layout = derive_adaptive_shell_layout(AdaptiveShellInputs {
+            window_width: 1200,
+            workspace_preset: WorkspaceSidebarWidthPreset::Comfy,
+            workspace_requested_visible: true,
+            properties_requested_visible: true,
+            compact_surface: None,
+            focus_mode_active: false,
+        });
+
+        assert_eq!(layout.properties_breakpoint_max_width, 1350);
+        assert_eq!(
+            layout.properties_presentation,
+            PropertiesPresentation::Sheet
+        );
+        assert_eq!(
+            layout.compact_surface,
+            Some(SecondarySurface::DocumentProperties)
+        );
+        assert!(!layout.render_workspace);
+        assert!(layout.render_properties);
+    }
+
+    #[test]
+    fn adaptive_layout_does_not_open_workspace_overlay_for_passive_compact_shrink() {
+        let layout = derive_adaptive_shell_layout(AdaptiveShellInputs {
+            window_width: 837,
+            workspace_preset: WorkspaceSidebarWidthPreset::Comfy,
+            workspace_requested_visible: true,
+            properties_requested_visible: false,
+            compact_surface: None,
+            focus_mode_active: false,
+        });
+
+        assert_eq!(
+            layout.properties_presentation,
+            PropertiesPresentation::Sheet
+        );
+        assert_eq!(layout.compact_surface, None);
+        assert!(!layout.render_workspace);
+        assert!(!layout.render_properties);
+    }
+
+    #[test]
+    fn adaptive_layout_keeps_explicit_compact_workspace_overlay() {
+        let layout = derive_adaptive_shell_layout(AdaptiveShellInputs {
+            window_width: 837,
+            workspace_preset: WorkspaceSidebarWidthPreset::Comfy,
+            workspace_requested_visible: true,
+            properties_requested_visible: false,
+            compact_surface: Some(SecondarySurface::Workspace),
+            focus_mode_active: false,
+        });
+
+        assert_eq!(layout.compact_surface, Some(SecondarySurface::Workspace));
+        assert!(layout.render_workspace);
+        assert!(!layout.render_properties);
     }
 
     #[test]

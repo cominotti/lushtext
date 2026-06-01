@@ -152,7 +152,7 @@ Tagged release CI prepares reviewable Cominotti repository artifacts when
 `COMINOTTI_FLATPAK_PRIVATE_KEY_B64`, `COMINOTTI_FLATPAK_PUBLIC_KEY_B64`, and
 `COMINOTTI_FLATPAK_GPG_KEY` are configured. Deployment defaults to Cloudflare
 Pages direct upload when `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and
-`COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT` (default `cominotti-flatpak`) are
+`COMINOTTI_FLATPAK_CLOUDFLARE_PAGES_PROJECT` (default `cominotti-sw-flatpak`) are
 configured. Deployment is still provider-neutral:
 `COMINOTTI_FLATPAK_DEPLOY_COMMAND`, when configured, overrides the Cloudflare
 Pages path and receives `COMINOTTI_FLATPAK_STAGING_DIR` pointing at the staged
