@@ -350,7 +350,7 @@ verify_version_surfaces() {
 
 refresh_cargo_lock() {
     command -v cargo >/dev/null 2>&1 || die "cargo is required to refresh Cargo.lock"
-    cargo metadata --format-version 1 --no-deps >/dev/null
+    cargo update -w >/dev/null
 }
 
 verify_cargo_sources_current() {

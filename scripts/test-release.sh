@@ -163,7 +163,7 @@ write_stub_tools() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$1" == "metadata" ]]; then
+if [[ "$1" == "update" && "${2:-}" == "-w" ]]; then
     lushtext_version="$(awk -F\" '/^version = "/ { print $2; exit }' crates/lushtext/Cargo.toml)"
     core_version="$(awk -F\" '/^version = "/ { print $2; exit }' crates/lushtext-core/Cargo.toml)"
     awk -v lush="$lushtext_version" -v core="$core_version" '
@@ -182,7 +182,6 @@ if [[ "$1" == "metadata" ]]; then
         { print }
     ' Cargo.lock > Cargo.lock.tmp
     mv Cargo.lock.tmp Cargo.lock
-    printf '{"packages":[]}\n'
     exit 0
 fi
 
