@@ -35,6 +35,7 @@ If `main` pushed but the tag did not:
 If the tag pushed but the release workflow failed:
 
 - Rerun the workflow if the tagged source is correct and the failure was transient or infrastructure-related.
+- If the fix is in release tooling or workflow scripts after the public tag, keep the tag immutable and rerun from the workflow recovery ref while still resolving the released source from the public tag and commit.
 - If source code or release metadata is wrong, publish a new patch release rather than moving the public tag.
 - Only delete or replace a pushed tag with explicit maintainer approval and a clear downstream-impact note.
 
@@ -67,6 +68,7 @@ If generated repository verification fails:
 
 - regenerate with the intended tag and commit;
 - verify `cominotti.flatpakrepo`, `lushtext.flatpakref`, and the release manifest all use the signed Cominotti remote metadata;
+- if `flatpak-builder` cannot install runtime dependencies because the dependency remote is missing, make the generator configure the user-level runtime remote before rerunning CI;
 - verify public install instructions do not use `--no-gpg-verify`;
 - rerun `make verify-cominotti-flatpak-repo`.
 - rerun `make verify-cominotti-pages-limits` before deploying to Cloudflare Pages.
