@@ -65,6 +65,35 @@
   </screenshots>
 
   <releases>
+    <release version="0.2.0" date="2026-06-01">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Folger Shakespeare Library, "Shakespeare's Sonnets - Sonnet 116", final rhyming couplet.</p>
+        <p>Selection: Complete final couplet.</p>
+        <p>Complete couplet:</p>
+        <p>&gt; If this be error, and upon me proved,</p>
+        <p>&gt; I never writ, nor no man ever loved.</p>
+        <p>William Shakespeare, "Sonnet 116"</p>
+        <p>## What's Changed</p>
+        <p>LushText now has a first-party Cominotti Flatpak publication path. The release workflow can generate signed repository metadata for the Cominotti Flatpak remote, publish the shared `cominotti.flatpakrepo` remote descriptor, and provide a LushText-specific `lushtext.flatpakref` installer while keeping Flathub as a reviewable secondary handoff.</p>
+        <p>The editor minimap is more faithful to the document you are actually seeing. Search, bookmark, modified-line, and long-line markers now project through the rendered GtkSourceMap geometry, so they stay aligned with wrapped text and dynamic end-of-file overscroll instead of drifting into the blank tail below the document.</p>
+        <p>Adaptive editor geometry is steadier in tight windows. The status bar and its quick document controls stay visible, the workspace sidebar and document properties settle into pane or sheet presentations without oscillating, and passive window narrowing no longer leaves the editor's left edge hidden behind the workspace surface.</p>
+        <p>Changing editor transparency and theme settings is smoother across multiple tabs. LushText now deduplicates generated opacity-aware GtkSourceView style schemes and writes them off the main thread, keeping preference changes from competing with editing responsiveness.</p>
+        <p>Maintainers also get a stronger release lane: Cominotti Flatpak verification, Cloudflare Pages limit checks, optional deploy hooks, Flathub source-commit correctness, release dry-run coverage, and headless Mutter debugging helpers for reproducing GTK layout issues.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for normal users upgrading from v0.1.0.</p>
+        <p>Maintainers should verify that the release workflow either deploys the Cominotti Flatpak repository or uploads the `cominotti-flatpak-repository` artifact for manual publication. Optional Flathub publication still requires review of the generated pull request or artifact; automerge remains intentionally disabled.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>There are no deprecations in this release.</p>
+        <p>Normal editor windows now keep a slightly taller minimum height so the header, tab strip, editor, and status bar remain usable instead of clipping persistent controls.</p>
+        <p>The minimap may hide itself for very large wrapped documents with extremely long lines. This is intentional: it protects responsiveness when a narrow minimap would otherwise need to build an enormous wrapped visual-line map.</p>
+        <p>Cominotti Flatpak deployment depends on the configured signing material and deployment credentials. If those secrets or variables are absent, the release workflow reports the skipped publication step instead of claiming completion.</p>
+        <p>## Bug Fixes</p>
+        <p>Minimap markers now stay inside the rendered document content area and no longer stretch across blank end-of-file overscroll space.</p>
+        <p>The workspace sidebar, document-properties pane, compact bottom sheet, search results, and status bar now share constrained window space more predictably, reducing GTK allocation warnings and preventing important controls from disappearing at small sizes.</p>
+        <p>Window resize transitions now preserve the editor's left and top edges when the user was already at the start of the document, avoiding accidental-looking horizontal or vertical scroll jumps caused by layout changes.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-05-29">
       <description>
         <p>## Poetic Opening</p>
