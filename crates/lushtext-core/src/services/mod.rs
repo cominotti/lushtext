@@ -31,3 +31,24 @@ pub mod session_service;
 pub mod workspace_manager;
 pub mod workspace_note_service;
 pub mod workspace_watch;
+
+/// Feature-gated pure service hooks used only by the property-test target.
+#[cfg(feature = "property-tests")]
+pub mod property_testing {
+    use std::path::{Path, PathBuf};
+
+    use crate::model::sidecar_identity::DocumentSidecarIdentity;
+
+    /// Rebase a saved-document sidecar identity through the shared note helper.
+    ///
+    /// Property tests use this to prove the same path-prefix policy that
+    /// document-note and workspace search sidecars rely on during rename flows.
+    #[must_use]
+    pub fn rebase_document_identity_paths(
+        identity: &DocumentSidecarIdentity,
+        old_path: &Path,
+        new_path: &Path,
+    ) -> Option<(PathBuf, PathBuf)> {
+        super::note_storage::rebase_identity_paths(identity, old_path, new_path)
+    }
+}

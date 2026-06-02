@@ -6,6 +6,9 @@ rust-version.workspace = true
 license = "GPL-3.0-or-later"
 publish = false
 
+[features]
+property-tests = []
+
 [dependencies]
 gtk4        = { workspace = true }
 libadwaita  = { workspace = true }
@@ -45,7 +48,13 @@ glib-build-tools = "0.22"
 [dev-dependencies]
 tempfile  = { workspace = true }
 criterion = { workspace = true }
+proptest  = { workspace = true }
 
 [[bench]]
 name = "benchmarks"
 harness = false
+
+[[test]]
+name = "properties"
+path = "tests/properties.rs"
+required-features = ["property-tests"]

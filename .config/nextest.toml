@@ -4,5 +4,10 @@
 [profile.default]
 slow-timeout = { period = "30s", terminate-after = 4 }
 
+[profile.property]
+# Property tests are pure but generated. Give a little more room for shrinking
+# while keeping stuck cases bounded.
+slow-timeout = { period = "60s", terminate-after = 2 }
+
 # Widget retries are owned by scripts/run-widget-tests.sh because the custom
 # GTK harness still runs outside nextest.

@@ -15,6 +15,8 @@ make run        # build + force a fresh launch with temporary GNOME desktop stag
 make refresh-dock-icon # regenerate icon assets + force a fresh GNOME Shell dock icon reload
 make verify-flatpak-identity # verify Flatpak export identity, permissions, and MIME registration
 make test       # all tests
+make test-prop  # bounded property tests for pure deterministic logic
+make test-prop-deep # opt-in deeper property run with more generated cases
 make test-widget-headless # CI-style mutter/dbus widget run
 make mutants-smoke # small cargo-mutants smoke run
 make mutants-diff  # mutation test current changes against origin/main
@@ -56,6 +58,26 @@ These patterns are replicated from invowk-rust and must be maintained:
 4. Verify gtk-rs version alignment if adding any gtk/glib/gio/pango crate.
 5. Run `make cargo-sources` to regenerate `build-aux/cargo-sources.json` for Flatpak.
 
+## Property Testing
+
+- Framework: `proptest`, wired only for the `lushtext-core` property-test target
+- Feature: `lushtext-core/property-tests`
+- Target: `cargo nextest run -p lushtext-core --features property-tests --test properties --profile property`
+- Makefile targets: `test-prop`, `test-prop-deep`
+- Regression file location: `crates/lushtext-core/proptest-regressions/properties.txt`
+
+The property target is guarded by `required-features = ["property-tests"]` and
+must stay outside default non-widget nextest and default mutation runs. Use it
+for pure deterministic invariants over bounded generated strings, paths,
+vectors, Markdown fragments, replacement lists, encodings, and sidecar hashes.
+Do not put GTK widget construction, compositor behavior, D-Bus/portal state,
+file chooser flows, watcher timing, or live session behavior in this target.
+
+`make test-prop` uses the CI-safe default of 64 cases per property. Use
+`make test-prop-deep PROPTEST_DEEP_CASES=1024` for a manual or scheduled pass.
+Do not raise the default pull-request case count just to investigate one broad
+invariant; tighten the generator or use the deep lane.
+
 ## GResources
 
 - **Dev builds**: `build.rs` in `lushtext-core` compiles resources via `glib-build-tools`. Embedded in the binary via `include_bytes!` in `lib.rs`.
@@ -84,10 +106,24 @@ the cargo-mutants scope; keep that behavior in `scripts/run-widget-tests.sh`,
 where Mutter, D-Bus, renderer settings, retries, and warning filtering are
 controlled.
 
+Default mutation runs must also omit `lushtext-core/property-tests`. Generated
+property cases belong in `make test-prop`; otherwise mutation runtime becomes
+mutants multiplied by generated cases. If a future change needs a tiny property
+under mutation, add a separate documented opt-in mode rather than changing the
+default wrapper.
+
 Local in-place mutation runs are guarded. `MUTANTS_IN_PLACE=1` refuses dirty
 worktrees outside CI because cargo-mutants rewrites source files while testing.
 Use a clean checkout, a disposable worktree, or the default copy-based local
 mode when experimenting.
+
+cargo-mutants is serial by default, so the local Makefile targets auto-tune
+parallelism: `MUTANTS_JOBS` defaults to about `nproc / 4` and
+`MUTANTS_TEST_THREADS` caps each mutant job's nextest so `jobs x test-threads`
+stays near the logical CPU count instead of oversubscribing. `scripts/run-mutants.sh`
+only passes `--jobs` when `MUTANTS_JOBS` is set, and CI leaves it unset, so the
+sharded small runners keep the serial default and fan out through `MUTANTS_SHARD`
+instead.
 
 Treat survivors in this order: first decide whether the mutant represents a
 real missed behavior, then add or tighten deterministic tests, then consider
@@ -166,6 +202,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but this repo targets the GNOME 50 platform family (GTK 4.22, Libadwaita 1.9).
 
 - `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, Clippy, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. The `Dependency Policy` job runs `cargo deny check advisories bans sources`.
+- `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
 - `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, Cominotti repository metadata tests, a no-mutation release preview, and current metadata validation.
 - `.github/workflows/release.yml` — `v*` tag release validation and manual dry-run workflow. It validates release metadata, builds the Flatpak from the release source, prepares/deploys Cominotti Flatpak repository artifacts when signing and deploy configuration are available, creates or updates the GitHub Release context, and opens an optional Flathub manifest PR when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.

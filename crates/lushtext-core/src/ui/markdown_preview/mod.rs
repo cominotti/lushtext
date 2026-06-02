@@ -43,6 +43,17 @@ use imp::{
 };
 use inline_footnotes::lower_inline_footnotes;
 
+/// Run the preview's real inline-footnote lowering for feature-gated property tests.
+///
+/// Keeping this as a narrow feature-only hook lets generated tests exercise the
+/// production lowering path without making the private scanner part of the
+/// normal application API.
+#[cfg(feature = "property-tests")]
+#[must_use]
+pub fn lower_inline_footnotes_for_property_test(markdown: &str) -> Option<String> {
+    lower_inline_footnotes(markdown, markdown_render_options())
+}
+
 /// Maximum width for one rendered preview image before we scale it down.
 ///
 /// The preview lives inside a `GtkTextView` child-anchor slot, so very large

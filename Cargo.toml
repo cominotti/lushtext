@@ -78,6 +78,7 @@ assert_cmd = "2.0"
 predicates = "3.0"
 criterion  = { version = "0.8", features = ["html_reports"] }
 libtest-mimic = "0.8"
+proptest = "1.11.0"
 
 # --- Workspace-wide lint configuration ---
 # Crates opt in with `[lints] workspace = true`.

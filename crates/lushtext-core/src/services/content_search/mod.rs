@@ -8,6 +8,8 @@
 mod replace;
 mod search;
 
+#[cfg(feature = "property-tests")]
+pub use replace::apply_replacements_to_text_for_property_test;
 pub use replace::{
     ReplaceUndoBackup, ReplaceUndoEntry, UndoReplaceOutcome, apply_replacements, undo_replacements,
 };

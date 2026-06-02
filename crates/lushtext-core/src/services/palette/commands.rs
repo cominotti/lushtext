@@ -270,6 +270,20 @@ fn merge_sorted<'a>(
     result
 }
 
+/// Merge two already-sorted result streams through the production palette policy.
+///
+/// This feature-only hook gives property tests direct access to the stable tie
+/// behavior without exposing the helper in ordinary builds.
+#[cfg(feature = "property-tests")]
+#[must_use]
+pub fn merge_sorted_for_property_test<'a>(
+    a: Vec<ScoredResult<'a>>,
+    b: Vec<ScoredResult<'a>>,
+    max: usize,
+) -> Vec<ScoredResult<'a>> {
+    merge_sorted(a, b, max)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

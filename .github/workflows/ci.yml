@@ -90,6 +90,40 @@ jobs:
       - name: Run non-widget tests
         run: cargo nextest run --workspace
 
+  property-tests:
+    name: Property Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git \
+            curl
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-property
+
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+
+      - name: Run property tests
+        run: make test-prop
+
   widget-tests:
     name: Widget Tests
     runs-on: ubuntu-latest

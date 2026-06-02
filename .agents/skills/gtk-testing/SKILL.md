@@ -8,6 +8,8 @@ Guide testing for LushText as it exists today. The repo already has solid covera
 The testing approach is pragmatic:
 
 - Keep pure logic in unit and service tests where no display server is needed.
+- Use the property-test lane for pure deterministic invariants that benefit from
+  bounded generated inputs.
 - Use the existing integration helpers for cross-service filesystem workflows.
 - Use the custom widget harness for real window and widget behavior.
 - Reach for a new compositor-level or E2E harness only when the current widget target cannot express the behavior.
@@ -18,6 +20,7 @@ The testing approach is pragmatic:
 |-------|------|----------|---------|---------|
 | Unit | Domain invariants and small pure helpers | crate-local `#[cfg(test)]` modules | No | `make test-unit` |
 | Service | Filesystem and persistence logic in lib tests | crate-local `#[cfg(test)]` modules | No | `make test-unit` |
+| Property | Pure deterministic invariants over bounded generated inputs | `crates/lushtext-core/tests/properties.rs` and `crates/lushtext-core/tests/properties/*.rs` | No | `make test-prop` |
 | Integration | Cross-service workflows with real temp directories | `crates/lushtext/tests/integration.rs` and `crates/lushtext/tests/integration/*.rs` | No | `make test-int` |
 | Widget | Widget and real-window behavior, including workflow-level UI regressions | `crates/lushtext/tests/widget.rs` and `crates/lushtext/tests/widget/*.rs` | Yes | `make test-widget` |
 
@@ -41,6 +44,7 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 - `crates/lushtext/tests/widget.rs` is a custom single-threaded harness. GTK widgets stay on one stable thread, and each test runs in its own child process.
 - `build.rs` generates the widget registry from `crates/lushtext/tests/widget/*.rs`.
 - `make test` may use `cargo nextest` for non-widget tests across the workspace, but widget tests still run through `scripts/run-widget-tests.sh`, which owns the native and headless `cargo test --test widget` paths.
+- `make test-prop` runs the feature-gated `lushtext-core/property-tests` target. Keep this lane pure and out of default nextest and mutation runs.
 - The widget harness supports `--list --format terse`, which matters for CI and nextest-style discovery.
 
 ## Default Workflow
@@ -84,6 +88,7 @@ Use `make test-widget` locally when a display server is already available.
 ## What To Add After a Change
 
 - New domain or model logic: unit tests.
+- Pure deterministic invariants with broad input space: property tests with bounded generators.
 - New service or persistence behavior: service or integration tests with `TestContext`.
 - New widget state, signal wiring, or window orchestration: widget tests.
 - Bug fix: add the lowest-level regression test that reproduces the bug reliably.

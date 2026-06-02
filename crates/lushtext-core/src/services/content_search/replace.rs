@@ -148,67 +148,22 @@ pub fn apply_replacements(
             }
         };
 
-        // Apply replacements from the bottom of the file upward so byte ranges
-        // on earlier lines stay valid even after later replacements change length.
-        file_replacements.sort_by(|a, b| {
-            b.line_number
-                .cmp(&a.line_number)
-                .then(b.match_range.start.cmp(&a.match_range.start))
-        });
-
-        let line_ending = detect_line_ending(&original_text);
-        let mut lines: Vec<String> = original_text.lines().map(String::from).collect();
-        let has_trailing_newline = original_text.ends_with('\n');
-
-        // Validate against the original line snapshot before mutating anything
-        // so stale search results skip the whole file instead of partially applying.
-        let mut file_stale = false;
-        for r in &file_replacements {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "Search result line numbers stay within usize indexing limits on supported editor workloads"
-            )]
-            let line_idx = r.line_number.saturating_sub(1) as usize;
-            if line_idx < lines.len() && lines[line_idx] != r.original_line {
+        let text_outcome = build_replaced_text(&original_text, &mut file_replacements);
+        let (new_content, file_replaced) = match text_outcome {
+            ReplacementTextOutcome::Replaced {
+                new_content,
+                replacement_count,
+            } => (new_content, replacement_count),
+            ReplacementTextOutcome::StaleLine { line_number } => {
                 errors.push(format!(
                     "Skipped {}: line {} changed since search",
                     path.display(),
-                    r.line_number,
+                    line_number,
                 ));
-                file_stale = true;
-                break;
+                continue;
             }
-        }
-        if file_stale {
-            continue;
-        }
-
-        let mut file_replaced = 0usize;
-        for r in &file_replacements {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "Search result line numbers stay within usize indexing limits on supported editor workloads"
-            )]
-            let line_idx = r.line_number.saturating_sub(1) as usize;
-            if line_idx < lines.len() {
-                let line = &mut lines[line_idx];
-                let start = line.floor_char_boundary(r.match_range.start.min(line.len()));
-                let end = line.ceil_char_boundary(r.match_range.end.min(line.len()));
-                if start <= end {
-                    line.replace_range(start..end, &r.replacement);
-                    file_replaced += 1;
-                }
-            }
-        }
-
-        if file_replaced == 0 {
-            continue;
-        }
-
-        let mut new_content = lines.join(line_ending);
-        if has_trailing_newline {
-            new_content.push_str(line_ending);
-        }
+            ReplacementTextOutcome::Unchanged => continue,
+        };
         let replaced_bytes = new_content.as_bytes().to_vec();
         backup.insert(
             path.clone(),
@@ -304,6 +259,114 @@ fn record_replacement_success_counts(
 ) {
     *replaced_count += file_replaced;
     *files_affected += 1;
+}
+
+/// Pure result of applying one file's replacement preview data to text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReplacementTextOutcome {
+    /// At least one bounded replacement changed the file text.
+    Replaced {
+        /// Full file text after replacements are applied.
+        new_content: String,
+        /// Number of individual replacement previews consumed.
+        replacement_count: usize,
+    },
+    /// No generated replacement targeted an existing line or valid range.
+    Unchanged,
+    /// The line text no longer matches the preview captured during search.
+    StaleLine {
+        /// Original 1-based line number reported by the stale search result.
+        line_number: u64,
+    },
+}
+
+/// Apply one file's replacement previews to already-loaded text.
+///
+/// The helper owns the deterministic range clipping and reverse-order policy
+/// used by the I/O command above, making that behavior property-testable
+/// without opening files or touching undo journals.
+fn build_replaced_text(
+    original_text: &str,
+    file_replacements: &mut [&Replacement],
+) -> ReplacementTextOutcome {
+    // Apply replacements from the bottom of the file upward so byte ranges on
+    // earlier lines stay valid even after later replacements change length.
+    file_replacements.sort_by(|a, b| {
+        b.line_number
+            .cmp(&a.line_number)
+            .then(b.match_range.start.cmp(&a.match_range.start))
+    });
+
+    let line_ending = detect_line_ending(original_text);
+    let mut lines: Vec<String> = original_text.lines().map(String::from).collect();
+    let has_trailing_newline = original_text.ends_with('\n');
+
+    // Validate against the original line snapshot before mutating anything so
+    // stale search results skip the whole file instead of partially applying.
+    for replacement in file_replacements.iter() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Search result line numbers stay within usize indexing limits on supported editor workloads"
+        )]
+        let line_idx = replacement.line_number.saturating_sub(1) as usize;
+        if line_idx < lines.len() && lines[line_idx] != replacement.original_line {
+            return ReplacementTextOutcome::StaleLine {
+                line_number: replacement.line_number,
+            };
+        }
+    }
+
+    let mut replacement_count = 0usize;
+    for replacement in file_replacements.iter() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Search result line numbers stay within usize indexing limits on supported editor workloads"
+        )]
+        let line_idx = replacement.line_number.saturating_sub(1) as usize;
+        if line_idx < lines.len() {
+            let line = &mut lines[line_idx];
+            let start = line.floor_char_boundary(replacement.match_range.start.min(line.len()));
+            let end = line.ceil_char_boundary(replacement.match_range.end.min(line.len()));
+            if start <= end {
+                line.replace_range(start..end, &replacement.replacement);
+                replacement_count += 1;
+            }
+        }
+    }
+
+    if replacement_count == 0 {
+        return ReplacementTextOutcome::Unchanged;
+    }
+
+    let mut new_content = lines.join(line_ending);
+    if has_trailing_newline {
+        new_content.push_str(line_ending);
+    }
+
+    ReplacementTextOutcome::Replaced {
+        new_content,
+        replacement_count,
+    }
+}
+
+/// Apply replacement preview data to text through the production pure helper.
+///
+/// This feature-only hook lets the property target exercise clipping and
+/// ordering without touching files, locks, or undo-backup persistence.
+#[cfg(feature = "property-tests")]
+#[must_use]
+pub fn apply_replacements_to_text_for_property_test(
+    original_text: &str,
+    replacements: &[Replacement],
+) -> Option<(String, usize)> {
+    let mut file_replacements: Vec<&Replacement> = replacements.iter().collect();
+    match build_replaced_text(original_text, &mut file_replacements) {
+        ReplacementTextOutcome::Replaced {
+            new_content,
+            replacement_count,
+        } => Some((new_content, replacement_count)),
+        ReplacementTextOutcome::Unchanged | ReplacementTextOutcome::StaleLine { .. } => None,
+    }
 }
 
 /// Restore files from backup (undo Replace All).

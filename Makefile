@@ -10,6 +10,8 @@
 #   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
 #   make test-int    - Integration tests only
+#   make test-prop   - Bounded property tests for pure deterministic logic
+#   make test-prop-deep - Opt-in deeper property run with more generated cases
 #   make test-widget - Widget tests with shared native/headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make mutants-smoke - Small cargo-mutants smoke run
@@ -30,7 +32,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep test-widget test-widget-headless mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check pre-commit dev-tools install-git-hooks clean help \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -55,6 +57,19 @@ CARGO_TEST_INT        = cargo test --workspace --test integration
 endif
 CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh
 CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 1
+CARGO_TEST_PROP           = cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
+PROPTEST_DEEP_CASES ?= 512
+
+# Local cargo-mutants parallelism. cargo-mutants defaults to serial (one mutant
+# at a time), which leaves a multi-core box mostly idle on the slowest workload.
+# Locally we fan out: MUTANTS_LOCAL_JOBS defaults to about cores / 4, and each
+# job's nextest is capped to MUTANTS_LOCAL_TEST_THREADS so jobs x threads stays
+# near the logical CPU count instead of oversubscribing it. CI lanes call
+# scripts/run-mutants.sh directly and leave MUTANTS_JOBS unset, so the sharded
+# small runners keep the serial default.
+MUTANTS_LOCAL_JOBS ?= $(shell nproc 2>/dev/null | awk '{j = int($$1 / 4); if (j < 1) j = 1; print j}')
+MUTANTS_LOCAL_TEST_THREADS ?= 4
+MUTANTS_LOCAL_PARALLELISM = MUTANTS_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS)
 
 FLATPAK_REMOTE ?= flathub
 FLATPAK_REMOTE_URL ?= https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -108,6 +123,18 @@ test-int:
 	@echo "Running integration tests..."
 	$(CARGO_TEST_INT)
 
+# Property tests for pure deterministic logic. The feature-gated target stays
+# outside default nextest and mutation runs so generated cases do not multiply
+# ordinary feedback time.
+test-prop:
+	@echo "Running bounded property tests..."
+	$(CARGO_TEST_PROP)
+
+# Deeper opt-in property pass for local investigation or scheduled checks.
+test-prop-deep:
+	@echo "Running deep property tests with $(PROPTEST_DEEP_CASES) generated cases per property..."
+	LUSHTEXT_PROPTEST_CASES=$(PROPTEST_DEEP_CASES) $(CARGO_TEST_PROP)
+
 # Widget tests (auto-detect display; fall back to mutter --headless when available)
 test-widget:
 	@echo "Running widget tests..."
@@ -120,18 +147,18 @@ test-widget-headless:
 
 # Small mutation pass for checking cargo-mutants tooling and timeout behavior.
 mutants-smoke:
-	@echo "Running cargo-mutants smoke scope..."
-	./scripts/run-mutants.sh smoke
+	@echo "Running cargo-mutants smoke scope (jobs=$(MUTANTS_LOCAL_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh smoke
 
 # Mutation-test the current diff against origin/main.
 mutants-diff:
-	@echo "Running cargo-mutants against changed code..."
-	./scripts/run-mutants.sh diff
+	@echo "Running cargo-mutants against changed code (jobs=$(MUTANTS_LOCAL_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh diff
 
 # Mutation-test the configured deterministic scope.
 mutants-full:
-	@echo "Running configured cargo-mutants scope..."
-	./scripts/run-mutants.sh full
+	@echo "Running configured cargo-mutants scope (jobs=$(MUTANTS_LOCAL_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh full
 
 # List configured mutants without running tests.
 mutants-list:
@@ -352,6 +379,8 @@ help:
 	@echo "  test         All tests (unit + integration + widget)"
 	@echo "  test-unit    Unit tests only (fast)"
 	@echo "  test-int     Integration tests only"
+	@echo "  test-prop    Bounded property tests for pure deterministic logic"
+	@echo "  test-prop-deep Deeper property run with PROPTEST_DEEP_CASES"
 	@echo "  test-widget  Widget tests (auto-detect display; falls back to headless)"
 	@echo "  test-widget-headless Widget tests with the CI headless setup"
 	@echo "  mutants-smoke Small cargo-mutants smoke run"
