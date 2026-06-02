@@ -263,6 +263,23 @@ mod tests {
     }
 
     #[test]
+    fn watched_root_count_reports_all_registered_roots() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let one = dir.path().join("one");
+        let two = dir.path().join("two");
+        fs::create_dir(&one).expect("expected operation to succeed");
+        fs::create_dir(&two).expect("expected operation to succeed");
+
+        let watcher = WorkspaceWatcher::start(&[
+            WorkspaceWatchTarget::directory(one),
+            WorkspaceWatchTarget::directory(two),
+        ])
+        .expect("expected operation to succeed");
+
+        assert_eq!(watcher.watched_root_count(), 2);
+    }
+
+    #[test]
     fn watching_file_root_reports_file_rename() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let file_path = dir.path().join("root.txt");

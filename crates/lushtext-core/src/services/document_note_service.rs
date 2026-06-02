@@ -252,21 +252,108 @@ mod tests {
     }
 
     #[test]
+    fn delete_for_path_removes_existing_sidecar_and_ignores_missing() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let file_path = dir.path().join("src/main.rs");
+        write_file(&file_path, "fn main() {}\n");
+
+        let identity = save_for_path(dir.path(), &file_path, &RichNoteBody::new("Keep"))
+            .expect("expected operation to succeed");
+        let sidecar_path = document_notes_dir(dir.path())
+            .join(note_storage::sidecar_filename(&identity.sidecar_id));
+
+        delete_for_path(dir.path(), &file_path).expect("expected operation to succeed");
+        assert!(!sidecar_path.exists());
+        delete_for_path(dir.path(), &file_path).expect("expected missing sidecar to be a no-op");
+    }
+
+    #[test]
+    fn delete_for_path_reports_non_file_sidecar_errors() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let file_path = dir.path().join("src/main.rs");
+        write_file(&file_path, "fn main() {}\n");
+
+        let identity = save_for_path(dir.path(), &file_path, &RichNoteBody::new("Keep"))
+            .expect("expected operation to succeed");
+        let sidecar_path = document_notes_dir(dir.path())
+            .join(note_storage::sidecar_filename(&identity.sidecar_id));
+        std::fs::remove_file(&sidecar_path).expect("expected operation to succeed");
+        std::fs::create_dir(&sidecar_path).expect("expected operation to succeed");
+
+        let error =
+            delete_for_path(dir.path(), &file_path).expect_err("directory sidecar should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to delete document note sidecar"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn move_path_tree_rewrites_document_identity() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let old_file = dir.path().join("workspace/old.rs");
         let new_file = dir.path().join("workspace/new.rs");
         write_file(&old_file, "fn old() {}\n");
 
-        save_for_path(dir.path(), &old_file, &RichNoteBody::new("Keep this note"))
-            .expect("expected operation to succeed");
+        let old_identity =
+            save_for_path(dir.path(), &old_file, &RichNoteBody::new("Keep this note"))
+                .expect("expected operation to succeed");
+        let old_sidecar_path = document_notes_dir(dir.path())
+            .join(note_storage::sidecar_filename(&old_identity.sidecar_id));
 
         std::fs::rename(&old_file, &new_file).expect("expected operation to succeed");
-        move_path_tree(dir.path(), &old_file, &new_file).expect("expected operation to succeed");
+        let migrated = move_path_tree(dir.path(), &old_file, &new_file)
+            .expect("expected operation to succeed");
 
+        assert_eq!(migrated, 1);
+        assert!(!old_sidecar_path.exists());
         let loaded = load_for_path(dir.path(), &new_file).expect("expected operation to succeed");
         let loaded = loaded.expect("expected moved note");
         assert_eq!(loaded.identity.display_path, new_file);
         assert_eq!(loaded.note.text, "Keep this note");
+        let json_sidecars = std::fs::read_dir(document_notes_dir(dir.path()))
+            .expect("expected operation to succeed")
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .count();
+        assert_eq!(json_sidecars, 1);
+    }
+
+    #[test]
+    fn list_workspace_document_notes_filters_roots_and_sorts_rows() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let workspace = dir.path().join("workspace");
+        let alpha = workspace.join("alpha.rs");
+        let beta = workspace.join("nested/beta.rs");
+        let outside = dir.path().join("outside/gamma.rs");
+        write_file(&alpha, "alpha");
+        write_file(&beta, "beta");
+        write_file(&outside, "gamma");
+
+        save_for_path(dir.path(), &beta, &RichNoteBody::new("Beta note"))
+            .expect("expected operation to succeed");
+        save_for_path(dir.path(), &outside, &RichNoteBody::new("Outside note"))
+            .expect("expected operation to succeed");
+        save_for_path(dir.path(), &alpha, &RichNoteBody::new("Alpha note"))
+            .expect("expected operation to succeed");
+
+        let notes = list_workspace_document_notes(dir.path(), &[workspace])
+            .expect("expected operation to succeed");
+
+        assert_eq!(
+            notes,
+            vec![
+                WorkspaceDocumentNote {
+                    path: alpha,
+                    note: RichNoteBody::new("Alpha note"),
+                },
+                WorkspaceDocumentNote {
+                    path: beta,
+                    note: RichNoteBody::new("Beta note"),
+                },
+            ]
+        );
     }
 }

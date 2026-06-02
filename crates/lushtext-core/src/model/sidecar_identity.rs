@@ -147,4 +147,13 @@ mod tests {
             stable_path_hash(Path::new("/tmp/real.rs"))
         );
     }
+
+    #[test]
+    fn epoch_helpers_return_current_nonzero_time_units() {
+        let secs = now_epoch_secs();
+        let millis = now_epoch_millis();
+
+        assert!(secs > 1_700_000_000);
+        assert!(millis >= secs * 1000);
+    }
 }

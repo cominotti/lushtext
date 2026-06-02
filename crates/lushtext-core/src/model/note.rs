@@ -103,6 +103,31 @@ mod tests {
     }
 
     #[test]
+    fn update_text_reports_real_changes_and_refreshes_timestamp() {
+        let mut note = RichNoteBody {
+            text: "hello".to_string(),
+            created_at_secs: 1,
+            updated_at_secs: 1,
+        };
+
+        assert!(note.update_text("  goodbye  "));
+        assert_eq!(note.text, "goodbye");
+        assert_eq!(note.created_at_secs, 1);
+        assert!(note.updated_at_secs >= note.created_at_secs);
+    }
+
+    #[test]
+    fn rich_note_empty_and_preview_use_normalized_text() {
+        let empty = RichNoteBody::new("  \n\t  ");
+        let note = RichNoteBody::new("\n\n  # heading  \nbody");
+
+        assert!(empty.is_empty());
+        assert_eq!(empty.preview_line(), "");
+        assert!(!note.is_empty());
+        assert_eq!(note.preview_line(), "# heading");
+    }
+
+    #[test]
     fn preview_line_skips_leading_blank_lines() {
         assert_eq!(note_preview_line("\n\n# heading\nbody"), "# heading");
     }

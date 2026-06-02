@@ -329,6 +329,91 @@ impl SavedSearch {
 mod tests {
     use super::*;
 
+    fn match_in_line(line: &str, range: Range<usize>) -> SearchMatch {
+        SearchMatch {
+            path: PathBuf::from("/tmp/file.rs"),
+            line_number: 7,
+            line_content: line.to_string(),
+            match_range: range,
+        }
+    }
+
+    #[test]
+    fn toggle_summary_lists_enabled_options_in_display_order() {
+        let options =
+            ContentSearchOptions::new(true, true, true, false, Some("src/**/*.rs".to_string()));
+
+        assert_eq!(
+            options.toggle_summary(),
+            "Aa  .*  W  no .gitignore  src/**/*.rs"
+        );
+    }
+
+    #[test]
+    fn toggle_summary_omits_disabled_and_empty_values() {
+        assert_eq!(ContentSearchOptions::default().toggle_summary(), "");
+
+        let options = ContentSearchOptions::new(false, false, false, true, Some(String::new()));
+        assert_eq!(options.toggle_summary(), "");
+    }
+
+    #[test]
+    fn display_query_truncates_at_unicode_boundary_only_when_needed() {
+        let spec = SearchQuerySpec::new("abcdéfg", ContentSearchOptions::default());
+
+        assert_eq!(spec.display_query(4), "abcd…");
+        assert_eq!(spec.display_query(5), "abcd…");
+        assert_eq!(spec.display_query(6), "abcdé…");
+        assert_eq!(spec.display_query(8), "abcdéfg");
+    }
+
+    #[test]
+    fn generate_replacement_preview_literal_preserves_match_metadata() {
+        let matches = vec![match_in_line("hello world", 6..11)];
+        let previews = generate_replacement_preview(
+            &matches,
+            "world",
+            "Rust",
+            &ContentSearchOptions::default(),
+        );
+
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0].path, PathBuf::from("/tmp/file.rs"));
+        assert_eq!(previews[0].line_number, 7);
+        assert_eq!(previews[0].original_line, "hello world");
+        assert_eq!(previews[0].replaced_line, "hello Rust");
+        assert_eq!(previews[0].replacement, "Rust");
+        assert_eq!(previews[0].match_range, 6..11);
+    }
+
+    #[test]
+    fn generate_replacement_preview_regex_expands_backreferences() {
+        let options = ContentSearchOptions::new(false, true, false, true, None);
+        let matches = vec![match_in_line("name: Ada", 6..9)];
+        let previews = generate_replacement_preview(&matches, "([a-z]+)", "<$1>", &options);
+
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0].replaced_line, "name: <Ada>");
+        assert_eq!(previews[0].replacement, "<Ada>");
+    }
+
+    #[test]
+    fn history_and_saved_search_rows_delegate_to_query_spec() {
+        let spec = SearchQuerySpec::new(
+            "abcdefghijklmnopqrstuvwxyz",
+            ContentSearchOptions::new(true, false, false, true, None),
+        );
+
+        let history = SearchHistoryEntry::from_spec(spec.clone());
+        assert_eq!(history.toggle_summary(), "Aa");
+        assert_eq!(history.display_query(8), "abcdefgh…");
+        assert_eq!(history.query_spec(), spec);
+
+        let saved = SavedSearch::from_spec("Letters", history.query_spec());
+        assert_eq!(saved.name, "Letters");
+        assert_eq!(saved.row_subtitle(), "abcdefghijklmnopqrstuvwxyz  Aa");
+    }
+
     #[test]
     fn search_history_json_remains_flat() {
         let entry = SearchHistoryEntry::from_spec(SearchQuerySpec::new(

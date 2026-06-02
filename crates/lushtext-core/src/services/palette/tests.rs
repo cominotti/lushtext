@@ -6,7 +6,9 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 use super::*;
-use crate::model::palette::{CommandCategory, SearchMode, SearchResultItem};
+use crate::model::palette::{
+    CommandCategory, IndexedFile, PaletteFileEntry, SearchMode, SearchResultItem,
+};
 
 fn file_names(index: &FileIndex) -> Vec<&str> {
     index
@@ -14,6 +16,14 @@ fn file_names(index: &FileIndex) -> Vec<&str> {
         .iter()
         .map(|file| file.name.as_str())
         .collect()
+}
+
+fn indexed_file(root: &Arc<PathBuf>, relative_path: &str) -> IndexedFile {
+    IndexedFile::new(root.join(relative_path), Arc::clone(root))
+}
+
+fn file_paths(index: &FileIndex) -> Vec<PathBuf> {
+    index.files().iter().map(|file| file.path.clone()).collect()
 }
 
 #[test]
@@ -92,6 +102,55 @@ fn search_all_mixed_mode_includes_files_and_commands() {
             .iter()
             .any(|result| matches!(result.item, SearchResultItem::Command(_)))
     );
+}
+
+#[test]
+fn search_all_mixed_mode_preserves_score_order_and_max_zero() {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    std::fs::write(dir.path().join("save.rs"), "").expect("expected operation to succeed");
+
+    let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+    assert!(search_all(&index, "save", SearchMode::All, 0).is_empty());
+
+    let results = search_all(&index, "save", SearchMode::All, 10);
+    assert!(
+        results
+            .windows(2)
+            .all(|pair| pair[0].score >= pair[1].score),
+        "merged file and command results should stay sorted by descending score: {:?}",
+        results
+            .iter()
+            .map(|result| result.score)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn search_open_files_finds_active_documents_and_respects_max() {
+    let files = vec![
+        PaletteFileEntry::new(
+            "main.rs".to_string(),
+            "/workspace/src/main.rs".to_string(),
+            PathBuf::from("/workspace/src/main.rs"),
+        ),
+        PaletteFileEntry::new(
+            "manifest.json".to_string(),
+            "/workspace/manifest.json".to_string(),
+            PathBuf::from("/workspace/manifest.json"),
+        ),
+    ];
+
+    let results = search_open_files(&files, "main", 1);
+
+    assert_eq!(results.len(), 1);
+    match results[0].item {
+        SearchResultItem::OpenFile(file) => {
+            assert_eq!(file.path, PathBuf::from("/workspace/src/main.rs"));
+        }
+        SearchResultItem::File(_) | SearchResultItem::Command(_) => {
+            panic!("expected open-file result");
+        }
+    }
 }
 
 #[test]
@@ -210,6 +269,40 @@ fn max_indexed_files_constant_remains_100k() {
 }
 
 #[test]
+fn truncate_to_index_limit_only_truncates_when_count_exceeds_limit() {
+    let root = Arc::new(PathBuf::from("/workspace"));
+    let mut below_limit = vec![indexed_file(&root, "one.rs"), indexed_file(&root, "two.rs")];
+    let mut at_limit = vec![
+        indexed_file(&root, "one.rs"),
+        indexed_file(&root, "two.rs"),
+        indexed_file(&root, "three.rs"),
+    ];
+    let mut above_limit = vec![
+        indexed_file(&root, "one.rs"),
+        indexed_file(&root, "two.rs"),
+        indexed_file(&root, "three.rs"),
+        indexed_file(&root, "four.rs"),
+    ];
+
+    super::index::truncate_to_index_limit(&mut below_limit, 3);
+    super::index::truncate_to_index_limit(&mut at_limit, 3);
+    super::index::truncate_to_index_limit(&mut above_limit, 3);
+
+    assert_eq!(below_limit.len(), 2);
+    assert_eq!(at_limit.len(), 3);
+    assert_eq!(above_limit.len(), 3);
+    assert_eq!(above_limit[2].name, "three.rs");
+}
+
+#[test]
+fn compaction_threshold_starts_below_three_quarters_remaining() {
+    assert!(!super::index::should_compact_after_removal(4, 3));
+    assert!(super::index::should_compact_after_removal(4, 2));
+    assert!(!super::index::should_compact_after_removal(8, 6));
+    assert!(super::index::should_compact_after_removal(8, 5));
+}
+
+#[test]
 fn empty_query_returns_all_results_up_to_cap() {
     let dir = TempDir::new().expect("expected operation to succeed");
     for i in 0..100 {
@@ -247,4 +340,154 @@ fn search_commands_empty_query_returns_registry() {
 fn file_index_nonexistent_root_returns_empty_index() {
     let index = FileIndex::rebuild(&[PathBuf::from("/nonexistent/path")]);
     assert!(index.files().is_empty());
+}
+
+#[test]
+fn file_index_len_and_empty_reflect_actual_file_count() {
+    let empty = FileIndex::default();
+    assert_eq!(empty.len(), 0);
+    assert!(empty.is_empty());
+
+    let root = Arc::new(PathBuf::from("/workspace"));
+    let index = FileIndex::from(vec![
+        indexed_file(&root, "src/main.rs"),
+        indexed_file(&root, "src/lib.rs"),
+    ]);
+    assert_eq!(index.len(), 2);
+    assert!(!index.is_empty());
+}
+
+#[test]
+fn add_file_registers_the_file_and_workspace_root() {
+    let root = Arc::new(PathBuf::from("/workspace"));
+    let path = root.join("src/main.rs");
+    let mut index = FileIndex::default();
+
+    index.add_file(IndexedFile::new(path.clone(), Arc::clone(&root)));
+
+    assert_eq!(index.len(), 1);
+    assert_eq!(index.files()[0].path, path);
+    assert_eq!(
+        index
+            .workspace_root_for(&root.join("src/other.rs"))
+            .expect("workspace root should be registered")
+            .as_ref(),
+        root.as_ref()
+    );
+}
+
+#[test]
+fn file_index_from_vec_preserves_files_and_workspace_roots() {
+    let root_a = Arc::new(PathBuf::from("/workspace-a"));
+    let root_b = Arc::new(PathBuf::from("/workspace-b"));
+    let index = FileIndex::from(vec![
+        indexed_file(&root_a, "a.rs"),
+        indexed_file(&root_a, "nested/b.rs"),
+        indexed_file(&root_b, "c.rs"),
+    ]);
+
+    assert_eq!(index.len(), 3);
+    assert_eq!(
+        index
+            .workspace_root_for(&root_a.join("nested/other.rs"))
+            .expect("workspace A root should be indexed")
+            .as_ref(),
+        root_a.as_ref()
+    );
+    assert_eq!(
+        index
+            .workspace_root_for(&root_b.join("other.rs"))
+            .expect("workspace B root should be indexed")
+            .as_ref(),
+        root_b.as_ref()
+    );
+}
+
+#[test]
+fn remove_path_removes_exact_and_descendant_paths_only() {
+    let root = Arc::new(PathBuf::from("/workspace"));
+    let mut index = FileIndex::from(vec![
+        indexed_file(&root, "README.md"),
+        indexed_file(&root, "src/lib.rs"),
+        indexed_file(&root, "src/nested/mod.rs"),
+        indexed_file(&root, "tests/main.rs"),
+    ]);
+
+    index.remove_path(&root.join("src"));
+    assert_eq!(
+        file_paths(&index),
+        vec![root.join("README.md"), root.join("tests/main.rs")]
+    );
+
+    index.remove_path(&root.join("README.md"));
+    assert_eq!(file_paths(&index), vec![root.join("tests/main.rs")]);
+}
+
+#[test]
+fn remove_path_prunes_workspace_roots_after_large_removals() {
+    let root_a = Arc::new(PathBuf::from("/workspace-a"));
+    let root_b = Arc::new(PathBuf::from("/workspace-b"));
+    let mut index = FileIndex::from(vec![
+        indexed_file(&root_a, "one.rs"),
+        indexed_file(&root_a, "two.rs"),
+        indexed_file(&root_a, "three.rs"),
+        indexed_file(&root_a, "four.rs"),
+        indexed_file(&root_b, "survivor.rs"),
+    ]);
+
+    index.remove_path(root_a.as_path());
+
+    assert_eq!(file_paths(&index), vec![root_b.join("survivor.rs")]);
+    assert!(
+        index.workspace_root_for(&root_a.join("ghost.rs")).is_none(),
+        "removed roots should not stay addressable after pruning"
+    );
+    assert_eq!(
+        index
+            .workspace_root_for(&root_b.join("other.rs"))
+            .expect("surviving root should remain registered")
+            .as_ref(),
+        root_b.as_ref()
+    );
+}
+
+#[test]
+fn rename_path_updates_exact_and_descendant_paths_only() {
+    let root = Arc::new(PathBuf::from("/workspace"));
+    let mut index = FileIndex::from(vec![
+        indexed_file(&root, "src/main.rs"),
+        indexed_file(&root, "src/nested/lib.rs"),
+        indexed_file(&root, "src-sibling/file.rs"),
+    ]);
+
+    index.rename_path(&root.join("src"), &root.join("crate"));
+
+    assert_eq!(
+        file_paths(&index),
+        vec![
+            root.join("crate/main.rs"),
+            root.join("crate/nested/lib.rs"),
+            root.join("src-sibling/file.rs"),
+        ]
+    );
+}
+
+#[test]
+fn file_index_recursion_depth_includes_boundary_and_skips_beyond_it() {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let mut boundary_dir = dir.path().to_path_buf();
+    for depth in 0..64 {
+        boundary_dir.push(format!("level-{depth}"));
+    }
+    std::fs::create_dir_all(&boundary_dir).expect("expected operation to succeed");
+    std::fs::write(boundary_dir.join("boundary.txt"), "").expect("expected operation to succeed");
+
+    let too_deep_dir = boundary_dir.join("level-64");
+    std::fs::create_dir(&too_deep_dir).expect("expected operation to succeed");
+    std::fs::write(too_deep_dir.join("too-deep.txt"), "").expect("expected operation to succeed");
+
+    let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+    let names = file_names(&index);
+    assert!(names.contains(&"boundary.txt"));
+    assert!(!names.contains(&"too-deep.txt"));
 }

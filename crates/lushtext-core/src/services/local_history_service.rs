@@ -604,6 +604,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::services::file_limits::FileSizeCheck;
 
     fn seed_file(dir: &TempDir, rel: &str, content: &str) -> PathBuf {
         let path = dir.path().join(rel);
@@ -612,6 +613,72 @@ mod tests {
         }
         std::fs::write(&path, content).expect("write file");
         path
+    }
+
+    fn stored_meta(outcome: LocalHistoryCaptureOutcome) -> LocalHistorySnapshotMeta {
+        match outcome {
+            LocalHistoryCaptureOutcome::Stored(meta) => meta,
+            LocalHistoryCaptureOutcome::SkippedDuplicate => {
+                panic!("capture should have stored a snapshot")
+            }
+        }
+    }
+
+    fn history_dir_for_path(data_dir: &Path, path: &Path) -> PathBuf {
+        let identity = resolve_document_identity(path).expect("resolve identity");
+        document_dir(data_dir, &identity)
+    }
+
+    #[test]
+    fn availability_policy_maps_file_sizes_to_capture_and_browse_modes() {
+        let cases = [
+            (
+                FileSizeCheck::Normal,
+                LocalHistoryAvailability::Full,
+                true,
+                true,
+            ),
+            (
+                FileSizeCheck::LargeFileToast,
+                LocalHistoryAvailability::Full,
+                true,
+                true,
+            ),
+            (
+                FileSizeCheck::DisableSyntax,
+                LocalHistoryAvailability::SaveOnly,
+                false,
+                true,
+            ),
+            (
+                FileSizeCheck::DisableUndoAndSyntax,
+                LocalHistoryAvailability::Unavailable,
+                false,
+                false,
+            ),
+            (
+                FileSizeCheck::TooLarge,
+                LocalHistoryAvailability::Unavailable,
+                false,
+                false,
+            ),
+        ];
+
+        for (size_check, expected, allows_capture, allows_browsing) in cases {
+            let availability = availability_for_size_check(size_check);
+
+            assert_eq!(availability, expected);
+            assert_eq!(
+                availability.allows_automatic_capture(),
+                allows_capture,
+                "{size_check:?} automatic capture policy changed"
+            );
+            assert_eq!(
+                availability.allows_browsing(),
+                allows_browsing,
+                "{size_check:?} browsing policy changed"
+            );
+        }
     }
 
     #[test]
@@ -655,6 +722,32 @@ mod tests {
     }
 
     #[test]
+    fn capture_snapshot_normalizes_carriage_returns_before_storing() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "one\n");
+
+        let outcome = capture_snapshot_for_path(
+            dir.path(),
+            &path,
+            "one\r\ntwo\rthree\n",
+            LocalHistorySnapshotOrigin::Save,
+            LocalHistoryCapturePolicy::DeduplicateLatest,
+        )
+        .expect("capture snapshot");
+        let meta = stored_meta(outcome);
+        let loaded = load_snapshot_for_path(dir.path(), &path, &meta.snapshot_id)
+            .expect("load snapshot")
+            .expect("snapshot should exist");
+
+        assert_eq!(loaded.text, "one\ntwo\nthree\n");
+        assert_eq!(loaded.meta.byte_len, "one\ntwo\nthree\n".len() as u64);
+        assert_eq!(
+            loaded.meta.content_hash,
+            stable_bytes_hash(b"one\ntwo\nthree\n")
+        );
+    }
+
+    #[test]
     fn capture_snapshot_orders_newest_first() {
         let dir = TempDir::new().expect("tempdir");
         let path = seed_file(&dir, "workspace/file.txt", "one\n");
@@ -681,6 +774,144 @@ mod tests {
         assert_eq!(snapshots.len(), 2);
         assert_eq!(snapshots[0].origin, LocalHistorySnapshotOrigin::Save);
         assert_eq!(snapshots[1].origin, LocalHistorySnapshotOrigin::Baseline);
+    }
+
+    #[test]
+    fn retention_prunes_per_document_cap_and_snapshot_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "one\n");
+        let retention = RetentionPolicy {
+            per_document_cap: 2,
+            global_cap: 10,
+        };
+
+        let first_meta = stored_meta(
+            capture_snapshot_for_path_with_retention(
+                dir.path(),
+                &path,
+                "v1\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+                retention,
+            )
+            .expect("capture first"),
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        capture_snapshot_for_path_with_retention(
+            dir.path(),
+            &path,
+            "v2\n",
+            LocalHistorySnapshotOrigin::Save,
+            LocalHistoryCapturePolicy::DeduplicateLatest,
+            retention,
+        )
+        .expect("capture second");
+        std::thread::sleep(Duration::from_millis(2));
+        capture_snapshot_for_path_with_retention(
+            dir.path(),
+            &path,
+            "v3\n",
+            LocalHistorySnapshotOrigin::Save,
+            LocalHistoryCapturePolicy::DeduplicateLatest,
+            retention,
+        )
+        .expect("capture third");
+
+        let snapshots = list_snapshots_for_path(dir.path(), &path).expect("list snapshots");
+        let doc_dir = history_dir_for_path(dir.path(), &path);
+
+        assert_eq!(snapshots.len(), 2);
+        assert!(
+            !snapshots
+                .iter()
+                .any(|meta| meta.snapshot_id == first_meta.snapshot_id),
+            "oldest metadata should be trimmed"
+        );
+        assert!(
+            !snapshot_path(&doc_dir, &first_meta.snapshot_id).exists(),
+            "oldest snapshot file should be deleted with its metadata"
+        );
+    }
+
+    #[test]
+    fn retention_prunes_global_cap_across_documents() {
+        let dir = TempDir::new().expect("tempdir");
+        let first = seed_file(&dir, "workspace/a.txt", "a0\n");
+        let second = seed_file(&dir, "workspace/b.txt", "b0\n");
+        let third = seed_file(&dir, "workspace/c.txt", "c0\n");
+        let retention = RetentionPolicy {
+            per_document_cap: 10,
+            global_cap: 2,
+        };
+
+        let first_meta = stored_meta(
+            capture_snapshot_for_path_with_retention(
+                dir.path(),
+                &first,
+                "a1\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+                retention,
+            )
+            .expect("capture a1"),
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        let second_meta = stored_meta(
+            capture_snapshot_for_path_with_retention(
+                dir.path(),
+                &second,
+                "b1\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+                retention,
+            )
+            .expect("capture b1"),
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        let third_meta = stored_meta(
+            capture_snapshot_for_path_with_retention(
+                dir.path(),
+                &third,
+                "c1\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+                retention,
+            )
+            .expect("capture c1"),
+        );
+
+        let first_snapshots = list_snapshots_for_path(dir.path(), &first).expect("list a");
+        let second_snapshots = list_snapshots_for_path(dir.path(), &second).expect("list b");
+        let third_snapshots = list_snapshots_for_path(dir.path(), &third).expect("list c");
+        let first_doc_dir = history_dir_for_path(dir.path(), &first);
+
+        assert!(
+            first_snapshots.is_empty(),
+            "oldest document should be pruned"
+        );
+        assert_eq!(second_snapshots.len(), 1);
+        assert_eq!(third_snapshots.len(), 1);
+        assert!(
+            !first_doc_dir.exists(),
+            "empty pruned lineage should be removed"
+        );
+        assert_eq!(stable_bytes_hash(b"b1\n"), second_snapshots[0].content_hash);
+        assert_eq!(stable_bytes_hash(b"c1\n"), third_snapshots[0].content_hash);
+        assert!(!snapshot_path(&first_doc_dir, &first_meta.snapshot_id).exists());
+        assert_eq!(
+            load_snapshot_for_path(dir.path(), &second, &second_meta.snapshot_id)
+                .expect("load kept second")
+                .expect("second snapshot should remain")
+                .text,
+            "b1\n"
+        );
+        assert_eq!(
+            load_snapshot_for_path(dir.path(), &third, &third_meta.snapshot_id)
+                .expect("load kept third")
+                .expect("third snapshot should remain")
+                .text,
+            "c1\n"
+        );
     }
 
     #[test]
@@ -780,5 +1011,170 @@ mod tests {
             .expect("load renamed")
             .expect("snapshot should exist");
         assert_eq!(loaded.text, "version one\n");
+    }
+
+    #[test]
+    fn move_path_tree_merges_existing_target_and_skips_missing_source_files() {
+        let dir = TempDir::new().expect("tempdir");
+        let old_path = seed_file(&dir, "workspace/old.txt", "old\n");
+        let new_path = seed_file(&dir, "workspace/new.txt", "new\n");
+
+        let moved_meta = stored_meta(
+            capture_snapshot_for_path(
+                dir.path(),
+                &old_path,
+                "moved body\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture moved snapshot"),
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        let missing_meta = stored_meta(
+            capture_snapshot_for_path(
+                dir.path(),
+                &old_path,
+                "missing body\n",
+                LocalHistorySnapshotOrigin::Periodic,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture missing snapshot"),
+        );
+        capture_snapshot_for_path(
+            dir.path(),
+            &new_path,
+            "target body\n",
+            LocalHistorySnapshotOrigin::Baseline,
+            LocalHistoryCapturePolicy::DeduplicateLatest,
+        )
+        .expect("capture target snapshot");
+
+        let old_doc_dir = history_dir_for_path(dir.path(), &old_path);
+        std::fs::remove_file(snapshot_path(&old_doc_dir, &missing_meta.snapshot_id))
+            .expect("remove one source snapshot to simulate partial lineage");
+
+        let migrated = move_path_tree(dir.path(), &old_path, &new_path).expect("move tree");
+
+        assert_eq!(migrated, 1);
+        assert!(!old_doc_dir.exists(), "source lineage should be removed");
+        let snapshots = list_snapshots_for_path(dir.path(), &new_path).expect("list merged");
+        assert!(
+            snapshots
+                .iter()
+                .any(|meta| meta.snapshot_id == moved_meta.snapshot_id),
+            "metadata for moved snapshot should be merged"
+        );
+        let loaded = load_snapshot_for_path(dir.path(), &new_path, &moved_meta.snapshot_id)
+            .expect("load moved snapshot")
+            .expect("moved snapshot should exist");
+        assert_eq!(loaded.text, "moved body\n");
+    }
+
+    #[test]
+    fn deduplicate_snapshot_ids_keeps_first_seen_metadata() {
+        let mut snapshots = vec![
+            LocalHistorySnapshotMeta {
+                snapshot_id: "history-a".to_string(),
+                captured_at_millis: 30,
+                origin: LocalHistorySnapshotOrigin::Save,
+                byte_len: 3,
+                content_hash: "first".to_string(),
+            },
+            LocalHistorySnapshotMeta {
+                snapshot_id: "history-b".to_string(),
+                captured_at_millis: 20,
+                origin: LocalHistorySnapshotOrigin::Baseline,
+                byte_len: 3,
+                content_hash: "second".to_string(),
+            },
+            LocalHistorySnapshotMeta {
+                snapshot_id: "history-a".to_string(),
+                captured_at_millis: 10,
+                origin: LocalHistorySnapshotOrigin::Periodic,
+                byte_len: 3,
+                content_hash: "duplicate".to_string(),
+            },
+        ];
+
+        deduplicate_snapshot_ids(&mut snapshots);
+
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].snapshot_id, "history-a");
+        assert_eq!(snapshots[0].content_hash, "first");
+        assert_eq!(snapshots[1].snapshot_id, "history-b");
+    }
+
+    #[test]
+    fn remove_snapshot_files_deletes_present_files_and_ignores_missing() {
+        let dir = TempDir::new().expect("tempdir");
+        let present = LocalHistorySnapshotMeta {
+            snapshot_id: "history-present".to_string(),
+            captured_at_millis: 1,
+            origin: LocalHistorySnapshotOrigin::Save,
+            byte_len: 4,
+            content_hash: "present".to_string(),
+        };
+        let missing = LocalHistorySnapshotMeta {
+            snapshot_id: "history-missing".to_string(),
+            captured_at_millis: 2,
+            origin: LocalHistorySnapshotOrigin::Save,
+            byte_len: 4,
+            content_hash: "missing".to_string(),
+        };
+        let present_path = snapshot_path(dir.path(), &present.snapshot_id);
+        std::fs::write(&present_path, "body").expect("write snapshot");
+
+        remove_snapshot_files(dir.path(), &[present, missing]);
+
+        assert!(!present_path.exists());
+    }
+
+    #[test]
+    fn rebase_identity_paths_handles_display_and_canonical_prefixes() {
+        let old_root = Path::new("/project/old");
+        let new_root = Path::new("/project/new");
+        let display_nested = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/project/old/src/file.txt"),
+            PathBuf::from("/canonical/elsewhere/file.txt"),
+        );
+        let canonical_nested = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/visible/elsewhere/file.txt"),
+            PathBuf::from("/project/old/src/file.txt"),
+        );
+        let unrelated = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/project/other/file.txt"),
+            PathBuf::from("/canonical/other/file.txt"),
+        );
+
+        let (display_path, canonical_path) =
+            rebase_identity_paths(&display_nested, old_root, new_root)
+                .expect("display path should rebase");
+        assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
+        assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
+
+        let (display_path, canonical_path) =
+            rebase_identity_paths(&canonical_nested, old_root, new_root)
+                .expect("canonical path should rebase");
+        assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
+        assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
+
+        assert!(rebase_identity_paths(&unrelated, old_root, new_root).is_none());
+    }
+
+    #[test]
+    fn load_json_file_reports_non_missing_read_errors() {
+        let dir = TempDir::new().expect("tempdir");
+
+        let error = load_json_file::<serde_json::Value>(dir.path()).expect_err("directory read");
+
+        assert!(
+            error.to_string().contains("failed to read"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn local_history_lock_is_singleton() {
+        assert!(std::ptr::eq(local_history_lock(), local_history_lock()));
     }
 }

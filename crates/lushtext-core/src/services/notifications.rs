@@ -395,6 +395,13 @@ mod tests {
         })
     }
 
+    fn progress_with_severity(text: &str, severity: NotificationSeverity) -> NotificationPayload {
+        NotificationPayload::Progress(StatusMessage {
+            text: text.to_string(),
+            severity,
+        })
+    }
+
     #[test]
     fn transient_overrides_progress_but_progress_remains_underneath() {
         let bus = NotificationBus::default();
@@ -438,6 +445,80 @@ mod tests {
     }
 
     #[test]
+    fn public_heartbeat_reports_only_matching_progress_records() {
+        let bus = NotificationBus::default();
+
+        assert!(!bus.heartbeat(NotificationOwner::Search, NotificationSurface::StatusBar));
+        assert!(bus.publish(
+            NotificationOwner::Search,
+            NotificationSurface::StatusBar,
+            progress("Searching…"),
+        ));
+        assert!(bus.heartbeat(NotificationOwner::Search, NotificationSurface::StatusBar));
+        assert!(!bus.heartbeat(NotificationOwner::Editor(1), NotificationSurface::StatusBar));
+    }
+
+    #[test]
+    fn heartbeat_matches_owner_surface_and_progress_payload_only() {
+        let bus = NotificationBus::default();
+        let now = Instant::now();
+
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now,
+            NotificationOwner::Search,
+            NotificationSurface::EditorInfoBar(1),
+            Some(progress("Decoy same owner")),
+        ));
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now + Duration::from_millis(1),
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            Some(progress("Decoy same surface")),
+        ));
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now + Duration::from_millis(2),
+            NotificationOwner::Search,
+            NotificationSurface::StatusBar,
+            Some(progress("Target")),
+        ));
+
+        assert!(bus.reduce_at(
+            NotificationEvent::Heartbeat,
+            now + Duration::from_secs(1),
+            NotificationOwner::Search,
+            NotificationSurface::StatusBar,
+            None,
+        ));
+
+        let records = bus.records.borrow();
+        let decoy_same_owner = records
+            .iter()
+            .find(|record| record.surface == NotificationSurface::EditorInfoBar(1))
+            .expect("decoy same owner");
+        let decoy_same_surface = records
+            .iter()
+            .find(|record| record.owner == NotificationOwner::Window)
+            .expect("decoy same surface");
+        let target = records
+            .iter()
+            .find(|record| {
+                record.owner == NotificationOwner::Search
+                    && record.surface == NotificationSurface::StatusBar
+            })
+            .expect("target");
+
+        assert_eq!(decoy_same_owner.updated_at, now);
+        assert_eq!(
+            decoy_same_surface.updated_at,
+            now + Duration::from_millis(1)
+        );
+        assert_eq!(target.updated_at, now + Duration::from_secs(1));
+    }
+
+    #[test]
     fn progress_expires_without_completion() {
         let bus = NotificationBus::default();
         let now = Instant::now();
@@ -458,6 +539,27 @@ mod tests {
             bus.status_bar_view_at(now + Duration::from_secs(11))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn notifications_expire_at_exact_timeout_boundary() {
+        let bus = NotificationBus::default();
+        let now = Instant::now();
+
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now,
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            Some(transient("Saved", NotificationSeverity::Info)),
+        ));
+
+        assert!(
+            bus.status_bar_view_at(now + NOTIFICATION_TIMEOUT - Duration::from_millis(1))
+                .is_some()
+        );
+        assert!(bus.sweep_expired_at(now + NOTIFICATION_TIMEOUT));
+        assert!(bus.status_bar_view_at(now + NOTIFICATION_TIMEOUT).is_none());
     }
 
     #[test]
@@ -537,6 +639,83 @@ mod tests {
     }
 
     #[test]
+    fn update_progress_matches_only_the_requested_progress_record() {
+        let bus = NotificationBus::default();
+        let now = Instant::now();
+
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now,
+            NotificationOwner::Search,
+            NotificationSurface::EditorInfoBar(1),
+            Some(progress("Decoy same owner")),
+        ));
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now + Duration::from_millis(1),
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            Some(progress("Decoy same surface")),
+        ));
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now + Duration::from_millis(2),
+            NotificationOwner::Search,
+            NotificationSurface::StatusBar,
+            Some(progress("Target")),
+        ));
+
+        assert!(bus.reduce_at(
+            NotificationEvent::Update,
+            now + Duration::from_secs(1),
+            NotificationOwner::Search,
+            NotificationSurface::StatusBar,
+            Some(progress_with_severity(
+                "Updated target",
+                NotificationSeverity::Warning
+            )),
+        ));
+
+        let records = bus.records.borrow();
+        assert_eq!(records.len(), 3);
+        assert!(
+            records.iter().any(|record| {
+                record.surface == NotificationSurface::EditorInfoBar(1)
+                    && matches!(
+                        &record.payload,
+                        NotificationPayload::Progress(message)
+                            if message.text == "Decoy same owner"
+                    )
+            }),
+            "same-owner decoy should not be updated"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record.owner == NotificationOwner::Window
+                    && matches!(
+                        &record.payload,
+                        NotificationPayload::Progress(message)
+                            if message.text == "Decoy same surface"
+                    )
+            }),
+            "same-surface decoy should not be updated"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record.owner == NotificationOwner::Search
+                    && record.surface == NotificationSurface::StatusBar
+                    && matches!(
+                        &record.payload,
+                        NotificationPayload::Progress(message)
+                            if message.text == "Updated target"
+                                && message.severity == NotificationSeverity::Warning
+                    )
+            }),
+            "target should be updated"
+        );
+    }
+
+    #[test]
     fn transient_expires_after_timeout() {
         let bus = NotificationBus::default();
         let now = Instant::now();
@@ -582,6 +761,39 @@ mod tests {
     }
 
     #[test]
+    fn sweep_expired_reports_false_when_nothing_changed() {
+        let bus = NotificationBus::default();
+        let now = Instant::now();
+
+        assert!(!bus.sweep_expired());
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now,
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            Some(transient("Saved", NotificationSeverity::Info)),
+        ));
+        assert!(!bus.sweep_expired_at(now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn public_sweep_expired_reports_true_for_expired_records() {
+        let bus = NotificationBus::default();
+        let now = Instant::now();
+
+        bus.records.borrow_mut().push(NotificationRecord {
+            owner: NotificationOwner::Window,
+            surface: NotificationSurface::StatusBar,
+            payload: transient("Already expired", NotificationSeverity::Info),
+            updated_at: now - NOTIFICATION_TIMEOUT,
+            expires_at: Some(now - Duration::from_millis(1)),
+        });
+
+        assert!(bus.sweep_expired());
+        assert!(bus.records.borrow().is_empty());
+    }
+
+    #[test]
     fn resolve_clears_specific_notification_but_preserves_others() {
         let bus = NotificationBus::default();
         let now = Instant::now();
@@ -617,6 +829,40 @@ mod tests {
             bus.editor_info_bar_view_at(9, now + Duration::from_secs(1))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn resolve_matches_owner_and_surface_together() {
+        let bus = NotificationBus::default();
+        let now = Instant::now();
+
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now,
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            Some(transient("Window saved", NotificationSeverity::Info)),
+        ));
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now + Duration::from_millis(1),
+            NotificationOwner::Search,
+            NotificationSurface::StatusBar,
+            Some(progress("Searching…")),
+        ));
+
+        assert!(bus.reduce_at(
+            NotificationEvent::Resolve,
+            now + Duration::from_secs(1),
+            NotificationOwner::Search,
+            NotificationSurface::StatusBar,
+            None,
+        ));
+
+        let records = bus.records.borrow();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].owner, NotificationOwner::Window);
+        assert_eq!(records[0].surface, NotificationSurface::StatusBar);
     }
 
     #[test]
@@ -678,6 +924,112 @@ mod tests {
     }
 
     #[test]
+    fn public_editor_info_bar_view_returns_latest_inline_notification() {
+        let bus = NotificationBus::default();
+
+        assert!(bus.publish(
+            NotificationOwner::Editor(7),
+            NotificationSurface::EditorInfoBar(7),
+            inline("Draft Changes Restored"),
+        ));
+
+        assert_eq!(
+            bus.editor_info_bar_view(7)
+                .expect("editor notification visible")
+                .title,
+            "Draft Changes Restored"
+        );
+        assert!(bus.editor_info_bar_view(8).is_none());
+    }
+
+    #[test]
+    fn publish_replaces_only_conflicting_records() {
+        let bus = NotificationBus::default();
+        let now = Instant::now();
+
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now,
+            NotificationOwner::Search,
+            NotificationSurface::StatusBar,
+            Some(progress("Search progress")),
+        ));
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now + Duration::from_millis(1),
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            Some(transient("First transient", NotificationSeverity::Info)),
+        ));
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now + Duration::from_millis(2),
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            Some(transient("Second transient", NotificationSeverity::Warning)),
+        ));
+
+        {
+            let records = bus.records.borrow();
+            assert_eq!(
+                records.len(),
+                2,
+                "new transient should replace old transient"
+            );
+            assert!(
+                records
+                    .iter()
+                    .any(|record| matches!(record.payload, NotificationPayload::Progress(_))),
+                "progress should remain under transient status"
+            );
+        }
+
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now + Duration::from_millis(3),
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            Some(progress("Window progress")),
+        ));
+        assert!(bus.reduce_at(
+            NotificationEvent::Publish,
+            now + Duration::from_millis(4),
+            NotificationOwner::Window,
+            NotificationSurface::StatusBar,
+            Some(progress("Window progress updated")),
+        ));
+
+        let records = bus.records.borrow();
+        assert_eq!(
+            records.len(),
+            2,
+            "same owner/surface progress should replace"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record.owner == NotificationOwner::Search
+                    && matches!(
+                        &record.payload,
+                        NotificationPayload::Progress(message)
+                            if message.text == "Search progress"
+                    )
+            }),
+            "different owner progress on the same surface should remain"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record.owner == NotificationOwner::Window
+                    && matches!(
+                        &record.payload,
+                        NotificationPayload::Progress(message)
+                            if message.text == "Window progress updated"
+                    )
+            }),
+            "same owner/surface progress should be replaced by newest payload"
+        );
+    }
+
+    #[test]
     fn dismiss_owner_clears_all_owned_notifications() {
         let bus = NotificationBus::default();
         let now = Instant::now();
@@ -701,5 +1053,19 @@ mod tests {
             bus.editor_info_bar_view_at(3, now + Duration::from_secs(1))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn public_dismiss_owner_reports_whether_records_changed() {
+        let bus = NotificationBus::default();
+
+        assert!(!bus.dismiss_owner(NotificationOwner::Editor(3)));
+        assert!(bus.publish(
+            NotificationOwner::Editor(3),
+            NotificationSurface::EditorInfoBar(3),
+            inline("File Has Changed on Disk"),
+        ));
+        assert!(bus.dismiss_owner(NotificationOwner::Editor(3)));
+        assert!(!bus.dismiss_owner(NotificationOwner::Editor(3)));
     }
 }

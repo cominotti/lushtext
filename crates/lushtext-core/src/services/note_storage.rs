@@ -118,3 +118,101 @@ pub fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn canonicalize_roots_resolves_existing_roots_and_keeps_missing_roots() {
+        let dir = TempDir::new().expect("tempdir");
+        let existing = dir.path().join("workspace");
+        let missing = dir.path().join("missing");
+        std::fs::create_dir_all(&existing).expect("create workspace");
+
+        let roots = canonicalize_roots(&[existing.clone(), missing.clone()]);
+
+        assert_eq!(
+            roots[0],
+            existing.canonicalize().expect("canonical workspace")
+        );
+        assert_eq!(roots[1], missing);
+    }
+
+    #[test]
+    fn matches_any_root_accepts_display_or_canonical_roots_only() {
+        let root = PathBuf::from("/workspace");
+        let canonical_match = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/visible/file.rs"),
+            PathBuf::from("/workspace/file.rs"),
+        );
+        let display_match = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/visible.rs"),
+            PathBuf::from("/canonical/file.rs"),
+        );
+        let outside = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/outside/visible.rs"),
+            PathBuf::from("/canonical/file.rs"),
+        );
+
+        assert!(matches_any_root(
+            &canonical_match,
+            std::slice::from_ref(&root)
+        ));
+        assert!(matches_any_root(
+            &display_match,
+            std::slice::from_ref(&root)
+        ));
+        assert!(!matches_any_root(&outside, &[root]));
+    }
+
+    #[test]
+    fn rebase_identity_paths_handles_display_and_canonical_prefixes() {
+        let old_root = Path::new("/project/old");
+        let new_root = Path::new("/project/new");
+        let display_nested = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/project/old/src/file.txt"),
+            PathBuf::from("/canonical/elsewhere/file.txt"),
+        );
+        let canonical_nested = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/visible/elsewhere/file.txt"),
+            PathBuf::from("/project/old/src/file.txt"),
+        );
+        let unrelated = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/project/other/file.txt"),
+            PathBuf::from("/canonical/other/file.txt"),
+        );
+
+        let (display_path, canonical_path) =
+            rebase_identity_paths(&display_nested, old_root, new_root)
+                .expect("display path should rebase");
+        assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
+        assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
+
+        let (display_path, canonical_path) =
+            rebase_identity_paths(&canonical_nested, old_root, new_root)
+                .expect("canonical path should rebase");
+        assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
+        assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
+
+        assert!(rebase_identity_paths(&unrelated, old_root, new_root).is_none());
+    }
+
+    #[test]
+    fn load_json_file_distinguishes_missing_from_other_read_errors() {
+        let dir = TempDir::new().expect("tempdir");
+        let missing_path = dir.path().join("missing.json");
+
+        assert!(
+            load_json_file::<serde_json::Value>(&missing_path)
+                .expect("missing file should be accepted")
+                .is_none()
+        );
+        let error = load_json_file::<serde_json::Value>(dir.path()).expect_err("directory read");
+        assert!(
+            error.to_string().contains("failed to read"),
+            "unexpected error: {error}"
+        );
+    }
+}

@@ -248,6 +248,22 @@ mod tests {
     }
 
     #[test]
+    fn sync_parent_dir_reports_missing_parent() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("missing-parent/data.json");
+
+        assert!(sync_parent_dir(&path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_dir_reports_missing_directory() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+
+        assert!(sync_dir(&dir.path().join("missing")).is_err());
+    }
+
+    #[test]
     fn atomic_write_bytes_replaces_file_and_removes_temp() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("data.txt");
@@ -303,6 +319,47 @@ mod tests {
         assert!(lock.is_none());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn file_write_lock_reports_non_missing_open_errors() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+
+        assert!(FileWriteLock::acquire(dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_write_lock_releases_on_drop() {
+        use std::fs::OpenOptions;
+        use std::os::unix::io::AsRawFd;
+
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("locked.txt");
+        std::fs::write(&path, "content").expect("expected operation to succeed");
+
+        let lock = FileWriteLock::acquire(&path)
+            .expect("lock file")
+            .expect("existing file should lock");
+        let second = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open second handle");
+
+        // SAFETY: `second` owns a live file descriptor for the duration of the syscall.
+        let locked_result =
+            unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_ne!(locked_result, 0, "second lock should fail while held");
+
+        drop(lock);
+        // SAFETY: `second` still owns the same live descriptor after the first lock is dropped.
+        let unlocked_result =
+            unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(unlocked_result, 0, "second lock should succeed after drop");
+        // SAFETY: unlocking the descriptor acquired above is valid while `second` is alive.
+        let _ = unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_UN) };
+    }
+
     #[test]
     fn copy_file_durable_writes_destination_before_removing_source() {
         let dir = TempDir::new().expect("expected operation to succeed");
@@ -317,5 +374,22 @@ mod tests {
             std::fs::read_to_string(&to).expect("expected operation to succeed"),
             "snapshot"
         );
+    }
+
+    #[test]
+    fn missing_ancestors_collects_only_missing_prefix() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let nested = dir.path().join("a/b/c");
+        let missing = missing_ancestors(&nested);
+
+        assert_eq!(
+            missing,
+            vec![nested.clone(), dir.path().join("a/b"), dir.path().join("a")]
+        );
+
+        std::fs::create_dir_all(dir.path().join("a")).expect("create first missing ancestor");
+        let missing = missing_ancestors(&nested);
+
+        assert_eq!(missing, vec![nested, dir.path().join("a/b")]);
     }
 }

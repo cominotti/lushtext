@@ -340,6 +340,29 @@ mod tests {
         std::fs::write(path, contents).expect("expected operation to succeed");
     }
 
+    fn sidecar_path_for_identity(data_dir: &Path, identity: &DocumentSidecarIdentity) -> PathBuf {
+        bookmarks_dir(data_dir).join(sidecar_filename(identity))
+    }
+
+    #[test]
+    fn workspace_bookmark_display_label_prefers_label_and_falls_back_to_line() {
+        let labeled = WorkspaceBookmark {
+            path: PathBuf::from("/workspace/file.rs"),
+            bookmark_id: BookmarkId("bookmark-labeled".to_string()),
+            line: 41,
+            label: Some("Review this".to_string()),
+        };
+        let unlabeled = WorkspaceBookmark {
+            path: PathBuf::from("/workspace/file.rs"),
+            bookmark_id: BookmarkId("bookmark-unlabeled".to_string()),
+            line: 0,
+            label: None,
+        };
+
+        assert_eq!(labeled.display_label(), "Review this");
+        assert_eq!(unlabeled.display_label(), "Line 1");
+    }
+
     #[test]
     fn save_and_load_roundtrip() {
         let dir = TempDir::new().expect("expected operation to succeed");
@@ -374,25 +397,186 @@ mod tests {
     }
 
     #[test]
+    fn delete_for_path_removes_existing_sidecar_and_ignores_missing() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let file_path = dir.path().join("src/main.rs");
+        write_file(&file_path, "fn main() {}\n");
+        let identity = save_for_path(dir.path(), &file_path, &[BookmarkRecord::new(0, None)])
+            .expect("expected operation to succeed");
+        let sidecar_path = sidecar_path_for_identity(dir.path(), &identity);
+
+        delete_for_path(dir.path(), &file_path).expect("delete sidecar");
+
+        assert!(!sidecar_path.exists());
+        delete_for_path(dir.path(), &file_path).expect("missing sidecar should be ignored");
+    }
+
+    #[test]
+    fn delete_for_path_reports_non_file_sidecar_errors() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let file_path = dir.path().join("src/main.rs");
+        write_file(&file_path, "fn main() {}\n");
+        let identity = resolve_document_identity(&file_path).expect("resolve identity");
+        let sidecar_path = sidecar_path_for_identity(dir.path(), &identity);
+        std::fs::create_dir_all(&sidecar_path).expect("create directory at sidecar path");
+
+        let error = delete_for_path(dir.path(), &file_path).expect_err("delete directory sidecar");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to delete bookmark sidecar"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn move_path_tree_rewrites_document_identity() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let old_file = dir.path().join("workspace/old.rs");
         let new_file = dir.path().join("workspace/new.rs");
         write_file(&old_file, "fn old() {}\n");
 
-        save_for_path(
+        let old_identity = save_for_path(
             dir.path(),
             &old_file,
             &[BookmarkRecord::new(2, Some("keep".to_string()))],
         )
         .expect("expected operation to succeed");
+        let old_sidecar_path = sidecar_path_for_identity(dir.path(), &old_identity);
 
         std::fs::rename(&old_file, &new_file).expect("expected operation to succeed");
-        move_path_tree(dir.path(), &old_file, &new_file).expect("expected operation to succeed");
+        let migrated = move_path_tree(dir.path(), &old_file, &new_file)
+            .expect("expected operation to succeed");
 
+        assert_eq!(migrated, 1);
+        assert!(!old_sidecar_path.exists(), "old sidecar should be removed");
         let loaded = load_for_path(dir.path(), &new_file).expect("expected operation to succeed");
         assert_eq!(loaded.identity.display_path, new_file);
         assert_eq!(loaded.bookmarks.len(), 1);
         assert_eq!(loaded.bookmarks[0].label.as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn list_workspace_bookmarks_filters_roots_and_sorts_rows() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let inside_a = dir.path().join("workspace/a.rs");
+        let inside_b = dir.path().join("workspace/b.rs");
+        let outside = dir.path().join("other/outside.rs");
+        write_file(&inside_a, "fn a() {}\n");
+        write_file(&inside_b, "fn b() {}\n");
+        write_file(&outside, "fn outside() {}\n");
+
+        save_for_path(
+            dir.path(),
+            &inside_b,
+            &[BookmarkRecord::new(4, Some("B".to_string()))],
+        )
+        .expect("save b");
+        save_for_path(
+            dir.path(),
+            &inside_a,
+            &[
+                BookmarkRecord::new(3, Some("A3".to_string())),
+                BookmarkRecord::new(1, None),
+            ],
+        )
+        .expect("save a");
+        save_for_path(
+            dir.path(),
+            &outside,
+            &[BookmarkRecord::new(0, Some("Outside".to_string()))],
+        )
+        .expect("save outside");
+
+        let bookmarks = list_workspace_bookmarks(dir.path(), &[dir.path().join("workspace")])
+            .expect("list bookmarks");
+
+        assert_eq!(bookmarks.len(), 3);
+        assert_eq!(bookmarks[0].path, inside_a);
+        assert_eq!(bookmarks[0].line, 1);
+        assert_eq!(bookmarks[1].path, dir.path().join("workspace/a.rs"));
+        assert_eq!(bookmarks[1].line, 3);
+        assert_eq!(bookmarks[2].path, inside_b);
+        assert!(
+            bookmarks.iter().all(|bookmark| bookmark.path != outside),
+            "outside workspace bookmarks should be filtered out"
+        );
+    }
+
+    #[test]
+    fn matches_any_root_accepts_display_or_canonical_roots_only() {
+        let root = PathBuf::from("/workspace");
+        let canonical_match = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/visible/file.rs"),
+            PathBuf::from("/workspace/file.rs"),
+        );
+        let display_match = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/visible.rs"),
+            PathBuf::from("/canonical/file.rs"),
+        );
+        let outside = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/outside/visible.rs"),
+            PathBuf::from("/canonical/file.rs"),
+        );
+
+        assert!(matches_any_root(
+            &canonical_match,
+            std::slice::from_ref(&root)
+        ));
+        assert!(matches_any_root(
+            &display_match,
+            std::slice::from_ref(&root)
+        ));
+        assert!(!matches_any_root(&outside, &[root]));
+    }
+
+    #[test]
+    fn rebase_identity_paths_handles_display_and_canonical_prefixes() {
+        let old_root = Path::new("/project/old");
+        let new_root = Path::new("/project/new");
+        let display_nested = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/project/old/src/file.txt"),
+            PathBuf::from("/canonical/elsewhere/file.txt"),
+        );
+        let canonical_nested = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/visible/elsewhere/file.txt"),
+            PathBuf::from("/project/old/src/file.txt"),
+        );
+        let unrelated = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/project/other/file.txt"),
+            PathBuf::from("/canonical/other/file.txt"),
+        );
+
+        let (display_path, canonical_path) =
+            rebase_identity_paths(&display_nested, old_root, new_root)
+                .expect("display path should rebase");
+        assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
+        assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
+
+        let (display_path, canonical_path) =
+            rebase_identity_paths(&canonical_nested, old_root, new_root)
+                .expect("canonical path should rebase");
+        assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
+        assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
+
+        assert!(rebase_identity_paths(&unrelated, old_root, new_root).is_none());
+    }
+
+    #[test]
+    fn load_json_file_distinguishes_missing_from_other_read_errors() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let missing_path = dir.path().join("missing.json");
+
+        assert!(
+            load_json_file::<serde_json::Value>(&missing_path)
+                .expect("missing file should be accepted")
+                .is_none()
+        );
+        let error = load_json_file::<serde_json::Value>(dir.path()).expect_err("directory read");
+        assert!(
+            error.to_string().contains("failed to read"),
+            "unexpected error: {error}"
+        );
     }
 }

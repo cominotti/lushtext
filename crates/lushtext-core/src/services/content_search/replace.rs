@@ -229,8 +229,11 @@ pub fn apply_replacements(
             Ok(()) => {
                 applied_paths.push(path.clone());
                 held_locks.push(lock);
-                replaced_count += file_replaced;
-                files_affected += 1;
+                record_replacement_success_counts(
+                    &mut replaced_count,
+                    &mut files_affected,
+                    file_replaced,
+                );
             }
             Err(AtomicWriteError::BeforeRename(e)) => {
                 errors.push(format!("Failed to write {}: {e}", path.display()));
@@ -252,8 +255,11 @@ pub fn apply_replacements(
                 ));
                 applied_paths.push(path.clone());
                 held_locks.push(lock);
-                replaced_count += file_replaced;
-                files_affected += 1;
+                record_replacement_success_counts(
+                    &mut replaced_count,
+                    &mut files_affected,
+                    file_replaced,
+                );
             }
         }
     }
@@ -288,6 +294,16 @@ pub fn apply_replacements(
     };
 
     Ok((result, backup))
+}
+
+/// Fold one successfully written file into the public Replace All counters.
+fn record_replacement_success_counts(
+    replaced_count: &mut usize,
+    files_affected: &mut usize,
+    file_replaced: usize,
+) {
+    *replaced_count += file_replaced;
+    *files_affected += 1;
 }
 
 /// Restore files from backup (undo Replace All).
@@ -596,6 +612,98 @@ mod tests {
             "let needle = 42;\n",
             "file bytes must stay unchanged when the undo journal cannot be saved",
         );
+    }
+
+    #[test]
+    fn test_apply_replacements_ignores_line_numbers_past_eof() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("test.rs");
+        fs::write(&file, "needle\n").expect("expected operation to succeed");
+
+        let replacements = vec![make_replacement(&file, 2, "needle", "replaced", 0..6)];
+
+        let cancel = AtomicBool::new(false);
+        let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
+            .expect("out-of-range search rows should be ignored without panicking");
+
+        assert_eq!(result.replaced_count, 0);
+        assert_eq!(result.files_affected, 0);
+        assert!(result.errors.is_empty());
+        assert!(backup.is_empty());
+        assert_eq!(
+            fs::read_to_string(&file).expect("expected operation to succeed"),
+            "needle\n"
+        );
+    }
+
+    #[test]
+    fn test_apply_replacements_keeps_partial_success_errors_in_result() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("test.rs");
+        let missing = dir.path().join("missing.rs");
+        fs::write(&file, "needle\n").expect("expected operation to succeed");
+
+        let replacements = vec![
+            make_replacement(&file, 1, "needle", "replaced", 0..6),
+            make_replacement(&missing, 1, "needle", "replaced", 0..6),
+        ];
+
+        let cancel = AtomicBool::new(false);
+        let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
+            .expect("successful files should keep the Replace All operation successful");
+
+        assert_eq!(result.replaced_count, 1);
+        assert_eq!(result.files_affected, 1);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("Failed to read"));
+        assert_eq!(
+            fs::read_to_string(&file).expect("expected operation to succeed"),
+            "replaced\n"
+        );
+        assert!(backup.contains_key(&file));
+        assert!(!backup.contains_key(&missing));
+    }
+
+    #[test]
+    fn record_replacement_success_counts_adds_file_and_replacement_totals() {
+        let mut replaced_count = 3;
+        let mut files_affected = 2;
+
+        record_replacement_success_counts(&mut replaced_count, &mut files_affected, 4);
+
+        assert_eq!(replaced_count, 7);
+        assert_eq!(files_affected, 3);
+    }
+
+    #[test]
+    fn atomic_write_error_display_includes_inner_error() {
+        let error = AtomicWriteError::AfterRename(anyhow::anyhow!("directory sync failed"));
+
+        assert_eq!(error.to_string(), "directory sync failed");
+    }
+
+    #[test]
+    fn remaining_count_reports_actual_backup_len() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file_a = dir.path().join("a.rs");
+        let file_b = dir.path().join("b.rs");
+        let mut remaining_backup = ReplaceUndoBackup::new();
+        remaining_backup.insert(
+            file_a,
+            ReplaceUndoEntry::new(b"before-a".to_vec(), b"after-a".to_vec()),
+        );
+        remaining_backup.insert(
+            file_b,
+            ReplaceUndoEntry::new(b"before-b".to_vec(), b"after-b".to_vec()),
+        );
+        let outcome = UndoReplaceOutcome {
+            restored_paths: Vec::new(),
+            skipped_paths: Vec::new(),
+            failed_paths: Vec::new(),
+            remaining_backup,
+        };
+
+        assert_eq!(outcome.remaining_count(), 2);
     }
 
     #[test]

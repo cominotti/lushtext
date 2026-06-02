@@ -1,0 +1,99 @@
+# cargo-mutants configuration for LushText.
+#
+# The default scope intentionally targets deterministic model, service, and
+# pure-helper logic. GTK widget harness coverage remains in
+# scripts/run-widget-tests.sh, where Mutter, D-Bus, renderer settings, retries,
+# and warning filtering are controlled.
+
+test_tool = "nextest"
+test_workspace = true
+
+# CI uses --baseline=skip after a separate nextest baseline, so wrapper commands
+# also pass an explicit --timeout. These values keep local baseline-driven runs
+# from timing out too aggressively on slower GTK build hosts.
+minimum_test_timeout = 60.0
+timeout_multiplier = 5.0
+build_timeout_multiplier = 3.0
+
+gitignore = true
+
+examine_globs = [
+    "crates/lushtext-core/src/model/**/*.rs",
+    "crates/lushtext-core/src/services/**/*.rs",
+    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes.rs",
+    "crates/lushtext-core/src/ui/editor_page/minimap.rs",
+]
+
+exclude_globs = [
+    # Test modules are already skipped by cargo-mutants when marked cfg(test),
+    # but standalone test files are excluded explicitly to keep the mutation
+    # scope about production behavior.
+    "crates/lushtext-core/src/services/palette/tests.rs",
+]
+
+# `crates/lushtext-core/src/ui/window/tabs.rs` was calibrated out after the
+# first full-shard run because its survivors were mostly `LushtextWindow::...`
+# GTK adapter methods. Keep those in the widget harness until smaller pure tab
+# policy helpers are extracted.
+
+exclude_re = [
+    # Derived/debug-only formatting changes are equivalent for user behavior and
+    # would otherwise create low-signal survivors in domain value objects.
+    "impl Debug",
+    # Equivalent: deleting the dedicated UTF-8 BOM arm in `encode_text` falls
+    # through to the generic BOM-writing branch and produces identical bytes.
+    "crates/lushtext-core/src/services/editor_io\\.rs:.*delete match arm DocumentEncoding::Utf8Bom in encode_text",
+    # Equivalent for returned index state: `>=` only adds a warning when the
+    # count is exactly the limit; `Vec::truncate(limit)` is otherwise a no-op.
+    "crates/lushtext-core/src/services/palette/index\\.rs:.*replace > with >= in truncate_to_index_limit",
+    # Equivalent: missing snapshot files are intentionally ignored during
+    # retention cleanup; this mutation only changes whether that no-op logs.
+    "crates/lushtext-core/src/services/local_history_service\\.rs:.*replace != with == in remove_snapshot_files",
+    # Equivalent for stable directory entries: non-symlink classification is
+    # identical whether it uses `DirEntry::file_type()` or follows with metadata.
+    "crates/lushtext-core/src/services/file_tree\\.rs:.*replace match guard !file_type\\.is_symlink\\(\\) with false in classify_entry",
+    # Equivalent on LushText's Linux target: this non-Unix advisory-lock stub is
+    # not compiled or called in the mutation test target.
+    "crates/lushtext-core/src/services/durable_write\\.rs:131:.*FileWriteLock::acquire -> std::io::Result<Option<Self>>",
+    # Equivalent on Unix: dropping the owned `File` releases the `flock` even if
+    # the explicit `LOCK_UN` syscall is removed.
+    "crates/lushtext-core/src/services/durable_write\\.rs:.*replace <impl Drop for FileWriteLock>::drop with \\(\\)",
+    # Equivalent for success behavior: the mutation only changes whether a
+    # second parent-directory fsync is attempted after rename.
+    "crates/lushtext-core/src/services/durable_write\\.rs:.*replace != with == in rename_durable",
+    # Equivalent on the Unix paths used by this target: `Path::parent()` does
+    # not yield the same root path, so the loop guard behaves identically.
+    "crates/lushtext-core/src/services/editorconfig\\.rs:.*replace match guard parent != dir with true in resolve_for_path",
+    # Equivalent: references emitted by pulldown-cmark also have definitions,
+    # so label reservation is already covered by `FootnoteDefinition`, while
+    # protected references fall through to the protected-depth catch-all arm.
+    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*delete match arm Event::FootnoteReference\\(label\\) in build_scan_plan",
+    # Equivalent: the scan loop may do one extra final-byte check, but a lone
+    # trailing byte cannot start a complete `^[...]` marker.
+    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace < with <= in collect_inline_footnote_replacements",
+    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace \\+ with \\* in collect_inline_footnote_replacements",
+    # Equivalent: after a replacement is recorded, restarting at or just before
+    # the closing bracket only rechecks bytes that cannot form a new marker.
+    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace \\+ with - in collect_inline_footnote_replacements",
+    # Equivalent: protected ranges ending at the current index have already been
+    # advanced out of consideration by the preceding `end <= index` loop.
+    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace < with <= in find_inline_footnote_close",
+    # Equivalent: the byte scanner only branches on ASCII marker bytes and only
+    # slices at ASCII delimiter offsets, so byte-by-byte UTF-8 walking is valid.
+    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace next_char_len -> usize with 1",
+    # Minimap GTK adapter methods are covered by the widget harness under
+    # `scripts/run-widget-tests.sh`; the deterministic policies they gather
+    # inputs for stay mutation-scoped through the pure helpers below them.
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*LushtextEditorPage::(minimap_availability|is_minimap_visible|minimap_marker_count|minimap_marker_bounds|setup_minimap|sync_minimap_wrap_mode|refresh_minimap|schedule_minimap_refresh|apply_minimap_width_from_settings|queue_minimap_draw|set_minimap_tracking_suspended|clear_modified_line_marks|record_modified_lines|mark_entire_buffer_modified|publish_minimap_unavailable_feedback_if_needed)",
+    # Minimap wrappers that require live GtkSourceView buffers, source-map
+    # layout, Cairo drawing, or search contexts stay outside the non-widget
+    # mutation lane. Their pure policy/math helpers remain tested and mutated.
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*(current_availability|wrapped_minimap_layout_exceeds_budget|buffer_has_line_exceeding_char_budget|document_line_count|collect_markers|collect_search_match_lines|collect_modified_lines|collect_long_line_warnings|draw_marker_strip|projected_minimap_marker_bounds|marker_projection_space|project_marker_bounds|line_top_in_strip|line_bottom_in_strip|buffer_y_to_strip_y)",
+    # Equivalent in `fit_marker_bounds`: these exact-boundary mutations either
+    # touch unreachable post-clamp states or produce the same final clamped
+    # bounds after the minimum-height expansion settles.
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace < with == in fit_marker_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace < with <= in fit_marker_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace - with \\+ in fit_marker_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace > with >= in fit_marker_bounds",
+]

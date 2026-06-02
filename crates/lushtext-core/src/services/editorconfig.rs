@@ -9,7 +9,9 @@
 
 use crate::model::encoding::{DocumentEncoding, LineEnding};
 use crate::model::formatting_overrides::FormattingOverrides;
-use editorconfig_parser::{Charset, EditorConfig, EditorConfigProperty, EndOfLine, IndentStyle};
+use editorconfig_parser::{
+    Charset, EditorConfig, EditorConfigProperties, EditorConfigProperty, EndOfLine, IndentStyle,
+};
 use std::path::Path;
 
 /// Resolve EditorConfig formatting overrides for a file.
@@ -64,7 +66,7 @@ pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
     let mut resolved_insert_final_newline = false;
 
     for config in &configs {
-        let props = config.resolve(file_path);
+        let props = resolve_preserving_unset(config, file_path);
 
         if !resolved_tab_width {
             match props.tab_width {
@@ -188,6 +190,53 @@ pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
     }
 
     result
+}
+
+/// Resolve one parsed file while preserving `unset` so parent files cannot refill that field.
+fn resolve_preserving_unset(config: &EditorConfig, file_path: &Path) -> EditorConfigProperties {
+    let path = if let Some(cwd) = config.cwd() {
+        file_path.strip_prefix(cwd).unwrap_or(file_path)
+    } else {
+        file_path
+    };
+    let mut properties = EditorConfigProperties::default();
+    for section in config.sections() {
+        if section
+            .matcher
+            .as_ref()
+            .is_some_and(|matcher| matcher.is_match(path))
+        {
+            merge_property(
+                &mut properties.indent_style,
+                &section.properties.indent_style,
+            );
+            merge_property(&mut properties.indent_size, &section.properties.indent_size);
+            merge_property(&mut properties.tab_width, &section.properties.tab_width);
+            merge_property(&mut properties.end_of_line, &section.properties.end_of_line);
+            merge_property(&mut properties.charset, &section.properties.charset);
+            merge_property(
+                &mut properties.trim_trailing_whitespace,
+                &section.properties.trim_trailing_whitespace,
+            );
+            merge_property(
+                &mut properties.insert_final_newline,
+                &section.properties.insert_final_newline,
+            );
+        }
+    }
+    properties
+}
+
+fn merge_property<T: Copy>(target: &mut EditorConfigProperty<T>, source: &EditorConfigProperty<T>) {
+    match source {
+        EditorConfigProperty::Value(value) => {
+            *target = EditorConfigProperty::Value(*value);
+        }
+        EditorConfigProperty::Unset => {
+            *target = EditorConfigProperty::Unset;
+        }
+        EditorConfigProperty::None => {}
+    }
 }
 
 /// Map EditorConfig line-ending values onto LushText's save-policy vocabulary.
@@ -315,6 +364,20 @@ mod tests {
     }
 
     #[test]
+    fn indent_size_unset_restores_tab_width_default() {
+        let tmp = TempDir::new().expect("expected operation to succeed");
+        write_editorconfig(
+            tmp.path(),
+            "root = true\n\n[*]\nindent_size = 4\n\n[*.rs]\nindent_size = unset\n",
+        );
+        let file = tmp.path().join("main.rs");
+        touch(&file);
+
+        let result = resolve_for_path(&file);
+        assert_eq!(result.indent_width, Some(-1));
+    }
+
+    #[test]
     fn root_stops_directory_walk() {
         let tmp = TempDir::new().expect("expected operation to succeed");
 
@@ -357,6 +420,34 @@ mod tests {
         assert_eq!(result.tab_width, Some(2));
         // indent_style inherited from root (not overridden by closer file).
         assert_eq!(result.insert_spaces, Some(false));
+    }
+
+    #[test]
+    fn partial_closer_config_still_inherits_unresolved_parent_fields() {
+        let tmp = TempDir::new().expect("expected operation to succeed");
+        write_editorconfig(
+            tmp.path(),
+            "root = true\n\n[*]\ntrim_trailing_whitespace = true\ninsert_final_newline = true\n",
+        );
+
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("expected operation to succeed");
+        write_editorconfig(
+            &src,
+            "[*]\ntab_width = 2\nindent_style = space\nindent_size = 3\nend_of_line = lf\ncharset = utf-8\ntrim_trailing_whitespace = false\n",
+        );
+
+        let file = src.join("main.rs");
+        touch(&file);
+
+        let result = resolve_for_path(&file);
+        assert_eq!(result.tab_width, Some(2));
+        assert_eq!(result.insert_spaces, Some(true));
+        assert_eq!(result.indent_width, Some(3));
+        assert_eq!(result.line_ending, Some(LineEnding::Lf));
+        assert_eq!(result.save_encoding, Some(DocumentEncoding::Utf8));
+        assert_eq!(result.trim_trailing_whitespace, Some(false));
+        assert_eq!(result.insert_final_newline, Some(true));
     }
 
     #[test]

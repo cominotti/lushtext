@@ -197,4 +197,26 @@ mod tests {
         let loaded = load(dir.path()).expect("expected operation to succeed");
         assert_eq!(loaded.tabs[0].path, Some("/tmp/newer.rs".into()));
     }
+
+    #[test]
+    fn ordered_save_accepts_equal_generation_snapshot() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let first = SessionData {
+            tabs: vec![tab("/tmp/first.rs", 1)],
+            active_tab_index: Some(0),
+        };
+        let replacement = SessionData {
+            tabs: vec![tab("/tmp/replacement.rs", 2)],
+            active_tab_index: Some(0),
+        };
+
+        assert!(save_ordered(dir.path(), &first, 7).expect("expected operation to succeed"));
+        assert!(
+            save_ordered(dir.path(), &replacement, 7).expect("expected operation to succeed"),
+            "equal generations are accepted because only strictly older snapshots are stale"
+        );
+
+        let loaded = load(dir.path()).expect("expected operation to succeed");
+        assert_eq!(loaded.tabs[0].path, Some("/tmp/replacement.rs".into()));
+    }
 }

@@ -446,19 +446,33 @@ impl LushtextEditorPage {
 }
 
 fn current_availability(editor: &LushtextEditorPage) -> MinimapAvailability {
-    if editor.focus_mode_suppresses_minimap() {
+    minimap_availability_for_policy(MinimapAvailabilityPolicy {
+        focus_suppressed: editor.focus_mode_suppresses_minimap(),
+        preference_enabled: editor.imp().settings.boolean(keys::SHOW_MINIMAP),
+        evicted: editor.is_evicted(),
+        syntax_enabled: editor.size_check().syntax_enabled(),
+        wrapped_layout_too_large: wrapped_minimap_layout_exceeds_budget(editor),
+    })
+}
+
+/// Pure availability inputs gathered from GTK state by `current_availability`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MinimapAvailabilityPolicy {
+    focus_suppressed: bool,
+    preference_enabled: bool,
+    evicted: bool,
+    syntax_enabled: bool,
+    wrapped_layout_too_large: bool,
+}
+
+fn minimap_availability_for_policy(policy: MinimapAvailabilityPolicy) -> MinimapAvailability {
+    if policy.focus_suppressed || !policy.preference_enabled {
         return MinimapAvailability::Disabled;
     }
-    if !editor.imp().settings.boolean(keys::SHOW_MINIMAP) {
-        return MinimapAvailability::Disabled;
-    }
-    if editor.is_evicted() {
+    if policy.evicted {
         return MinimapAvailability::Evicted;
     }
-    if !editor.size_check().syntax_enabled() {
-        return MinimapAvailability::TooLarge;
-    }
-    if wrapped_minimap_layout_exceeds_budget(editor) {
+    if !policy.syntax_enabled || policy.wrapped_layout_too_large {
         return MinimapAvailability::TooLarge;
     }
     MinimapAvailability::Visible
@@ -475,8 +489,10 @@ fn wrapped_minimap_layout_exceeds_budget(editor: &LushtextEditorPage) -> bool {
     let buffer = editor.buffer();
     let buffer_chars = u64::try_from(buffer.char_count()).unwrap_or(u64::MAX);
     let estimated_size = editor.file_size().unwrap_or(0).max(buffer_chars);
-    let exceeds = estimated_size > MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET
-        && buffer_has_line_exceeding_char_budget(&buffer, MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET);
+    let exceeds = wrapped_layout_budget_exceeded(
+        estimated_size,
+        buffer_has_line_exceeding_char_budget(&buffer, MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET),
+    );
     editor
         .imp()
         .minimap
@@ -485,25 +501,29 @@ fn wrapped_minimap_layout_exceeds_budget(editor: &LushtextEditorPage) -> bool {
     exceeds
 }
 
+fn wrapped_layout_budget_exceeded(estimated_size: u64, has_extreme_line: bool) -> bool {
+    estimated_size > MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET && has_extreme_line
+}
+
 fn buffer_has_line_exceeding_char_budget(
     buffer: &sourceview5::Buffer,
     line_char_budget: usize,
 ) -> bool {
-    let mut iter = buffer.start_iter();
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+    text_exceeds_line_char_budget(&text, line_char_budget)
+}
+
+fn text_exceeds_line_char_budget(text: &str, line_char_budget: usize) -> bool {
     let mut current_line_chars = 0usize;
 
-    while !iter.is_end() {
-        if iter.char() == '\n' {
+    for ch in text.chars() {
+        if ch == '\n' {
             current_line_chars = 0;
         } else {
             current_line_chars = current_line_chars.saturating_add(1);
             if current_line_chars > line_char_budget {
                 return true;
             }
-        }
-
-        if !iter.forward_char() {
-            break;
         }
     }
 
@@ -597,14 +617,16 @@ fn collect_modified_lines(editor: &LushtextEditorPage) -> Vec<u32> {
 }
 
 fn collect_long_line_warnings(editor: &LushtextEditorPage) -> Vec<u32> {
-    editor
-        .buffer()
-        .text(
-            &editor.buffer().start_iter(),
-            &editor.buffer().end_iter(),
-            true,
-        )
-        .lines()
+    let text = editor.buffer().text(
+        &editor.buffer().start_iter(),
+        &editor.buffer().end_iter(),
+        true,
+    );
+    long_line_warning_lines(&text)
+}
+
+fn long_line_warning_lines(text: &str) -> Vec<u32> {
+    text.lines()
         .enumerate()
         .filter_map(|(line, text)| {
             (text.chars().count() > MINIMAP_LONG_LINE_WARNING_THRESHOLD)
@@ -669,7 +691,7 @@ fn draw_marker_strip(
 
     for marker in &markers {
         let lane_width = marker_lane_width(marker.kind, width);
-        let x = width - lane_width;
+        let x = marker_lane_x(width, lane_width);
         let (red, green, blue, alpha) = marker_rgba(marker.kind, dark);
         cr.set_source_rgba(red, green, blue, alpha);
         cr.rectangle(x, marker.top, lane_width, marker.height());
@@ -859,6 +881,10 @@ fn marker_lane_width(kind: MinimapMarkerKind, total_width: f64) -> f64 {
     (total_width * ratio).max(2.0)
 }
 
+fn marker_lane_x(total_width: f64, lane_width: f64) -> f64 {
+    total_width - lane_width
+}
+
 fn marker_rgba(kind: MinimapMarkerKind, dark: bool) -> (f64, f64, f64, f64) {
     match (kind, dark) {
         (MinimapMarkerKind::Bookmark, false) => (0.11, 0.44, 0.85, 0.95),
@@ -882,6 +908,29 @@ fn iter_at_line_or_last(buffer: &sourceview5::Buffer, line: u32) -> gtk4::TextIt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_minimap_policy_constants_are_stable() {
+        assert_eq!(MINIMAP_MARKER_STRIP_WIDTH, 8);
+        assert_eq!(MINIMAP_REFRESH_DEBOUNCE, Duration::from_millis(80));
+        assert_eq!(MINIMAP_LONG_LINE_WARNING_THRESHOLD, 120);
+        assert_eq!(MINIMAP_SEARCH_MATCH_CAP, 2_000);
+        assert_eq!(MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET, 2_097_152);
+        assert_eq!(MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET, 8_000);
+        assert_eq!(MINIMAP_MARKER_MIN_HEIGHT, 2.0);
+        assert_eq!(MINIMAP_MODIFIED_MARK_CATEGORY, "lushtext-minimap-modified");
+    }
+
+    #[test]
+    fn test_marker_bounds_height_uses_bottom_minus_top() {
+        let bounds = MinimapMarkerBounds {
+            kind: MinimapMarkerKind::Search,
+            top: 3.25,
+            bottom: 11.75,
+        };
+
+        assert_eq!(bounds.height(), 8.5);
+    }
 
     #[test]
     fn test_normalize_line_runs_merges_contiguous_lines() {
@@ -929,6 +978,112 @@ mod tests {
     }
 
     #[test]
+    fn test_markers_from_lines_handles_empty_input() {
+        assert!(markers_from_lines(MinimapMarkerKind::LongLine, []).is_empty());
+    }
+
+    #[test]
+    fn test_buffer_line_budget_resets_on_newlines_and_uses_strict_overflow() {
+        assert!(!text_exceeds_line_char_budget("abcd\nabcde\nxy", 5));
+        assert!(text_exceeds_line_char_budget("abcd\nabcde\nxy", 4));
+
+        assert!(!text_exceeds_line_char_budget("éé\né", 2));
+        assert!(text_exceeds_line_char_budget("éé\né", 1));
+    }
+
+    #[test]
+    fn test_buffer_line_budget_returns_false_for_empty_buffers() {
+        assert!(!text_exceeds_line_char_budget("", 0));
+    }
+
+    #[test]
+    fn test_minimap_availability_policy_preserves_priority_order() {
+        let visible = MinimapAvailabilityPolicy {
+            focus_suppressed: false,
+            preference_enabled: true,
+            evicted: false,
+            syntax_enabled: true,
+            wrapped_layout_too_large: false,
+        };
+
+        assert_eq!(
+            minimap_availability_for_policy(visible),
+            MinimapAvailability::Visible
+        );
+        assert_eq!(
+            minimap_availability_for_policy(MinimapAvailabilityPolicy {
+                preference_enabled: false,
+                evicted: true,
+                syntax_enabled: false,
+                wrapped_layout_too_large: true,
+                ..visible
+            }),
+            MinimapAvailability::Disabled,
+            "the user preference should win over document state"
+        );
+        assert_eq!(
+            minimap_availability_for_policy(MinimapAvailabilityPolicy {
+                focus_suppressed: true,
+                preference_enabled: true,
+                evicted: true,
+                ..visible
+            }),
+            MinimapAvailability::Disabled,
+            "Focus Mode should suppress the minimap without changing the saved preference"
+        );
+        assert_eq!(
+            minimap_availability_for_policy(MinimapAvailabilityPolicy {
+                evicted: true,
+                syntax_enabled: false,
+                ..visible
+            }),
+            MinimapAvailability::Evicted,
+            "evicted tabs report their reload state before size-tier feedback"
+        );
+        assert_eq!(
+            minimap_availability_for_policy(MinimapAvailabilityPolicy {
+                syntax_enabled: false,
+                ..visible
+            }),
+            MinimapAvailability::TooLarge
+        );
+        assert_eq!(
+            minimap_availability_for_policy(MinimapAvailabilityPolicy {
+                wrapped_layout_too_large: true,
+                ..visible
+            }),
+            MinimapAvailability::TooLarge
+        );
+    }
+
+    #[test]
+    fn test_wrapped_layout_budget_requires_size_above_budget_and_extreme_line() {
+        assert!(!wrapped_layout_budget_exceeded(
+            MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET,
+            true
+        ));
+        assert!(!wrapped_layout_budget_exceeded(
+            MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET + 1,
+            false
+        ));
+        assert!(wrapped_layout_budget_exceeded(
+            MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET + 1,
+            true
+        ));
+    }
+
+    #[test]
+    fn test_long_line_warning_lines_use_strict_character_threshold() {
+        let exact = "a".repeat(MINIMAP_LONG_LINE_WARNING_THRESHOLD);
+        let too_long = "b".repeat(MINIMAP_LONG_LINE_WARNING_THRESHOLD + 1);
+        let another_too_long = "c".repeat(MINIMAP_LONG_LINE_WARNING_THRESHOLD + 2);
+        let text = format!("{exact}\n{too_long}\nshort\n{another_too_long}");
+
+        assert_eq!(long_line_warning_lines(&text), vec![1, 3]);
+        assert!(long_line_warning_lines("short\nalso short").is_empty());
+    }
+
+    #[test]
     fn test_fit_marker_bounds_keeps_min_height_above_eof_tail() {
         let bounds = fit_marker_bounds(
             MinimapMarkerKind::Search,
@@ -970,6 +1125,176 @@ mod tests {
     }
 
     #[test]
+    fn test_fit_marker_bounds_clamps_to_content_and_handles_reversed_input() {
+        let bounds = fit_marker_bounds(
+            MinimapMarkerKind::LongLine,
+            60.0,
+            20.0,
+            MarkerProjectionSpace {
+                strip_height: 120.0,
+                content_top: 25.0,
+                content_bottom: 55.0,
+                map_y_in_strip: 0.0,
+                min_height: 2.0,
+            },
+        )
+        .expect("partially visible reversed marker should be clamped");
+
+        assert_eq!(bounds.kind, MinimapMarkerKind::LongLine);
+        assert_eq!(bounds.top, 25.0);
+        assert_eq!(bounds.bottom, 55.0);
+        assert_eq!(bounds.height(), 30.0);
+    }
+
+    #[test]
+    fn test_fit_marker_bounds_fills_content_when_minimum_exceeds_content_height() {
+        let bounds = fit_marker_bounds(
+            MinimapMarkerKind::Modified,
+            42.0,
+            42.0,
+            MarkerProjectionSpace {
+                strip_height: 100.0,
+                content_top: 40.0,
+                content_bottom: 45.0,
+                map_y_in_strip: 0.0,
+                min_height: 20.0,
+            },
+        )
+        .expect("minimum height should be capped to visible content");
+
+        assert_eq!(bounds.top, 40.0);
+        assert_eq!(bounds.bottom, 45.0);
+    }
+
+    #[test]
+    fn test_fit_marker_bounds_leaves_already_tall_markers_unchanged() {
+        let bounds = fit_marker_bounds(
+            MinimapMarkerKind::Search,
+            10.0,
+            16.0,
+            MarkerProjectionSpace {
+                strip_height: 100.0,
+                content_top: 0.0,
+                content_bottom: 90.0,
+                map_y_in_strip: 0.0,
+                min_height: 4.0,
+            },
+        )
+        .expect("marker taller than the minimum should stay drawable");
+
+        assert_eq!(bounds.top, 10.0);
+        assert_eq!(bounds.bottom, 16.0);
+    }
+
+    #[test]
+    fn test_fit_marker_bounds_keeps_markers_that_touch_content_edges() {
+        let top_bounds = fit_marker_bounds(
+            MinimapMarkerKind::Bookmark,
+            25.0,
+            25.0,
+            MarkerProjectionSpace {
+                strip_height: 120.0,
+                content_top: 25.0,
+                content_bottom: 55.0,
+                map_y_in_strip: 0.0,
+                min_height: 4.0,
+            },
+        )
+        .expect("line at content top should still be visible");
+        assert_eq!(top_bounds.top, 25.0);
+        assert_eq!(top_bounds.bottom, 29.0);
+
+        let bottom_bounds = fit_marker_bounds(
+            MinimapMarkerKind::Bookmark,
+            55.0,
+            55.0,
+            MarkerProjectionSpace {
+                strip_height: 120.0,
+                content_top: 25.0,
+                content_bottom: 55.0,
+                map_y_in_strip: 0.0,
+                min_height: 4.0,
+            },
+        )
+        .expect("line at content bottom should still be visible");
+        assert_eq!(bottom_bounds.top, 51.0);
+        assert_eq!(bottom_bounds.bottom, 55.0);
+    }
+
+    #[test]
+    fn test_fit_marker_bounds_rejects_each_non_finite_input() {
+        let finite_space = MarkerProjectionSpace {
+            strip_height: 100.0,
+            content_top: 10.0,
+            content_bottom: 80.0,
+            map_y_in_strip: 0.0,
+            min_height: 2.0,
+        };
+
+        assert!(
+            fit_marker_bounds(MinimapMarkerKind::Search, f64::NAN, 20.0, finite_space).is_none()
+        );
+        assert!(
+            fit_marker_bounds(MinimapMarkerKind::Search, 20.0, f64::NAN, finite_space).is_none()
+        );
+        assert!(
+            fit_marker_bounds(
+                MinimapMarkerKind::Search,
+                20.0,
+                21.0,
+                MarkerProjectionSpace {
+                    strip_height: f64::NAN,
+                    ..finite_space
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            fit_marker_bounds(
+                MinimapMarkerKind::Search,
+                20.0,
+                21.0,
+                MarkerProjectionSpace {
+                    content_top: f64::NAN,
+                    ..finite_space
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            fit_marker_bounds(
+                MinimapMarkerKind::Search,
+                20.0,
+                21.0,
+                MarkerProjectionSpace {
+                    content_bottom: f64::NAN,
+                    ..finite_space
+                },
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn test_fit_marker_bounds_rejects_zero_height_when_minimum_is_zero() {
+        assert!(
+            fit_marker_bounds(
+                MinimapMarkerKind::Search,
+                30.0,
+                30.0,
+                MarkerProjectionSpace {
+                    strip_height: 100.0,
+                    content_top: 0.0,
+                    content_bottom: 90.0,
+                    map_y_in_strip: 0.0,
+                    min_height: 0.0,
+                },
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn test_fit_marker_bounds_rejects_unprojectable_geometry() {
         let space = MarkerProjectionSpace {
             strip_height: 100.0,
@@ -1003,5 +1328,57 @@ mod tests {
             .is_none(),
             "unallocated marker strips should not draw semantic markers"
         );
+        assert!(
+            fit_marker_bounds(
+                MinimapMarkerKind::Modified,
+                10.0,
+                11.0,
+                MarkerProjectionSpace {
+                    strip_height: 100.0,
+                    content_top: 20.0,
+                    content_bottom: 20.0,
+                    map_y_in_strip: 0.0,
+                    min_height: 2.0,
+                },
+            )
+            .is_none(),
+            "empty rendered content should not synthesize marker bounds"
+        );
+    }
+
+    #[test]
+    fn test_marker_lane_widths_are_nested_with_two_pixel_floor() {
+        assert_eq!(marker_lane_width(MinimapMarkerKind::Bookmark, 10.0), 10.0);
+        assert!((marker_lane_width(MinimapMarkerKind::Search, 10.0) - 8.2).abs() < 1e-12);
+        assert!((marker_lane_width(MinimapMarkerKind::Modified, 10.0) - 6.4).abs() < 1e-12);
+        assert!((marker_lane_width(MinimapMarkerKind::LongLine, 10.0) - 4.6).abs() < 1e-12);
+        assert_eq!(marker_lane_x(10.0, 4.6), 5.4);
+
+        for kind in [
+            MinimapMarkerKind::Bookmark,
+            MinimapMarkerKind::Search,
+            MinimapMarkerKind::Modified,
+            MinimapMarkerKind::LongLine,
+        ] {
+            assert_eq!(marker_lane_width(kind, 1.0), 2.0);
+        }
+    }
+
+    #[test]
+    fn test_marker_rgba_palette_is_stable_for_light_and_dark_modes() {
+        let expected = [
+            (MinimapMarkerKind::Bookmark, false, (0.11, 0.44, 0.85, 0.95)),
+            (MinimapMarkerKind::Bookmark, true, (0.39, 0.65, 0.95, 0.95)),
+            (MinimapMarkerKind::Search, false, (0.95, 0.45, 0.0, 0.92)),
+            (MinimapMarkerKind::Search, true, (1.0, 0.58, 0.17, 0.92)),
+            (MinimapMarkerKind::Modified, false, (0.17, 0.68, 0.42, 0.92)),
+            (MinimapMarkerKind::Modified, true, (0.32, 0.84, 0.55, 0.92)),
+            (MinimapMarkerKind::LongLine, false, (0.88, 0.11, 0.14, 0.92)),
+            (MinimapMarkerKind::LongLine, true, (1.0, 0.46, 0.45, 0.92)),
+        ];
+
+        for (kind, dark, rgba) in expected {
+            assert_eq!(marker_rgba(kind, dark), rgba);
+        }
     }
 }

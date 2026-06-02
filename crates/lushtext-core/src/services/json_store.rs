@@ -118,6 +118,20 @@ mod tests {
     }
 
     #[test]
+    fn test_load_non_file_path_returns_error() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join("data.json")).expect("expected operation to succeed");
+
+        let error: Result<TestData> = load(dir.path(), "data.json");
+
+        let error = error.expect_err("directory JSON path should fail");
+        assert!(
+            error.to_string().contains("failed to read"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn test_save_creates_nested_directories() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let nested = dir.path().join("deeply/nested/dir");

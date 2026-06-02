@@ -269,3 +269,64 @@ fn merge_sorted<'a>(
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static LEFT_COMMAND: CommandDef = CommandDef {
+        id: "test.left",
+        label: "Left",
+        category: CommandCategory::App,
+        shortcut: None,
+    };
+
+    static RIGHT_COMMAND: CommandDef = CommandDef {
+        id: "test.right",
+        label: "Right",
+        category: CommandCategory::App,
+        shortcut: None,
+    };
+
+    fn command_result(command: &'static CommandDef, score: u32) -> ScoredResult<'static> {
+        ScoredResult {
+            item: SearchResultItem::Command(command),
+            score,
+        }
+    }
+
+    #[test]
+    fn merge_sorted_honors_zero_max_even_with_available_results() {
+        let results = merge_sorted(
+            vec![command_result(&LEFT_COMMAND, 10)],
+            vec![command_result(&RIGHT_COMMAND, 9)],
+            0,
+        );
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn merge_sorted_keeps_descending_scores_and_prefers_left_ties() {
+        let results = merge_sorted(
+            vec![
+                command_result(&LEFT_COMMAND, 10),
+                command_result(&LEFT_COMMAND, 8),
+            ],
+            vec![
+                command_result(&RIGHT_COMMAND, 9),
+                command_result(&RIGHT_COMMAND, 8),
+            ],
+            4,
+        );
+        let scores: Vec<u32> = results.iter().map(|result| result.score).collect();
+
+        assert_eq!(scores, vec![10, 9, 8, 8]);
+        match results[2].item {
+            SearchResultItem::Command(command) => assert_eq!(command.id, "test.left"),
+            SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => {
+                panic!("expected command result");
+            }
+        }
+    }
+}

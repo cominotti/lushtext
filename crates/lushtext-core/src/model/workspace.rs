@@ -226,6 +226,35 @@ mod tests {
     }
 
     #[test]
+    fn workspace_id_accessors_report_underlying_identifier() {
+        let id = WorkspaceId::new("project-1");
+        let empty = WorkspaceId::new("");
+
+        assert_eq!(id.as_str(), "project-1");
+        assert!(!id.is_empty());
+        assert_eq!(empty.as_str(), "");
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn workspace_scope_queries_distinguish_all_from_specific_workspace() {
+        let first = WorkspaceId::new("first");
+        let second = WorkspaceId::new("second");
+        let all = WorkspaceScope::All;
+        let scoped = WorkspaceScope::workspace(first.clone());
+
+        assert!(all.is_all());
+        assert_eq!(all.workspace_id(), None);
+        assert!(all.includes_workspace(&first));
+        assert!(all.includes_workspace(&second));
+
+        assert!(!scoped.is_all());
+        assert_eq!(scoped.workspace_id(), Some(&first));
+        assert!(scoped.includes_workspace(&first));
+        assert!(!scoped.includes_workspace(&second));
+    }
+
+    #[test]
     fn add_workspace_selects_new_workspace() {
         let mut file = WorkspacesFile::default();
         let id = file.add_workspace("project", "/tmp/project".into());
@@ -318,6 +347,68 @@ mod tests {
         let restored: WorkspaceEntry =
             serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(restored, entry);
+    }
+
+    #[test]
+    fn workspace_entry_queries_expose_path_and_kind() {
+        let directory = WorkspaceEntry::Directory {
+            path: "/tmp/project".into(),
+        };
+        let file = WorkspaceEntry::File {
+            path: "/tmp/project/file.txt".into(),
+        };
+
+        assert_eq!(directory.path(), Path::new("/tmp/project"));
+        assert!(directory.is_dir());
+        assert_eq!(file.path(), Path::new("/tmp/project/file.txt"));
+        assert!(!file.is_dir());
+    }
+
+    #[test]
+    fn remove_unselected_workspace_preserves_valid_current_scope() {
+        let mut file = WorkspacesFile::default();
+        let first = file.add_workspace("first", "/tmp/first".into());
+        let second = file.add_workspace("second", "/tmp/second".into());
+        file.set_current_scope(WorkspaceScope::workspace(first.clone()));
+
+        file.remove_workspace(&second);
+
+        assert_eq!(file.current_scope(), WorkspaceScope::workspace(first));
+        assert_eq!(file.workspaces.len(), 1);
+        assert_eq!(file.workspaces[0].name, "first");
+    }
+
+    #[test]
+    fn rename_workspace_updates_only_matching_entry() {
+        let mut file = WorkspacesFile::default();
+        let first = file.add_workspace("first", "/tmp/first".into());
+        let second = file.add_workspace("second", "/tmp/second".into());
+
+        file.rename_workspace(&first, "renamed");
+        file.rename_workspace(&WorkspaceId::new("missing"), "ignored");
+
+        assert_eq!(file.workspaces[0].name, "renamed");
+        assert_eq!(file.workspaces[1].name, "second");
+        assert_eq!(file.current_scope(), WorkspaceScope::workspace(second));
+    }
+
+    #[test]
+    fn normalize_scope_keeps_existing_workspace_and_clears_missing_one() {
+        let mut file = WorkspacesFile::default();
+        let existing = file.add_workspace("project", "/tmp/project".into());
+        file.current_scope = WorkspaceScope::workspace(existing.clone());
+
+        file.normalize_scope();
+        assert_eq!(
+            file.current_scope,
+            WorkspaceScope::workspace(existing.clone())
+        );
+        assert_eq!(file.current_scope(), WorkspaceScope::workspace(existing));
+
+        file.current_scope = WorkspaceScope::workspace(WorkspaceId::new("missing"));
+        file.normalize_scope();
+        assert_eq!(file.current_scope, WorkspaceScope::All);
+        assert_eq!(file.current_scope(), WorkspaceScope::All);
     }
 
     #[test]

@@ -12,6 +12,9 @@
 #   make test-int    - Integration tests only
 #   make test-widget - Widget tests with shared native/headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
+#   make mutants-smoke - Small cargo-mutants smoke run
+#   make mutants-diff  - Mutation test current changes against origin/main
+#   make mutants-full  - Mutation test the configured deterministic scope
 #   make check       - clippy + fmt check
 #   make pre-commit  - repo pre-commit gate (fmt + clippy)
 #   make flatpak-deps - Install Flatpak runtime/SDK deps into the user installation
@@ -27,7 +30,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless \
+.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check pre-commit dev-tools install-git-hooks clean help \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -114,6 +117,26 @@ test-widget:
 test-widget-headless:
 	@echo "Running widget tests under mutter --headless..."
 	$(CARGO_TEST_WIDGET_HEADLESS)
+
+# Small mutation pass for checking cargo-mutants tooling and timeout behavior.
+mutants-smoke:
+	@echo "Running cargo-mutants smoke scope..."
+	./scripts/run-mutants.sh smoke
+
+# Mutation-test the current diff against origin/main.
+mutants-diff:
+	@echo "Running cargo-mutants against changed code..."
+	./scripts/run-mutants.sh diff
+
+# Mutation-test the configured deterministic scope.
+mutants-full:
+	@echo "Running configured cargo-mutants scope..."
+	./scripts/run-mutants.sh full
+
+# List configured mutants without running tests.
+mutants-list:
+	@echo "Listing configured cargo-mutants scope..."
+	./scripts/run-mutants.sh list
 
 BENCH_REPORT_OUT_DIR ?= docs/benchmarks
 
@@ -331,6 +354,10 @@ help:
 	@echo "  test-int     Integration tests only"
 	@echo "  test-widget  Widget tests (auto-detect display; falls back to headless)"
 	@echo "  test-widget-headless Widget tests with the CI headless setup"
+	@echo "  mutants-smoke Small cargo-mutants smoke run"
+	@echo "  mutants-diff Changed-code mutation against origin/main"
+	@echo "  mutants-full Configured deterministic mutation scope"
+	@echo "  mutants-list List configured mutants without running tests"
 	@echo "  pre-commit   Repo pre-commit gate (fmt + clippy)"
 	@echo "  install-git-hooks Configure this repo to use .githooks/"
 	@echo ""

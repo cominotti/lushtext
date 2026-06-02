@@ -182,6 +182,20 @@ mod tests {
         };
         assert!(manifest.remove_by_path(std::path::Path::new("/a.rs")));
         assert_eq!(manifest.drafts.len(), 1);
+        assert_eq!(manifest.drafts[0], entry("def", Some("/b.rs")));
+    }
+
+    #[test]
+    fn remove_by_path_returns_false_and_preserves_entries_when_missing() {
+        let mut manifest = DraftManifest {
+            drafts: vec![entry("abc", Some("/a.rs")), entry("untitled-1", None)],
+        };
+
+        assert!(!manifest.remove_by_path(std::path::Path::new("/missing.rs")));
+        assert_eq!(
+            manifest.drafts,
+            vec![entry("abc", Some("/a.rs")), entry("untitled-1", None)]
+        );
     }
 
     #[test]

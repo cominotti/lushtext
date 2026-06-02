@@ -169,6 +169,20 @@ mod tests {
     }
 
     #[test]
+    fn test_load_non_file_workspace_path_returns_error() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join("workspaces.json"))
+            .expect("expected operation to succeed");
+
+        let error = load(dir.path()).expect_err("directory workspace file should fail");
+
+        assert!(
+            error.to_string().contains("failed to read"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn test_save_and_load_roundtrip() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let mut file = WorkspacesFile::default();
@@ -212,6 +226,10 @@ mod tests {
         assert_eq!(loaded.workspaces.len(), 2);
         assert_eq!(loaded.workspaces[0].id, WorkspaceId::new("legacy"));
         assert_eq!(loaded.workspaces[0].root, Path::new("/tmp/one"));
+        assert_eq!(loaded.workspaces[1].name, "two");
+        assert_eq!(loaded.workspaces[1].root, Path::new("/tmp/two"));
+        assert_ne!(loaded.workspaces[1].id, WorkspaceId::default());
+        assert_ne!(loaded.workspaces[1].id, WorkspaceId::new("legacy"));
         assert_eq!(
             loaded.current_scope(),
             WorkspaceScope::workspace(WorkspaceId::new("legacy"))

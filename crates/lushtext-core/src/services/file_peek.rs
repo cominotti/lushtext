@@ -315,6 +315,11 @@ mod tests {
     }
 
     #[test]
+    fn sample_byte_limit_matches_expected_budget() {
+        assert_eq!(PEEK_SAMPLE_BYTE_LIMIT, 16_384);
+    }
+
+    #[test]
     fn load_snapshot_returns_text_preview_for_utf8_file() {
         let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
         std::fs::write(file.path(), "alpha\nbeta\n").expect("expected operation to succeed");
@@ -360,6 +365,23 @@ mod tests {
     }
 
     #[test]
+    fn bounded_read_marks_only_content_beyond_the_limit_as_truncated() {
+        let exact = tempfile::NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(exact.path(), b"abcd").expect("expected operation to succeed");
+        let exact_sample = read_bounded_bytes(exact.path(), 4).expect("read exact sample");
+
+        assert_eq!(exact_sample.bytes, b"abcd");
+        assert!(!exact_sample.truncated_by_bytes);
+
+        let over = tempfile::NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(over.path(), b"abcde").expect("expected operation to succeed");
+        let over_sample = read_bounded_bytes(over.path(), 4).expect("read over-limit sample");
+
+        assert_eq!(over_sample.bytes, b"abcd");
+        assert!(over_sample.truncated_by_bytes);
+    }
+
+    #[test]
     fn load_snapshot_marks_line_truncation() {
         let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
         let mut content = String::new();
@@ -381,6 +403,40 @@ mod tests {
                 .count(),
             PEEK_SAMPLE_LINE_LIMIT
         );
+    }
+
+    #[test]
+    fn truncate_preview_text_preserves_newline_only_for_complete_nonempty_samples() {
+        let (plain, plain_lines, plain_truncated) = truncate_preview_text("alpha", false);
+        assert_eq!(plain, "alpha");
+        assert_eq!(plain_lines, 1);
+        assert!(!plain_truncated);
+
+        let (newline_only, newline_only_lines, newline_only_truncated) =
+            truncate_preview_text("\n", false);
+        assert_eq!(newline_only, "");
+        assert_eq!(newline_only_lines, 1);
+        assert!(!newline_only_truncated);
+
+        let (byte_truncated, _, byte_was_truncated) = truncate_preview_text("alpha\n", true);
+        assert_eq!(byte_truncated, "alpha");
+        assert!(byte_was_truncated);
+
+        let mut line_limited_source = String::new();
+        for _ in 0..=PEEK_SAMPLE_LINE_LIMIT {
+            line_limited_source.push_str("line\n");
+        }
+        let (line_truncated, line_count, line_was_truncated) =
+            truncate_preview_text(&line_limited_source, false);
+        assert_eq!(line_count, PEEK_SAMPLE_LINE_LIMIT);
+        assert!(!line_truncated.ends_with('\n'));
+        assert!(line_was_truncated);
+
+        let (complete, complete_lines, complete_truncated) =
+            truncate_preview_text("alpha\n", false);
+        assert_eq!(complete, "alpha\n");
+        assert_eq!(complete_lines, 1);
+        assert!(!complete_truncated);
     }
 
     #[test]

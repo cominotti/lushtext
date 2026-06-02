@@ -351,6 +351,91 @@ mod tests {
         for encoding in DocumentEncoding::COMMON {
             assert_eq!(DocumentEncoding::from_id(encoding.id()), Some(encoding));
         }
+        assert_eq!(DocumentEncoding::from_id("unknown"), None);
+    }
+
+    #[test]
+    fn document_encoding_labels_codecs_and_bom_policy_are_stable() {
+        let expected = [
+            (DocumentEncoding::Utf8, "utf-8", "UTF-8", false),
+            (DocumentEncoding::Utf8Bom, "utf-8-bom", "UTF-8 BOM", true),
+            (
+                DocumentEncoding::Windows1252,
+                "windows-1252",
+                "Windows-1252",
+                false,
+            ),
+            (DocumentEncoding::ShiftJis, "shift-jis", "Shift_JIS", false),
+            (DocumentEncoding::Utf16Le, "utf-16le", "UTF-16 LE", true),
+            (DocumentEncoding::Utf16Be, "utf-16be", "UTF-16 BE", true),
+        ];
+
+        for (encoding, id, label, writes_bom) in expected {
+            assert_eq!(encoding.id(), id);
+            assert_eq!(encoding.label(), label);
+            assert_eq!(encoding.to_string(), label);
+            assert_eq!(encoding.writes_bom(), writes_bom);
+            assert_eq!(
+                encoding.codec(),
+                DocumentEncoding::from_id(id)
+                    .expect("test table IDs should stay in the encoding registry")
+                    .codec()
+            );
+        }
+    }
+
+    #[test]
+    fn decode_confidence_labels_and_warning_policy_are_stable() {
+        let expected = [
+            (DecodeConfidence::Exact, "Exact", false),
+            (DecodeConfidence::Heuristic, "Heuristic", true),
+            (DecodeConfidence::Low, "Low", true),
+        ];
+
+        for (confidence, label, needs_warning) in expected {
+            assert_eq!(confidence.label(), label);
+            assert_eq!(confidence.needs_warning(), needs_warning);
+        }
+    }
+
+    #[test]
+    fn line_endings_round_trip_ids_and_save_separators() {
+        let expected = [
+            (LineEnding::Lf, "lf", "LF", Some("\n")),
+            (LineEnding::Crlf, "crlf", "CRLF", Some("\r\n")),
+            (LineEnding::Cr, "cr", "CR", Some("\r")),
+            (LineEnding::Mixed, "mixed", "Mixed", None),
+        ];
+
+        for (line_ending, id, label, separator) in expected {
+            assert_eq!(line_ending.id(), id);
+            assert_eq!(line_ending.label(), label);
+            assert_eq!(line_ending.separator(), separator);
+            assert_eq!(LineEnding::from_id(id), Some(line_ending));
+        }
+
+        assert_eq!(LineEnding::from_id("unknown"), None);
+    }
+
+    #[test]
+    fn invisible_mode_ids_labels_and_parsing_are_stable() {
+        let expected = [
+            (InvisibleCharactersMode::Off, "off", "Off"),
+            (
+                InvisibleCharactersMode::WhitespaceOnly,
+                "whitespace-only",
+                "Whitespace Only",
+            ),
+            (InvisibleCharactersMode::All, "all", "All"),
+        ];
+
+        for (mode, id, label) in expected {
+            assert_eq!(mode.id(), id);
+            assert_eq!(mode.label(), label);
+            assert_eq!(InvisibleCharactersMode::from_id(id), Some(mode));
+        }
+
+        assert_eq!(InvisibleCharactersMode::from_id("unknown"), None);
     }
 
     #[test]

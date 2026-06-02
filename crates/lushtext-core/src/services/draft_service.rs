@@ -366,6 +366,7 @@ pub fn cleanup_orphans(data_dir: &Path, manifest: &mut DraftManifest) -> Result<
 mod tests {
     use super::*;
     use crate::model::draft::{DraftEntry, FileDraftRestoreResolution};
+    use crate::model::session::{SessionData, SessionTab};
     use tempfile::TempDir;
 
     fn file_entry(id: &str, path: &Path, original_mtime_secs: Option<u64>) -> DraftEntry {
@@ -374,6 +375,17 @@ mod tests {
             original_path: Some(path.to_path_buf()),
             original_mtime_secs,
             saved_at_secs: 1,
+        }
+    }
+
+    fn session_tab(path: &Path) -> SessionTab {
+        SessionTab {
+            path: Some(path.to_path_buf()),
+            draft_id: None,
+            cursor_line: 0,
+            cursor_col: 0,
+            scroll_line: 0,
+            pinned: false,
         }
     }
 
@@ -433,6 +445,33 @@ mod tests {
     }
 
     #[test]
+    fn read_draft_reports_non_file_errors() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = drafts_dir(dir.path()).join("blocked.draft");
+        std::fs::create_dir_all(&path).expect("expected operation to succeed");
+
+        let error = read_draft(dir.path(), "blocked").expect_err("directory draft should fail");
+        assert!(
+            error.to_string().contains("failed to read draft"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn delete_draft_file_reports_non_file_errors() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = drafts_dir(dir.path()).join("blocked.draft");
+        std::fs::create_dir_all(&path).expect("expected operation to succeed");
+
+        let error =
+            delete_draft_file(dir.path(), "blocked").expect_err("directory draft should fail");
+        assert!(
+            error.to_string().contains("failed to delete draft"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn manifest_save_and_load_roundtrip() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let manifest = DraftManifest {
@@ -453,6 +492,54 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let manifest = load_manifest(dir.path()).expect("expected operation to succeed");
         assert_eq!(manifest, DraftManifest::default());
+    }
+
+    #[test]
+    fn update_manifest_serializes_concurrent_read_modify_write() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let data_dir = dir.path().to_path_buf();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let first_data_dir = data_dir.clone();
+
+        let first = std::thread::spawn(move || {
+            update_manifest(&first_data_dir, |manifest| {
+                manifest.upsert(DraftEntry {
+                    draft_id: "first".into(),
+                    original_path: Some(PathBuf::from("/first.rs")),
+                    original_mtime_secs: None,
+                    saved_at_secs: 1,
+                });
+                entered_tx.send(()).expect("expected operation to succeed");
+                // Hold the read-modify-write lock long enough for the second
+                // thread to prove it waits for the first saved snapshot.
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            })
+            .expect("expected operation to succeed");
+        });
+
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("expected first update to enter critical section");
+        let second_data_dir = data_dir.clone();
+        let second = std::thread::spawn(move || {
+            update_manifest(&second_data_dir, |manifest| {
+                manifest.upsert(DraftEntry {
+                    draft_id: "second".into(),
+                    original_path: Some(PathBuf::from("/second.rs")),
+                    original_mtime_secs: None,
+                    saved_at_secs: 2,
+                });
+            })
+            .expect("expected operation to succeed");
+        });
+
+        first.join().expect("first update should not panic");
+        second.join().expect("second update should not panic");
+
+        let manifest = load_manifest(&data_dir).expect("expected operation to succeed");
+        assert_eq!(manifest.drafts.len(), 2);
+        assert!(manifest.find_by_id("first").is_some());
+        assert!(manifest.find_by_id("second").is_some());
     }
 
     #[test]
@@ -544,6 +631,91 @@ mod tests {
     }
 
     #[test]
+    fn load_restore_state_removes_stale_file_draft_from_manifest_and_disk() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
+        let stale_mtime = current_mtime
+            .checked_add(1)
+            .unwrap_or_else(|| current_mtime.saturating_sub(1));
+        let draft_id = draft_id_for_path(&path);
+
+        write_draft(dir.path(), &draft_id, "stale content").expect("expected operation to succeed");
+        save_manifest(
+            dir.path(),
+            &DraftManifest {
+                drafts: vec![file_entry(&draft_id, &path, Some(stale_mtime))],
+            },
+        )
+        .expect("expected operation to succeed");
+        session_service::save(
+            dir.path(),
+            &SessionData {
+                tabs: vec![session_tab(&path)],
+                active_tab_index: Some(0),
+            },
+        )
+        .expect("expected operation to succeed");
+
+        let (manifest, _session, preloaded) = load_restore_state(dir.path());
+
+        assert_eq!(
+            preloaded.get(&draft_id),
+            Some(&PreloadedDraftRestore::SkipStaleFile)
+        );
+        assert!(manifest.find_by_id(&draft_id).is_none());
+        assert!(
+            load_manifest(dir.path())
+                .expect("expected operation to succeed")
+                .find_by_id(&draft_id)
+                .is_none()
+        );
+        assert_eq!(
+            read_draft(dir.path(), &draft_id).expect("expected operation to succeed"),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_restore_cleanup_fallback_retains_only_non_stale_entries() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        write_draft(dir.path(), "stale", "stale content").expect("expected operation to succeed");
+        write_draft(dir.path(), "keep", "keep content").expect("expected operation to succeed");
+        let keep = DraftEntry {
+            draft_id: "keep".into(),
+            original_path: Some(PathBuf::from("/keep.rs")),
+            original_mtime_secs: None,
+            saved_at_secs: 2,
+        };
+        let mut manifest = DraftManifest {
+            drafts: vec![
+                DraftEntry {
+                    draft_id: "stale".into(),
+                    original_path: Some(PathBuf::from("/stale.rs")),
+                    original_mtime_secs: None,
+                    saved_at_secs: 1,
+                },
+                keep.clone(),
+            ],
+        };
+        std::fs::create_dir_all(drafts_dir(dir.path()).join(MANIFEST_FILE))
+            .expect("expected operation to succeed");
+
+        cleanup_stale_restore_entries(dir.path(), &mut manifest, &[String::from("stale")]);
+
+        assert_eq!(manifest.drafts, vec![keep]);
+        assert_eq!(
+            read_draft(dir.path(), "stale").expect("expected operation to succeed"),
+            None
+        );
+        assert_eq!(
+            read_draft(dir.path(), "keep").expect("expected operation to succeed"),
+            Some("keep content".to_string())
+        );
+    }
+
+    #[test]
     fn cleanup_orphans_removes_entries_without_files() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let mut manifest = DraftManifest {
@@ -593,6 +765,22 @@ mod tests {
             cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
         assert_eq!(cleaned, 0);
         assert_eq!(manifest.drafts.len(), 1);
+    }
+
+    #[test]
+    fn cleanup_orphans_ignores_hidden_draft_files() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let hidden_path = drafts_dir(dir.path()).join(".hidden.draft");
+        std::fs::create_dir_all(hidden_path.parent().expect("expected drafts dir"))
+            .expect("expected operation to succeed");
+        std::fs::write(&hidden_path, "editor swap").expect("expected operation to succeed");
+        let mut manifest = DraftManifest::default();
+
+        let cleaned =
+            cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
+
+        assert_eq!(cleaned, 0);
+        assert!(hidden_path.exists());
     }
 
     #[test]

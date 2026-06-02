@@ -307,6 +307,118 @@ mod tests {
     }
 
     #[test]
+    fn delete_for_root_removes_existing_sidecar_and_ignores_missing() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let root = dir.path().join("workspace");
+        create_dir(&root);
+
+        let identity = save_for_root(dir.path(), &root, &RichNoteBody::new("Remember this"))
+            .expect("expected operation to succeed");
+        let sidecar_path = workspace_notes_dir(dir.path())
+            .join(note_storage::sidecar_filename(&identity.sidecar_id));
+
+        delete_for_root(dir.path(), &root).expect("expected operation to succeed");
+        assert!(!sidecar_path.exists());
+        delete_for_root(dir.path(), &root).expect("expected missing sidecar to be a no-op");
+    }
+
+    #[test]
+    fn delete_for_root_reports_non_file_sidecar_errors() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let root = dir.path().join("workspace");
+        create_dir(&root);
+
+        let identity = save_for_root(dir.path(), &root, &RichNoteBody::new("Remember this"))
+            .expect("expected operation to succeed");
+        let sidecar_path = workspace_notes_dir(dir.path())
+            .join(note_storage::sidecar_filename(&identity.sidecar_id));
+        std::fs::remove_file(&sidecar_path).expect("expected operation to succeed");
+        std::fs::create_dir(&sidecar_path).expect("expected operation to succeed");
+
+        let error = delete_for_root(dir.path(), &root).expect_err("directory sidecar should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to delete workspace note sidecar"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn move_root_tree_returns_zero_when_sidecar_dir_is_missing() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let old_root = dir.path().join("old");
+        let new_root = dir.path().join("new");
+
+        let migrated = move_root_tree(dir.path(), &old_root, &new_root)
+            .expect("expected operation to succeed");
+
+        assert_eq!(migrated, 0);
+    }
+
+    #[test]
+    fn move_root_tree_rewrites_note_identity_and_removes_old_sidecar() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let old_root = dir.path().join("old-workspace");
+        let new_root = dir.path().join("new-workspace");
+        create_dir(&old_root);
+
+        let old_identity = save_for_root(dir.path(), &old_root, &RichNoteBody::new("Project note"))
+            .expect("expected operation to succeed");
+        let old_sidecar_path = workspace_notes_dir(dir.path())
+            .join(note_storage::sidecar_filename(&old_identity.sidecar_id));
+
+        std::fs::rename(&old_root, &new_root).expect("expected operation to succeed");
+        let migrated = move_root_tree(dir.path(), &old_root, &new_root)
+            .expect("expected operation to succeed");
+
+        assert_eq!(migrated, 1);
+        assert!(!old_sidecar_path.exists());
+        let loaded = load_for_root(dir.path(), &new_root).expect("expected operation to succeed");
+        let loaded = loaded.expect("expected moved workspace note");
+        assert_eq!(loaded.identity.display_root, new_root);
+        assert_eq!(loaded.note.text, "Project note");
+        let json_sidecars = std::fs::read_dir(workspace_notes_dir(dir.path()))
+            .expect("expected operation to succeed")
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .count();
+        assert_eq!(json_sidecars, 1);
+    }
+
+    #[test]
+    fn rebase_workspace_root_identity_handles_display_and_canonical_prefixes() {
+        let old_root = Path::new("/project/old");
+        let new_root = Path::new("/project/new");
+        let display_nested = WorkspaceRootIdentity::from_roots(
+            PathBuf::from("/project/old/nested"),
+            PathBuf::from("/canonical/elsewhere"),
+        );
+        let canonical_nested = WorkspaceRootIdentity::from_roots(
+            PathBuf::from("/visible/elsewhere"),
+            PathBuf::from("/project/old/nested"),
+        );
+        let unrelated = WorkspaceRootIdentity::from_roots(
+            PathBuf::from("/project/other"),
+            PathBuf::from("/canonical/other"),
+        );
+
+        let (display_root, canonical_root) =
+            rebase_workspace_root_identity(&display_nested, old_root, new_root)
+                .expect("display root should rebase");
+        assert_eq!(display_root, PathBuf::from("/project/new/nested"));
+        assert_eq!(canonical_root, PathBuf::from("/project/new/nested"));
+
+        let (display_root, canonical_root) =
+            rebase_workspace_root_identity(&canonical_nested, old_root, new_root)
+                .expect("canonical root should rebase");
+        assert_eq!(display_root, PathBuf::from("/project/new/nested"));
+        assert_eq!(canonical_root, PathBuf::from("/project/new/nested"));
+
+        assert!(rebase_workspace_root_identity(&unrelated, old_root, new_root).is_none());
+    }
+
+    #[test]
     fn list_for_scope_uses_root_identity_not_workspace_slot() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let root = dir.path().join("workspace");

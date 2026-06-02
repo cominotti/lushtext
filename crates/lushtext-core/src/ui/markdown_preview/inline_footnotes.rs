@@ -418,6 +418,16 @@ mod tests {
     }
 
     #[test]
+    fn lower_uses_exact_blank_line_between_source_and_generated_definitions() {
+        let lowered = lower("Body^[Inline note].\n").expect("inline footnote should lower exactly");
+
+        assert_eq!(
+            lowered,
+            "Body[^__lush_inline_footnote_1].\n\n[^__lush_inline_footnote_1]: Inline note\n"
+        );
+    }
+
+    #[test]
     fn lower_preserves_supported_inline_formatting_in_definition_body() {
         let lowered = lower("Body^[Inline **bold** and `code`].")
             .expect("formatted inline footnote should lower");
@@ -459,6 +469,15 @@ mod tests {
     }
 
     #[test]
+    fn lower_accepts_even_backslashes_before_inline_footnote_marker() {
+        let lowered =
+            lower(r"Body \\^[A real note].").expect("even backslashes should not escape marker");
+
+        assert!(lowered.contains(r"Body \\[^__lush_inline_footnote_1]."));
+        assert!(lowered.contains("[^__lush_inline_footnote_1]: A real note"));
+    }
+
+    #[test]
     fn lower_ignores_inline_footnote_syntax_inside_inline_code() {
         assert_eq!(lower("Use `^[Not a footnote]` here."), None);
     }
@@ -479,6 +498,18 @@ mod tests {
     }
 
     #[test]
+    fn lower_ignores_inline_footnote_syntax_inside_links_images_and_tables() {
+        let markdown = "[Link ^[No]](https://example.com) ![Image ^[No]](image.png)\n\n| h |\n|---|\n| ^[No] |\n\nOutside^[Yes].";
+        let lowered = lower(markdown).expect("outside inline footnote should lower");
+
+        assert!(lowered.contains("[Link ^[No]](https://example.com)"));
+        assert!(lowered.contains("![Image ^[No]](image.png)"));
+        assert!(lowered.contains("| ^[No] |"));
+        assert!(lowered.contains("Outside[^__lush_inline_footnote_1]."));
+        assert!(lowered.contains("[^__lush_inline_footnote_1]: Yes"));
+    }
+
+    #[test]
     fn lower_ignores_malformed_inline_footnote_delimiter() {
         assert_eq!(lower("Body^[No close."), None);
     }
@@ -495,5 +526,266 @@ mod tests {
             .expect("inline footnote with nested brackets should lower");
 
         assert!(lowered.contains("[^__lush_inline_footnote_1]: Inline [bracketed] note"));
+    }
+
+    #[test]
+    fn lower_handles_escaped_brackets_and_code_brackets_inside_body() {
+        let lowered = lower(r"Body^[Escaped \] bracket and `]` code].")
+            .expect("inline footnote with escaped bracket should lower");
+
+        assert!(lowered.contains(r"[^__lush_inline_footnote_1]: Escaped \] bracket and `]` code"));
+    }
+
+    #[test]
+    fn lower_handles_adjacent_multibyte_inline_footnotes() {
+        let lowered = lower("Café^[é note]中^[漢字 note].")
+            .expect("adjacent multibyte inline footnotes should lower");
+
+        assert!(lowered.contains("Café[^__lush_inline_footnote_1]中[^__lush_inline_footnote_2]."));
+        assert!(lowered.contains("[^__lush_inline_footnote_1]: é note"));
+        assert!(lowered.contains("[^__lush_inline_footnote_2]: 漢字 note"));
+    }
+
+    #[test]
+    fn lower_indents_multiline_definition_bodies() {
+        let lowered = lower("Body^[first line\nsecond line].")
+            .expect("multiline inline footnote should lower");
+
+        assert!(lowered.contains("[^__lush_inline_footnote_1]: first line\n    second line"));
+    }
+
+    #[test]
+    fn range_helpers_ignore_empty_ranges_and_merge_touching_ranges() {
+        let mut ranges = Vec::new();
+        push_non_empty_range(&mut ranges, 2..2);
+        push_non_empty_range(&mut ranges, 2..4);
+        assert_eq!(ranges, vec![2..4]);
+
+        let merged = merge_ranges(vec![8..10, 1..3, 3..6, 5..8, 12..13]);
+        assert_eq!(merged, vec![1..10, 12..13]);
+    }
+
+    #[test]
+    fn protected_range_lookup_skips_ranges_that_end_at_index() {
+        let ranges = vec![0..2, 3..5, 8..10];
+
+        assert_eq!(first_relevant_protected_range(&ranges, 0), 0);
+        assert_eq!(first_relevant_protected_range(&ranges, 2), 1);
+        assert_eq!(first_relevant_protected_range(&ranges, 5), 2);
+        assert_eq!(first_relevant_protected_range(&ranges, 10), ranges.len());
+    }
+
+    #[test]
+    fn tag_classifiers_accept_only_prose_and_protected_containers() {
+        assert!(is_eligible_start(&Tag::Paragraph));
+        assert!(!is_eligible_start(&Tag::HtmlBlock));
+        assert!(is_eligible_end(TagEnd::Paragraph));
+        assert!(!is_eligible_end(TagEnd::Link));
+
+        assert!(is_protected_start(&Tag::HtmlBlock));
+        assert!(!is_protected_start(&Tag::Paragraph));
+        assert!(is_protected_end(TagEnd::Link));
+        assert!(!is_protected_end(TagEnd::Paragraph));
+    }
+
+    fn protected_snippets<'a>(markdown: &'a str, plan: &InlineFootnoteScanPlan) -> Vec<&'a str> {
+        plan.protected_ranges
+            .iter()
+            .map(|range| &markdown[range.clone()])
+            .collect()
+    }
+
+    #[test]
+    fn parser_scan_plan_tracks_reference_labels_and_protected_ranges() {
+        let markdown = "Text[^alpha] and <span>protected</span>.\n\n```rust\ncode\n```\n\nBody^[note].\n\n[^alpha]: Existing definition";
+        let plan = build_scan_plan(markdown, test_options());
+
+        assert!(plan.used_labels.contains("alpha"));
+        assert!(
+            plan.eligible_ranges
+                .iter()
+                .any(|range| markdown[range.clone()].contains("Body^[note]"))
+        );
+        assert!(
+            plan.protected_ranges
+                .iter()
+                .any(|range| markdown[range.clone()].contains("<span>protected</span>"))
+        );
+        assert!(
+            plan.protected_ranges
+                .iter()
+                .any(|range| markdown[range.clone()].contains("code"))
+        );
+    }
+
+    #[test]
+    fn parser_scan_plan_records_nested_ranges_inside_protected_spans() {
+        let markdown = "[Link *em ^[No]*](https://example.com) outside^[Yes].";
+        let plan = build_scan_plan(markdown, test_options());
+        let snippets = protected_snippets(markdown, &plan);
+
+        assert!(snippets.contains(&"[Link *em ^[No]*](https://example.com)"));
+        assert!(snippets.contains(&"em ^"));
+        assert!(
+            snippets
+                .iter()
+                .filter(|snippet| **snippet == "*em ^[No]*")
+                .count()
+                >= 2
+        );
+    }
+
+    #[test]
+    fn parser_scan_plan_keeps_unprotected_footnote_references_scannable() {
+        let markdown = "Text[^alpha] outside^[Yes].\n\n[^alpha]: Existing definition";
+        let plan = build_scan_plan(markdown, test_options());
+        let snippets = protected_snippets(markdown, &plan);
+
+        assert!(plan.used_labels.contains("alpha"));
+        assert!(!snippets.contains(&"[^alpha]"));
+    }
+
+    #[test]
+    fn parser_scan_plan_protects_footnote_references_inside_tables() {
+        let markdown = "| h |\n|---|\n| [^alpha] |\n\n[^alpha]: Existing definition";
+        let plan = build_scan_plan(markdown, test_options());
+        let snippets = protected_snippets(markdown, &plan);
+
+        assert!(plan.used_labels.contains("alpha"));
+        assert!(snippets.contains(&"[^alpha]"));
+    }
+
+    #[test]
+    fn replacement_scan_skips_multiple_protected_ranges() {
+        let markdown = "ok ^[one] {first ^[skip]} mid {second ^[skip]}^[two] tail ^[out]";
+        let first_start = markdown.find("{first").expect("first protected range");
+        let first_end = first_start + "{first ^[skip]}".len();
+        let second_start = markdown.find("{second").expect("second protected range");
+        let second_end = second_start + "{second ^[skip]}".len();
+        let scan_start = markdown.find("^[one]").expect("first inline footnote");
+        let scan_end = markdown
+            .find(" tail")
+            .expect("scan end before final marker");
+        let protected_ranges = vec![first_start..first_end, second_start..second_end];
+        let mut label_generator =
+            InlineFootnoteLabelGenerator::new(std::collections::HashSet::new());
+        let mut replacements = Vec::new();
+
+        collect_inline_footnote_replacements(
+            markdown,
+            scan_start..scan_end,
+            &protected_ranges,
+            &mut label_generator,
+            &mut replacements,
+        );
+
+        assert_eq!(
+            replacements,
+            vec![
+                InlineFootnoteReplacement {
+                    source: scan_start..scan_start + "^[one]".len(),
+                    label: "__lush_inline_footnote_1".to_string(),
+                    body: "one".to_string(),
+                },
+                InlineFootnoteReplacement {
+                    source: second_end..second_end + "^[two]".len(),
+                    label: "__lush_inline_footnote_2".to_string(),
+                    body: "two".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn replacement_scan_rejects_protected_marker_with_external_close() {
+        let markdown = "ok {protected ^[skip}].";
+        let protected_start = markdown.find("{protected").expect("protected start");
+        let protected_end = protected_start + "{protected ^[skip}".len();
+        let protected_range = protected_start..protected_end;
+        let mut label_generator =
+            InlineFootnoteLabelGenerator::new(std::collections::HashSet::new());
+        let mut replacements = Vec::new();
+
+        collect_inline_footnote_replacements(
+            markdown,
+            0..markdown.len(),
+            std::slice::from_ref(&protected_range),
+            &mut label_generator,
+            &mut replacements,
+        );
+
+        assert!(replacements.is_empty());
+    }
+
+    #[test]
+    fn replacement_scan_rechecks_later_protected_ranges_after_an_expired_one() {
+        let markdown = "ok {first} mid {second ^[skip}].";
+        let first_start = markdown.find("{first}").expect("first protected start");
+        let first_end = first_start + "{first}".len();
+        let second_start = markdown.find("{second").expect("second protected start");
+        let second_end = second_start + "{second ^[skip}".len();
+        let protected_ranges = vec![first_start..first_end, second_start..second_end];
+        let mut label_generator =
+            InlineFootnoteLabelGenerator::new(std::collections::HashSet::new());
+        let mut replacements = Vec::new();
+
+        collect_inline_footnote_replacements(
+            markdown,
+            0..markdown.len(),
+            &protected_ranges,
+            &mut label_generator,
+            &mut replacements,
+        );
+
+        assert!(replacements.is_empty());
+    }
+
+    #[test]
+    fn close_scanner_ignores_protected_brackets_inside_body() {
+        let markdown = "^[body [protected ]] after]";
+        let protected_start = markdown.find("[protected").expect("protected start");
+        let protected_end = protected_start + "[protected ]]".len();
+        let protected_range = protected_start..protected_end;
+        let close = find_inline_footnote_close(
+            markdown,
+            2,
+            markdown.len(),
+            std::slice::from_ref(&protected_range),
+        );
+
+        assert_eq!(close, markdown.rfind(']'));
+    }
+
+    #[test]
+    fn close_scanner_advances_between_multiple_protected_ranges() {
+        let markdown = "^[body [first ] gap [second ]] after]";
+        let first_start = markdown.find("[first").expect("first protected start");
+        let first_end = first_start + "[first ]".len();
+        let second_start = markdown.find("[second").expect("second protected start");
+        let second_end = second_start + "[second ]]".len();
+        let close = find_inline_footnote_close(
+            markdown,
+            2,
+            markdown.len(),
+            &[first_start..first_end, second_start..second_end],
+        );
+
+        assert_eq!(close, markdown.rfind(']'));
+    }
+
+    #[test]
+    fn close_scanner_does_not_skip_early_close_before_later_protected_range() {
+        let markdown = "^[early] [protected]";
+        let protected_start = markdown.find("[protected]").expect("protected start");
+        let protected_end = protected_start + "[protected]".len();
+        let protected_range = protected_start..protected_end;
+        let close = find_inline_footnote_close(
+            markdown,
+            2,
+            markdown.len(),
+            std::slice::from_ref(&protected_range),
+        );
+
+        assert_eq!(close, markdown.find(']'));
     }
 }

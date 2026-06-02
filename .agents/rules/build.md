@@ -16,6 +16,9 @@ make refresh-dock-icon # regenerate icon assets + force a fresh GNOME Shell dock
 make verify-flatpak-identity # verify Flatpak export identity, permissions, and MIME registration
 make test       # all tests
 make test-widget-headless # CI-style mutter/dbus widget run
+make mutants-smoke # small cargo-mutants smoke run
+make mutants-diff  # mutation test current changes against origin/main
+make mutants-full  # mutation test the configured deterministic scope
 make check      # clippy + fmt
 make pre-commit # repo pre-commit gate (fmt + clippy)
 make install-git-hooks
@@ -65,6 +68,32 @@ These patterns are replicated from invowk-rust and must be maintained:
 - `lib.rs::init_schema_dir()` sets `GSETTINGS_SCHEMA_DIR` to point to `data/` for dev builds. Installed builds use the system schema directory.
 - Requires `glib-compile-schemas` on the build machine (from `glib2-devel` / `libglib2.0-dev`).
 - Widget tests use `GSETTINGS_BACKEND=memory` for isolation (set in `ensure_gtk_init()`).
+
+## Mutation Testing
+
+- Framework: `cargo-mutants` 27.x, configured in `.cargo/mutants.toml`
+- Test runner: `cargo nextest`, matching the non-widget CI lane
+- Wrapper: `scripts/run-mutants.sh`
+- Makefile targets: `mutants-smoke`, `mutants-diff`, `mutants-full`, `mutants-list`
+- Output: `mutants.out` / `mutants.out.old` (gitignored and uploaded from CI)
+
+The default mutation scope is intentionally deterministic: model code, service
+code, and a few pure helper-heavy UI modules. Do not add GTK widget construction,
+live signal wiring, file dialogs, or display-server-dependent code directly to
+the cargo-mutants scope; keep that behavior in `scripts/run-widget-tests.sh`,
+where Mutter, D-Bus, renderer settings, retries, and warning filtering are
+controlled.
+
+Local in-place mutation runs are guarded. `MUTANTS_IN_PLACE=1` refuses dirty
+worktrees outside CI because cargo-mutants rewrites source files while testing.
+Use a clean checkout, a disposable worktree, or the default copy-based local
+mode when experimenting.
+
+Treat survivors in this order: first decide whether the mutant represents a
+real missed behavior, then add or tighten deterministic tests, then consider
+small refactors that make the behavior testable. Only equivalent or explicitly
+out-of-scope mutants should be excluded, and exclusions must stay narrow enough
+that nearby behavior still mutates.
 
 ## Meson Build (Installed / Flatpak)
 

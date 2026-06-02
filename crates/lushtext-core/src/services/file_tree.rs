@@ -326,6 +326,18 @@ mod tests {
     }
 
     #[test]
+    fn test_is_dir_empty_ignores_hidden_entries_and_detects_visible_entries() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+
+        assert!(is_dir_empty(dir.path()));
+        std::fs::write(dir.path().join(".hidden"), "").expect("expected operation to succeed");
+        assert!(is_dir_empty(dir.path()), "hidden files should not count");
+        std::fs::write(dir.path().join("visible.txt"), "").expect("expected operation to succeed");
+        assert!(!is_dir_empty(dir.path()), "visible files should count");
+        assert!(!is_dir_empty(&dir.path().join("missing")));
+    }
+
+    #[test]
     fn test_paths_are_absolute() {
         let dir = TempDir::new().expect("expected operation to succeed");
         std::fs::write(dir.path().join("file.txt"), "").expect("expected operation to succeed");
@@ -379,6 +391,30 @@ mod tests {
         assert!(scan.truncated);
         assert!(!scan.cancelled);
         assert_eq!(names(&scan.entries), vec!["docs", "src", "alpha.txt"]);
+    }
+
+    #[test]
+    fn test_bounded_scan_checks_only_directory_lookahead_cap() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join("alpha")).expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join("beta")).expect("expected operation to succeed");
+        std::fs::write(dir.path().join("file.txt"), "").expect("expected operation to succeed");
+
+        let scan = scan_directory_bounded(dir.path(), 10, 1, None);
+        let checked_dirs = scan
+            .entries
+            .iter()
+            .filter(|entry| entry.is_dir && entry.is_empty.is_some())
+            .count();
+
+        assert_eq!(checked_dirs, 1);
+        assert!(
+            scan.entries
+                .iter()
+                .filter(|entry| !entry.is_dir)
+                .all(|entry| entry.is_empty.is_none()),
+            "file entries should never consume directory lookahead"
+        );
     }
 
     #[test]

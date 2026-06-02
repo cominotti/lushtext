@@ -241,6 +241,25 @@ mod tests {
     }
 
     #[test]
+    fn test_command_display_subtitle_includes_category_and_optional_shortcut() {
+        let with_shortcut = CommandDef {
+            id: "win.save",
+            label: "Save",
+            category: CommandCategory::File,
+            shortcut: Some("Ctrl+S"),
+        };
+        let without_shortcut = CommandDef {
+            id: "app.preferences",
+            label: "Preferences",
+            category: CommandCategory::App,
+            shortcut: None,
+        };
+
+        assert_eq!(with_shortcut.display_subtitle(), "File · Ctrl+S");
+        assert_eq!(without_shortcut.display_subtitle(), "App");
+    }
+
+    #[test]
     fn test_search_mode_default_is_all() {
         assert_eq!(SearchMode::default(), SearchMode::All);
     }

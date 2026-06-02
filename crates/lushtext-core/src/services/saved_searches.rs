@@ -91,6 +91,14 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_len_index_is_out_of_bounds() {
+        let mut entries = vec![make_saved("a", "query-a")];
+        remove(&mut entries, 1);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "a");
+    }
+
+    #[test]
     fn test_load_missing_file_returns_empty() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let entries = load(dir.path());

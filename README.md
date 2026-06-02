@@ -200,6 +200,34 @@ to quit, and temporarily stages a GNOME desktop entry and app icon so the fresh
 development copy appears correctly in GNOME Shell. If the existing app refuses
 to close, the launcher fails instead of activating stale code.
 
+### Mutation testing
+
+LushText uses `cargo-mutants` for deterministic model, service, and pure helper
+coverage. It complements, rather than replaces, the normal gates: `cargo nextest`
+proves the non-widget baseline, the GTK widget runner keeps Mutter and warning
+behavior covered, benchmark compilation protects Criterion coverage, Clippy and
+rustfmt protect code quality, and `cargo deny` remains the dependency-policy
+gate.
+
+Install the local mutation tools once:
+
+```sh
+cargo install --locked cargo-mutants
+cargo install cargo-nextest --locked
+```
+
+Then use the wrapper targets:
+
+```sh
+make mutants-smoke # bounded tooling and timeout check
+make mutants-diff  # changed-code mutation against origin/main
+make mutants-full  # configured deterministic model/service/helper scope
+```
+
+Generated `mutants.out` directories are ignored locally and uploaded from CI
+when present. See [`docs/mutation-testing.md`](docs/mutation-testing.md) for
+triage rules, CI behavior, sharding, and equivalent-mutant exclusion policy.
+
 ## First Run
 
 1. Open a file with `Ctrl+O`, from the header-bar open button, or by launching

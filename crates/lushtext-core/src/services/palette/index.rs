@@ -39,6 +39,7 @@ impl FileIndex {
     }
 
     /// Like [`Self::rebuild`], but uses `capacity_hint` for the initial `Vec` allocation.
+    #[must_use]
     pub fn rebuild_with_hint(roots: &[PathBuf], capacity_hint: usize) -> Self {
         let mut files = Vec::with_capacity(capacity_hint.max(64));
         let mut visited = HashSet::new();
@@ -58,14 +59,7 @@ impl FileIndex {
             );
             root_arcs.push(root_arc);
         }
-        if files.len() > MAX_INDEXED_FILES {
-            tracing::warn!(
-                "File index truncated: {} files exceeds {} limit",
-                files.len(),
-                MAX_INDEXED_FILES
-            );
-            files.truncate(MAX_INDEXED_FILES);
-        }
+        truncate_to_index_limit(&mut files, MAX_INDEXED_FILES);
         Self {
             files,
             roots: root_arcs,
@@ -98,7 +92,7 @@ impl FileIndex {
         let before = self.files.len();
         self.files
             .retain(|file| file.path != path && !file.path.starts_with(path));
-        if self.files.len() < before * 3 / 4 {
+        if should_compact_after_removal(before, self.files.len()) {
             self.files.shrink_to_fit();
             self.roots.retain(|root| {
                 self.files
@@ -138,6 +132,29 @@ impl FileIndex {
             max,
         )
     }
+}
+
+/// Truncate oversized index results after scanning all roots.
+///
+/// The limit is parameterized so unit tests can exercise the threshold without
+/// constructing a six-figure temporary directory tree.
+pub(super) fn truncate_to_index_limit(files: &mut Vec<IndexedFile>, limit: usize) {
+    if files.len() > limit {
+        tracing::warn!(
+            "File index truncated: {} files exceeds {} limit",
+            files.len(),
+            limit
+        );
+        files.truncate(limit);
+    }
+}
+
+/// Return whether a removal changed the index enough to justify compacting roots.
+///
+/// Root compaction scans the remaining files, so it is reserved for larger
+/// removals; small deletions keep the root cache intact for cheap lookups.
+pub(super) fn should_compact_after_removal(before: usize, after: usize) -> bool {
+    after < before * 3 / 4
 }
 
 impl From<Vec<IndexedFile>> for FileIndex {

@@ -1,0 +1,164 @@
+name: Mutation Testing
+
+on:
+  pull_request:
+  schedule:
+    - cron: "37 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: mutation-testing-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  MUTANTS_TIMEOUT: "300"
+
+jobs:
+  pr-mutants:
+    name: PR Mutation Diff
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git \
+            curl
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-mutants
+
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+
+      - name: Install cargo-mutants
+        run: cargo install --locked cargo-mutants --version 27.0.0
+
+      - name: Prove non-widget baseline
+        run: cargo nextest run --workspace
+
+      - name: Generate pull-request diff
+        run: git diff "origin/${{ github.base_ref }}..." > git.diff
+
+      - name: Run changed-code mutation
+        run: MUTANTS_IN_PLACE=1 ./scripts/run-mutants.sh ci-pr git.diff
+
+      - name: Upload mutation output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-mutants-out
+          path: mutants.out
+          if-no-files-found: ignore
+
+  full-baseline:
+    name: Full Mutation Baseline
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git \
+            curl
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-mutants
+
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+
+      - name: Prove non-widget baseline
+        run: cargo nextest run --workspace
+
+  full-mutants:
+    name: Full Mutation Scope ${{ matrix.shard }}/4
+    if: github.event_name != 'pull_request'
+    needs: full-baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git \
+            curl
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-mutants
+
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+
+      - name: Install cargo-mutants
+        run: cargo install --locked cargo-mutants --version 27.0.0
+
+      - name: Run full-scope mutation shard
+        run: |
+          MUTANTS_BASELINE_SKIP=1 \
+          MUTANTS_IN_PLACE=1 \
+          MUTANTS_SHARD="${{ matrix.shard }}/4" \
+          ./scripts/run-mutants.sh ci-full
+
+      - name: Upload mutation output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-mutants-out-${{ matrix.shard }}-of-4
+          path: mutants.out
+          if-no-files-found: ignore

@@ -124,4 +124,26 @@ mod tests {
         let after_delete = load(dir.path()).expect("expected operation to succeed");
         assert!(after_delete.is_empty());
     }
+
+    #[test]
+    fn delete_missing_backup_is_noop() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+
+        delete(dir.path()).expect("expected missing backup delete to be a no-op");
+    }
+
+    #[test]
+    fn delete_reports_non_file_backup_errors() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        std::fs::create_dir(dir.path().join(BACKUP_FILE)).expect("expected operation to succeed");
+
+        let error = delete(dir.path()).expect_err("directory backup should fail deletion");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to delete replace backup"),
+            "unexpected error: {error}"
+        );
+    }
 }

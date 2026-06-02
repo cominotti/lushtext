@@ -86,9 +86,15 @@ where
 mod tests {
     use super::*;
     use std::panic;
+    use std::sync::Mutex;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    static ACTIVE_THREADS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn slot_guard_releases_slot_on_panic() {
+        let _guard = ACTIVE_THREADS_TEST_LOCK.lock().expect("lock test counter");
         ACTIVE_THREADS.store(1, Ordering::Relaxed);
 
         let result = panic::catch_unwind(|| {
@@ -98,5 +104,64 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(ACTIVE_THREADS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn try_acquire_slot_respects_limit_and_increments_active_count() {
+        let _guard = ACTIVE_THREADS_TEST_LOCK.lock().expect("lock test counter");
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+
+        for expected in 1..=MAX_CONCURRENT_SPAWNS {
+            assert!(try_acquire_slot());
+            assert_eq!(ACTIVE_THREADS.load(Ordering::Relaxed), expected);
+        }
+
+        assert!(!try_acquire_slot());
+        assert_eq!(
+            ACTIVE_THREADS.load(Ordering::Relaxed),
+            MAX_CONCURRENT_SPAWNS
+        );
+        release_slot();
+        assert_eq!(
+            ACTIVE_THREADS.load(Ordering::Relaxed),
+            MAX_CONCURRENT_SPAWNS - 1
+        );
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn spawn_blocking_then_runs_work_releases_slot_and_dispatches_callback() {
+        let _guard = ACTIVE_THREADS_TEST_LOCK.lock().expect("lock test counter");
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        let (sender, receiver) = mpsc::channel();
+
+        spawn_blocking_then(
+            (),
+            || 42,
+            move |(), result| {
+                sender.send(result).expect("send result");
+            },
+        );
+
+        std::thread::sleep(Duration::from_millis(75));
+        assert_eq!(
+            ACTIVE_THREADS.load(Ordering::Relaxed),
+            0,
+            "completed work should release its concurrency slot promptly"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut received = None;
+        while Instant::now() < deadline {
+            while glib::MainContext::default().iteration(false) {}
+            if let Ok(result) = receiver.try_recv() {
+                received = Some(result);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert_eq!(received, Some(42));
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
     }
 }

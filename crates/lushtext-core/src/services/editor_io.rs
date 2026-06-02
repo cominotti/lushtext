@@ -843,6 +843,26 @@ mod tests {
     }
 
     #[test]
+    fn load_text_file_explicit_reopen_strips_only_matching_bom() {
+        let file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(file.path(), [0xEF, 0xBB, 0xBF, b'a'])
+            .expect("expected operation to succeed");
+
+        let cancel = AtomicBool::new(false);
+        let matching =
+            load_text_file_with_encoding(file.path(), &cancel, Some(DocumentEncoding::Utf8Bom))
+                .expect("expected operation to succeed");
+        assert_eq!(matching.content, "a");
+        assert!(matching.has_bom);
+
+        let plain_utf8 =
+            load_text_file_with_encoding(file.path(), &cancel, Some(DocumentEncoding::Utf8))
+                .expect("expected operation to succeed");
+        assert_eq!(plain_utf8.content, "\u{feff}a");
+        assert!(!plain_utf8.has_bom);
+    }
+
+    #[test]
     fn load_text_file_decodes_windows_1252_when_utf8_fails() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
         std::fs::write(file.path(), [0x63, 0x61, 0x66, 0xE9])
@@ -869,6 +889,90 @@ mod tests {
     }
 
     #[test]
+    fn load_text_file_guesses_utf16_without_bom_when_signal_is_strong() {
+        let le_file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(le_file.path(), [b'H', 0, 0xE9, 0, b'\n', 0])
+            .expect("expected operation to succeed");
+
+        let be_file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(be_file.path(), [0, b'H', 0, 0xE9, 0, b'\n'])
+            .expect("expected operation to succeed");
+
+        let cancel = AtomicBool::new(false);
+        let le_result =
+            load_text_file(le_file.path(), &cancel).expect("expected operation to succeed");
+        let be_result =
+            load_text_file(be_file.path(), &cancel).expect("expected operation to succeed");
+
+        assert_eq!(le_result.content, "Hé\n");
+        assert_eq!(
+            le_result.encoding_state.opened_encoding,
+            DocumentEncoding::Utf16Le
+        );
+        assert_eq!(
+            le_result.encoding_state.decode_confidence,
+            DecodeConfidence::Heuristic
+        );
+        assert_eq!(be_result.content, "Hé\n");
+        assert_eq!(
+            be_result.encoding_state.opened_encoding,
+            DocumentEncoding::Utf16Be
+        );
+        assert_eq!(
+            be_result.encoding_state.decode_confidence,
+            DecodeConfidence::Heuristic
+        );
+    }
+
+    #[test]
+    fn utf16_without_bom_heuristic_handles_boundary_and_ambiguous_zero_patterns() {
+        assert_eq!(
+            guess_utf16_without_bom(&[0xE9, 0, 0xE8, 0]),
+            Some(DocumentEncoding::Utf16Le)
+        );
+        assert_eq!(
+            guess_utf16_without_bom(&[0, 0xE9, 0, 0xE8]),
+            Some(DocumentEncoding::Utf16Be)
+        );
+
+        let ambiguous_le_signal = [
+            0, 0, 0, 0, 0xE9, 0, 0xE8, 0, 0xE7, 0, 0xE9, 0xE9, 0xE8, 0xE8, 0xE7, 0xE7, 0xE6, 0xE6,
+            0xE5, 0xE5,
+        ];
+        let ambiguous_be_signal = [
+            0, 0, 0, 0, 0, 0xE9, 0, 0xE8, 0, 0xE7, 0xE9, 0xE9, 0xE8, 0xE8, 0xE7, 0xE7, 0xE6, 0xE6,
+            0xE5, 0xE5,
+        ];
+
+        assert_eq!(guess_utf16_without_bom(&ambiguous_le_signal), None);
+        assert_eq!(guess_utf16_without_bom(&ambiguous_be_signal), None);
+    }
+
+    #[test]
+    fn load_text_file_does_not_guess_utf16_for_short_or_odd_inputs() {
+        let short_file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(short_file.path(), [0xFF, 0]).expect("expected operation to succeed");
+
+        let odd_file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(odd_file.path(), [0, 0xFF, 0]).expect("expected operation to succeed");
+
+        let cancel = AtomicBool::new(false);
+        let short_result =
+            load_text_file(short_file.path(), &cancel).expect("expected operation to succeed");
+        let odd_result =
+            load_text_file(odd_file.path(), &cancel).expect("expected operation to succeed");
+
+        assert_eq!(
+            short_result.encoding_state.opened_encoding,
+            DocumentEncoding::Windows1252
+        );
+        assert_eq!(
+            odd_result.encoding_state.opened_encoding,
+            DocumentEncoding::Windows1252
+        );
+    }
+
+    #[test]
     fn load_text_file_detects_mixed_line_endings() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
         std::fs::write(file.path(), "a\r\nb\nc\r").expect("expected operation to succeed");
@@ -889,6 +993,101 @@ mod tests {
     }
 
     #[test]
+    fn detect_line_endings_classifies_single_styles_and_suggests_majority() {
+        assert_eq!(
+            detect_line_endings("a\nb\n"),
+            (LineEnding::Lf, LineEnding::Lf)
+        );
+        assert_eq!(
+            detect_line_endings("a\r\nb\r\n"),
+            (LineEnding::Crlf, LineEnding::Crlf)
+        );
+        assert_eq!(
+            detect_line_endings("a\rb\r"),
+            (LineEnding::Cr, LineEnding::Cr)
+        );
+        assert_eq!(
+            detect_line_endings("a\r\nb\r\nc\n"),
+            (LineEnding::Mixed, LineEnding::Crlf)
+        );
+        assert_eq!(
+            detect_line_endings("a\rb\rc\n"),
+            (LineEnding::Mixed, LineEnding::Cr)
+        );
+    }
+
+    #[test]
+    fn load_text_file_does_not_mark_utf16_nul_bytes_as_binary_like() {
+        let file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(file.path(), [0xFF, 0xFE, b'A', 0]).expect("expected operation to succeed");
+
+        let cancel = AtomicBool::new(false);
+        let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
+
+        assert_eq!(
+            result.encoding_state.opened_encoding,
+            DocumentEncoding::Utf16Le
+        );
+        assert!(
+            !result
+                .file_health
+                .iter()
+                .any(|finding| finding.kind == FileHealthFindingKind::BinaryLikeContent)
+        );
+        assert!(
+            !result
+                .file_health
+                .iter()
+                .any(|finding| finding.kind == FileHealthFindingKind::Utf8Bom)
+        );
+    }
+
+    #[test]
+    fn load_text_file_reports_space_and_zero_width_health_counts() {
+        let file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(file.path(), "a\u{00a0}b\u{00a0}c\u{200b}")
+            .expect("expected operation to succeed");
+
+        let cancel = AtomicBool::new(false);
+        let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
+
+        let nbsp = result
+            .file_health
+            .iter()
+            .find(|finding| finding.kind == FileHealthFindingKind::NonBreakingSpace)
+            .expect("NBSP finding should be present");
+        let zero_width = result
+            .file_health
+            .iter()
+            .find(|finding| finding.kind == FileHealthFindingKind::ZeroWidthCharacter)
+            .expect("zero-width finding should be present");
+        assert!(nbsp.body.contains("2 non-breaking space"));
+        assert!(zero_width.body.contains("1 zero-width character"));
+    }
+
+    #[test]
+    fn load_text_file_omits_absent_space_character_health_findings() {
+        let file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(file.path(), "plain text").expect("expected operation to succeed");
+
+        let cancel = AtomicBool::new(false);
+        let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
+
+        assert!(
+            !result
+                .file_health
+                .iter()
+                .any(|finding| finding.kind == FileHealthFindingKind::NonBreakingSpace)
+        );
+        assert!(
+            !result
+                .file_health
+                .iter()
+                .any(|finding| finding.kind == FileHealthFindingKind::ZeroWidthCharacter)
+        );
+    }
+
+    #[test]
     fn load_text_file_honors_cancellation() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
         std::fs::write(file.path(), "hello").expect("expected operation to succeed");
@@ -897,6 +1096,22 @@ mod tests {
         let result = load_text_file(file.path(), &cancel);
 
         assert!(matches!(result, Err(LoadError::Cancelled)));
+    }
+
+    #[test]
+    fn load_text_file_too_large_reports_decimal_megabytes_without_reading() {
+        let file = NamedTempFile::new().expect("expected operation to succeed");
+        file.as_file()
+            .set_len(501_000_000)
+            .expect("expected operation to succeed");
+
+        let cancel = AtomicBool::new(false);
+        let result = load_text_file(file.path(), &cancel);
+
+        assert!(matches!(
+            result,
+            Err(LoadError::TooLarge { size_mb: 501, .. })
+        ));
     }
 
     #[test]
@@ -930,6 +1145,73 @@ mod tests {
     }
 
     #[test]
+    fn lossy_encoding_preview_summarizes_and_details_sampled_issues() {
+        let singular = LossyEncodingPreview {
+            target_encoding: DocumentEncoding::Windows1252,
+            total_issue_count: 1,
+            issues: vec![LossyEncodingIssue {
+                line: 1,
+                column: 5,
+                character: '😀',
+            }],
+        };
+        assert_eq!(
+            singular.summary(),
+            "Windows-1252 cannot represent 1 character in the current document."
+        );
+
+        let plural = LossyEncodingPreview {
+            target_encoding: DocumentEncoding::ShiftJis,
+            total_issue_count: 3,
+            issues: vec![
+                LossyEncodingIssue {
+                    line: 1,
+                    column: 1,
+                    character: 'A',
+                },
+                LossyEncodingIssue {
+                    line: 2,
+                    column: 1,
+                    character: '\n',
+                },
+                LossyEncodingIssue {
+                    line: 3,
+                    column: 2,
+                    character: '\u{200b}',
+                },
+            ],
+        };
+
+        assert_eq!(
+            plural.summary(),
+            "Shift_JIS cannot represent 3 characters in the current document."
+        );
+        assert_eq!(
+            plural.detail_lines(),
+            vec![
+                "Line 1, column 1: A (U+0041)",
+                "Line 2, column 1: \\n (U+000A)",
+                "Line 3, column 2: zero-width (U+200B)",
+            ]
+        );
+    }
+
+    #[test]
+    fn analyze_lossy_encoding_counts_all_issues_but_caps_preview_sample() {
+        let preview = analyze_lossy_encoding("😀😀😀😀\n😀😀😀😀😀", DocumentEncoding::Windows1252)
+            .expect("expected lossy preview");
+
+        assert_eq!(preview.total_issue_count, 9);
+        assert_eq!(preview.issues.len(), MAX_LOSSY_PREVIEW_ISSUES);
+        assert_eq!(preview.issues[0].line, 1);
+        assert_eq!(preview.issues[0].column, 1);
+        assert_eq!(preview.issues[4].line, 2);
+        assert_eq!(preview.issues[4].column, 1);
+        assert_eq!(preview.issues[7].line, 2);
+        assert_eq!(preview.issues[7].column, 4);
+    }
+
+    #[test]
     fn write_document_to_path_replaces_destination() {
         let dir = tempfile::tempdir().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
@@ -948,6 +1230,58 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(path).expect("expected operation to succeed"),
             "saved\r\ntext"
+        );
+    }
+
+    #[test]
+    fn write_document_to_path_writes_bom_for_bom_save_encodings() {
+        let dir = tempfile::tempdir().expect("expected operation to succeed");
+        let utf8_path = dir.path().join("utf8.txt");
+        let utf16le_path = dir.path().join("utf16le.txt");
+        let utf16be_path = dir.path().join("utf16be.txt");
+
+        write_document_to_path(
+            &utf8_path,
+            "A",
+            DocumentEncoding::Utf8Bom,
+            LineEnding::Lf,
+            false,
+        )
+        .expect("expected operation to succeed");
+        write_document_to_path(
+            &utf16le_path,
+            "A",
+            DocumentEncoding::Utf16Le,
+            LineEnding::Lf,
+            false,
+        )
+        .expect("expected operation to succeed");
+        write_document_to_path(
+            &utf16be_path,
+            "A",
+            DocumentEncoding::Utf16Be,
+            LineEnding::Lf,
+            false,
+        )
+        .expect("expected operation to succeed");
+
+        assert_eq!(
+            std::fs::read(utf8_path).expect("expected operation to succeed"),
+            [0xEF, 0xBB, 0xBF, b'A']
+        );
+        assert_eq!(
+            bom_bytes_for_encoding(DocumentEncoding::Utf8Bom),
+            &[0xEF, 0xBB, 0xBF]
+        );
+        assert!(
+            std::fs::read(utf16le_path)
+                .expect("expected operation to succeed")
+                .starts_with(&[0xFF, 0xFE])
+        );
+        assert!(
+            std::fs::read(utf16be_path)
+                .expect("expected operation to succeed")
+                .starts_with(&[0xFE, 0xFF])
         );
     }
 
@@ -999,6 +1333,33 @@ mod tests {
             },
         );
         assert_eq!(removed, "text");
+    }
+
+    #[test]
+    fn apply_save_formatting_overrides_does_not_add_redundant_final_newline() {
+        let overrides = FormattingOverrides {
+            insert_final_newline: Some(true),
+            ..Default::default()
+        };
+
+        assert_eq!(apply_save_formatting_overrides("", overrides), "");
+        assert_eq!(
+            apply_save_formatting_overrides("text\n", overrides),
+            "text\n"
+        );
+        assert_eq!(
+            apply_save_formatting_overrides("text\r", overrides),
+            "text\r"
+        );
+    }
+
+    #[test]
+    fn mtime_and_now_epoch_helpers_report_current_nonzero_seconds() {
+        let file = NamedTempFile::new().expect("expected operation to succeed");
+        std::fs::write(file.path(), "mtime").expect("expected operation to succeed");
+
+        assert!(now_epoch_secs() > 1_700_000_000);
+        assert!(mtime_secs(file.path()).expect("mtime should exist") > 1_700_000_000);
     }
 
     #[test]
