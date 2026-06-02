@@ -118,12 +118,16 @@ Use a clean checkout, a disposable worktree, or the default copy-based local
 mode when experimenting.
 
 cargo-mutants is serial by default, so the local Makefile targets auto-tune
-parallelism: `MUTANTS_JOBS` defaults to about `nproc / 4` and
-`MUTANTS_TEST_THREADS` caps each mutant job's nextest so `jobs x test-threads`
-stays near the logical CPU count instead of oversubscribing. `scripts/run-mutants.sh`
-only passes `--jobs` when `MUTANTS_JOBS` is set, and CI leaves it unset, so the
-sharded small runners keep the serial default and fan out through `MUTANTS_SHARD`
-instead.
+parallelism: `MUTANTS_JOBS` defaults to about `nproc / 4`, then two per-job caps
+keep `jobs x per-job-parallelism` near the logical CPU count instead of
+oversubscribing. `MUTANTS_TEST_THREADS` (default `4`) bounds each job's nextest,
+and `MUTANTS_BUILD_JOBS` (derived) bounds each job's `cargo build` via
+`CARGO_BUILD_JOBS` — the build phase is what spikes load average, since six
+concurrent cold builds each fan out to every core by default even while IO and
+memory pressure stay near zero. `scripts/run-mutants.sh` only exports these /
+passes `--jobs` when the matching env var is set, and CI leaves all three unset,
+so the sharded small runners keep the serial default and fan out through
+`MUTANTS_SHARD` instead.
 
 Treat survivors in this order: first decide whether the mutant represents a
 real missed behavior, then add or tighten deterministic tests, then consider

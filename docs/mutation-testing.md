@@ -49,7 +49,7 @@ MUTANTS_TIMEOUT=600 make mutants-full
 MUTANTS_SMOKE_FILE=crates/lushtext-core/src/services/file_limits.rs make mutants-smoke
 MUTANTS_BASE=origin/main make mutants-diff
 MUTANTS_SHARD=0/4 make mutants-full
-MUTANTS_JOBS=8 MUTANTS_TEST_THREADS=3 make mutants-full   # override local parallelism
+MUTANTS_JOBS=8 MUTANTS_TEST_THREADS=3 MUTANTS_BUILD_JOBS=3 make mutants-full   # override local parallelism
 ```
 
 `mutants-smoke` is the fast sanity check for tool installation, config parsing,
@@ -63,12 +63,20 @@ runs the configured deterministic scope and can be sharded with `MUTANTS_SHARD`.
 cargo-mutants is serial by default — one mutant builds and tests at a time —
 which leaves a multi-core host mostly idle on the slowest gate. The local
 Makefile targets (`mutants-smoke`, `mutants-diff`, `mutants-full`) auto-tune
-this: `MUTANTS_JOBS` defaults to about `nproc / 4` and `MUTANTS_TEST_THREADS`
-defaults to `4`, so several mutants run concurrently while `jobs x test-threads`
-stays near the logical CPU count. Each mutant job launches its own nextest, so
-the thread cap is what prevents `--jobs` from oversubscribing the machine and
-turning into thrash. Override either knob inline (see above) or via
-`MUTANTS_LOCAL_JOBS` / `MUTANTS_LOCAL_TEST_THREADS` in the Makefile invocation.
+this: `MUTANTS_JOBS` defaults to about `nproc / 4`, and the two per-job caps
+default so that `jobs x per-job-parallelism` stays near the logical CPU count:
+
+- `MUTANTS_TEST_THREADS` (default `4`) bounds the test phase — each mutant job
+  launches its own nextest, which otherwise grabs every core.
+- `MUTANTS_BUILD_JOBS` (derived, ~`nproc / jobs`) bounds the build phase via
+  `CARGO_BUILD_JOBS` — without it, the concurrent cold builds each fan out to
+  every core and spike load average far above `nproc` even though IO and memory
+  stay quiet (the build phase is the one that pushed load to ~100 in testing).
+
+Together these keep both phases near `nproc` instead of thrashing. Override any
+knob inline (see above) or via `MUTANTS_LOCAL_JOBS` /
+`MUTANTS_LOCAL_TEST_THREADS` / `MUTANTS_LOCAL_BUILD_JOBS` in the Makefile
+invocation.
 
 CI deliberately does not use this. The mutation workflow calls
 `scripts/run-mutants.sh` directly and leaves `MUTANTS_JOBS` unset, so the small

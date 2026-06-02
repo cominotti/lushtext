@@ -13,14 +13,22 @@ MUTANTS_BASELINE_SKIP="${MUTANTS_BASELINE_SKIP:-0}"
 MUTANTS_IN_PLACE="${MUTANTS_IN_PLACE:-0}"
 MUTANTS_JOBS="${MUTANTS_JOBS:-}"
 MUTANTS_TEST_THREADS="${MUTANTS_TEST_THREADS:-}"
+MUTANTS_BUILD_JOBS="${MUTANTS_BUILD_JOBS:-}"
 
-# Cap nextest threads per mutant job so concurrent jobs do not oversubscribe the
-# host. cargo-mutants runs MUTANTS_JOBS build/test pipelines at once and each one
-# launches its own nextest, which otherwise grabs every core. Keeping
-# jobs x test-threads near the logical CPU count is what makes --jobs a speedup
-# instead of thrash. CI leaves both unset, so sharded runners stay serial.
+# Cap per-job parallelism so concurrent jobs do not oversubscribe the host.
+# cargo-mutants runs MUTANTS_JOBS build/test pipelines at once; each one launches
+# its own cargo build AND its own nextest, both of which otherwise grab every
+# core. Capping each phase so jobs x per-job-parallelism stays near the logical
+# CPU count is what makes --jobs a speedup instead of thrash:
+#   - NEXTEST_TEST_THREADS bounds the test phase.
+#   - CARGO_BUILD_JOBS bounds the build phase (the one that spikes load average,
+#     since six concurrent cold builds each fan out to every core by default).
+# CI leaves all three unset, so sharded runners stay serial and uncapped.
 if [[ -n "${MUTANTS_TEST_THREADS}" ]]; then
     export NEXTEST_TEST_THREADS="${MUTANTS_TEST_THREADS}"
+fi
+if [[ -n "${MUTANTS_BUILD_JOBS}" ]]; then
+    export CARGO_BUILD_JOBS="${MUTANTS_BUILD_JOBS}"
 fi
 
 usage() {
@@ -45,6 +53,7 @@ Environment:
   MUTANTS_IN_PLACE      Set to 1 to pass --in-place; guarded outside CI.
   MUTANTS_JOBS          Build/test this many mutants in parallel (default: serial).
   MUTANTS_TEST_THREADS  Cap nextest threads per mutant job (pairs with MUTANTS_JOBS).
+  MUTANTS_BUILD_JOBS    Cap cargo build jobs per mutant job (pairs with MUTANTS_JOBS).
 EOF
 }
 

@@ -69,7 +69,11 @@ PROPTEST_DEEP_CASES ?= 512
 # small runners keep the serial default.
 MUTANTS_LOCAL_JOBS ?= $(shell nproc 2>/dev/null | awk '{j = int($$1 / 4); if (j < 1) j = 1; print j}')
 MUTANTS_LOCAL_TEST_THREADS ?= 4
-MUTANTS_LOCAL_PARALLELISM = MUTANTS_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS)
+# Build-phase cap: derived so jobs x build-jobs stays near the CPU count. Without
+# it, each of the MUTANTS_LOCAL_JOBS concurrent cargo builds fans out to every
+# core, spiking load average far above ncpu during the cold-build phase.
+MUTANTS_LOCAL_BUILD_JOBS ?= $(shell nproc 2>/dev/null | awk '{n = $$1; j = int(n / 4); if (j < 1) j = 1; b = int(n / j); if (b < 1) b = 1; print b}')
+MUTANTS_LOCAL_PARALLELISM = MUTANTS_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS) MUTANTS_BUILD_JOBS=$(MUTANTS_LOCAL_BUILD_JOBS)
 
 FLATPAK_REMOTE ?= flathub
 FLATPAK_REMOTE_URL ?= https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -147,17 +151,17 @@ test-widget-headless:
 
 # Small mutation pass for checking cargo-mutants tooling and timeout behavior.
 mutants-smoke:
-	@echo "Running cargo-mutants smoke scope (jobs=$(MUTANTS_LOCAL_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	@echo "Running cargo-mutants smoke scope (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
 	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh smoke
 
 # Mutation-test the current diff against origin/main.
 mutants-diff:
-	@echo "Running cargo-mutants against changed code (jobs=$(MUTANTS_LOCAL_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	@echo "Running cargo-mutants against changed code (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
 	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh diff
 
 # Mutation-test the configured deterministic scope.
 mutants-full:
-	@echo "Running configured cargo-mutants scope (jobs=$(MUTANTS_LOCAL_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	@echo "Running configured cargo-mutants scope (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
 	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh full
 
 # List configured mutants without running tests.
