@@ -12,6 +12,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -61,7 +62,14 @@ jobs:
         run: cargo nextest run --workspace
 
       - name: Generate pull-request diff
-        run: git diff "origin/${{ github.base_ref }}..." > git.diff
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail --location --silent --show-error \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github.v3.diff" \
+            "${{ github.event.pull_request.url }}" > git.diff
+          test -s git.diff
 
       - name: Run changed-code mutation
         run: MUTANTS_IN_PLACE=1 ./scripts/run-mutants.sh ci-pr git.diff
