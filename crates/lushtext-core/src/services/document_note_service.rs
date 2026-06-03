@@ -336,12 +336,13 @@ mod tests {
         write_file(&beta, "beta");
         write_file(&outside, "gamma");
 
-        save_for_path(dir.path(), &beta, &RichNoteBody::new("Beta note"))
-            .expect("expected operation to succeed");
-        save_for_path(dir.path(), &outside, &RichNoteBody::new("Outside note"))
-            .expect("expected operation to succeed");
-        save_for_path(dir.path(), &alpha, &RichNoteBody::new("Alpha note"))
-            .expect("expected operation to succeed");
+        let beta_note = RichNoteBody::new("Beta note");
+        let outside_note = RichNoteBody::new("Outside note");
+        let alpha_note = RichNoteBody::new("Alpha note");
+
+        save_for_path(dir.path(), &beta, &beta_note).expect("expected operation to succeed");
+        save_for_path(dir.path(), &outside, &outside_note).expect("expected operation to succeed");
+        save_for_path(dir.path(), &alpha, &alpha_note).expect("expected operation to succeed");
 
         let notes = list_workspace_document_notes(dir.path(), &[workspace])
             .expect("expected operation to succeed");
@@ -351,11 +352,11 @@ mod tests {
             vec![
                 WorkspaceDocumentNote {
                     path: alpha,
-                    note: RichNoteBody::new("Alpha note"),
+                    note: alpha_note,
                 },
                 WorkspaceDocumentNote {
                     path: beta,
-                    note: RichNoteBody::new("Beta note"),
+                    note: beta_note,
                 },
             ]
         );
