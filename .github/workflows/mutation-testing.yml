@@ -27,10 +27,6 @@ jobs:
       image: registry.fedoraproject.org/fedora:44
 
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
       - name: Install system dependencies
         run: |
           dnf install -y \
@@ -41,6 +37,10 @@ jobs:
             gettext \
             git \
             curl
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
@@ -83,8 +83,6 @@ jobs:
       image: registry.fedoraproject.org/fedora:44
 
     steps:
-      - uses: actions/checkout@v6
-
       - name: Install system dependencies
         run: |
           dnf install -y \
@@ -95,6 +93,8 @@ jobs:
             gettext \
             git \
             curl
+
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
@@ -126,8 +126,6 @@ jobs:
       image: registry.fedoraproject.org/fedora:44
 
     steps:
-      - uses: actions/checkout@v6
-
       - name: Install system dependencies
         run: |
           dnf install -y \
@@ -138,6 +136,8 @@ jobs:
             gettext \
             git \
             curl
+
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
