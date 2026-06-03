@@ -12,7 +12,6 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -62,17 +61,25 @@ jobs:
         run: cargo nextest run --workspace
 
       - name: Generate pull-request diff
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          curl --fail --location --silent --show-error \
-            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
-            --header "Accept: application/vnd.github.v3.diff" \
-            "${{ github.event.pull_request.url }}" > git.diff
-          test -s git.diff
+          repo_dir="${GITHUB_WORKSPACE:-}"
+          if ! git -C "${repo_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            git_dir="$(find /__w -mindepth 1 -maxdepth 4 -type d -name .git -print -quit)"
+            if [ -z "${git_dir}" ]; then
+              echo "Unable to locate the checkout .git directory" >&2
+              exit 1
+            fi
+            repo_dir="${git_dir%/.git}"
+          fi
+
+          echo "MUTANTS_REPO_DIR=${repo_dir}" >> "${GITHUB_ENV}"
+          echo "Using checkout at ${repo_dir}"
+          git -C "${repo_dir}" diff "origin/${{ github.base_ref }}..." > "${repo_dir}/git.diff"
 
       - name: Run changed-code mutation
-        run: MUTANTS_IN_PLACE=1 ./scripts/run-mutants.sh ci-pr git.diff
+        run: |
+          cd "${MUTANTS_REPO_DIR}"
+          MUTANTS_IN_PLACE=1 ./scripts/run-mutants.sh ci-pr git.diff
 
       - name: Upload mutation output
         if: always()
