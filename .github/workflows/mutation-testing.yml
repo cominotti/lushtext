@@ -42,6 +42,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Generate pull-request diff
+        run: |
+          curl --fail --location --silent --show-error \
+            "${{ github.event.pull_request.diff_url }}" > git.diff
+          test -s git.diff
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
 
@@ -60,26 +66,8 @@ jobs:
         # cases have their own CI lane and must not multiply mutation runtime.
         run: cargo nextest run --workspace
 
-      - name: Generate pull-request diff
-        run: |
-          repo_dir="${GITHUB_WORKSPACE:-}"
-          if ! git -C "${repo_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            git_dir="$(find /__w -mindepth 1 -maxdepth 4 -type d -name .git -print -quit)"
-            if [ -z "${git_dir}" ]; then
-              echo "Unable to locate the checkout .git directory" >&2
-              exit 1
-            fi
-            repo_dir="${git_dir%/.git}"
-          fi
-
-          echo "MUTANTS_REPO_DIR=${repo_dir}" >> "${GITHUB_ENV}"
-          echo "Using checkout at ${repo_dir}"
-          git -C "${repo_dir}" diff "origin/${{ github.base_ref }}..." > "${repo_dir}/git.diff"
-
       - name: Run changed-code mutation
-        run: |
-          cd "${MUTANTS_REPO_DIR}"
-          MUTANTS_IN_PLACE=1 ./scripts/run-mutants.sh ci-pr git.diff
+        run: MUTANTS_IN_PLACE=1 ./scripts/run-mutants.sh ci-pr git.diff
 
       - name: Upload mutation output
         if: always()
