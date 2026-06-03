@@ -245,6 +245,10 @@ pub struct LushtextWindow {
     #[template_child]
     pub title_widget: TemplateChild<libadwaita::WindowTitle>,
     #[template_child]
+    pub new_tab_button: TemplateChild<gtk4::Button>,
+    #[template_child]
+    pub open_button: TemplateChild<gtk4::Button>,
+    #[template_child]
     pub document_properties_toggle_button: TemplateChild<gtk4::ToggleButton>,
     #[template_child]
     pub tab_bar: TemplateChild<libadwaita::TabBar>,
@@ -276,6 +280,8 @@ pub struct LushtextWindow {
     pub focus_mode_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
     pub focus_mode_affordance: TemplateChild<gtk4::Box>,
+    #[template_child]
+    pub leave_focus_mode_button: TemplateChild<gtk4::Button>,
     /// Dedicated secondary menu for bookmark and note workflows.
     #[template_child]
     pub notes_menu_button: TemplateChild<gtk4::MenuButton>,
@@ -363,6 +369,8 @@ impl Default for LushtextWindow {
         Self {
             header_bar: TemplateChild::default(),
             title_widget: TemplateChild::default(),
+            new_tab_button: TemplateChild::default(),
+            open_button: TemplateChild::default(),
             document_properties_toggle_button: TemplateChild::default(),
             tab_bar: TemplateChild::default(),
             window_overlay: TemplateChild::default(),
@@ -379,6 +387,7 @@ impl Default for LushtextWindow {
             command_palette: TemplateChild::default(),
             focus_mode_revealer: TemplateChild::default(),
             focus_mode_affordance: TemplateChild::default(),
+            leave_focus_mode_button: TemplateChild::default(),
             notes_menu_button: TemplateChild::default(),
             primary_menu_button: TemplateChild::default(),
             preview_paned: TemplateChild::default(),
@@ -449,6 +458,8 @@ impl ObjectImpl for LushtextWindow {
 
         let obj = self.obj();
         let settings = &self.settings;
+
+        self.apply_accessibility_metadata();
 
         let w = settings.int(keys::WINDOW_WIDTH);
         let h = settings.int(keys::WINDOW_HEIGHT);
@@ -793,7 +804,12 @@ impl ObjectImpl for LushtextWindow {
                 window.forget_tab_page(page);
                 if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
                     if let Some(ref path) = editor.file_path() {
-                        window.imp().open_paths.borrow_mut().remove(path.as_path());
+                        let mut paths = window.imp().open_paths.borrow_mut();
+                        paths.remove(path.as_path());
+                        paths.remove(&super::documents::open_path_key(path));
+                        if let Some(canonical_path) = editor.canonical_file_path() {
+                            paths.remove(&canonical_path);
+                        }
                     }
                     window.dismiss_editor_notifications(editor);
                     window.untrack_editor_memory(editor);
@@ -824,6 +840,44 @@ impl ObjectImpl for LushtextWindow {
         if let Some(source_id) = self.search_progress.heartbeat_source_id.take() {
             source_id.remove();
         }
+    }
+}
+
+impl LushtextWindow {
+    /// Assign stable labels to compact shell controls whose visible content is
+    /// mostly symbolic. Assistive technology reads these labels through GTK's
+    /// accessibility layer, and the smoke lane uses them as durable anchors.
+    fn apply_accessibility_metadata(&self) {
+        self.new_tab_button
+            .update_property(&[gtk4::accessible::Property::Label("New file")]);
+        self.open_button
+            .update_property(&[gtk4::accessible::Property::Label("Open file")]);
+        self.document_properties_toggle_button.update_property(&[
+            gtk4::accessible::Property::Label("Toggle document properties"),
+            gtk4::accessible::Property::Description(
+                "Show or hide metadata and formatting controls for the active document",
+            ),
+        ]);
+        self.primary_menu_button
+            .update_property(&[gtk4::accessible::Property::Label("Main menu")]);
+        self.notes_menu_button
+            .update_property(&[gtk4::accessible::Property::Label("Notes menu")]);
+        self.tab_bar
+            .set_accessible_role(gtk4::AccessibleRole::TabList);
+        self.tab_bar.update_property(&[
+            gtk4::accessible::Property::Label("Open document tabs"),
+            gtk4::accessible::Property::Description("Switch between open documents"),
+        ]);
+        self.tab_view.update_property(&[
+            gtk4::accessible::Property::Label("Editor tab content"),
+            gtk4::accessible::Property::Description("Content for the selected document tab"),
+        ]);
+        self.focus_mode_affordance.update_property(&[
+            gtk4::accessible::Property::Label("Focus mode controls"),
+            gtk4::accessible::Property::Description("Shows that focus mode is active"),
+        ]);
+        self.leave_focus_mode_button
+            .update_property(&[gtk4::accessible::Property::Label("Leave focus mode")]);
     }
 }
 

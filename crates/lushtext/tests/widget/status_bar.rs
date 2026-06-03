@@ -29,6 +29,29 @@ fn test_initially_no_message() {
     assert_eq!(bar.imp().message_label.label().as_str(), "");
 }
 
+#[test]
+fn test_status_controls_expose_accessibility_roles() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+
+    assert_eq!(
+        bar.imp().sidebar_toggle_button.accessible_role(),
+        gtk4::AccessibleRole::ToggleButton
+    );
+    assert_eq!(
+        bar.imp().metadata_box.accessible_role(),
+        gtk4::AccessibleRole::Group
+    );
+    assert_eq!(
+        bar.imp().line_ending_button.accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        bar.imp().encoding_button.accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+}
+
 fn status_message(text: &str, severity: MessageKind) -> StatusMessage {
     StatusMessage {
         text: text.to_string(),

@@ -12,6 +12,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Pull-request CI stays deterministic and bounded: no installed package,
+# portal, AT-SPI, screenshot, or full benchmark timing requirements here.
+# Those artifact-heavy checks live in end-user-smoke.yml and release-benchmark.yml.
+
 jobs:
   lint:
     name: Lint
@@ -123,6 +127,40 @@ jobs:
 
       - name: Run property tests
         run: make test-prop
+
+  fuzz-corpus-replay:
+    name: Fuzz Corpus Replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-fuzz-replay
+
+      - name: Replay committed fuzz corpus seeds
+        # The replay test is guarded by `lushtext-core/fuzzing`, so default
+        # workspace nextest runs intentionally skip it. This explicit stable
+        # lane keeps the committed corpus covered without installing nightly,
+        # cargo-fuzz, sanitizer tooling, or a C++ compiler.
+        run: make fuzz-corpus-replay
 
   widget-tests:
     name: Widget Tests

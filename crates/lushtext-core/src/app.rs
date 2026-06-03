@@ -65,6 +65,9 @@ mod imp {
                 LushtextWindow::new(app.upcast_ref())
             };
 
+            // Root the window before dispatching asynchronous file loads so
+            // quick failures have a visible status and inline-error surface.
+            window.present();
             for file in files {
                 if let Some(path) = file.path() {
                     window.open_document(&path);

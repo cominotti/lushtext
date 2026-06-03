@@ -31,6 +31,7 @@ use super::minimap::{MinimapAvailability, MinimapMarker};
 type MemoryChangedCallback = Box<dyn Fn(u64)>;
 type NotificationCallback = Box<dyn Fn(InlineActionNotification)>;
 type LoadCompletedCallback = Box<dyn FnOnce()>;
+type LoadFailedCallback = Box<dyn FnOnce(String)>;
 type FileLoadedCallback = Box<dyn Fn()>;
 type NotesChangedCallback = Box<dyn Fn()>;
 
@@ -155,6 +156,11 @@ pub struct DocumentMetadataState {
 pub struct LoadState {
     /// One-shot callback fired after the first successful file load.
     pub load_completed_callback: RefCell<Option<LoadCompletedCallback>>,
+    /// One-shot callback fired after the first failed file load.
+    ///
+    /// Window-level open flows use this to undo provisional tab/path state only
+    /// after the background load has actually failed.
+    pub load_failed_callback: RefCell<Option<LoadFailedCallback>>,
     /// Recurring callbacks fired after every successful file load or reload.
     ///
     /// Notes, local history, and future tab-local workflows all need the same
@@ -304,6 +310,11 @@ pub struct LushtextEditorPage {
 
     /// Absolute path of the file being edited. `None` for untitled tabs.
     pub file_path: RefCell<Option<PathBuf>>,
+    /// Canonical file identity resolved by the background load path.
+    ///
+    /// Duplicate-tab reconciliation uses this after load completion so the GTK
+    /// thread never has to call `Path::canonicalize()` while opening files.
+    pub canonical_file_path: RefCell<Option<PathBuf>>,
     /// On-disk file size in bytes, populated after async load completes.
     /// Used for memory estimation and status bar display.
     pub file_size: Cell<Option<u64>>,
@@ -312,9 +323,13 @@ pub struct LushtextEditorPage {
     /// Whether this tab's buffer was evicted to free memory. Evicted tabs
     /// reload from disk when re-focused.
     pub evicted: Cell<bool>,
-    /// Cooperative cancellation token for background file loads. `Arc<AtomicBool>`
-    /// is Send+Sync, allowing the background thread to check it.
-    pub cancel_token: Arc<AtomicBool>,
+    /// Cooperative cancellation token for the current background file load.
+    /// A fresh `Arc<AtomicBool>` per load prevents a newer request from
+    /// uncancelling an older background worker.
+    pub cancel_token: RefCell<Arc<AtomicBool>>,
+    /// Monotonic identity for file loads so stale background completions cannot
+    /// apply after a newer open or reopen starts for the same editor tab.
+    pub load_generation: Cell<u64>,
     /// Last style-scheme ID actually applied to this buffer.
     pub applied_style_scheme_id: RefCell<Option<String>>,
     /// Current document-surface opacity for the main editor text area.
@@ -371,10 +386,12 @@ impl Default for LushtextEditorPage {
             search_revealer: TemplateChild::default(),
             search_bar: TemplateChild::default(),
             file_path: RefCell::default(),
+            canonical_file_path: RefCell::default(),
             file_size: Cell::default(),
             size_check: Cell::new(FileSizeCheck::Normal),
             evicted: Cell::new(false),
-            cancel_token: Arc::new(AtomicBool::new(false)),
+            cancel_token: RefCell::new(Arc::new(AtomicBool::new(false))),
+            load_generation: Cell::new(0),
             applied_style_scheme_id: RefCell::new(None),
             document_surface_opacity: Cell::new(1.0),
             settings: gio::Settings::new(crate::config::APP_ID),

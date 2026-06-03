@@ -11,6 +11,8 @@ use crate::services::content_search::ReplaceUndoBackup;
 use crate::services::{json_store, search_backup};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use std::sync::atomic::Ordering;
+use std::sync::{Mutex, OnceLock};
 
 use super::LushtextSearchPanel;
 
@@ -25,48 +27,57 @@ impl LushtextSearchPanel {
         self.imp().undo_button.set_visible(false);
     }
 
-    /// Store undo backup after a successful replace.
+    /// Store undo backup and persist it as the current retryable journal.
     pub fn set_undo_backup(&self, backup: &ReplaceUndoBackup) {
-        let generation = self
-            .imp()
-            .preview
-            .undo_backup_generation
-            .get()
-            .wrapping_add(1);
-        self.imp().preview.undo_backup_generation.set(generation);
-        self.imp().preview.undo_backup.replace(Some(backup.clone()));
+        self.set_undo_backup_in_memory(backup);
 
         let data_dir = json_store::data_dir();
+        let Ok(_disk_guard) = undo_backup_disk_lock().lock() else {
+            tracing::warn!("Replace undo backup disk lock was poisoned; skipping backup save");
+            return;
+        };
         if let Err(e) = search_backup::save(&data_dir, backup) {
             tracing::error!("Failed to persist replace backup: {e}");
         }
     }
 
-    /// Load a persisted Replace All backup left by a prior session.
+    /// Store undo backup after the replace service already wrote per-file journal entries.
+    pub fn set_persisted_undo_backup(&self, backup: &ReplaceUndoBackup) {
+        self.set_undo_backup_in_memory(backup);
+    }
+
+    fn set_undo_backup_in_memory(&self, backup: &ReplaceUndoBackup) {
+        self.imp()
+            .preview
+            .undo_backup_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.imp().preview.undo_backup.replace(Some(backup.clone()));
+    }
+
+    /// Clear stale Replace All journal data left by a prior session.
     pub(crate) fn load_persisted_undo_backup(&self) {
         let data_dir = json_store::data_dir();
-        let load_generation = self.imp().preview.undo_backup_generation.get();
+        let generation = self
+            .imp()
+            .preview
+            .undo_backup_generation
+            .load(Ordering::Acquire);
+        let generation_counter = self.imp().preview.undo_backup_generation.clone();
         crate::services::async_task::spawn_blocking_then(
             self.clone(),
-            move || search_backup::load(&data_dir),
-            move |panel, result| match result {
-                Ok(backup) if !backup.is_empty() => {
-                    if panel.imp().preview.undo_backup_generation.get() != load_generation {
-                        return;
-                    }
-                    let generation = panel
-                        .imp()
-                        .preview
-                        .undo_backup_generation
-                        .get()
-                        .wrapping_add(1);
-                    panel.imp().preview.undo_backup_generation.set(generation);
-                    panel.imp().preview.undo_backup.replace(Some(backup));
-                    panel.show_undo_button();
+            move || {
+                let _disk_guard = undo_backup_disk_lock()
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("replace undo backup disk lock poisoned"))?;
+                if generation_counter.load(Ordering::Acquire) != generation {
+                    return Ok(());
                 }
-                Ok(_) => {}
+                search_backup::delete(&data_dir)
+            },
+            move |_panel, result| match result {
+                Ok(()) => {}
                 Err(e) => {
-                    tracing::warn!("Failed to load persisted replace backup: {e}");
+                    tracing::warn!("Failed to clear stale replace backup: {e}");
                 }
             },
         );
@@ -74,17 +85,18 @@ impl LushtextSearchPanel {
 
     /// Clear undo backup and hide the undo button.
     pub(crate) fn clear_undo_backup(&self) {
-        let generation = self
-            .imp()
+        self.imp()
             .preview
             .undo_backup_generation
-            .get()
-            .wrapping_add(1);
-        self.imp().preview.undo_backup_generation.set(generation);
+            .fetch_add(1, Ordering::AcqRel);
         self.imp().preview.undo_backup.replace(None);
         self.hide_undo_button();
 
         let data_dir = json_store::data_dir();
+        let Ok(_disk_guard) = undo_backup_disk_lock().lock() else {
+            tracing::warn!("Replace undo backup disk lock was poisoned; skipping backup cleanup");
+            return;
+        };
         if let Err(e) = search_backup::delete(&data_dir) {
             tracing::warn!("Failed to delete replace backup after undo: {e}");
         }
@@ -150,4 +162,9 @@ impl LushtextSearchPanel {
                 .set_sensitive(imp.runtime.total_matches.get() > 0);
         }
     }
+}
+
+fn undo_backup_disk_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }

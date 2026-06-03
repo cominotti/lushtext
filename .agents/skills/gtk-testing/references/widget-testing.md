@@ -47,27 +47,22 @@ renderer-specific GTK bug.
 
 ## Waiting for Async UI State
 
-Many widget changes land through idle callbacks, timeouts, or `spawn_blocking_then`. Use a local wait helper with a timeout instead of hard-coded sleeps:
+Many widget changes land through idle callbacks, timeouts, or `spawn_blocking_then`. Use the **shared** wait helpers from `crates/lushtext/tests/widget/common.rs` — do not paste a private copy into your module:
 
 ```rust
-use std::time::{Duration, Instant};
+use crate::common::{flush_events, wait_until};
 
-fn flush_events() {
-    while glib::MainContext::default().iteration(false) {}
-}
-
-fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        flush_events();
-        if predicate() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(predicate(), "timed out waiting for widget state");
-}
+// `wait_until` polls, then drains ALL ready main-loop sources. The drain is
+// required: `spawn_blocking_then` delivers completion via a low-priority
+// idle_add_once source, which only runs once nothing higher-priority is pending.
+wait_until(Duration::from_secs(5), || window.imp().sidebar.section_count() == 1);
 ```
+
+Why shared, not local: there were once five copy-pasted `wait_until`s, so fixing one missed the rest. The canonical version lives once in `common.rs`; everything imports it. Do **not** rewrite it as a single blocking `MainContext::iteration(true)` with a timeout source — the timeout (higher priority) starves the idle completion and every `spawn_blocking_then`-backed wait then times out (verified failing 5/5 in isolation). The flake to fix is the *budget*, not the poll mechanism.
+
+**Budget the wait to what it waits on.** Window realization and `spawn_blocking_then`/file-I/O completion are async and scheduling-dependent — give them a generous budget (≥5–10s). A 2s budget for async work flakes under load. The predicate returns the moment the work lands, so a larger ceiling never slows the fast path and only matters when a loaded machine delays the thread. Keep short budgets for synchronous UI-state flips.
+
+If a widget test fails then passes (or the harness prints `FLAKY:`), that is a blocker, not noise: read the real panic, classify the wait, fix the cause, and rerun to confirm. See the skill's Flake Discipline section.
 
 Use predicates tied to visible behavior:
 

@@ -7,6 +7,10 @@
 //! generated inputs and leaves GTK widgets, compositor behavior, and live
 //! session flows to the existing widget harness.
 
+#[path = "properties/durable_write_metadata.rs"]
+mod durable_write_metadata;
+#[path = "properties/editor_formatting.rs"]
+mod editor_formatting;
 #[path = "properties/encoding_sidecar.rs"]
 mod encoding_sidecar;
 #[path = "properties/inline_footnotes.rs"]
@@ -15,7 +19,11 @@ mod inline_footnotes;
 mod palette;
 #[path = "properties/path_rebasing.rs"]
 mod path_rebasing;
+#[path = "properties/replace_undo.rs"]
+mod replace_undo;
 #[path = "properties/search_replacement.rs"]
 mod search_replacement;
+#[path = "properties/session_draft_roundtrip.rs"]
+mod session_draft_roundtrip;
 #[path = "properties/support.rs"]
 mod support;

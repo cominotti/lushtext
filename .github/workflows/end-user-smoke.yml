@@ -1,0 +1,130 @@
+name: End-User Smoke
+
+on:
+  schedule:
+    - cron: "37 7 * * 3"
+  workflow_dispatch:
+
+concurrency:
+  group: end-user-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  smoke-lanes:
+    name: Smoke (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Host-sensitive smoke lanes are scheduled/manual instead of PR-required.
+    # They preserve artifacts so failures can be understood without immediate
+    # local portal, compositor, or AT-SPI reproduction.
+    container:
+      image: registry.fedoraproject.org/fedora:44
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: visual
+            command: make visual-smoke SMOKE_ARTIFACT_DIR=build/smoke
+            artifact_path: build/smoke/visual
+          - lane: portal-sandbox
+            command: make portal-sandbox-smoke SMOKE_ARTIFACT_DIR=build/smoke
+            artifact_path: build/smoke/portal-sandbox
+          - lane: accessibility
+            command: make accessibility-smoke SMOKE_ARTIFACT_DIR=build/smoke
+            artifact_path: build/smoke/accessibility
+          - lane: performance
+            command: make performance-smoke SMOKE_ARTIFACT_DIR=build/smoke
+            artifact_path: build/smoke/performance
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git \
+            curl \
+            jq \
+            file \
+            flatpak \
+            dbus-daemon \
+            glib2 \
+            mutter \
+            gstreamer1 \
+            pipewire \
+            pipewire-utils \
+            wireplumber \
+            python3 \
+            python3-gobject \
+            python3-pyatspi \
+            at-spi2-core
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-end-user-smoke-${{ matrix.lane }}
+
+      - name: Run ${{ matrix.lane }} smoke
+        run: ${{ matrix.command }}
+
+      - name: Upload ${{ matrix.lane }} smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.lane }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: warn
+
+  benchmark-report:
+    name: Full Benchmark Report
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Full Criterion reports are intentionally outside pull-request CI. This
+    # scheduled/manual job complements the tag-triggered release benchmark lane.
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git \
+            jq
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-end-user-bench-report
+
+      - name: Run full benchmark report
+        run: make bench-report-full BENCH_REPORT_OUT_DIR=build/benchmark-report
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report-full
+          path: build/benchmark-report/*.md
+          if-no-files-found: warn

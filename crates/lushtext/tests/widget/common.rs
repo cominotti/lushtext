@@ -86,14 +86,33 @@ pub fn flush_after_delay(delay: Duration) {
     flush_events();
 }
 
+/// Interval between `wait_until` predicate checks.
+const WAIT_UNTIL_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
 /// Poll until the predicate becomes true or the timeout expires.
+///
+/// Each poll sleeps briefly and then **drains every ready main-loop source** via
+/// `flush_events()` (`while iteration(false) {}`). Draining to exhaustion is the
+/// important part: `spawn_blocking_then` delivers its completion through
+/// `glib::idle_add_once`, a *low-priority idle source*. A loop that only blocks
+/// on `MainContext::iteration(true)` with a higher-priority timeout source can
+/// starve that idle indefinitely, so the async result never lands and the wait
+/// times out even though the work finished. Drain-all dispatches the idle as
+/// soon as nothing higher-priority is pending, which is exactly how these tests
+/// observe background completion. Do not "optimize" this into a single blocking
+/// iteration — that regresses every `spawn_blocking_then`-backed wait.
+///
+/// The flake this guards against is a *budget* problem, not a polling-gap one:
+/// give async/realization waits a generous timeout (see callers) rather than
+/// changing the poll mechanism.
 pub fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if predicate() {
             return;
         }
-        flush_after_delay(Duration::from_millis(20));
+        std::thread::sleep(WAIT_UNTIL_POLL_INTERVAL);
+        flush_events();
     }
     panic!("condition was not met within {timeout:?}");
 }

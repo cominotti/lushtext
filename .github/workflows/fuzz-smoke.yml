@@ -1,0 +1,58 @@
+name: Fuzz Smoke
+
+on:
+  schedule:
+    - cron: "19 6 * * 2"
+  workflow_dispatch:
+
+concurrency:
+  group: fuzz-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FUZZ_SMOKE_RUNS: "64"
+  FUZZ_SMOKE_SECONDS: "5"
+  FUZZ_SMOKE_MAX_LEN: "4096"
+  FUZZ_TARGETS: "editor_bytes markdown_preprocess operation_script"
+
+jobs:
+  fuzz-smoke:
+    name: Bounded Fuzz Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gcc-c++ \
+            gettext \
+            git
+
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-fuzz-smoke
+
+      - name: Install cargo-fuzz
+        run: cargo install --locked cargo-fuzz
+
+      - name: Run bounded fuzz smoke
+        # `make fuzz-smoke` supplies target, run, time, and max-input bounds.
+        # The operation-script target also caps script length and operation
+        # count in `lushtext-core::fuzzing` so scheduled discovery stays small.
+        run: make fuzz-smoke

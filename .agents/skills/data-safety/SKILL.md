@@ -221,15 +221,20 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > Tree: Slot release in a Drop guard or catch_unwind wrapper? → Yes: SAFE. Panic in work closure can leave ACTIVE_THREADS permanently incremented?
 > FLAG MEDIUM: "Panic in work closure leaks concurrency slot. After 8 panics, all background I/O stalls permanently."
 >
-> **AW-4: Temp file or renamed directory entry not flushed before completion**
+> **AW-4: Temp file, metadata, or renamed directory entry not flushed before completion**
 > Grep: `rename` in atomic write functions (e.g., `json_store::save`, `write_draft`)
-> Tree: Is `flush()`, `sync_all()`, or `sync_data()` called on the temp file before rename? → No: FLAG. After successful rename, is the parent directory synced (for example through `durable_write::sync_parent_dir`)? → Yes: SAFE.
-> FLAG HIGH: "Atomic write missing temp-file sync or parent-directory sync. Power loss on ext4/XFS/Btrfs can lose the new bytes or the renamed directory entry."
+> Tree: Is content flushed before metadata is applied? → Yes: continue. Is required metadata applied before the final temp-file sync? → Yes: continue. Is `sync_all()` or `sync_data()` called on the temp file after metadata and before rename? → No: FLAG. After successful rename, is the parent directory synced (for example through `durable_write::sync_parent_dir`)? → Yes: SAFE.
+> FLAG HIGH: "Atomic write missing final temp-file sync after metadata or parent-directory sync. Power loss on ext4/XFS/Btrfs can lose the new bytes, required metadata, or renamed directory entry."
 >
 > **AW-5: Shared temp path for concurrent writers**
 > Grep: temp path construction near atomic writes (`with_extension("tmp")`, `.tmp`, or `unique_temp_path`)
 > Tree: Does each atomic write use `durable_write::unique_temp_path` or another collision-resistant temp name in the final directory? → Yes: SAFE. Can two saves of the same final path use the same temp path concurrently?
 > FLAG HIGH: "Concurrent writers share one temp path. One writer can rename or delete the other's temp file, causing failed saves or stale bytes."
+>
+> **AW-6: Write coordination tied to replaceable destination inode**
+> Grep: `flock`, `File::open`, or lock files near editor save / Replace All coordination
+> Tree: Does coordination key the stable resolved target path (canonical target for existing files/symlinks, canonical parent + file name for missing files)? → Yes: SAFE. Does the guard require opening the destination read-write? → No: SAFE.
+> FLAG MEDIUM: "Write coordination locks the old destination inode or requires read-write access. Atomic rename replaces the inode, so save/replace operations can interleave or fail to coordinate valid read-only targets."
 >
 > **Output**: Same format as draft-integrity.
 

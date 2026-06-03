@@ -1,0 +1,35 @@
+[package]
+name = "lushtext-fuzz"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95.0"
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lushtext-core = { path = "../crates/lushtext-core", features = ["fuzzing"] }
+
+[[bin]]
+name = "editor_bytes"
+path = "fuzz_targets/editor_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "markdown_preprocess"
+path = "fuzz_targets/markdown_preprocess.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "operation_script"
+path = "fuzz_targets/operation_script.rs"
+test = false
+doc = false
+bench = false

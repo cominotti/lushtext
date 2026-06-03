@@ -17,7 +17,15 @@ make verify-flatpak-identity # verify Flatpak export identity, permissions, and 
 make test       # all tests
 make test-prop  # bounded property tests for pure deterministic logic
 make test-prop-deep # opt-in deeper property run with more generated cases
+make fuzz-corpus-replay # stable replay of committed fuzz corpus seeds
+make fuzz-smoke # bounded local cargo-fuzz smoke, requires nightly tooling
+make fuzz-operation-smoke # bounded structured-operation fuzz smoke
 make test-widget-headless # CI-style mutter/dbus widget run
+make visual-smoke # real-session screenshot smoke with artifacts
+make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
+make accessibility-smoke # AT-SPI-enabled accessibility smoke
+make performance-smoke # lightweight Criterion performance smoke
+make end-user-smoke # run all host-supported end-user smoke lanes
 make mutants-smoke # small cargo-mutants smoke run
 make mutants-diff  # mutation test current changes against origin/main
 make mutants-full  # mutation test the configured deterministic scope
@@ -69,14 +77,66 @@ These patterns are replicated from invowk-rust and must be maintained:
 The property target is guarded by `required-features = ["property-tests"]` and
 must stay outside default non-widget nextest and default mutation runs. Use it
 for pure deterministic invariants over bounded generated strings, paths,
-vectors, Markdown fragments, replacement lists, encodings, and sidecar hashes.
-Do not put GTK widget construction, compositor behavior, D-Bus/portal state,
-file chooser flows, watcher timing, or live session behavior in this target.
+vectors, Markdown fragments, replacement lists, encodings, sidecar hashes, and
+tiny deterministic tempdir-backed service fixtures. Do not put GTK widget
+construction, compositor behavior, D-Bus/portal state, file chooser flows,
+watcher timing, or live session behavior in this target.
 
 `make test-prop` uses the CI-safe default of 64 cases per property. Use
 `make test-prop-deep PROPTEST_DEEP_CASES=1024` for a manual or scheduled pass.
 Do not raise the default pull-request case count just to investigate one broad
 invariant; tighten the generator or use the deep lane.
+
+## Fuzzing
+
+- Framework: `cargo-fuzz`, isolated under `fuzz/`
+- Feature: `lushtext-core/fuzzing`
+- Targets: `editor_bytes`, `markdown_preprocess`, `operation_script`
+- Makefile targets: `fuzz-list`, `fuzz-corpus-replay`, `fuzz-smoke`,
+  `fuzz-operation-smoke`
+- Default tool: `cargo +nightly fuzz` (override with `CARGO_FUZZ=...`)
+- Docs: `docs/fuzzing.md`
+
+The fuzz project is excluded from the normal Cargo workspace. Fuzz discovery
+enables `lushtext-core/fuzzing` through the isolated `fuzz/` crate, while stable
+corpus replay enables the same helper feature from an ordinary Rust test target.
+Default `make test`, nextest, property, widget, benchmark, and mutation lanes
+must not invoke fuzz targets or corpus replay, and they must not require
+fuzz-only dependencies. GitHub Actions runs stable corpus replay as its own
+ordinary CI job through `make fuzz-corpus-replay`; keep coverage-guided
+`cargo-fuzz` smoke in scheduled/manual lanes instead of pull-request CI.
+
+Local fuzz smoke needs a nightly Rust toolchain, `cargo-fuzz`, and a C++
+compiler for `libfuzzer-sys` (`gcc-c++` on Fedora/toolbox).
+
+Use fuzzing for hostile byte ingestion and bounded structured operation scripts:
+arbitrary bytes through editor decoding, encoding-state and file-health
+classification, text-level Markdown preprocessing/parser setup, replacement
+preview generation, save-formatting, session/draft JSON round trips, and corrupt
+session/draft JSON decode attempts. Fuzz targets must stay deterministic and
+must not start GTK, construct widgets, open file choosers, watch filesystems,
+use D-Bus/portals, or require a compositor.
+
+`make fuzz-smoke` runs each configured target with explicit run, time, and input
+length bounds against temporary corpus copies so generated corpus growth does
+not dirty the checkout. `make fuzz-operation-smoke` runs only the structured
+operation target with the same smoke bounds; the operation-script harness also
+caps generated scripts at 32 operations. Longer runs should be manual or
+scheduled with explicit budgets.
+
+`make fuzz-corpus-replay` replays committed `fuzz/corpus/**` seeds through
+stable Rust tests. It must stay read-only: no corpus mutation, no fuzz artifact
+or coverage writes, no `cargo-fuzz`, no `libfuzzer-sys`, no sanitizer flags, no
+nightly requirement, and no C/C++ compiler requirement.
+
+Do not add LibAFL unless a future OpenSpec change identifies a concrete need
+for custom executors, feedback, scheduling, distributed orchestration, or fuzzer
+state persistence.
+
+Real fuzz crashes should be minimized with
+`cargo +nightly fuzz tmin <target> <crash>` and fixed with a minimized corpus
+seed, deterministic regression test, or a reviewed rationale for why no durable
+seed is appropriate.
 
 ## GResources
 
@@ -134,6 +194,37 @@ real missed behavior, then add or tighten deterministic tests, then consider
 small refactors that make the behavior testable. Only equivalent or explicitly
 out-of-scope mutants should be excluded, and exclusions must stay narrow enough
 that nearby behavior still mutates.
+
+## End-User Smoke Lanes
+
+`docs/end-user-coverage.md` is the coverage map for behavior that default unit,
+integration, property, fuzz, widget, benchmark, and mutation lanes cannot prove
+honestly. Keep those lane boundaries current when adding new smoke checks.
+
+- `make visual-smoke` builds the debug binary, launches LushText under isolated
+  headless Mutter through the existing screenshot automation, captures a
+  representative editor/search/minimap screenshot, and stores environment and
+  session artifacts under `build/smoke/visual` by default.
+- `make portal-sandbox-smoke` records available Flatpak/Snap runtime state and
+  invokes supported confined smoke checks. It must skip explicitly when neither
+  runtime is installed or buildable; a skip is not proof that confinement works.
+- `make accessibility-smoke` keeps the accessibility bridge enabled and uses the
+  AT-SPI path. Do not rely on the widget harness for this class of coverage
+  because `scripts/run-widget-tests.sh` intentionally sets `NO_AT_BRIDGE=1`.
+- `make performance-smoke` runs a small Criterion smoke filter with coarse
+  timing artifacts. It is distinct from full `bench-report` output and should
+  stay forgiving enough to avoid routine shared-runner noise.
+- `make end-user-smoke` runs the host-supported smoke lanes together. Individual
+  scripts own their dependency checks, artifact paths, and skip messages.
+
+The default pull-request path should stay bounded. Wire only cheap and stable
+parts of these smoke lanes into PR CI; keep screenshot, portal/sandbox,
+AT-SPI, installed-package, and deeper performance checks scheduled, manual,
+release-only, or opt-in unless a later change proves they are reliable as
+blocking PR gates.
+`.github/workflows/end-user-smoke.yml` is the scheduled/manual artifact lane
+for visual, portal/sandbox, accessibility, performance smoke, and full
+benchmark report coverage.
 
 ## Meson Build (Installed / Flatpak)
 
@@ -205,8 +296,9 @@ Meson wraps Cargo for installed and Flatpak builds:
 
 All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but this repo targets the GNOME 50 platform family (GTK 4.22, Libadwaita 1.9).
 
-- `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, Clippy, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. The `Dependency Policy` job runs `cargo deny check advisories bans sources`.
+- `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, Clippy, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources`.
 - `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
+- `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive visual, portal/sandbox, accessibility, and performance-smoke lanes plus a full benchmark report. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
 - `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, Cominotti repository metadata tests, a no-mutation release preview, and current metadata validation.
 - `.github/workflows/release.yml` — `v*` tag release validation and manual dry-run workflow. It validates release metadata, builds the Flatpak from the release source, prepares/deploys Cominotti Flatpak repository artifacts when signing and deploy configuration are available, creates or updates the GitHub Release context, and opens an optional Flathub manifest PR when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.

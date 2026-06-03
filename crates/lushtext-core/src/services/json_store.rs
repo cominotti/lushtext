@@ -6,7 +6,6 @@ use crate::services::durable_write;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::io::{BufWriter, Write};
 use std::path::Path;
 
 /// Returns the application data directory (`$XDG_DATA_HOME/lushtext`).
@@ -51,28 +50,14 @@ pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<
     durable_write::create_dir_all_durable(data_dir)
         .with_context(|| format!("failed to create {}", data_dir.display()))?;
     let path = data_dir.join(filename);
-    let tmp_path = durable_write::unique_temp_path(&path, "json");
-    let file = std::fs::File::create(&tmp_path)
-        .with_context(|| format!("failed to create {}", tmp_path.display()))?;
-    let mut writer = BufWriter::new(file);
-    serde_json::to_writer_pretty(&mut writer, value)
-        .with_context(|| format!("failed to serialize {}", tmp_path.display()))?;
-    writer
-        .flush()
-        .with_context(|| format!("failed to flush {}", tmp_path.display()))?;
-    writer
-        .get_ref()
-        .sync_all()
-        .with_context(|| format!("failed to sync {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &path).with_context(|| {
-        format!(
-            "failed to rename {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-    durable_write::sync_parent_dir(&path)
-        .with_context(|| format!("failed to sync parent directory for {}", path.display()))
+    // The shared helper owns the temp-file-then-rename ordering, the full fsync
+    // contract, and identity-metadata preservation. Streaming JSON avoids a
+    // second full-sized allocation for large state files.
+    durable_write::atomic_write_stream_classified(&path, "json", |writer| {
+        serde_json::to_writer_pretty(writer, value).map_err(std::io::Error::other)
+    })
+    .map_err(durable_write::DurableWriteError::into_io_error)
+    .with_context(|| format!("failed to write {}", path.display()))
 }
 
 #[cfg(test)]

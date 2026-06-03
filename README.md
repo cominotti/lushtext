@@ -19,9 +19,10 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Minimap** -- toggleable right-edge document overview with semantic markers for bookmarks, active in-tab search matches, modified-since-save regions, and long-line warnings on supported files
 - **Session persistence** -- tabs, pinned state, cursor positions, and scroll offsets restored on restart
 - **Draft recovery** -- unsaved changes auto-saved to disk and recovered after crash
+- **Crash-safe saves** -- atomic temp-file-then-rename writes with safe temp permissions, metadata applied before the final temp sync, the full Linux fsync durability contract (data + parent directory), stable target coordination across saves and Replace All, symlink-backed saves that update the resolved target, and an explicit warning when a change reaches disk but its durability cannot be confirmed
 - **Print** -- native GTK print dialog with syntax highlighting and editor settings preserved
 - **Workspace content search** -- Ctrl+Shift+F parallel grep across the current workspace scope (`All workspaces` or one selected workspace) with streaming results, regex/literal/whole-word modes, .gitignore toggle, glob file filter, F4/Shift+F4 match navigation, progress reporting, search history with full state recall, and named saved searches
-- **Multi-file Replace All** -- preview proposed changes with per-match checkboxes, atomic file writes, skip-modified-tabs safety, and full undo support
+- **Multi-file Replace All** -- preview proposed changes with per-match checkboxes, atomic file writes, stable save/replace coordination, file and undo-memory caps, per-file durable undo journals, skip-modified-tabs safety, and full undo support within the active safety window
 - **Find and replace** -- per-tab search bar with match highlighting
 - **Command palette** -- Ctrl+P fuzzy search for files and commands, scoped to the current workspace selection unless `All workspaces` is active (SIMD-accelerated via nucleo)
 - **Large file handling** -- graceful degradation: >1MB toast, >10MB disable syntax, >50MB disable undo, >500MB refuse
@@ -228,6 +229,24 @@ Generated `mutants.out` directories are ignored locally and uploaded from CI
 when present. See [`docs/mutation-testing.md`](docs/mutation-testing.md) for
 triage rules, CI behavior, sharding, and equivalent-mutant exclusion policy.
 
+### End-user smoke coverage
+
+The default test suite is intentionally deterministic. Live desktop, portal,
+accessibility, and performance checks are exposed as separate lanes so they can
+record host details and skip clearly when a machine lacks the required runtime:
+
+```sh
+make visual-smoke          # headless Mutter screenshot smoke with artifacts
+make portal-sandbox-smoke  # available Flatpak/Snap confinement diagnostics
+make accessibility-smoke   # AT-SPI-enabled smoke outside the widget harness
+make performance-smoke     # lightweight Criterion timing smoke
+make end-user-smoke        # run all host-supported smoke lanes
+```
+
+See [`docs/end-user-coverage.md`](docs/end-user-coverage.md) for the coverage
+map and the expected pull-request, scheduled, release, and local validation
+boundaries.
+
 ## First Run
 
 1. Open a file with `Ctrl+O`, from the header-bar open button, or by launching
@@ -301,7 +320,8 @@ Stored state can include document text:
 | `local-history/` | Local-history snapshots for saved files |
 | `search-history.json` | Recent workspace search queries and options |
 | `saved-searches.json` | Named saved searches |
-| `replace-backup.json` | Temporary undo data for multi-file Replace All |
+| `replace-backup-journal/` | Temporary per-file undo journal for multi-file Replace All |
+| `replace-backup.json` | Legacy temporary Replace All undo file, cleared with stale journal state |
 
 To fully reset LushText state, close the app and remove that app-data directory.
 For Flatpak installs, also reset the sandboxed GSettings if you want preferences
@@ -645,14 +665,14 @@ lushtext-core/src/
     note_storage.rs  Shared sidecar identity/load/filter helpers for note workflows
     content_search/  Parallel workspace grep plus replace/undo helpers
     palette/         Command registry, SIMD fuzzy search, and file indexing
-    durable_write.rs Parent-directory fsync helpers for crash-durable atomic writes
+    durable_write.rs Crash-durable atomic writes, streaming writes, stable target guards, metadata preservation
     editor_io.rs     Encoding-aware text file load/save helpers, health analysis, and mtimes
     editorconfig.rs  .editorconfig resolution
     file_peek.rs     Bounded read-only snapshots for sidebar file peek
     notifications.rs Window-scoped status and inline notification store
     file_tree.rs     Directory scanning
     draft_service.rs Draft autosave
-    search_backup.rs Replace All undo backup persistence for the active session
+    search_backup.rs Replace All per-file undo journal persistence for the active safety window
     search_history.rs  Search history persistence
     saved_searches.rs  Named saved search persistence
     session_service.rs  Session load/save
@@ -681,11 +701,21 @@ make test-unit   # Unit tests only
 make test-int    # Integration tests only
 make test-widget # Widget tests with shared native/headless runner
 make test-widget-headless # Widget tests with the CI mutter/dbus setup
+make visual-smoke # Headless Mutter screenshot smoke with artifacts
+make portal-sandbox-smoke # Confined Flatpak/Snap smoke diagnostics
+make accessibility-smoke # AT-SPI-enabled accessibility smoke
+make performance-smoke # Lightweight Criterion performance smoke
 ```
 
 Widget tests require a display server. `make test` and `make test-widget-headless` use the CI-style `mutter --headless` path for deterministic full-suite runs. `make test-widget` uses `scripts/run-widget-tests.sh`, which runs against the current display session when one is available and otherwise falls back to headless mode if the required tools are installed. The runner defaults to GTK's Cairo renderer so headless containers do not fail the warning gate while probing unavailable GPU devices; set `GSK_RENDERER` explicitly when debugging a renderer-specific issue.
 
 GTK widget tests run through the custom harness in [`crates/lushtext/tests/widget.rs`](./crates/lushtext/tests/widget.rs), which executes each widget test in its own process so GTK objects stay on a real main thread and test state cannot leak across cases. Because that binary is not owned by nextest, the shared runner keeps the native and headless `cargo test --test widget` paths aligned in one place.
+
+For end-user risks that the widget harness cannot honestly prove, use the
+separate smoke lanes documented in
+[`docs/end-user-coverage.md`](docs/end-user-coverage.md). Those lanes preserve
+artifacts and record explicit skip reasons instead of treating missing desktop,
+portal, accessibility, or packaging support as a pass.
 
 ## Benchmarks
 

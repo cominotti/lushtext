@@ -7,6 +7,8 @@
 
 pub mod app;
 pub mod config;
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;
 pub mod model;
 pub mod services;
 pub mod ui;
@@ -246,8 +248,12 @@ pub(crate) fn active_sourceview_scheme(
         scheme_manager
             .scheme(&dark_id)
             .or_else(|| scheme_manager.scheme(&base_id))
+            .or_else(|| scheme_manager.scheme("Adwaita-dark"))
+            .or_else(|| scheme_manager.scheme("Adwaita"))
     } else {
-        scheme_manager.scheme(&base_id)
+        scheme_manager
+            .scheme(&base_id)
+            .or_else(|| scheme_manager.scheme("Adwaita"))
     }
 }
 

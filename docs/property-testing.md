@@ -11,14 +11,20 @@ The property-test target currently covers:
 
 - Markdown inline-footnote lowering
 - Replace All text transformation range and ordering rules
+- Replace All apply -> immediate undo byte restoration for tiny deterministic files
 - Sidecar path rebasing after rename flows
 - Command-palette merge ordering and truncation
 - Encoding, line-ending, and sidecar hash helpers
+- EditorConfig save-time formatting idempotence
+- Session and draft JSON round trips
 
 Keep GTK widget construction, compositor behavior, D-Bus or portal state,
 filesystem watcher timing, file chooser flows, and live sessions out of this
-target. If a proposed property needs those, cover it in the widget harness or
-first extract a pure helper with a small production API.
+target. Tiny tempdir-backed service properties are allowed when the workflow is
+deterministic, bounded, and does not involve watchers, portals, file choosers, or
+live application sessions. If a proposed property needs those runtime surfaces,
+cover it in the widget harness or first extract a pure helper with a small
+production API.
 
 ## Commands
 
@@ -55,7 +61,7 @@ The shared property helpers live under
 - Deep-run cap: 4096 cases per property
 - Shrink limit: 1024 attempts
 - Per-case timeout: 10 seconds
-- Input bounds: small strings, paths, vectors, and byte samples
+- Input bounds: small strings, paths, vectors, byte samples, and tiny temp files
 
 Keep generated domains intentionally small. A useful property should encode a
 clear invariant over a compact model, not a broad random end-to-end workflow.

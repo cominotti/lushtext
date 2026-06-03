@@ -6,24 +6,30 @@
 //! behavior, a few critical shell affordances, and preview-pane regressions
 //! that still live in the window layer.
 
-use crate::common::{emit_key_pressed_on_focus, ensure_gtk_init};
+use crate::common::{
+    emit_key_pressed_on_focus, ensure_gtk_init, flush_after_delay, flush_events, wait_until,
+};
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
-use glib::prelude::{Cast, IsA, ObjectExt};
+use glib::prelude::{Cast, IsA, ObjectExt, ToValue};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{
     ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt, AnimationExt,
-    ComboRowExt, SidebarItemExt,
+    AlertDialogExtManual, ComboRowExt, PreferencesRowExt, SidebarItemExt,
 };
 use lushtext_core::config::keys;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
-use lushtext_core::model::encoding::{DocumentEncoding, FileHealthFindingKind, LineEnding};
+use lushtext_core::model::encoding::{
+    DocumentEncoding, FileHealthFindingKind, InvisibleCharactersMode, LineEnding,
+};
 use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
-use lushtext_core::services::file_limits::FileSizeCheck;
+use lushtext_core::services::file_limits::{
+    DISABLE_SYNTAX_HIGHLIGHTING, DISABLE_UNDO_HISTORY, FileSizeCheck, REFUSE_TO_OPEN,
+};
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::{
     bookmark_service, document_note_service, draft_service, editor_io, json_store,
@@ -34,8 +40,14 @@ use lushtext_core::ui::editor_page::{
 };
 use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_core::ui::window::{
+    LushtextWindow, PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test,
+};
+use sourceview5::prelude::*;
+use std::cell::RefCell;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 fn test_window() -> LushtextWindow {
@@ -206,29 +218,14 @@ fn wait_for_workspace_consumers(window: &LushtextWindow, expected_roots: usize, 
     });
 }
 
-fn flush_events() {
-    while glib::MainContext::default().iteration(false) {}
-}
-
-fn flush_after_delay(delay: Duration) {
-    std::thread::sleep(delay);
-    flush_events();
-}
-
-fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if predicate() {
-            return;
-        }
-        flush_after_delay(Duration::from_millis(20));
-    }
-    panic!("condition was not met within {timeout:?}");
-}
-
 fn present_window(window: &LushtextWindow) {
     window.present();
-    wait_until(Duration::from_secs(2), || {
+    // Window realization is a precondition, not the behavior under test, so give
+    // the headless compositor a generous budget to send the surface `configure`
+    // that yields a non-zero allocation. `wait_until` returns as soon as the size
+    // is real, so the larger ceiling only matters on a slow, loaded compositor and
+    // never costs time on the fast path.
+    wait_until(Duration::from_secs(5), || {
         window.width() > 0 && window.height() > 0
     });
     flush_after_delay(Duration::from_millis(20));
@@ -256,6 +253,23 @@ fn activate_action(window: &LushtextWindow, name: &str) {
     flush_events();
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditorPrintState {
+    text: String,
+    modified: bool,
+    path: Option<PathBuf>,
+    draft_id: Option<String>,
+}
+
+fn editor_print_state(editor: &LushtextEditorPage) -> EditorPrintState {
+    EditorPrintState {
+        text: editor_text(editor),
+        modified: editor.is_modified(),
+        path: editor.file_path(),
+        draft_id: editor.draft_id(),
+    }
+}
+
 fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
     window
         .imp()
@@ -265,6 +279,221 @@ fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
         .child()
         .downcast::<LushtextEditorPage>()
         .expect("expected operation to succeed")
+}
+
+fn editor_buffer_text(editor: &LushtextEditorPage) -> String {
+    let buffer = editor.buffer();
+    buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string()
+}
+
+fn open_temp_document(initial_text: &str) -> (LushtextWindow, tempfile::TempDir, PathBuf) {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("document tempdir");
+    let path = dir.path().join("watched.txt");
+    std::fs::write(&path, initial_text).expect("write watched file");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        let editor = active_editor(&window);
+        editor.file_size().is_some() && editor_buffer_text(&editor) == initial_text
+    });
+
+    (window, dir, path)
+}
+
+fn write_ascii_fixture(path: &Path, size: u64) {
+    const CHUNK: &[u8] = b"fn main() { println!(\"large file fixture\"); }\n";
+
+    let mut file = std::fs::File::create(path).expect("create large-file fixture");
+    let mut written = 0u64;
+    while written < size {
+        let remaining = usize::try_from((size - written).min(CHUNK.len() as u64))
+            .expect("fixture chunk size fits usize");
+        file.write_all(&CHUNK[..remaining])
+            .expect("write large-file fixture");
+        written += remaining as u64;
+    }
+}
+
+/// Force an external write onto a later mtime second before waiting for GTK.
+///
+/// The production monitor compares second-resolution mtimes, so this helper
+/// avoids false-negative tests on filesystems where two writes inside one
+/// second collapse to the same observed timestamp.
+fn write_external_change_after_mtime_tick(
+    path: &Path,
+    editor: &LushtextEditorPage,
+    contents: &str,
+) {
+    let last_known = editor
+        .imp()
+        .monitor
+        .last_known_mtime
+        .get()
+        .expect("loaded editor should know the backing file mtime");
+
+    for _ in 0..5 {
+        std::fs::write(path, contents).expect("write external file change");
+        if editor_io::mtime_secs(path).is_some_and(|mtime| mtime != last_known) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1100));
+    }
+
+    panic!("external write did not advance the observed file mtime");
+}
+
+fn wait_for_external_change_warning(editor: &LushtextEditorPage) {
+    wait_until(Duration::from_secs(4), || {
+        let info_bar = editor.info_bar().imp();
+        info_bar.alert_revealer.reveals_child()
+            && info_bar.alert_title.label().as_str() == "File Has Changed on Disk"
+    });
+}
+
+fn modified_file_backed_tab(
+    initial_text: &str,
+    modified_text: &str,
+) -> (LushtextWindow, tempfile::TempDir, PathBuf, LushtextEditorPage) {
+    let (window, dir, path) = open_temp_document(initial_text);
+    let editor = active_editor(&window);
+    editor.buffer().set_text(modified_text);
+    editor.buffer().set_modified(true);
+    flush_events();
+    (window, dir, path, editor)
+}
+
+fn close_selected_tab(window: &LushtextWindow) {
+    let page = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("selected tab");
+    window.imp().tab_view.close_page(&page);
+    flush_events();
+}
+
+fn respond_to_save_changes_dialog(window: &LushtextWindow, response: &str) {
+    let dialog = visible_alert_dialog(window).expect("save changes dialog");
+    let button = save_changes_response_button(&dialog, response);
+    button.emit_clicked();
+    flush_events();
+}
+
+fn save_changes_response_button(
+    dialog: &libadwaita::AlertDialog,
+    response: &str,
+) -> gtk4::Button {
+    let response_label = dialog.response_label(response);
+    let fallback_label = response_label.replace('_', "");
+    find_button_by_label(dialog.upcast_ref(), response_label.as_str())
+        .or_else(|| find_button_by_label(dialog.upcast_ref(), &fallback_label))
+        .unwrap_or_else(|| panic!("response button '{response}' not found"))
+}
+
+fn activate_widget_without_pointer(widget: &impl IsA<gtk4::Widget>) {
+    let widget = widget.as_ref();
+    assert!(widget.is_sensitive(), "widget should be keyboard activatable");
+    assert!(
+        widget.property::<bool>("visible"),
+        "widget should be visible before keyboard activation"
+    );
+    widget.grab_focus();
+    flush_events();
+    assert!(widget.activate(), "widget should activate without a pointer");
+    flush_events();
+}
+
+fn emit_key_pressed_on_widget(
+    widget: &impl IsA<gtk4::Widget>,
+    key: gtk4::gdk::Key,
+) -> glib::Propagation {
+    let widget = widget.as_ref();
+    let controllers = widget.observe_controllers();
+    for index in 0..controllers.n_items() {
+        if let Some(controller) = controllers
+            .item(index)
+            .and_then(|object| object.downcast::<gtk4::EventControllerKey>().ok())
+        {
+            let args: [&dyn ToValue; 3] = [&key, &0u32, &gtk4::gdk::ModifierType::empty()];
+            let stopped: bool =
+                glib::object::ObjectExt::emit_by_name(&controller, "key-pressed", &args);
+            return if stopped {
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            };
+        }
+    }
+    panic!("widget had no EventControllerKey");
+}
+
+fn activate_save_changes_response_with_keyboard(window: &LushtextWindow, response: &str) {
+    let dialog = visible_alert_dialog(window).expect("save changes dialog");
+    let button = save_changes_response_button(&dialog, response);
+    button.grab_focus();
+    flush_events();
+    assert!(button.is_sensitive(), "response button should be enabled");
+    assert!(
+        button.property::<bool>("visible"),
+        "response button should be visible"
+    );
+    button.emit_clicked();
+    flush_events();
+}
+
+fn wait_for_save_changes_dialog(window: &LushtextWindow) {
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading == "Save Changes?")
+    });
+}
+
+fn seed_file_backed_draft(window: &LushtextWindow, path: &Path, content: &str) -> String {
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(path);
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: Some(path.to_path_buf()),
+        original_mtime_secs: editor_io::mtime_secs(path),
+        saved_at_secs: editor_io::now_epoch_secs(),
+    };
+    draft_service::write_draft(&data_dir, &draft_id, content).expect("seed draft bytes");
+    let mut manifest = draft_service::load_manifest(&data_dir).expect("load draft manifest");
+    manifest.upsert(entry.clone());
+    draft_service::save_manifest(&data_dir, &manifest).expect("seed draft manifest");
+    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+    draft_id
+}
+
+fn save_changes_check_buttons(dialog: &libadwaita::AlertDialog) -> Vec<gtk4::CheckButton> {
+    let extra = dialog.extra_child().expect("save changes dialog extra child");
+    descendants(&extra)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk4::CheckButton>().ok())
+        .collect()
+}
+
+fn save_changes_check_button_for_title(
+    dialog: &libadwaita::AlertDialog,
+    title: &str,
+) -> gtk4::CheckButton {
+    let extra = dialog.extra_child().expect("save changes dialog extra child");
+    let row = descendants(&extra)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<libadwaita::ActionRow>().ok())
+        .find(|row| row.title() == title)
+        .unwrap_or_else(|| panic!("save changes row '{title}' not found"));
+
+    descendants(&row)
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk4::CheckButton>().ok())
+        .unwrap_or_else(|| panic!("save changes row '{title}' had no checkbox"))
 }
 
 // Keep hidden-to-visible preview-shell regressions in this suite: a directly
@@ -507,6 +736,24 @@ fn find_button_by_label(root: &gtk4::Widget, label: &str) -> Option<gtk4::Button
     let mut child = root.first_child();
     while let Some(widget) = child {
         if let Some(found) = find_button_by_label(&widget, label) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
+}
+
+fn find_button_by_tooltip(root: &gtk4::Widget, tooltip: &str) -> Option<gtk4::Button> {
+    if let Ok(button) = root.clone().downcast::<gtk4::Button>()
+        && button.tooltip_text().as_deref() == Some(tooltip)
+    {
+        return Some(button);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_button_by_tooltip(&widget, tooltip) {
             return Some(found);
         }
         child = widget.next_sibling();
@@ -1577,7 +1824,10 @@ fn test_sidebar_peek_does_not_create_tab_until_promoted() {
     let window = test_window();
     present_window(&window);
 
-    wait_until(Duration::from_secs(2), || {
+    // Section population is async (restored workspaces are populated via
+    // spawn_blocking_then), so this waits on background completion and gets a
+    // generous budget that only matters when a loaded machine delays the thread.
+    wait_until(Duration::from_secs(10), || {
         window.imp().sidebar.imp().sections.borrow().len() == 1
     });
 
@@ -1618,7 +1868,10 @@ fn test_sidebar_peek_promotion_reuses_existing_tab() {
     let window = test_window();
     present_window(&window);
 
-    wait_until(Duration::from_secs(2), || {
+    // Section population is async (restored workspaces are populated via
+    // spawn_blocking_then), so this waits on background completion and gets a
+    // generous budget that only matters when a loaded machine delays the thread.
+    wait_until(Duration::from_secs(10), || {
         window.imp().sidebar.imp().sections.borrow().len() == 1
     });
 
@@ -1875,6 +2128,230 @@ fn test_new_document_action_focuses_new_editor() {
 
     assert_eq!(window.imp().tab_view.n_pages(), 1);
     wait_for_active_editor_focus(&window);
+}
+
+#[test]
+fn test_shell_controls_expose_accessibility_roles() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert_eq!(
+        window.imp().new_tab_button.accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        window.imp().open_button.accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        window
+            .imp()
+            .document_properties_toggle_button
+            .accessible_role(),
+        gtk4::AccessibleRole::ToggleButton
+    );
+    assert_eq!(
+        window.imp().primary_menu_button.accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        window.imp().tab_bar.accessible_role(),
+        gtk4::AccessibleRole::TabList
+    );
+}
+
+#[test]
+fn test_save_changes_dialog_controls_expose_accessibility_roles() {
+    let (window, _dir, _path, _editor) = modified_file_backed_tab("disk\n", "unsaved\n");
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    let dialog = visible_alert_dialog(&window).expect("save changes dialog");
+    let group = dialog.extra_child().expect("save changes checklist");
+    let checks = save_changes_check_buttons(&dialog);
+
+    assert_eq!(group.accessible_role(), gtk4::AccessibleRole::Group);
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].accessible_role(), gtk4::AccessibleRole::Checkbox);
+    assert_eq!(
+        save_changes_response_button(&dialog, "cancel").accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        save_changes_response_button(&dialog, "save").accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+
+    respond_to_save_changes_dialog(&window, "cancel");
+}
+
+#[test]
+fn test_local_history_browser_controls_expose_accessibility_roles() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("local history role tempdir");
+    let path = dir.path().join("history-roles.txt");
+    std::fs::write(&path, "snapshot text\n").expect("write history role file");
+    local_history_service::capture_snapshot_for_path(
+        &json_store::data_dir(),
+        &path,
+        "snapshot text\n",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed local history snapshot");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some() && action_enabled(&window, "show-local-history")
+    });
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog");
+    let child = dialog.child().expect("local-history browser child");
+    let sidebar = find_adw_sidebar(&child).expect("local-history sidebar");
+    assert_eq!(sidebar.accessible_role(), gtk4::AccessibleRole::List);
+    assert_eq!(
+        find_button_by_label(&child, "Restore")
+            .expect("restore button")
+            .accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        find_button_by_label(&child, "Copy")
+            .expect("copy button")
+            .accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        find_button_by_tooltip(&child, "Back to Snapshots")
+            .expect("local-history back button")
+            .accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+}
+
+#[test]
+fn test_notes_browser_controls_expose_accessibility_roles() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("notes-roles.md");
+    std::fs::write(&path, "# Notes\n").expect("write notes role source");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("# Note\n\nAccessible"),
+    )
+    .expect("seed document note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let search_entry = find_search_entry(&child).expect("notes browser search entry");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    assert_eq!(search_entry.accessible_role(), gtk4::AccessibleRole::SearchBox);
+    assert_eq!(sidebar.accessible_role(), gtk4::AccessibleRole::List);
+    assert_eq!(
+        find_button_by_label(&child, "Open")
+            .expect("notes browser open button")
+            .accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        find_button_by_tooltip(&child, "Back to Notes")
+            .expect("notes browser back button")
+            .accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+}
+
+#[test]
+fn test_keyboard_search_workflow_navigates_closes_and_restores_editor_focus() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor
+        .buffer()
+        .set_text("alpha needle\nbeta needle\ngamma\n");
+    editor.source_view().grab_focus();
+    wait_for_active_editor_focus(&window);
+
+    assert!(
+        shortcut_bound(&window, "win.begin-search", "<Control>f"),
+        "Ctrl+F should invoke the in-tab search action"
+    );
+    activate_action(&window, "begin-search");
+    wait_until(Duration::from_secs(2), || editor.is_search_visible());
+
+    editor.search_bar().search_entry().set_text("needle");
+    wait_until(Duration::from_secs(2), || {
+        editor
+            .search_bar()
+            .search_context()
+            .is_some_and(|context| context.occurrences_count() == 2)
+    });
+    assert_eq!(
+        emit_key_pressed_on_widget(editor.search_bar().search_entry(), gtk4::gdk::Key::Return),
+        glib::Propagation::Stop
+    );
+    assert!(editor.search_bar().has_navigated());
+
+    editor.search_bar().search_entry().emit_stop_search();
+    wait_until(Duration::from_secs(2), || !editor.is_search_visible());
+    wait_for_active_editor_focus(&window);
+}
+
+#[test]
+fn test_keyboard_command_palette_and_secondary_surfaces_restore_editor_focus() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    active_editor(&window).source_view().grab_focus();
+    wait_for_active_editor_focus(&window);
+
+    assert!(
+        shortcut_bound(&window, "win.toggle-command-palette", "<Control><Shift>p"),
+        "Ctrl+Shift+P should invoke the command palette"
+    );
+    activate_action(&window, "toggle-command-palette");
+    wait_until(Duration::from_secs(2), || {
+        window.imp().palette_revealer.reveals_child()
+    });
+    window
+        .imp()
+        .command_palette
+        .imp()
+        .search_entry
+        .emit_stop_search();
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().palette_revealer.reveals_child()
+    });
+    wait_for_active_editor_focus(&window);
+
+    activate_widget_without_pointer(&*window.imp().status_bar.imp().sidebar_toggle_button);
+    wait_until(Duration::from_secs(2), || !workspace_sidebar_visible(&window));
+    activate_widget_without_pointer(&*window.imp().status_bar.imp().sidebar_toggle_button);
+    wait_until(Duration::from_secs(2), || workspace_sidebar_visible(&window));
+
+    activate_widget_without_pointer(&*window.imp().document_properties_toggle_button);
+    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&window));
+    assert!(
+        shortcut_bound(&window, "win.toggle-properties", "F9"),
+        "F9 should invoke document-properties visibility"
+    );
+    activate_widget_without_pointer(&*window.imp().document_properties_toggle_button);
+    wait_until(Duration::from_secs(2), || !properties_sidebar_visible(&window));
 }
 
 #[test]
@@ -2459,6 +2936,182 @@ fn test_large_document_disables_minimap_and_surfaces_feedback() {
         .status_bar_view()
         .expect("minimap warning status message");
     assert_eq!(status.text, "Minimap unavailable for this large document");
+}
+
+#[test]
+fn test_large_file_load_disables_syntax_through_ui_state() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let dir = tempfile::tempdir().expect("large-file tempdir");
+    let path = dir.path().join("large.rs");
+    let size = DISABLE_SYNTAX_HIGHLIGHTING + 1;
+    write_ascii_fixture(&path, size);
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+
+    wait_until(Duration::from_secs(10), || {
+        active_editor(&window).size_check() == FileSizeCheck::DisableSyntax
+    });
+    let editor = active_editor(&window);
+    assert_eq!(editor.file_size(), Some(size));
+    assert_eq!(editor.size_check(), FileSizeCheck::DisableSyntax);
+    assert!(!editor.buffer().is_highlight_syntax());
+    assert!(editor.buffer().language().is_none());
+
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_availability() == MinimapAvailability::TooLarge
+    });
+    assert!(!editor.is_minimap_visible());
+}
+
+#[test]
+fn test_large_file_load_disables_undo_and_history_through_ui_state() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("huge-file tempdir");
+    let path = dir.path().join("huge.rs");
+    let size = DISABLE_UNDO_HISTORY + 1;
+    std::fs::write(&path, "small fixture promoted to huge-file policy\n").expect("write fixture");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_path() == Some(path.clone())
+            && active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    editor.apply_loaded_content_for_test("huge-file policy content\n", size);
+    let saved_page = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("saved page selected");
+    window.new_tab();
+    flush_events();
+    window.imp().tab_view.set_selected_page(&saved_page);
+    flush_events();
+
+    assert_eq!(editor.file_size(), Some(size));
+    assert_eq!(editor.size_check(), FileSizeCheck::DisableUndoAndSyntax);
+    assert!(!editor.size_check().undo_enabled());
+    assert!(!editor.buffer().can_undo());
+    assert!(!action_enabled(&window, "show-local-history"));
+    assert!(!editor.buffer().is_highlight_syntax());
+}
+
+#[test]
+fn test_too_large_file_refuses_to_load_and_clears_open_path_state() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("too-large-file tempdir");
+    let path = dir.path().join("too-large.txt");
+    let file = std::fs::File::create(&path).expect("create too-large sparse file");
+    file.set_len(REFUSE_TO_OPEN + 1)
+        .expect("size too-large sparse file");
+    let canonical_path = path.canonicalize().expect("canonical too-large path");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window)
+            .info_bar()
+            .imp()
+            .alert_title
+            .label()
+            .as_str()
+            == "Could Not Open File"
+    });
+
+    let editor = active_editor(&window);
+    let info_bar = editor.info_bar().imp();
+    assert!(info_bar.alert_revealer.reveals_child());
+    assert!(info_bar.alert_body.label().contains("too large to edit"));
+    assert_eq!(editor.file_path(), None);
+    assert_eq!(editor.file_size(), None);
+    assert!(!window.imp().open_paths.borrow().contains(&path));
+    assert!(!window.imp().open_paths.borrow().contains(&canonical_path));
+}
+
+#[test]
+fn test_memory_pressure_evicts_background_tab_and_reloads_without_path_corruption() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("memory-pressure tempdir");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+    let first_text = "first tab data\n";
+    let second_text = "second tab data\n";
+    std::fs::write(&first_path, first_text).expect("write first file");
+    std::fs::write(&second_path, second_text).expect("write second file");
+    let first_key = first_path.canonicalize().expect("canonical first path");
+
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&first_path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_path() == Some(first_path.clone())
+            && editor_buffer_text(&active_editor(&window)) == first_text
+    });
+    let first_page = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("first page selected");
+    let first_editor = active_editor(&window);
+
+    window.open_document(&second_path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_path() == Some(second_path.clone())
+            && editor_buffer_text(&active_editor(&window)) == second_text
+    });
+    let second_page = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("second page selected");
+    let second_editor = active_editor(&window);
+
+    window.imp().tab_view.set_selected_page(&first_page);
+    flush_events();
+    first_editor.imp().file_size.set(Some(200_000_000));
+    first_editor
+        .imp()
+        .size_check
+        .set(FileSizeCheck::DisableUndoAndSyntax);
+    second_editor.imp().file_size.set(Some(100_000));
+    window
+        .imp()
+        .editor_memory
+        .total
+        .set(first_editor.estimated_buffer_bytes() + second_editor.estimated_buffer_bytes());
+
+    window.imp().tab_view.set_selected_page(&second_page);
+    flush_events();
+    wait_until(Duration::from_secs(2), || first_editor.is_evicted());
+    assert_eq!(editor_buffer_text(&first_editor), "");
+    assert_eq!(window.imp().tab_view.n_pages(), 2);
+    assert!(window.imp().open_paths.borrow().contains(&first_key));
+
+    window.imp().tab_view.set_selected_page(&first_page);
+    flush_events();
+    wait_until(Duration::from_secs(5), || {
+        !first_editor.is_evicted() && editor_buffer_text(&first_editor) == first_text
+    });
+    assert_eq!(first_editor.file_path(), Some(first_path.clone()));
+    assert!(window.imp().open_paths.borrow().contains(&first_key));
+
+    window.open_document(&first_path);
+    flush_events();
+    assert_eq!(window.imp().tab_view.n_pages(), 2);
+    assert_eq!(active_editor(&window).file_path(), Some(first_path));
 }
 
 #[test]
@@ -3812,6 +4465,172 @@ fn test_complete_save_as_success_updates_editor_identity_and_cleans_old_draft() 
 }
 
 #[test]
+fn test_file_chooser_open_selection_opens_selected_document() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("chooser tempdir");
+    let path = dir.path().join("chosen.txt");
+    std::fs::write(&path, "chosen through chooser\n").expect("write chosen file");
+
+    let window = test_window();
+    present_window(&window);
+    window.select_open_file_for_test(&path);
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+            && active_editor(&window).file_path() == Some(path.clone())
+            && editor_buffer_text(&active_editor(&window)) == "chosen through chooser\n"
+    });
+}
+
+#[test]
+fn test_file_chooser_save_as_selection_adopts_destination_after_write() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("chooser tempdir");
+    let path = dir.path().join("saved-through-chooser.txt");
+
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("save as through chooser\n");
+    editor.buffer().set_modified(true);
+    let old_draft_id = editor.draft_id().expect("untitled draft id");
+    let data_dir = json_store::data_dir();
+    draft_service::write_draft(&data_dir, &old_draft_id, "save as through chooser\n")
+        .expect("seed draft");
+
+    window.select_save_as_destination_for_test(&path);
+
+    wait_until(Duration::from_secs(2), || {
+        path.exists() && editor.file_path() == Some(path.clone()) && !editor.is_modified()
+    });
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read saved chooser destination"),
+        "save as through chooser\n"
+    );
+    wait_until(Duration::from_secs(2), || {
+        draft_service::read_draft(&data_dir, &old_draft_id)
+            .expect("read draft")
+            .is_none()
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn test_file_chooser_save_as_existing_symlink_updates_target_without_replacing_link() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("chooser symlink tempdir");
+    let target = dir.path().join("target.txt");
+    let link = dir.path().join("link.txt");
+    std::fs::write(&target, "old target\n").expect("seed target");
+    std::os::unix::fs::symlink(&target, &link).expect("create save-as symlink");
+
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("new target\n");
+    editor.buffer().set_modified(true);
+
+    window.select_save_as_destination_for_test(&link);
+
+    wait_until(Duration::from_secs(2), || {
+        std::fs::read_to_string(&target).is_ok_and(|content| content == "new target\n")
+            && editor.file_path() == Some(link.clone())
+            && !editor.is_modified()
+    });
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("stat link")
+            .file_type()
+            .is_symlink(),
+        "Save As must update the symlink target without replacing the link"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("read target"),
+        "new target\n"
+    );
+    assert!(window.imp().open_paths.borrow().contains(&link));
+    assert!(
+        window
+            .imp()
+            .open_paths
+            .borrow()
+            .contains(&target.canonicalize().expect("canonical target")),
+        "Save As should register the canonical target for duplicate detection"
+    );
+}
+
+#[test]
+fn test_file_chooser_workspace_folder_selection_adds_workspace() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("workspace chooser tempdir");
+    let root = dir.path().join("chosen-workspace");
+    std::fs::create_dir_all(&root).expect("create workspace root");
+
+    let window = test_window();
+    window.imp().sidebar.select_workspace_folder_for_test(&root);
+
+    // Adding a workspace folder kicks off background work (file-tree scan +
+    // persistence via spawn_blocking_then), so this waits on async completion,
+    // not a synchronous UI flip. Async/scheduling-dependent waits get a generous
+    // budget: the predicate returns the instant the work lands, so the larger
+    // ceiling only matters when a loaded machine delays the background thread.
+    wait_until(Duration::from_secs(10), || {
+        window
+            .imp()
+            .sidebar
+            .all_workspace_root_paths()
+            .iter()
+            .any(|candidate| candidate == &root)
+    });
+    assert!(
+        window
+            .imp()
+            .sidebar
+            .current_scope_root_paths()
+            .iter()
+            .any(|candidate| candidate == &root),
+        "newly selected workspace should become the current scope",
+    );
+}
+
+#[test]
+fn test_file_chooser_cancellation_preserves_document_workspace_and_draft_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("cancelled chooser draft\n");
+    editor.buffer().set_modified(true);
+    let old_draft_id = editor.draft_id().expect("untitled draft id");
+    let data_dir = json_store::data_dir();
+    draft_service::write_draft(&data_dir, &old_draft_id, "cancelled chooser draft\n")
+        .expect("seed draft");
+    let workspace_roots = window.imp().sidebar.all_workspace_root_paths();
+
+    window.cancel_open_file_for_test();
+    window.cancel_save_as_destination_for_test();
+    window.imp().sidebar.cancel_workspace_folder_for_test();
+    flush_events();
+
+    assert_tab_count(&window, 1);
+    assert_eq!(editor.file_path(), None);
+    assert!(editor.is_modified());
+    assert_eq!(editor.draft_id().as_deref(), Some(old_draft_id.as_str()));
+    assert_eq!(editor_buffer_text(&editor), "cancelled chooser draft\n");
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &old_draft_id).expect("read draft"),
+        Some("cancelled chooser draft\n".to_string()),
+    );
+    assert_eq!(window.imp().sidebar.all_workspace_root_paths(), workspace_roots);
+}
+
+#[test]
 fn test_local_history_action_requires_saved_eligible_document() {
     ensure_gtk_init();
     let window = test_window();
@@ -4179,6 +4998,11 @@ fn test_local_history_dialog_scales_from_parent_and_keeps_preview_dominant() {
     );
 }
 
+// This exercises the adaptive local-history browser, whose sheet open, collapse
+// reveal, and restore steps are animation- and async-backed. Those waits get a
+// generous budget because animation settle + background completion under headless
+// Mutter occasionally exceed a tight window under load; the predicates still
+// return the instant the state is real.
 #[test]
 fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     ensure_gtk_init();
@@ -4208,7 +5032,7 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     .expect("seed version two");
 
     window.open_document(&path);
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(5), || {
         active_editor(&window).file_size().is_some()
     });
 
@@ -4217,23 +5041,23 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     editor.buffer().set_modified(true);
 
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
     let split_view = find_navigation_split_view(&child).expect("navigation split view");
     let sidebar = find_adw_sidebar(&child).expect("snapshot sidebar");
-    wait_until(Duration::from_secs(2), || sidebar.item(1).is_some());
+    wait_until(Duration::from_secs(5), || sidebar.item(1).is_some());
 
     split_view.set_collapsed(true);
     sidebar.set_selected(1);
     flush_events();
 
-    wait_until(Duration::from_secs(2), || split_view.shows_content());
+    wait_until(Duration::from_secs(5), || split_view.shows_content());
     // The restore button may be sensitive while an older preview is still
     // visible. Wait for the exact target snapshot text before clicking it.
     wait_for_local_history_preview_text(&child, "version two\n");
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(5), || {
         find_button_by_label(&child, "Restore").is_some_and(|button| button.is_sensitive())
     });
 
@@ -4241,8 +5065,8 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
         find_button_by_label(&child, "Restore").expect("restore button in local-history dialog");
     restore_button.emit_clicked();
 
-    wait_until(Duration::from_secs(2), || editor_text(&editor) == "version two\n");
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(5), || editor_text(&editor) == "version two\n");
+    wait_until(Duration::from_secs(5), || {
         window
             .imp()
             .notification_bus
@@ -4257,7 +5081,7 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     .expect("undo restore button");
     undo_button.emit_clicked();
 
-    wait_until(Duration::from_secs(2), || editor_text(&editor) == "working copy");
+    wait_until(Duration::from_secs(5), || editor_text(&editor) == "working copy");
 }
 
 #[test]
@@ -4582,6 +5406,734 @@ fn test_mixed_line_endings_warning_opens_normalization_picker_and_updates_status
             .label()
             .as_deref(),
         Some("LF")
+    );
+}
+
+#[test]
+fn test_external_file_change_warning_preserves_unsaved_buffer() {
+    let (window, _dir, path) = open_temp_document("original\n");
+    let editor = active_editor(&window);
+    editor.buffer().set_text("local unsaved\n");
+    editor.buffer().set_modified(true);
+
+    write_external_change_after_mtime_tick(&path, &editor, "external version\n");
+    wait_for_external_change_warning(&editor);
+
+    assert_eq!(
+        editor_buffer_text(&editor),
+        "local unsaved\n",
+        "external monitor warning must not silently replace unsaved editor text",
+    );
+    assert!(editor.is_modified());
+    assert_eq!(
+        editor.info_bar().imp().discard_button.label().as_deref(),
+        Some("_Discard Changes and Reload")
+    );
+}
+
+#[test]
+fn test_external_file_change_dismiss_keeps_buffer_content() {
+    let (window, _dir, path) = open_temp_document("original\n");
+    let editor = active_editor(&window);
+    editor.buffer().set_text("local draft\n");
+    editor.buffer().set_modified(true);
+
+    write_external_change_after_mtime_tick(&path, &editor, "external version\n");
+    wait_for_external_change_warning(&editor);
+
+    editor.info_bar().imp().dismiss_button.emit_clicked();
+    wait_until(Duration::from_secs(2), || {
+        !editor.info_bar().imp().alert_revealer.reveals_child()
+    });
+
+    assert_eq!(editor_buffer_text(&editor), "local draft\n");
+    assert!(
+        editor.is_modified(),
+        "dismissing an external-change warning should not clear unsaved state",
+    );
+}
+
+#[test]
+fn test_external_file_change_discard_action_reloads_disk_bytes() {
+    let (window, _dir, path) = open_temp_document("original\n");
+    let editor = active_editor(&window);
+    editor.buffer().set_text("local draft\n");
+    editor.buffer().set_modified(true);
+
+    write_external_change_after_mtime_tick(&path, &editor, "external version\n");
+    wait_for_external_change_warning(&editor);
+
+    editor.info_bar().imp().discard_button.emit_clicked();
+    wait_until(Duration::from_secs(3), || {
+        editor_buffer_text(&editor) == "external version\n"
+            && !editor.info_bar().imp().alert_revealer.reveals_child()
+    });
+
+    assert!(!editor.is_modified());
+}
+
+#[test]
+fn test_own_save_does_not_surface_external_change_warning() {
+    let (window, _dir, path) = open_temp_document("original\n");
+    let editor = active_editor(&window);
+    editor.buffer().set_text("saved by lushtext\n");
+    editor.buffer().set_modified(true);
+
+    activate_action(&window, "save");
+    wait_until(Duration::from_secs(3), || {
+        !editor.is_modified()
+            && editor_io::mtime_secs(&path) == editor.imp().monitor.last_known_mtime.get()
+    });
+    flush_after_delay(Duration::from_millis(700));
+
+    assert!(
+        !editor.info_bar().imp().alert_revealer.reveals_child(),
+        "saving through LushText should update monitor state before file events become warnings",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("saved file contents"),
+        "saved by lushtext\n"
+    );
+}
+
+#[test]
+fn test_close_modified_file_tab_cancel_keeps_unsaved_tab() {
+    let (window, _dir, path, editor) = modified_file_backed_tab("disk\n", "unsaved\n");
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    respond_to_save_changes_dialog(&window, "cancel");
+
+    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    assert_tab_count(&window, 1);
+    assert_eq!(editor_buffer_text(&editor), "unsaved\n");
+    assert!(editor.is_modified());
+    assert_eq!(
+        std::fs::read_to_string(path).expect("disk contents after cancel"),
+        "disk\n"
+    );
+}
+
+#[test]
+fn test_keyboard_save_changes_cancel_preserves_modified_tab() {
+    let (window, _dir, path, editor) = modified_file_backed_tab("disk\n", "unsaved\n");
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    activate_save_changes_response_with_keyboard(&window, "cancel");
+
+    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    assert_tab_count(&window, 1);
+    assert_eq!(editor_buffer_text(&editor), "unsaved\n");
+    assert!(editor.is_modified());
+    assert_eq!(
+        std::fs::read_to_string(path).expect("disk contents after keyboard cancel"),
+        "disk\n"
+    );
+}
+
+#[test]
+fn test_keyboard_save_changes_save_writes_then_closes() {
+    let (window, _dir, path, _editor) = modified_file_backed_tab("disk\n", "keyboard saved\n");
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    activate_save_changes_response_with_keyboard(&window, "save");
+
+    wait_until(Duration::from_secs(3), || {
+        window.imp().tab_view.n_pages() == 0
+            && std::fs::read_to_string(&path).is_ok_and(|contents| contents == "keyboard saved\n")
+    });
+}
+
+#[test]
+fn test_keyboard_save_changes_discard_closes_without_writing() {
+    let (window, _dir, path, _editor) = modified_file_backed_tab("disk\n", "keyboard discard\n");
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    activate_save_changes_response_with_keyboard(&window, "discard");
+
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    assert_eq!(
+        std::fs::read_to_string(path).expect("disk contents after keyboard discard"),
+        "disk\n"
+    );
+}
+
+#[test]
+fn test_close_modified_file_tab_save_writes_then_closes() {
+    let (window, _dir, path, _editor) = modified_file_backed_tab("disk\n", "saved\n");
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    respond_to_save_changes_dialog(&window, "save");
+
+    wait_until(Duration::from_secs(3), || {
+        window.imp().tab_view.n_pages() == 0
+            && std::fs::read_to_string(&path).is_ok_and(|contents| contents == "saved\n")
+    });
+}
+
+#[test]
+fn test_close_modified_file_tab_save_failure_keeps_tab_modified() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let dir = tempfile::tempdir().expect("save failure tempdir");
+    let bad_path = dir.path().join("missing-parent").join("close-fails.txt");
+    editor.set_file_path(&bad_path);
+    editor.buffer().set_text("still unsaved\n");
+    editor.buffer().set_modified(true);
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    respond_to_save_changes_dialog(&window, "save");
+
+    wait_until(Duration::from_secs(3), || {
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Save failed during close"))
+    });
+    assert_tab_count(&window, 1);
+    assert_eq!(editor_buffer_text(&editor), "still unsaved\n");
+    assert!(editor.is_modified());
+    assert!(!bad_path.exists());
+}
+
+#[test]
+fn test_close_modified_file_tab_discard_closes_without_writing() {
+    let (window, _dir, path, _editor) = modified_file_backed_tab("disk\n", "discard me\n");
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    respond_to_save_changes_dialog(&window, "discard");
+
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    assert_eq!(
+        std::fs::read_to_string(path).expect("disk contents after discard"),
+        "disk\n"
+    );
+}
+
+#[test]
+fn test_window_close_request_cancel_keeps_modified_file_tab() {
+    let (window, _dir, path, editor) = modified_file_backed_tab("disk\n", "window unsaved\n");
+
+    window.close();
+    wait_for_save_changes_dialog(&window);
+    respond_to_save_changes_dialog(&window, "cancel");
+
+    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    assert!(window.is_visible());
+    assert_tab_count(&window, 1);
+    assert_eq!(editor_buffer_text(&editor), "window unsaved\n");
+    assert!(editor.is_modified());
+    assert_eq!(
+        std::fs::read_to_string(path).expect("disk contents after window cancel"),
+        "disk\n"
+    );
+}
+
+#[test]
+fn test_window_close_request_save_persists_session_and_cleans_file_draft() {
+    let (window, _dir, path, _editor) = modified_file_backed_tab("disk\n", "window saved\n");
+    let draft_id = seed_file_backed_draft(&window, &path, "recoverable draft\n");
+    let data_dir = json_store::data_dir();
+
+    window.close();
+    wait_for_save_changes_dialog(&window);
+    respond_to_save_changes_dialog(&window, "save");
+
+    wait_until(Duration::from_secs(3), || {
+        !window.is_visible()
+            && std::fs::read_to_string(&path).is_ok_and(|contents| contents == "window saved\n")
+    });
+    wait_until(Duration::from_secs(3), || {
+        draft_service::read_draft(&data_dir, &draft_id)
+            .expect("read cleaned draft")
+            .is_none()
+    });
+    let session = session_service::load(&data_dir).expect("session saved on close");
+    assert_eq!(session.tabs.len(), 1);
+    assert_eq!(session.tabs[0].path.as_deref(), Some(path.as_path()));
+    assert_eq!(session.active_tab_index, Some(0));
+}
+
+#[test]
+fn test_close_modified_untitled_save_requires_save_as_or_discard() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.buffer().set_text("untitled work\n");
+    editor.buffer().set_modified(true);
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    respond_to_save_changes_dialog(&window, "save");
+
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Untitled documents must be saved"))
+    });
+    assert_tab_count(&window, 1);
+    assert_eq!(editor_buffer_text(&editor), "untitled work\n");
+    assert!(editor.is_modified());
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    respond_to_save_changes_dialog(&window, "discard");
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+}
+
+#[test]
+fn test_close_modified_untitled_cancel_preserves_and_discard_cleans_draft() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.buffer().set_text("untitled draft\n");
+    editor.buffer().set_modified(true);
+    let draft_id = editor.draft_id().expect("untitled draft id");
+    let data_dir = json_store::data_dir();
+    draft_service::write_draft(&data_dir, &draft_id, "untitled draft\n").expect("seed draft");
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    respond_to_save_changes_dialog(&window, "cancel");
+
+    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    assert_tab_count(&window, 1);
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read draft after cancel"),
+        Some("untitled draft\n".to_string()),
+        "cancel should leave the recovery draft available",
+    );
+
+    close_selected_tab(&window);
+    wait_for_save_changes_dialog(&window);
+    respond_to_save_changes_dialog(&window, "discard");
+
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    wait_until(Duration::from_secs(3), || {
+        draft_service::read_draft(&data_dir, &draft_id)
+            .expect("read draft after discard")
+            .is_none()
+    });
+}
+
+#[test]
+fn test_multi_tab_window_close_saves_checked_and_discards_unchecked_documents() {
+    ensure_gtk_init();
+    let (_dir, files) = seed_named_tab_files(&["save-me.txt", "discard-me.txt"]);
+    let window = test_window();
+    present_window(&window);
+
+    for path in &files {
+        window.open_document(path);
+    }
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 2);
+    let save_page = find_tab_page_by_title(&window, "save-me.txt");
+    let discard_page = find_tab_page_by_title(&window, "discard-me.txt");
+    let save_editor = save_page
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("save editor");
+    let discard_editor = discard_page
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("discard editor");
+    wait_until(Duration::from_secs(2), || {
+        save_editor.file_size().is_some() && discard_editor.file_size().is_some()
+    });
+    save_editor.buffer().set_text("checked save\n");
+    save_editor.buffer().set_modified(true);
+    discard_editor.buffer().set_text("unchecked discard\n");
+    discard_editor.buffer().set_modified(true);
+    let saved_draft_id = seed_file_backed_draft(&window, &files[0], "saved branch draft\n");
+    let discarded_draft_id =
+        seed_file_backed_draft(&window, &files[1], "discarded branch draft\n");
+    let data_dir = json_store::data_dir();
+
+    window.close();
+    wait_for_save_changes_dialog(&window);
+    let dialog = visible_alert_dialog(&window).expect("multi-document save dialog");
+    let checks = save_changes_check_buttons(&dialog);
+    assert_eq!(checks.len(), 2);
+    save_changes_check_button_for_title(&dialog, "discard-me.txt").set_active(false);
+    respond_to_save_changes_dialog(&window, "save");
+
+    wait_until(Duration::from_secs(3), || !window.is_visible());
+    assert_eq!(
+        std::fs::read_to_string(&files[0]).expect("saved checked file"),
+        "checked save\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&files[1]).expect("discarded unchecked file"),
+        "content for discard-me.txt\n"
+    );
+    wait_until(Duration::from_secs(3), || {
+        let saved_clean = draft_service::read_draft(&data_dir, &saved_draft_id)
+            .expect("read saved branch draft")
+            .is_none();
+        let discarded_clean = draft_service::read_draft(&data_dir, &discarded_draft_id)
+            .expect("read discarded branch draft")
+            .is_none();
+        saved_clean && discarded_clean
+    });
+}
+
+#[test]
+fn test_keyboard_multi_tab_save_changes_selection_control() {
+    ensure_gtk_init();
+    let (_dir, files) = seed_named_tab_files(&["save-me.txt", "discard-me.txt"]);
+    let window = test_window();
+    present_window(&window);
+
+    for path in &files {
+        window.open_document(path);
+    }
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 2);
+    let save_page = find_tab_page_by_title(&window, "save-me.txt");
+    let discard_page = find_tab_page_by_title(&window, "discard-me.txt");
+    let save_editor = save_page
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("save editor");
+    let discard_editor = discard_page
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("discard editor");
+    wait_until(Duration::from_secs(2), || {
+        save_editor.file_size().is_some() && discard_editor.file_size().is_some()
+    });
+    save_editor.buffer().set_text("keyboard checked save\n");
+    save_editor.buffer().set_modified(true);
+    discard_editor
+        .buffer()
+        .set_text("keyboard unchecked discard\n");
+    discard_editor.buffer().set_modified(true);
+
+    window.close();
+    wait_for_save_changes_dialog(&window);
+    let dialog = visible_alert_dialog(&window).expect("multi-document save dialog");
+    let discard_check = save_changes_check_button_for_title(&dialog, "discard-me.txt");
+    assert!(discard_check.is_active());
+    activate_widget_without_pointer(&discard_check);
+    assert!(!discard_check.is_active());
+    activate_save_changes_response_with_keyboard(&window, "save");
+
+    wait_until(Duration::from_secs(3), || !window.is_visible());
+    assert_eq!(
+        std::fs::read_to_string(&files[0]).expect("saved checked file"),
+        "keyboard checked save\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&files[1]).expect("discarded unchecked file"),
+        "content for discard-me.txt\n"
+    );
+}
+
+#[test]
+fn test_close_paths_are_blocked_while_save_is_in_progress() {
+    let (window, _dir, _path, editor) = modified_file_backed_tab("disk\n", "saving\n");
+    editor.imp().save.inflight.set(true);
+
+    close_selected_tab(&window);
+
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Save is still in progress"))
+    });
+    assert_tab_count(&window, 1);
+    assert!(visible_alert_dialog(&window).is_none());
+
+    window.close();
+    flush_events();
+    assert!(window.is_visible());
+    assert_tab_count(&window, 1);
+
+    editor.imp().save.inflight.set(false);
+}
+
+#[test]
+fn test_print_action_prepares_active_document_snapshot() {
+    ensure_gtk_init();
+    let (window, _dir, path) = open_temp_document("original print content\n");
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.buffer().set_text("active print content\nwith metadata\n");
+    editor.buffer().set_modified(true);
+    flush_events();
+    let before = editor_print_state(&editor);
+    let captured: Rc<RefCell<Vec<PrintDocumentSnapshot>>> = Rc::default();
+    let captured_for_runner = Rc::clone(&captured);
+
+    assert!(action_enabled(&window, "print"));
+    with_print_runner_for_test(
+        move |snapshot| {
+            captured_for_runner.borrow_mut().push(snapshot.clone());
+            PrintOutcome::Completed
+        },
+        || activate_action(&window, "print"),
+    );
+
+    let snapshots = captured.borrow();
+    assert_eq!(snapshots.len(), 1);
+    let snapshot = &snapshots[0];
+    assert_eq!(snapshot.path.as_deref(), Some(path.as_path()));
+    assert_eq!(snapshot.content, "active print content\nwith metadata\n");
+    assert!(snapshot.modified);
+    assert_eq!(snapshot.draft_id, before.draft_id);
+    assert_eq!(snapshot.title, editor.title());
+    assert_eq!(editor_print_state(&editor), before);
+}
+
+#[test]
+fn test_print_cancel_preserves_document_state() {
+    ensure_gtk_init();
+    let (window, _dir, _path) = open_temp_document("print cancel content\n");
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.buffer().set_text("print cancel unsaved edit\n");
+    editor.buffer().set_modified(true);
+    flush_events();
+    let before = editor_print_state(&editor);
+    let captured: Rc<RefCell<Vec<PrintDocumentSnapshot>>> = Rc::default();
+    let captured_for_runner = Rc::clone(&captured);
+
+    with_print_runner_for_test(
+        move |snapshot| {
+            captured_for_runner.borrow_mut().push(snapshot.clone());
+            PrintOutcome::Cancelled
+        },
+        || activate_action(&window, "print"),
+    );
+
+    assert_eq!(captured.borrow().len(), 1);
+    assert_eq!(editor_print_state(&editor), before);
+    assert!(
+        !window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Print failed")),
+        "cancel should not be surfaced as a print failure",
+    );
+}
+
+#[test]
+fn test_print_failure_reports_feedback_and_preserves_document_state() {
+    ensure_gtk_init();
+    let (window, _dir, _path) = open_temp_document("print failure content\n");
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.buffer().set_text("print failure unsaved edit\n");
+    editor.buffer().set_modified(true);
+    flush_events();
+    let before = editor_print_state(&editor);
+
+    with_print_runner_for_test(
+        |_| PrintOutcome::Failed("simulated backend failure".to_string()),
+        || activate_action(&window, "print"),
+    );
+
+    assert_eq!(editor_print_state(&editor), before);
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Print failed: simulated backend failure"))
+    });
+}
+
+#[test]
+fn test_zoom_actions_and_menu_controls_update_setting_bounds() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_uint(keys::ZOOM_LEVEL, 100)
+        .expect("reset zoom");
+    let window = test_window();
+    present_window(&window);
+    let popover = window
+        .imp()
+        .primary_menu_button
+        .popover()
+        .expect("primary menu popover");
+    let zoom_in = find_button_by_tooltip(popover.upcast_ref(), "Zoom In").expect("zoom in button");
+    let zoom_out =
+        find_button_by_tooltip(popover.upcast_ref(), "Zoom Out").expect("zoom out button");
+
+    assert!(action_enabled(&window, "zoom-in"));
+    assert!(action_enabled(&window, "zoom-out"));
+    assert!(action_enabled(&window, "zoom-reset"));
+    activate_action(&window, "zoom-in");
+    assert_eq!(settings.uint(keys::ZOOM_LEVEL), 110);
+    activate_action(&window, "zoom-out");
+    assert_eq!(settings.uint(keys::ZOOM_LEVEL), 100);
+    activate_action(&window, "zoom-reset");
+    assert_eq!(settings.uint(keys::ZOOM_LEVEL), 100);
+
+    settings
+        .set_uint(keys::ZOOM_LEVEL, 400)
+        .expect("set max zoom");
+    flush_events();
+    assert!(!zoom_in.is_sensitive());
+    assert!(zoom_out.is_sensitive());
+    activate_action(&window, "zoom-in");
+    assert_eq!(settings.uint(keys::ZOOM_LEVEL), 400);
+
+    settings
+        .set_uint(keys::ZOOM_LEVEL, 50)
+        .expect("set min zoom");
+    flush_events();
+    assert!(zoom_in.is_sensitive());
+    assert!(!zoom_out.is_sensitive());
+    activate_action(&window, "zoom-out");
+    assert_eq!(settings.uint(keys::ZOOM_LEVEL), 50);
+}
+
+#[test]
+fn test_zoom_level_remains_global_across_tab_switches() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_uint(keys::ZOOM_LEVEL, 100)
+        .expect("reset zoom");
+    let window = test_window();
+    window.new_tab();
+    window.new_tab();
+    present_window(&window);
+    let first = window.imp().tab_view.nth_page(0);
+    let second = window.imp().tab_view.nth_page(1);
+    window.imp().tab_view.set_selected_page(&second);
+
+    activate_action(&window, "zoom-in");
+    assert_eq!(settings.uint(keys::ZOOM_LEVEL), 110);
+
+    window.imp().tab_view.set_selected_page(&first);
+    flush_events();
+    assert_eq!(
+        settings.uint(keys::ZOOM_LEVEL),
+        110,
+        "zoom is a window/application preference, not a per-tab value",
+    );
+    activate_action(&window, "zoom-out");
+    window.imp().tab_view.set_selected_page(&second);
+    flush_events();
+    assert_eq!(settings.uint(keys::ZOOM_LEVEL), 100);
+}
+
+#[test]
+fn test_style_scheme_setting_updates_current_and_new_editors() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_string(keys::STYLE_SCHEME, "Adwaita")
+        .expect("set initial style scheme");
+    settings
+        .set_double(keys::TAB_CONTENT_OPACITY, 1.0)
+        .expect("set opaque tab content");
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let first = active_editor(&window);
+
+    settings
+        .set_string(keys::STYLE_SCHEME, "Adwaita-dark")
+        .expect("set alternate style scheme");
+    wait_until(Duration::from_secs(2), || {
+        first.applied_style_scheme_id().as_deref() == Some("Adwaita-dark")
+    });
+
+    window.new_tab();
+    flush_events();
+    let second = active_editor(&window);
+    wait_until(Duration::from_secs(2), || {
+        second.applied_style_scheme_id().as_deref() == Some("Adwaita-dark")
+    });
+}
+
+#[test]
+fn test_invalid_style_scheme_falls_back_to_bundled_adwaita_scheme() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_double(keys::TAB_CONTENT_OPACITY, 1.0)
+        .expect("set opaque tab content");
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let expected = if libadwaita::StyleManager::default().is_dark() {
+        "Adwaita-dark"
+    } else {
+        "Adwaita"
+    };
+
+    settings
+        .set_string(keys::STYLE_SCHEME, "missing-scheme-for-test")
+        .expect("set invalid style scheme");
+
+    wait_until(Duration::from_secs(2), || {
+        editor.applied_style_scheme_id().as_deref() == Some(expected)
+    });
+}
+
+#[test]
+fn test_cycle_invisible_characters_updates_active_editor_and_default_for_new_tabs() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_string(keys::INVISIBLE_CHARACTERS_MODE, InvisibleCharactersMode::Off.id())
+        .expect("reset invisible-character mode");
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let first = active_editor(&window);
+    assert_eq!(
+        first.invisible_characters_mode(),
+        InvisibleCharactersMode::Off
+    );
+
+    activate_action(&window, "cycle-invisible-characters");
+    assert_eq!(
+        first.invisible_characters_mode(),
+        InvisibleCharactersMode::WhitespaceOnly
+    );
+    assert_eq!(
+        settings.string(keys::INVISIBLE_CHARACTERS_MODE).as_str(),
+        InvisibleCharactersMode::WhitespaceOnly.id()
+    );
+
+    activate_action(&window, "cycle-invisible-characters");
+    assert_eq!(first.invisible_characters_mode(), InvisibleCharactersMode::All);
+    activate_action(&window, "cycle-invisible-characters");
+    assert_eq!(first.invisible_characters_mode(), InvisibleCharactersMode::Off);
+
+    activate_action(&window, "cycle-invisible-characters");
+    window.new_tab();
+    flush_events();
+    let second = active_editor(&window);
+    assert_eq!(
+        second.invisible_characters_mode(),
+        InvisibleCharactersMode::WhitespaceOnly,
+        "new tabs should inherit the last user-selected invisible-character mode",
     );
 }
 

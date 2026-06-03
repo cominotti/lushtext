@@ -106,6 +106,7 @@ impl ObjectImpl for LushtextSearchBar {
         // settings (regex, case-sensitive, whole word). The actions are
         // stateful booleans in a "search-options" group on this widget.
         self.setup_options_menu();
+        self.apply_accessibility_metadata();
 
         // Wire all button and keyboard signals once here, not in attach().
         // The handlers delegate to methods on the wrapper type which check
@@ -142,11 +143,10 @@ impl LushtextSearchBar {
         let group = gtk4::gio::SimpleActionGroup::new();
         for name in ["regex", "case-sensitive", "whole-word"] {
             let action = gtk4::gio::SimpleAction::new_stateful(name, None, &false.to_variant());
-            let action_clone = action.clone();
             let bar_weak = self.obj().downgrade();
-            action.connect_activate(move |_, _| {
-                let current: bool = action_clone.state().and_then(|v| v.get()).unwrap_or(false);
-                action_clone.set_state(&(!current).to_variant());
+            action.connect_activate(move |action, _| {
+                let current: bool = action.state().and_then(|v| v.get()).unwrap_or(false);
+                action.set_state(&(!current).to_variant());
                 if let Some(bar) = bar_weak.upgrade() {
                     bar.emit_search_state_changed();
                 }
@@ -158,29 +158,72 @@ impl LushtextSearchBar {
         self.options_group.replace(Some(group));
     }
 
+    /// Assign stable names to icon-only search controls for screen readers and
+    /// the AT-SPI smoke lane. Tooltips are visual hints; accessible labels are
+    /// the semantic contract assistive technologies query.
+    fn apply_accessibility_metadata(&self) {
+        self.search_entry.update_property(&[
+            gtk4::accessible::Property::Label("Find text"),
+            gtk4::accessible::Property::Description("Search within the active document"),
+        ]);
+        self.replace_entry.update_property(&[
+            gtk4::accessible::Property::Label("Replacement text"),
+            gtk4::accessible::Property::Description("Replacement text for find and replace"),
+        ]);
+        self.prev_button
+            .update_property(&[gtk4::accessible::Property::Label("Previous search match")]);
+        self.next_button
+            .update_property(&[gtk4::accessible::Property::Label("Next search match")]);
+        self.replace_mode_button
+            .update_property(&[gtk4::accessible::Property::Label("Toggle replace controls")]);
+        self.options_button
+            .update_property(&[gtk4::accessible::Property::Label("Search options")]);
+        self.close_button
+            .update_property(&[gtk4::accessible::Property::Label("Close search")]);
+        self.replace_button
+            .update_property(&[gtk4::accessible::Property::Label("Replace current match")]);
+        self.replace_all_button
+            .update_property(&[gtk4::accessible::Property::Label("Replace all matches")]);
+    }
+
     /// Wire all button clicks and keyboard handlers once during construction.
     /// Handlers delegate to wrapper-type methods that check for an active
     /// SearchContext, so they safely no-op when no search session is attached.
     fn wire_ui_signals(&self) {
-        let obj = self.obj().clone();
-
         // Nav buttons
-        let bar = obj.clone();
-        self.prev_button.connect_clicked(move |_| bar.move_prev());
-        let bar = obj.clone();
-        self.next_button.connect_clicked(move |_| bar.move_next());
+        let bar_weak = self.obj().downgrade();
+        self.prev_button.connect_clicked(move |_| {
+            if let Some(bar) = bar_weak.upgrade() {
+                bar.move_prev();
+            }
+        });
+        let bar_weak = self.obj().downgrade();
+        self.next_button.connect_clicked(move |_| {
+            if let Some(bar) = bar_weak.upgrade() {
+                bar.move_next();
+            }
+        });
 
         // Replace buttons
-        let bar = obj.clone();
-        self.replace_button
-            .connect_clicked(move |_| bar.replace_current());
-        let bar = obj.clone();
-        self.replace_all_button
-            .connect_clicked(move |_| bar.replace_all());
+        let bar_weak = self.obj().downgrade();
+        self.replace_button.connect_clicked(move |_| {
+            if let Some(bar) = bar_weak.upgrade() {
+                bar.replace_current();
+            }
+        });
+        let bar_weak = self.obj().downgrade();
+        self.replace_all_button.connect_clicked(move |_| {
+            if let Some(bar) = bar_weak.upgrade() {
+                bar.replace_all();
+            }
+        });
 
         // Search-as-you-type: pipe entry text → active SearchSettings.
-        let bar = obj.clone();
+        let bar_weak = self.obj().downgrade();
         self.search_entry.connect_search_changed(move |entry| {
+            let Some(bar) = bar_weak.upgrade() else {
+                return;
+            };
             let imp = bar.imp();
             if let Some(ref settings) = *imp.search_settings.borrow() {
                 let text = entry.text();
@@ -195,16 +238,18 @@ impl LushtextSearchBar {
         });
 
         // Enter/Shift+Enter on the search entry for match navigation.
-        let bar = obj.clone();
+        let bar_weak = self.obj().downgrade();
         let key_controller = gtk4::EventControllerKey::new();
         key_controller.connect_key_pressed(move |_, keyval, _keycode, state| {
             let shift = state.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
             match keyval {
                 gtk4::gdk::Key::Return | gtk4::gdk::Key::KP_Enter => {
-                    if shift {
-                        bar.move_prev();
-                    } else {
-                        bar.move_next();
+                    if let Some(bar) = bar_weak.upgrade() {
+                        if shift {
+                            bar.move_prev();
+                        } else {
+                            bar.move_next();
+                        }
                     }
                     glib::Propagation::Stop
                 }
@@ -214,7 +259,7 @@ impl LushtextSearchBar {
         self.search_entry.add_controller(key_controller);
 
         // Escape on the replace entry also closes the search bar.
-        let bar_weak = obj.downgrade();
+        let bar_weak = self.obj().downgrade();
         let replace_key_controller = gtk4::EventControllerKey::new();
         replace_key_controller.connect_key_pressed(move |_, keyval, _keycode, _state| {
             if keyval == gtk4::gdk::Key::Escape

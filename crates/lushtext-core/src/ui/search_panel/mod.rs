@@ -95,9 +95,10 @@ impl LushtextSearchPanel {
 
     /// Called when the panel is being hidden.
     pub fn close(&self) {
-        // Don't cancel the search or clear Replace All undo state. The polling
-        // timer is self-managing, and undo recovery now survives panel close so
-        // hiding the panel cannot discard the user's rollback path.
+        // The polling timer is self-managing. Replace All journal files are
+        // intentionally bounded to the active panel lifetime so a later session
+        // cannot inherit stale rollback state.
+        self.clear_undo_backup();
     }
 
     /// Pre-fill the search entry with text (e.g., editor selection).

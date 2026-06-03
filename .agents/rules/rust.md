@@ -53,12 +53,41 @@ Use `services::async_task::spawn_blocking_then(state, work, then)` for any I/O t
 
 Never pass GTK objects directly across threads — they are not `Send`/`Sync`. Use `glib::thread_guard::ThreadGuard` or `glib::SendWeakRef`.
 
-Durable atomic writes on Linux require both halves of the filesystem contract:
-write and flush the temp file, call `sync_all()` or `sync_data()` on that temp
-file before `rename()`, then sync the parent directory after the rename so ext4,
-XFS, and Btrfs cannot lose the renamed directory entry across power loss. Use
+Durable atomic writes on Linux require the full ordered filesystem contract:
+probe metadata, create the temp file with safe permissions, write and flush
+content, apply required metadata, call `sync_all()` on the temp file after those
+metadata mutations, `rename()`, then sync the parent directory so ext4, XFS, and
+Btrfs cannot lose the renamed directory entry across power loss. Use
 `services::durable_write::sync_parent_dir()` for the directory half instead of
 leaving it to each call site.
+
+Prefer the shared `services::durable_write::atomic_write_bytes` (or
+`atomic_write_bytes_classified` / `atomic_write_stream_classified` when you need
+the failure phase or streaming serialization) over hand-rolling
+temp-file-then-rename. The shared helper guarantees these things every
+persistence caller must inherit and must not silently drop:
+
+- **Identity-metadata preservation.** Because the rename installs a brand-new
+  inode, an overwrite would otherwise reset the destination's permissions,
+  ownership, ACLs, and xattrs. The helper copies that metadata onto the temp file
+  before the final temp sync and rename (standard `0o777` bits are preserved
+  exactly; ownership, ACLs/xattrs, and the setuid/setgid/sticky bits are
+  best-effort — the kernel intentionally clears setuid/setgid on a content
+  rewrite). New files keep default permissions. Copy fallback uses source
+  metadata, not destination metadata. Do not reintroduce a raw `File::create` +
+  `rename` that loses this.
+- **Stable target coordination.** Editor save, Save As, Replace All, and undo
+  must acquire the resolved target guard before reading or writing file bytes.
+  Do not coordinate on the destination inode; atomic rename replaces that inode.
+  Symlink paths and canonical target paths must share one guard, and acquiring
+  the guard must not require opening the destination read-write.
+- **Honest failure classification.** `DurableWriteError::BeforeRename` means the
+  previous bytes are intact (report as an unwritten/failed save and keep the
+  document modified); `DurableWriteError::AfterRename` means the new bytes are on
+  disk but the directory `fsync` did not complete (surface a distinct
+  "durability unconfirmed" warning, never a generic lost-save). The editor maps
+  these to `SaveError::WriteTemp` and `SaveError::DurabilityUnconfirmed`. Never
+  swallow an `fsync` error into a silent success.
 
 Never set `autoexpand = true` on `GtkTreeListModel`.
 

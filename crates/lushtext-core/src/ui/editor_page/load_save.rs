@@ -9,7 +9,8 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
@@ -54,75 +55,131 @@ impl LushtextEditorPage {
     pub fn load_file_async_with_encoding(&self, path: &Path, reopen_as: Option<DocumentEncoding>) {
         let file_path = path.to_path_buf();
         self.imp().file_path.replace(Some(file_path.clone()));
+        self.imp().canonical_file_path.borrow_mut().take();
 
-        self.imp().cancel_token.store(false, Ordering::Release);
-        let cancel = self.imp().cancel_token.clone();
+        self.imp()
+            .cancel_token
+            .borrow()
+            .store(true, Ordering::Release);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.imp().cancel_token.replace(cancel.clone());
+        let load_generation = self.imp().load_generation.get().wrapping_add(1);
+        self.imp().load_generation.set(load_generation);
 
         async_task::spawn_blocking_then(
             self.clone(),
             move || editor_io::load_text_file_with_encoding(&file_path, &cancel, reopen_as),
-            |editor, result| match result {
-                Ok(loaded) => {
-                    editor.imp().file_size.set(Some(loaded.size));
-                    editor.imp().size_check.set(loaded.size_check);
-                    editor.imp().evicted.set(false);
-                    editor.set_document_encoding_state(loaded.encoding_state);
-                    editor.set_has_bom(loaded.has_bom);
-                    editor.set_file_health(loaded.file_health);
-                    editor.set_minimap_tracking_suspended(true);
-                    editor.apply_loaded_content(&loaded.content, loaded.size_check);
-                    editor.set_minimap_tracking_suspended(false);
-                    editor.clear_modified_line_marks();
-                    editor.apply_restore_position();
-                    editor.notify_estimated_memory_changed();
-                    editor.imp().monitor.last_known_mtime.set(loaded.mtime);
-                    editor.clear_inline_notification();
-                    editor.seed_local_history_from_loaded_content(&loaded.content);
-                    if editor
-                        .file_health()
-                        .iter()
-                        .any(|finding| finding.kind == FileHealthFindingKind::MixedLineEndings)
-                    {
-                        editor.emit_inline_notification_with_warning_action(
-                            InlineActionNotification {
-                                style: InlineNotificationStyle::Warning,
-                                title: "Mixed Line Endings Detected".to_string(),
-                                body: format!(
-                                    "This document opened with mixed line endings. Normalize future saves to {}.",
-                                    editor.save_line_ending().label()
-                                ),
-                                primary_button: Some("_Normalize…".to_string()),
-                                secondary_button: None,
-                            },
-                            super::imp::PendingWarningAction::NormalizeLineEndings,
-                        );
-                    }
-                    editor.refresh_minimap();
-                    if let Some(callback) = editor.imp().load.load_completed_callback.take() {
-                        callback();
-                    }
-                    for callback in editor.imp().load.file_loaded_callbacks.borrow().iter() {
-                        callback();
-                    }
-                }
-                Err(LoadError::Cancelled) => {}
-                Err(error) => {
-                    tracing::error!("{error}");
-                    editor.emit_inline_notification(InlineActionNotification {
-                        style: InlineNotificationStyle::Error,
-                        title: "Could Not Open File".to_string(),
-                        body: error.to_string(),
-                        primary_button: Some("_Retry".to_string()),
-                        secondary_button: None,
-                    });
-                }
+            move |editor, result| {
+                editor.apply_load_result_if_current(load_generation, result);
             },
         );
     }
 
+    /// Apply one background load result only if it still belongs to the newest load.
+    ///
+    /// Background reads can finish after a later `load_file_async` or
+    /// `cancel_load` call. Keeping the generation check inside this helper
+    /// makes that stale-result guard easy to exercise without a timing race.
+    fn apply_load_result_if_current(
+        &self,
+        load_generation: u64,
+        result: Result<editor_io::LoadResult, LoadError>,
+    ) -> bool {
+        if self.imp().load_generation.get() != load_generation {
+            return false;
+        }
+        match result {
+            Ok(loaded) => {
+                self.imp().file_size.set(Some(loaded.size));
+                self.imp().size_check.set(loaded.size_check);
+                self.imp()
+                    .canonical_file_path
+                    .replace(loaded.canonical_path);
+                self.imp().evicted.set(false);
+                self.set_document_encoding_state(loaded.encoding_state);
+                self.set_has_bom(loaded.has_bom);
+                self.set_file_health(loaded.file_health);
+                self.set_minimap_tracking_suspended(true);
+                self.apply_loaded_content(&loaded.content, loaded.size_check);
+                self.set_minimap_tracking_suspended(false);
+                self.clear_modified_line_marks();
+                self.apply_restore_position();
+                self.notify_estimated_memory_changed();
+                self.imp().monitor.last_known_mtime.set(loaded.mtime);
+                self.clear_inline_notification();
+                self.seed_local_history_from_loaded_content(&loaded.content);
+                if self
+                    .file_health()
+                    .iter()
+                    .any(|finding| finding.kind == FileHealthFindingKind::MixedLineEndings)
+                {
+                    self.emit_inline_notification_with_warning_action(
+                        InlineActionNotification {
+                            style: InlineNotificationStyle::Warning,
+                            title: "Mixed Line Endings Detected".to_string(),
+                            body: format!(
+                                "This document opened with mixed line endings. Normalize future saves to {}.",
+                                self.save_line_ending().label()
+                            ),
+                            primary_button: Some("_Normalize…".to_string()),
+                            secondary_button: None,
+                        },
+                        super::imp::PendingWarningAction::NormalizeLineEndings,
+                    );
+                }
+                self.refresh_minimap();
+                if let Some(callback) = self.imp().load.load_completed_callback.take() {
+                    callback();
+                }
+                for callback in self.imp().load.file_loaded_callbacks.borrow().iter() {
+                    callback();
+                }
+            }
+            Err(LoadError::Cancelled) => {}
+            Err(error) => {
+                tracing::error!("{error}");
+                let error_text = error.to_string();
+                self.emit_inline_notification(InlineActionNotification {
+                    style: InlineNotificationStyle::Error,
+                    title: "Could Not Open File".to_string(),
+                    body: error_text.clone(),
+                    primary_button: Some("_Retry".to_string()),
+                    secondary_button: None,
+                });
+                if let Some(callback) = self.imp().load.load_failed_callback.take() {
+                    callback(error_text);
+                }
+            }
+        }
+        true
+    }
+
+    /// Apply the same post-load size policy without blocking on a giant fixture.
+    ///
+    /// Widget tests use this `test-utils` seam for UI-observable large-file
+    /// capability states that would otherwise require loading tens of megabytes
+    /// through `GtkTextBuffer` just to cross a threshold.
+    #[cfg(feature = "test-utils")]
+    pub fn apply_loaded_content_for_test(&self, content: &str, reported_size: u64) {
+        let size_check = FileSizeCheck::classify(reported_size);
+        self.imp().file_size.set(Some(reported_size));
+        self.imp().size_check.set(size_check);
+        self.imp().evicted.set(false);
+        self.apply_loaded_content(content, size_check);
+        self.seed_local_history_from_loaded_content(content);
+        self.notify_estimated_memory_changed();
+        self.refresh_minimap();
+    }
+
     /// Cancel any in-progress file load. Safe to call even if no load is active.
     pub fn cancel_load(&self) {
-        self.imp().cancel_token.store(true, Ordering::Release);
+        self.imp()
+            .cancel_token
+            .borrow()
+            .store(true, Ordering::Release);
+        self.imp()
+            .load_generation
+            .set(self.imp().load_generation.get().wrapping_add(1));
     }
 
     /// Apply freshly loaded file content and its size-based feature gates.
@@ -152,12 +209,65 @@ impl LushtextEditorPage {
         self.imp().size_check.get()
     }
 
+    /// Test-only seam for the live-buffer snapshot policy.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn save_uses_chunked_snapshot_for_test(&self) -> bool {
+        self.live_buffer_requires_chunked_snapshot()
+    }
+
+    /// Return the active load generation for stale-callback regression tests.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn load_generation_for_test(&self) -> u64 {
+        self.imp().load_generation.get()
+    }
+
+    /// Return the active cancellation token so tests can prove token identity rotation.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn load_cancel_token_for_test(&self) -> Arc<AtomicBool> {
+        self.imp().cancel_token.borrow().clone()
+    }
+
+    /// Apply a synthetic load result through the production stale-generation gate.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn apply_load_result_for_test(
+        &self,
+        load_generation: u64,
+        result: Result<editor_io::LoadResult, LoadError>,
+    ) -> bool {
+        self.apply_load_result_if_current(load_generation, result)
+    }
+
     /// Set the file path (used by Save As) and refresh syntax highlighting.
     pub fn set_file_path(&self, path: &Path) {
+        self.set_file_path_with_canonical(path, None);
+    }
+
+    /// Set the display path and known canonical target as one coherent identity.
+    pub(crate) fn set_file_path_with_canonical(
+        &self,
+        path: &Path,
+        canonical_path: Option<PathBuf>,
+    ) {
         self.imp().file_path.replace(Some(path.to_path_buf()));
+        self.imp().canonical_file_path.replace(canonical_path);
         if self.imp().size_check.get().syntax_enabled() {
             self.reapply_language();
         }
+        self.schedule_minimap_refresh();
+    }
+
+    /// Clear a provisional file identity after the first load fails.
+    ///
+    /// Failed desktop activation can leave an editor visible with an inline
+    /// error, but it must not behave as if the path was successfully opened.
+    pub(crate) fn clear_file_path_after_failed_load(&self) {
+        self.imp().file_path.replace(None);
+        self.imp().canonical_file_path.borrow_mut().take();
+        self.buffer().set_language(None::<&sourceview5::Language>);
         self.schedule_minimap_refresh();
     }
 
@@ -202,7 +312,7 @@ impl LushtextEditorPage {
         view.set_editable(false);
         view.set_cursor_visible(false);
 
-        if self.file_size().unwrap_or_default() >= LARGE_SAVE_SNAPSHOT_THRESHOLD {
+        if self.live_buffer_requires_chunked_snapshot() {
             let editor = self.clone();
             snapshot_buffer_text_async(self.buffer(), move |text| {
                 editor.write_snapshot_async(path, text, restore_state, callback);
@@ -307,6 +417,7 @@ impl LushtextEditorPage {
                     metadata.save_line_ending,
                     allow_lossy,
                 )?;
+                let canonical_path = path.canonicalize().ok();
 
                 if history_availability.allows_browsing() {
                     let data_dir = crate::services::json_store::data_dir();
@@ -327,6 +438,7 @@ impl LushtextEditorPage {
                 Ok::<_, SaveError>((
                     size,
                     mtime,
+                    canonical_path,
                     history_availability
                         .allows_automatic_capture()
                         .then(|| formatted_text.clone()),
@@ -343,7 +455,7 @@ impl LushtextEditorPage {
                 editor.imp().save.inflight.set(false);
 
                 match result {
-                    Ok((size, mtime, clean_text, saved_buffer_text)) => {
+                    Ok((size, mtime, canonical_path, clean_text, saved_buffer_text)) => {
                         if let Some(saved_buffer_text) = saved_buffer_text {
                             editor.replace_buffer_after_save_formatting(&saved_buffer_text);
                         }
@@ -357,6 +469,7 @@ impl LushtextEditorPage {
                         editor.set_document_encoding_state(state);
                         let has_bom = state.save_encoding.writes_bom();
                         editor.set_has_bom(has_bom);
+                        editor.imp().canonical_file_path.replace(canonical_path);
                         let mut findings: Vec<FileHealthFinding> = editor
                             .file_health()
                             .into_iter()
@@ -413,6 +526,17 @@ impl LushtextEditorPage {
         buffer.place_cursor(&iter);
         buffer.set_modified(false);
         self.set_minimap_tracking_suspended(false);
+    }
+
+    /// Decide whether save snapshotting should yield through the main loop.
+    ///
+    /// GtkTextBuffer exposes a cheap character count, not a UTF-8 byte count.
+    /// Multiplying by four is a conservative upper bound that sends large or
+    /// unknown-size buffers through chunked capture without first copying the
+    /// whole text just to measure it.
+    fn live_buffer_requires_chunked_snapshot(&self) -> bool {
+        let char_count = u64::try_from(self.buffer().char_count()).unwrap_or(u64::MAX);
+        char_count.saturating_mul(4) >= LARGE_SAVE_SNAPSHOT_THRESHOLD
     }
 }
 

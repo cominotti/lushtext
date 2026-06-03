@@ -101,6 +101,12 @@ impl LushtextEditorPage {
         self.imp().file_path.borrow().clone()
     }
 
+    /// Background-resolved canonical path for duplicate-tab reconciliation.
+    #[must_use]
+    pub(crate) fn canonical_file_path(&self) -> Option<std::path::PathBuf> {
+        self.imp().canonical_file_path.borrow().clone()
+    }
+
     /// On-disk size in bytes, populated after async load completes.
     #[must_use]
     pub fn file_size(&self) -> Option<u64> {

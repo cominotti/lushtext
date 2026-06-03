@@ -41,6 +41,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--search")
     parser.add_argument("--enable-minimap", action="store_true")
+    parser.add_argument(
+        "--enable-atspi",
+        action="store_true",
+        help="Start the private AT-SPI registry even when no search text is set.",
+    )
+    parser.add_argument(
+        "--window-action",
+        action="append",
+        default=[],
+        help="Window action to activate before capture; may be repeated.",
+    )
+    parser.add_argument(
+        "--color-scheme",
+        choices=("default", "force-light", "force-dark"),
+        default="default",
+        help="LushText color-scheme GSettings value to apply before launch.",
+    )
+    parser.add_argument(
+        "--capture-artifact-dir",
+        type=Path,
+        help="Directory for the helper's internal logs instead of a temporary directory.",
+    )
+    parser.add_argument(
+        "--atspi-tree-output",
+        type=Path,
+        help="Write a bounded AT-SPI tree subset for the launched app.",
+    )
+    parser.add_argument(
+        "--atspi-focus-output",
+        type=Path,
+        help="Write the focused accessible node path for the launched app.",
+    )
     parser.add_argument("--binary", type=Path, default=usage_binary())
     parser.add_argument("--width", type=positive_int, default=1600)
     parser.add_argument("--height", type=positive_int, default=1000)
@@ -88,8 +120,20 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
         cli.extend(["--search", args.search])
     if args.enable_minimap:
         cli.append("--enable-minimap")
+    if args.enable_atspi:
+        cli.append("--enable-atspi")
     if args.keep_artifacts:
         cli.append("--keep-artifacts")
+    if args.color_scheme != "default":
+        cli.extend(["--color-scheme", args.color_scheme])
+    for action in args.window_action:
+        cli.extend(["--window-action", action])
+    if args.capture_artifact_dir is not None:
+        cli.extend(["--capture-artifact-dir", str(args.capture_artifact_dir)])
+    if args.atspi_tree_output is not None:
+        cli.extend(["--atspi-tree-output", str(args.atspi_tree_output)])
+    if args.atspi_focus_output is not None:
+        cli.extend(["--atspi-focus-output", str(args.atspi_focus_output)])
     return cli
 
 
@@ -107,7 +151,7 @@ def outer_run(args: argparse.Namespace) -> int:
     ):
         require_command(command)
 
-    if args.search is not None:
+    if args.search is not None or args.enable_atspi or args.atspi_tree_output is not None:
         if not ATSPI_REGISTRYD.is_file():
             raise RuntimeError("Missing at-spi2-registryd. Run make dev-tools inside the Toolbx/container.")
         subprocess.run(
@@ -117,9 +161,15 @@ def outer_run(args: argparse.Namespace) -> int:
             stderr=subprocess.DEVNULL,
         )
 
-    artifact_dir = Path(tempfile.mkdtemp(prefix="lushtext-mutter-debug."))
+    if args.capture_artifact_dir is None:
+        artifact_dir = Path(tempfile.mkdtemp(prefix="lushtext-mutter-debug."))
+        remove_artifacts_after_run = not args.keep_artifacts
+    else:
+        artifact_dir = args.capture_artifact_dir.resolve()
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        remove_artifacts_after_run = False
     for name in ("data", "config", "cache", "runtime"):
-        (artifact_dir / name).mkdir()
+        (artifact_dir / name).mkdir(exist_ok=True)
     os.chmod(artifact_dir / "runtime", 0o700)
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -152,7 +202,7 @@ def outer_run(args: argparse.Namespace) -> int:
         if shutil.which("file") is not None:
             subprocess.run(["file", str(args.output)], check=False)
         print(f"Screenshot saved to {args.output}")
-        if args.keep_artifacts:
+        if not remove_artifacts_after_run:
             print(f"Artifacts kept in {artifact_dir}")
         else:
             shutil.rmtree(artifact_dir, ignore_errors=True)
@@ -311,7 +361,7 @@ def internal_run(args: argparse.Namespace) -> int:
         wireplumber = start_logged(["wireplumber"], artifact_dir / "wireplumber.log")
         processes.append(wireplumber)
 
-        if args.search is not None:
+        if args.search is not None or args.enable_atspi or args.atspi_tree_output is not None:
             atspi_address, registry = setup_atspi(artifact_dir)
             processes.append(registry)
             os.environ["AT_SPI_BUS_ADDRESS"] = atspi_address
@@ -321,10 +371,22 @@ def internal_run(args: argparse.Namespace) -> int:
                 ["gsettings", "set", "dev.cominotti.lushtext", "show-minimap", "true"],
                 check=True,
             )
+        if args.color_scheme != "default":
+            subprocess.run(
+                [
+                    "gsettings",
+                    "set",
+                    "dev.cominotti.lushtext",
+                    "color-scheme",
+                    args.color_scheme,
+                ],
+                check=True,
+            )
 
         env = os.environ.copy()
         if atspi_address is None:
             env["NO_AT_BRIDGE"] = "1"
+            env.pop("AT_SPI_BUS_ADDRESS", None)
 
         command = [
             "mutter",
@@ -426,6 +488,42 @@ def set_search_text(args: argparse.Namespace, artifact_dir: Path, env: dict[str,
         raise RuntimeError("AT-SPI could not set the LushText search entry text.")
 
 
+def dump_atspi_tree(args: argparse.Namespace, artifact_dir: Path, env: dict[str, str]) -> None:
+    if args.atspi_tree_output is None:
+        return
+
+    focus_output = args.atspi_focus_output or (artifact_dir / "atspi-focus.txt")
+    args.atspi_tree_output.parent.mkdir(parents=True, exist_ok=True)
+    focus_output.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            str(SYSTEM_PYTHON),
+            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-dump-tree.py"),
+            "--application-regex",
+            "^lushtext$",
+            "--output",
+            str(args.atspi_tree_output),
+            "--focus-output",
+            str(focus_output),
+            "--timeout",
+            "10",
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=15,
+    )
+    (artifact_dir / "atspi-dump-tree.stdout").write_text(result.stdout, encoding="utf-8")
+    (artifact_dir / "atspi-dump-tree.stderr").write_text(result.stderr, encoding="utf-8")
+    print(f"AT-SPI dump-tree status: {result.returncode}")
+    if result.stdout.strip():
+        print(f"AT-SPI dump-tree stdout: {result.stdout.strip()}")
+    if result.stderr.strip():
+        print(f"AT-SPI dump-tree stderr: {result.stderr.strip()}")
+    if result.returncode != 0:
+        raise RuntimeError("AT-SPI tree dump failed.")
+
+
 def capture_monitor(bus, output: Path) -> None:
     from gi.repository import Gio, GLib
 
@@ -525,6 +623,8 @@ def mutter_child(args: argparse.Namespace) -> int:
 
     artifact_dir = Path(os.environ["LUSHTEXT_MUTTER_ARTIFACT_DIR"])
     app_env = os.environ.copy()
+    if app_env.get("NO_AT_BRIDGE") == "1":
+        app_env.pop("AT_SPI_BUS_ADDRESS", None)
     app_env.update(
         {
             "GDK_BACKEND": "wayland",
@@ -552,8 +652,13 @@ def mutter_child(args: argparse.Namespace) -> int:
             time.sleep(0.8)
             set_search_text(args, artifact_dir, app_env)
             time.sleep(0.5)
-        else:
+        for action_name in args.window_action:
+            activate_window_action(bus, action_name)
+            print(f"Activated window action: {action_name}", flush=True)
             time.sleep(0.8)
+        if args.search is None and not args.window_action:
+            time.sleep(0.8)
+        dump_atspi_tree(args, artifact_dir, app_env)
         capture_monitor(bus, args.output)
         return 0
     finally:

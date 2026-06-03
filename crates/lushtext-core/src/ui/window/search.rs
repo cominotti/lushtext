@@ -186,9 +186,12 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         };
                         window.publish_status_message(&msg, kind);
 
-                        // Store backup and show undo button.
-                        imp.search_panel.set_undo_backup(&backup);
-                        imp.search_panel.show_undo_button();
+                        if backup.is_empty() {
+                            imp.search_panel.clear_undo_backup();
+                        } else {
+                            imp.search_panel.set_persisted_undo_backup(&backup);
+                            imp.search_panel.show_undo_button();
+                        }
 
                         // Reload affected open tabs to show updated content.
                         reload_affected_tabs(&window, &affected_paths);

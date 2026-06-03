@@ -18,7 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::time::Duration;
 
 /// Callback type for file-open events (path, line_number).
@@ -104,7 +104,7 @@ pub struct SearchPreviewState {
     /// In-memory before/after file snapshots after a successful Replace All.
     pub undo_backup: RefCell<Option<ReplaceUndoBackup>>,
     /// Generation counter invalidating stale backup loads and deletes.
-    pub undo_backup_generation: Cell<u32>,
+    pub undo_backup_generation: Arc<AtomicU32>,
     /// Replacement previews currently displayed in preview mode.
     pub preview_replacements: RefCell<Vec<Replacement>>,
     /// Indices of preview rows the user chose to apply.

@@ -7,6 +7,9 @@ use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::config::{APP_ID, keys};
+use lushtext_core::model::encoding::DocumentEncodingState;
+use lushtext_core::services::editor_io::LoadResult;
+use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::editor_page::{
     BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage, MinimapAvailability,
@@ -15,6 +18,8 @@ use lushtext_core::ui::editor_page::{
 use sourceview5::prelude::*;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 fn button_label(button: &gtk4::Button) -> gtk4::Label {
     button
@@ -22,6 +27,13 @@ fn button_label(button: &gtk4::Button) -> gtk4::Label {
         .expect("button child")
         .downcast::<gtk4::Label>()
         .expect("button label")
+}
+
+fn editor_buffer_text(page: &LushtextEditorPage) -> String {
+    let buffer = page.buffer();
+    buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string()
 }
 
 fn same_widget(widget: &gtk4::Widget, target: &impl IsA<gtk4::Widget>) -> bool {
@@ -616,7 +628,93 @@ fn test_save_file_writes_content() {
 }
 
 #[test]
-fn test_save_keeps_document_dirty_until_background_write_finishes() {
+fn test_large_untitled_buffer_uses_chunked_save_snapshot_policy() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&"x".repeat(2_500_000));
+
+    assert!(
+        page.save_uses_chunked_snapshot_for_test(),
+        "large untitled buffers should not be copied in one synchronous snapshot"
+    );
+}
+
+#[test]
+fn test_file_that_grew_in_memory_uses_chunked_save_snapshot_policy() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.imp().file_size.set(Some(1_024));
+    page.buffer().set_text(&"x".repeat(2_500_000));
+
+    assert!(
+        page.save_uses_chunked_snapshot_for_test(),
+        "snapshot policy should follow live buffer size, not only loaded file size"
+    );
+}
+
+#[test]
+fn test_stale_load_generation_result_does_not_mutate_current_editor_state() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text("current buffer\n");
+
+    let stale_generation = page.load_generation_for_test();
+    page.cancel_load();
+    let stale_result = LoadResult {
+        content: "stale disk bytes\n".to_string(),
+        size: 17,
+        size_check: FileSizeCheck::Normal,
+        canonical_path: Some(std::path::PathBuf::from("/tmp/stale.txt")),
+        mtime: Some(123),
+        encoding_state: DocumentEncodingState::default(),
+        has_bom: false,
+        file_health: Vec::new(),
+    };
+
+    assert!(
+        !page.apply_load_result_for_test(stale_generation, Ok(stale_result)),
+        "stale load generations should be rejected before touching the editor"
+    );
+    assert_eq!(editor_buffer_text(&page), "current buffer\n");
+    assert_eq!(page.file_size(), None);
+}
+
+#[test]
+fn test_new_load_cancels_previous_token_without_reusing_identity() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("load token tempdir");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+    std::fs::write(&first_path, "first\n").expect("write first");
+    std::fs::write(&second_path, "second\n").expect("write second");
+
+    let page = LushtextEditorPage::new();
+    page.load_file_async(&first_path);
+    let first_token = page.load_cancel_token_for_test();
+    assert!(
+        !first_token.load(Ordering::Acquire),
+        "newly started load token should begin active"
+    );
+
+    page.load_file_async(&second_path);
+    let second_token = page.load_cancel_token_for_test();
+
+    assert!(
+        first_token.load(Ordering::Acquire),
+        "starting a newer load must permanently cancel the previous token"
+    );
+    assert!(
+        !second_token.load(Ordering::Acquire),
+        "the replacement token should remain active for the newer load"
+    );
+    assert!(
+        !Arc::ptr_eq(&first_token, &second_token),
+        "new loads should rotate token identity instead of clearing the old token"
+    );
+}
+
+#[test]
+fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
     let buffer = page.buffer();
@@ -638,11 +736,13 @@ fn test_save_keeps_document_dirty_until_background_write_finishes() {
     assert!(page.is_saving());
     assert!(page.is_modified());
     assert!(!page.source_view().is_editable());
+    assert!(!page.source_view().is_cursor_visible());
 
     wait_until(std::time::Duration::from_secs(2), || done.get());
     assert!(!page.is_saving());
     assert!(!page.is_modified());
     assert!(page.source_view().is_editable());
+    assert!(page.source_view().is_cursor_visible());
     assert_eq!(
         std::fs::read_to_string(path).expect("expected operation to succeed"),
         content
@@ -665,6 +765,9 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
         r.expect("expected operation to succeed");
         first_done_clone.set(true);
     });
+    assert!(page.is_saving());
+    assert!(!page.source_view().is_editable());
+    assert!(!page.source_view().is_cursor_visible());
 
     let duplicate_result: std::rc::Rc<
         std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::SaveError>>>,
@@ -684,6 +787,13 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
     ));
 
     wait_until(std::time::Duration::from_secs(2), || first_done.get());
+    assert!(!page.is_saving());
+    assert!(page.source_view().is_editable());
+    assert!(page.source_view().is_cursor_visible());
+    assert_eq!(
+        std::fs::read_to_string(tmp.path()).expect("saved duplicate test file"),
+        "x".repeat(70_000)
+    );
 }
 
 #[test]

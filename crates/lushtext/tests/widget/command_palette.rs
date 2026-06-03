@@ -2,7 +2,7 @@
 
 //! Tests for the Command Palette widget and its components.
 
-use crate::common::ensure_gtk_init;
+use crate::common::{ensure_gtk_init, flush_events, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::prelude::ToValue;
 use gtk4::prelude::*;
@@ -19,12 +19,7 @@ use lushtext_core::ui::command_palette::item::PaletteItem;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
-
-/// Drain all pending events from the GTK main loop.
-fn flush_events() {
-    while glib::MainContext::default().iteration(false) {}
-}
+use std::time::Duration;
 
 /// Spin the main loop (blocking) until the predicate returns true.
 /// Panics after ~2 seconds to prevent infinite hangs.
@@ -39,21 +34,11 @@ fn spin_until(predicate: impl Fn() -> bool) {
     }
 }
 
-fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if predicate() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-        flush_events();
-    }
-    panic!("condition was not met within {timeout:?}");
-}
-
 fn present_window(window: &LushtextWindow) {
     window.present();
-    wait_until(Duration::from_secs(2), || {
+    // Realization is a precondition: give the headless compositor a generous
+    // budget to allocate the window before tests interact with it.
+    wait_until(Duration::from_secs(5), || {
         window.width() > 0 && window.height() > 0
     });
     flush_events();

@@ -5,6 +5,7 @@ members = [
     "crates/lushtext",
     "workspace-hack",
 ]
+exclude = ["fuzz"]
 
 # Default binary for `cargo run`
 default-members = ["crates/lushtext"]

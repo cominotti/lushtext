@@ -8,6 +8,7 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
+use std::path::Path;
 
 use super::LushtextSidebar;
 use crate::model::workspace::WorkspaceId;
@@ -33,10 +34,28 @@ impl LushtextSidebar {
                 && let Some(path) = file.path()
                 && let Some(sidebar) = sidebar_weak.upgrade()
             {
-                sidebar.handle_new_workspace(&path);
+                sidebar.handle_workspace_folder_selection(&path);
             }
         });
     }
+
+    /// Complete the Add Workspace Folder chooser after GTK or a portal returns
+    /// a folder path. Cancellation intentionally skips this helper so the
+    /// workspace list is unchanged.
+    fn handle_workspace_folder_selection(&self, path: &Path) {
+        self.handle_new_workspace(path);
+    }
+
+    /// Test helper for the folder chooser's successful Add Workspace result.
+    #[cfg(feature = "test-utils")]
+    pub fn select_workspace_folder_for_test(&self, path: &std::path::Path) {
+        self.handle_workspace_folder_selection(path);
+    }
+
+    /// Test helper for Add Workspace cancellation. This explicit no-op keeps
+    /// cancellation coverage readable without exposing GTK dialog internals.
+    #[cfg(feature = "test-utils")]
+    pub fn cancel_workspace_folder_for_test(&self) {}
 
     /// Show the rename workspace dialog.
     pub(super) fn show_rename_workspace_dialog(&self, workspace_id: &WorkspaceId) {

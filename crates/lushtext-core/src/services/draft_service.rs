@@ -14,12 +14,16 @@ use crate::model::session::SessionData;
 use crate::services::{durable_write, editor_io, json_store, session_service};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 const DRAFTS_DIR: &str = "drafts";
 const MANIFEST_FILE: &str = "manifest.json";
+/// Maximum eager draft body bytes loaded during startup restore.
+///
+/// Draft files remain on disk when this cap is reached; the limit only protects
+/// startup memory before normal editor buffer accounting is active.
+pub const MAX_DRAFT_PRELOAD_BYTES: u64 = 64 * 1024 * 1024;
 
 fn manifest_write_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -129,6 +133,7 @@ pub fn load_restore_state(
 
     let mut preloaded = HashMap::new();
     let mut stale_draft_ids = Vec::new();
+    let mut preloaded_bytes = 0u64;
     for tab in &session.tabs {
         let draft_id = match &tab.path {
             Some(path) => draft_id_for_path(path),
@@ -141,6 +146,10 @@ pub fn load_restore_state(
             continue;
         };
         if entry.original_path.is_some() {
+            if should_skip_draft_preload(data_dir, &draft_id, &mut preloaded_bytes) {
+                tracing::warn!("Skipped eager preload for large draft {draft_id}");
+                continue;
+            }
             match resolve_file_draft_restore(data_dir, &entry) {
                 Ok(FileDraftRestoreResolution::Restore { content }) => {
                     preloaded.insert(draft_id, PreloadedDraftRestore::Content(content));
@@ -162,6 +171,10 @@ pub fn load_restore_state(
             continue;
         }
 
+        if should_skip_draft_preload(data_dir, &draft_id, &mut preloaded_bytes) {
+            tracing::warn!("Skipped eager preload for large draft {draft_id}");
+            continue;
+        }
         match read_draft(data_dir, &draft_id) {
             Ok(Some(content)) => {
                 preloaded.insert(draft_id, PreloadedDraftRestore::Content(content));
@@ -175,6 +188,22 @@ pub fn load_restore_state(
 
     cleanup_stale_restore_entries(data_dir, &mut manifest, &stale_draft_ids);
     (manifest, session, preloaded)
+}
+
+fn should_skip_draft_preload(data_dir: &Path, draft_id: &str, preloaded_bytes: &mut u64) -> bool {
+    let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return false;
+    };
+    let size = metadata.len();
+    if size > MAX_DRAFT_PRELOAD_BYTES {
+        return true;
+    }
+    if preloaded_bytes.saturating_add(size) > MAX_DRAFT_PRELOAD_BYTES {
+        return true;
+    }
+    *preloaded_bytes = preloaded_bytes.saturating_add(size);
+    false
 }
 
 /// Resolve whether a file-backed draft is still safe to restore.
@@ -258,26 +287,11 @@ pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()>
         .with_context(|| format!("failed to create drafts dir: {}", dir.display()))?;
 
     let path = dir.join(format!("{draft_id}.draft"));
-    let tmp_path = durable_write::unique_temp_path(&path, "draft");
-
-    let mut file = std::fs::File::create(&tmp_path)
-        .with_context(|| format!("failed to create temp draft: {}", tmp_path.display()))?;
-    file.write_all(content.as_bytes())
-        .with_context(|| format!("failed to write temp draft: {}", tmp_path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush temp draft: {}", tmp_path.display()))?;
-    file.sync_all()
-        .with_context(|| format!("failed to sync temp draft: {}", tmp_path.display()))?;
-
-    std::fs::rename(&tmp_path, &path).with_context(|| {
-        format!(
-            "failed to rename {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-    durable_write::sync_parent_dir(&path)
-        .with_context(|| format!("failed to sync drafts dir for {}", path.display()))
+    // The shared helper owns the temp-file-then-rename ordering, the full fsync
+    // contract, and identity-metadata preservation when overwriting an existing
+    // draft file.
+    durable_write::atomic_write_bytes(&path, "draft", content.as_bytes())
+        .with_context(|| format!("failed to write draft: {}", path.display()))
 }
 
 /// Read a draft file's content. Returns `None` if the draft file
@@ -387,6 +401,10 @@ mod tests {
             scroll_line: 0,
             pinned: false,
         }
+    }
+
+    fn draft_path(data_dir: &Path, draft_id: &str) -> PathBuf {
+        drafts_dir(data_dir).join(format!("{draft_id}.draft"))
     }
 
     #[test]
@@ -674,6 +692,60 @@ mod tests {
         assert_eq!(
             read_draft(dir.path(), &draft_id).expect("expected operation to succeed"),
             None
+        );
+    }
+
+    #[test]
+    fn load_restore_state_skips_oversized_untitled_draft_without_deleting_it() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "untitled-large";
+        std::fs::create_dir_all(drafts_dir(dir.path())).expect("create drafts dir");
+        let draft_path = draft_path(dir.path(), draft_id);
+        let draft_file = std::fs::File::create(&draft_path).expect("create sparse draft");
+        draft_file
+            .set_len(MAX_DRAFT_PRELOAD_BYTES + 1)
+            .expect("size sparse draft");
+
+        save_manifest(
+            dir.path(),
+            &DraftManifest {
+                drafts: vec![DraftEntry {
+                    draft_id: draft_id.to_string(),
+                    original_path: None,
+                    original_mtime_secs: None,
+                    saved_at_secs: 1,
+                }],
+            },
+        )
+        .expect("save manifest");
+        session_service::save(
+            dir.path(),
+            &SessionData {
+                tabs: vec![SessionTab {
+                    path: None,
+                    draft_id: Some(draft_id.to_string()),
+                    cursor_line: 2,
+                    cursor_col: 3,
+                    scroll_line: 4,
+                    pinned: false,
+                }],
+                active_tab_index: Some(0),
+            },
+        )
+        .expect("save session");
+
+        let (manifest, session, preloaded) = load_restore_state(dir.path());
+
+        assert!(preloaded.is_empty());
+        assert_eq!(session.tabs.len(), 1, "session tab still restores");
+        assert_eq!(session.tabs[0].draft_id.as_deref(), Some(draft_id));
+        assert!(
+            manifest.find_by_id(draft_id).is_some(),
+            "manifest entry should remain available for later recovery"
+        );
+        assert!(
+            draft_path.exists(),
+            "oversized draft file must not be deleted"
         );
     }
 

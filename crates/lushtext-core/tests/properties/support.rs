@@ -40,6 +40,12 @@ pub const PROPERTY_TIMEOUT_MS: u32 = 10_000;
 pub const PROPERTY_REGRESSION_FILE: &str = "proptest-regressions/properties.txt";
 /// Maximum characters in generated single-line text fragments.
 pub const MAX_TEXT_FRAGMENT_CHARS: usize = 24;
+/// Maximum chunks in generated save-formatting documents.
+///
+/// Chunks include text, whitespace, and newline variants. Twelve keeps the
+/// mixed-line-ending surface rich without turning every property case into a
+/// large editor document.
+pub const MAX_FORMATTING_TEXT_CHUNKS: usize = 12;
 /// Maximum path components in generated relative paths.
 pub const MAX_PATH_SEGMENTS: usize = 4;
 /// Maximum elements in generated vectors used by the initial properties.
@@ -92,6 +98,16 @@ pub fn optional_text_fragment() -> impl Strategy<Value = String> {
         .prop_map(|chars| chars.into_iter().collect())
 }
 
+/// Generate bounded text for save-formatting properties.
+///
+/// This intentionally mixes empty chunks, trailing spaces, tabs, LF, CRLF, and
+/// CR separators so EditorConfig save-only rewrites see the awkward cases users
+/// create when files move between tools and platforms.
+pub fn save_formatting_text() -> impl Strategy<Value = String> {
+    prop::collection::vec(save_formatting_chunk(), 0..=MAX_FORMATTING_TEXT_CHUNKS)
+        .prop_map(|chunks| chunks.concat())
+}
+
 /// Generate a component-safe relative path suffix.
 pub fn path_suffix() -> impl Strategy<Value = PathBuf> {
     prop::collection::vec(path_segment(), 0..=MAX_PATH_SEGMENTS).prop_map(|segments| {
@@ -106,6 +122,19 @@ pub fn path_suffix() -> impl Strategy<Value = PathBuf> {
 /// Generate one path component without separators or platform-sensitive bytes.
 fn path_segment() -> impl Strategy<Value = String> {
     prop::collection::vec(path_char(), 1..=12).prop_map(|chars| chars.into_iter().collect())
+}
+
+/// Generate one chunk for a save-formatting document.
+fn save_formatting_chunk() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just(String::new()),
+        Just(" ".to_string()),
+        Just("\t".to_string()),
+        Just("\n".to_string()),
+        Just("\r\n".to_string()),
+        Just("\r".to_string()),
+        optional_text_fragment(),
+    ]
 }
 
 /// Generate a readable ASCII fragment character with no Markdown delimiters.

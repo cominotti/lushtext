@@ -7,7 +7,9 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [features]
+fuzzing = []
 property-tests = []
+test-utils = []
 
 [dependencies]
 gtk4        = { workspace = true }
@@ -58,3 +60,8 @@ harness = false
 name = "properties"
 path = "tests/properties.rs"
 required-features = ["property-tests"]
+
+[[test]]
+name = "fuzz_corpus_replay"
+path = "tests/fuzz_corpus_replay.rs"
+required-features = ["fuzzing"]

@@ -139,7 +139,9 @@ impl super::LushtextWindow {
         if session.tabs.is_empty() {
             return;
         }
-        let had_tabs_before = self.imp().tab_view.n_pages() > 0;
+        let tab_view = &self.imp().tab_view;
+        let had_tabs_before = tab_view.n_pages() > 0;
+        let selected_before_restore = tab_view.selected_page();
         self.imp().session.restoring.set(true);
 
         for tab in &session.tabs {
@@ -169,8 +171,14 @@ impl super::LushtextWindow {
             }
         }
 
-        if !had_tabs_before && let Some(idx) = session.active_tab_index {
-            let tab_view = &self.imp().tab_view;
+        if had_tabs_before {
+            // Explicit file activations can create tabs while the startup
+            // session is still loading. Restore may add older tabs after that,
+            // but it must not steal selection from the user's requested file.
+            if let Some(page) = selected_before_restore {
+                tab_view.set_selected_page(&page);
+            }
+        } else if let Some(idx) = session.active_tab_index {
             #[expect(
                 clippy::cast_sign_loss,
                 reason = "AdwTabView page counts are non-negative"

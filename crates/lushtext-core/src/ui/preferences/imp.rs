@@ -197,10 +197,23 @@ impl ObjectImpl for LushtextPreferences {
         self.setup_workspace_sidebar_width_row();
         self.setup_font_button();
         self.setup_transparency_row();
+        self.apply_accessibility_metadata();
     }
 }
 
 impl LushtextPreferences {
+    /// Keep numeric Adwaita preference rows discoverable as composite groups.
+    /// Their internal child owns the `SpinButton` role, so the row itself must
+    /// avoid the weaker presentation role that hides the control grouping.
+    fn apply_accessibility_metadata(&self) {
+        self.tab_width_row
+            .set_accessible_role(gtk4::AccessibleRole::Group);
+        self.focus_mode_target_columns_row
+            .set_accessible_role(gtk4::AccessibleRole::Group);
+        self.workspace_empty_folder_lookahead_cap_row
+            .set_accessible_role(gtk4::AccessibleRole::Group);
+    }
+
     /// Keep the workspace width preference aligned with the three named shell presets
     /// instead of exposing the raw GSettings backing value to users.
     fn setup_workspace_sidebar_width_row(&self) {

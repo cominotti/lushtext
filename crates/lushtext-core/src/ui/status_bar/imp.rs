@@ -5,6 +5,7 @@
 //! The widget keeps the left workspace toggle fixed while the metadata cluster
 //! stays limited to glanceable, document-local state.
 
+use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 
@@ -48,6 +49,31 @@ impl ObjectSubclass for LushtextStatusBar {
     }
 }
 
-impl ObjectImpl for LushtextStatusBar {}
+impl ObjectImpl for LushtextStatusBar {
+    fn constructed(&self) {
+        self.parent_constructed();
+
+        self.sidebar_toggle_button
+            .update_property(&[gtk4::accessible::Property::Label(
+                "Toggle workspace sidebar",
+            )]);
+        self.message_label.update_property(&[
+            gtk4::accessible::Property::Label("Status message"),
+            gtk4::accessible::Property::Description("Current editor status and feedback"),
+        ]);
+        self.metadata_box
+            .set_accessible_role(gtk4::AccessibleRole::Group);
+        self.metadata_box.update_property(&[
+            gtk4::accessible::Property::Label("Document metadata"),
+            gtk4::accessible::Property::Description(
+                "Line ending and text encoding controls for the active document",
+            ),
+        ]);
+        self.line_ending_button
+            .update_property(&[gtk4::accessible::Property::Label("Choose line endings")]);
+        self.encoding_button
+            .update_property(&[gtk4::accessible::Property::Label("Choose text encoding")]);
+    }
+}
 impl WidgetImpl for LushtextStatusBar {}
 impl BoxImpl for LushtextStatusBar {}

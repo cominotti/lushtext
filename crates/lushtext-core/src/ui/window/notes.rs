@@ -1027,6 +1027,10 @@ impl LushtextWindow {
         let content = browser_content_box(&dialog);
         let search_entry = gtk4::SearchEntry::new();
         search_entry.set_placeholder_text(Some(&format!("Search {WORKSPACE_SCOPE_TITLE}…")));
+        search_entry.update_property(&[
+            gtk4::accessible::Property::Label("Search bookmarks"),
+            gtk4::accessible::Property::Description("Filter bookmarks in the current workspace"),
+        ]);
         content.append(&search_entry);
 
         let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -1077,11 +1081,24 @@ impl LushtextWindow {
 
         let search_entry = gtk4::SearchEntry::new();
         search_entry.set_placeholder_text(Some(&format!("Search {WORKSPACE_SCOPE_TITLE}…")));
+        search_entry.update_property(&[
+            gtk4::accessible::Property::Label("Search notes"),
+            gtk4::accessible::Property::Description(
+                "Filter bookmarks, document notes, and workspace notes",
+            ),
+        ]);
 
         let sidebar = libadwaita::Sidebar::new();
+        sidebar.set_accessible_role(gtk4::AccessibleRole::List);
         sidebar.set_mode(libadwaita::SidebarMode::Sidebar);
         sidebar.set_vexpand(true);
         sidebar.set_placeholder(Some(&empty_browser_label("No notes match that search")));
+        sidebar.update_property(&[
+            gtk4::accessible::Property::Label("Notes results"),
+            gtk4::accessible::Property::Description(
+                "Choose a bookmark, document note, or workspace note",
+            ),
+        ]);
         let limit_label = gtk4::Label::new(None);
         limit_label.set_halign(gtk4::Align::Start);
         limit_label.set_xalign(0.0);
@@ -1111,12 +1128,14 @@ impl LushtextWindow {
         let open_button = gtk4::Button::with_label("Open");
         open_button.add_css_class("suggested-action");
         open_button.set_sensitive(false);
+        open_button.update_property(&[gtk4::accessible::Property::Label("Open selected note")]);
 
         let back_button = gtk4::Button::builder()
             .icon_name("go-previous-symbolic")
             .tooltip_text("Back to Notes")
             .visible(false)
             .build();
+        back_button.update_property(&[gtk4::accessible::Property::Label("Back to notes")]);
 
         let split_view = libadwaita::NavigationSplitView::new();
         split_view.set_min_sidebar_width(260.0);

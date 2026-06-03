@@ -43,15 +43,61 @@ use imp::{
 };
 use inline_footnotes::lower_inline_footnotes;
 
+/// Result of fuzzing Markdown preprocessing without constructing GTK widgets.
+///
+/// The fuzz target only needs to know that the preprocessing and parser setup
+/// completed. Counts keep the helper useful for sanity checks without exposing
+/// renderer internals as a stable public API.
+#[cfg(feature = "fuzzing")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FuzzedMarkdownPreprocess {
+    /// Number of pulldown-cmark events produced after preprocessing.
+    pub parser_event_count: usize,
+    /// Byte length of the Markdown text passed to the parser.
+    pub parser_input_len: usize,
+    /// Whether markdown-it-style inline footnotes were lowered first.
+    pub lowered_inline_footnotes: bool,
+}
+
+/// Run the preview's real inline-footnote lowering for feature-gated generated tests.
+///
+/// Keeping this as a narrow feature-only hook lets generated tests and fuzzing
+/// exercise the production lowering path without making the private scanner
+/// part of the normal application API.
+#[cfg(any(feature = "property-tests", feature = "fuzzing"))]
+#[must_use]
+fn lower_inline_footnotes_for_generated_test(markdown: &str) -> Option<String> {
+    lower_inline_footnotes(markdown, markdown_render_options())
+}
+
 /// Run the preview's real inline-footnote lowering for feature-gated property tests.
 ///
-/// Keeping this as a narrow feature-only hook lets generated tests exercise the
-/// production lowering path without making the private scanner part of the
-/// normal application API.
+/// This preserves the original property-test API while sharing the same
+/// generated-input hook used by fuzzing.
 #[cfg(feature = "property-tests")]
 #[must_use]
 pub fn lower_inline_footnotes_for_property_test(markdown: &str) -> Option<String> {
-    lower_inline_footnotes(markdown, markdown_render_options())
+    lower_inline_footnotes_for_generated_test(markdown)
+}
+
+/// Exercise Markdown preprocessing and parser setup for fuzz targets.
+///
+/// The helper stops before renderer code that touches `GtkTextBuffer`,
+/// `LushtextMarkdownPreview`, links, images, GSettings, or other GTK state.
+#[cfg(feature = "fuzzing")]
+#[must_use]
+pub fn preprocess_markdown_for_fuzzing(markdown: &str) -> FuzzedMarkdownPreprocess {
+    let lowered = lower_inline_footnotes_for_generated_test(markdown);
+    let lowered_inline_footnotes = lowered.is_some();
+    let parser_input = lowered.as_deref().unwrap_or(markdown);
+    let options = markdown_render_options();
+    let parser_event_count = Parser::new_ext(parser_input, options).count();
+
+    FuzzedMarkdownPreprocess {
+        parser_event_count,
+        parser_input_len: parser_input.len(),
+        lowered_inline_footnotes,
+    }
 }
 
 /// Maximum width for one rendered preview image before we scale it down.
