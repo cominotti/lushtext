@@ -22,9 +22,9 @@ Thresholds are in `services/file_limits.rs` as a `FileSizeCheck` enum:
 - `DISABLE_UNDO_HISTORY = 50_000_000` (50 MB) — disable undo
 - `REFUSE_TO_OPEN = 500_000_000` (500 MB) — refuse
 
-**Current implementation** uses `std::fs::read` + `simdutf8` for SIMD UTF-8 validation on all file sizes (not `read_to_string`). Error handling uses `LoadError` thiserror enum with `Cancelled`, `InvalidUtf8`, and `Io` variants. Load cancellation via `Arc<AtomicBool>`.
+**Current implementation** uses `services::filesystem::read::bytes` + `simdutf8` for SIMD UTF-8 validation on all file sizes. Error handling uses `LoadError` thiserror enum with `Cancelled`, `InvalidUtf8`, and `Io` variants. Load cancellation via `Arc<AtomicBool>`.
 
-The key insight: `fs::metadata` is a stat() call — fast even on network filesystems — while `read` allocates the full file into memory. Checking size first prevents the allocation entirely for files that exceed the threshold.
+The key insight: `services::filesystem::metadata` performs a lightweight stat-style query, while a full read allocates the file into memory. Checking size first prevents the allocation entirely for files that exceed the threshold.
 
 **RAM impact**: Peak memory during `apply_loaded_content` is ~2.5-3x file size: the `content` String (~1x) coexists briefly with GtkTextBuffer's internal B-tree (~1.5-2x) during `set_text()`. After `set_text` returns and `content` is dropped, steady-state is ~1.5-2x file size (buffer only). With undo enabled, add another ~1-2x for undo history that accumulates during editing.
 
@@ -89,7 +89,7 @@ Design choice: `buffer.set_modified(false)` is called only after the durable wri
 
 When a user closes a tab while a file is still loading, the background thread should stop doing work as soon as possible rather than finishing a 100MB read that nobody wants.
 
-**Current implementation**: The codebase uses whole-file `std::fs::read` + `simdutf8` (not chunked reading). Cancellation is checked before and after the read call:
+**Current implementation**: The codebase uses whole-file `services::filesystem::read::bytes` + `simdutf8` (not chunked reading). Cancellation is checked before and after the read call:
 
 ```rust
 use std::sync::Arc;
@@ -100,7 +100,7 @@ if cancel_token.load(Ordering::Relaxed) {
     return Err(LoadError::Cancelled);
 }
 
-let bytes = std::fs::read(&file_path).map_err(read_err)?;
+let bytes = filesystem::read::bytes(&file_path).map_err(read_err)?;
 
 if cancel_token.load(Ordering::Relaxed) {
     return Err(LoadError::Cancelled);

@@ -33,7 +33,7 @@ The threshold: **if the suggestion makes the code harder to read and you need a 
 | Core question | "Does this block the main thread?" | "Does this scale to large inputs?" | "Is this idiomatic and following project patterns?" |
 | Primary focus | Thread safety, frame budget | Throughput at 10x-100x, RAM budgets | Correctness, SIMD consistency, benchmarks |
 | Benchmarks | Defer to gtk-perf-scale | Owns benchmark-audit | Defer to gtk-perf-scale |
-| Example finding | `fs::write` on main thread | Missing file size check | `Result<T, String>` instead of thiserror enum |
+| Example finding | filesystem write on main thread | Missing file size check | `Result<T, String>` instead of thiserror enum |
 
 If you find a GTK threading issue, flag it but reference `gtk-responsiveness`. If you find a scaling issue, reference `gtk-perf-scale`.
 
@@ -67,7 +67,7 @@ This skill uses **parallel subagents** for independent review concerns. Do NOT r
 
 **Triggers**:
 - paths: `ui/editor_page/**/*.rs`, `services/palette.rs`
-- content: `read_to_string|fs::read|from_utf8|memchr|simdutf8`
+- content: `filesystem::read|from_utf8|memchr|simdutf8`
 
 **Subagent prompt**:
 ```
@@ -86,12 +86,12 @@ The project has established SIMD patterns that new code on similar paths should 
 IMPORTANT: Only flag SIMD issues where an ESTABLISHED project pattern is missing on a similar code path. Do NOT recommend SIMD adoption for new code paths that haven't been profiled. Do NOT flag micro allocation patterns.
 
 Review criteria:
-- Does new file-loading code use the established simdutf8 pattern (std::fs::read + simdutf8::basic::from_utf8 + from_utf8_unchecked)?
+- Does new file-loading code use the established simdutf8 pattern (`services::filesystem::read::bytes` + simdutf8 validation + `from_utf8_unchecked`)?
 - Does new search/scoring code use nucleo-matcher (the established fuzzy search pattern)?
 - For new byte-scanning code on buffers that could be >1KB: is there an existing memchr pattern it should follow?
 
 Anti-patterns to flag:
-- [FLAG] New file-loading path uses std::fs::read_to_string instead of the established simdutf8 pattern
+- [FLAG] New file-loading path uses a scalar string-read path instead of the filesystem byte-read boundary plus established simdutf8 validation
 - [FLAG] New fuzzy search code uses hand-rolled scoring instead of nucleo-matcher
 - [GOOD] nucleo-matcher used for fuzzy search with Matcher reuse across candidates
 - [GOOD] simdutf8 + from_utf8_unchecked with correct safety comment

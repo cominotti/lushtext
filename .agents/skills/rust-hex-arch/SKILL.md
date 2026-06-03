@@ -71,23 +71,25 @@ These principles override pattern-matching instinct. When in doubt, favor the si
 
 2. **Free functions are the default service boundary.** `workspace_manager::load(path)` is usually clearer than `dyn WorkspaceStore`. Only introduce a trait when multiple implementations, mock seams, or a named domain boundary justify it. See `references/port-patterns.md`.
 
-3. **`RefCell<T>` and `Cell<T>` in `imp` structs are normal.** GObject methods take `&self`; interior mutability is the standard GTK4-rs pattern, not a smell by itself.
+3. **`services::filesystem` is the filesystem adapter.** Prefer its concrete operation-family APIs over adding a virtual filesystem trait unless a change proves multiple implementations or a named testing seam is truly needed.
 
-4. **GtkSourceView, AdwTabView, TreeListModel, and ListStore are natural ports.** They already provide strong framework contracts. Do not recommend wrapping them just to satisfy an abstract architecture diagram.
+4. **`RefCell<T>` and `Cell<T>` in `imp` structs are normal.** GObject methods take `&self`; interior mutability is the standard GTK4-rs pattern, not a smell by itself.
 
-5. **`spawn_blocking_then` is the async adapter.** The GLib main loop is the event loop. Do not recommend Tokio or another async runtime for ordinary editor I/O.
+5. **GtkSourceView, AdwTabView, TreeListModel, and ListStore are natural ports.** They already provide strong framework contracts. Do not recommend wrapping them just to satisfy an abstract architecture diagram.
 
-6. **Signal closures are adapter glue, not business logic.** Thin closures that delegate immediately are good. If a closure grows beyond a few non-delegation lines, the logic likely belongs in a widget method, helper module, or service.
+6. **`spawn_blocking_then` is the async adapter.** The GLib main loop is the event loop. Do not recommend Tokio or another async runtime for ordinary editor I/O.
 
-7. **A crate boundary is stronger than a module boundary.** The existing two-crate workspace already enforces the major separation. Do not recommend more crates unless scale clearly demands it.
+7. **Signal closures are adapter glue, not business logic.** Thin closures that delegate immediately are good. If a closure grows beyond a few non-delegation lines, the logic likely belongs in a widget method, helper module, or service.
 
-8. **Not every contract needs a trait.** A function signature is already a port. Do not invent traits for single implementations with no testing or runtime polymorphism need.
+8. **A crate boundary is stronger than a module boundary.** The existing two-crate workspace already enforces the major separation. Do not recommend more crates unless scale clearly demands it.
 
-9. **Domain types in `model/` must stay framework-free.** No GTK, GLib, gio, sourceview, or UI/service imports.
+9. **Not every contract needs a trait.** A function signature is already a port. Do not invent traits for single implementations with no testing or runtime polymorphism need.
 
-10. **GLib collections belong in the UI layer.** Services should return `Vec`, `HashMap`, enums, and domain structs. Convert to `gio::ListStore` or similar at the adapter boundary.
+10. **Domain types in `model/` must stay framework-free.** No GTK, GLib, gio, sourceview, or UI/service imports.
 
-11. **Split large driving adapters by workflow before adding abstraction.** If one widget mixes unrelated flows, extract sibling modules by workflow. Prefer `search.rs`, `drafts.rs`, `runtime.rs`, `dialogs.rs`, or similar over new service traits.
+11. **GLib collections belong in the UI layer.** Services should return `Vec`, `HashMap`, enums, and domain structs. Convert to `gio::ListStore` or similar at the adapter boundary.
+
+12. **Split large driving adapters by workflow before adding abstraction.** If one widget mixes unrelated flows, extract sibling modules by workflow. Prefer `search.rs`, `drafts.rs`, `runtime.rs`, `dialogs.rs`, or similar over new service traits.
 
 12. **Repeated value shaping belongs in the domain.** If UI or services rebuild the same field bundle in multiple places, extract a value object in `model/`.
 
@@ -348,6 +350,7 @@ Check:
 
 Check:
 - I/O isolation behind clear function boundaries
+- filesystem access routed through `services::filesystem` rather than raw calls or the private durable backend
 - atomic or otherwise deliberate persistence patterns
 - no upward dependency on `ui`
 - whether a trait is actually justified per `references/port-patterns.md`

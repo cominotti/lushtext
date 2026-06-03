@@ -32,6 +32,7 @@ thiserror   = { workspace = true }
 dirs        = { workspace = true }
 libc        = { workspace = true }
 notify-debouncer-full = { workspace = true }
+rustix      = { workspace = true }
 tracing        = { workspace = true }
 nucleo-matcher = { workspace = true }
 simdutf8       = { workspace = true }
@@ -46,6 +47,7 @@ workspace = true
 
 [build-dependencies]
 glib-build-tools = "0.22"
+lushtext-build-support = { workspace = true }
 
 [dev-dependencies]
 tempfile  = { workspace = true }

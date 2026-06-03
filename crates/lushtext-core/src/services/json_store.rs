@@ -2,7 +2,7 @@
 
 //! Generic JSON file persistence: load/save any serde type to a JSON file.
 
-use crate::services::durable_write;
+use crate::services::filesystem::{WriteLabel, read, write};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -30,7 +30,7 @@ pub fn data_dir() -> std::path::PathBuf {
 /// Returns an error if the file exists but cannot be read or parsed as JSON.
 pub fn load<T: DeserializeOwned + Default>(data_dir: &Path, filename: &str) -> Result<T> {
     let path = data_dir.join(filename);
-    match std::fs::read(&path) {
+    match read::bytes(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .with_context(|| format!("failed to parse {}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
@@ -47,22 +47,23 @@ pub fn load<T: DeserializeOwned + Default>(data_dir: &Path, filename: &str) -> R
 /// Returns an error if the parent directory cannot be created, the value cannot
 /// be serialized, or the temp file cannot be flushed, synced, or renamed.
 pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<()> {
-    durable_write::create_dir_all_durable(data_dir)
+    write::create_dir_all_durable(data_dir)
         .with_context(|| format!("failed to create {}", data_dir.display()))?;
     let path = data_dir.join(filename);
     // The shared helper owns the temp-file-then-rename ordering, the full fsync
     // contract, and identity-metadata preservation. Streaming JSON avoids a
     // second full-sized allocation for large state files.
-    durable_write::atomic_write_stream_classified(&path, "json", |writer| {
+    write::atomic_replace_stream(&path, WriteLabel::JSON, |writer| {
         serde_json::to_writer_pretty(writer, value).map_err(std::io::Error::other)
     })
-    .map_err(durable_write::DurableWriteError::into_io_error)
+    .map_err(write::DurableWriteError::into_io_error)
     .with_context(|| format!("failed to write {}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use serde::{Deserialize, Serialize};
     use tempfile::TempDir;
 
@@ -96,8 +97,7 @@ mod tests {
     #[test]
     fn test_load_malformed_json_returns_error() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(dir.path().join("bad.json"), "not valid json {{{")
-            .expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("bad.json"), "not valid json {{{");
         let result: Result<TestData> = load(dir.path(), "bad.json");
         assert!(result.is_err());
     }
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn test_load_non_file_path_returns_error() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join("data.json")).expect("expected operation to succeed");
+        fixture::create_dir(&dir.path().join("data.json"));
 
         let error: Result<TestData> = load(dir.path(), "data.json");
 
@@ -157,8 +157,7 @@ mod tests {
             value: 99,
         };
         save(dir.path(), "data.json", &data).expect("expected operation to succeed");
-        let content = std::fs::read_to_string(dir.path().join("data.json"))
-            .expect("expected operation to succeed");
+        let content = fixture::read_text(&dir.path().join("data.json"));
         assert!(content.contains('\n'));
     }
 

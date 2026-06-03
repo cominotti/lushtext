@@ -5,6 +5,10 @@
 //! In Flatpak builds, Meson compiles and installs GResources separately.
 //! This build.rs handles the dev-build case so `cargo run` works directly.
 
+use std::path::Path;
+
+use lushtext_build_support::filesystem as build_fs;
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -13,7 +17,7 @@ fn main() {
     let resource_xml = format!("{resource_dir}/dev.cominotti.lushtext.gresource.xml");
 
     // Only compile resources if the XML exists (skip during early scaffold)
-    if std::path::Path::new(&resource_xml).exists() {
+    if build_fs::exists(Path::new(&resource_xml)) {
         glib_build_tools::compile_resources(
             &[resource_dir, data_dir],
             &resource_xml,
@@ -28,7 +32,7 @@ fn main() {
     if std::env::var("LUSHTEXT_PKGDATADIR").is_err() {
         let schema_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data");
         let schema_file = format!("{schema_dir}/dev.cominotti.lushtext.gschema.xml");
-        if std::path::Path::new(&schema_file).exists() {
+        if build_fs::exists(Path::new(&schema_file)) {
             let status = std::process::Command::new("glib-compile-schemas")
                 .arg(schema_dir)
                 .status()

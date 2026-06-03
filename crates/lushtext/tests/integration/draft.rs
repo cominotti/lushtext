@@ -8,6 +8,7 @@
 use super::common::TestContext;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::services::draft_service;
+use lushtext_core::services::filesystem::fixture;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -134,8 +135,7 @@ fn cleanup_removes_manifest_entries_without_draft_files() {
     };
 
     // Create the drafts directory but NOT the draft file
-    std::fs::create_dir_all(draft_service::drafts_dir(ctx.data_dir()))
-        .expect("expected operation to succeed");
+    fixture::create_dir_all(&draft_service::drafts_dir(ctx.data_dir()));
 
     let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest)
         .expect("expected operation to succeed");

@@ -61,11 +61,11 @@ The benchmark file at `crates/lushtext-core/benches/benchmarks.rs` (single file,
 | `scan_directory` | `file_tree::scan_directory()` | 10k entries |
 | `json_persistence` | `workspace_manager`, `json_store` | 10 workspaces, 50 tabs |
 | `file_size_classify` | `FileSizeCheck::classify()` | 5 size buckets |
-| `utf8_validation` | `read_to_string` vs `read` + `simdutf8` | 1/5/10/50 MB |
+| `utf8_validation` | filesystem text read vs filesystem byte read + `simdutf8` | 1/5/10/50 MB |
 
 ### Known Gaps
 
-**File save path** — The save path's `buffer.text().to_string()` + `std::fs::write` is unbenchmarked. Since the GtkTextBuffer part requires GTK initialization, benchmark only the Rust portion (fs::write at 1/5/10/50 MB).
+**File save path** — The save path's `buffer.text().to_string()` + filesystem write boundary is unbenchmarked. Since the GtkTextBuffer part requires GTK initialization, benchmark only the Rust portion (`services::filesystem::write` at 1/5/10/50 MB).
 
 ---
 

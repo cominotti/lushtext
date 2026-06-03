@@ -93,24 +93,6 @@ impl std::fmt::Display for DurableWriteError {
 
 impl std::error::Error for DurableWriteError {}
 
-/// Atomically replace `path` with `bytes`, preserving the destination's identity
-/// metadata, and sync the renamed directory entry.
-///
-/// This is the flattening wrapper around [`atomic_write_bytes_classified`] for
-/// callers that do not need the before/after-rename distinction.
-///
-/// **Threading:** Performs blocking filesystem calls. Call from a background
-/// thread unless it is part of a synchronous shutdown safety path.
-///
-/// # Errors
-///
-/// Returns an error if the temp file cannot be written and synced, the
-/// destination metadata cannot be reapplied, the rename fails, or the parent
-/// directory cannot be synced after the rename.
-pub fn atomic_write_bytes(path: &Path, tmp_tag: &str, bytes: &[u8]) -> std::io::Result<()> {
-    atomic_write_bytes_classified(path, tmp_tag, bytes).map_err(DurableWriteError::into_io_error)
-}
-
 /// Atomically replace `path` with `bytes`, classifying any failure by phase.
 ///
 /// The full durability contract runs in order: write the bytes to a uniquely
@@ -127,6 +109,11 @@ pub fn atomic_write_bytes(path: &Path, tmp_tag: &str, bytes: &[u8]) -> std::io::
 /// Returns [`DurableWriteError::BeforeRename`] when the destination's previous
 /// bytes are still intact, or [`DurableWriteError::AfterRename`] when the new
 /// bytes are in place but the directory `fsync` failed.
+#[cfg(test)]
+fn atomic_write_bytes(path: &Path, tmp_tag: &str, bytes: &[u8]) -> std::io::Result<()> {
+    atomic_write_bytes_classified(path, tmp_tag, bytes).map_err(DurableWriteError::into_io_error)
+}
+
 pub fn atomic_write_bytes_classified(
     path: &Path,
     tmp_tag: &str,

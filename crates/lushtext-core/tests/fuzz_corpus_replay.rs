@@ -6,13 +6,15 @@
 //! run through ordinary stable Rust test tooling. They do not discover inputs,
 //! minimize crashes, or write fuzz artifacts.
 
-use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use lushtext_core::fuzzing::{
     exercise_editor_bytes_for_fuzzing, exercise_markdown_for_fuzzing,
     exercise_operation_script_for_fuzzing,
+};
+use lushtext_core::services::filesystem::{
+    DirectoryScanPolicy, FileKind, read as fs_read, tree as fs_tree,
 };
 
 /// Relative path from the `lushtext-core` crate to the reviewable corpus root.
@@ -44,7 +46,7 @@ fn replay_corpus<T>(target: &str, mut replay_seed: impl FnMut(&[u8]) -> T) {
     );
 
     for seed in seeds {
-        let bytes = fs::read(&seed).unwrap_or_else(|error| {
+        let bytes = fs_read::bytes(&seed).unwrap_or_else(|error| {
             panic!("failed to read corpus seed `{}`: {error}", seed.display())
         });
         let result = panic::catch_unwind(AssertUnwindSafe(|| replay_seed(&bytes)));
@@ -71,12 +73,11 @@ fn corpus_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 
 /// Recursively walk one corpus directory without depending on extra crates.
 fn collect_corpus_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
+    for entry in fs_tree::scan_directory(dir, DirectoryScanPolicy::visible_workspace())? {
+        let path = entry.path;
+        if entry.kind == FileKind::Directory {
             collect_corpus_files(&path, files)?;
-        } else if path.is_file() {
+        } else if entry.kind == FileKind::File {
             files.push(path);
         }
     }

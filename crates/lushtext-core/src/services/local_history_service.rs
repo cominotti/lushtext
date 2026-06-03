@@ -19,7 +19,15 @@ use crate::model::local_history::{
     LocalHistorySnapshotOrigin,
 };
 use crate::model::sidecar_identity::{DocumentSidecarIdentity, stable_bytes_hash};
-use crate::services::{durable_write, editor_io, file_limits::FileSizeCheck, json_store};
+use crate::services::{
+    editor_io,
+    file_limits::FileSizeCheck,
+    filesystem::{
+        DirectoryScanPolicy, FileKind, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
+        read as fs_read, tree as fs_tree, write as fs_write,
+    },
+    json_store,
+};
 
 /// Directory name that stores one local-history lineage per saved document.
 const LOCAL_HISTORY_DIR: &str = "local-history";
@@ -113,8 +121,7 @@ pub fn local_history_dir(data_dir: &Path) -> PathBuf {
 /// Returns an error if the path cannot be canonicalized.
 pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
     let display_path = path.to_path_buf();
-    let canonical_path = path
-        .canonicalize()
+    let canonical_path = fs_metadata::canonical_path(path)
         .with_context(|| format!("failed to canonicalize {}", path.display()))?;
     Ok(DocumentSidecarIdentity::from_paths(
         display_path,
@@ -201,7 +208,7 @@ pub fn load_snapshot_for_path(
     };
 
     let snapshot_path = snapshot_path(&document_dir(data_dir, &identity), &meta.snapshot_id);
-    let text = std::fs::read_to_string(&snapshot_path)
+    let text = fs_read::text(&snapshot_path)
         .with_context(|| format!("failed to read {}", snapshot_path.display()))?;
     Ok(Some(LocalHistorySnapshot { meta, text }))
 }
@@ -218,7 +225,7 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
         .lock()
         .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
     let base_dir = local_history_dir(data_dir);
-    if !base_dir.exists() {
+    if fs_metadata::file_facts(&base_dir).is_err() {
         return Ok(0);
     }
 
@@ -285,7 +292,7 @@ fn capture_snapshot_for_identity_locked(
 
     let meta = LocalHistorySnapshotMeta::new(origin, normalized.len() as u64, content_hash.clone());
     let doc_dir = document_dir(data_dir, &identity);
-    durable_write::create_dir_all_durable(&doc_dir)
+    fs_write::create_dir_all_durable(&doc_dir)
         .with_context(|| format!("failed to create {}", doc_dir.display()))?;
     editor_io::write_snapshot_to_path(&snapshot_path(&doc_dir, &meta.snapshot_id), &normalized)
         .map(|_| ())
@@ -350,7 +357,7 @@ fn trim_document_to_retention(
 
 fn enforce_global_retention_locked(data_dir: &Path, retention: RetentionPolicy) -> Result<()> {
     let base_dir = local_history_dir(data_dir);
-    if !base_dir.exists() {
+    if fs_metadata::file_facts(&base_dir).is_err() {
         return Ok(());
     }
 
@@ -385,7 +392,7 @@ fn enforce_global_retention_locked(data_dir: &Path, retention: RetentionPolicy) 
 
     for (index, loaded) in documents.iter_mut().enumerate() {
         let Some(keep_ids) = keep_by_document.get(&index) else {
-            let _ = std::fs::remove_dir_all(&loaded.dir);
+            let _ = fs_mutate::remove_dir_all_if_exists(&loaded.dir);
             continue;
         };
 
@@ -405,7 +412,7 @@ fn enforce_global_retention_locked(data_dir: &Path, retention: RetentionPolicy) 
             .snapshots
             .retain(|meta| keep_ids.contains(&meta.snapshot_id));
         if loaded.document.snapshots.is_empty() {
-            let _ = std::fs::remove_dir_all(&loaded.dir);
+            let _ = fs_mutate::remove_dir_all_if_exists(&loaded.dir);
             continue;
         }
 
@@ -418,12 +425,11 @@ fn enforce_global_retention_locked(data_dir: &Path, retention: RetentionPolicy) 
 
 fn load_all_documents_from_base(base_dir: &Path) -> Result<Vec<LoadedHistoryDocument>> {
     let mut documents = Vec::new();
-    for entry in std::fs::read_dir(base_dir)
+    for entry in fs_tree::scan_directory(base_dir, DirectoryScanPolicy::visible_workspace())
         .with_context(|| format!("failed to read {}", base_dir.display()))?
     {
-        let entry = entry.with_context(|| format!("failed to iterate {}", base_dir.display()))?;
-        let path = entry.path();
-        if !path.is_dir() {
+        let path = entry.path;
+        if entry.kind != FileKind::Directory {
             continue;
         }
 
@@ -454,12 +460,12 @@ fn migrate_loaded_document(
         return Ok(());
     }
 
-    if !target_dir.exists() {
+    if fs_metadata::file_facts(&target_dir).is_err() {
         if let Some(parent) = target_dir.parent() {
-            durable_write::create_dir_all_durable(parent)
+            fs_write::create_dir_all_durable(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        durable_write::rename_durable(&loaded.dir, &target_dir).with_context(|| {
+        fs_write::rename_durable(&loaded.dir, &target_dir).with_context(|| {
             format!(
                 "failed to move {} to {}",
                 loaded.dir.display(),
@@ -485,11 +491,11 @@ fn migrate_loaded_document(
     for meta in &loaded.document.snapshots {
         let from = snapshot_path(&loaded.dir, &meta.snapshot_id);
         let to = snapshot_path(&target_dir, &meta.snapshot_id);
-        if !from.exists() || to.exists() {
+        if fs_metadata::file_facts(&from).is_err() || fs_metadata::file_facts(&to).is_ok() {
             continue;
         }
-        durable_write::rename_durable(&from, &to)
-            .or_else(|_| durable_write::copy_file_durable(&from, &to, "local-history-copy"))
+        fs_write::rename_durable(&from, &to)
+            .or_else(|_| fs_write::copy_file_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY))
             .with_context(|| {
                 format!(
                     "failed to move snapshot {} to {}",
@@ -507,7 +513,7 @@ fn migrate_loaded_document(
     target_document.sort_newest_first();
     trim_document_to_retention(&target_dir, &mut target_document, PER_DOCUMENT_SNAPSHOT_CAP);
     save_document_index(&target_dir, &target_document)?;
-    let _ = std::fs::remove_dir_all(&loaded.dir);
+    let _ = fs_mutate::remove_dir_all_if_exists(&loaded.dir);
     loaded.dir = target_dir;
     loaded.document = target_document;
     Ok(())
@@ -521,9 +527,7 @@ fn deduplicate_snapshot_ids(snapshots: &mut Vec<LocalHistorySnapshotMeta>) {
 fn remove_snapshot_files(document_dir: &Path, snapshots: &[LocalHistorySnapshotMeta]) {
     for meta in snapshots {
         let path = snapshot_path(document_dir, &meta.snapshot_id);
-        if let Err(error) = std::fs::remove_file(&path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
+        if let Err(error) = fs_mutate::remove_file_if_exists(&path) {
             tracing::warn!(
                 "Failed to delete pruned history snapshot {}: {error}",
                 path.display()
@@ -549,9 +553,8 @@ fn rebase_identity_paths(
         } else {
             new_path.join(suffix)
         };
-        let canonical_path = display_path
-            .canonicalize()
-            .unwrap_or_else(|_| display_path.clone());
+        let canonical_path =
+            fs_metadata::canonical_path(&display_path).unwrap_or_else(|_| display_path.clone());
         return Some((display_path, canonical_path));
     }
 
@@ -567,9 +570,8 @@ fn rebase_identity_paths(
         } else {
             new_path.join(suffix)
         };
-        let canonical_path = display_path
-            .canonicalize()
-            .unwrap_or_else(|_| display_path.clone());
+        let canonical_path =
+            fs_metadata::canonical_path(&display_path).unwrap_or_else(|_| display_path.clone());
         return Some((display_path, canonical_path));
     }
 
@@ -577,7 +579,7 @@ fn rebase_identity_paths(
 }
 
 fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
-    match std::fs::read(path) {
+    match fs_read::bytes(path) {
         Ok(bytes) => {
             let value = serde_json::from_slice(&bytes)
                 .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -605,13 +607,14 @@ mod tests {
 
     use super::*;
     use crate::services::file_limits::FileSizeCheck;
+    use crate::services::filesystem::fixture;
 
     fn seed_file(dir: &TempDir, rel: &str, content: &str) -> PathBuf {
         let path = dir.path().join(rel);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create parent");
+            fixture::create_dir_all(parent);
         }
-        std::fs::write(&path, content).expect("write file");
+        fixture::write_text(&path, content);
         path
     }
 
@@ -828,7 +831,7 @@ mod tests {
             "oldest metadata should be trimmed"
         );
         assert!(
-            !snapshot_path(&doc_dir, &first_meta.snapshot_id).exists(),
+            fs_metadata::file_facts(&snapshot_path(&doc_dir, &first_meta.snapshot_id)).is_err(),
             "oldest snapshot file should be deleted with its metadata"
         );
     }
@@ -892,12 +895,15 @@ mod tests {
         assert_eq!(second_snapshots.len(), 1);
         assert_eq!(third_snapshots.len(), 1);
         assert!(
-            !first_doc_dir.exists(),
+            fs_metadata::file_facts(&first_doc_dir).is_err(),
             "empty pruned lineage should be removed"
         );
         assert_eq!(stable_bytes_hash(b"b1\n"), second_snapshots[0].content_hash);
         assert_eq!(stable_bytes_hash(b"c1\n"), third_snapshots[0].content_hash);
-        assert!(!snapshot_path(&first_doc_dir, &first_meta.snapshot_id).exists());
+        assert!(
+            fs_metadata::file_facts(&snapshot_path(&first_doc_dir, &first_meta.snapshot_id))
+                .is_err()
+        );
         assert_eq!(
             load_snapshot_for_path(dir.path(), &second, &second_meta.snapshot_id)
                 .expect("load kept second")
@@ -1001,7 +1007,7 @@ mod tests {
         .expect("capture history");
 
         let new_path = dir.path().join("workspace/new.txt");
-        std::fs::rename(&old_path, &new_path).expect("rename file");
+        fixture::rename(&old_path, &new_path);
         let migrated = move_path_tree(dir.path(), &old_path, &new_path).expect("move tree");
 
         assert_eq!(migrated, 1);
@@ -1050,13 +1056,15 @@ mod tests {
         .expect("capture target snapshot");
 
         let old_doc_dir = history_dir_for_path(dir.path(), &old_path);
-        std::fs::remove_file(snapshot_path(&old_doc_dir, &missing_meta.snapshot_id))
-            .expect("remove one source snapshot to simulate partial lineage");
+        fixture::remove_file(&snapshot_path(&old_doc_dir, &missing_meta.snapshot_id));
 
         let migrated = move_path_tree(dir.path(), &old_path, &new_path).expect("move tree");
 
         assert_eq!(migrated, 1);
-        assert!(!old_doc_dir.exists(), "source lineage should be removed");
+        assert!(
+            fs_metadata::file_facts(&old_doc_dir).is_err(),
+            "source lineage should be removed"
+        );
         let snapshots = list_snapshots_for_path(dir.path(), &new_path).expect("list merged");
         assert!(
             snapshots
@@ -1122,11 +1130,11 @@ mod tests {
             content_hash: "missing".to_string(),
         };
         let present_path = snapshot_path(dir.path(), &present.snapshot_id);
-        std::fs::write(&present_path, "body").expect("write snapshot");
+        fixture::write_text(&present_path, "body");
 
         remove_snapshot_files(dir.path(), &[present, missing]);
 
-        assert!(!present_path.exists());
+        assert!(fs_metadata::file_facts(&present_path).is_err());
     }
 
     #[test]

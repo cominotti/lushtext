@@ -21,6 +21,12 @@
   color: @dim_label_color;
 }
 
+/* Status message lane: pulsing this wrapper highlights the whole message area,
+   including empty space after short messages, while leaving controls untouched. */
+.status-bar .status-message-area {
+  background-color: transparent;
+}
+
 /* Message severity — uses Adwaita semantic colors, adapts to light/dark */
 .status-bar .status-info {
   color: @accent_color;
@@ -32,6 +38,78 @@
 
 .status-bar .status-error {
   color: @error_color;
+}
+
+.status-bar .status-message-area.status-pulse-info.status-pulse-a {
+  animation: status-message-info-pulse-a 420ms ease-out;
+}
+
+.status-bar .status-message-area.status-pulse-info.status-pulse-b {
+  animation: status-message-info-pulse-b 420ms ease-out;
+}
+
+.status-bar .status-message-area.status-pulse-warning.status-pulse-a {
+  animation: status-message-warning-pulse-a 420ms ease-out;
+}
+
+.status-bar .status-message-area.status-pulse-warning.status-pulse-b {
+  animation: status-message-warning-pulse-b 420ms ease-out;
+}
+
+.status-bar .status-message-area.status-pulse-error.status-pulse-a {
+  animation: status-message-error-pulse-a 420ms ease-out;
+}
+
+.status-bar .status-message-area.status-pulse-error.status-pulse-b {
+  animation: status-message-error-pulse-b 420ms ease-out;
+}
+
+.status-bar .status-message-area.status-pulse-info .status-message-label {
+  color: @accent_fg_color;
+}
+
+.status-bar .status-message-area.status-pulse-warning .status-message-label {
+  color: var(--warning-fg-color);
+}
+
+.status-bar .status-message-area.status-pulse-error .status-message-label {
+  color: var(--error-fg-color);
+}
+
+@keyframes status-message-info-pulse-a {
+  0% { background-color: alpha(@accent_bg_color, 0.72); }
+  55% { background-color: alpha(@accent_bg_color, 0.34); }
+  100% { background-color: transparent; }
+}
+
+@keyframes status-message-info-pulse-b {
+  0% { background-color: alpha(@accent_bg_color, 0.72); }
+  55% { background-color: alpha(@accent_bg_color, 0.34); }
+  100% { background-color: transparent; }
+}
+
+@keyframes status-message-warning-pulse-a {
+  0% { background-color: var(--warning-bg-color); }
+  55% { background-color: var(--warning-bg-color); }
+  100% { background-color: transparent; }
+}
+
+@keyframes status-message-warning-pulse-b {
+  0% { background-color: var(--warning-bg-color); }
+  55% { background-color: var(--warning-bg-color); }
+  100% { background-color: transparent; }
+}
+
+@keyframes status-message-error-pulse-a {
+  0% { background-color: var(--error-bg-color); }
+  55% { background-color: var(--error-bg-color); }
+  100% { background-color: transparent; }
+}
+
+@keyframes status-message-error-pulse-b {
+  0% { background-color: var(--error-bg-color); }
+  55% { background-color: var(--error-bg-color); }
+  100% { background-color: transparent; }
 }
 
 /* Editor inline alerts replace GtkInfoBar with supported GTK widgets while

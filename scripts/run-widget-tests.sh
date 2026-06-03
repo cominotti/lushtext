@@ -3,7 +3,6 @@
 
 set -euo pipefail
 
-MODE="auto"
 RETRIES=0
 MONITOR="2560x1600"
 TEST_ARGS=()
@@ -12,15 +11,12 @@ WIDGET_WARNING_REGEX='(warning:|WARNING|CRITICAL|Gdk-Message:|Broken pipe|cannot
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-widget-tests.sh [--auto|--native|--headless] [--retries N] [--monitor WxH] [-- [test-binary-args...]]
+Usage: scripts/run-widget-tests.sh [--headless] [--retries N] [--monitor WxH] [-- [test-binary-args...]]
 
-Run the LushText widget test harness either against the current desktop session
-or under a transient Mutter headless compositor.
+Run the LushText widget test harness under a transient Mutter headless compositor.
+The harness intentionally has no native/live-display mode.
 
 Options:
-  --auto        Use the current display when available, otherwise fall back to
-                headless mode if Mutter and dbus-run-session are installed.
-  --native      Require an existing display server and run the harness directly.
   --headless    Always run under `mutter --headless`.
   --retries N   Retry the full harness up to N times after the first failure.
   --monitor WxH Virtual monitor size for headless runs (default: 2560x1600).
@@ -37,10 +33,6 @@ require_command() {
         echo "Error: '$command_name' is required for widget test execution." >&2
         exit 1
     fi
-}
-
-has_live_display() {
-    [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]]
 }
 
 export_widget_test_env() {
@@ -98,11 +90,6 @@ run_with_widget_log() {
     return "$status"
 }
 
-run_native() {
-    export_widget_test_env
-    run_with_widget_log cargo test -p lushtext --test widget -- "${TEST_ARGS[@]}"
-}
-
 run_headless() {
     require_command dbus-run-session
     require_command mutter
@@ -113,7 +100,9 @@ run_headless() {
     if (
         export XDG_RUNTIME_DIR="$runtime_dir"
         export GDK_BACKEND=wayland
+        export LUSHTEXT_WIDGET_HEADLESS_RUNNER=1
         export_widget_test_env
+        unset DISPLAY WAYLAND_DISPLAY
         run_with_widget_log \
             dbus-run-session -- \
             mutter --headless --wayland --no-x11 --virtual-monitor "$MONITOR" -- \
@@ -128,52 +117,18 @@ run_headless() {
 }
 
 run_once() {
-    case "$MODE" in
-        auto)
-            if has_live_display; then
-                echo "Running widget tests against the current display session..."
-                run_native
-            elif command -v dbus-run-session >/dev/null 2>&1 && command -v mutter >/dev/null 2>&1; then
-                echo "No live display detected; running widget tests under mutter --headless..."
-                run_headless
-            else
-                echo "Error: no display server detected and headless prerequisites are missing." >&2
-                echo "Install 'mutter' and 'dbus-run-session', or rerun inside a live desktop session." >&2
-                exit 1
-            fi
-            ;;
-        native)
-            if ! has_live_display; then
-                echo "Error: --native requires DISPLAY or WAYLAND_DISPLAY to be set." >&2
-                exit 1
-            fi
-            echo "Running widget tests against the current display session..."
-            run_native
-            ;;
-        headless)
-            echo "Running widget tests under mutter --headless..."
-            run_headless
-            ;;
-        *)
-            echo "Error: unknown mode '$MODE'." >&2
-            exit 1
-            ;;
-    esac
+    echo "Running widget tests under mutter --headless..."
+    run_headless
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --auto)
-            MODE="auto"
-            shift
-            ;;
-        --native)
-            MODE="native"
-            shift
-            ;;
         --headless)
-            MODE="headless"
             shift
+            ;;
+        --auto|--native)
+            echo "Error: '$1' was removed; widget tests are headless-only." >&2
+            exit 1
             ;;
         --retries)
             [[ $# -lt 2 ]] && { echo "Error: --retries requires a value." >&2; exit 1; }

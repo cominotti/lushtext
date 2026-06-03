@@ -15,6 +15,9 @@ Important repo facts:
 - `crates/lushtext/tests/widget.rs` is a custom single-threaded harness, not the default libtest runner.
 - Each widget test runs in its own child process via `LUSHTEXT_WIDGET_CHILD`.
 - The harness supports `--list --format terse`, which matters for nextest-style discovery.
+- Non-list harness executions self-supervise into a private `mutter --headless`
+  session before GTK initializes, so plain Cargo and Makefile runs cannot place
+  widget windows on the developer's live desktop.
 - `crates/lushtext/tests/widget/common.rs` already sets up GTK, GResources, in-memory GSettings, isolated data dirs, and unique application IDs.
 
 Prefer the existing helpers:
@@ -27,17 +30,18 @@ use crate::common::{ensure_gtk_init, test_application, test_window};
 
 Prefer `mutter --headless` for GTK4 and Libadwaita:
 
-Use `scripts/run-widget-tests.sh --headless` or `make test-widget-headless` when possible so CI and local repro share the same wrapper, retry policy, and monitor size.
+Use `scripts/run-widget-tests.sh --headless` or `make test-widget-headless` when possible so CI and local repro share the same wrapper, retry policy, and monitor size. Plain `cargo test --test widget` is still Cargo-visible by default, but it must re-launch itself into headless Mutter before running tests.
 
 ```bash
 export XDG_RUNTIME_DIR="$(mktemp -d)"
 export GDK_BACKEND=wayland
+export LUSHTEXT_WIDGET_HEADLESS_RUNNER=1
 dbus-run-session -- \
   mutter --headless --wayland --no-x11 --virtual-monitor 2560x1600 -- \
     cargo test --test widget
 ```
 
-Use `make test-widget` when a display server is already available.
+Never run widget tests against a live display server. The runner intentionally rejects native/live-display modes.
 
 The shared runner and widget harness default `GSK_RENDERER` to `cairo`. This
 keeps CI on GTK's CPU fallback renderer so a headless Fedora container does not
@@ -70,6 +74,12 @@ Use predicates tied to visible behavior:
 - selected page changed
 - a label or title updated
 - a `Cell` flag in the widget `imp()` flipped
+
+For local-history browser tests, remember that the "Before edits" baseline is
+captured on the first modified transition, not when the file load completes. If
+the test relies on browser row ordering, modify the buffer first and then wait
+until the stored metadata/text proves the baseline and target snapshot are in the
+expected rows.
 
 ## Visibility and Realization Traps
 

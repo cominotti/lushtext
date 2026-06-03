@@ -52,7 +52,7 @@ fn constructed(&self) {
     let window = self.obj().clone();
     self.sidebar.connect_file_activated(move |path| {
         if path.extension().map_or(false, |e| SUPPORTED_EXTENSIONS.contains(&e.to_str().unwrap())) {
-            let content = std::fs::read_to_string(&path).unwrap();
+            let content = filesystem::read::text(&path).unwrap();
             if content.len() > MAX_FILE_SIZE {
                 window.show_error("File too large");
             } else {
@@ -100,7 +100,7 @@ Anything that doesn't need a GTK type to operate belongs in services:
 ```rust
 // services/session_service.rs
 pub fn filter_existing_tabs(data: &mut SessionData) {
-    data.tabs.retain(|tab| tab.path.exists());
+    data.tabs.retain(|tab| filesystem::metadata::file_facts(&tab.path).is_ok());
     if let Some(ref active) = data.active_tab {
         if !data.tabs.iter().any(|t| t.path == *active) {
             data.active_tab = None;

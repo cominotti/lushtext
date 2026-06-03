@@ -61,7 +61,7 @@ Every finding is anchored to a grep match, validated through a binary decision t
 ## Definitions
 
 - **Persistence operation**: Write to `$XDG_DATA_HOME/lushtext/` (drafts, session, workspaces, search history, saved searches) or GSettings.
-- **Atomic write**: Unique temp path in the target directory + temp-file flush/sync + rename + parent-directory sync. Final path is always fully old or fully new, and the renamed directory entry is durable before success is reported on common Linux filesystems.
+- **Atomic write**: Unique temp path in the target directory + temp-file flush/sync + rename + parent-directory sync through `services::filesystem::write`. Final path is always fully old or fully new, and the renamed directory entry is durable before success is reported on common Linux filesystems.
 - **Fire-and-forget cleanup**: `std::thread::spawn` that ONLY deletes temp files — no manifest or data writes.
 - **Optimistic state clear**: Setting a flag to "clean" BEFORE the async operation completes.
 - **Data loss (flaggable)**: User content (buffer text, file content, draft) permanently unrecoverable. Metadata loss (cursor position, window size) is not flagged.
@@ -100,9 +100,9 @@ Launch subagents in parallel via the Agent tool. Skip any whose normalized suffi
 |---|---|---|
 | `draft-integrity` | `services/draft_service.rs`, `ui/window/drafts.rs`, `ui/window/documents.rs`, `ui/editor_page/**` | `set_draft_dirty`, `draft_dirty`, `write_draft`, `save_manifest`, `find_by_id`, `original_path`, `is_evicted`, `autosave_inflight`, `autosave_pending` |
 | `close-flow` | `ui/window/imp.rs`, `ui/window/mod.rs`, `ui/window/dialogs.rs`, `ui/window/tabs.rs`, `ui/editor_page/mod.rs` | `close_page_finish`, `save_file_async`, `is_saving`, `SaveInProgress`, `cleanup_drafts`, `on_done(true)`, `.destroy()`, `search_panel.close()` |
-| `atomic-write` | `ui/**/*.rs`, `services/**/*.rs` | `std::thread::spawn`, `spawn_blocking_then`, `json_store::save`, `save_manifest`, `fs::write`, `write_all`, `rename`, `sync_all`, `sync_data`, `release_slot` |
+| `atomic-write` | `ui/**/*.rs`, `services/**/*.rs` | `std::thread::spawn`, `spawn_blocking_then`, `json_store::save`, `save_manifest`, `filesystem::write`, `write_all`, `rename`, `sync_all`, `sync_data`, `release_slot` |
 | `replace-safety` | `services/content_search/**`, `ui/search_panel/**`, `ui/window/search.rs` | `undo_backup`, `skip_paths`, `apply_replacements`, `original_line`, `content_mismatch` |
-| `restore-lifecycle` | `services/session_service.rs`, `ui/window/session_persistence.rs`, `ui/window/drafts.rs`, `ui/window/mod.rs`, `ui/editor_page/mod.rs` | `load_completed_callback`, `timeout_add_local_once`, `preloaded_drafts`, `filter_existing_tabs`, `path.exists()`, `set_restore_position`, `apply_restore_position`, `save_ordered` |
+| `restore-lifecycle` | `services/session_service.rs`, `ui/window/session_persistence.rs`, `ui/window/drafts.rs`, `ui/window/mod.rs`, `ui/editor_page/mod.rs` | `load_completed_callback`, `timeout_add_local_once`, `preloaded_drafts`, `filter_existing_tabs`, direct path-existence probes, `set_restore_position`, `apply_restore_position`, `save_ordered` |
 
 If a future feature moves code into a different crate or package but preserves the normalized suffix and/or hits the same content hints, the same subagent must still trigger.
 
@@ -207,8 +207,8 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > **Patterns to check:**
 >
 > **AW-1: Non-atomic write for persistent data**
-> Grep: `fs::write` or `write_all` in functions that write to persistent paths
-> Tree: Writing to a persistent path (under `data_dir()` or similar)? → No: SAFE. Uses durable temp-file sync + rename + parent-directory sync pattern? → Yes: SAFE.
+> Grep: direct raw writes, `write_all`, or non-durable `filesystem::write::write_bytes` in functions that write to persistent paths
+> Tree: Writing to a persistent path (under `data_dir()` or similar)? → No: SAFE. Uses `filesystem::write::atomic_replace`, `atomic_replace_stream`, or another durable temp-file sync + rename + parent-directory sync pattern? → Yes: SAFE.
 > FLAG HIGH: "Direct write to persistent file without atomic temp+rename. Crash during write corrupts file."
 >
 > **AW-2: Persistence I/O via raw thread::spawn**
@@ -223,12 +223,12 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 >
 > **AW-4: Temp file, metadata, or renamed directory entry not flushed before completion**
 > Grep: `rename` in atomic write functions (e.g., `json_store::save`, `write_draft`)
-> Tree: Is content flushed before metadata is applied? → Yes: continue. Is required metadata applied before the final temp-file sync? → Yes: continue. Is `sync_all()` or `sync_data()` called on the temp file after metadata and before rename? → No: FLAG. After successful rename, is the parent directory synced (for example through `durable_write::sync_parent_dir`)? → Yes: SAFE.
+> Tree: Is content flushed before metadata is applied? → Yes: continue. Is required metadata applied before the final temp-file sync? → Yes: continue. Is `sync_all()` or `sync_data()` called on the temp file after metadata and before rename? → No: FLAG. After successful rename, is the parent directory synced (for example through `filesystem::write::sync_parent_dir`)? → Yes: SAFE.
 > FLAG HIGH: "Atomic write missing final temp-file sync after metadata or parent-directory sync. Power loss on ext4/XFS/Btrfs can lose the new bytes, required metadata, or renamed directory entry."
 >
 > **AW-5: Shared temp path for concurrent writers**
-> Grep: temp path construction near atomic writes (`with_extension("tmp")`, `.tmp`, or `unique_temp_path`)
-> Tree: Does each atomic write use `durable_write::unique_temp_path` or another collision-resistant temp name in the final directory? → Yes: SAFE. Can two saves of the same final path use the same temp path concurrently?
+> Grep: temp path construction near atomic writes (`with_extension("tmp")`, `.tmp`, or private unique-temp helpers)
+> Tree: Does each atomic write use a collision-resistant temp name in the final directory through `filesystem::write`? → Yes: SAFE. Can two saves of the same final path use the same temp path concurrently?
 > FLAG HIGH: "Concurrent writers share one temp path. One writer can rename or delete the other's temp file, causing failed saves or stale bytes."
 >
 > **AW-6: Write coordination tied to replaceable destination inode**
@@ -303,7 +303,7 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > FLAG MEDIUM: "Timed cleanup evicts preloaded drafts while slow loads still in progress."
 >
 > **RL-3: Session filter drops unavailable files permanently**
-> Grep: `filter_existing_tabs` or `path.exists()` in session load context
+> Grep: `filter_existing_tabs` or direct path-existence probes in session load context
 > Tree: Filters out non-existent files? → No: skip. Filtered session re-saved to disk? → No (original preserved): SAFE. Removed entries preserved anywhere (backup file, log)? → Yes: SAFE.
 > FLAG HIGH: "Temporarily unavailable files (NFS, unmounted) permanently removed from session. Re-saved without them."
 >

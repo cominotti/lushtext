@@ -6,6 +6,7 @@ use crate::common::TestContext;
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
+use lushtext_core::services::filesystem::fixture;
 use lushtext_core::services::workspace_manager;
 use std::path::Path;
 
@@ -88,9 +89,9 @@ fn test_remove_and_add_different_root_persists_new_workspace_entry() {
 #[test]
 fn test_legacy_multi_root_workspace_normalizes_to_sibling_workspaces() {
     let ctx = TestContext::new();
-    std::fs::write(
-        ctx.data_dir().join("workspaces.json"),
-        serde_json::json!({
+    fixture::write_text(
+        &ctx.data_dir().join("workspaces.json"),
+        &serde_json::json!({
             "active_workspace": "legacy",
             "workspaces": [{
                 "id": "legacy",
@@ -102,8 +103,7 @@ fn test_legacy_multi_root_workspace_normalizes_to_sibling_workspaces() {
             }]
         })
         .to_string(),
-    )
-    .expect("expected operation to succeed");
+    );
 
     let restored = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
 

@@ -20,6 +20,9 @@ harness = false
 [lints]
 workspace = true
 
+[build-dependencies]
+lushtext-build-support = { workspace = true }
+
 [dependencies]
 lushtext-core      = { workspace = true }
 glib               = { workspace = true }

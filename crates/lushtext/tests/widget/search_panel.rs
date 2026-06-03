@@ -2,7 +2,7 @@
 
 //! Tests for the workspace search panel and its components.
 
-use crate::common::{ensure_gtk_init, flush_events, wait_until};
+use crate::common::{ensure_gtk_init, fixture, flush_events, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::content_search::{
@@ -154,7 +154,7 @@ fn test_start_search_uses_passed_query_spec_instead_of_live_widget_state() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("notes.txt"), "needle here\n").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("notes.txt"), "needle here\n");
 
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
     panel.set_query("absent");
@@ -1215,7 +1215,7 @@ fn test_search_panel_no_results_keeps_results_body_hidden() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("notes.txt"), "completely unrelated text").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("notes.txt"), "completely unrelated text");
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
@@ -1237,11 +1237,10 @@ fn test_search_panel_first_result_reveals_fixed_max_height_results_body() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(
-        dir.path().join("notes.txt"),
+    fixture::write_text(
+        &dir.path().join("notes.txt"),
         "needle one\nneedle two\nneedle three\n",
-    )
-    .expect("expected operation to succeed");
+    );
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
@@ -1264,7 +1263,7 @@ fn test_search_panel_clearing_query_hides_results_revealers_after_results() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("notes.txt"), "needle once\n").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("notes.txt"), "needle once\n");
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
@@ -1289,7 +1288,7 @@ fn test_search_panel_followup_search_keeps_results_body_open_until_new_outcome()
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("notes.txt"), "needle once\n").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("notes.txt"), "needle once\n");
 
     panel.clamp_results_height(240);
     panel.set_workspace_roots(vec![dir.path().to_path_buf()]);

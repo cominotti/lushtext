@@ -3,6 +3,7 @@
 //! File dialogs for the main window: open file, open folder, save as,
 //! and save-changes confirmation on close.
 
+use crate::services::filesystem::metadata as fs_metadata;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -124,13 +125,13 @@ impl super::LushtextWindow {
         let path_display = path.display().to_string();
         match save_result {
             Ok(()) => {
-                let canonical_path = path.canonicalize().ok();
+                let canonical_path = fs_metadata::canonical_path(path).ok();
                 {
                     let mut open_paths = self.imp().open_paths.borrow_mut();
                     if let Some(old) = old_path {
                         open_paths.remove(old);
                         open_paths.remove(&super::documents::open_path_key(old));
-                        if let Ok(old_canonical) = old.canonicalize() {
+                        if let Ok(old_canonical) = fs_metadata::canonical_path(old) {
                             open_paths.remove(&old_canonical);
                         }
                     }

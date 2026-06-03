@@ -11,6 +11,7 @@ use gtk4::prelude::*;
 use crate::config::keys;
 use crate::services::async_task;
 use crate::services::editorconfig;
+use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::notifications::InlineActionNotification;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
@@ -607,7 +608,7 @@ impl LushtextWindow {
                     paths.remove(&canonical_path);
                 }
                 paths.insert(open_path_key(&updated));
-                if let Ok(canonical_updated) = updated.canonicalize() {
+                if let Ok(canonical_updated) = fs_metadata::canonical_path(&updated) {
                     paths.insert(canonical_updated.clone());
                     drop(paths);
                     editor.set_file_path_with_canonical(&updated, Some(canonical_updated));

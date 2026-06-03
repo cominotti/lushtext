@@ -30,6 +30,7 @@ use sourceview5::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::services::filesystem::metadata as fs_metadata;
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
 
 use imp::{
@@ -1914,7 +1915,7 @@ fn resolve_link_target(
         if scheme.as_str() == "file" {
             let file = gio::File::for_uri(raw_target);
             let path = file.path()?;
-            if path.exists() {
+            if path_exists(&path) {
                 return Some(PreviewLaunchTarget {
                     uri: raw_target.to_string(),
                     local_path: Some(path),
@@ -1954,7 +1955,7 @@ fn resolve_image_target(
         if scheme.as_str() == "file" {
             let file = gio::File::for_uri(raw_target);
             return match file.path() {
-                Some(path) if path.exists() => ResolvedImageTarget::LocalFile(path),
+                Some(path) if path_exists(&path) => ResolvedImageTarget::LocalFile(path),
                 _ => ResolvedImageTarget::Fallback {
                     title: "Image file not found",
                     body: raw_target.to_string(),
@@ -1992,7 +1993,7 @@ fn resolve_local_path(
 ) -> LocalPathResolution {
     let path = Path::new(raw_target);
     if path.is_absolute() {
-        return if path.exists() {
+        return if path_exists(path) {
             LocalPathResolution::Resolved(path.to_path_buf())
         } else {
             LocalPathResolution::Missing
@@ -2003,7 +2004,7 @@ fn resolve_local_path(
         && let Some(parent) = document_path.parent()
     {
         let candidate = parent.join(path);
-        if candidate.exists() {
+        if path_exists(&candidate) {
             return LocalPathResolution::Resolved(candidate);
         }
     }
@@ -2012,7 +2013,7 @@ fn resolve_local_path(
         .workspace_roots
         .iter()
         .map(|root| root.join(path))
-        .filter(|candidate| candidate.exists())
+        .filter(|candidate| path_exists(candidate))
         .collect::<Vec<_>>();
 
     match matches.len() {
@@ -2020,6 +2021,10 @@ fn resolve_local_path(
         1 => LocalPathResolution::Resolved(matches.into_iter().next().expect("one match exists")),
         _ => LocalPathResolution::Ambiguous(matches),
     }
+}
+
+fn path_exists(path: &Path) -> bool {
+    fs_metadata::file_facts(path).is_ok()
 }
 
 /// Assign or look up the stable preview-local number for one footnote label.
@@ -2349,6 +2354,7 @@ fn pop_tag(stack: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use crate::ui::markdown_preview::imp::list_item_text_margin;
     use pulldown_cmark::LinkType;
     use tempfile::tempdir;
@@ -2502,10 +2508,10 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let document_dir = tempdir.path().join("docs");
         let workspace_root = tempdir.path().join("workspace");
-        std::fs::create_dir_all(&document_dir).expect("document dir");
-        std::fs::create_dir_all(workspace_root.join("images")).expect("workspace dir");
-        std::fs::write(document_dir.join("logo.png"), b"doc").expect("document-relative file");
-        std::fs::write(workspace_root.join("logo.png"), b"workspace").expect("workspace file");
+        fixture::create_dir_all(&document_dir);
+        fixture::create_dir_all(&workspace_root.join("images"));
+        fixture::write_bytes(&document_dir.join("logo.png"), b"doc");
+        fixture::write_bytes(&workspace_root.join("logo.png"), b"workspace");
 
         let context = MarkdownPreviewRenderContext::new(
             Some(document_dir.join("guide.md")),
@@ -2523,10 +2529,10 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let root_a = tempdir.path().join("root-a");
         let root_b = tempdir.path().join("root-b");
-        std::fs::create_dir_all(root_a.join("images")).expect("root a dir");
-        std::fs::create_dir_all(root_b.join("images")).expect("root b dir");
-        std::fs::write(root_a.join("images/logo.png"), b"a").expect("root a file");
-        std::fs::write(root_b.join("images/logo.png"), b"b").expect("root b file");
+        fixture::create_dir_all(&root_a.join("images"));
+        fixture::create_dir_all(&root_b.join("images"));
+        fixture::write_bytes(&root_a.join("images/logo.png"), b"a");
+        fixture::write_bytes(&root_b.join("images/logo.png"), b"b");
 
         let context = MarkdownPreviewRenderContext::new(None, vec![root_a.clone(), root_b.clone()]);
 

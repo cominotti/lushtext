@@ -17,7 +17,9 @@ use libadwaita::prelude::{AdwDialogExt, SidebarItemExt};
 
 use crate::model::local_history::{LocalHistorySnapshot, LocalHistorySnapshotMeta};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use crate::services::{async_task, json_store, local_history_service};
+use crate::services::{
+    async_task, filesystem::metadata as fs_metadata, json_store, local_history_service,
+};
 use crate::ui::editor_page::{LushtextEditorPage, PendingWarningAction};
 use crate::ui::status_bar::MessageKind;
 
@@ -133,11 +135,11 @@ impl LushtextWindow {
         async_task::spawn_blocking_then(
             self.clone(),
             move || {
-                let availability = std::fs::metadata(&path).ok().map_or(
+                let availability = fs_metadata::file_facts(&path).ok().map_or(
                     local_history_service::LocalHistoryAvailability::Unavailable,
-                    |metadata| {
+                    |facts| {
                         local_history_service::availability_for_size_check(
-                            crate::services::file_limits::FileSizeCheck::classify(metadata.len()),
+                            crate::services::file_limits::FileSizeCheck::classify(facts.byte_size),
                         )
                     },
                 );

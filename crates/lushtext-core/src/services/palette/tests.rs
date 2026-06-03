@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tempfile::TempDir;
@@ -9,6 +9,7 @@ use super::*;
 use crate::model::palette::{
     CommandCategory, IndexedFile, PaletteFileEntry, SearchMode, SearchResultItem,
 };
+use crate::services::filesystem::fixture;
 
 fn file_names(index: &FileIndex) -> Vec<&str> {
     index
@@ -88,7 +89,7 @@ fn search_commands_zoom_finds_all_zoom_entries() {
 #[test]
 fn search_all_mixed_mode_includes_files_and_commands() {
     let dir = TempDir::new().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("save.rs"), "").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("save.rs"), "");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let results = search_all(&index, "save", SearchMode::All, 50);
@@ -107,7 +108,7 @@ fn search_all_mixed_mode_includes_files_and_commands() {
 #[test]
 fn search_all_mixed_mode_preserves_score_order_and_max_zero() {
     let dir = TempDir::new().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("save.rs"), "").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("save.rs"), "");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     assert!(search_all(&index, "save", SearchMode::All, 0).is_empty());
@@ -156,9 +157,9 @@ fn search_open_files_finds_active_documents_and_respects_max() {
 #[test]
 fn file_index_skips_hidden_files_and_directories() {
     let dir = TempDir::new().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("visible.txt"), "").expect("expected operation to succeed");
-    std::fs::write(dir.path().join(".hidden"), "").expect("expected operation to succeed");
-    std::fs::create_dir(dir.path().join("subdir")).expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("visible.txt"), "");
+    fixture::write_text(&dir.path().join(".hidden"), "");
+    fixture::create_dir(&dir.path().join("subdir"));
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     assert_eq!(index.files().len(), 1);
@@ -169,8 +170,8 @@ fn file_index_skips_hidden_files_and_directories() {
 fn file_index_multiple_roots_collects_files_from_each_root() {
     let dir1 = TempDir::new().expect("expected operation to succeed");
     let dir2 = TempDir::new().expect("expected operation to succeed");
-    std::fs::write(dir1.path().join("a.rs"), "").expect("expected operation to succeed");
-    std::fs::write(dir2.path().join("b.rs"), "").expect("expected operation to succeed");
+    fixture::write_text(&dir1.path().join("a.rs"), "");
+    fixture::write_text(&dir2.path().join("b.rs"), "");
 
     let index = FileIndex::rebuild(&[dir1.path().to_path_buf(), dir2.path().to_path_buf()]);
     assert_eq!(index.files().len(), 2);
@@ -180,8 +181,7 @@ fn file_index_multiple_roots_collects_files_from_each_root() {
 fn file_index_search_respects_max() {
     let dir = TempDir::new().expect("expected operation to succeed");
     for i in 0..20 {
-        std::fs::write(dir.path().join(format!("file{i}.rs")), "")
-            .expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join(format!("file{i}.rs")), "");
     }
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
@@ -192,8 +192,8 @@ fn file_index_search_respects_max() {
 #[test]
 fn file_index_workspace_root_is_shared_with_arc() {
     let dir = TempDir::new().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("a.rs"), "").expect("expected operation to succeed");
-    std::fs::write(dir.path().join("b.rs"), "").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("a.rs"), "");
+    fixture::write_text(&dir.path().join("b.rs"), "");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     assert!(Arc::ptr_eq(
@@ -206,8 +206,8 @@ fn file_index_workspace_root_is_shared_with_arc() {
 fn file_index_root_named_as_ignored_dir_is_still_scanned() {
     let dir = TempDir::new().expect("expected operation to succeed");
     let root = dir.path().join("node_modules");
-    std::fs::create_dir(&root).expect("expected operation to succeed");
-    std::fs::write(root.join("index.js"), "").expect("expected operation to succeed");
+    fixture::create_dir(&root);
+    fixture::write_text(&root.join("index.js"), "");
 
     let index = FileIndex::rebuild(&[root]);
     assert!(file_names(&index).contains(&"index.js"));
@@ -216,12 +216,12 @@ fn file_index_root_named_as_ignored_dir_is_still_scanned() {
 #[test]
 fn file_index_skips_ignored_directories() {
     let dir = TempDir::new().expect("expected operation to succeed");
-    std::fs::create_dir(dir.path().join("src")).expect("expected operation to succeed");
-    std::fs::write(dir.path().join("src/main.rs"), "").expect("expected operation to succeed");
+    fixture::create_dir(&dir.path().join("src"));
+    fixture::write_text(&dir.path().join("src/main.rs"), "");
     for ignored in super::index::IGNORED_INDEX_DIRS {
         let ignored_dir = dir.path().join(ignored);
-        std::fs::create_dir(&ignored_dir).expect("expected operation to succeed");
-        std::fs::write(ignored_dir.join("ignored.txt"), "").expect("expected operation to succeed");
+        fixture::create_dir(&ignored_dir);
+        fixture::write_text(&ignored_dir.join("ignored.txt"), "");
     }
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
@@ -233,10 +233,9 @@ fn file_index_skips_ignored_directories() {
 #[test]
 fn file_index_symlink_escape_to_root_is_rejected() {
     let dir = TempDir::new().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("local.rs"), "").expect("expected operation to succeed");
-    std::fs::create_dir(dir.path().join("escape")).expect("expected operation to succeed");
-    std::os::unix::fs::symlink("/", dir.path().join("escape/root"))
-        .expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("local.rs"), "");
+    fixture::create_dir(&dir.path().join("escape"));
+    fixture::symlink(Path::new("/"), &dir.path().join("escape/root"));
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let names = file_names(&index);
@@ -252,10 +251,9 @@ fn file_index_symlink_escape_to_root_is_rejected() {
 #[test]
 fn file_index_symlink_cycle_does_not_duplicate_results() {
     let dir = TempDir::new().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("file.rs"), "").expect("expected operation to succeed");
-    std::fs::create_dir(dir.path().join("sub")).expect("expected operation to succeed");
-    std::os::unix::fs::symlink(dir.path(), dir.path().join("sub/loop"))
-        .expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("file.rs"), "");
+    fixture::create_dir(&dir.path().join("sub"));
+    fixture::symlink(dir.path(), &dir.path().join("sub/loop"));
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let names = file_names(&index);
@@ -306,8 +304,7 @@ fn compaction_threshold_starts_below_three_quarters_remaining() {
 fn empty_query_returns_all_results_up_to_cap() {
     let dir = TempDir::new().expect("expected operation to succeed");
     for i in 0..100 {
-        std::fs::write(dir.path().join(format!("file{i}.rs")), "")
-            .expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join(format!("file{i}.rs")), "");
     }
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
@@ -318,9 +315,9 @@ fn empty_query_returns_all_results_up_to_cap() {
 #[test]
 fn workspace_root_for_returns_matching_root() {
     let dir = TempDir::new().expect("expected operation to succeed");
-    std::fs::create_dir(dir.path().join("src")).expect("expected operation to succeed");
+    fixture::create_dir(&dir.path().join("src"));
     let path = dir.path().join("src/lib.rs");
-    std::fs::write(&path, "").expect("expected operation to succeed");
+    fixture::write_text(&path, "");
 
     let root = dir.path().to_path_buf();
     let index = FileIndex::rebuild(std::slice::from_ref(&root));
@@ -479,12 +476,12 @@ fn file_index_recursion_depth_includes_boundary_and_skips_beyond_it() {
     for depth in 0..64 {
         boundary_dir.push(format!("level-{depth}"));
     }
-    std::fs::create_dir_all(&boundary_dir).expect("expected operation to succeed");
-    std::fs::write(boundary_dir.join("boundary.txt"), "").expect("expected operation to succeed");
+    fixture::create_dir_all(&boundary_dir);
+    fixture::write_text(&boundary_dir.join("boundary.txt"), "");
 
     let too_deep_dir = boundary_dir.join("level-64");
-    std::fs::create_dir(&too_deep_dir).expect("expected operation to succeed");
-    std::fs::write(too_deep_dir.join("too-deep.txt"), "").expect("expected operation to succeed");
+    fixture::create_dir(&too_deep_dir);
+    fixture::write_text(&too_deep_dir.join("too-deep.txt"), "");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let names = file_names(&index);

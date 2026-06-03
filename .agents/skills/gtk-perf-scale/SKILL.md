@@ -33,7 +33,7 @@ These two skills are complementary, not overlapping:
 | Core question | "Does this block the main thread?" | "Does this scale to large inputs?" |
 | Primary metric | Frame time (<16ms) | Throughput, memory, latency at 10x-100x typical load |
 | RAM focus | Signal handler leaks, reference cycles | Buffer memory budgets, index caps, concurrent load limits |
-| Example fix | Move `fs::write` to background thread | Add file size check before loading; cap directory entries |
+| Example fix | Move filesystem write work to background thread | Add file size check before loading; cap directory entries |
 
 If you find a main-thread blocking issue while doing a scale audit, flag it but reference `gtk-responsiveness` for the fix pattern.
 
@@ -88,7 +88,7 @@ These thresholds are calibrated for GTK4/GtkSourceView5 on typical desktop hardw
 
 **Triggers**:
 - paths: `ui/editor_page/**/*.rs`, `services/file_limits.rs`
-- content: `read_to_string|fs::write|fs::read|fs::metadata`
+- content: `filesystem::read|filesystem::write|filesystem::metadata|filesystem::tree|raw filesystem`
 
 **Subagent prompt**:
 ```
@@ -114,16 +114,16 @@ Scale Thresholds (calibrated for GTK4/GtkSourceView5 on 4-core, 8-16GB RAM, SSD)
 | Thread spawn guard | 8 concurrent | Queue additional calls |
 
 Review criteria:
-- Size-gated loading: does the code check fs::metadata size BEFORE read_to_string? Are thresholds applied (1MB toast, 10MB no syntax, 50MB no undo, 500MB refuse)?
+- Size-gated loading: does the code check file size through `services::filesystem::metadata` BEFORE reading? Are thresholds applied (1MB toast, 10MB no syntax, 50MB no undo, 500MB refuse)?
 - Background save: is file writing moved to spawn_blocking_then? Does it use the durable atomic-write helper, keep the editor state protected while saving, reject duplicate in-flight saves, and clear buffer.modified only after success?
-- Cancel token: does EditorPage store Arc<AtomicBool>? Is it checked before AND after read_to_string? Is cancel_load() called on tab close?
+- Cancel token: does EditorPage store Arc<AtomicBool>? Is it checked before AND after the filesystem read? Is cancel_load() called on tab close?
 - Syntax gate: is reapply_language() skipped for files >10MB?
 
 IMPORTANT: Do NOT flag micro allocation patterns (drop ordering, intermediate scoping, clone avoidance). Focus on the architectural decisions: are size limits in place? Is there graceful degradation?
 
 Anti-patterns to flag:
-- [FLAG] No file size check before read_to_string (will happily read a 4GB file)
-- [FLAG] Synchronous fs::write on main thread (blocks UI)
+- [FLAG] No file size check before file read (will happily read a 4GB file)
+- [FLAG] Synchronous filesystem write on main thread (blocks UI)
 - [FLAG] Missing cancel token on EditorPage (wasted work on tab close)
 - [RECOMMEND] Missing syntax highlighting gate for files >10MB
 
@@ -310,7 +310,7 @@ Description. What to benchmark. Expected baseline.
 After all subagents return, produce the unified report:
 
 1. **Merge findings** — combine all [FLAG], [RECOMMEND], [CONSIDER], [GOOD] items from all subagents verbatim. Do not add new findings beyond what was reported.
-2. **Deduplicate** — if two subagents flag the same line (e.g., large-file-audit and ram-budget-audit both flag a `read_to_string`), keep the more specific finding
+2. **Deduplicate** — if two subagents flag the same line (e.g., large-file-audit and ram-budget-audit both flag an unbounded file read), keep the more specific finding
 3. **Drop excluded items** — remove any finding that falls under the "What We Do NOT Flag" list above
 4. **Sort by severity** — FLAG first, then RECOMMEND, CONSIDER, GOOD
 

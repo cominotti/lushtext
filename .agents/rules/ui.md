@@ -51,7 +51,8 @@ LushtextWindow (AdwApplicationWindow)
 │   └── GtkRevealer [focus_mode_revealer] → focus-mode affordance
 └── LushtextStatusBar (always visible, full width)
     ├── GtkToggleButton [sidebar_toggle_button] — toggle sidebar (action: win.toggle-sidebar)
-    ├── GtkLabel [message_label] — feedback messages (left, hexpand)
+    ├── GtkBox [message_area_box] — full-width feedback message lane (left, hexpand; small non-flashing start gap; pulse background)
+    │   └── GtkLabel [message_label] — feedback message text (caption, ellipsized)
     └── GtkBox [metadata_box] — EditorConfig + line ending + encoding (right, hidden when no tabs)
 ```
 
@@ -123,6 +124,7 @@ LushtextWindow (AdwApplicationWindow)
 - The flexible center shell must yield before this bar at tiny heights; keep the editor/sidebar surface inside `LushtextShrinkableBin` so the root window can allocate the status bar inside the visible height.
 - `metadata_box` (EditorConfig + line ending + encoding) is hidden via `set_visible(false)` when no tabs are open; the message area and workspace toggle remain available.
 - Messages use Adwaita semantic color tokens: `@accent_color` (Info), `@warning_color` (Warning), `@error_color` (Error). These adapt to light/dark mode automatically — no Rust-side dark mode handling needed.
+- Repeated visible notification updates briefly pulse the full `message_area_box`, not just the label text. The message area keeps a small non-flashing start margin after the workspace toggle, and pulse selectors must stay scoped to `.status-message-area` so the workspace toggle and metadata controls do not flash.
 - Background uses `@headerbar_bg_color` to visually distinguish from the editor area.
 - Use the `caption` Adwaita CSS class for status bar text (small font, standard GNOME HIG for secondary UI).
 

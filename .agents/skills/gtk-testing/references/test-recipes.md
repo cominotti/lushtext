@@ -15,7 +15,7 @@ There is no standalone `tests/e2e/` target today. Workflow-level UI regressions 
 fn open_file_creates_tab_with_filename() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.rs");
-    std::fs::write(&path, "fn main() {}\n").unwrap();
+    crate::common::fixture::write_text(&path, "fn main() {}\n");
 
     let window = crate::common::test_window();
     window.open_document(&path);
@@ -37,7 +37,7 @@ fn open_file_creates_tab_with_filename() {
 fn modified_indicator_appears_on_edit() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mod.txt");
-    std::fs::write(&path, "original").unwrap();
+    crate::common::fixture::write_text(&path, "original");
 
     let window = crate::common::test_window();
     window.open_document(&path);
@@ -67,7 +67,7 @@ fn modified_indicator_appears_on_edit() {
 fn opening_same_file_twice_reuses_tab() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dup.txt");
-    std::fs::write(&path, "content").unwrap();
+    crate::common::fixture::write_text(&path, "content");
 
     let window = crate::common::test_window();
     window.open_document(&path);

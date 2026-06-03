@@ -13,6 +13,7 @@ use std::sync::atomic::AtomicBool;
 
 use lushtext_core::model::content_search::Replacement;
 use lushtext_core::services::content_search::{apply_replacements, undo_replacements};
+use lushtext_core::services::filesystem::{fixture, read as fs_read};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
@@ -77,8 +78,7 @@ proptest! {
         for (index, file) in case.files.iter().enumerate() {
             let path = tempdir.path().join(format!("replace-target-{index}.txt"));
             let original_bytes = file.original_text().into_bytes();
-            std::fs::write(&path, &original_bytes)
-                .map_err(|error| TestCaseError::fail(format!("seed write failed: {error}")))?;
+            fixture::write_bytes(&path, &original_bytes);
 
             replacements.push(file.replacement_for_path(path.clone()));
             originals.push((path, original_bytes));
@@ -103,7 +103,7 @@ proptest! {
         prop_assert!(outcome.remaining_backup.is_empty());
 
         for (path, original_bytes) in originals {
-            let restored_bytes = std::fs::read(&path)
+            let restored_bytes = fs_read::bytes(&path)
                 .map_err(|error| TestCaseError::fail(format!("restore read failed: {error}")))?;
             prop_assert_eq!(restored_bytes, original_bytes);
         }

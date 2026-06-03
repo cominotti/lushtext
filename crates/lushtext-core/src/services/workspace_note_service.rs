@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 use crate::model::note::RichNoteBody;
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScope};
 use crate::model::workspace_note::{WorkspaceNoteDocument, WorkspaceRootIdentity};
+use crate::services::filesystem::{
+    DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
+};
 use crate::services::json_store;
 
 use super::note_storage;
@@ -43,8 +46,7 @@ pub fn workspace_notes_dir(data_dir: &Path) -> PathBuf {
 /// Returns an error if the root cannot be canonicalized.
 pub fn resolve_workspace_root_identity(root: &Path) -> Result<WorkspaceRootIdentity> {
     let display_root = root.to_path_buf();
-    let canonical_root = root
-        .canonicalize()
+    let canonical_root = fs_metadata::canonical_path(root)
         .with_context(|| format!("failed to canonicalize {}", root.display()))?;
     Ok(WorkspaceRootIdentity::from_roots(
         display_root,
@@ -127,9 +129,8 @@ pub fn delete_for_root(data_dir: &Path, root: &Path) -> Result<()> {
 fn delete_sidecar_file(data_dir: &Path, identity: &WorkspaceRootIdentity) -> Result<()> {
     let path =
         workspace_notes_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    match fs_mutate::remove_file_if_exists(&path) {
+        Ok(_) => Ok(()),
         Err(error) => Err(anyhow::anyhow!(
             "failed to delete workspace note sidecar {}: {}",
             path.display(),
@@ -148,16 +149,15 @@ fn delete_sidecar_file(data_dir: &Path, identity: &WorkspaceRootIdentity) -> Res
 /// sidecar cannot be read, rewritten, or cleaned up.
 pub fn move_root_tree(data_dir: &Path, old_root: &Path, new_root: &Path) -> Result<usize> {
     let dir = workspace_notes_dir(data_dir);
-    if !dir.exists() {
+    if fs_metadata::file_facts(&dir).is_err() {
         return Ok(0);
     }
 
     let mut migrated = 0;
-    for entry in
-        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
+        .with_context(|| format!("failed to read {}", dir.display()))?
     {
-        let entry = entry.with_context(|| format!("failed to iterate {}", dir.display()))?;
-        let sidecar_path = entry.path();
+        let sidecar_path = entry.path;
         if sidecar_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
@@ -178,8 +178,8 @@ pub fn move_root_tree(data_dir: &Path, old_root: &Path, new_root: &Path) -> Resu
             &document.identity.sidecar_id,
         ));
         save_document(data_dir, &document)?;
-        if entry.path() != new_sidecar_path {
-            let _ = std::fs::remove_file(entry.path());
+        if sidecar_path != new_sidecar_path {
+            let _ = fs_mutate::remove_file_if_exists(&sidecar_path);
         }
         migrated += 1;
     }
@@ -238,9 +238,8 @@ fn rebase_workspace_root_identity(
         } else {
             new_root.join(suffix)
         };
-        let canonical_root = display_root
-            .canonicalize()
-            .unwrap_or_else(|_| display_root.clone());
+        let canonical_root =
+            fs_metadata::canonical_path(&display_root).unwrap_or_else(|_| display_root.clone());
         return Some((display_root, canonical_root));
     }
 
@@ -256,9 +255,8 @@ fn rebase_workspace_root_identity(
         } else {
             new_root.join(suffix)
         };
-        let canonical_root = display_root
-            .canonicalize()
-            .unwrap_or_else(|_| display_root.clone());
+        let canonical_root =
+            fs_metadata::canonical_path(&display_root).unwrap_or_else(|_| display_root.clone());
         return Some((display_root, canonical_root));
     }
 
@@ -269,10 +267,11 @@ fn rebase_workspace_root_identity(
 mod tests {
     use super::*;
     use crate::model::workspace::{WorkspaceConfig, WorkspaceId};
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     fn create_dir(path: &Path) {
-        std::fs::create_dir_all(path).expect("expected operation to succeed");
+        fixture::create_dir_all(path);
     }
 
     #[test]
@@ -303,7 +302,7 @@ mod tests {
 
         let sidecar_path = workspace_notes_dir(dir.path())
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
-        assert!(!sidecar_path.exists());
+        assert!(fs_metadata::file_facts(&sidecar_path).is_err());
     }
 
     #[test]
@@ -318,7 +317,7 @@ mod tests {
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
 
         delete_for_root(dir.path(), &root).expect("expected operation to succeed");
-        assert!(!sidecar_path.exists());
+        assert!(fs_metadata::file_facts(&sidecar_path).is_err());
         delete_for_root(dir.path(), &root).expect("expected missing sidecar to be a no-op");
     }
 
@@ -332,8 +331,8 @@ mod tests {
             .expect("expected operation to succeed");
         let sidecar_path = workspace_notes_dir(dir.path())
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
-        std::fs::remove_file(&sidecar_path).expect("expected operation to succeed");
-        std::fs::create_dir(&sidecar_path).expect("expected operation to succeed");
+        fixture::remove_file(&sidecar_path);
+        fixture::create_dir(&sidecar_path);
 
         let error = delete_for_root(dir.path(), &root).expect_err("directory sidecar should fail");
         assert!(
@@ -368,21 +367,24 @@ mod tests {
         let old_sidecar_path = workspace_notes_dir(dir.path())
             .join(note_storage::sidecar_filename(&old_identity.sidecar_id));
 
-        std::fs::rename(&old_root, &new_root).expect("expected operation to succeed");
+        fixture::rename(&old_root, &new_root);
         let migrated = move_root_tree(dir.path(), &old_root, &new_root)
             .expect("expected operation to succeed");
 
         assert_eq!(migrated, 1);
-        assert!(!old_sidecar_path.exists());
+        assert!(fs_metadata::file_facts(&old_sidecar_path).is_err());
         let loaded = load_for_root(dir.path(), &new_root).expect("expected operation to succeed");
         let loaded = loaded.expect("expected moved workspace note");
         assert_eq!(loaded.identity.display_root, new_root);
         assert_eq!(loaded.note.text, "Project note");
-        let json_sidecars = std::fs::read_dir(workspace_notes_dir(dir.path()))
-            .expect("expected operation to succeed")
-            .filter_map(std::result::Result::ok)
-            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
-            .count();
+        let json_sidecars = fs_tree::scan_directory(
+            &workspace_notes_dir(dir.path()),
+            DirectoryScanPolicy::visible_workspace(),
+        )
+        .expect("expected operation to succeed")
+        .into_iter()
+        .filter(|entry| entry.path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .count();
         assert_eq!(json_sidecars, 1);
     }
 

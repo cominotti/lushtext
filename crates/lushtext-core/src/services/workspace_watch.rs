@@ -223,8 +223,8 @@ fn format_errors(errors: &[notify::Error]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use notify_debouncer_full::notify::event::{AccessMode, RenameMode};
-    use std::fs;
     use std::thread;
     use std::time::Instant;
     use tempfile::TempDir;
@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(watcher.watched_root_count(), 1);
 
         let created = dir.path().join("alpha.txt");
-        fs::write(&created, "alpha").expect("expected operation to succeed");
+        fixture::write_text(&created, "alpha");
 
         let poll = wait_for_poll(&watcher, Duration::from_secs(5))
             .expect("directory watcher should report the created file");
@@ -267,8 +267,8 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let one = dir.path().join("one");
         let two = dir.path().join("two");
-        fs::create_dir(&one).expect("expected operation to succeed");
-        fs::create_dir(&two).expect("expected operation to succeed");
+        fixture::create_dir(&one);
+        fixture::create_dir(&two);
 
         let watcher = WorkspaceWatcher::start(&[
             WorkspaceWatchTarget::directory(one),
@@ -283,7 +283,7 @@ mod tests {
     fn watching_file_root_reports_file_rename() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let file_path = dir.path().join("root.txt");
-        fs::write(&file_path, "before").expect("expected operation to succeed");
+        fixture::write_text(&file_path, "before");
 
         let watcher = WorkspaceWatcher::start(&[WorkspaceWatchTarget::file(file_path.clone())])
             .expect("expected operation to succeed");
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(watcher.watched_root_count(), 1);
 
         let renamed_path = dir.path().join("renamed.txt");
-        fs::rename(&file_path, &renamed_path).expect("expected operation to succeed");
+        fixture::rename(&file_path, &renamed_path);
 
         let poll = wait_for_poll(&watcher, Duration::from_secs(5))
             .expect("file watcher should report file rename");

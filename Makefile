@@ -16,7 +16,7 @@
 #   make fuzz-corpus-replay - Replay committed fuzz corpus seeds on stable Rust
 #   make fuzz-smoke  - Run bounded fuzz smoke against temporary corpus copies
 #   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
-#   make test-widget - Widget tests with shared native/headless runner
+#   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make visual-smoke - Real-session screenshot smoke under headless Mutter
 #   make portal-sandbox-smoke - Confined runtime smoke for available Flatpak/Snap paths
@@ -28,6 +28,7 @@
 #   make mutants-diff  - Mutation test current changes against origin/main
 #   make mutants-full  - Mutation test the configured deterministic scope
 #   make check       - clippy + fmt check
+#   make check-agent-docs - validate agent rules/skills guidance
 #   make pre-commit  - repo pre-commit gate (fmt + clippy)
 #   make flatpak-deps - Install Flatpak runtime/SDK deps into the user installation
 #   make flatpak-install - Build and install Flatpak into the user installation
@@ -43,7 +44,7 @@
 #   make help        - Show available targets
 
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless visual-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check pre-commit dev-tools install-git-hooks clean help \
+       check-fmt check-clippy check check-agent-docs pre-commit dev-tools install-git-hooks clean help \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
        cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
@@ -65,7 +66,7 @@ CARGO_TEST_NON_WIDGET = cargo test --workspace --lib --bins --test integration
 CARGO_TEST_UNIT       = cargo test --workspace --lib
 CARGO_TEST_INT        = cargo test --workspace --test integration
 endif
-CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh
+CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh --headless
 CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 1
 CARGO_TEST_PROP           = cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
 CARGO_TEST_FUZZ_CORPUS_REPLAY = cargo test -p lushtext-core --features fuzzing --test fuzz_corpus_replay
@@ -199,7 +200,7 @@ fuzz-operation-smoke:
 	fi; \
 	$(CARGO_FUZZ) run "$(FUZZ_OPERATION_TARGET)" "$$corpus" -- -runs=$(FUZZ_SMOKE_RUNS) -max_len=$(FUZZ_SMOKE_MAX_LEN) -max_total_time=$(FUZZ_SMOKE_SECONDS)
 
-# Widget tests (auto-detect display; fall back to mutter --headless when available)
+# Widget tests under the private headless runner.
 test-widget:
 	@echo "Running widget tests..."
 	$(CARGO_TEST_WIDGET)
@@ -300,6 +301,11 @@ pre-commit: check-fmt check-clippy
 
 # Lint + format check
 check: pre-commit
+
+# Validate agent-facing rules and skills after guidance changes.
+check-agent-docs:
+	@echo "Checking agent documentation..."
+	./scripts/check-agent-docs.sh
 
 # Install repo-managed Git hooks
 install-git-hooks:
@@ -474,7 +480,7 @@ help:
 	@echo "  test-int     Integration tests only"
 	@echo "  test-prop    Bounded property tests for pure deterministic logic"
 	@echo "  test-prop-deep Deeper property run with PROPTEST_DEEP_CASES"
-	@echo "  test-widget  Widget tests (auto-detect display; falls back to headless)"
+	@echo "  test-widget  Widget tests under the private headless runner"
 	@echo "  test-widget-headless Widget tests with the CI headless setup"
 	@echo "  visual-smoke Real-session screenshot smoke under headless Mutter"
 	@echo "  portal-sandbox-smoke Confined runtime smoke for available Flatpak/Snap paths"

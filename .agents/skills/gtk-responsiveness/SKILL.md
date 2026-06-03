@@ -83,7 +83,7 @@ Each subagent prompt below includes inline memory-leak review criteria. This cov
 
 **Triggers**:
 - paths: `ui/**/*.rs`, `services/**/*.rs`
-- content: `fs::read|fs::write|fs::read_to_string|fs::read_dir|fs::metadata|Command::new|std::process`
+- content: `filesystem::read|filesystem::write|filesystem::tree|filesystem::metadata|Command::new|std::process|raw filesystem`
 
 **Subagent prompt**:
 ```
@@ -99,12 +99,13 @@ The project uses a custom async primitive: crate::services::async_task::spawn_bl
 - state: non-Send GTK object (auto-wrapped in ThreadGuard)
 - work: FnOnce() -> T + Send, runs on background thread via std::thread::spawn
 - then: FnOnce(S, T), runs on main thread via glib::idle_add_once
-Do NOT recommend Tokio. This pattern is sufficient for file I/O.
+Do NOT recommend Tokio. This pattern is sufficient for file I/O, and file operations should still use `services::filesystem` inside the background closure.
 
 While reviewing, also check for genuine memory leaks: strong reference cycles that prevent widget cleanup, missing `@weak` references in long-lived closures, signal handlers that accumulate without cleanup. Do NOT flag trivial clones, missing `Vec::with_capacity()`, or other micro allocation patterns — those are not responsiveness concerns.
 
 Review criteria:
-- Is any blocking I/O (fs::read_to_string, fs::write, fs::read_dir, fs::metadata, Command::new) called on the main thread outside spawn_blocking_then?
+- Is any blocking I/O (`services::filesystem` reads/writes/scans/metadata or `Command::new`) called on the main thread outside `spawn_blocking_then`?
+- Does the code bypass `services::filesystem` with raw filesystem calls outside approved backend or fixture modules?
 - Is heavy work done in the `then` callback? (Large JSON parsing, file processing should be in the `work` closure, not `then`)
 - For file operations: is the path cloned/moved into the closure correctly? (Borrowed paths can't cross thread boundaries)
 - Cancel tokens: for large file loads, does EditorPage store an Arc<AtomicBool> checked before AND after the I/O call?
@@ -112,7 +113,7 @@ Review criteria:
 - For animated sidebars/panes: if the code avoids I/O but still resizes a heavy tree or list every frame, flag that as a responsiveness hazard anyway. A frozen snapshot or lighter animation surface may be required.
 
 Anti-patterns to flag:
-- [FLAG] std::fs::read_to_string, fs::write, fs::read_dir, fs::metadata, or Command::new in ui/ code outside spawn_blocking_then
+- [FLAG] Filesystem-boundary call, raw filesystem bypass, or `Command::new` in UI code outside `spawn_blocking_then`
 - [FLAG] Large data parsing (serde_json::from_str on >10KB) in the `then` callback
 - [RECOMMEND] Missing cancel token for file loads that may become stale (tab closed during load)
 - [FLAG] ThreadGuard used in a periodic timer or long-lived callback — panics if widget is destroyed; use SendWeakRef instead
@@ -185,7 +186,7 @@ Review criteria:
 
 Anti-patterns to flag:
 - [FLAG] autoexpand = true on TreeListModel — catastrophic: unbounded thread spawns or UI freeze
-- [FLAG] I/O (fs::read, network) in connect_bind — freezes UI on every scroll
+- [FLAG] I/O (`services::filesystem`, raw filesystem, or network) in `connect_bind` — freezes UI on every scroll
 - [FLAG] Widget creation (Label::new, Box::new) in connect_bind — defeats list-item recycling and causes per-scroll churn
 - [RECOMMEND] Signal connections in connect_bind without disconnect in connect_unbind
 - [GOOD] Lazy population with empty ListStore + spawn_blocking_then

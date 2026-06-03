@@ -40,7 +40,7 @@ let path = path.to_path_buf();
 async_task::spawn_blocking_then(
     self.clone(),
     move || -> Result<String, LoadError> {
-        let bytes = std::fs::read(&path).map_err(|e| LoadError::Io(e.to_string()))?;
+        let bytes = filesystem::read::bytes(&path).map_err(|e| LoadError::Io(e.to_string()))?;
         match simdutf8::basic::from_utf8(&bytes) {
             // SAFETY: simdutf8 just confirmed valid UTF-8
             Ok(_) => Ok(unsafe { String::from_utf8_unchecked(bytes) }),
@@ -88,7 +88,7 @@ async_task::spawn_blocking_then(
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let content = std::fs::read_to_string(&path)?;
+        let content = filesystem::read::text(&path)?;
         // Check again after I/O completes
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
@@ -233,7 +233,7 @@ for tab in session.tabs.iter() {
     // Load content in parallel
     async_task::spawn_blocking_then(
         editor.clone(),
-        move || std::fs::read_to_string(&path),
+        move || filesystem::read::text(&path),
         move |editor, result| {
             if let Ok(content) = result {
                 editor.apply_loaded_content(&content);

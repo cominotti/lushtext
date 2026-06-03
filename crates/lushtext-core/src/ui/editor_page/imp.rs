@@ -11,7 +11,11 @@ use crate::model::bookmark::BookmarkRecord;
 use crate::model::encoding::{DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode};
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::notifications::InlineActionNotification;
-use crate::services::{async_task, durable_write, file_limits::FileSizeCheck};
+use crate::services::{
+    async_task,
+    file_limits::FileSizeCheck,
+    filesystem::{WriteLabel, read as fs_read, write as fs_write},
+};
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
 use gtk4::gio;
@@ -1069,43 +1073,43 @@ fn write_transparency_style_scheme_if_needed(
     file_path: &Path,
     xml: &str,
 ) -> std::io::Result<()> {
-    if std::fs::read_to_string(file_path).is_ok_and(|existing| existing == xml) {
+    if fs_read::text(file_path).is_ok_and(|existing| existing == xml) {
         return Ok(());
     }
 
-    durable_write::create_dir_all_durable(scheme_dir)?;
-    durable_write::atomic_write_bytes(file_path, "style-scheme", xml.as_bytes())
+    fs_write::create_dir_all_durable(scheme_dir)?;
+    fs_write::atomic_replace(file_path, WriteLabel::from("style-scheme"), xml.as_bytes()).map_err(
+        |error| match error {
+            fs_write::DurableWriteError::BeforeRename(source)
+            | fs_write::DurableWriteError::AfterRename(source) => source,
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::write_transparency_style_scheme_if_needed;
+    use crate::services::filesystem::{DirectoryScanPolicy, fixture, tree as fs_tree};
     use tempfile::TempDir;
 
     #[test]
     fn transparency_style_scheme_rewrites_corrupt_existing_file() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let scheme_dir = dir.path().join("style-schemes");
-        std::fs::create_dir_all(&scheme_dir).expect("expected operation to succeed");
+        fixture::create_dir_all(&scheme_dir);
         let file_path = scheme_dir.join("lushtext-opacity-test.xml");
-        std::fs::write(&file_path, "<truncated").expect("expected operation to succeed");
+        fixture::write_text(&file_path, "<truncated");
         let xml = "<?xml version=\"1.0\"?><style-scheme id=\"ok\"/>";
 
         write_transparency_style_scheme_if_needed(&scheme_dir, &file_path, xml)
             .expect("style-scheme rewrite should succeed");
 
-        assert_eq!(
-            std::fs::read_to_string(&file_path).expect("expected operation to succeed"),
-            xml
-        );
+        assert_eq!(fixture::read_text(&file_path), xml);
         assert!(
-            std::fs::read_dir(&scheme_dir)
+            fs_tree::scan_directory(&scheme_dir, DirectoryScanPolicy::visible_workspace())
                 .expect("expected operation to succeed")
-                .all(|entry| !entry
-                    .expect("expected operation to succeed")
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".style-scheme."))
+                .into_iter()
+                .all(|entry| !entry.file_name.contains(".style-scheme."))
         );
     }
 }

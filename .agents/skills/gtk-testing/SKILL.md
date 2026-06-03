@@ -30,7 +30,7 @@ The testing approach is pragmatic:
 | Fuzz replay | Committed fuzz corpus seeds through narrow non-GTK helpers | `crates/lushtext-core/tests/fuzz_corpus_replay.rs` and `fuzz/corpus/**` | No | `make fuzz-corpus-replay` |
 | Fuzz | Hostile byte ingestion and bounded operation scripts through narrow non-GTK helpers | `fuzz/fuzz_targets/*.rs` and `fuzz/corpus/**` | No | `make fuzz-smoke` |
 | Integration | Cross-service workflows with real temp directories | `crates/lushtext/tests/integration.rs` and `crates/lushtext/tests/integration/*.rs` | No | `make test-int` |
-| Widget | Widget and real-window behavior, including workflow-level UI regressions | `crates/lushtext/tests/widget.rs` and `crates/lushtext/tests/widget/*.rs` | Yes | `make test-widget` |
+| Widget | Widget and real-window behavior, including workflow-level UI regressions | `crates/lushtext/tests/widget.rs` and `crates/lushtext/tests/widget/*.rs` | Private headless Mutter only | `make test-widget` |
 | Visual smoke | Rendered desktop screenshots and compositor/session artifacts | `scripts/run-visual-smoke.sh` | Yes | `make visual-smoke` |
 | Portal/sandbox smoke | Confined Flatpak/Snap runtime diagnostics and skip-aware package checks | `scripts/run-portal-sandbox-smoke.sh` | Host-dependent | `make portal-sandbox-smoke` |
 | Accessibility smoke | AT-SPI-enabled focus and accessible metadata checks outside the accessibility-disabled widget harness | `scripts/run-accessibility-smoke.sh` | Yes | `make accessibility-smoke` |
@@ -60,7 +60,7 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 - `crates/lushtext/tests/widget.rs` is a custom single-threaded harness. GTK widgets stay on one stable thread, and each test runs in its own child process. Each test is retried once on failure in a fresh process: a transient passes on attempt 2 and is reported as `ok (FLAKY: passed on attempt N)` plus a loud stderr `FLAKY:` warning, while a real failure fails both attempts and stays `FAILED`. A `FLAKY` line is not a clean run — it is a bug to root-cause, never noise to mute.
 - Shared widget wait/flush helpers live once in `crates/lushtext/tests/widget/common.rs` (`wait_until`, `flush_events`, `flush_after_delay`, `present_window`). Import them; do not paste private per-file copies (there were once five copy-pasted `wait_until`s, so fixing one missed the rest). `wait_until` polls and then **drains every ready main-loop source** (`while iteration(false) {}`). Drain-to-exhaustion is load-bearing: `spawn_blocking_then` delivers completion via a low-priority `idle_add_once` source, and only draining dispatches it reliably. Do **not** "optimize" `wait_until` into a single blocking `MainContext::iteration(true)` — a higher-priority timeout source starves the idle and every `spawn_blocking_then`-backed wait then times out (verified: that rewrite fails such tests 5/5).
 - `build.rs` generates the widget registry from `crates/lushtext/tests/widget/*.rs`.
-- `make test` may use `cargo nextest` for non-widget tests across the workspace, but widget tests still run through `scripts/run-widget-tests.sh`, which owns the native and headless `cargo test --test widget` paths.
+- `make test` may use `cargo nextest` for non-widget tests across the workspace, but widget tests still run through `scripts/run-widget-tests.sh`, which owns the headless `cargo test --test widget` path. Native/live-display widget runs are forbidden.
 - `make test-prop` runs the feature-gated `lushtext-core/property-tests` target. Keep this lane deterministic, bounded, and out of default nextest and mutation runs.
 - `make fuzz-corpus-replay` runs the feature-gated `lushtext-core/fuzzing` replay target on stable Rust. Keep it read-only and out of default test and mutation lanes; CI runs it as a separate explicit job so committed seeds stay guarded.
 - `make fuzz-smoke` runs the isolated `cargo-fuzz` project under `fuzz/` with `lushtext-core/fuzzing`. Keep it out of default test, property, widget, benchmark, mutation, and pull-request CI lanes; use scheduled/manual fuzz smoke for coverage-guided discovery.
@@ -87,19 +87,20 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 
 ## Headless GTK Runs
 
-Prefer `make test-widget-headless` or `scripts/run-widget-tests.sh --headless` over hand-copying the mutter command. The shared runner owns the CI path. Two retry layers exist and serve different failures: the harness retries each **test** once in a fresh process (nets a one-off per-test transient), and `--retries N` reruns the **whole suite** in a brand-new Mutter + dbus session (nets a degraded compositor session). Neither is a license to ignore the failure — see Flake Discipline.
+Prefer `make test-widget-headless` or `scripts/run-widget-tests.sh --headless` over hand-copying the mutter command. The shared runner owns the CI path, and plain `cargo test --test widget` self-supervises into the same kind of private headless session before GTK initializes. Two retry layers exist and serve different failures: the harness retries each **test** once in a fresh process (nets a one-off per-test transient), and `--retries N` reruns the **whole suite** in a brand-new Mutter + dbus session (nets a degraded compositor session). Neither is a license to ignore the failure — see Flake Discipline.
 
 The underlying headless invocation is:
 
 ```bash
 export XDG_RUNTIME_DIR="$(mktemp -d)"
 export GDK_BACKEND=wayland
+export LUSHTEXT_WIDGET_HEADLESS_RUNNER=1
 dbus-run-session -- \
   mutter --headless --wayland --no-x11 --virtual-monitor 2560x1600 -- \
     cargo test --test widget
 ```
 
-Use `make test-widget` locally when a display server is already available.
+Do not add or use a live-display/native widget mode. If a behavior only reproduces on the human's desktop, switch to `gtk-agentic-debugging` and keep that separate from the widget harness.
 
 ## Flake Discipline (read before muting any flake)
 

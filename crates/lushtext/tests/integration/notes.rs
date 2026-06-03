@@ -5,7 +5,11 @@
 use lushtext_core::model::bookmark::BookmarkRecord;
 use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspaceScope};
-use lushtext_core::services::{bookmark_service, document_note_service, workspace_note_service};
+use lushtext_core::services::{
+    bookmark_service, document_note_service,
+    filesystem::{fixture, metadata as fs_metadata},
+    workspace_note_service,
+};
 
 use crate::common::TestContext;
 
@@ -26,7 +30,10 @@ fn bookmark_sidecar_roundtrip_uses_saved_file_identity() {
 
     let sidecar_path = bookmark_service::bookmarks_dir(ctx.data_dir())
         .join(format!("{}.json", identity.sidecar_id));
-    assert!(sidecar_path.exists(), "bookmark sidecar should be written");
+    assert!(
+        fs_metadata::file_facts(&sidecar_path).is_ok(),
+        "bookmark sidecar should be written"
+    );
     assert_eq!(loaded.identity.display_path, file_path);
     assert_eq!(loaded.bookmarks.len(), 2);
     assert_eq!(loaded.bookmarks[0].line, 0);
@@ -48,7 +55,7 @@ fn note_sidecars_follow_in_app_rename_migration() {
     document_note_service::save_for_path(ctx.data_dir(), &old_file, &RichNoteBody::new("doc note"))
         .expect("expected operation to succeed");
 
-    std::fs::rename(&old_file, &new_file).expect("expected operation to succeed");
+    fixture::rename(&old_file, &new_file);
     bookmark_service::move_path_tree(ctx.data_dir(), &old_file, &new_file)
         .expect("expected operation to succeed");
     document_note_service::move_path_tree(ctx.data_dir(), &old_file, &new_file)
@@ -83,7 +90,7 @@ fn document_note_roundtrip_uses_saved_file_identity() {
     let sidecar_path = document_note_service::document_notes_dir(ctx.data_dir())
         .join(format!("{}.json", identity.sidecar_id));
     assert!(
-        sidecar_path.exists(),
+        fs_metadata::file_facts(&sidecar_path).is_ok(),
         "document note sidecar should be written"
     );
     assert_eq!(loaded.identity.display_path, file_path);
@@ -108,7 +115,7 @@ fn workspace_note_roundtrip_uses_root_identity_and_scope_listing() {
     let sidecar_path = workspace_note_service::workspace_notes_dir(ctx.data_dir())
         .join(format!("{}.json", identity.sidecar_id));
     assert!(
-        sidecar_path.exists(),
+        fs_metadata::file_facts(&sidecar_path).is_ok(),
         "workspace note sidecar should be written"
     );
     assert_eq!(loaded.identity.display_root, root);

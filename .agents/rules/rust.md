@@ -53,18 +53,48 @@ Use `services::async_task::spawn_blocking_then(state, work, then)` for any I/O t
 
 Never pass GTK objects directly across threads — they are not `Send`/`Sync`. Use `glib::thread_guard::ThreadGuard` or `glib::SendWeakRef`.
 
+## Filesystem Boundary
+
+Production code must use `services::filesystem` for file reads, metadata,
+canonical identity, traversal, mutation, sidecar helpers, and durable writes.
+Call sites should read in LushText terms, such as
+`filesystem::read::text`, `filesystem::metadata::file_facts`,
+`filesystem::tree::scan_directory`, `filesystem::mutate::remove_file_if_exists`,
+and `filesystem::write::atomic_replace`.
+
+Approved raw filesystem exceptions are limited to:
+
+- `services::filesystem::sys` for the private descriptor and platform backend.
+- `services::durable_write` for the private crash-durable write backend used by
+  `filesystem::write`.
+- `services::filesystem::fixture` for test and benchmark setup/assertions.
+
+Do not import the private durable backend from callers. The public durability
+surface is `services::filesystem::write`, including `atomic_replace`,
+`atomic_replace_stream`, `rename_durable`, `copy_file_durable`,
+`sync_parent_dir`, `FileWriteLock`, and `TargetWriteGuard`.
+
+Tests and benches should use `services::filesystem::fixture` helpers such as
+`write_text`, `write_bytes`, `create_dir_all`, `create_sparse_file`,
+`symlink`, `set_mode`, and `assert_text`. This keeps examples readable while
+preserving the boundary.
+
+Run `./scripts/check-filesystem-boundary.sh` after filesystem-sensitive changes
+or before completing work that touches file I/O, persistence, tests, benches,
+rules, or skills. A clean run means no disallowed raw filesystem examples remain
+outside the approved backend and fixture modules.
+
 Durable atomic writes on Linux require the full ordered filesystem contract:
 probe metadata, create the temp file with safe permissions, write and flush
 content, apply required metadata, call `sync_all()` on the temp file after those
 metadata mutations, `rename()`, then sync the parent directory so ext4, XFS, and
 Btrfs cannot lose the renamed directory entry across power loss. Use
-`services::durable_write::sync_parent_dir()` for the directory half instead of
+`services::filesystem::write::sync_parent_dir()` for the directory half instead of
 leaving it to each call site.
 
-Prefer the shared `services::durable_write::atomic_write_bytes` (or
-`atomic_write_bytes_classified` / `atomic_write_stream_classified` when you need
-the failure phase or streaming serialization) over hand-rolling
-temp-file-then-rename. The shared helper guarantees these things every
+Prefer the shared `services::filesystem::write::atomic_replace` (or
+`atomic_replace_stream` when you need streaming serialization) over hand-rolling
+temp-file-then-rename. The shared boundary guarantees these things every
 persistence caller must inherit and must not silently drop:
 
 - **Identity-metadata preservation.** Because the rename installs a brand-new
@@ -150,7 +180,7 @@ Prefer the new standard-library helpers when they make intent clearer:
 ## Error Handling
 
 - Services return `anyhow::Result`.
-- For file I/O: try the operation and handle errors (no TOCTOU `exists()` checks).
+- For file I/O: try the operation and handle errors; avoid preflight existence checks that race with the operation.
 - In GTK signal handlers: log errors with `tracing::error!`, don't panic.
 
 ## File Size Limit
@@ -172,4 +202,5 @@ When production code approaches 1000 lines:
 - Integration tests: `crates/lushtext/tests/integration.rs` with `#[path]` split pattern.
 - Widget tests: `crates/lushtext/tests/widget.rs` with `#[path]` split pattern; require display server.
 - Use `TestContext` for filesystem isolation (tempdir + simulated XDG dirs).
+- Use `services::filesystem::fixture` helpers for file setup and assertions in tests and benches.
 - Run `cargo hakari generate` after adding/removing dependencies.

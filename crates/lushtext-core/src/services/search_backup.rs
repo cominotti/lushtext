@@ -6,7 +6,13 @@
 //! All can be reverted without overwriting files edited after the replacement.
 
 use crate::services::content_search::{ReplaceUndoBackup, ReplaceUndoEntry};
-use crate::services::{durable_write, json_store};
+use crate::services::{
+    filesystem::{
+        DirectoryScanPolicy, FileKind, metadata as fs_metadata, mutate as fs_mutate,
+        tree as fs_tree, write as fs_write,
+    },
+    json_store,
+};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -36,7 +42,7 @@ struct ReplaceBackupDiskEntry {
 /// converted back into UTF-8 file content.
 pub fn load(data_dir: &Path) -> Result<ReplaceUndoBackup> {
     let journal_dir = data_dir.join(JOURNAL_DIR);
-    if journal_dir.is_dir() {
+    if fs_metadata::file_facts(&journal_dir).is_ok_and(|facts| facts.kind == FileKind::Directory) {
         return load_journal(&journal_dir);
     }
 
@@ -90,9 +96,8 @@ pub fn save_entry(data_dir: &Path, path: &Path, entry: &ReplaceUndoEntry) -> Res
 /// Returns an error if an existing entry cannot be removed.
 pub fn delete_entry(data_dir: &Path, path: &Path) -> Result<()> {
     let entry_path = data_dir.join(JOURNAL_DIR).join(entry_file_name(path));
-    match std::fs::remove_file(&entry_path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    match fs_mutate::remove_file_if_exists(&entry_path) {
+        Ok(_) => Ok(()),
         Err(e) => Err(anyhow::anyhow!(
             "failed to delete replace journal entry {}: {}",
             entry_path.display(),
@@ -103,16 +108,10 @@ pub fn delete_entry(data_dir: &Path, path: &Path) -> Result<()> {
 
 fn load_journal(journal_dir: &Path) -> Result<ReplaceUndoBackup> {
     let mut backup = ReplaceUndoBackup::new();
-    for entry in std::fs::read_dir(journal_dir)
+    for entry in fs_tree::scan_directory(journal_dir, DirectoryScanPolicy::visible_workspace())
         .with_context(|| format!("failed to read replace journal {}", journal_dir.display()))?
     {
-        let entry = entry.with_context(|| {
-            format!(
-                "failed to inspect replace journal entry in {}",
-                journal_dir.display()
-            )
-        })?;
-        let path = entry.path();
+        let path = entry.path;
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
@@ -160,9 +159,8 @@ fn disk_entry_from_memory(path: &Path, entry: &ReplaceUndoEntry) -> Result<Repla
 /// Returns an error if an existing backup file cannot be deleted.
 pub fn delete(data_dir: &Path) -> Result<()> {
     let legacy = data_dir.join(BACKUP_FILE);
-    match std::fs::remove_file(&legacy) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+    match fs_mutate::remove_file_if_exists(&legacy) {
+        Ok(_) => {}
         Err(e) => {
             return Err(anyhow::anyhow!(
                 "failed to delete replace backup {}: {}",
@@ -173,16 +171,15 @@ pub fn delete(data_dir: &Path) -> Result<()> {
     }
 
     let journal_dir = data_dir.join(JOURNAL_DIR);
-    match std::fs::remove_dir_all(&journal_dir) {
-        Ok(()) => {
-            if data_dir.exists()
-                && let Err(error) = durable_write::sync_parent_dir(&journal_dir)
+    match fs_mutate::remove_dir_all_if_exists(&journal_dir) {
+        Ok(_) => {
+            if fs_metadata::file_facts(data_dir).is_ok()
+                && let Err(error) = fs_write::sync_parent_dir(&journal_dir)
             {
                 tracing::warn!("Failed to sync replace journal cleanup: {error}");
             }
             Ok(())
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(anyhow::anyhow!(
             "failed to delete replace journal {}: {}",
             journal_dir.display(),
@@ -200,6 +197,7 @@ fn entry_file_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     #[test]
@@ -234,7 +232,7 @@ mod tests {
     #[test]
     fn delete_reports_non_file_backup_errors() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join(BACKUP_FILE)).expect("expected operation to succeed");
+        fixture::create_dir(&dir.path().join(BACKUP_FILE));
 
         let error = delete(dir.path()).expect_err("directory backup should fail deletion");
 
@@ -249,8 +247,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn save_entry_does_not_rewrite_existing_journal_entries() {
-        use std::os::unix::fs::MetadataExt;
-
         let dir = TempDir::new().expect("expected operation to succeed");
         let path_a = PathBuf::from("/tmp/a.rs");
         let path_b = PathBuf::from("/tmp/b.rs");
@@ -259,24 +255,18 @@ mod tests {
 
         save_entry(dir.path(), &path_a, &entry_a).expect("save first journal entry");
         let entry_a_path = dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_a));
-        let inode_before = std::fs::metadata(&entry_a_path)
-            .expect("stat first entry before")
-            .ino();
+        let inode_before = fs_metadata::inode(&entry_a_path).expect("stat first entry before");
 
         save_entry(dir.path(), &path_b, &entry_b).expect("save second journal entry");
 
-        let inode_after = std::fs::metadata(&entry_a_path)
-            .expect("stat first entry after")
-            .ino();
+        let inode_after = fs_metadata::inode(&entry_a_path).expect("stat first entry after");
         assert_eq!(
             inode_after, inode_before,
             "saving a new file's journal entry must not rewrite older entries"
         );
         assert!(
-            dir.path()
-                .join(JOURNAL_DIR)
-                .join(entry_file_name(&path_b))
-                .exists(),
+            fs_metadata::file_facts(&dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_b)))
+                .is_ok(),
             "the second per-file journal entry should be created independently"
         );
     }

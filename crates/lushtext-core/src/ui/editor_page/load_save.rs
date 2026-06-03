@@ -22,7 +22,7 @@ use crate::model::encoding::{
 };
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use crate::services::{async_task, editor_io};
+use crate::services::{async_task, editor_io, filesystem::metadata as fs_metadata};
 
 use super::{LushtextEditorPage, SaveError};
 use editor_io::LoadError;
@@ -417,7 +417,7 @@ impl LushtextEditorPage {
                     metadata.save_line_ending,
                     allow_lossy,
                 )?;
-                let canonical_path = path.canonicalize().ok();
+                let canonical_path = fs_metadata::canonical_path(&path).ok();
 
                 if history_availability.allows_browsing() {
                     let data_dir = crate::services::json_store::data_dir();

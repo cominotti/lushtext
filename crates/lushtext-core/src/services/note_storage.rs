@@ -12,6 +12,7 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
+use crate::services::filesystem::{metadata as fs_metadata, read as fs_read};
 
 /// Resolve the stable identity for one saved document path.
 ///
@@ -20,8 +21,7 @@ use crate::model::sidecar_identity::DocumentSidecarIdentity;
 /// Returns an error if the path cannot be canonicalized.
 pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
     let display_path = path.to_path_buf();
-    let canonical_path = path
-        .canonicalize()
+    let canonical_path = fs_metadata::canonical_path(path)
         .with_context(|| format!("failed to canonicalize {}", path.display()))?;
     Ok(DocumentSidecarIdentity::from_paths(
         display_path,
@@ -40,7 +40,7 @@ pub fn sidecar_filename(sidecar_id: &str) -> String {
 pub fn canonicalize_roots(workspace_roots: &[PathBuf]) -> Vec<PathBuf> {
     workspace_roots
         .iter()
-        .map(|root| root.canonicalize().unwrap_or_else(|_| root.clone()))
+        .map(|root| fs_metadata::canonical_path(root).unwrap_or_else(|_| root.clone()))
         .collect()
 }
 
@@ -71,9 +71,8 @@ pub fn rebase_identity_paths(
         } else {
             new_path.join(suffix)
         };
-        let canonical_path = display_path
-            .canonicalize()
-            .unwrap_or_else(|_| display_path.clone());
+        let canonical_path =
+            fs_metadata::canonical_path(&display_path).unwrap_or_else(|_| display_path.clone());
         return Some((display_path, canonical_path));
     }
 
@@ -89,9 +88,8 @@ pub fn rebase_identity_paths(
         } else {
             new_path.join(suffix)
         };
-        let canonical_path = display_path
-            .canonicalize()
-            .unwrap_or_else(|_| display_path.clone());
+        let canonical_path =
+            fs_metadata::canonical_path(&display_path).unwrap_or_else(|_| display_path.clone());
         return Some((display_path, canonical_path));
     }
 
@@ -104,7 +102,7 @@ pub fn rebase_identity_paths(
 ///
 /// Returns an error if the file cannot be read or parsed.
 pub fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
-    match std::fs::read(path) {
+    match fs_read::bytes(path) {
         Ok(bytes) => {
             let value = serde_json::from_slice(&bytes)
                 .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -122,6 +120,7 @@ pub fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     #[test]
@@ -129,13 +128,13 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let existing = dir.path().join("workspace");
         let missing = dir.path().join("missing");
-        std::fs::create_dir_all(&existing).expect("create workspace");
+        fixture::create_dir_all(&existing);
 
         let roots = canonicalize_roots(&[existing.clone(), missing.clone()]);
 
         assert_eq!(
             roots[0],
-            existing.canonicalize().expect("canonical workspace")
+            fs_metadata::canonical_path(&existing).expect("canonical workspace")
         );
         assert_eq!(roots[1], missing);
     }

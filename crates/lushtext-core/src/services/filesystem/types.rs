@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Shared value types returned by the filesystem boundary.
+//!
+//! These names describe LushText workflows rather than backend calls. Keeping
+//! the data plain and GTK-free lets services and tests share the same boundary
+//! without pulling widget types into the service layer.
+
+use std::path::PathBuf;
+
+/// Coarse filesystem kind used by callers that should not inspect raw metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileKind {
+    /// Regular file.
+    File,
+    /// Directory.
+    Directory,
+    /// Symlink, socket, device, or another kind the caller should treat carefully.
+    Other,
+}
+
+/// Metadata facts most LushText workflows need before reading or writing a file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileFacts {
+    /// Original path requested by the caller.
+    pub path: PathBuf,
+    /// Canonical path when the target can be resolved.
+    pub canonical_path: Option<PathBuf>,
+    /// File kind derived from metadata.
+    pub kind: FileKind,
+    /// File length in bytes.
+    pub byte_size: u64,
+    /// Last modification time as seconds since the Unix epoch, if available.
+    pub modified_at_secs: Option<u64>,
+}
+
+/// Bytes plus metadata captured from one file read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileSnapshot {
+    /// Metadata facts captured near the read.
+    pub facts: FileFacts,
+    /// File bytes read from disk.
+    pub bytes: Vec<u8>,
+}
+
+/// Directory entry shape exposed by tree-oriented scans.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryEntryInfo {
+    /// Absolute or caller-relative child path.
+    pub path: PathBuf,
+    /// Display name for sorting and UI rows.
+    pub file_name: String,
+    /// Coarse file kind.
+    pub kind: FileKind,
+}
+
+/// Readability-first policy for directory scans.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DirectoryScanPolicy {
+    /// Maximum entries retained by the caller.
+    pub max_entries: usize,
+    /// Whether hidden dotfiles should be skipped.
+    pub include_hidden: bool,
+}
+
+impl DirectoryScanPolicy {
+    /// Policy for an unbounded visible workspace scan.
+    #[must_use]
+    pub const fn visible_workspace() -> Self {
+        Self {
+            max_entries: usize::MAX,
+            include_hidden: false,
+        }
+    }
+}
+
+/// Human-readable label used in temp-file names and diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WriteLabel(&'static str);
+
+impl WriteLabel {
+    /// Editor save write label.
+    pub const SAVE: Self = Self("save");
+    /// JSON state write label.
+    pub const JSON: Self = Self("json");
+    /// Draft persistence write label.
+    pub const DRAFT: Self = Self("draft");
+    /// Replace All write label.
+    pub const REPLACE: Self = Self("replace");
+    /// Local-history snapshot migration copy label.
+    pub const LOCAL_HISTORY_COPY: Self = Self("local-history-copy");
+
+    /// Return the stable label string used by durable write helpers.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl From<&'static str> for WriteLabel {
+    fn from(value: &'static str) -> Self {
+        Self(value)
+    }
+}
+
+/// Small result summary for mutating filesystem commands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MutationOutcome {
+    /// The requested operation changed the filesystem.
+    Changed,
+    /// The target was already absent and no change was needed.
+    AlreadyAbsent,
+}

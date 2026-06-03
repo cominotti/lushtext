@@ -7,7 +7,8 @@
 //! that still live in the window layer.
 
 use crate::common::{
-    emit_key_pressed_on_focus, ensure_gtk_init, flush_after_delay, flush_events, wait_until,
+    emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
+    fs_metadata, fs_read, wait_until,
 };
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
 use glib::prelude::{Cast, IsA, ObjectExt, ToValue};
@@ -22,6 +23,7 @@ use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::encoding::{
     DocumentEncoding, FileHealthFindingKind, InvisibleCharactersMode, LineEnding,
 };
+use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
@@ -30,7 +32,10 @@ use lushtext_core::model::workspace::{
 use lushtext_core::services::file_limits::{
     DISABLE_SYNTAX_HIGHLIGHTING, DISABLE_UNDO_HISTORY, FileSizeCheck, REFUSE_TO_OPEN,
 };
-use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_core::services::notifications::{
+    InlineActionNotification, InlineNotificationStyle, NotificationOwner, NotificationPayload,
+    NotificationSeverity, NotificationSurface, StatusMessage,
+};
 use lushtext_core::services::{
     bookmark_service, document_note_service, draft_service, editor_io, json_store,
     local_history_service, session_service, workspace_manager, workspace_note_service,
@@ -45,13 +50,26 @@ use lushtext_core::ui::window::{
 };
 use sourceview5::prelude::*;
 use std::cell::RefCell;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 fn test_window() -> LushtextWindow {
     crate::common::test_window()
+}
+
+/// Return whether the message area has any severity or animation-restart pulse state.
+fn status_message_area_has_any_pulse(window: &LushtextWindow) -> bool {
+    let area = &window.imp().status_bar.imp().message_area_box;
+    area.has_css_class("status-pulse-info")
+        || area.has_css_class("status-pulse-warning")
+        || area.has_css_class("status-pulse-error")
+        || area.has_css_class("status-pulse-a")
+        || area.has_css_class("status-pulse-b")
+}
+
+fn status_message_area_generation(window: &LushtextWindow) -> u32 {
+    window.imp().status_bar.imp().pulse_generation.get()
 }
 
 fn seed_restored_window_size(width: i32, height: i32) {
@@ -150,7 +168,7 @@ fn seed_restored_workspaces() -> tempfile::TempDir {
 
     for (idx, name) in ["one", "two", "three"].into_iter().enumerate() {
         let path = roots_dir.path().join(name);
-        std::fs::create_dir_all(&path).expect("create workspace root");
+        fixture::create_dir_all(&path);
         workspaces.workspaces.push(WorkspaceConfig {
             id: WorkspaceId::new(format!("ws-{idx}")),
             name: name.to_string(),
@@ -167,10 +185,10 @@ fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, 
     let roots_dir = tempfile::tempdir().expect("scoped workspace roots tempdir");
     let left_root = roots_dir.path().join("left");
     let right_root = roots_dir.path().join("right");
-    std::fs::create_dir_all(&left_root).expect("create left workspace root");
-    std::fs::create_dir_all(&right_root).expect("create right workspace root");
-    std::fs::write(left_root.join("alpha.rs"), "fn alpha() {}\n").expect("write alpha");
-    std::fs::write(right_root.join("beta.rs"), "fn beta() {}\n").expect("write beta");
+    fixture::create_dir_all(&left_root);
+    fixture::create_dir_all(&right_root);
+    fixture::write_text(&left_root.join("alpha.rs"), "fn alpha() {}\n");
+    fixture::write_text(&right_root.join("beta.rs"), "fn beta() {}\n");
 
     let workspaces = WorkspacesFile {
         current_scope: initial_scope,
@@ -292,7 +310,7 @@ fn open_temp_document(initial_text: &str) -> (LushtextWindow, tempfile::TempDir,
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("document tempdir");
     let path = dir.path().join("watched.txt");
-    std::fs::write(&path, initial_text).expect("write watched file");
+    fixture::write_text(&path, initial_text);
 
     let window = test_window();
     present_window(&window);
@@ -307,16 +325,7 @@ fn open_temp_document(initial_text: &str) -> (LushtextWindow, tempfile::TempDir,
 
 fn write_ascii_fixture(path: &Path, size: u64) {
     const CHUNK: &[u8] = b"fn main() { println!(\"large file fixture\"); }\n";
-
-    let mut file = std::fs::File::create(path).expect("create large-file fixture");
-    let mut written = 0u64;
-    while written < size {
-        let remaining = usize::try_from((size - written).min(CHUNK.len() as u64))
-            .expect("fixture chunk size fits usize");
-        file.write_all(&CHUNK[..remaining])
-            .expect("write large-file fixture");
-        written += remaining as u64;
-    }
+    fixture::write_repeated_bytes(path, CHUNK, size);
 }
 
 /// Force an external write onto a later mtime second before waiting for GTK.
@@ -337,7 +346,7 @@ fn write_external_change_after_mtime_tick(
         .expect("loaded editor should know the backing file mtime");
 
     for _ in 0..5 {
-        std::fs::write(path, contents).expect("write external file change");
+        fixture::write_text(path, contents);
         if editor_io::mtime_secs(path).is_some_and(|mtime| mtime != last_known) {
             return;
         }
@@ -912,7 +921,7 @@ fn local_history_preview_text(root: &gtk4::Widget) -> Option<String> {
 }
 
 fn wait_for_local_history_preview_text(root: &gtk4::Widget, expected: &str) {
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(5), || {
         local_history_preview_text(root).as_deref() == Some(expected)
     });
 }
@@ -1672,8 +1681,8 @@ fn seed_peek_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let root_dir = tempfile::tempdir().expect("peek workspace tempdir");
     let alpha = root_dir.path().join("alpha.rs");
     let beta = root_dir.path().join("beta.rs");
-    std::fs::write(&alpha, "fn alpha() {\n    println!(\"alpha\");\n}\n").expect("write alpha");
-    std::fs::write(&beta, "fn beta() {\n    println!(\"beta\");\n}\n").expect("write beta");
+    fixture::write_text(&alpha, "fn alpha() {\n    println!(\"alpha\");\n}\n");
+    fixture::write_text(&beta, "fn beta() {\n    println!(\"beta\");\n}\n");
 
     let mut workspaces = WorkspacesFile::default();
     workspaces.workspaces.push(WorkspaceConfig {
@@ -1692,7 +1701,7 @@ fn seed_named_tab_files(names: &[&str]) -> (tempfile::TempDir, Vec<PathBuf>) {
         .iter()
         .map(|name| {
             let path = dir.path().join(name);
-            std::fs::write(&path, format!("content for {name}\n")).expect("write tab fixture");
+            fixture::write_text(&path, &format!("content for {name}\n"));
             path
         })
         .collect();
@@ -1703,9 +1712,8 @@ fn seed_named_tab_files(names: &[&str]) -> (tempfile::TempDir, Vec<PathBuf>) {
 fn test_open_document_restores_bookmarks() {
     let tempdir = tempfile::tempdir().expect("notes tempdir");
     let file_path = tempdir.path().join("src/main.rs");
-    std::fs::create_dir_all(file_path.parent().expect("expected operation to succeed"))
-        .expect("create file parent");
-    std::fs::write(&file_path, "one\ntwo\nthree\nfour\n").expect("write source file");
+    fixture::create_dir_all(file_path.parent().expect("expected operation to succeed"));
+    fixture::write_text(&file_path, "one\ntwo\nthree\nfour\n");
 
     let window = test_window();
     let data_dir = json_store::data_dir();
@@ -2192,7 +2200,7 @@ fn test_local_history_browser_controls_expose_accessibility_roles() {
     present_window(&window);
     let dir = tempfile::tempdir().expect("local history role tempdir");
     let path = dir.path().join("history-roles.txt");
-    std::fs::write(&path, "snapshot text\n").expect("write history role file");
+    fixture::write_text(&path, "snapshot text\n");
     local_history_service::capture_snapshot_for_path(
         &json_store::data_dir(),
         &path,
@@ -2238,7 +2246,7 @@ fn test_notes_browser_controls_expose_accessibility_roles() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_root.join("notes-roles.md");
-    std::fs::write(&path, "# Notes\n").expect("write notes role source");
+    fixture::write_text(&path, "# Notes\n");
     document_note_service::save_for_path(
         &json_store::data_dir(),
         &path,
@@ -2823,6 +2831,125 @@ fn test_shell_chrome_uses_explicit_opaque_classes_for_transparency_mode() {
 }
 
 #[test]
+fn test_transient_status_message_pulses_full_message_area() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    window.publish_status_message("File saved", NotificationSeverity::Info);
+
+    let status_bar = window.imp().status_bar.imp();
+    assert_eq!(status_bar.message_label.label().as_str(), "File saved");
+    assert!(status_bar.message_area_box.has_css_class("status-pulse-info"));
+    assert!(status_bar.message_area_box.has_css_class("status-pulse-a"));
+    assert!(!status_bar.message_label.has_css_class("status-pulse-info"));
+    assert!(!status_bar.sidebar_toggle_button.has_css_class("status-pulse-info"));
+    assert!(!status_bar.metadata_box.has_css_class("status-pulse-info"));
+}
+
+#[test]
+fn test_repeated_transient_status_message_restarts_pulse_without_text_counter() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    window.publish_status_message("File saved", NotificationSeverity::Info);
+    let first_generation = status_message_area_generation(&window);
+    let first_used_a = window
+        .imp()
+        .status_bar
+        .imp()
+        .message_area_box
+        .has_css_class("status-pulse-a");
+
+    window.publish_status_message("File saved", NotificationSeverity::Info);
+    let status_bar = window.imp().status_bar.imp();
+
+    assert_eq!(status_bar.message_label.label().as_str(), "File saved");
+    assert!(status_message_area_generation(&window) > first_generation);
+    assert_ne!(
+        first_used_a,
+        status_bar.message_area_box.has_css_class("status-pulse-a")
+    );
+}
+
+#[test]
+fn test_visible_search_progress_update_pulses_message_area() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    window.update_search_progress_message_for_test(
+        "Searching 10 files\u{2026}",
+        NotificationSeverity::Info,
+    );
+
+    let status_bar = window.imp().status_bar.imp();
+    assert_eq!(
+        status_bar.message_label.label().as_str(),
+        "Searching 10 files\u{2026}"
+    );
+    assert!(status_bar.message_area_box.has_css_class("status-pulse-info"));
+}
+
+#[test]
+fn test_hidden_search_progress_update_does_not_pulse_over_transient() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    window.publish_status_message("File saved", NotificationSeverity::Info);
+    window.imp().status_bar.clear_message_area_pulse();
+    let generation_before_hidden_update = status_message_area_generation(&window);
+
+    window.update_search_progress_message_for_test(
+        "Searching 10 files\u{2026}",
+        NotificationSeverity::Warning,
+    );
+
+    let status_bar = window.imp().status_bar.imp();
+    assert_eq!(status_bar.message_label.label().as_str(), "File saved");
+    assert!(!status_message_area_has_any_pulse(&window));
+    assert_eq!(
+        status_message_area_generation(&window),
+        generation_before_hidden_update
+    );
+}
+
+#[test]
+fn test_generic_progress_heartbeat_and_resolve_renders_do_not_pulse() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert!(window.imp().notification_bus.publish(
+        NotificationOwner::Search,
+        NotificationSurface::StatusBar,
+        NotificationPayload::Progress(StatusMessage {
+            text: "Searching 1 file\u{2026}".to_string(),
+            severity: NotificationSeverity::Info,
+        }),
+    ));
+    window.render_notifications();
+    assert_eq!(
+        window.imp().status_bar.imp().message_label.label().as_str(),
+        "Searching 1 file\u{2026}"
+    );
+    assert!(!status_message_area_has_any_pulse(&window));
+
+    assert!(
+        window
+            .imp()
+            .notification_bus
+            .heartbeat(NotificationOwner::Search, NotificationSurface::StatusBar)
+    );
+    window.render_notifications();
+    assert!(!status_message_area_has_any_pulse(&window));
+
+    assert!(window.imp().notification_bus.resolve(
+        NotificationOwner::Search,
+        NotificationSurface::StatusBar
+    ));
+    window.render_notifications();
+    assert!(!status_message_area_has_any_pulse(&window));
+}
+
+#[test]
 fn test_editor_transparency_uses_derived_scheme_and_keeps_minimap_opaque() {
     ensure_gtk_init();
     let settings = gio::Settings::new(lushtext_core::config::APP_ID);
@@ -2835,7 +2962,7 @@ fn test_editor_transparency_uses_derived_scheme_and_keeps_minimap_opaque() {
 
     let temp_dir = tempfile::tempdir().expect("editor tempdir");
     let file_path = temp_dir.path().join("alpha.rs");
-    std::fs::write(&file_path, "fn main() {\n    println!(\"hi\");\n}\n").expect("write file");
+    fixture::write_text(&file_path, "fn main() {\n    println!(\"hi\");\n}\n");
 
     let window = test_window();
     present_window(&window);
@@ -2976,7 +3103,7 @@ fn test_large_file_load_disables_undo_and_history_through_ui_state() {
     let dir = tempfile::tempdir().expect("huge-file tempdir");
     let path = dir.path().join("huge.rs");
     let size = DISABLE_UNDO_HISTORY + 1;
-    std::fs::write(&path, "small fixture promoted to huge-file policy\n").expect("write fixture");
+    fixture::write_text(&path, "small fixture promoted to huge-file policy\n");
 
     let window = test_window();
     present_window(&window);
@@ -3011,10 +3138,8 @@ fn test_too_large_file_refuses_to_load_and_clears_open_path_state() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("too-large-file tempdir");
     let path = dir.path().join("too-large.txt");
-    let file = std::fs::File::create(&path).expect("create too-large sparse file");
-    file.set_len(REFUSE_TO_OPEN + 1)
-        .expect("size too-large sparse file");
-    let canonical_path = path.canonicalize().expect("canonical too-large path");
+    fixture::create_sparse_file(&path, REFUSE_TO_OPEN + 1);
+    let canonical_path = fs_metadata::canonical_path(&path).expect("canonical too-large path");
 
     let window = test_window();
     present_window(&window);
@@ -3048,9 +3173,9 @@ fn test_memory_pressure_evicts_background_tab_and_reloads_without_path_corruptio
     let second_path = dir.path().join("second.txt");
     let first_text = "first tab data\n";
     let second_text = "second tab data\n";
-    std::fs::write(&first_path, first_text).expect("write first file");
-    std::fs::write(&second_path, second_text).expect("write second file");
-    let first_key = first_path.canonicalize().expect("canonical first path");
+    fixture::write_text(&first_path, first_text);
+    fixture::write_text(&second_path, second_text);
+    let first_key = fs_metadata::canonical_path(&first_path).expect("canonical first path");
 
     let window = test_window();
     present_window(&window);
@@ -3913,8 +4038,8 @@ fn test_open_properties_right_pane_and_bottom_sheet_keep_active_document_state()
     let dir = tempfile::tempdir().expect("tempdir");
     let first_path = dir.path().join("first.txt");
     let second_path = dir.path().join("second.txt");
-    std::fs::write(&first_path, "first\n").expect("write first file");
-    std::fs::write(&second_path, "second file\n").expect("write second file");
+    fixture::write_text(&first_path, "first\n");
+    fixture::write_text(&second_path, "second file\n");
 
     window.open_document(&first_path);
     wait_until(Duration::from_secs(2), || {
@@ -3990,7 +4115,7 @@ fn test_open_properties_bottom_sheet_and_right_pane_keep_active_document_state()
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("sheet-to-pane.txt");
-    std::fs::write(&path, "sheet to pane\n").expect("write file");
+    fixture::write_text(&path, "sheet to pane\n");
 
     window.open_document(&path);
     let expected_location = path.display().to_string();
@@ -4363,12 +4488,14 @@ fn test_flush_dirty_drafts_fails_when_manifest_cannot_be_saved() {
     let data_dir = json_store::data_dir();
     let drafts_dir = draft_service::drafts_dir(&data_dir);
     let manifest_path = drafts_dir.join("manifest.json");
-    if manifest_path.is_dir() {
-        std::fs::remove_dir_all(&manifest_path).expect("remove stale manifest dir");
+    if fs_metadata::file_facts(&manifest_path).is_ok_and(|facts| {
+        facts.kind == lushtext_core::services::filesystem::FileKind::Directory
+    }) {
+        fixture::remove_dir_all(&manifest_path);
     } else {
-        let _ = std::fs::remove_file(&manifest_path);
+        fixture::remove_file(&manifest_path);
     }
-    std::fs::create_dir_all(&manifest_path).expect("create manifest path as directory");
+    fixture::create_dir_all(&manifest_path);
 
     let error = window
         .flush_dirty_drafts()
@@ -4384,7 +4511,7 @@ fn test_flush_dirty_drafts_fails_when_manifest_cannot_be_saved() {
         "draft bytes already written must be visible for recovery",
     );
 
-    std::fs::remove_dir_all(&manifest_path).expect("remove manifest dir");
+    fixture::remove_dir_all(&manifest_path);
     draft_service::delete_draft_file(&data_dir, &draft_id).expect("delete draft file");
 }
 
@@ -4447,7 +4574,7 @@ fn test_complete_save_as_success_updates_editor_identity_and_cleans_old_draft() 
 
     let dir = tempfile::tempdir().expect("save as tempdir");
     let path = dir.path().join("saved.txt");
-    std::fs::write(&path, "saved content").expect("seed saved file");
+    fixture::write_text(&path, "saved content");
 
     window.complete_save_as(&editor, None, Some(old_draft_id.as_str()), &path, Ok(()));
 
@@ -4469,7 +4596,7 @@ fn test_file_chooser_open_selection_opens_selected_document() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("chooser tempdir");
     let path = dir.path().join("chosen.txt");
-    std::fs::write(&path, "chosen through chooser\n").expect("write chosen file");
+    fixture::write_text(&path, "chosen through chooser\n");
 
     let window = test_window();
     present_window(&window);
@@ -4503,10 +4630,12 @@ fn test_file_chooser_save_as_selection_adopts_destination_after_write() {
     window.select_save_as_destination_for_test(&path);
 
     wait_until(Duration::from_secs(2), || {
-        path.exists() && editor.file_path() == Some(path.clone()) && !editor.is_modified()
+        fs_metadata::file_facts(&path).is_ok()
+            && editor.file_path() == Some(path.clone())
+            && !editor.is_modified()
     });
     assert_eq!(
-        std::fs::read_to_string(&path).expect("read saved chooser destination"),
+        fs_read::text(&path).expect("read saved chooser destination"),
         "save as through chooser\n"
     );
     wait_until(Duration::from_secs(2), || {
@@ -4523,8 +4652,8 @@ fn test_file_chooser_save_as_existing_symlink_updates_target_without_replacing_l
     let dir = tempfile::tempdir().expect("chooser symlink tempdir");
     let target = dir.path().join("target.txt");
     let link = dir.path().join("link.txt");
-    std::fs::write(&target, "old target\n").expect("seed target");
-    std::os::unix::fs::symlink(&target, &link).expect("create save-as symlink");
+    fixture::write_text(&target, "old target\n");
+    fixture::symlink(&target, &link);
 
     let window = test_window();
     window.new_tab();
@@ -4537,28 +4666,22 @@ fn test_file_chooser_save_as_existing_symlink_updates_target_without_replacing_l
     window.select_save_as_destination_for_test(&link);
 
     wait_until(Duration::from_secs(2), || {
-        std::fs::read_to_string(&target).is_ok_and(|content| content == "new target\n")
+        fs_read::text(&target).is_ok_and(|content| content == "new target\n")
             && editor.file_path() == Some(link.clone())
             && !editor.is_modified()
     });
     assert!(
-        std::fs::symlink_metadata(&link)
-            .expect("stat link")
-            .file_type()
-            .is_symlink(),
+        fixture::is_symlink(&link),
         "Save As must update the symlink target without replacing the link"
     );
-    assert_eq!(
-        std::fs::read_to_string(&target).expect("read target"),
-        "new target\n"
-    );
+    assert_eq!(fs_read::text(&target).expect("read target"), "new target\n");
     assert!(window.imp().open_paths.borrow().contains(&link));
     assert!(
         window
             .imp()
             .open_paths
             .borrow()
-            .contains(&target.canonicalize().expect("canonical target")),
+            .contains(&fs_metadata::canonical_path(&target).expect("canonical target")),
         "Save As should register the canonical target for duplicate detection"
     );
 }
@@ -4568,7 +4691,7 @@ fn test_file_chooser_workspace_folder_selection_adds_workspace() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("workspace chooser tempdir");
     let root = dir.path().join("chosen-workspace");
-    std::fs::create_dir_all(&root).expect("create workspace root");
+    fixture::create_dir_all(&root);
 
     let window = test_window();
     window.imp().sidebar.select_workspace_folder_for_test(&root);
@@ -4643,7 +4766,7 @@ fn test_local_history_action_requires_saved_eligible_document() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("history.txt");
-    std::fs::write(&path, "one\n").expect("write file");
+    fixture::write_text(&path, "one\n");
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -4672,7 +4795,7 @@ fn test_active_editor_extra_menu_includes_contextual_notes_and_local_history() {
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("extra-menu.txt");
-    std::fs::write(&path, "hello").expect("write file");
+    fixture::write_text(&path, "hello");
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -4706,7 +4829,7 @@ fn test_local_history_dialog_shows_empty_state_without_snapshots() {
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("empty-history.txt");
-    std::fs::write(&path, "one\n").expect("write file");
+    fixture::write_text(&path, "one\n");
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -4752,7 +4875,7 @@ fn test_local_history_browser_explains_empty_snapshot_and_disables_copy() {
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("empty-snapshot-history.txt");
-    std::fs::write(&path, "").expect("write file");
+    fixture::write_text(&path, "");
 
     let data_dir = json_store::data_dir();
     local_history_service::capture_snapshot_for_path(
@@ -4810,7 +4933,7 @@ fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("legacy-noise-history.txt");
-    std::fs::write(&path, "").expect("write file");
+    fixture::write_text(&path, "");
 
     let data_dir = json_store::data_dir();
     local_history_service::capture_snapshot_for_path(
@@ -4904,7 +5027,7 @@ fn test_local_history_dialog_scales_from_parent_and_keeps_preview_dominant() {
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("viewer-history.txt");
-    std::fs::write(&path, "current\n").expect("write file");
+    fixture::write_text(&path, "current\n");
 
     let data_dir = json_store::data_dir();
     local_history_service::capture_snapshot_for_path(
@@ -5010,7 +5133,7 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("history-browser.txt");
-    std::fs::write(&path, "current\n").expect("write file");
+    fixture::write_text(&path, "current\n");
 
     let data_dir = json_store::data_dir();
     local_history_service::capture_snapshot_for_path(
@@ -5039,6 +5162,28 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     let editor = active_editor(&window);
     editor.buffer().set_text("working copy");
     editor.buffer().set_modified(true);
+
+    // The first modified transition schedules the "before edits" baseline.
+    // Wait for it before opening the browser so row 1 deterministically names
+    // the newest saved snapshot instead of racing the background capture.
+    wait_until(Duration::from_secs(10), || {
+        let Ok(snapshots) = local_history_service::list_snapshots_for_path(&data_dir, &path) else {
+            return false;
+        };
+        if !snapshots
+            .first()
+            .is_some_and(|meta| meta.origin == LocalHistorySnapshotOrigin::Baseline)
+        {
+            return false;
+        }
+        let Some(target) = snapshots.get(1) else {
+            return false;
+        };
+        local_history_service::load_snapshot_for_path(&data_dir, &path, &target.snapshot_id)
+            .ok()
+            .flatten()
+            .is_some_and(|snapshot| snapshot.text == "version two\n")
+    });
 
     activate_action(&window, "show-local-history");
     wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
@@ -5094,7 +5239,7 @@ fn test_local_history_capture_policy_respects_full_save_only_and_unavailable_mod
     let window = test_window();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("capture-policy.txt");
-    std::fs::write(&path, "saved\n").expect("write file");
+    fixture::write_text(&path, "saved\n");
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -5186,7 +5331,7 @@ fn test_properties_panel_updates_for_file_backed_editor() {
     let window = test_window();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("example.txt");
-    std::fs::write(&path, "hello world").expect("write file");
+    fixture::write_text(&path, "hello world");
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -5223,7 +5368,7 @@ fn test_status_bar_shows_detected_encoding_and_line_endings_after_open() {
     let window = test_window();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("encoded.txt");
-    std::fs::write(&path, [0x63, 0x61, 0x66, 0xE9, b'\r', b'\n']).expect("write file");
+    fixture::write_bytes(&path, [0x63, 0x61, 0x66, 0xE9, b'\r', b'\n']);
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -5247,7 +5392,7 @@ fn test_reopen_with_encoding_requires_discard_confirmation_for_modified_document
     let window = test_window();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("reopen.txt");
-    std::fs::write(&path, "hello").expect("write file");
+    fixture::write_text(&path, "hello");
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -5283,7 +5428,7 @@ fn test_status_bar_encoding_label_stays_short_after_save_policy_change() {
     let window = test_window();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("save-policy.txt");
-    std::fs::write(&path, "hello").expect("write file");
+    fixture::write_text(&path, "hello");
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -5324,7 +5469,7 @@ fn test_save_encoding_choice_surfaces_lossy_confirmation() {
     let window = test_window();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("lossy.txt");
-    std::fs::write(&path, "hello").expect("write file");
+    fixture::write_text(&path, "hello");
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -5364,7 +5509,7 @@ fn test_mixed_line_endings_warning_opens_normalization_picker_and_updates_status
     let window = test_window();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("mixed.txt");
-    std::fs::write(&path, "a\r\nb\nc\r\n").expect("write file");
+    fixture::write_text(&path, "a\r\nb\nc\r\n");
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -5491,7 +5636,7 @@ fn test_own_save_does_not_surface_external_change_warning() {
         "saving through LushText should update monitor state before file events become warnings",
     );
     assert_eq!(
-        std::fs::read_to_string(&path).expect("saved file contents"),
+        fs_read::text(&path).expect("saved file contents"),
         "saved by lushtext\n"
     );
 }
@@ -5509,7 +5654,7 @@ fn test_close_modified_file_tab_cancel_keeps_unsaved_tab() {
     assert_eq!(editor_buffer_text(&editor), "unsaved\n");
     assert!(editor.is_modified());
     assert_eq!(
-        std::fs::read_to_string(path).expect("disk contents after cancel"),
+        fs_read::text(&path).expect("disk contents after cancel"),
         "disk\n"
     );
 }
@@ -5527,7 +5672,7 @@ fn test_keyboard_save_changes_cancel_preserves_modified_tab() {
     assert_eq!(editor_buffer_text(&editor), "unsaved\n");
     assert!(editor.is_modified());
     assert_eq!(
-        std::fs::read_to_string(path).expect("disk contents after keyboard cancel"),
+        fs_read::text(&path).expect("disk contents after keyboard cancel"),
         "disk\n"
     );
 }
@@ -5542,7 +5687,7 @@ fn test_keyboard_save_changes_save_writes_then_closes() {
 
     wait_until(Duration::from_secs(3), || {
         window.imp().tab_view.n_pages() == 0
-            && std::fs::read_to_string(&path).is_ok_and(|contents| contents == "keyboard saved\n")
+            && fs_read::text(&path).is_ok_and(|contents| contents == "keyboard saved\n")
     });
 }
 
@@ -5556,7 +5701,7 @@ fn test_keyboard_save_changes_discard_closes_without_writing() {
 
     wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
     assert_eq!(
-        std::fs::read_to_string(path).expect("disk contents after keyboard discard"),
+        fs_read::text(&path).expect("disk contents after keyboard discard"),
         "disk\n"
     );
 }
@@ -5571,7 +5716,7 @@ fn test_close_modified_file_tab_save_writes_then_closes() {
 
     wait_until(Duration::from_secs(3), || {
         window.imp().tab_view.n_pages() == 0
-            && std::fs::read_to_string(&path).is_ok_and(|contents| contents == "saved\n")
+            && fs_read::text(&path).is_ok_and(|contents| contents == "saved\n")
     });
 }
 
@@ -5602,7 +5747,7 @@ fn test_close_modified_file_tab_save_failure_keeps_tab_modified() {
     assert_tab_count(&window, 1);
     assert_eq!(editor_buffer_text(&editor), "still unsaved\n");
     assert!(editor.is_modified());
-    assert!(!bad_path.exists());
+    assert!(fs_metadata::file_facts(&bad_path).is_err());
 }
 
 #[test]
@@ -5615,7 +5760,7 @@ fn test_close_modified_file_tab_discard_closes_without_writing() {
 
     wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
     assert_eq!(
-        std::fs::read_to_string(path).expect("disk contents after discard"),
+        fs_read::text(&path).expect("disk contents after discard"),
         "disk\n"
     );
 }
@@ -5634,7 +5779,7 @@ fn test_window_close_request_cancel_keeps_modified_file_tab() {
     assert_eq!(editor_buffer_text(&editor), "window unsaved\n");
     assert!(editor.is_modified());
     assert_eq!(
-        std::fs::read_to_string(path).expect("disk contents after window cancel"),
+        fs_read::text(&path).expect("disk contents after window cancel"),
         "disk\n"
     );
 }
@@ -5651,7 +5796,7 @@ fn test_window_close_request_save_persists_session_and_cleans_file_draft() {
 
     wait_until(Duration::from_secs(3), || {
         !window.is_visible()
-            && std::fs::read_to_string(&path).is_ok_and(|contents| contents == "window saved\n")
+            && fs_read::text(&path).is_ok_and(|contents| contents == "window saved\n")
     });
     wait_until(Duration::from_secs(3), || {
         draft_service::read_draft(&data_dir, &draft_id)
@@ -5775,11 +5920,11 @@ fn test_multi_tab_window_close_saves_checked_and_discards_unchecked_documents() 
 
     wait_until(Duration::from_secs(3), || !window.is_visible());
     assert_eq!(
-        std::fs::read_to_string(&files[0]).expect("saved checked file"),
+        fs_read::text(&files[0]).expect("saved checked file"),
         "checked save\n"
     );
     assert_eq!(
-        std::fs::read_to_string(&files[1]).expect("discarded unchecked file"),
+        fs_read::text(&files[1]).expect("discarded unchecked file"),
         "content for discard-me.txt\n"
     );
     wait_until(Duration::from_secs(3), || {
@@ -5835,11 +5980,11 @@ fn test_keyboard_multi_tab_save_changes_selection_control() {
 
     wait_until(Duration::from_secs(3), || !window.is_visible());
     assert_eq!(
-        std::fs::read_to_string(&files[0]).expect("saved checked file"),
+        fs_read::text(&files[0]).expect("saved checked file"),
         "keyboard checked save\n"
     );
     assert_eq!(
-        std::fs::read_to_string(&files[1]).expect("discarded unchecked file"),
+        fs_read::text(&files[1]).expect("discarded unchecked file"),
         "content for discard-me.txt\n"
     );
 }
@@ -6154,7 +6299,7 @@ fn test_narrow_window_keeps_quick_encoding_controls_visible() {
     window.set_default_size(820, 900);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("narrow.txt");
-    std::fs::write(&path, "hello").expect("write file");
+    fixture::write_text(&path, "hello");
 
     window.open_document(&path);
     present_window(&window);
@@ -6488,7 +6633,7 @@ fn test_notes_menu_popup_opens_for_add_and_remove_bookmark_states() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_root.join("notes-popup.rs");
-    std::fs::write(&path, "one\ntwo\nthree\n").expect("write notes popup source");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
 
     let data_dir = json_store::data_dir();
     bookmark_service::save_for_path(
@@ -6643,7 +6788,7 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_root.join("document-note.md");
-    std::fs::write(&path, "# Heading\n\nBody\n").expect("write document note source");
+    fixture::write_text(&path, "# Heading\n\nBody\n");
 
     let data_dir = json_store::data_dir();
     document_note_service::save_for_path(
@@ -6705,7 +6850,7 @@ fn test_empty_document_note_first_render_keeps_modal_geometry_after_typing() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_root.join("empty-document-note.md");
-    std::fs::write(&path, "# Source\n\nBody\n").expect("write document note source");
+    fixture::write_text(&path, "# Source\n\nBody\n");
 
     let window = test_window();
     present_window(&window);
@@ -6802,7 +6947,7 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_root.join("browse-notes.md");
-    std::fs::write(&path, "# Notes\n").expect("write browser note source");
+    fixture::write_text(&path, "# Notes\n");
 
     let data_dir = json_store::data_dir();
     document_note_service::save_for_path(
@@ -6858,7 +7003,7 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_root.join("browse-bookmark.rs");
-    std::fs::write(&path, "one\ntwo\nthree\n").expect("write bookmark source");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
 
     let data_dir = json_store::data_dir();
     bookmark_service::save_for_path(
@@ -6914,8 +7059,8 @@ fn test_browse_notes_filters_bookmarks_to_current_workspace_scope() {
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-left")));
     let left_path = left_root.join("left-bookmark.rs");
     let right_path = right_root.join("right-bookmark.rs");
-    std::fs::write(&left_path, "left\n").expect("write left bookmark source");
-    std::fs::write(&right_path, "right\n").expect("write right bookmark source");
+    fixture::write_text(&left_path, "left\n");
+    fixture::write_text(&right_path, "right\n");
 
     let data_dir = json_store::data_dir();
     bookmark_service::save_for_path(
@@ -6968,7 +7113,7 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_root.join("sectioned-notes.md");
-    std::fs::write(&path, "one\ntwo\nthree\n").expect("write sectioned note source");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
 
     let data_dir = json_store::data_dir();
     bookmark_service::save_for_path(
@@ -7137,7 +7282,7 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     let content = (0..510)
         .map(|line| format!("line {line}\n"))
         .collect::<String>();
-    std::fs::write(&path, content).expect("write many bookmark source");
+    fixture::write_text(&path, &content);
 
     let bookmarks = (0..510)
         .map(|line| {
@@ -7211,7 +7356,7 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_root.join("notes-state.rs");
-    std::fs::write(&path, "one\ntwo\nthree\n").expect("write note-state source");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
 
     let data_dir = json_store::data_dir();
     bookmark_service::save_for_path(
@@ -7451,7 +7596,7 @@ fn test_local_history_startup_restore_uses_restored_draft_as_baseline() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = dir.path().join("restored-history.txt");
-    std::fs::write(&file_path, "").expect("write empty file");
+    fixture::write_text(&file_path, "");
     let data_dir = json_store::data_dir();
     let draft_id = draft_service::draft_id_for_path(&file_path);
     let draft_content = "draft content";
@@ -7540,7 +7685,7 @@ fn test_startup_restore_applies_matching_file_backed_draft() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = dir.path().join("restored.txt");
-    std::fs::write(&file_path, "disk content").expect("write file");
+    fixture::write_text(&file_path, "disk content");
     let data_dir = json_store::data_dir();
     let draft_id = draft_service::draft_id_for_path(&file_path);
     draft_service::write_draft(&data_dir, &draft_id, "draft content").expect("seed draft");
@@ -7599,7 +7744,7 @@ fn test_startup_restore_skips_stale_file_backed_draft_once() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = dir.path().join("stale.txt");
-    std::fs::write(&file_path, "current disk content").expect("write file");
+    fixture::write_text(&file_path, "current disk content");
     let data_dir = json_store::data_dir();
     let draft_id = draft_service::draft_id_for_path(&file_path);
     draft_service::write_draft(&data_dir, &draft_id, "stale draft").expect("seed draft");

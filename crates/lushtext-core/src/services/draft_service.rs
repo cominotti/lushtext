@@ -11,7 +11,14 @@ use crate::model::draft::{
     DraftEntry, DraftManifest, FileDraftRestoreResolution, PreloadedDraftRestore,
 };
 use crate::model::session::SessionData;
-use crate::services::{durable_write, editor_io, json_store, session_service};
+use crate::services::{
+    editor_io,
+    filesystem::{
+        DirectoryScanPolicy, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
+        read as fs_read, tree as fs_tree, write as fs_write,
+    },
+    json_store, session_service,
+};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -192,10 +199,10 @@ pub fn load_restore_state(
 
 fn should_skip_draft_preload(data_dir: &Path, draft_id: &str, preloaded_bytes: &mut u64) -> bool {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
-    let Ok(metadata) = std::fs::metadata(&path) else {
+    let Ok(facts) = fs_metadata::file_facts(&path) else {
         return false;
     };
-    let size = metadata.len();
+    let size = facts.byte_size;
     if size > MAX_DRAFT_PRELOAD_BYTES {
         return true;
     }
@@ -283,14 +290,14 @@ fn cleanup_stale_restore_entries(
 /// cannot be written, flushed, synced, or renamed into place.
 pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()> {
     let dir = drafts_dir(data_dir);
-    durable_write::create_dir_all_durable(&dir)
+    fs_write::create_dir_all_durable(&dir)
         .with_context(|| format!("failed to create drafts dir: {}", dir.display()))?;
 
     let path = dir.join(format!("{draft_id}.draft"));
     // The shared helper owns the temp-file-then-rename ordering, the full fsync
     // contract, and identity-metadata preservation when overwriting an existing
     // draft file.
-    durable_write::atomic_write_bytes(&path, "draft", content.as_bytes())
+    fs_write::atomic_replace(&path, WriteLabel::DRAFT, content.as_bytes())
         .with_context(|| format!("failed to write draft: {}", path.display()))
 }
 
@@ -304,7 +311,7 @@ pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()>
 /// Returns an error if an existing draft file cannot be read as UTF-8 text.
 pub fn read_draft(data_dir: &Path, draft_id: &str) -> Result<Option<String>> {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
-    match std::fs::read_to_string(&path) {
+    match fs_read::text(&path) {
         Ok(content) => Ok(Some(content)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(anyhow::anyhow!(
@@ -324,9 +331,8 @@ pub fn read_draft(data_dir: &Path, draft_id: &str) -> Result<Option<String>> {
 /// Returns an error if an existing draft file cannot be deleted.
 pub fn delete_draft_file(data_dir: &Path, draft_id: &str) -> Result<()> {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    match fs_mutate::remove_file_if_exists(&path) {
+        Ok(_) => Ok(()),
         Err(e) => Err(anyhow::anyhow!(
             "failed to delete draft {}: {}",
             path.display(),
@@ -353,21 +359,20 @@ pub fn cleanup_orphans(data_dir: &Path, manifest: &mut DraftManifest) -> Result<
     let before = manifest.drafts.len();
     manifest.drafts.retain(|entry| {
         let path = dir.join(format!("{}.draft", entry.draft_id));
-        path.exists()
+        fs_metadata::file_facts(&path).is_ok()
     });
     cleaned += before - manifest.drafts.len();
 
     // Remove draft files with no manifest entry.
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy();
+    if let Ok(entries) = fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace()) {
+        for entry in entries {
+            let name = entry.file_name;
             if !name.ends_with(".draft") || name.starts_with('.') {
                 continue;
             }
             let draft_id = name.trim_end_matches(".draft");
             if manifest.find_by_id(draft_id).is_none() {
-                let _ = std::fs::remove_file(entry.path());
+                let _ = fs_mutate::remove_file_if_exists(&entry.path);
                 cleaned += 1;
             }
         }
@@ -381,6 +386,7 @@ mod tests {
     use super::*;
     use crate::model::draft::{DraftEntry, FileDraftRestoreResolution};
     use crate::model::session::{SessionData, SessionTab};
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     fn file_entry(id: &str, path: &Path, original_mtime_secs: Option<u64>) -> DraftEntry {
@@ -466,7 +472,7 @@ mod tests {
     fn read_draft_reports_non_file_errors() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = drafts_dir(dir.path()).join("blocked.draft");
-        std::fs::create_dir_all(&path).expect("expected operation to succeed");
+        fixture::create_dir_all(&path);
 
         let error = read_draft(dir.path(), "blocked").expect_err("directory draft should fail");
         assert!(
@@ -479,7 +485,7 @@ mod tests {
     fn delete_draft_file_reports_non_file_errors() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = drafts_dir(dir.path()).join("blocked.draft");
-        std::fs::create_dir_all(&path).expect("expected operation to succeed");
+        fixture::create_dir_all(&path);
 
         let error =
             delete_draft_file(dir.path(), "blocked").expect_err("directory draft should fail");
@@ -564,7 +570,7 @@ mod tests {
     fn resolve_file_draft_restore_returns_content_when_mtime_matches() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        fixture::write_text(&path, "disk content");
         write_draft(dir.path(), "draft", "restored content")
             .expect("expected operation to succeed");
         let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
@@ -587,7 +593,7 @@ mod tests {
     fn resolve_file_draft_restore_skips_changed_file_mtime() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        fixture::write_text(&path, "disk content");
         write_draft(dir.path(), "draft", "stale content").expect("expected operation to succeed");
         let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
         let stale_mtime = current_mtime
@@ -605,7 +611,7 @@ mod tests {
     fn resolve_file_draft_restore_allows_legacy_entries_without_stored_mtime() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        fixture::write_text(&path, "disk content");
         write_draft(dir.path(), "draft", "legacy content").expect("expected operation to succeed");
 
         let resolution = resolve_file_draft_restore(dir.path(), &file_entry("draft", &path, None))
@@ -636,7 +642,7 @@ mod tests {
     fn resolve_file_draft_restore_handles_missing_draft_file() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        fixture::write_text(&path, "disk content");
         let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
 
         let resolution = resolve_file_draft_restore(
@@ -652,7 +658,7 @@ mod tests {
     fn load_restore_state_removes_stale_file_draft_from_manifest_and_disk() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        fixture::write_text(&path, "disk content");
         let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
         let stale_mtime = current_mtime
             .checked_add(1)
@@ -699,12 +705,9 @@ mod tests {
     fn load_restore_state_skips_oversized_untitled_draft_without_deleting_it() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let draft_id = "untitled-large";
-        std::fs::create_dir_all(drafts_dir(dir.path())).expect("create drafts dir");
+        fixture::create_dir_all(&drafts_dir(dir.path()));
         let draft_path = draft_path(dir.path(), draft_id);
-        let draft_file = std::fs::File::create(&draft_path).expect("create sparse draft");
-        draft_file
-            .set_len(MAX_DRAFT_PRELOAD_BYTES + 1)
-            .expect("size sparse draft");
+        fixture::create_sparse_file(&draft_path, MAX_DRAFT_PRELOAD_BYTES + 1);
 
         save_manifest(
             dir.path(),
@@ -744,7 +747,7 @@ mod tests {
             "manifest entry should remain available for later recovery"
         );
         assert!(
-            draft_path.exists(),
+            fs_metadata::file_facts(&draft_path).is_ok(),
             "oversized draft file must not be deleted"
         );
     }
@@ -771,8 +774,7 @@ mod tests {
                 keep.clone(),
             ],
         };
-        std::fs::create_dir_all(drafts_dir(dir.path()).join(MANIFEST_FILE))
-            .expect("expected operation to succeed");
+        fixture::create_dir_all(&drafts_dir(dir.path()).join(MANIFEST_FILE));
 
         cleanup_stale_restore_entries(dir.path(), &mut manifest, &[String::from("stale")]);
 
@@ -799,7 +801,7 @@ mod tests {
             }],
         };
         // Don't create the draft file — the manifest entry is orphaned
-        std::fs::create_dir_all(drafts_dir(dir.path())).expect("expected operation to succeed");
+        fixture::create_dir_all(&drafts_dir(dir.path()));
         let cleaned =
             cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
         assert_eq!(cleaned, 1);
@@ -843,16 +845,15 @@ mod tests {
     fn cleanup_orphans_ignores_hidden_draft_files() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let hidden_path = drafts_dir(dir.path()).join(".hidden.draft");
-        std::fs::create_dir_all(hidden_path.parent().expect("expected drafts dir"))
-            .expect("expected operation to succeed");
-        std::fs::write(&hidden_path, "editor swap").expect("expected operation to succeed");
+        fixture::create_dir_all(hidden_path.parent().expect("expected drafts dir"));
+        fixture::write_text(&hidden_path, "editor swap");
         let mut manifest = DraftManifest::default();
 
         let cleaned =
             cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
 
         assert_eq!(cleaned, 0);
-        assert!(hidden_path.exists());
+        assert!(fs_metadata::file_facts(&hidden_path).is_ok());
     }
 
     #[test]

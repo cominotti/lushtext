@@ -9,9 +9,12 @@
 
 use crate::config::keys;
 use crate::services::notifications::{
-    NotificationOwner, NotificationSeverity, NotificationSurface,
+    NotificationOwner, NotificationSeverity, NotificationSurface, StatusMessage,
 };
-use crate::services::{async_task, content_search, json_store, saved_searches, search_history};
+use crate::services::{
+    async_task, content_search, filesystem::metadata as fs_metadata, json_store, saved_searches,
+    search_history,
+};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_panel::SearchProgressUpdate;
 use crate::ui::status_bar::MessageKind;
@@ -24,6 +27,10 @@ use std::time::Duration;
 
 use super::LushtextWindow;
 
+/// Delay that lets the in-editor Find revealer finish closing before workspace search opens.
+///
+/// The 260 ms value tracks the panel transition budget; too short can hand
+/// focus over mid-animation, while much longer makes Ctrl+Shift+F feel laggy.
 pub(super) const SEARCH_PANEL_TRANSITION_DELAY_MS: u64 = 260;
 
 fn format_search_progress_message(files_searched: usize) -> String {
@@ -39,6 +46,8 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     imp.search_panel.set_workspace_roots(initial_roots);
 
     // --- Result activation: open file at line ---
+    // GTK signal closures may outlive the current window instance; weak refs
+    // let callbacks no-op instead of keeping closed windows alive.
     let window_weak = window.downgrade();
     imp.search_panel.connect_open_file(move |path, line| {
         if let Some(window) = window_weak.upgrade() {
@@ -125,6 +134,8 @@ pub fn setup_search_panel(window: &LushtextWindow) {
         let tab_view = &imp.tab_view;
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
+            // Tab pages store generic GTK widgets, so the cast gives access to
+            // editor-specific save and path state only for editor tabs.
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
                 && let Some(path) = editor.file_path()
                 && (editor.is_modified() || editor.is_saving())
@@ -380,6 +391,8 @@ impl LushtextWindow {
     ) {
         let window_weak = self.downgrade();
         let callback = std::cell::RefCell::new(Some(callback));
+        // Schedule on GTK's main loop so focus changes happen after the panel
+        // animation frame, without blocking input while the delay elapses.
         glib::timeout_add_local_once(
             Duration::from_millis(SEARCH_PANEL_TRANSITION_DELAY_MS),
             move || {
@@ -393,6 +406,10 @@ impl LushtextWindow {
         );
     }
 
+    /// Start delayed status-bar progress tracking for a new workspace search.
+    ///
+    /// Clears stale progress, arms the 500 ms visibility delay, and starts the
+    /// heartbeat timer that keeps active progress notifications alive.
     pub(crate) fn prepare_search_progress_tracking(&self) {
         self.finish_search_progress_tracking();
         let imp = self.imp();
@@ -417,15 +434,41 @@ impl LushtextWindow {
         });
     }
 
+    /// Publish an informational search-progress update through the notification bus.
     pub(crate) fn update_search_progress_message(&self, message: &str) {
+        self.update_search_progress_status_message(message, NotificationSeverity::Info);
+    }
+
+    /// Route progress updates through the visible-status pulse gate.
+    ///
+    /// The expected `StatusMessage` lets rendering pulse only when this progress
+    /// update actually occupies the status bar instead of sitting below a transient.
+    fn update_search_progress_status_message(&self, message: &str, severity: NotificationSeverity) {
+        let status_message = StatusMessage {
+            text: message.to_string(),
+            severity,
+        };
         if self.imp().notification_bus.update_progress(
             NotificationOwner::Search,
             NotificationSurface::StatusBar,
-            message,
-            NotificationSeverity::Info,
+            status_message.text.clone(),
+            status_message.severity,
         ) {
-            self.render_notifications();
+            self.render_notifications_for_status_update(&status_message);
         }
+    }
+
+    /// Publish a search-progress status message through the production routing path.
+    ///
+    /// Widget tests use this to exercise visible and hidden progress updates
+    /// without starting a real workspace search.
+    #[cfg(feature = "test-utils")]
+    pub fn update_search_progress_message_for_test(
+        &self,
+        message: &str,
+        severity: NotificationSeverity,
+    ) {
+        self.update_search_progress_status_message(message, severity);
     }
 
     pub(crate) fn finish_search_progress_tracking(&self) {
@@ -517,14 +560,12 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
             && !editor.is_saving()
         {
             // Update mtime to suppress file monitor "changed" detection for our own write.
-            if let Ok(metadata) = std::fs::metadata(&path) {
-                use std::time::SystemTime;
-                let mtime = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs());
-                editor.imp().monitor.last_known_mtime.set(mtime);
+            if let Ok(facts) = fs_metadata::file_facts(&path) {
+                editor
+                    .imp()
+                    .monitor
+                    .last_known_mtime
+                    .set(facts.modified_at_secs);
             }
             editor.load_file_async(&path);
         }

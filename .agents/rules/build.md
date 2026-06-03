@@ -7,7 +7,7 @@ globs: "{Cargo.toml,Makefile,.cargo/**,.config/**,build.rs,meson.build,meson_opt
 
 ## Dev Builds
 
-Use `make` targets for development. The Makefile auto-detects nextest for non-widget tests across the workspace, while full-suite widget coverage in `make test` flows through the shared headless `scripts/run-widget-tests.sh` path so local verification matches CI. `make test-widget` still uses the same runner in auto/native mode for interactive debugging.
+Use `make` targets for development. The Makefile auto-detects nextest for non-widget tests across the workspace; `.config/nextest.toml` excludes the `widget` binary from nextest's default filter, while full-suite widget coverage in `make test` flows through the shared headless `scripts/run-widget-tests.sh` path so local verification matches CI. Widget tests must never use the developer's live desktop session: the script has no native mode, and the Cargo-visible widget harness self-supervises into private `mutter --headless` before GTK initializes.
 
 ```
 make dev-tools  # Flatpak runtime/SDK deps + GTK debug input/screenshot helpers
@@ -25,6 +25,8 @@ make visual-smoke # real-session screenshot smoke with artifacts
 make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # lightweight Criterion performance smoke
+./scripts/check-filesystem-boundary.sh # no disallowed raw filesystem calls/examples
+make check-agent-docs # validate agent rules/skills guidance
 make end-user-smoke # run all host-supported end-user smoke lanes
 make mutants-smoke # small cargo-mutants smoke run
 make mutants-diff  # mutation test current changes against origin/main
@@ -33,6 +35,10 @@ make check      # clippy + fmt
 make pre-commit # repo pre-commit gate (fmt + clippy)
 make install-git-hooks
 ```
+
+Filesystem-sensitive changes must also pass `make check-agent-docs`; that target
+verifies the `services::filesystem` guidance in rules and skills, then runs the
+raw filesystem no-leftovers audit.
 
 Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-linux for fast linking.
 

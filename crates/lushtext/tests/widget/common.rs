@@ -11,6 +11,9 @@ use glib::prelude::IsA;
 use glib::prelude::ToValue;
 use gtk4::prelude::{GtkWindowExt, WidgetExt};
 use lushtext_core::config::APP_ID;
+pub use lushtext_core::services::filesystem::{
+    fixture, metadata as fs_metadata, mutate as fs_mutate, read as fs_read,
+};
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
@@ -23,7 +26,7 @@ static GTK_INIT: Once = Once::new();
 /// Uses the in-memory GSettings backend so tests don't pollute user's dconf.
 /// Sets `LUSHTEXT_DATA_DIR` to a temp directory so session/draft I/O doesn't
 /// touch the user's real data.
-/// Requires a display server — use `mutter --headless` for headless environments.
+/// Requires the private headless compositor owned by the widget harness.
 pub fn ensure_gtk_init() {
     GTK_INIT.call_once(|| {
         // Widget tests run in one isolated process before GTK startup, so they
@@ -36,8 +39,8 @@ pub fn ensure_gtk_init() {
         // interfering with each other via shared session files.
         let test_data_dir =
             std::env::temp_dir().join(format!("lushtext-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&test_data_dir);
-        let _ = std::fs::create_dir_all(&test_data_dir);
+        let _ = fs_mutate::remove_dir_all_if_exists(&test_data_dir);
+        let _ = fs_mutate::create_dir_all(&test_data_dir);
         // SAFETY: widget tests set these process environment variables before
         // GTK startup and before any background worker threads are spawned.
         unsafe { std::env::set_var("LUSHTEXT_DATA_DIR", &test_data_dir) };

@@ -9,6 +9,7 @@
 
 use crate::model::encoding::{DocumentEncoding, LineEnding};
 use crate::model::formatting_overrides::FormattingOverrides;
+use crate::services::filesystem::read as fs_read;
 use editorconfig_parser::{
     Charset, EditorConfig, EditorConfigProperties, EditorConfigProperty, EndOfLine, IndentStyle,
 };
@@ -39,7 +40,7 @@ pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
 
     loop {
         let ec_path = dir.join(".editorconfig");
-        if let Ok(content) = std::fs::read_to_string(&ec_path) {
+        if let Ok(content) = fs_read::text(&ec_path) {
             let config = EditorConfig::parse(&content).with_cwd(dir);
             let is_root = config.root();
             configs.push(config);
@@ -264,20 +265,20 @@ fn map_charset(value: Charset) -> Option<DocumentEncoding> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     /// Create a `.editorconfig` file with the given content in `dir`.
     fn write_editorconfig(dir: &Path, content: &str) {
-        fs::write(dir.join(".editorconfig"), content).expect("expected operation to succeed");
+        fixture::write_text(&dir.join(".editorconfig"), content);
     }
 
     /// Create a file at the given path (empty, just needs to exist for resolution).
     fn touch(path: &Path) {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("expected operation to succeed");
+            fixture::create_dir_all(parent);
         }
-        fs::write(path, "").expect("expected operation to succeed");
+        fixture::write_text(path, "");
     }
 
     #[test]
@@ -386,7 +387,7 @@ mod tests {
 
         // Child .editorconfig with root = true, tab_width = 2
         let src = tmp.path().join("src");
-        fs::create_dir_all(&src).expect("expected operation to succeed");
+        fixture::create_dir_all(&src);
         write_editorconfig(&src, "root = true\n\n[*]\ntab_width = 2\n");
 
         let file = src.join("main.rs");
@@ -409,7 +410,7 @@ mod tests {
 
         // Nested .editorconfig: tab_width = 2 (overrides root)
         let src = tmp.path().join("src");
-        fs::create_dir_all(&src).expect("expected operation to succeed");
+        fixture::create_dir_all(&src);
         write_editorconfig(&src, "[*]\ntab_width = 2\n");
 
         let file = src.join("main.rs");
@@ -431,7 +432,7 @@ mod tests {
         );
 
         let src = tmp.path().join("src");
-        fs::create_dir_all(&src).expect("expected operation to succeed");
+        fixture::create_dir_all(&src);
         write_editorconfig(
             &src,
             "[*]\ntab_width = 2\nindent_style = space\nindent_size = 3\nend_of_line = lf\ncharset = utf-8\ntrim_trailing_whitespace = false\n",

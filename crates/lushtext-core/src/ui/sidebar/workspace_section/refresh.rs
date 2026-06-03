@@ -15,6 +15,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::model::workspace::WorkspaceEntry;
+use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::notifications::NotificationSeverity;
 
 use super::LushtextWorkspaceSection;
@@ -139,7 +140,7 @@ impl LushtextWorkspaceSection {
                     .ok()
             })
             .and_then(|item| item.path())
-            .filter(|path| path.exists())
+            .filter(|path| path_exists(path))
     }
 
     fn reload_current_view(&self) {
@@ -252,7 +253,7 @@ impl LushtextWorkspaceSection {
 
     fn prune_invalid_drilldown_stack(&self) {
         let mut stack = self.imp().drilldown_stack.borrow_mut();
-        while stack.last().is_some_and(|path| !path.exists()) {
+        while stack.last().is_some_and(|path| !path_exists(path)) {
             stack.pop();
         }
 
@@ -330,6 +331,10 @@ impl LushtextWorkspaceSection {
             }
         });
     }
+}
+
+fn path_exists(path: &Path) -> bool {
+    fs_metadata::file_facts(path).is_ok()
 }
 
 fn minimize_refresh_directories(mut directories: Vec<PathBuf>) -> Vec<PathBuf> {

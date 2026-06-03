@@ -29,16 +29,27 @@
 
     <!-- Left: feedback message area -->
     <child>
-      <object class="GtkLabel" id="message_label">
+      <object class="GtkBox" id="message_area_box">
+        <property name="orientation">horizontal</property>
         <property name="hexpand">true</property>
-        <property name="xalign">0.0</property>
-        <property name="ellipsize">end</property>
-        <property name="margin-start">12</property>
-        <property name="margin-top">4</property>
-        <property name="margin-bottom">4</property>
+        <property name="margin-start">6</property>
         <style>
-          <class name="caption"/>
+          <class name="status-message-area"/>
         </style>
+        <child>
+          <object class="GtkLabel" id="message_label">
+            <property name="hexpand">true</property>
+            <property name="xalign">0.0</property>
+            <property name="ellipsize">end</property>
+            <property name="margin-start">12</property>
+            <property name="margin-top">4</property>
+            <property name="margin-bottom">4</property>
+            <style>
+              <class name="caption"/>
+              <class name="status-message-label"/>
+            </style>
+          </object>
+        </child>
       </object>
     </child>
 

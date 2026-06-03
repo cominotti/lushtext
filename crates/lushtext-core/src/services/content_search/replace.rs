@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::model::content_search::{ReplaceResult, Replacement};
-use crate::services::{durable_write, search_backup};
+use crate::services::{
+    filesystem::{WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write},
+    search_backup,
+};
 
 /// Largest single file Replace All will read and rewrite.
 ///
@@ -138,7 +141,7 @@ pub fn apply_replacements(
             continue;
         }
 
-        let _guard = match durable_write::FileWriteLock::acquire(&path) {
+        let _guard = match fs_write::FileWriteLock::acquire(&path) {
             Ok(guard) => guard,
             Err(e) => {
                 errors.push(format!("Failed to lock {}: {e}", path.display()));
@@ -150,14 +153,14 @@ pub fn apply_replacements(
             break;
         }
 
-        let metadata = match std::fs::metadata(&path) {
-            Ok(metadata) => metadata,
+        let facts = match fs_metadata::file_facts(&path) {
+            Ok(facts) => facts,
             Err(e) => {
                 errors.push(format!("Failed to stat {}: {e}", path.display()));
                 continue;
             }
         };
-        if metadata.len() > MAX_REPLACE_FILE_BYTES {
+        if facts.byte_size > MAX_REPLACE_FILE_BYTES {
             skipped_paths.push(path.clone());
             errors.push(format!(
                 "Skipped {}: file is larger than the 10 MB Replace All limit",
@@ -166,7 +169,7 @@ pub fn apply_replacements(
             continue;
         }
 
-        let original_bytes = match std::fs::read(&path) {
+        let original_bytes = match fs_read::bytes(&path) {
             Ok(bytes) => bytes,
             Err(e) => {
                 errors.push(format!("Failed to read {}: {e}", path.display()));
@@ -467,13 +470,13 @@ pub fn undo_replacements(backup: &ReplaceUndoBackup) -> UndoReplaceOutcome {
     let mut remaining_backup = ReplaceUndoBackup::new();
 
     for (path, entry) in backup {
-        let Ok(_lock) = durable_write::FileWriteLock::acquire(path) else {
+        let Ok(_lock) = fs_write::FileWriteLock::acquire(path) else {
             failed_paths.push(path.clone());
             remaining_backup.insert(path.clone(), entry.clone());
             continue;
         };
 
-        let Ok(current_bytes) = std::fs::read(path) else {
+        let Ok(current_bytes) = fs_read::bytes(path) else {
             failed_paths.push(path.clone());
             remaining_backup.insert(path.clone(), entry.clone());
             continue;
@@ -533,7 +536,7 @@ impl std::error::Error for AtomicWriteError {}
 /// before/after-rename failure classification as in-editor saves, instead of
 /// re-implementing the contract here.
 fn atomic_write(path: &Path, content: &[u8]) -> Result<(), AtomicWriteError> {
-    let write_path = durable_write::resolve_write_target_identity(path)
+    let write_path = fs_write::resolve_target_identity(path)
         .map_err(|source| {
             AtomicWriteError::BeforeRename(anyhow::anyhow!(
                 "Failed to resolve write target {}: {source}",
@@ -541,20 +544,16 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<(), AtomicWriteError> {
             ))
         })?
         .into_path_buf();
-    durable_write::atomic_write_bytes_classified(&write_path, "replace", content).map_err(|error| {
-        match error {
-            durable_write::DurableWriteError::BeforeRename(source) => {
-                AtomicWriteError::BeforeRename(anyhow::anyhow!(
-                    "Failed to write {}: {source}",
-                    path.display()
-                ))
-            }
-            durable_write::DurableWriteError::AfterRename(source) => {
-                AtomicWriteError::AfterRename(anyhow::anyhow!(
-                    "Failed to sync parent directory for {}: {source}",
-                    path.display()
-                ))
-            }
+    fs_write::atomic_replace(&write_path, WriteLabel::REPLACE, content).map_err(|error| match error
+    {
+        fs_write::DurableWriteError::BeforeRename(source) => AtomicWriteError::BeforeRename(
+            anyhow::anyhow!("Failed to write {}: {source}", path.display()),
+        ),
+        fs_write::DurableWriteError::AfterRename(source) => {
+            AtomicWriteError::AfterRename(anyhow::anyhow!(
+                "Failed to sync parent directory for {}: {source}",
+                path.display()
+            ))
         }
     })
 }
@@ -575,7 +574,7 @@ fn rollback_applied_files(backup: &ReplaceUndoBackup, applied_paths: &[PathBuf])
         let Some(entry) = backup.get(path) else {
             continue;
         };
-        let Ok(_guard) = durable_write::FileWriteLock::acquire(path) else {
+        let Ok(_guard) = fs_write::FileWriteLock::acquire(path) else {
             errors.push(format!("Failed to lock {} for rollback", path.display()));
             continue;
         };
@@ -589,8 +588,8 @@ fn rollback_applied_files(backup: &ReplaceUndoBackup, applied_paths: &[PathBuf])
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use std::collections::HashSet;
-    use std::fs;
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -621,9 +620,8 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.rs");
         let file_b = dir.path().join("b.rs");
-        fs::write(&file_a, "let hello = 1;\nlet world = 2;\n")
-            .expect("expected operation to succeed");
-        fs::write(&file_b, "fn hello() {}\n").expect("expected operation to succeed");
+        fixture::write_text(&file_a, "let hello = 1;\nlet world = 2;\n");
+        fixture::write_text(&file_b, "fn hello() {}\n");
 
         let replacements = vec![
             make_replacement(&file_a, 1, "let hello = 1;", "goodbye", 4..9),
@@ -638,7 +636,7 @@ mod tests {
         assert_eq!(result.files_affected, 2);
         assert!(result.skipped_paths.is_empty());
 
-        let content_a = fs::read_to_string(&file_a).expect("expected operation to succeed");
+        let content_a = fixture::read_text(&file_a);
         assert!(
             content_a.contains("goodbye"),
             "a.rs should have replacement"
@@ -648,7 +646,7 @@ mod tests {
             "a.rs should not have original"
         );
 
-        let content_b = fs::read_to_string(&file_b).expect("expected operation to succeed");
+        let content_b = fixture::read_text(&file_b);
         assert!(
             content_b.contains("goodbye"),
             "b.rs should have replacement"
@@ -662,7 +660,7 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
         let original = "let needle = 42;\n";
-        fs::write(&file, original).expect("expected operation to succeed");
+        fixture::write_text(&file, original);
 
         let replacements = vec![make_replacement(
             &file,
@@ -688,7 +686,7 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let journal_dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
-        fs::write(&file, "let needle = 42;\n").expect("expected operation to succeed");
+        fixture::write_text(&file, "let needle = 42;\n");
 
         let replacements = vec![make_replacement(
             &file,
@@ -719,10 +717,10 @@ mod tests {
 
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
-        fs::write(&file, "needle\n").expect("seed target");
+        fixture::write_text(&file, "needle\n");
         let replacements = vec![make_replacement(&file, 1, "needle", "replaced", 0..6)];
         let save_guard =
-            durable_write::FileWriteLock::acquire(&file).expect("simulate in-flight save guard");
+            fs_write::FileWriteLock::acquire(&file).expect("simulate in-flight save guard");
         let (tx, rx) = mpsc::channel();
 
         let worker = std::thread::spawn(move || {
@@ -736,7 +734,7 @@ mod tests {
             "Replace All should wait while an editor save holds the stable target guard"
         );
         assert_eq!(
-            fs::read_to_string(&file).expect("read unchanged target"),
+            fixture::read_text(&file),
             "needle\n",
             "Replace All must not read/write through the held save guard"
         );
@@ -749,19 +747,14 @@ mod tests {
         worker.join().expect("replace worker should join");
 
         assert_eq!(result.0.files_affected, 1);
-        assert_eq!(
-            fs::read_to_string(&file).expect("read target"),
-            "replaced\n"
-        );
+        assert_eq!(fixture::read_text(&file), "replaced\n");
     }
 
     #[test]
     fn test_apply_replacements_skips_over_file_size_cap_before_reading() {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("huge.rs");
-        let huge = fs::File::create(&file).expect("create huge sparse file");
-        huge.set_len(MAX_REPLACE_FILE_BYTES + 1)
-            .expect("size huge sparse file");
+        fixture::create_sparse_file(&file, MAX_REPLACE_FILE_BYTES + 1);
 
         let replacements = vec![make_replacement(&file, 1, "needle", "replaced", 0..6)];
         let cancel = AtomicBool::new(false);
@@ -780,8 +773,8 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.rs");
         let file_b = dir.path().join("b.rs");
-        fs::write(&file_a, "needle-a\n").expect("write a");
-        fs::write(&file_b, "needle-b\n").expect("write b");
+        fixture::write_text(&file_a, "needle-a\n");
+        fixture::write_text(&file_b, "needle-b\n");
 
         TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(24)));
         let replacements = vec![
@@ -796,8 +789,8 @@ mod tests {
         assert_eq!(result.files_affected, 1);
         assert_eq!(result.skipped_paths, vec![file_b.clone()]);
         assert!(result.errors[0].contains("undo data would exceed"));
-        assert_eq!(fs::read_to_string(&file_a).expect("read a"), "done-a\n");
-        assert_eq!(fs::read_to_string(&file_b).expect("read b"), "needle-b\n");
+        assert_eq!(fixture::read_text(&file_a), "done-a\n");
+        assert_eq!(fixture::read_text(&file_b), "needle-b\n");
         assert!(backup.contains_key(&file_a));
         assert!(!backup.contains_key(&file_b));
     }
@@ -828,8 +821,8 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
         let journal_path = dir.path().join("journal-is-a-file");
-        fs::write(&file, "let needle = 42;\n").expect("expected operation to succeed");
-        fs::write(&journal_path, "not a directory").expect("expected operation to succeed");
+        fixture::write_text(&file, "let needle = 42;\n");
+        fixture::write_text(&journal_path, "not a directory");
 
         let replacements = vec![make_replacement(
             &file,
@@ -850,7 +843,7 @@ mod tests {
                 .contains("persist undo journal"),
         );
         assert_eq!(
-            fs::read_to_string(&file).expect("expected operation to succeed"),
+            fixture::read_text(&file),
             "let needle = 42;\n",
             "file bytes must stay unchanged when the undo journal cannot be saved",
         );
@@ -860,7 +853,7 @@ mod tests {
     fn test_apply_replacements_ignores_line_numbers_past_eof() {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
-        fs::write(&file, "needle\n").expect("expected operation to succeed");
+        fixture::write_text(&file, "needle\n");
 
         let replacements = vec![make_replacement(&file, 2, "needle", "replaced", 0..6)];
 
@@ -872,10 +865,7 @@ mod tests {
         assert_eq!(result.files_affected, 0);
         assert!(result.errors.is_empty());
         assert!(backup.is_empty());
-        assert_eq!(
-            fs::read_to_string(&file).expect("expected operation to succeed"),
-            "needle\n"
-        );
+        assert_eq!(fixture::read_text(&file), "needle\n");
     }
 
     #[test]
@@ -883,7 +873,7 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
         let missing = dir.path().join("missing.rs");
-        fs::write(&file, "needle\n").expect("expected operation to succeed");
+        fixture::write_text(&file, "needle\n");
 
         let replacements = vec![
             make_replacement(&file, 1, "needle", "replaced", 0..6),
@@ -898,10 +888,7 @@ mod tests {
         assert_eq!(result.files_affected, 1);
         assert_eq!(result.errors.len(), 1);
         assert!(result.errors[0].contains("Failed to stat"));
-        assert_eq!(
-            fs::read_to_string(&file).expect("expected operation to succeed"),
-            "replaced\n"
-        );
+        assert_eq!(fixture::read_text(&file), "replaced\n");
         assert!(backup.contains_key(&file));
         assert!(!backup.contains_key(&missing));
     }
@@ -953,7 +940,7 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
         let original = "let needle = 42;\n";
-        fs::write(&file, original).expect("expected operation to succeed");
+        fixture::write_text(&file, original);
 
         let replacements = vec![make_replacement(
             &file,
@@ -967,26 +954,19 @@ mod tests {
         let (_, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
             .expect("expected operation to succeed");
 
-        assert!(
-            fs::read_to_string(&file)
-                .expect("expected operation to succeed")
-                .contains("haystack")
-        );
+        assert!(fixture::read_text(&file).contains("haystack"));
 
         let outcome = undo_replacements(&backup);
         assert_eq!(outcome.restored_count(), 1);
         assert!(outcome.remaining_backup.is_empty());
-        assert_eq!(
-            fs::read_to_string(&file).expect("expected operation to succeed"),
-            original
-        );
+        assert_eq!(fixture::read_text(&file), original);
     }
 
     #[test]
     fn test_undo_replacements_drops_entry_when_file_is_already_original() {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
-        fs::write(&file, "before\n").expect("expected operation to succeed");
+        fixture::write_text(&file, "before\n");
 
         let mut backup = ReplaceUndoBackup::new();
         backup.insert(
@@ -1006,7 +986,7 @@ mod tests {
     fn test_undo_replacements_skips_diverged_file_and_keeps_backup() {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
-        fs::write(&file, "let needle = 42;\n").expect("expected operation to succeed");
+        fixture::write_text(&file, "let needle = 42;\n");
 
         let replacements = vec![make_replacement(
             &file,
@@ -1019,7 +999,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let (_, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
             .expect("expected operation to succeed");
-        fs::write(&file, "let user_edit = 42;\n").expect("expected operation to succeed");
+        fixture::write_text(&file, "let user_edit = 42;\n");
 
         let outcome = undo_replacements(&backup);
 
@@ -1028,7 +1008,7 @@ mod tests {
         assert!(outcome.failed_paths.is_empty());
         assert_eq!(outcome.remaining_backup, backup);
         assert_eq!(
-            fs::read_to_string(&file).expect("expected operation to succeed"),
+            fixture::read_text(&file),
             "let user_edit = 42;\n",
             "undo must not overwrite edits made after Replace All",
         );
@@ -1039,7 +1019,7 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let restored_file = dir.path().join("restored.rs");
         let missing_file = dir.path().join("missing.rs");
-        fs::write(&restored_file, "after\n").expect("expected operation to succeed");
+        fixture::write_text(&restored_file, "after\n");
 
         let mut backup = ReplaceUndoBackup::new();
         backup.insert(
@@ -1061,17 +1041,14 @@ mod tests {
             outcome.remaining_backup.get(&missing_file),
             backup.get(&missing_file),
         );
-        assert_eq!(
-            fs::read_to_string(&restored_file).expect("expected operation to succeed"),
-            "before\n"
-        );
+        assert_eq!(fixture::read_text(&restored_file), "before\n");
     }
 
     #[test]
     fn test_apply_replacements_reverse_order() {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
-        fs::write(&file, "ab cd\n").expect("expected operation to succeed");
+        fixture::write_text(&file, "ab cd\n");
 
         let replacements = vec![
             make_replacement(&file, 1, "ab cd", "XY", 0..2),
@@ -1083,7 +1060,7 @@ mod tests {
             .expect("expected operation to succeed");
         assert_eq!(result.replaced_count, 2);
 
-        let content = fs::read_to_string(&file).expect("expected operation to succeed");
+        let content = fixture::read_text(&file);
         assert_eq!(
             content, "XY ZW\n",
             "both replacements should apply correctly"
@@ -1095,8 +1072,8 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.txt");
         let file_b = dir.path().join("b.txt");
-        fs::write(&file_a, "needle\n").expect("expected operation to succeed");
-        fs::write(&file_b, "needle\n").expect("expected operation to succeed");
+        fixture::write_text(&file_a, "needle\n");
+        fixture::write_text(&file_b, "needle\n");
 
         let replacements = vec![
             make_replacement(&file_a, 1, "needle", "replaced", 0..6),
@@ -1106,14 +1083,8 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let result = apply_replacements(&replacements, &HashSet::new(), &cancel, None);
         assert!(result.is_err(), "cancelled replace should abort");
-        assert_eq!(
-            fs::read_to_string(&file_a).expect("expected operation to succeed"),
-            "needle\n"
-        );
-        assert_eq!(
-            fs::read_to_string(&file_b).expect("expected operation to succeed"),
-            "needle\n"
-        );
+        assert_eq!(fixture::read_text(&file_a), "needle\n");
+        assert_eq!(fixture::read_text(&file_b), "needle\n");
     }
 
     #[test]
@@ -1122,8 +1093,8 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.txt");
         let file_b = dir.path().join("b.txt");
-        fs::write(&file_a, "needle\n").expect("expected operation to succeed");
-        fs::write(&file_b, "needle\n").expect("expected operation to succeed");
+        fixture::write_text(&file_a, "needle\n");
+        fixture::write_text(&file_b, "needle\n");
         let replacements = vec![
             make_replacement(&file_a, 1, "needle", "replaced", 0..6),
             make_replacement(&file_b, 1, "needle", "replaced", 0..6),
@@ -1131,7 +1102,7 @@ mod tests {
 
         let cancel = Arc::new(AtomicBool::new(false));
         let lock_b =
-            durable_write::FileWriteLock::acquire(&file_b).expect("expected operation to succeed");
+            fs_write::FileWriteLock::acquire(&file_b).expect("expected operation to succeed");
         let cancel_for_worker = cancel.clone();
         let worker = std::thread::spawn(move || {
             apply_replacements(
@@ -1144,7 +1115,7 @@ mod tests {
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
-            if fs::read_to_string(&file_a).is_ok_and(|content| content.contains("replaced")) {
+            if fs_read::text(&file_a).is_ok_and(|content| content.contains("replaced")) {
                 cancel.store(true, Ordering::Relaxed);
                 break;
             }
@@ -1155,14 +1126,8 @@ mod tests {
         let result = worker.join().expect("expected operation to succeed");
 
         assert!(result.is_err(), "cancelled replace should roll back");
-        assert_eq!(
-            fs::read_to_string(&file_a).expect("expected operation to succeed"),
-            "needle\n"
-        );
-        assert_eq!(
-            fs::read_to_string(&file_b).expect("expected operation to succeed"),
-            "needle\n"
-        );
+        assert_eq!(fixture::read_text(&file_a), "needle\n");
+        assert_eq!(fixture::read_text(&file_b), "needle\n");
     }
 
     #[test]
@@ -1188,8 +1153,8 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.rs");
         let file_b = dir.path().join("b.rs");
-        fs::write(&file_a, "needle\n").expect("expected operation to succeed");
-        fs::write(&file_b, "needle\n").expect("expected operation to succeed");
+        fixture::write_text(&file_a, "needle\n");
+        fixture::write_text(&file_b, "needle\n");
 
         let replacements = vec![
             make_replacement(&file_a, 1, "needle", "replaced", 0..6),
@@ -1209,17 +1174,14 @@ mod tests {
         assert_eq!(result.skipped_paths[0], file_b);
         assert!(backup.contains_key(&file_a));
         assert!(!backup.contains_key(&file_b));
-        assert_eq!(
-            fs::read_to_string(&file_b).expect("expected operation to succeed"),
-            "needle\n"
-        );
+        assert_eq!(fixture::read_text(&file_b), "needle\n");
     }
 
     #[test]
     fn test_apply_replacements_skips_stale_search_result() {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("stale.rs");
-        fs::write(&file, "needle changed\n").expect("expected operation to succeed");
+        fixture::write_text(&file, "needle changed\n");
 
         let replacements = vec![make_replacement(&file, 1, "needle", "replaced", 0..6)];
 
@@ -1232,21 +1194,16 @@ mod tests {
                 .to_string()
                 .contains("changed since search")
         );
-        assert_eq!(
-            fs::read_to_string(&file).expect("expected operation to succeed"),
-            "needle changed\n"
-        );
+        assert_eq!(fixture::read_text(&file), "needle changed\n");
     }
 
     #[cfg(unix)]
     #[test]
     fn replace_all_and_undo_preserve_file_mode() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("private.rs");
-        fs::write(&file, "let needle = 42;\n").expect("seed file");
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).expect("restrictive mode");
+        fixture::write_text(&file, "let needle = 42;\n");
+        fixture::set_mode(&file, 0o600);
 
         let replacements = vec![make_replacement(
             &file,
@@ -1259,11 +1216,7 @@ mod tests {
         let (_result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
             .expect("replace should succeed");
 
-        let mode_after_replace = fs::metadata(&file)
-            .expect("stat after replace")
-            .permissions()
-            .mode()
-            & 0o777;
+        let mode_after_replace = fixture::mode(&file) & 0o777;
         assert_eq!(
             mode_after_replace, 0o600,
             "Replace All must keep the rewritten file's restrictive mode"
@@ -1274,11 +1227,7 @@ mod tests {
             outcome.restored_paths.contains(&file),
             "undo should restore the file"
         );
-        let mode_after_undo = fs::metadata(&file)
-            .expect("stat after undo")
-            .permissions()
-            .mode()
-            & 0o777;
+        let mode_after_undo = fixture::mode(&file) & 0o777;
         assert_eq!(
             mode_after_undo, 0o600,
             "undoing Replace All must also keep the file's restrictive mode"

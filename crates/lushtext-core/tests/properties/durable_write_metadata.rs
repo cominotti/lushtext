@@ -9,9 +9,9 @@
 
 #![cfg(unix)]
 
-use std::os::unix::fs::PermissionsExt;
-
-use lushtext_core::services::durable_write;
+use lushtext_core::services::filesystem::{
+    WriteLabel, fixture, metadata as fs_metadata, read as fs_read, write as fs_write,
+};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
@@ -23,11 +23,7 @@ use crate::support;
 /// clears setuid/setgid when an unprivileged process rewrites file contents, so
 /// only the standard permission bits are part of the durable-write guarantee.
 fn file_mode(path: &std::path::Path) -> u32 {
-    std::fs::metadata(path)
-        .expect("stat generated file")
-        .permissions()
-        .mode()
-        & 0o777
+    fs_metadata::mode(path).expect("stat generated file") & 0o777
 }
 
 proptest! {
@@ -47,17 +43,16 @@ proptest! {
 
         let dir = tempfile::tempdir().map_err(|e| TestCaseError::fail(e.to_string()))?;
         let path = dir.path().join("payload.bin");
-        std::fs::write(&path, &old_bytes).map_err(|e| TestCaseError::fail(e.to_string()))?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
-            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        fixture::write_bytes(&path, &old_bytes);
+        fixture::set_mode(&path, mode);
 
         let before = file_mode(&path);
 
-        durable_write::atomic_write_bytes(&path, "prop", &new_bytes)
+        fs_write::atomic_replace(&path, WriteLabel::from("prop"), &new_bytes)
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
 
         // Content is replaced ...
-        let written = std::fs::read(&path).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let written = fs_read::bytes(&path).map_err(|e| TestCaseError::fail(e.to_string()))?;
         prop_assert_eq!(written, new_bytes);
         // ... and the mode is preserved across the overwrite.
         prop_assert_eq!(file_mode(&path), before);
@@ -78,20 +73,18 @@ proptest! {
         let dir = tempfile::tempdir().map_err(|e| TestCaseError::fail(e.to_string()))?;
         let from = dir.path().join("from.bin");
         let to = dir.path().join("to.bin");
-        std::fs::write(&from, &source_bytes).map_err(|e| TestCaseError::fail(e.to_string()))?;
-        std::fs::write(&to, &dest_bytes).map_err(|e| TestCaseError::fail(e.to_string()))?;
-        std::fs::set_permissions(&from, std::fs::Permissions::from_mode(source_mode))
-            .map_err(|e| TestCaseError::fail(e.to_string()))?;
-        std::fs::set_permissions(&to, std::fs::Permissions::from_mode(dest_mode))
-            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        fixture::write_bytes(&from, &source_bytes);
+        fixture::write_bytes(&to, &dest_bytes);
+        fixture::set_mode(&from, source_mode);
+        fixture::set_mode(&to, dest_mode);
 
         let expected_mode = file_mode(&from);
 
-        durable_write::copy_file_durable(&from, &to, "prop-copy")
+        fs_write::copy_file_durable(&from, &to, WriteLabel::from("prop-copy"))
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
 
-        prop_assert!(!from.exists());
-        let written = std::fs::read(&to).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert!(fs_metadata::file_facts(&from).is_err());
+        let written = fs_read::bytes(&to).map_err(|e| TestCaseError::fail(e.to_string()))?;
         prop_assert_eq!(written, source_bytes);
         prop_assert_eq!(file_mode(&to), expected_mode);
     }

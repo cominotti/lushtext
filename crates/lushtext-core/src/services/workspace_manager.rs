@@ -8,6 +8,7 @@
 use crate::model::workspace::{
     WorkspaceConfig, WorkspaceEntry, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
+use crate::services::filesystem::read as fs_read;
 use crate::services::json_store;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -20,7 +21,7 @@ use std::path::{Path, PathBuf};
 /// Returns an error if the workspace file exists but cannot be read or parsed.
 pub fn load(data_dir: &Path) -> Result<WorkspacesFile> {
     let path = data_dir.join("workspaces.json");
-    match std::fs::read(&path) {
+    match fs_read::bytes(&path) {
         Ok(bytes) => {
             let stored: StoredWorkspacesFile = serde_json::from_slice(&bytes)
                 .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -158,6 +159,7 @@ fn generated_workspace_id() -> WorkspaceId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     #[test]
@@ -171,8 +173,7 @@ mod tests {
     #[test]
     fn test_load_non_file_workspace_path_returns_error() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join("workspaces.json"))
-            .expect("expected operation to succeed");
+        fixture::create_dir(&dir.path().join("workspaces.json"));
 
         let error = load(dir.path()).expect_err("directory workspace file should fail");
 
@@ -204,9 +205,9 @@ mod tests {
     #[test]
     fn test_load_normalizes_legacy_multi_root_workspace() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(
-            dir.path().join("workspaces.json"),
-            serde_json::json!({
+        fixture::write_text(
+            &dir.path().join("workspaces.json"),
+            &serde_json::json!({
                 "active_workspace": "legacy",
                 "workspaces": [{
                     "id": "legacy",
@@ -218,8 +219,7 @@ mod tests {
                 }]
             })
             .to_string(),
-        )
-        .expect("expected operation to succeed");
+        );
 
         let loaded = load(dir.path()).expect("expected operation to succeed");
 
@@ -239,9 +239,9 @@ mod tests {
     #[test]
     fn test_load_normalizes_legacy_file_root_to_parent_directory() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(
-            dir.path().join("workspaces.json"),
-            serde_json::json!({
+        fixture::write_text(
+            &dir.path().join("workspaces.json"),
+            &serde_json::json!({
                 "active_workspace": "legacy",
                 "workspaces": [{
                     "id": "legacy",
@@ -252,8 +252,7 @@ mod tests {
                 }]
             })
             .to_string(),
-        )
-        .expect("expected operation to succeed");
+        );
 
         let loaded = load(dir.path()).expect("expected operation to succeed");
 
@@ -264,9 +263,9 @@ mod tests {
     #[test]
     fn test_load_falls_back_to_all_scope_when_target_is_missing() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(
-            dir.path().join("workspaces.json"),
-            serde_json::json!({
+        fixture::write_text(
+            &dir.path().join("workspaces.json"),
+            &serde_json::json!({
                 "current_scope": { "kind": "workspace", "workspace_id": "missing" },
                 "workspaces": [{
                     "id": "existing",
@@ -275,8 +274,7 @@ mod tests {
                 }]
             })
             .to_string(),
-        )
-        .expect("expected operation to succeed");
+        );
 
         let loaded = load(dir.path()).expect("expected operation to succeed");
         assert_eq!(loaded.current_scope(), WorkspaceScope::All);

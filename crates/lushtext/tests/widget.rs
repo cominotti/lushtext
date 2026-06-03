@@ -2,9 +2,9 @@
 
 //! Widget tests for LushText GTK4 UI components.
 //!
-//! These tests require a display server. For headless environments, use
-//! `mutter --headless` with a monitor large enough for wide split-view tests —
-//! see `.github/workflows/ci.yml` for the full invocation.
+//! These tests always run under a private headless Mutter compositor. Plain
+//! `cargo test` is still allowed, but the harness re-launches itself into that
+//! isolated compositor before any GTK widget can be shown on the live desktop.
 //! They verify widget construction, property behavior, and signal wiring.
 //!
 //! GTK widgets must remain on one stable thread for the lifetime of the test
@@ -17,6 +17,11 @@ use std::process::Command;
 use std::process::ExitCode;
 
 include!(concat!(env!("OUT_DIR"), "/widget_test_registry.rs"));
+
+const CHILD_TEST_ENV: &str = "LUSHTEXT_WIDGET_CHILD";
+const HEADLESS_RUNNER_ENV: &str = "LUSHTEXT_WIDGET_HEADLESS_RUNNER";
+const HEADLESS_MONITOR_ENV: &str = "LUSHTEXT_WIDGET_HEADLESS_MONITOR";
+const DEFAULT_HEADLESS_MONITOR: &str = "2560x1600";
 
 fn configure_widget_test_environment() {
     // Widget tests need deterministic process-wide backends before any GTK
@@ -44,12 +49,16 @@ fn configure_widget_test_environment() {
 fn main() -> ExitCode {
     configure_widget_test_environment();
 
-    if let Ok(test_name) = std::env::var("LUSHTEXT_WIDGET_CHILD") {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let list_mode = args.iter().any(|arg| arg == "--list");
+    if !list_mode && std::env::var_os(HEADLESS_RUNNER_ENV).is_none() {
+        return run_under_headless_compositor(&args);
+    }
+
+    if let Ok(test_name) = std::env::var(CHILD_TEST_ENV) {
         return run_single_test(&test_name);
     }
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let list_mode = args.iter().any(|arg| arg == "--list");
     let terse_list = args
         .array_windows::<2>()
         .any(|[flag, value]| flag == "--format" && value == "terse");
@@ -109,7 +118,8 @@ fn main() -> ExitCode {
         let mut passed_on = None;
         for attempt in 1..=WIDGET_TEST_ATTEMPTS {
             let status = Command::new(&current_exe)
-                .env("LUSHTEXT_WIDGET_CHILD", name)
+                .env(CHILD_TEST_ENV, name)
+                .env(HEADLESS_RUNNER_ENV, "1")
                 .status()
                 .expect("spawn widget child");
             if status.success() {
@@ -174,6 +184,56 @@ fn main() -> ExitCode {
 /// real. This nets one-off compositor/timing transients without hiding a
 /// reproducible break (which fails on every attempt).
 const WIDGET_TEST_ATTEMPTS: usize = 2;
+
+fn run_under_headless_compositor(args: &[String]) -> ExitCode {
+    let runtime_dir = tempfile::Builder::new()
+        .prefix("lushtext-widget-runtime-")
+        .tempdir()
+        .expect("create private widget-test runtime dir");
+    let monitor = std::env::var(HEADLESS_MONITOR_ENV)
+        .unwrap_or_else(|_| DEFAULT_HEADLESS_MONITOR.to_string());
+    let current_exe = std::env::current_exe().expect("current_exe");
+
+    eprintln!(
+        "running widget tests under private mutter --headless session ({monitor}); \
+         live desktop display is not used"
+    );
+
+    let status = Command::new("dbus-run-session")
+        .arg("--")
+        .arg("mutter")
+        .arg("--headless")
+        .arg("--wayland")
+        .arg("--no-x11")
+        .arg("--virtual-monitor")
+        .arg(&monitor)
+        .arg("--")
+        .arg(current_exe)
+        .args(args)
+        .env("XDG_RUNTIME_DIR", runtime_dir.path())
+        .env("GDK_BACKEND", "wayland")
+        .env(HEADLESS_RUNNER_ENV, "1")
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .status();
+
+    match status {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => ExitCode::from(
+            status
+                .code()
+                .and_then(|code| u8::try_from(code).ok())
+                .unwrap_or(101),
+        ),
+        Err(error) => {
+            eprintln!(
+                "failed to launch private headless widget-test session: {error}; \
+                 install dbus-run-session and mutter"
+            );
+            ExitCode::from(101)
+        }
+    }
+}
 
 fn matches_filters(name: &str, filters: &[String], skips: &[String], exact: bool) -> bool {
     let included = if filters.is_empty() {

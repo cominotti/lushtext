@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 use crate::model::document_note::DocumentNoteDocument;
 use crate::model::note::RichNoteBody;
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
+use crate::services::filesystem::{
+    DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
+};
 use crate::services::json_store;
 
 use super::note_storage;
@@ -109,9 +112,8 @@ pub fn delete_for_path(data_dir: &Path, path: &Path) -> Result<()> {
 fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> Result<()> {
     let path =
         document_notes_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    match fs_mutate::remove_file_if_exists(&path) {
+        Ok(_) => Ok(()),
         Err(error) => Err(anyhow::anyhow!(
             "failed to delete document note sidecar {}: {}",
             path.display(),
@@ -130,16 +132,15 @@ fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> R
 /// sidecar cannot be read, rewritten, or cleaned up.
 pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Result<usize> {
     let dir = document_notes_dir(data_dir);
-    if !dir.exists() {
+    if fs_metadata::file_facts(&dir).is_err() {
         return Ok(0);
     }
 
     let mut migrated = 0;
-    for entry in
-        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
+        .with_context(|| format!("failed to read {}", dir.display()))?
     {
-        let entry = entry.with_context(|| format!("failed to iterate {}", dir.display()))?;
-        let sidecar_path = entry.path();
+        let sidecar_path = entry.path;
         if sidecar_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
@@ -160,8 +161,8 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
             &document.identity.sidecar_id,
         ));
         save_document(data_dir, &document)?;
-        if entry.path() != new_sidecar_path {
-            let _ = std::fs::remove_file(entry.path());
+        if sidecar_path != new_sidecar_path {
+            let _ = fs_mutate::remove_file_if_exists(&sidecar_path);
         }
         migrated += 1;
     }
@@ -181,16 +182,15 @@ pub fn list_workspace_document_notes(
 ) -> Result<Vec<WorkspaceDocumentNote>> {
     let canonical_roots = note_storage::canonicalize_roots(workspace_roots);
     let dir = document_notes_dir(data_dir);
-    if !dir.exists() {
+    if fs_metadata::file_facts(&dir).is_err() {
         return Ok(Vec::new());
     }
 
     let mut notes = Vec::new();
-    for entry in
-        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
+        .with_context(|| format!("failed to read {}", dir.display()))?
     {
-        let entry = entry.with_context(|| format!("failed to iterate {}", dir.display()))?;
-        let Some(document) = note_storage::load_json_file::<DocumentNoteDocument>(&entry.path())?
+        let Some(document) = note_storage::load_json_file::<DocumentNoteDocument>(&entry.path)?
         else {
             continue;
         };
@@ -210,13 +210,14 @@ pub fn list_workspace_document_notes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     fn write_file(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("expected operation to succeed");
+            fixture::create_dir_all(parent);
         }
-        std::fs::write(path, contents).expect("expected operation to succeed");
+        fixture::write_text(path, contents);
     }
 
     #[test]
@@ -248,7 +249,7 @@ mod tests {
 
         let sidecar_path = document_notes_dir(dir.path())
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
-        assert!(!sidecar_path.exists());
+        assert!(fs_metadata::file_facts(&sidecar_path).is_err());
     }
 
     #[test]
@@ -263,7 +264,7 @@ mod tests {
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
 
         delete_for_path(dir.path(), &file_path).expect("expected operation to succeed");
-        assert!(!sidecar_path.exists());
+        assert!(fs_metadata::file_facts(&sidecar_path).is_err());
         delete_for_path(dir.path(), &file_path).expect("expected missing sidecar to be a no-op");
     }
 
@@ -277,8 +278,8 @@ mod tests {
             .expect("expected operation to succeed");
         let sidecar_path = document_notes_dir(dir.path())
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
-        std::fs::remove_file(&sidecar_path).expect("expected operation to succeed");
-        std::fs::create_dir(&sidecar_path).expect("expected operation to succeed");
+        fixture::remove_file(&sidecar_path);
+        fixture::create_dir(&sidecar_path);
 
         let error =
             delete_for_path(dir.path(), &file_path).expect_err("directory sidecar should fail");
@@ -303,21 +304,24 @@ mod tests {
         let old_sidecar_path = document_notes_dir(dir.path())
             .join(note_storage::sidecar_filename(&old_identity.sidecar_id));
 
-        std::fs::rename(&old_file, &new_file).expect("expected operation to succeed");
+        fixture::rename(&old_file, &new_file);
         let migrated = move_path_tree(dir.path(), &old_file, &new_file)
             .expect("expected operation to succeed");
 
         assert_eq!(migrated, 1);
-        assert!(!old_sidecar_path.exists());
+        assert!(fs_metadata::file_facts(&old_sidecar_path).is_err());
         let loaded = load_for_path(dir.path(), &new_file).expect("expected operation to succeed");
         let loaded = loaded.expect("expected moved note");
         assert_eq!(loaded.identity.display_path, new_file);
         assert_eq!(loaded.note.text, "Keep this note");
-        let json_sidecars = std::fs::read_dir(document_notes_dir(dir.path()))
-            .expect("expected operation to succeed")
-            .filter_map(std::result::Result::ok)
-            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
-            .count();
+        let json_sidecars = fs_tree::scan_directory(
+            &document_notes_dir(dir.path()),
+            DirectoryScanPolicy::visible_workspace(),
+        )
+        .expect("expected operation to succeed")
+        .into_iter()
+        .filter(|entry| entry.path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .count();
         assert_eq!(json_sidecars, 1);
     }
 

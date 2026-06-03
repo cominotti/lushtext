@@ -4,6 +4,7 @@
 
 use super::FileTreeItem;
 use crate::services;
+use crate::services::filesystem::{mutate as fs_mutate, write as fs_write};
 use glib::prelude::*;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -224,7 +225,7 @@ impl super::LushtextWorkspaceSection {
         services::async_task::spawn_blocking_then(
             self.clone(),
             move || {
-                let result = services::durable_write::rename_durable(&old_path, &new_path_c);
+                let result = fs_write::rename_durable(&old_path, &new_path_c);
                 (old_path, new_path_c, result)
             },
             move |section, (old_path, new_path, result)| {
@@ -272,9 +273,9 @@ impl super::LushtextWorkspaceSection {
                             let old_path_bg = old_path.clone();
                             std::thread::spawn(move || {
                                 if is_dir {
-                                    let _ = std::fs::remove_dir(&old_path_bg);
+                                    let _ = fs_mutate::remove_dir_if_exists(&old_path_bg);
                                 } else {
-                                    let _ = std::fs::remove_file(&old_path_bg);
+                                    let _ = fs_mutate::remove_file_if_exists(&old_path_bg);
                                 }
                             });
                             section.remove_from_model(&old_path);
@@ -304,9 +305,9 @@ impl super::LushtextWorkspaceSection {
         let is_dir = self.imp().context_is_dir.get();
         std::thread::spawn(move || {
             if is_dir {
-                let _ = std::fs::remove_dir(&path);
+                let _ = fs_mutate::remove_dir_if_exists(&path);
             } else {
-                let _ = std::fs::remove_file(&path);
+                let _ = fs_mutate::remove_file_if_exists(&path);
             }
         });
 
@@ -348,14 +349,14 @@ impl super::LushtextWorkspaceSection {
                 section,
                 move || {
                     let result = if is_dir {
-                        std::fs::remove_dir_all(&path_for_io)
+                        fs_mutate::remove_dir_all_if_exists(&path_for_io)
                     } else {
-                        std::fs::remove_file(&path_for_io)
+                        fs_mutate::remove_file_if_exists(&path_for_io)
                     };
                     (path_for_io, result)
                 },
                 |section, (path, result)| match result {
-                    Ok(()) => {
+                    Ok(_) => {
                         section.remove_from_model(&path);
                         if let Some(ref cb) = *section.imp().delete_callback.borrow() {
                             cb(&path);
@@ -388,15 +389,9 @@ fn create_unique(dir: &Path, base: &str, is_dir: bool) -> std::io::Result<PathBu
 
         let path = dir.join(&name);
         let result = if is_dir {
-            std::fs::create_dir(&path)
-                .and_then(|()| services::durable_write::sync_parent_dir(&path))
+            fs_mutate::create_dir(&path).and_then(|()| fs_write::sync_parent_dir(&path))
         } else {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .and_then(|file| file.sync_all())
-                .and_then(|()| services::durable_write::sync_parent_dir(&path))
+            fs_write::create_new_empty_file_durable(&path)
         };
         match result {
             Ok(()) => return Ok(path),

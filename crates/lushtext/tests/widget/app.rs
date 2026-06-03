@@ -2,7 +2,7 @@
 
 //! Tests for LushtextApplication.
 
-use crate::common::{ensure_gtk_init, flush_events, wait_until};
+use crate::common::{ensure_gtk_init, fixture, flush_events, fs_metadata, wait_until};
 use gio::prelude::*;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{IconTheme, gdk};
@@ -170,7 +170,7 @@ fn test_open_activation_opens_single_file_tab() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("activation tempdir");
     let path = dir.path().join("activated.txt");
-    std::fs::write(&path, "opened from desktop\n").expect("write activation file");
+    fixture::write_text(&path, "opened from desktop\n");
     let app = test_lushtext_application();
 
     open_files(&app, &[path.as_path()]);
@@ -189,9 +189,9 @@ fn test_open_activation_deduplicates_canonical_paths_and_focuses_duplicate() {
     let alpha = dir.path().join("alpha.txt");
     let beta = dir.path().join("beta.txt");
     let alpha_link = dir.path().join("alpha-link.txt");
-    std::fs::write(&alpha, "alpha\n").expect("write alpha");
-    std::fs::write(&beta, "beta\n").expect("write beta");
-    std::os::unix::fs::symlink(&alpha, &alpha_link).expect("symlink alpha");
+    fixture::write_text(&alpha, "alpha\n");
+    fixture::write_text(&beta, "beta\n");
+    fixture::symlink(&alpha, &alpha_link);
     let app = test_lushtext_application();
 
     open_files(&app, &[alpha.as_path(), beta.as_path(), alpha_link.as_path()]);
@@ -200,16 +200,16 @@ fn test_open_activation_deduplicates_canonical_paths_and_focuses_duplicate() {
 
     let canonical_paths: Vec<_> = tab_paths(&window)
         .into_iter()
-        .map(|path| path.canonicalize().expect("canonical tab path"))
+        .map(|path| fs_metadata::canonical_path(&path).expect("canonical tab path"))
         .collect();
-    assert!(canonical_paths.contains(&alpha.canonicalize().expect("canonical alpha")));
-    assert!(canonical_paths.contains(&beta.canonicalize().expect("canonical beta")));
+    assert!(canonical_paths.contains(&fs_metadata::canonical_path(&alpha).expect("canonical alpha")));
+    assert!(canonical_paths.contains(&fs_metadata::canonical_path(&beta).expect("canonical beta")));
     assert_eq!(
         active_editor(&window)
             .file_path()
             .as_deref()
-            .and_then(|path| path.canonicalize().ok()),
-        Some(alpha.canonicalize().expect("canonical alpha")),
+            .and_then(|path| fs_metadata::canonical_path(path).ok()),
+        Some(fs_metadata::canonical_path(&alpha).expect("canonical alpha")),
         "the duplicate activation should focus the already-open canonical file",
     );
 }
@@ -220,8 +220,8 @@ fn test_open_activation_reuses_existing_window() {
     let dir = tempfile::tempdir().expect("activation tempdir");
     let first = dir.path().join("first.txt");
     let second = dir.path().join("second.txt");
-    std::fs::write(&first, "first\n").expect("write first");
-    std::fs::write(&second, "second\n").expect("write second");
+    fixture::write_text(&first, "first\n");
+    fixture::write_text(&second, "second\n");
     let app = test_lushtext_application();
 
     open_files(&app, &[first.as_path()]);
@@ -257,14 +257,14 @@ fn test_open_activation_reports_failed_paths_without_stale_bookkeeping() {
         "a missing activation target should not poison duplicate-tab bookkeeping",
     );
 
-    std::fs::write(&missing, "created after failed activation\n").expect("create retry file");
+    fixture::write_text(&missing, "created after failed activation\n");
     open_files(&app, &[missing.as_path()]);
     wait_for_active_loaded_path(&window, &missing);
     assert_eq!(editor_text(&active_editor(&window)), "created after failed activation\n");
 
     let unreadable = dir.path().join("directory-target.txt");
-    std::fs::create_dir(&unreadable).expect("create unreadable document target");
-    let unreadable_key = unreadable.canonicalize().expect("canonical unreadable target");
+    fixture::create_dir(&unreadable);
+    let unreadable_key = fs_metadata::canonical_path(&unreadable).expect("canonical unreadable target");
     open_files(&app, &[unreadable.as_path()]);
     let unreadable_status = unreadable.display().to_string();
     wait_until(Duration::from_secs(3), || {
@@ -276,8 +276,8 @@ fn test_open_activation_reports_failed_paths_without_stale_bookkeeping() {
         "an unreadable activation target should not leave a canonical open-path key",
     );
 
-    std::fs::remove_dir(&unreadable).expect("remove unreadable target directory");
-    std::fs::write(&unreadable, "readable after cleanup\n").expect("replace target with file");
+    fixture::remove_dir_all(&unreadable);
+    fixture::write_text(&unreadable, "readable after cleanup\n");
     open_files(&app, &[unreadable.as_path()]);
     wait_for_active_loaded_path(&window, &unreadable);
     assert_eq!(active_editor(&window).file_path().as_deref(), Some(unreadable.as_path()));
@@ -302,7 +302,7 @@ fn test_desktop_exec_forwards_documents_and_matches_open_activation() {
 
     let dir = tempfile::tempdir().expect("activation tempdir");
     let path = dir.path().join("desktop-forwarded.txt");
-    std::fs::write(&path, "desktop metadata activation\n").expect("write activation file");
+    fixture::write_text(&path, "desktop metadata activation\n");
     let app = test_lushtext_application();
 
     open_files(&app, &[path.as_path()]);
@@ -317,8 +317,8 @@ fn test_open_activation_keeps_explicit_file_active_after_session_restore() {
     let dir = tempfile::tempdir().expect("activation tempdir");
     let restored = dir.path().join("restored.txt");
     let explicit = dir.path().join("explicit.txt");
-    std::fs::write(&restored, "restored session\n").expect("write restored");
-    std::fs::write(&explicit, "explicit activation\n").expect("write explicit");
+    fixture::write_text(&restored, "restored session\n");
+    fixture::write_text(&explicit, "explicit activation\n");
     session_service::save(
         &json_store::data_dir(),
         &SessionData {

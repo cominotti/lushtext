@@ -1128,12 +1128,20 @@ dependencies = [
  "gtk4",
  "libadwaita",
  "libtest-mimic",
+ "lushtext-build-support",
  "lushtext-core",
  "predicates",
  "serde_json",
  "sourceview5",
  "tempfile",
  "tracing-subscriber",
+ "workspace-hack",
+]
+
+[[package]]
+name = "lushtext-build-support"
+version = "0.1.0"
+dependencies = [
  "workspace-hack",
 ]
 
@@ -1158,12 +1166,14 @@ dependencies = [
  "ignore",
  "libadwaita",
  "libc",
+ "lushtext-build-support",
  "notify-debouncer-full",
  "nucleo-matcher",
  "pango",
  "proptest",
  "pulldown-cmark",
  "regex",
+ "rustix",
  "serde",
  "serde_json",
  "simdutf8",

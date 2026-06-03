@@ -72,15 +72,15 @@ All paths are written as normalized suffixes relative to any `*/src/` root.
 
 ### AW-4: Missing final temp metadata sync or parent-directory sync after atomic rename (CONFIRMED HISTORICAL)
 **Location**: `services/json_store.rs`, `services/draft_service.rs`, `services/editor_io.rs`, `services/content_search/replace.rs`, `services/local_history_service.rs`
-**Old code**: Atomic write helpers flushed and `sync_all()`ed the temp file before `std::fs::rename`, but returned immediately after rename without syncing the containing directory. A later partial hardening still synced temp content before applying metadata, leaving chmod/chown/xattr/ACL mutations outside the final temp-file durability proof. Local-history migration also renamed/copy-then-removed snapshot files without making the destination entry durable first.
+**Old code**: Atomic write helpers flushed and `sync_all()`ed the temp file before the final rename, but returned immediately after rename without syncing the containing directory. A later partial hardening still synced temp content before applying metadata, leaving chmod/chown/xattr/ACL mutations outside the final temp-file durability proof. Local-history migration also renamed/copy-then-removed snapshot files without making the destination entry durable first.
 **Scenario**: Power loss after rename on ext4, XFS, or Btrfs can preserve the synced temp-file bytes while losing the directory entry update or required destination metadata. The app may restart with the old JSON state, old draft file, old saved document, widened or missing file metadata, missing Replace All rollback state, or a broken local-history lineage.
-**Current guardrail**: `durable_write::atomic_write_bytes` probes metadata before temp creation, creates overwrite temps with no wider standard permissions than the destination, applies required metadata before the final temp-file sync, and syncs the parent directory after successful rename. `durable_write::copy_file_durable()` uses source metadata for cross-filesystem fallback copies and removes the source only after the destination write and destination parent sync complete.
+**Current guardrail**: `filesystem::write::atomic_replace` probes metadata before temp creation, creates overwrite temps with no wider standard permissions than the destination, applies required metadata before the final temp-file sync, and syncs the parent directory after successful rename. `filesystem::write::copy_file_durable()` uses source metadata for cross-filesystem fallback copies and removes the source only after the destination write and destination parent sync complete.
 
 ### AW-5: Shared temp path for concurrent writers (CONFIRMED HISTORICAL)
 **Location**: `services/json_store.rs`, `services/draft_service.rs`, `services/editor_io.rs`, `services/content_search/replace.rs`
 **Old code**: Several atomic writers derived temp paths only from the final file name, such as `.tmp`, so concurrent writes to the same final path shared one temp file.
 **Scenario**: Two saves of the same file overlap. Writer A syncs and renames the temp path while writer B is still writing, or writer B recreates the same temp path after writer A opened it. The final rename can fail or persist stale bytes.
-**Current guardrail**: Use `durable_write::unique_temp_path(final_path, tag)` so each writer gets a collision-resistant temp path in the final directory.
+**Current guardrail**: Use `services::filesystem::write` durable entry points so each writer gets a collision-resistant temp path in the final directory.
 
 ### AW-6: Destination-inode lock does not coordinate atomic replace (CONFIRMED HISTORICAL)
 **Location**: `services/durable_write.rs`, `services/editor_io.rs`, `services/content_search/replace.rs`
@@ -115,6 +115,6 @@ All paths are written as normalized suffixes relative to any `*/src/` root.
 
 ### RL-3: Session filter drops unavailable files (CONFIRMED HISTORICAL)
 **Former location**: `services/session_service.rs` — removed `filter_existing_tabs()`
-**Old code**: `path.exists()` stat check → false for NFS/slow mount → tab removed → session re-saved without it.
+**Old code**: direct path-existence stat check → false for NFS/slow mount → tab removed → session re-saved without it.
 **Scenario**: Laptop undocked, NFS share unavailable → session restore drops all NFS-backed tabs → session saved → dock again → tabs permanently gone from session. Draft files (if any) survive as orphans for one restart cycle.
 **Current guardrail**: Startup restore must load `session.json` as-is and preserve temporarily unavailable file-backed tabs. Do not reintroduce a service API that filters session tabs with `Path::exists`.

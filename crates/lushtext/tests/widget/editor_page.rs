@@ -2,7 +2,7 @@
 
 //! Tests for the LushtextEditorPage widget.
 
-use crate::common::{ensure_gtk_init, present_window, test_application, wait_until};
+use crate::common::{ensure_gtk_init, fixture, fs_read, present_window, test_application, wait_until};
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -620,7 +620,7 @@ fn test_save_file_writes_content() {
     while !done.get() {
         glib::MainContext::default().iteration(true);
     }
-    let saved = std::fs::read_to_string(&path).expect("expected operation to succeed");
+    let saved = fs_read::text(&path).expect("expected operation to succeed");
     assert_eq!(saved, "saved content");
 
     // Buffer should no longer be modified after save
@@ -685,8 +685,8 @@ fn test_new_load_cancels_previous_token_without_reusing_identity() {
     let dir = tempfile::tempdir().expect("load token tempdir");
     let first_path = dir.path().join("first.txt");
     let second_path = dir.path().join("second.txt");
-    std::fs::write(&first_path, "first\n").expect("write first");
-    std::fs::write(&second_path, "second\n").expect("write second");
+    fixture::write_text(&first_path, "first\n");
+    fixture::write_text(&second_path, "second\n");
 
     let page = LushtextEditorPage::new();
     page.load_file_async(&first_path);
@@ -743,10 +743,7 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
     assert!(!page.is_modified());
     assert!(page.source_view().is_editable());
     assert!(page.source_view().is_cursor_visible());
-    assert_eq!(
-        std::fs::read_to_string(path).expect("expected operation to succeed"),
-        content
-    );
+    assert_eq!(fs_read::text(&path).expect("expected operation to succeed"), content);
 }
 
 #[test]
@@ -791,7 +788,7 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
     assert!(page.source_view().is_editable());
     assert!(page.source_view().is_cursor_visible());
     assert_eq!(
-        std::fs::read_to_string(tmp.path()).expect("saved duplicate test file"),
+        fs_read::text(tmp.path()).expect("saved duplicate test file"),
         "x".repeat(70_000)
     );
 }

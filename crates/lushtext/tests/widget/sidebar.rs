@@ -2,7 +2,7 @@
 
 //! Tests for the LushtextSidebar multi-workspace orchestrator.
 
-use crate::common::{ensure_gtk_init, flush_after_delay, flush_events, wait_until};
+use crate::common::{ensure_gtk_init, fixture, flush_after_delay, flush_events, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
@@ -241,7 +241,7 @@ fn seed_restored_workspaces() -> tempfile::TempDir {
 
     for (idx, name) in ["one", "two", "three"].into_iter().enumerate() {
         let path = roots_dir.path().join(name);
-        std::fs::create_dir_all(&path).expect("create workspace root");
+        fixture::create_dir_all(&path);
         workspaces.workspaces.push(WorkspaceConfig {
             id: WorkspaceId::new(format!("ws-{idx}")),
             name: name.to_string(),
@@ -262,7 +262,7 @@ fn test_update_tab_path_exact_match() {
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let old_path = dir.path().join("old.rs");
-    std::fs::write(&old_path, "fn main() {}").expect("expected operation to succeed");
+    fixture::write_text(&old_path, "fn main() {}");
     window.open_document(&old_path);
 
     let new_path = dir.path().join("new.rs");
@@ -279,9 +279,9 @@ fn test_update_tab_path_directory_prefix_rewrite() {
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let old_dir = dir.path().join("old_dir");
-    std::fs::create_dir(&old_dir).expect("expected operation to succeed");
+    fixture::create_dir(&old_dir);
     let file_path = old_dir.join("file.rs");
-    std::fs::write(&file_path, "content").expect("expected operation to succeed");
+    fixture::write_text(&file_path, "content");
     window.open_document(&file_path);
 
     let new_dir = dir.path().join("new_dir");
@@ -304,7 +304,7 @@ fn test_update_tab_path_no_match_is_noop() {
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let file_path = dir.path().join("keep.rs");
-    std::fs::write(&file_path, "content").expect("expected operation to succeed");
+    fixture::write_text(&file_path, "content");
     window.open_document(&file_path);
 
     window.update_tab_path(
@@ -339,7 +339,7 @@ fn test_close_tab_for_path_exact() {
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let file_path = dir.path().join("doomed.rs");
-    std::fs::write(&file_path, "").expect("expected operation to succeed");
+    fixture::write_text(&file_path, "");
     window.open_document(&file_path);
     assert_tab_count(&window, 1);
 
@@ -355,13 +355,13 @@ fn test_close_tab_for_path_directory_closes_children() {
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let sub = dir.path().join("sub");
-    std::fs::create_dir(&sub).expect("expected operation to succeed");
+    fixture::create_dir(&sub);
     let f1 = sub.join("a.rs");
     let f2 = sub.join("b.rs");
     let f3 = dir.path().join("outside.rs");
-    std::fs::write(&f1, "").expect("expected operation to succeed");
-    std::fs::write(&f2, "").expect("expected operation to succeed");
-    std::fs::write(&f3, "").expect("expected operation to succeed");
+    fixture::write_text(&f1, "");
+    fixture::write_text(&f2, "");
+    fixture::write_text(&f3, "");
 
     window.open_document(&f1);
     window.open_document(&f2);
