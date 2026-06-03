@@ -163,7 +163,14 @@ seed is appropriate.
 - Test runner: `cargo nextest`, matching the non-widget CI lane
 - Wrapper: `scripts/run-mutants.sh`
 - Makefile targets: `mutants-smoke`, `mutants-diff`, `mutants-full`, `mutants-list`
-- Output: `mutants.out` / `mutants.out.old` (gitignored and uploaded from CI)
+- Output: `mutants.out` / `mutants.out.old` (gitignored; uploaded only when
+  mutation CI is explicitly re-enabled)
+
+Mutation tests are local-only by default. The GitHub Actions workflow remains in
+place as a re-enable template, but its mutation jobs are gated by the repository
+variable `LUSHTEXT_ENABLE_MUTATION_CI=true`. Leave that variable unset or any
+value other than `true` for normal PR, scheduled, and manual CI. Use the local
+Makefile targets above while the lane is disabled.
 
 The default mutation scope is intentionally deterministic: model code, service
 code, and a few pure helper-heavy UI modules. Do not add GTK widget construction,
@@ -191,9 +198,9 @@ and `MUTANTS_BUILD_JOBS` (derived) bounds each job's `cargo build` via
 `CARGO_BUILD_JOBS` — the build phase is what spikes load average, since six
 concurrent cold builds each fan out to every core by default even while IO and
 memory pressure stay near zero. `scripts/run-mutants.sh` only exports these /
-passes `--jobs` when the matching env var is set, and CI leaves all three unset,
-so the sharded small runners keep the serial default and fan out through
-`MUTANTS_SHARD` instead.
+passes `--jobs` when the matching env var is set. If the gated CI mutation lane
+is re-enabled, it must leave all three unset so the sharded small runners keep
+the serial default and fan out through `MUTANTS_SHARD` instead.
 
 Treat survivors in this order: first decide whether the mutant represents a
 real missed behavior, then add or tighten deterministic tests, then consider

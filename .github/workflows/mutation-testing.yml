@@ -1,5 +1,8 @@
 name: Mutation Testing
 
+# Mutation tests are local-only by default. Set the repository variable
+# LUSHTEXT_ENABLE_MUTATION_CI=true to re-enable the PR, scheduled, and manual
+# CI lanes without editing this workflow.
 on:
   pull_request:
   schedule:
@@ -18,9 +21,23 @@ env:
   MUTANTS_TIMEOUT: "300"
 
 jobs:
+  mutation-ci-mode:
+    name: Mutation CI Mode
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report mutation CI mode
+        run: |
+          if [[ "${{ vars.LUSHTEXT_ENABLE_MUTATION_CI }}" == "true" ]]; then
+            echo "Mutation CI is enabled."
+          else
+            echo "Mutation CI is disabled; mutation tests are local-only."
+            echo "Use make mutants-smoke, make mutants-diff, or make mutants-full locally."
+            echo "Set repository variable LUSHTEXT_ENABLE_MUTATION_CI=true to re-enable CI mutation lanes."
+          fi
+
   pr-mutants:
     name: PR Mutation Diff
-    if: github.event_name == 'pull_request'
+    if: ${{ vars.LUSHTEXT_ENABLE_MUTATION_CI == 'true' && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
@@ -79,7 +96,7 @@ jobs:
 
   full-baseline:
     name: Full Mutation Baseline
-    if: github.event_name != 'pull_request'
+    if: ${{ vars.LUSHTEXT_ENABLE_MUTATION_CI == 'true' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -116,7 +133,7 @@ jobs:
 
   full-mutants:
     name: Full Mutation Scope ${{ matrix.shard }}/4
-    if: github.event_name != 'pull_request'
+    if: ${{ vars.LUSHTEXT_ENABLE_MUTATION_CI == 'true' && github.event_name != 'pull_request' }}
     needs: full-baseline
     runs-on: ubuntu-latest
     timeout-minutes: 90
