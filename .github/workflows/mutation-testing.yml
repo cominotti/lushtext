@@ -29,7 +29,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
@@ -85,7 +85,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
@@ -128,7 +128,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
