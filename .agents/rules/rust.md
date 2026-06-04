@@ -65,14 +65,12 @@ and `filesystem::write::atomic_replace`.
 Approved raw filesystem exceptions are limited to:
 
 - `services::filesystem::sys` for the private descriptor and platform backend.
-- `services::durable_write` for the private crash-durable write backend used by
-  `filesystem::write`.
 - `services::filesystem::fixture` for test and benchmark setup/assertions.
 
-Do not import the private durable backend from callers. The public durability
-surface is `services::filesystem::write`, including `atomic_replace`,
-`atomic_replace_stream`, `rename_durable`, `copy_file_durable`,
-`sync_parent_dir`, `FileWriteLock`, and `TargetWriteGuard`.
+Do not import the private durable implementation from callers. The public
+durability surface is `services::filesystem::write`, including
+`atomic_replace`, `atomic_replace_stream`, `rename_durable`,
+`copy_file_durable`, `sync_parent_dir`, and `TargetWriteGuard`.
 
 Tests and benches should use `services::filesystem::fixture` helpers such as
 `write_text`, `write_bytes`, `create_dir_all`, `create_sparse_file`,

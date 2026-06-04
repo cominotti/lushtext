@@ -13,7 +13,7 @@ use crate::services::durable_write;
 use super::sys;
 use super::types::WriteLabel;
 
-pub use durable_write::{DurableWriteError, FileWriteLock, TargetWriteGuard, WriteTargetIdentity};
+pub use durable_write::{DurableWriteError, TargetWriteGuard, WriteTargetIdentity};
 
 /// Resolve the stable target identity used by coordinated writes.
 ///

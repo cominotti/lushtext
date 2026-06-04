@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 
+use crate::services::filesystem::sys;
+
 /// Process-local counter for temp-file names that may be created concurrently.
 ///
 /// Including the process ID and this counter keeps overlapping writes from
@@ -220,7 +222,7 @@ where
         Err(error) => return Err(DurableWriteError::BeforeRename(error)),
     };
     let tmp_path = unique_temp_path(path, tmp_tag);
-    let file = match create_temp_file(&tmp_path, metadata_plan.create_mode()) {
+    let file = match sys::create_temp_file(&tmp_path, metadata_plan.create_mode()) {
         Ok(file) => file,
         Err(error) => return Err(DurableWriteError::BeforeRename(error)),
     };
@@ -234,12 +236,12 @@ where
     .and_then(|()| sync_temp_after_metadata(&file));
 
     if let Err(error) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = sys::remove_file(&tmp_path);
         return Err(DurableWriteError::BeforeRename(error));
     }
 
-    if let Err(error) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
+    if let Err(error) = sys::rename(&tmp_path, path) {
+        let _ = sys::remove_file(&tmp_path);
         return Err(DurableWriteError::BeforeRename(error));
     }
     // The rename has landed: the new bytes are now the destination. A failure
@@ -277,19 +279,17 @@ impl WriteTargetIdentity {
 /// canonicalized. Broken symlinks fail here, which keeps callers from replacing
 /// the link itself by accident.
 pub fn resolve_write_target_identity(path: &Path) -> std::io::Result<WriteTargetIdentity> {
-    match path.canonicalize() {
+    match sys::canonicalize(path) {
         Ok(canonical) => Ok(WriteTargetIdentity(canonical)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if std::fs::symlink_metadata(path)
-                .is_ok_and(|metadata| metadata.file_type().is_symlink())
-            {
+            if sys::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("symlink target is unavailable: {}", path.display()),
                 ));
             }
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
-            let canonical_parent = parent.canonicalize()?;
+            let canonical_parent = sys::canonicalize(parent)?;
             let Some(file_name) = path.file_name() else {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -369,13 +369,6 @@ fn write_target_locks() -> &'static TargetWriteLocks {
     })
 }
 
-/// Backward-compatible alias for the stable write guard.
-///
-/// Older call sites used `FileWriteLock`; keeping the name avoids a large
-/// mechanical churn while the implementation now coordinates by resolved path
-/// rather than destination inode.
-pub type FileWriteLock = TargetWriteGuard;
-
 /// Rename a file or directory and sync both affected parent directories.
 ///
 /// `rename()` changes directory entries, so syncing only the moved file or
@@ -386,7 +379,7 @@ pub type FileWriteLock = TargetWriteGuard;
 /// Returns an error if the rename fails or either affected parent directory
 /// cannot be synced.
 pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::rename(from, to)?;
+    sys::rename(from, to)?;
     sync_parent_dir(from)?;
     if from.parent() != to.parent() {
         sync_parent_dir(to)?;
@@ -406,10 +399,10 @@ pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
 /// atomically written, the source cannot be removed, or the source directory
 /// cannot be synced after removal.
 pub fn copy_file_durable(from: &Path, to: &Path, tmp_tag: &str) -> std::io::Result<()> {
-    let bytes = std::fs::read(from)?;
+    let bytes = sys::read(from)?;
     atomic_write_bytes_with_metadata_source_classified(to, tmp_tag, &bytes, from)
         .map_err(DurableWriteError::into_io_error)?;
-    std::fs::remove_file(from)?;
+    sys::remove_file(from)?;
     sync_parent_dir(from)
 }
 
@@ -427,9 +420,7 @@ struct MetadataPlan {
 #[cfg(unix)]
 struct UnixMetadataSource {
     path: PathBuf,
-    mode: u32,
-    uid: u32,
-    gid: u32,
+    metadata: sys::UnixMetadata,
 }
 
 #[cfg(unix)]
@@ -437,20 +428,16 @@ impl MetadataPlan {
     /// Probe metadata before temp creation so restrictive destinations never get
     /// a wider temp sibling containing new bytes.
     fn probe(path: &Path, source: MetadataSource<'_>) -> std::io::Result<Self> {
-        use std::os::unix::fs::MetadataExt;
-
         let (source_path, required) = match source {
             MetadataSource::ExistingDestination => (path, false),
             MetadataSource::Explicit(path) => (path, true),
         };
 
-        match std::fs::metadata(source_path) {
-            Ok(meta) => Ok(Self {
+        match sys::required_metadata(source_path) {
+            Ok(metadata) => Ok(Self {
                 source: Some(UnixMetadataSource {
                     path: source_path.to_path_buf(),
-                    mode: meta.mode(),
-                    uid: meta.uid(),
-                    gid: meta.gid(),
+                    metadata,
                 }),
             }),
             Err(error) if !required && error.kind() == std::io::ErrorKind::NotFound => {
@@ -463,13 +450,13 @@ impl MetadataPlan {
     /// Permission bits used at temp-file creation time.
     #[must_use]
     fn create_mode(&self) -> Option<u32> {
-        self.source.as_ref().map(|source| source.mode & 0o777)
+        self.source
+            .as_ref()
+            .map(|source| source.metadata.mode & 0o777)
     }
 
     /// Apply metadata that must be present before the final temp-file sync.
-    fn apply(&self, temp: &std::fs::File) -> std::io::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn apply(&self, temp: &sys::File) -> std::io::Result<()> {
         let Some(source) = &self.source else {
             return Ok(());
         };
@@ -477,9 +464,9 @@ impl MetadataPlan {
         // Mode preservation is required. Best-effort metadata below can fail on
         // ordinary user saves, but silently widening a private file would be a
         // real safety bug.
-        temp.set_permissions(std::fs::Permissions::from_mode(source.mode & 0o7777))?;
-        best_effort_chown(temp, source.uid, source.gid);
-        best_effort_copy_xattrs(&source.path, temp);
+        sys::apply_mode(temp, source.metadata.mode & 0o7777)?;
+        sys::best_effort_chown(temp, source.metadata.uid, source.metadata.gid);
+        sys::copy_xattrs_best_effort(&source.path, temp);
         Ok(())
     }
 }
@@ -493,7 +480,7 @@ impl MetadataPlan {
         match source {
             MetadataSource::ExistingDestination => Ok(Self),
             MetadataSource::Explicit(source_path) => {
-                std::fs::metadata(source_path)?;
+                sys::metadata(source_path)?;
                 let _ = path;
                 Ok(Self)
             }
@@ -504,29 +491,9 @@ impl MetadataPlan {
         None
     }
 
-    fn apply(&self, _temp: &std::fs::File) -> std::io::Result<()> {
+    fn apply(&self, _temp: &sys::File) -> std::io::Result<()> {
         Ok(())
     }
-}
-
-#[cfg(unix)]
-fn create_temp_file(path: &Path, mode: Option<u32>) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    if let Some(mode) = mode {
-        options.mode(mode);
-    }
-    options.open(path)
-}
-
-#[cfg(not(unix))]
-fn create_temp_file(path: &Path, _mode: Option<u32>) -> std::io::Result<std::fs::File> {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
 }
 
 #[cfg(test)]
@@ -548,18 +515,18 @@ fn observe_temp_after_content_for_test(_path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-fn sync_temp_after_metadata(file: &std::fs::File) -> std::io::Result<()> {
+fn sync_temp_after_metadata(file: &sys::File) -> std::io::Result<()> {
     if FAIL_FINAL_TEMP_SYNC_AFTER_METADATA.with(|fail| fail.replace(false)) {
         return Err(std::io::Error::other(
             "injected final temp sync failure after metadata",
         ));
     }
-    file.sync_all()
+    sys::sync_file(file)
 }
 
 #[cfg(not(test))]
-fn sync_temp_after_metadata(file: &std::fs::File) -> std::io::Result<()> {
-    file.sync_all()
+fn sync_temp_after_metadata(file: &sys::File) -> std::io::Result<()> {
+    sys::sync_file(file)
 }
 
 #[cfg(test)]
@@ -584,7 +551,7 @@ thread_local! {
 /// directory or its parent cannot be synced.
 pub fn create_dir_all_durable(path: &Path) -> std::io::Result<()> {
     let missing = missing_ancestors(path);
-    std::fs::create_dir_all(path)?;
+    sys::create_dir_all(path)?;
 
     for created in missing.iter().rev() {
         sync_parent_dir(created)?;
@@ -611,7 +578,7 @@ pub fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 /// Sync a directory handle on Unix, where LushText's GTK target platforms live.
 #[cfg(unix)]
 fn sync_dir(path: &Path) -> std::io::Result<()> {
-    std::fs::File::open(path)?.sync_all()
+    sys::sync_dir_descriptor(path)
 }
 
 /// Keep non-Unix builds compiling even though the shipped target is Linux.
@@ -620,116 +587,10 @@ fn sync_dir(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Best-effort `fchown` of the temp file to the destination's owner.
-///
-/// Ignores failures: a non-root user editing their own file is already the owner
-/// (a no-op), and reassigning ownership they do not hold (`EPERM`) must not block
-/// the save.
-#[cfg(unix)]
-fn best_effort_chown(temp: &std::fs::File, uid: u32, gid: u32) {
-    use std::os::unix::io::AsRawFd;
-
-    // SAFETY: `fd` is owned by `temp` for the duration of the call, and `fchown`
-    // only borrows the descriptor. The return value is intentionally ignored
-    // because ownership preservation is best-effort.
-    unsafe {
-        libc::fchown(temp.as_raw_fd(), uid, gid);
-    }
-}
-
-/// Best-effort copy of every extended attribute from `dest` onto the temp file.
-///
-/// Copying xattrs carries POSIX access ACLs (`system.posix_acl_access`) and the
-/// SELinux label (`security.selinux`) along with ordinary `user.*` attributes in
-/// one pass. Every step is best-effort: unsupported filesystems (`ENOTSUP`) and
-/// policy-denied security attributes (`EPERM`) are skipped, never fatal.
-#[cfg(target_os = "linux")]
-fn best_effort_copy_xattrs(dest: &Path, temp: &std::fs::File) {
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::io::AsRawFd;
-
-    let Ok(dest_c) = std::ffi::CString::new(dest.as_os_str().as_bytes()) else {
-        return;
-    };
-
-    // Two-call sizing: first ask for the length of the NUL-separated name list,
-    // then fetch the names into an exactly sized buffer.
-    // SAFETY: passing a null buffer with size 0 is the documented way to query
-    // the required length; `dest_c` is a valid NUL-terminated path.
-    let list_len = unsafe { libc::listxattr(dest_c.as_ptr(), std::ptr::null_mut(), 0) };
-    if list_len <= 0 {
-        return;
-    }
-    let mut names = vec![0u8; usize::try_from(list_len).unwrap_or(0)];
-    // SAFETY: `names` has `list_len` bytes of capacity for the kernel to fill.
-    let written = unsafe {
-        libc::listxattr(
-            dest_c.as_ptr(),
-            names.as_mut_ptr().cast::<libc::c_char>(),
-            names.len(),
-        )
-    };
-    if written <= 0 {
-        return;
-    }
-    names.truncate(usize::try_from(written).unwrap_or(0));
-
-    let temp_fd = temp.as_raw_fd();
-    for name in names
-        .split(|&byte| byte == 0)
-        .filter(|name| !name.is_empty())
-    {
-        let Ok(name_c) = std::ffi::CString::new(name) else {
-            continue;
-        };
-
-        // Size then read this attribute's value from the destination.
-        // SAFETY: `dest_c` and `name_c` are valid NUL-terminated C strings; a
-        // null value buffer with size 0 queries the value length.
-        let value_len =
-            unsafe { libc::getxattr(dest_c.as_ptr(), name_c.as_ptr(), std::ptr::null_mut(), 0) };
-        if value_len < 0 {
-            continue;
-        }
-        let mut value = vec![0u8; usize::try_from(value_len).unwrap_or(0)];
-        // SAFETY: `value` has `value_len` bytes of capacity for the kernel.
-        let got = unsafe {
-            libc::getxattr(
-                dest_c.as_ptr(),
-                name_c.as_ptr(),
-                value.as_mut_ptr().cast::<libc::c_void>(),
-                value.len(),
-            )
-        };
-        if got < 0 {
-            continue;
-        }
-        value.truncate(usize::try_from(got).unwrap_or(0));
-
-        // Best-effort apply onto the temp fd; ignore unsupported/denied attrs.
-        // SAFETY: `temp_fd` is owned by `temp`; `name_c` and `value` are valid
-        // for the duration of the call. The result is intentionally ignored.
-        unsafe {
-            libc::fsetxattr(
-                temp_fd,
-                name_c.as_ptr(),
-                value.as_ptr().cast::<libc::c_void>(),
-                value.len(),
-                0,
-            );
-        }
-    }
-}
-
-/// Non-Linux Unix targets (e.g. macOS) keep the existing behavior: mode and
-/// ownership are preserved, but the divergent xattr syscalls are skipped.
-#[cfg(all(unix, not(target_os = "linux")))]
-fn best_effort_copy_xattrs(_dest: &Path, _temp: &std::fs::File) {}
-
 /// Collect ancestors that do not exist yet, starting at `path`.
 fn missing_ancestors(path: &Path) -> Vec<PathBuf> {
     path.ancestors()
-        .take_while(|ancestor| !ancestor.exists())
+        .take_while(|ancestor| !sys::path_exists(ancestor))
         .map(Path::to_path_buf)
         .collect()
 }
@@ -737,6 +598,7 @@ fn missing_ancestors(path: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     #[test]
@@ -753,7 +615,7 @@ mod tests {
     fn sync_parent_dir_accepts_existing_parent() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("data.json");
-        std::fs::write(&path, "{}").expect("expected operation to succeed");
+        fixture::write_text(&path, "{}");
 
         sync_parent_dir(&path).expect("expected operation to succeed");
     }
@@ -781,18 +643,11 @@ mod tests {
 
         atomic_write_bytes(&path, "test", b"new").expect("expected operation to succeed");
 
-        assert_eq!(
-            std::fs::read(&path).expect("expected operation to succeed"),
-            b"new"
-        );
+        assert_eq!(fixture::read_bytes(&path), b"new");
         assert!(
-            std::fs::read_dir(dir.path())
-                .expect("expected operation to succeed")
-                .all(|entry| !entry
-                    .expect("expected operation to succeed")
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".test."))
+            fixture::entry_names(dir.path())
+                .into_iter()
+                .all(|entry| !entry.contains(".test."))
         );
     }
 
@@ -810,48 +665,48 @@ mod tests {
     }
 
     #[test]
-    fn file_write_lock_accepts_existing_file() {
+    fn target_write_guard_accepts_existing_file() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("locked.txt");
-        std::fs::write(&path, "content").expect("expected operation to succeed");
+        fixture::write_text(&path, "content");
 
-        let lock = FileWriteLock::acquire(&path).expect("expected operation to succeed");
+        let lock = TargetWriteGuard::acquire(&path).expect("expected operation to succeed");
 
         drop(lock);
     }
 
     #[test]
-    fn file_write_lock_accepts_missing_file_with_existing_parent() {
+    fn target_write_guard_accepts_missing_file_with_existing_parent() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("missing.txt");
 
-        let lock = FileWriteLock::acquire(&path).expect("expected operation to succeed");
+        let lock = TargetWriteGuard::acquire(&path).expect("expected operation to succeed");
 
         drop(lock);
     }
 
     #[cfg(unix)]
     #[test]
-    fn file_write_lock_reports_missing_parent_errors() {
+    fn target_write_guard_reports_missing_parent_errors() {
         let dir = TempDir::new().expect("expected operation to succeed");
 
-        assert!(FileWriteLock::acquire(&dir.path().join("missing/target")).is_err());
+        assert!(TargetWriteGuard::acquire(&dir.path().join("missing/target")).is_err());
     }
 
     #[test]
-    fn file_write_lock_releases_on_drop() {
+    fn target_write_guard_releases_on_drop() {
         use std::sync::mpsc;
         use std::time::Duration;
 
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("locked.txt");
-        std::fs::write(&path, "content").expect("expected operation to succeed");
+        fixture::write_text(&path, "content");
 
-        let lock = FileWriteLock::acquire(&path).expect("lock file");
+        let lock = TargetWriteGuard::acquire(&path).expect("lock file");
         let (tx, rx) = mpsc::channel();
         let path_for_thread = path.clone();
         let thread = std::thread::spawn(move || {
-            let _lock = FileWriteLock::acquire(&path_for_thread).expect("second lock");
+            let _lock = TargetWriteGuard::acquire(&path_for_thread).expect("second lock");
             tx.send(()).expect("notify acquired");
         });
 
@@ -867,22 +722,21 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn file_write_lock_symlink_and_target_share_guard() {
-        use std::os::unix::fs::symlink;
+    fn target_write_guard_symlink_and_target_share_guard() {
         use std::sync::mpsc;
         use std::time::Duration;
 
         let dir = TempDir::new().expect("expected operation to succeed");
         let target = dir.path().join("target.txt");
         let link = dir.path().join("link.txt");
-        std::fs::write(&target, "content").expect("seed target");
-        symlink(&target, &link).expect("create symlink");
+        fixture::write_text(&target, "content");
+        fixture::symlink(&target, &link);
 
-        let lock = FileWriteLock::acquire(&link).expect("lock symlink target");
+        let lock = TargetWriteGuard::acquire(&link).expect("lock symlink target");
         let (tx, rx) = mpsc::channel();
         let target_for_thread = target.clone();
         let thread = std::thread::spawn(move || {
-            let _lock = FileWriteLock::acquire(&target_for_thread).expect("lock target");
+            let _lock = TargetWriteGuard::acquire(&target_for_thread).expect("lock target");
             tx.send(()).expect("notify acquired");
         });
 
@@ -898,16 +752,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn file_write_lock_accepts_read_only_destination() {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn target_write_guard_accepts_read_only_destination() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("readonly.txt");
-        std::fs::write(&path, "content").expect("seed file");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400))
-            .expect("make destination read-only");
+        fixture::write_text(&path, "content");
+        fixture::set_mode(&path, 0o400);
 
-        let lock = FileWriteLock::acquire(&path).expect("stable guard should not open read-write");
+        let lock =
+            TargetWriteGuard::acquire(&path).expect("stable guard should not open read-write");
 
         drop(lock);
     }
@@ -917,90 +769,52 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let from = dir.path().join("from.txt");
         let to = dir.path().join("to.txt");
-        std::fs::write(&from, "snapshot").expect("expected operation to succeed");
+        fixture::write_text(&from, "snapshot");
 
         copy_file_durable(&from, &to, "copy").expect("expected operation to succeed");
 
-        assert!(!from.exists());
-        assert_eq!(
-            std::fs::read_to_string(&to).expect("expected operation to succeed"),
-            "snapshot"
-        );
+        assert!(!fixture::exists(&from));
+        fixture::assert_text(&to, "snapshot");
     }
 
     #[cfg(unix)]
     #[test]
     fn copy_file_durable_preserves_source_mode_over_existing_destination() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = TempDir::new().expect("expected operation to succeed");
         let from = dir.path().join("from.txt");
         let to = dir.path().join("to.txt");
-        std::fs::write(&from, "source").expect("seed source");
-        std::fs::write(&to, "dest").expect("seed dest");
-        std::fs::set_permissions(&from, std::fs::Permissions::from_mode(0o644))
-            .expect("source mode");
-        std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o600)).expect("dest mode");
+        fixture::write_text(&from, "source");
+        fixture::write_text(&to, "dest");
+        fixture::set_mode(&from, 0o644);
+        fixture::set_mode(&to, 0o600);
 
         copy_file_durable(&from, &to, "copy").expect("copy fallback");
 
-        assert!(!from.exists());
-        assert_eq!(std::fs::read_to_string(&to).expect("read dest"), "source");
-        assert_eq!(
-            std::fs::metadata(&to)
-                .expect("stat dest")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o644
-        );
+        assert!(!fixture::exists(&from));
+        fixture::assert_text(&to, "source");
+        assert_eq!(fixture::mode(&to) & 0o777, 0o644);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn copy_file_durable_preserves_source_user_xattr_when_supported() {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-
         let dir = TempDir::new().expect("expected operation to succeed");
         let from = dir.path().join("from.txt");
         let to = dir.path().join("to.txt");
-        std::fs::write(&from, b"source").expect("seed source");
-        std::fs::write(&to, b"dest").expect("seed dest");
+        fixture::write_bytes(&from, b"source");
+        fixture::write_bytes(&to, b"dest");
 
-        let from_c = CString::new(from.as_os_str().as_bytes()).expect("source cstring");
-        let to_c = CString::new(to.as_os_str().as_bytes()).expect("dest cstring");
-        let name = CString::new("user.lushtext_copy_test").expect("name cstring");
+        let name = "user.lushtext_copy_test";
         let value = b"source-xattr";
-        // SAFETY: all pointers are valid NUL-terminated C strings / sized buffers.
-        let set = unsafe {
-            libc::setxattr(
-                from_c.as_ptr(),
-                name.as_ptr(),
-                value.as_ptr().cast::<libc::c_void>(),
-                value.len(),
-                0,
-            )
-        };
-        if set != 0 {
+        if fixture::set_xattr(&from, name, value).is_err() {
             eprintln!("skipping copy xattr test: setxattr unsupported here");
             return;
         }
 
         copy_file_durable(&from, &to, "copy").expect("copy fallback");
 
-        let mut read_back = vec![0u8; 64];
-        // SAFETY: `read_back` has capacity for the kernel to fill; pointers valid.
-        let got = unsafe {
-            libc::getxattr(
-                to_c.as_ptr(),
-                name.as_ptr(),
-                read_back.as_mut_ptr().cast::<libc::c_void>(),
-                read_back.len(),
-            )
-        };
-        assert!(got >= 0, "source user xattr must survive copy fallback");
-        read_back.truncate(usize::try_from(got).unwrap_or(0));
+        let read_back =
+            fixture::get_xattr(&to, name).expect("source user xattr must survive copy fallback");
         assert_eq!(read_back, value);
     }
 
@@ -1017,8 +831,8 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let from = dir.path().join("from.txt");
         let to = dir.path().join("to.txt");
-        std::fs::write(&from, b"source").expect("seed source");
-        std::fs::write(&to, b"dest").expect("seed dest");
+        fixture::write_bytes(&from, b"source");
+        fixture::write_bytes(&to, b"dest");
 
         let applied = Command::new(&setfacl)
             .args(["-m", "u:12345:r--"])
@@ -1057,7 +871,7 @@ mod tests {
             vec![nested.clone(), dir.path().join("a/b"), dir.path().join("a")]
         );
 
-        std::fs::create_dir_all(dir.path().join("a")).expect("create first missing ancestor");
+        fixture::create_dir_all(&dir.path().join("a"));
         let missing = missing_ancestors(&nested);
 
         assert_eq!(missing, vec![nested, dir.path().join("a/b")]);
@@ -1097,38 +911,33 @@ mod tests {
             matches!(error, DurableWriteError::BeforeRename(_)),
             "a pre-rename failure must classify as BeforeRename"
         );
-        assert!(!path.exists(), "the destination must not be created");
+        assert!(
+            !fixture::exists(&path),
+            "the destination must not be created"
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn atomic_write_bytes_preserves_existing_mode_on_overwrite() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = TempDir::new().expect("expected operation to succeed");
 
         let private = dir.path().join("private.bin");
-        std::fs::write(&private, b"old").expect("seed file");
-        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o600))
-            .expect("set restrictive mode");
+        fixture::write_bytes(&private, b"old");
+        fixture::set_mode(&private, 0o600);
         atomic_write_bytes(&private, "test", b"new").expect("overwrite");
         assert_eq!(
-            std::fs::metadata(&private)
-                .expect("stat")
-                .permissions()
-                .mode()
-                & 0o777,
+            fixture::mode(&private) & 0o777,
             0o600,
             "overwrite must not widen a 0600 file"
         );
 
         let exec = dir.path().join("tool");
-        std::fs::write(&exec, b"old").expect("seed exec");
-        std::fs::set_permissions(&exec, std::fs::Permissions::from_mode(0o755))
-            .expect("set executable mode");
+        fixture::write_bytes(&exec, b"old");
+        fixture::set_mode(&exec, 0o755);
         atomic_write_bytes(&exec, "test", b"new").expect("overwrite exec");
         assert_ne!(
-            std::fs::metadata(&exec).expect("stat").permissions().mode() & 0o111,
+            fixture::mode(&exec) & 0o111,
             0,
             "overwrite must keep the executable bit"
         );
@@ -1137,14 +946,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn atomic_write_temp_with_new_bytes_is_not_wider_than_private_destination() {
-        use std::os::unix::fs::PermissionsExt;
         use std::sync::{Arc, Mutex as StdMutex};
 
         let dir = TempDir::new().expect("expected operation to succeed");
         let private = dir.path().join("private.bin");
-        std::fs::write(&private, b"old").expect("seed file");
-        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o600))
-            .expect("set restrictive mode");
+        fixture::write_bytes(&private, b"old");
+        fixture::set_mode(&private, 0o600);
 
         let observed_mode = Arc::new(StdMutex::new(None));
         let observed_mode_for_hook = observed_mode.clone();
@@ -1156,11 +963,7 @@ mod tests {
             if tmp_path.parent() != Some(observed_parent.as_path()) {
                 return;
             }
-            let mode = std::fs::metadata(tmp_path)
-                .expect("stat temp after content")
-                .permissions()
-                .mode()
-                & 0o777;
+            let mode = fixture::mode(tmp_path) & 0o777;
             *observed_mode_for_hook.lock().expect("mode lock") = Some(mode);
         }));
 
@@ -1180,12 +983,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn atomic_write_final_sync_after_metadata_failure_is_before_rename() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("data.txt");
-        std::fs::write(&path, b"old").expect("seed file");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("set mode");
+        fixture::write_bytes(&path, b"old");
+        fixture::set_mode(&path, 0o600);
 
         FAIL_FINAL_TEMP_SYNC_AFTER_METADATA.with(|fail| fail.set(true));
         let error = atomic_write_bytes_classified(&path, "test", b"new")
@@ -1195,37 +996,25 @@ mod tests {
             matches!(error, DurableWriteError::BeforeRename(_)),
             "final temp sync after metadata is still before the rename"
         );
-        assert_eq!(std::fs::read(&path).expect("read destination"), b"old");
-        assert_eq!(
-            std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777,
-            0o600
-        );
+        assert_eq!(fixture::read_bytes(&path), b"old");
+        assert_eq!(fixture::mode(&path) & 0o777, 0o600);
     }
 
     #[cfg(unix)]
     #[test]
     fn atomic_write_bytes_new_file_uses_default_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = TempDir::new().expect("expected operation to succeed");
 
-        // A plain File::create in the same directory establishes what "default"
-        // means under the current umask, so the comparison stays umask-agnostic.
+        // A plain new-file helper in the same directory establishes what
+        // "default" means under the current umask, so the comparison stays
+        // umask-agnostic.
         let reference = dir.path().join("reference");
-        std::fs::File::create(&reference).expect("reference file");
-        let reference_mode = std::fs::metadata(&reference)
-            .expect("stat reference")
-            .permissions()
-            .mode()
-            & 0o777;
+        fixture::write_bytes(&reference, []);
+        let reference_mode = fixture::mode(&reference) & 0o777;
 
         let fresh = dir.path().join("fresh");
         atomic_write_bytes(&fresh, "test", b"hello").expect("new-file write");
-        let fresh_mode = std::fs::metadata(&fresh)
-            .expect("stat fresh")
-            .permissions()
-            .mode()
-            & 0o777;
+        let fresh_mode = fixture::mode(&fresh) & 0o777;
 
         assert_eq!(
             fresh_mode, reference_mode,
@@ -1236,29 +1025,14 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn atomic_write_bytes_preserves_user_xattr_when_supported() {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("tagged.bin");
-        std::fs::write(&path, b"old").expect("seed file");
+        fixture::write_bytes(&path, b"old");
 
-        let path_c = CString::new(path.as_os_str().as_bytes()).expect("path cstring");
-        let name = CString::new("user.lushtext_test").expect("name cstring");
+        let name = "user.lushtext_test";
         let value = b"durable";
 
-        // SAFETY: all pointers are valid NUL-terminated C strings / sized buffers
-        // for the duration of the call.
-        let set = unsafe {
-            libc::setxattr(
-                path_c.as_ptr(),
-                name.as_ptr(),
-                value.as_ptr().cast::<libc::c_void>(),
-                value.len(),
-                0,
-            )
-        };
-        if set != 0 {
+        if fixture::set_xattr(&path, name, value).is_err() {
             // tmpfs and some CI filesystems reject user xattrs (ENOTSUP): the
             // behavior is genuinely unavailable here, so skip rather than fail.
             eprintln!("skipping xattr preservation test: setxattr unsupported here");
@@ -1267,18 +1041,8 @@ mod tests {
 
         atomic_write_bytes(&path, "test", b"new").expect("overwrite preserves xattr");
 
-        let mut read_back = vec![0u8; 64];
-        // SAFETY: `read_back` has capacity for the kernel to fill; pointers valid.
-        let got = unsafe {
-            libc::getxattr(
-                path_c.as_ptr(),
-                name.as_ptr(),
-                read_back.as_mut_ptr().cast::<libc::c_void>(),
-                read_back.len(),
-            )
-        };
-        assert!(got >= 0, "the user xattr must survive the overwrite");
-        read_back.truncate(usize::try_from(got).unwrap_or(0));
+        let read_back =
+            fixture::get_xattr(&path, name).expect("the user xattr must survive the overwrite");
         assert_eq!(
             read_back, value,
             "the xattr value must be preserved exactly"
@@ -1302,7 +1066,7 @@ mod tests {
 
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("acl-target.bin");
-        std::fs::write(&path, b"old").expect("seed file");
+        fixture::write_bytes(&path, b"old");
 
         // Grant an extra named-user ACL entry (numeric uid avoids needing a real
         // account). If the filesystem does not support ACLs, skip.

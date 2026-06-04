@@ -350,7 +350,7 @@ Check:
 
 Check:
 - I/O isolation behind clear function boundaries
-- filesystem access routed through `services::filesystem` rather than raw calls or the private durable backend
+- filesystem access routed through `services::filesystem` rather than raw calls or private durable-write implementation details
 - atomic or otherwise deliberate persistence patterns
 - no upward dependency on `ui`
 - whether a trait is actually justified per `references/port-patterns.md`

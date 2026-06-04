@@ -141,7 +141,7 @@ pub fn apply_replacements(
             continue;
         }
 
-        let _guard = match fs_write::FileWriteLock::acquire(&path) {
+        let _guard = match fs_write::TargetWriteGuard::acquire(&path) {
             Ok(guard) => guard,
             Err(e) => {
                 errors.push(format!("Failed to lock {}: {e}", path.display()));
@@ -470,7 +470,7 @@ pub fn undo_replacements(backup: &ReplaceUndoBackup) -> UndoReplaceOutcome {
     let mut remaining_backup = ReplaceUndoBackup::new();
 
     for (path, entry) in backup {
-        let Ok(_lock) = fs_write::FileWriteLock::acquire(path) else {
+        let Ok(_lock) = fs_write::TargetWriteGuard::acquire(path) else {
             failed_paths.push(path.clone());
             remaining_backup.insert(path.clone(), entry.clone());
             continue;
@@ -574,7 +574,7 @@ fn rollback_applied_files(backup: &ReplaceUndoBackup, applied_paths: &[PathBuf])
         let Some(entry) = backup.get(path) else {
             continue;
         };
-        let Ok(_guard) = fs_write::FileWriteLock::acquire(path) else {
+        let Ok(_guard) = fs_write::TargetWriteGuard::acquire(path) else {
             errors.push(format!("Failed to lock {} for rollback", path.display()));
             continue;
         };
@@ -720,7 +720,7 @@ mod tests {
         fixture::write_text(&file, "needle\n");
         let replacements = vec![make_replacement(&file, 1, "needle", "replaced", 0..6)];
         let save_guard =
-            fs_write::FileWriteLock::acquire(&file).expect("simulate in-flight save guard");
+            fs_write::TargetWriteGuard::acquire(&file).expect("simulate in-flight save guard");
         let (tx, rx) = mpsc::channel();
 
         let worker = std::thread::spawn(move || {
@@ -1102,7 +1102,7 @@ mod tests {
 
         let cancel = Arc::new(AtomicBool::new(false));
         let lock_b =
-            fs_write::FileWriteLock::acquire(&file_b).expect("expected operation to succeed");
+            fs_write::TargetWriteGuard::acquire(&file_b).expect("expected operation to succeed");
         let cancel_for_worker = cancel.clone();
         let worker = std::thread::spawn(move || {
             apply_replacements(

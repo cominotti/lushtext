@@ -7,18 +7,15 @@
 //! The private backend keeps low-level descriptor and metadata details in one
 //! place while call sites stay readable and application-oriented.
 
-pub mod error;
 pub mod fixture;
 pub mod metadata;
 pub mod mutate;
 pub mod read;
-pub mod sidecar;
-mod sys;
+pub(in crate::services) mod sys;
 pub mod tree;
 pub mod types;
 pub mod write;
 
-pub use error::FilesystemError;
 pub use types::{
     DirectoryEntryInfo, DirectoryScanPolicy, FileFacts, FileKind, FileSnapshot, MutationOutcome,
     WriteLabel,

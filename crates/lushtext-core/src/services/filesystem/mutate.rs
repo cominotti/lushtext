@@ -9,22 +9,6 @@ use std::path::Path;
 
 use super::sys;
 use super::types::MutationOutcome;
-use super::write;
-
-/// Rename a path and sync affected parent directories.
-///
-/// # Errors
-///
-/// Returns an error when rename or parent sync fails.
-pub fn rename_path(from: &Path, to: &Path) -> std::io::Result<()> {
-    sys::rename(from, to)?;
-    write::sync_parent_dir(from)?;
-    if from.parent() != to.parent() {
-        write::sync_parent_dir(to)?;
-    }
-    Ok(())
-}
-
 /// Create one directory.
 ///
 /// # Errors

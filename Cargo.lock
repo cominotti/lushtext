@@ -1165,7 +1165,6 @@ dependencies = [
  "gtk4",
  "ignore",
  "libadwaita",
- "libc",
  "lushtext-build-support",
  "notify-debouncer-full",
  "nucleo-matcher",

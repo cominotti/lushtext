@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use super::{metadata, mutate, read, sys, write};
+use super::{DirectoryScanPolicy, metadata, mutate, read, sys, tree, write};
 
 /// Write UTF-8 fixture text to a path.
 ///
@@ -111,13 +111,39 @@ pub fn remove_dir_all(path: &Path) {
     mutate::remove_dir_all_if_exists(path).expect("remove fixture directory tree");
 }
 
-/// Rename a fixture path.
+/// Rename a fixture path through the same durable namespace helper callers use.
 ///
 /// # Panics
 ///
 /// Panics when the path cannot be renamed.
 pub fn rename(from: &Path, to: &Path) {
-    mutate::rename_path(from, to).expect("rename fixture path");
+    write::rename_durable(from, to).expect("rename fixture path");
+}
+
+/// Return whether a fixture path exists.
+#[must_use]
+pub fn exists(path: &Path) -> bool {
+    sys::path_exists(path)
+}
+
+/// Return all fixture entry names, including hidden temp leftovers.
+///
+/// # Panics
+///
+/// Panics when the directory cannot be scanned.
+#[must_use]
+pub fn entry_names(path: &Path) -> Vec<String> {
+    tree::scan_directory(
+        path,
+        DirectoryScanPolicy {
+            max_entries: usize::MAX,
+            include_hidden: true,
+        },
+    )
+    .expect("scan fixture directory")
+    .into_iter()
+    .map(|entry| entry.file_name)
+    .collect()
 }
 
 /// Create a Unix symlink fixture.
@@ -174,4 +200,24 @@ pub fn create_sparse_file(path: &Path, len: u64) {
 /// Panics when the fixture cannot be opened or written.
 pub fn write_at_start(path: &Path, bytes: &[u8]) {
     sys::write_at_start(path, bytes).expect("write fixture prefix");
+}
+
+/// Try to set an extended attribute for tests that skip unsupported filesystems.
+///
+/// # Errors
+///
+/// Returns an error when the filesystem does not support extended attributes or
+/// the attribute cannot be written, so callers can skip on unsupported setups.
+pub fn set_xattr(path: &Path, name: &str, value: &[u8]) -> std::io::Result<()> {
+    sys::set_xattr(path, name, value)
+}
+
+/// Try to read an extended attribute for tests that skip unsupported filesystems.
+///
+/// # Errors
+///
+/// Returns an error when the attribute is absent or the filesystem does not
+/// support extended attributes, so callers can skip on unsupported setups.
+pub fn get_xattr(path: &Path, name: &str) -> std::io::Result<Vec<u8>> {
+    sys::get_xattr(path, name)
 }
