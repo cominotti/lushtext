@@ -215,3 +215,19 @@ When a GtkGrid layout has toggle-visible rows sharing columns (e.g., Find/Replac
 
 Supported via GtkSourceView built-in language specs: JSON, TOML, YAML, Markdown.
 JSONC is deferred (requires custom `.lang` file — see `docs/next/jsonc-support.md`).
+
+## Large-Buffer Preview And Marker Guardrails
+
+Markdown preview, minimap long-line markers, encoding-warning previews, and
+draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
+
+- Use the shared `ui::buffer_snapshot` helper for any full-buffer text capture.
+- Large Markdown buffers should show a clear paused/limited preview state unless
+  rendering has been split into bounded main-loop snapshots plus worker-side
+  preprocessing.
+- Minimap long-line markers are optional; skip the full-buffer marker scan when
+  the shared snapshot policy says the buffer is too large for a synchronous
+  copy. Ordinary small-document marker behavior must remain covered by tests.
+- Replace-preview rows and other large derived result sets should be generated
+  from owned data on a worker, with a pending state and stale-result rejection
+  keyed by generation counters.

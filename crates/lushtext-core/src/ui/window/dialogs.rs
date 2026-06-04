@@ -3,7 +3,6 @@
 //! File dialogs for the main window: open file, open folder, save as,
 //! and save-changes confirmation on close.
 
-use crate::services::filesystem::metadata as fs_metadata;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -72,6 +71,7 @@ impl super::LushtextWindow {
     /// the background durable write reports success.
     fn handle_save_as_selection(&self, editor: &LushtextEditorPage, path: PathBuf) {
         let old_path = editor.file_path();
+        let old_canonical_path = editor.canonical_file_path();
         let old_draft_id = editor.draft_id();
         let editor = editor.clone();
         let editor_for_result = editor.clone();
@@ -80,6 +80,7 @@ impl super::LushtextWindow {
             window.complete_save_as(
                 &editor_for_result,
                 old_path.as_deref(),
+                old_canonical_path.as_deref(),
                 old_draft_id.as_deref(),
                 &path,
                 save_result,
@@ -118,6 +119,7 @@ impl super::LushtextWindow {
         &self,
         editor: &LushtextEditorPage,
         old_path: Option<&Path>,
+        old_canonical_path: Option<&Path>,
         old_draft_id: Option<&str>,
         path: &Path,
         save_result: Result<(), crate::ui::editor_page::SaveError>,
@@ -125,15 +127,15 @@ impl super::LushtextWindow {
         let path_display = path.display().to_string();
         match save_result {
             Ok(()) => {
-                let canonical_path = fs_metadata::canonical_path(path).ok();
+                let canonical_path = editor.canonical_file_path();
                 {
                     let mut open_paths = self.imp().open_paths.borrow_mut();
                     if let Some(old) = old_path {
                         open_paths.remove(old);
                         open_paths.remove(&super::documents::open_path_key(old));
-                        if let Ok(old_canonical) = fs_metadata::canonical_path(old) {
-                            open_paths.remove(&old_canonical);
-                        }
+                    }
+                    if let Some(old_canonical) = old_canonical_path {
+                        open_paths.remove(old_canonical);
                     }
                     open_paths.insert(super::documents::open_path_key(path));
                     if let Some(canonical_path) = canonical_path.clone() {
@@ -141,6 +143,7 @@ impl super::LushtextWindow {
                     }
                 }
                 editor.set_file_path_with_canonical(path, canonical_path);
+                self.refresh_canonical_path_after_rename(editor, path);
                 self.assign_draft_id(editor);
                 self.resolve_editorconfig_for_editor(editor, path);
                 self.reset_notes_after_save_as(editor, path);
@@ -173,16 +176,19 @@ impl super::LushtextWindow {
                 let editor_for_dialog = editor.clone();
                 let retry_path = path.to_path_buf();
                 let retry_old_path = old_path.map(std::path::Path::to_path_buf);
+                let retry_old_canonical_path = old_canonical_path.map(std::path::Path::to_path_buf);
                 let retry_old_draft_id = old_draft_id.map(ToOwned::to_owned);
                 self.confirm_lossy_save(&editor_for_dialog, &preview, move || {
                     let editor_for_result = editor.clone();
                     let window_for_retry = window.clone();
                     let retry_old_path = retry_old_path.clone();
+                    let retry_old_canonical_path = retry_old_canonical_path.clone();
                     let retry_old_draft_id = retry_old_draft_id.clone();
                     editor.save_file_async_to_path(retry_path.clone(), move |retry_result| {
                         window_for_retry.complete_save_as(
                             &editor_for_result,
                             retry_old_path.as_deref(),
+                            retry_old_canonical_path.as_deref(),
                             retry_old_draft_id.as_deref(),
                             &retry_path,
                             retry_result,

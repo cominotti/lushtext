@@ -143,11 +143,14 @@ impl LushtextSearchBar {
         let group = gtk4::gio::SimpleActionGroup::new();
         for name in ["regex", "case-sensitive", "whole-word"] {
             let action = gtk4::gio::SimpleAction::new_stateful(name, None, &false.to_variant());
+            let option_name = name.to_string();
             let bar_weak = self.obj().downgrade();
             action.connect_activate(move |action, _| {
                 let current: bool = action.state().and_then(|v| v.get()).unwrap_or(false);
-                action.set_state(&(!current).to_variant());
+                let next = !current;
+                action.set_state(&next.to_variant());
                 if let Some(bar) = bar_weak.upgrade() {
+                    bar.apply_option_state(&option_name, next);
                     bar.emit_search_state_changed();
                 }
             });

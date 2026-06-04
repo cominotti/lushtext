@@ -25,20 +25,32 @@ make visual-smoke # real-session screenshot smoke with artifacts
 make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # lightweight Criterion performance smoke
-./scripts/check-filesystem-boundary.sh # no disallowed raw filesystem calls/examples
+make check-filesystem-boundary # no disallowed raw filesystem calls/examples
+make check-policy # fast policy audits beside rustfmt and Clippy
+make lint-advisory # grouped advisory Clippy/rustc lint discovery
 make check-agent-docs # validate agent rules/skills guidance
 make end-user-smoke # run all host-supported end-user smoke lanes
 make mutants-smoke # small cargo-mutants smoke run
 make mutants-diff  # mutation test current changes against origin/main
 make mutants-full  # mutation test the configured deterministic scope
-make check      # clippy + fmt
-make pre-commit # repo pre-commit gate (fmt + clippy)
+make check      # fmt + all-feature Clippy + fast policy audits
+make pre-commit # repo pre-commit gate (fmt + all-feature Clippy + policy audits)
 make install-git-hooks
 ```
 
-Filesystem-sensitive changes must also pass `make check-agent-docs`; that target
-verifies the `services::filesystem` guidance in rules and skills, then runs the
-raw filesystem no-leftovers audit.
+The blocking Clippy command is `cargo clippy --workspace --all-targets
+--all-features -- -D warnings`, and it must stay identical in Makefile,
+pre-commit, CI, and contributor docs unless a narrower command is explicitly
+documented as a non-blocking smoke shortcut. `make check` runs rustfmt,
+all-feature Clippy, and fast policy audits. Filesystem-sensitive changes should
+also pass `make check-agent-docs`; that target verifies the
+`services::filesystem` guidance in rules and skills, then runs the raw
+filesystem no-leftovers audit.
+
+Run `make lint-advisory` after Rust/Clippy toolchain updates or lint-policy
+reviews. It runs broad advisory Clippy groups plus selected rustc probes,
+summarizes findings by lint code, and fails if a new category appears without a
+checked-in classification in `scripts/lint-advisory-policy.toml`.
 
 Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-linux for fast linking.
 
@@ -313,7 +325,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 
 All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but this repo targets the GNOME 50 platform family (GTK 4.22, Libadwaita 1.9).
 
-- `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, Clippy, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources`.
+- `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources licenses`.
 - `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
 - `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive visual, portal/sandbox, accessibility, and performance-smoke lanes plus a full benchmark report. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
@@ -321,5 +333,12 @@ All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but thi
 - `.github/workflows/release.yml` — `v*` tag release validation and manual dry-run workflow. It validates release metadata, builds the Flatpak from the release source, prepares/deploys Cominotti Flatpak repository artifacts when signing and deploy configuration are available, creates or updates the GitHub Release context, and opens an optional Flathub manifest PR when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.
 - `.github/workflows/release-benchmark.yml` — full benchmark run + markdown report uploaded as release asset on `v*` tags, same `fedora:44` container
 - `.github/workflows/snap.yml` — always-on `validate` job runs `snapcraft expand-extensions` (structural/extension validation only; a full build cannot succeed until the GNOME 50 platform snap exists). The `build-publish` job (`snapcore/action-build` + `snapcore/action-publish`, release `edge`) is gated behind the `SNAP_PLATFORM_AVAILABLE` repository variable so the missing platform never reds the pipeline; it uses the `SNAPCRAFT_STORE_CREDENTIALS` secret.
+
+Rust validation helpers installed in CI must be version-pinned in workflow
+`env` blocks or an equally obvious central location. Current pins are
+`CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.137`,
+`CARGO_FUZZ_VERSION=0.13.1`, and `CARGO_MUTANTS_VERSION=27.0.0`. Update the pin
+and rerun the affected local validation command when intentionally refreshing a
+tool.
 
 **When bumping gtk-rs version:** update the Fedora version in ci.yml and release-benchmark.yml, and the GNOME tag in flatpak.yml and the Flatpak manifest, to match the new minimum GTK requirement.

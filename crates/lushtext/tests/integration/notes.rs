@@ -126,7 +126,7 @@ fn workspace_note_roundtrip_uses_root_identity_and_scope_listing() {
         &[WorkspaceConfig {
             id: WorkspaceId::new("new-slot"),
             name: "Workspace".to_string(),
-            root: root.clone(),
+            root,
         }],
         &WorkspaceScope::Workspace(WorkspaceId::new("new-slot")),
     )

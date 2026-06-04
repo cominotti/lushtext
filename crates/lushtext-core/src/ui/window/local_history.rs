@@ -607,7 +607,7 @@ impl LocalHistoryBrowserState {
             Rc::clone(self),
             {
                 let path = self.path.clone();
-                let snapshot_id = meta.snapshot_id.clone();
+                let snapshot_id = meta.snapshot_id;
                 move || {
                     let data_dir = json_store::data_dir();
                     local_history_service::load_snapshot_for_path(&data_dir, &path, &snapshot_id)

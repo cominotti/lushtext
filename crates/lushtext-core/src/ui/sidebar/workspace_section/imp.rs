@@ -101,25 +101,34 @@ pub struct WatchRuntimeState {
     pub last_reported_error: RefCell<Option<String>>,
 }
 
-// CompositeTemplate loads the UI layout from a compiled XML file.
+// CompositeTemplate loads this widget's XML from the compiled GResource.
+// Each TemplateChild is bound by init_template() before constructed() runs.
 // GObject methods always take &self; Cell/RefCell provide interior mutability.
 #[derive(Default, CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/workspace-section.ui")]
 pub struct LushtextWorkspaceSection {
+    /// Header row bound from the template and reused for workspace gestures.
     #[template_child]
     pub header_box: TemplateChild<gtk4::Box>,
+    /// Workspace title label; `TemplateChild` delays access until template init.
     #[template_child]
     pub header_label: TemplateChild<gtk4::Label>,
+    /// Manual refresh button shown at the right edge of the section header.
     #[template_child]
     pub refresh_button: TemplateChild<gtk4::Button>,
+    /// Drill-down navigation header revealed while the section is focused.
     #[template_child]
     pub drilldown_header_box: TemplateChild<gtk4::Box>,
+    /// Back button for leaving the current drill-down root.
     #[template_child]
     pub drilldown_back_button: TemplateChild<gtk4::Button>,
+    /// Label showing the focused folder path in drill-down mode.
     #[template_child]
     pub drilldown_path_label: TemplateChild<gtk4::Label>,
+    /// Inner scroller that lets ListView rows yield to the sidebar width.
     #[template_child]
     pub inner_scrolled_window: TemplateChild<gtk4::ScrolledWindow>,
+    /// Virtualized tree view rendering the current workspace root model.
     #[template_child]
     pub file_tree_view: TemplateChild<gtk4::ListView>,
 
@@ -176,9 +185,11 @@ pub struct LushtextWorkspaceSection {
     /// Recursive watcher plus GTK-side poll source for automatic refresh.
     pub watch_runtime: WatchRuntimeState,
 
-    // File operation callbacks (forwarded to sidebar → window)
+    /// Rename callback installed by the sidebar after construction.
     pub rename_callback: RefCell<Option<RenameCallback>>,
+    /// Delete callback installed by the sidebar after construction.
     pub delete_callback: RefCell<Option<FileCallback>>,
+    /// Create callback installed by the sidebar after construction.
     pub create_callback: RefCell<Option<FileCallback>>,
     /// Callback used when a file row should open the local-history browser.
     pub local_history_callback: RefCell<Option<FileCallback>>,
@@ -189,13 +200,18 @@ pub struct LushtextWorkspaceSection {
     /// Callback used for lightweight status-bar messages owned by the window.
     pub message_callback: RefCell<Option<MessageCallback>>,
 
-    // Workspace-level callbacks (handled by sidebar)
+    /// Workspace rename callback installed by the sidebar after construction.
     pub rename_workspace_callback: RefCell<Option<WorkspaceCallback>>,
+    /// Workspace removal callback installed by the sidebar after construction.
     pub unlist_workspace_callback: RefCell<Option<WorkspaceCallback>>,
+    /// Drill-down focus callback used to synchronize the parent sidebar.
     pub folder_focused_callback: RefCell<Option<WorkspaceCallback>>,
+    /// Workspace note callback installed by the sidebar after construction.
     pub workspace_note_callback: RefCell<Option<WorkspaceCallback>>,
 }
 
+// ObjectSubclass registers this Rust struct as LushtextWorkspaceSection in
+// GLib's runtime type system; ParentType makes it behave as a GtkBox.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextWorkspaceSection {
     const NAME: &'static str = "LushtextWorkspaceSection";
@@ -267,6 +283,8 @@ impl LushtextWorkspaceSection {
         let factory = gtk4::SignalListItemFactory::new();
 
         factory.connect_setup(|_factory, list_item| {
+            // Factory callbacks receive generic GObjects from GTK, so
+            // downcast_ref checks the runtime type before using ListItem APIs.
             let list_item = list_item
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("item is ListItem");
@@ -304,9 +322,9 @@ impl LushtextWorkspaceSection {
                     && let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>()
                     && let Some(path) = file_item.path()
                 {
-                    // Find the WorkspaceSection by walking up the widget tree
-                    let mut current: Option<gtk4::Widget> =
-                        Some(overlay.clone().upcast::<gtk4::Widget>());
+                    // Factory setup only has recycled row widgets, so resolve
+                    // the owning section at click time from the live widget tree.
+                    let mut current: Option<gtk4::Widget> = Some(overlay.upcast::<gtk4::Widget>());
                     while let Some(w) = current {
                         if let Some(section) = w.downcast_ref::<super::LushtextWorkspaceSection>() {
                             section.focus_folder(&path);
@@ -331,7 +349,7 @@ impl LushtextWorkspaceSection {
                     btn_enter.set_visible(true);
                 }
             });
-            let btn_leave = focus_btn.clone();
+            let btn_leave = focus_btn;
             motion.connect_leave(move |_| {
                 btn_leave.set_visible(false);
             });
@@ -478,7 +496,8 @@ impl LushtextWorkspaceSection {
                 }
                 label.set_visible(true);
 
-                // If this item was just created (New File/Folder), show inline entry
+                // New file/folder rows carry a one-shot flag so rename starts
+                // only after GTK has bound the recycled row widget.
                 if file_item.is_pending_rename() {
                     file_item.set_pending_rename(false);
                     if let Some(section) = section_weak.upgrade() {
@@ -651,14 +670,15 @@ impl LushtextWorkspaceSection {
 
         obj.insert_action_group("section", Some(&action_group));
 
-        // Right-click gesture on the ListView
+        // Attach the gesture to the stable list view; press-time picking
+        // resolves the current recycled row before opening the menu.
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(3);
 
         let section_weak = obj.downgrade();
-        let focus_folder_action_clone = focus_folder_action.clone();
-        let local_history_action_clone = local_history_action.clone();
-        let document_note_action_clone = document_note_action.clone();
+        let focus_folder_action_clone = focus_folder_action;
+        let local_history_action_clone = local_history_action;
+        let document_note_action_clone = document_note_action;
         gesture.connect_pressed(move |gesture, _n_press, x, y| {
             let Some(section) = section_weak.upgrade() else {
                 return;
@@ -765,7 +785,7 @@ impl LushtextWorkspaceSection {
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(3);
 
-        let popover_ref = popover.clone();
+        let popover_ref = popover;
         gesture.connect_pressed(move |_gesture, _n_press, x, y| {
             #[expect(
                 clippy::cast_possible_truncation,

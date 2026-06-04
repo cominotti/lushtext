@@ -72,9 +72,11 @@ impl LushtextSearchPanel {
             delete_btn.add_css_class("flat");
             delete_btn.set_valign(gtk4::Align::Center);
 
-            let panel = self.clone();
+            let panel_weak = self.downgrade();
             delete_btn.connect_clicked(move |_| {
-                panel.remove_saved_search(idx);
+                if let Some(panel) = panel_weak.upgrade() {
+                    panel.remove_saved_search(idx);
+                }
             });
 
             row.add_suffix(&delete_btn);
@@ -149,11 +151,13 @@ impl LushtextSearchPanel {
                 if let Some(ref cb) = *panel.imp().callbacks.message_callback.borrow() {
                     cb(&format!("Search saved as '{display_name}'"));
                 }
+                // Persist a snapshot so later UI edits do not race this
+                // background save.
                 let entries_clone = panel.imp().history.saved_searches.borrow().clone();
 
                 let data_dir = json_store::data_dir();
                 crate::services::async_task::spawn_blocking_then(
-                    panel.clone(),
+                    panel,
                     move || saved_searches::save(&data_dir, &entries_clone),
                     |_panel, result| {
                         if let Err(e) = result {

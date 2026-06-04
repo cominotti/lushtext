@@ -401,7 +401,7 @@ fn test_file_tree_file_row_uses_regular_content_type_icon() {
     let image_path = dir.path().join("preview.png");
     fixture::write_bytes(&image_path, b"not a real image, extension is enough");
     section.load_roots(&[WorkspaceEntry::File {
-        path: image_path.clone(),
+        path: image_path,
     }]);
 
     let (_window, icon, label) = realized_root_row_widgets(&section);
@@ -626,7 +626,7 @@ fn test_remove_from_model_child_item() {
     ));
 
     let child_store_c = child_store.clone();
-    let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, move |item| {
+    let tree_model = gtk4::TreeListModel::new(root_store, false, false, move |item| {
         let fi = item.downcast_ref::<FileTreeItem>()?;
         if fi.is_dir() && fi.path().as_deref() == Some(std::path::Path::new("/tmp/test/src")) {
             Some(child_store_c.clone().upcast::<gio::ListModel>())
@@ -932,9 +932,10 @@ fn test_manual_refresh_keeps_selection_and_expansion() {
     section.imp().refresh_button.emit_clicked();
 
     wait_until(Duration::from_secs(5), || {
-        tree_contains_path(&section, &created) && selected_path(&section) == Some(existing.clone())
+        tree_contains_path(&section, &created)
+            && selected_path(&section).as_deref() == Some(existing.as_path())
     });
-    assert_eq!(selected_path(&section), Some(existing.clone()));
+    assert_eq!(selected_path(&section).as_deref(), Some(existing.as_path()));
     assert!(
         row_for_path(&section, &nested)
             .expect("nested directory should still exist")

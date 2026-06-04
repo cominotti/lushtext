@@ -432,7 +432,7 @@ mod tests {
         let workspaces = vec![WorkspaceConfig {
             id: WorkspaceId::new("new-slot"),
             name: "Workspace".to_string(),
-            root: root.clone(),
+            root,
         }];
         let notes = list_workspace_notes_for_scope(
             dir.path(),

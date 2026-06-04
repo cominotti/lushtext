@@ -4,5 +4,5 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-echo "Running LushText pre-commit checks (rustfmt + clippy)..."
+echo "Running LushText pre-commit checks (rustfmt + all-feature Clippy + policy audits)..."
 exec make pre-commit

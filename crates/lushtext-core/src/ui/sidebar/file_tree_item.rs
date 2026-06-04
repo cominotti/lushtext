@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 // Private implementation module. In GTK's GObject system, every type has
 // a private struct (imp) holding data and a public wrapper providing the API.
 mod imp {
-    use super::*;
+    use super::{Cell, ObjectImpl, ObjectSubclass, PathBuf, RefCell, glib};
 
     // GObject methods take &self (not &mut self) because GTK's list model
     // infrastructure holds multiple references to each item. Interior
@@ -49,6 +49,10 @@ mod imp {
 // glib::wrapper! generates the public wrapper type. Since FileTreeItem is a
 // pure data GObject (not a widget), the @extends chain is empty.
 glib::wrapper! {
+    /// Public GObject row model used by the workspace file tree.
+    ///
+    /// The wrapper lets GTK list and tree models hold files, directories, and
+    /// placeholder rows while the sidebar adapter owns all presentation logic.
     pub struct FileTreeItem(ObjectSubclass<imp::FileTreeItem>);
 }
 
@@ -96,6 +100,11 @@ impl FileTreeItem {
     #[must_use]
     pub fn is_empty(&self) -> Option<bool> {
         self.imp().is_empty.get()
+    }
+
+    /// Update the empty-directory hint after an async root or child scan finishes.
+    pub fn set_is_empty(&self, is_empty: Option<bool>) {
+        self.imp().is_empty.set(is_empty);
     }
 
     #[must_use]

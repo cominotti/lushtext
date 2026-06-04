@@ -206,15 +206,15 @@ to close, the launcher fails instead of activating stale code.
 LushText uses `cargo-mutants` for deterministic model, service, and pure helper
 coverage. It complements, rather than replaces, the normal gates: `cargo nextest`
 proves the non-widget baseline, the GTK widget runner keeps Mutter and warning
-behavior covered, benchmark compilation protects Criterion coverage, Clippy and
-rustfmt protect code quality, and `cargo deny` remains the dependency-policy
-gate.
+behavior covered, benchmark compilation protects Criterion coverage, all-feature
+Clippy and rustfmt protect code quality, and `cargo deny check advisories bans
+sources licenses` remains the dependency-policy gate.
 
 Install the local mutation tools once:
 
 ```sh
-cargo install --locked cargo-mutants
-cargo install cargo-nextest --locked
+cargo install --locked cargo-mutants --version 27.0.0
+cargo install --locked cargo-nextest --version 0.9.137
 ```
 
 Then use the wrapper targets:
@@ -417,12 +417,15 @@ make build-debug # Debug build
 make run         # Debug build + force a fresh run with temporary GNOME desktop staging
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
 make test        # All tests (unit + integration + widget)
-make check       # clippy + fmt check
-make pre-commit  # repo pre-commit gate (fmt + clippy)
+make check       # fmt + all-feature Clippy + fast policy audits
+make lint-advisory # grouped advisory Rust lint discovery
+make pre-commit  # repo pre-commit gate (fmt + all-feature Clippy + policy audits)
 make install-git-hooks
 ```
 
-LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hooks` once per checkout to configure `core.hooksPath`; after that, each commit runs the same rustfmt + Clippy gate locally before Git creates the commit.
+LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hooks` once per checkout to configure `core.hooksPath`; after that, each commit runs the same rustfmt, all-targets/all-features Clippy, and fast policy-audit gate locally before Git creates the commit.
+
+The blocking Rust lint command is `cargo clippy --workspace --all-targets --all-features -- -D warnings`. Broad Clippy groups stay advisory instead of blanket-blocking; run `make lint-advisory` after Rust or Clippy updates to get grouped Clippy/rustc findings and fail on any new unclassified category. CI pins validation helpers in workflow env variables, including cargo-deny `0.19.8`, cargo-nextest `0.9.137`, cargo-fuzz `0.13.1`, and cargo-mutants `27.0.0`.
 
 The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel non-widget execution (optional), but it always runs widget tests explicitly through the shared `scripts/run-widget-tests.sh` runner so `make test` still means the full suite. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 

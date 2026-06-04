@@ -13,12 +13,17 @@ use gtk4::glib;
 use std::cell::{Cell, RefCell};
 
 mod imp {
-    use super::*;
+    use super::{
+        Cell, DerivedObjectProperties, ObjectExt, ObjectImpl, ObjectSubclass, RefCell, glib,
+    };
 
     /// Discriminant for the item type. Avoids string comparison in hot paths.
     const KIND_FILE: u8 = 0;
     const KIND_MATCH: u8 = 1;
 
+    // GTK list models hold row items as shared GObjects, so methods receive
+    // &self. Cell handles Copy fields; RefCell handles strings with runtime
+    // borrow checks.
     #[derive(glib::Properties, Default)]
     #[properties(wrapper_type = super::SearchResultItem)]
     pub struct SearchResultItem {
@@ -52,6 +57,7 @@ mod imp {
         pub original_match_end: Cell<u32>,
     }
 
+    // ObjectSubclass registers this row type with GLib's runtime type system.
     #[glib::object_subclass]
     impl ObjectSubclass for SearchResultItem {
         const NAME: &'static str = "LushtextSearchResultItem";
@@ -69,6 +75,10 @@ mod imp {
 }
 
 glib::wrapper! {
+    /// Public GObject row model used by workspace search result lists.
+    ///
+    /// File rows and match rows share this data-only wrapper so `GtkTreeListModel`
+    /// can build expandable result groups without pulling in search-domain logic.
     pub struct SearchResultItem(ObjectSubclass<imp::SearchResultItem>);
 }
 

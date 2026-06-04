@@ -14,6 +14,7 @@
 //! animation, `connect_done` snaps visibility.
 
 use crate::config::keys;
+use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::MarkdownPreviewRenderContext;
 use gtk4::prelude::*;
@@ -415,7 +416,11 @@ impl LushtextWindow {
         match editor {
             Some(editor) if is_markdown(&editor) => {
                 let buffer = editor.buffer();
-                let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+                if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
+                    preview.show_placeholder("Markdown preview paused for this large document");
+                    return;
+                }
+                let text = buffer_snapshot::snapshot_buffer_text_direct(&buffer);
                 let context = MarkdownPreviewRenderContext::new(
                     editor.file_path(),
                     self.current_workspace_directory_roots(),

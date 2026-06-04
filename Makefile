@@ -27,9 +27,10 @@
 #   make mutants-smoke - Small cargo-mutants smoke run
 #   make mutants-diff  - Mutation test current changes against origin/main
 #   make mutants-full  - Mutation test the configured deterministic scope
-#   make check       - clippy + fmt check
+#   make check       - fmt + all-feature clippy + fast policy audits
 #   make check-agent-docs - validate agent rules/skills guidance
-#   make pre-commit  - repo pre-commit gate (fmt + clippy)
+#   make lint-advisory - grouped advisory lint discovery for Rust policy reviews
+#   make pre-commit  - repo pre-commit gate (fmt + all-feature clippy + policy audits)
 #   make flatpak-deps - Install Flatpak runtime/SDK deps into the user installation
 #   make flatpak-install - Build and install Flatpak into the user installation
 #   make verify-flatpak-identity - Verify Flatpak desktop identity and MIME registration
@@ -44,7 +45,7 @@
 #   make help        - Show available targets
 
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless visual-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check check-agent-docs pre-commit dev-tools install-git-hooks clean help \
+       check-fmt check-clippy check-filesystem-boundary check-policy lint-advisory check check-agent-docs pre-commit dev-tools install-git-hooks clean help \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
        cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
@@ -294,12 +295,25 @@ check-fmt:
 # Clippy gate matching CI
 check-clippy:
 	@echo "Running clippy..."
-	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Fast path-aware policy audit for lint-adjacent architecture drift.
+check-filesystem-boundary:
+	@echo "Checking filesystem boundary policy..."
+	./scripts/check-filesystem-boundary.sh
+
+# Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
+check-policy: check-filesystem-boundary
+
+# Advisory lint discovery; fails if a finding category has no checked-in policy.
+lint-advisory:
+	@echo "Running advisory lint discovery..."
+	./scripts/lint-advisory.py
 
 # Repo pre-commit gate
-pre-commit: check-fmt check-clippy
+pre-commit: check-fmt check-clippy check-policy
 
-# Lint + format check
+# Lint + format + fast policy check
 check: pre-commit
 
 # Validate agent-facing rules and skills after guidance changes.
@@ -500,7 +514,9 @@ help:
 	@echo "  mutants-diff Changed-code mutation against origin/main"
 	@echo "  mutants-full Configured deterministic mutation scope"
 	@echo "  mutants-list List configured mutants without running tests"
-	@echo "  pre-commit   Repo pre-commit gate (fmt + clippy)"
+	@echo "  pre-commit   Repo pre-commit gate (fmt + all-feature clippy + policy audits)"
+	@echo "  check-policy Fast policy audits, including the filesystem boundary"
+	@echo "  lint-advisory Grouped advisory Rust lint discovery"
 	@echo "  install-git-hooks Configure this repo to use .githooks/"
 	@echo ""
 	@echo "Benchmark targets:"

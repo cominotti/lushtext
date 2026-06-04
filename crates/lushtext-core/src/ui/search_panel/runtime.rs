@@ -207,6 +207,7 @@ impl LushtextSearchPanel {
         }
         imp.runtime.root_store.remove_all();
         imp.runtime.file_groups.borrow_mut().clear();
+        imp.runtime.search_matches.borrow_mut().clear();
         imp.runtime.total_matches.set(0);
         imp.runtime.total_files.set(0);
         imp.runtime.result_capped.set(false);
@@ -219,6 +220,10 @@ impl LushtextSearchPanel {
         imp.error_label.set_visible(false);
         imp.error_label.set_text("");
         imp.error_label.remove_css_class("error");
+        imp.preview
+            .preview_generation
+            .set(imp.preview.preview_generation.get().wrapping_add(1));
+        imp.preview.preview_pending.set(false);
         imp.preview.preview_mode.set(false);
         imp.preview.preview_replacements.borrow_mut().clear();
         imp.preview.checked_indices.borrow_mut().clear();
@@ -236,6 +241,10 @@ fn append_match_result(
     let imp = panel.imp();
     let path = search_match.path.clone();
     let display = make_display_path(&path, workspace_roots);
+    imp.runtime
+        .search_matches
+        .borrow_mut()
+        .push(search_match.clone());
 
     let mut groups = imp.runtime.file_groups.borrow_mut();
     let is_new_file = !groups.contains_key(&path);

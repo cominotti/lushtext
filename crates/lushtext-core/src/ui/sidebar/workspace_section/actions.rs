@@ -70,6 +70,8 @@ impl super::LushtextWorkspaceSection {
 
                 if was_collapsed {
                     let section_weak = section.downgrade();
+                    // Schedule on GTK's main loop after expansion so the child
+                    // model exists before this code looks up and appends to its store.
                     glib::idle_add_local_once(move || {
                         if let Some(section) = section_weak.upgrade()
                             && let Some(store) = section.find_store_for_dir(&target_dir)
@@ -127,33 +129,42 @@ impl super::LushtextWorkspaceSection {
 
         let is_new = self.imp().is_new_item.get();
 
-        // Enter → confirm rename
+        // Entry, key, and focus handlers use weak row widgets so the signal
+        // closures cannot keep recycled or detached inline-rename rows alive.
         let section_weak = self.downgrade();
         let path_c = path.clone();
-        let entry_c = entry.clone();
-        let label_c = label.clone();
-        let box_c = content_box.clone();
-        entry.connect_activate(move |_| {
-            if let Some(section) = section_weak.upgrade() {
-                section.confirm_rename(&path_c, &entry_c, &label_c, &box_c, is_new);
+        let label_weak = label.downgrade();
+        let box_weak = content_box.downgrade();
+        entry.connect_activate(move |entry| {
+            if let (Some(section), Some(label), Some(content_box)) = (
+                section_weak.upgrade(),
+                label_weak.upgrade(),
+                box_weak.upgrade(),
+            ) {
+                section.confirm_rename(&path_c, entry, &label, &content_box, is_new);
             }
         });
 
-        // Escape → cancel
         let key_ctl = gtk4::EventControllerKey::new();
         let section_weak = self.downgrade();
         let path_c = path.clone();
-        let entry_c = entry.clone();
-        let label_c = label.clone();
-        let box_c = content_box.clone();
+        let entry_weak = entry.downgrade();
+        let label_weak = label.downgrade();
+        let box_weak = content_box.downgrade();
         key_ctl.connect_key_pressed(move |_, key, _, _| {
             if key == gdk4::Key::Escape {
-                if is_new {
-                    if let Some(section) = section_weak.upgrade() {
-                        section.cancel_new_item(&path_c, &entry_c, &label_c, &box_c);
+                if let (Some(entry), Some(label), Some(content_box)) = (
+                    entry_weak.upgrade(),
+                    label_weak.upgrade(),
+                    box_weak.upgrade(),
+                ) {
+                    if is_new {
+                        if let Some(section) = section_weak.upgrade() {
+                            section.cancel_new_item(&path_c, &entry, &label, &content_box);
+                        }
+                    } else {
+                        cancel_rename(&entry, &label, &content_box);
                     }
-                } else {
-                    cancel_rename(&entry_c, &label_c, &box_c);
                 }
                 glib::Propagation::Stop
             } else {
@@ -162,20 +173,25 @@ impl super::LushtextWorkspaceSection {
         });
         entry.add_controller(key_ctl);
 
-        // Focus-out → cancel
         let focus_ctl = gtk4::EventControllerFocus::new();
         let section_weak = self.downgrade();
-        let path_c = path.clone();
-        let entry_c = entry.clone();
-        let label_c = label.clone();
-        let box_c = content_box.clone();
+        let path_c = path;
+        let entry_weak = entry.downgrade();
+        let label_weak = label.downgrade();
+        let box_weak = content_box.downgrade();
         focus_ctl.connect_leave(move |_| {
-            if is_new {
-                if let Some(section) = section_weak.upgrade() {
-                    section.cancel_new_item(&path_c, &entry_c, &label_c, &box_c);
+            if let (Some(entry), Some(label), Some(content_box)) = (
+                entry_weak.upgrade(),
+                label_weak.upgrade(),
+                box_weak.upgrade(),
+            ) {
+                if is_new {
+                    if let Some(section) = section_weak.upgrade() {
+                        section.cancel_new_item(&path_c, &entry, &label, &content_box);
+                    }
+                } else {
+                    cancel_rename(&entry, &label, &content_box);
                 }
-            } else {
-                cancel_rename(&entry_c, &label_c, &box_c);
             }
         });
         entry.add_controller(focus_ctl);
@@ -216,12 +232,13 @@ impl super::LushtextWorkspaceSection {
         let new_name_owned = new_name.to_string();
         let is_dir = self.imp().context_is_dir.get();
 
-        // Remove the inline entry immediately — label shows old name until rename completes
+        // Restore the row immediately so focus-out cannot start a second rename
+        // while the filesystem rename runs.
         let label = label.clone();
         cancel_rename(entry, &label, content_box);
 
         let old_path = old_path.to_path_buf();
-        let new_path_c = new_path.clone();
+        let new_path_c = new_path;
         services::async_task::spawn_blocking_then(
             self.clone(),
             move || {
@@ -335,7 +352,7 @@ impl super::LushtextWorkspaceSection {
         dialog.set_close_response("cancel");
 
         let section_weak = self.downgrade();
-        let path_c = path.clone();
+        let path_c = path;
         dialog.connect_response(None::<&str>, move |_, response| {
             if response != "delete" {
                 return;

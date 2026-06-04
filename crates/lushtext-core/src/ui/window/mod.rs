@@ -32,6 +32,10 @@ use gtk4::gio;
 use gtk4::prelude::*;
 
 #[cfg(feature = "test-utils")]
+pub use documents::set_canonical_refresh_delay_for_test;
+#[cfg(feature = "test-utils")]
+pub use encoding::set_lossy_encoding_analysis_delay_for_test;
+#[cfg(feature = "test-utils")]
 pub use print::{PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test};
 
 /// Maximum total estimated buffer memory across all tabs before evicting

@@ -11,82 +11,133 @@
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
+/// Lifetime for transient status and progress messages.
+///
+/// Ten seconds is long enough for slow search/save feedback to be noticed, but
+/// short enough that stale progress cannot permanently occupy the status bar.
 pub const NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// User-facing severity used for status-bar styling and inline warning tone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationSeverity {
+    /// Informational feedback that does not require user intervention.
     Info,
+    /// Recoverable warning, usually paired with an action or follow-up choice.
     Warning,
+    /// Error state where the requested operation failed.
     Error,
 }
 
+/// Visual treatment for editor-scoped inline action notifications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InlineNotificationStyle {
+    /// Warning-colored banner for recoverable or cautionary states.
     Warning,
+    /// Error-colored banner for failed operations.
     Error,
 }
 
+/// Logical source that owns a notification record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NotificationOwner {
+    /// Window-level workflows such as open/save and layout state.
     Window,
+    /// Workspace search progress and completion feedback.
     Search,
+    /// One editor tab, keyed by its stable per-window editor ID.
     Editor(usize),
 }
 
+/// UI surface where a notification may be rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NotificationSurface {
+    /// The persistent bottom status bar for window-level feedback.
     StatusBar,
+    /// An editor-owned inline alert row above the text view.
     EditorInfoBar(usize),
 }
 
+/// Text and severity rendered by the status bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusMessage {
+    /// Short user-facing message text.
     pub text: String,
+    /// Styling and priority hint for this status message.
     pub severity: NotificationSeverity,
 }
 
+/// Persistent inline alert with optional workflow actions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineActionNotification {
+    /// Warning or error visual treatment for the inline row.
     pub style: InlineNotificationStyle,
+    /// Short headline shown in the inline alert.
     pub title: String,
+    /// Supporting copy explaining the state or decision.
     pub body: String,
+    /// Primary action label, if the workflow exposes one.
     pub primary_button: Option<String>,
+    /// Secondary action label, if the workflow exposes one.
     pub secondary_button: Option<String>,
 }
 
+/// Payload variants stored by the notification bus.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotificationPayload {
+    /// Time-limited status-bar message that should win over progress updates.
     Transient(StatusMessage),
+    /// Time-limited progress message that can be renewed by heartbeats.
     Progress(StatusMessage),
+    /// Persistent editor inline alert with optional action buttons.
     InlineAction(InlineActionNotification),
 }
 
+/// Reducer event used to mutate the notification store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationEvent {
+    /// Insert or replace a notification payload.
     Publish,
+    /// Update an existing progress payload or publish it if missing.
     Update,
+    /// Refresh an existing progress timeout without changing its text.
     Heartbeat,
+    /// Remove one owner/surface notification.
     Resolve,
+    /// Remove all notifications owned by one workflow.
     DismissOwner,
+    /// Drop expired notifications without publishing a new payload.
     SweepExpired,
 }
 
+/// Stored notification plus ownership, surface, and lifetime metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotificationRecord {
+    /// Workflow that owns and may later resolve this record.
     pub owner: NotificationOwner,
+    /// UI surface that may render this record.
     pub surface: NotificationSurface,
+    /// Renderable payload for the status bar or editor inline row.
     pub payload: NotificationPayload,
+    /// Last publish/update/heartbeat time used for priority and expiry.
     pub updated_at: Instant,
+    /// Optional expiry time; inline action records stay persistent.
     pub expires_at: Option<Instant>,
 }
 
+/// Main-thread notification store for one window.
+///
+/// `RefCell` and `Cell` keep mutation possible through shared GTK callbacks,
+/// while callers receive view snapshots instead of direct access to records.
 #[derive(Debug, Default)]
 pub struct NotificationBus {
+    /// Ordered records for visible notification surfaces.
     records: RefCell<Vec<NotificationRecord>>,
+    /// Monotonic counter bumped whenever a visible view may have changed.
     generation: Cell<u64>,
 }
 
 impl NotificationBus {
+    /// Publish a notification payload and return whether the visible store changed.
     pub fn publish(
         &self,
         owner: NotificationOwner,
@@ -102,6 +153,7 @@ impl NotificationBus {
         )
     }
 
+    /// Update or create a progress notification for one owner and surface.
     pub fn update_progress(
         &self,
         owner: NotificationOwner,
@@ -121,6 +173,7 @@ impl NotificationBus {
         )
     }
 
+    /// Refresh the timeout for an existing progress notification.
     pub fn heartbeat(&self, owner: NotificationOwner, surface: NotificationSurface) -> bool {
         self.reduce_at(
             NotificationEvent::Heartbeat,
@@ -131,6 +184,7 @@ impl NotificationBus {
         )
     }
 
+    /// Remove one notification identified by owner and surface.
     pub fn resolve(&self, owner: NotificationOwner, surface: NotificationSurface) -> bool {
         self.reduce_at(
             NotificationEvent::Resolve,
@@ -141,6 +195,7 @@ impl NotificationBus {
         )
     }
 
+    /// Remove all notifications owned by one workflow.
     pub fn dismiss_owner(&self, owner: NotificationOwner) -> bool {
         self.reduce_at(
             NotificationEvent::DismissOwner,
@@ -151,10 +206,12 @@ impl NotificationBus {
         )
     }
 
+    /// Drop expired notifications using the current clock.
     pub fn sweep_expired(&self) -> bool {
         self.sweep_expired_at(Instant::now())
     }
 
+    /// Drop expired notifications using a caller-provided clock for tests.
     pub fn sweep_expired_at(&self, now: Instant) -> bool {
         self.reduce_at(
             NotificationEvent::SweepExpired,
@@ -165,10 +222,12 @@ impl NotificationBus {
         )
     }
 
+    /// Return the highest-priority message currently visible in the status bar.
     pub fn status_bar_view(&self) -> Option<StatusMessage> {
         self.status_bar_view_at(Instant::now())
     }
 
+    /// Return the status-bar view at `now`, pruning expired records first.
     pub fn status_bar_view_at(&self, now: Instant) -> Option<StatusMessage> {
         self.prune_expired(now);
         let records = self.records.borrow();
@@ -189,10 +248,12 @@ impl NotificationBus {
             .map(|(_, _, message)| message)
     }
 
+    /// Return the latest inline action notification for one editor.
     pub fn editor_info_bar_view(&self, editor_id: usize) -> Option<InlineActionNotification> {
         self.editor_info_bar_view_at(editor_id, Instant::now())
     }
 
+    /// Return the editor inline view at `now`, pruning expired records first.
     pub fn editor_info_bar_view_at(
         &self,
         editor_id: usize,
@@ -214,6 +275,7 @@ impl NotificationBus {
             .map(|(_, notification)| notification)
     }
 
+    /// Return the current store generation for view refresh de-duplication.
     pub fn generation(&self) -> u64 {
         self.generation.get()
     }
@@ -554,10 +616,9 @@ mod tests {
             Some(transient("Saved", NotificationSeverity::Info)),
         ));
 
-        assert!(
-            bus.status_bar_view_at(now + NOTIFICATION_TIMEOUT - Duration::from_millis(1))
-                .is_some()
-        );
+        let just_before_expiry =
+            now + NOTIFICATION_TIMEOUT.saturating_sub(Duration::from_millis(1));
+        assert!(bus.status_bar_view_at(just_before_expiry).is_some());
         assert!(bus.sweep_expired_at(now + NOTIFICATION_TIMEOUT));
         assert!(bus.status_bar_view_at(now + NOTIFICATION_TIMEOUT).is_none());
     }
@@ -785,8 +846,8 @@ mod tests {
             owner: NotificationOwner::Window,
             surface: NotificationSurface::StatusBar,
             payload: transient("Already expired", NotificationSeverity::Info),
-            updated_at: now - NOTIFICATION_TIMEOUT,
-            expires_at: Some(now - Duration::from_millis(1)),
+            updated_at: now,
+            expires_at: Some(now),
         });
 
         assert!(bus.sweep_expired());

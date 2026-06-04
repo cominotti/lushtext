@@ -11,6 +11,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_DENY_VERSION: "0.19.8"
+  CARGO_NEXTEST_VERSION: "0.9.137"
 
 # Pull-request CI stays deterministic and bounded: no installed package,
 # portal, AT-SPI, screenshot, or full benchmark timing requirements here.
@@ -53,7 +55,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Filesystem boundary policy
+        run: make check-filesystem-boundary
 
       - name: Rustdoc lint gate
         run: |
@@ -89,7 +94,7 @@ jobs:
           shared-key: fedora-44
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+        run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Run non-widget tests
         run: cargo nextest run --workspace
@@ -123,7 +128,7 @@ jobs:
           shared-key: fedora-44-property
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+        run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Run property tests
         run: make test-prop
@@ -242,7 +247,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-deny
-        run: cargo install --locked cargo-deny
+        run: cargo install --locked cargo-deny --version "${CARGO_DENY_VERSION}"
 
       - name: Check dependency policy
-        run: cargo deny check advisories bans sources
+        run: cargo deny check advisories bans sources licenses

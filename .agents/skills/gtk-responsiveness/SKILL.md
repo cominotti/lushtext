@@ -40,6 +40,24 @@ For paned/revealer animations, "responsive" also includes **warning-free live ge
 
 **The 1ms Rule**: If an operation can exceed 1ms in the worst case (large file, slow disk, network mount, many entries), it must run off the main thread. The overhead of `spawn_blocking_then` is negligible compared to a UI freeze.
 
+## LushText Text-Buffer Snapshot Rule
+
+GTK buffers are main-thread-only, but copying the whole buffer in one signal,
+timer, or action callback can still freeze the editor. When reviewing or writing
+code that reads `buffer.text(&start, &end, ...)`, check whether it should use
+`crate::ui::buffer_snapshot` instead.
+
+- Direct snapshots are acceptable only for small buffers.
+- Large, unknown, or grown-in-memory buffers need chunked main-loop snapshots or
+  a documented paused/limited UI state.
+- After the owned text is captured, CPU-heavy work such as lossy encoding
+  analysis or Replace preview generation belongs in `spawn_blocking_then`.
+- Every async result that changes UI state needs a generation counter plus an
+  editor/window lifetime check. For path-sensitive work, also verify the editor
+  still owns the same path and is still mounted in the tab view.
+- Optional surfaces such as Markdown preview and minimap long-line markers may
+  skip large-buffer work; the active editor must stay responsive.
+
 ## Sidebar / Paned Animation Lessons
 
 - Large restored workspace trees can make sidebar toggle stutter even when no explicit I/O runs during the animation. The problem can be per-frame relayout of the live subtree, not blocking calls.
@@ -107,6 +125,10 @@ Review criteria:
 - Is any blocking I/O (`services::filesystem` reads/writes/scans/metadata or `Command::new`) called on the main thread outside `spawn_blocking_then`?
 - Does the code bypass `services::filesystem` with raw filesystem calls outside approved backend or fixture modules?
 - Does a hot path call rich metadata helpers when a cheap existence/kind status helper would answer the question?
+- Does a UI callback synchronously call `buffer.text()` over an unbounded buffer
+  for save, draft autosave, encoding analysis, Markdown preview, minimap, or
+  Replace preview preparation instead of using `ui::buffer_snapshot`, chunking,
+  or a paused/limited state?
 - Is heavy work done in the `then` callback? (Large JSON parsing, file processing should be in the `work` closure, not `then`)
 - For file operations: is the path cloned/moved into the closure correctly? (Borrowed paths can't cross thread boundaries)
 - Cancel tokens: for large file loads, does EditorPage store an Arc<AtomicBool> checked before AND after the I/O call?
@@ -115,6 +137,9 @@ Review criteria:
 
 Anti-patterns to flag:
 - [FLAG] Filesystem-boundary call, raw filesystem bypass, or `Command::new` in UI code outside `spawn_blocking_then`
+- [FLAG] Unbounded whole-buffer GTK snapshot in a signal, timer, action, or
+  preview refresh path without the shared snapshot helper or an explicit
+  large-buffer paused/limited state
 - [FLAG] Large data parsing (serde_json::from_str on >10KB) in the `then` callback
 - [RECOMMEND] Missing cancel token for file loads that may become stale (tab closed during load)
 - [FLAG] ThreadGuard used in a periodic timer or long-lived callback — panics if widget is destroyed; use SendWeakRef instead

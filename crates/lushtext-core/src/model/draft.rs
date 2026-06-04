@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 /// One draft entry in the manifest. Maps a draft file on disk to the
 /// original source file and tracks metadata for conflict detection.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftEntry {
     /// Stable identifier for this draft, used as the filename stem.
     /// For path-backed files: hex-encoded hash of the absolute path.
@@ -29,7 +29,7 @@ pub struct DraftEntry {
 
 /// The full draft manifest, stored as JSON alongside the draft files.
 /// Loaded at startup and kept in memory; written atomically on each update.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftManifest {
     pub drafts: Vec<DraftEntry>,
 }
@@ -46,6 +46,8 @@ pub enum PreloadedDraftRestore {
     Content(String),
     /// A file-backed draft was discarded because the backing file changed.
     SkipStaleFile,
+    /// The draft remains on disk but is too large to apply automatically.
+    SkipOversized,
 }
 
 /// Result of validating a file-backed draft against its current backing file.
@@ -59,6 +61,8 @@ pub enum FileDraftRestoreResolution {
     Restore { content: String },
     /// The backing file's mtime changed, so restoring would overwrite newer data.
     SkipStale,
+    /// The draft is too large to read into a GTK buffer automatically.
+    SkipOversized,
     /// Automatic restore could not trust current file metadata for this attempt.
     SkipUnavailable,
     /// The manifest entry existed, but the draft file itself was already gone.
@@ -216,7 +220,7 @@ mod tests {
             original_mtime_secs: Some(9999),
             saved_at_secs: 9999,
         };
-        manifest.upsert(updated.clone());
+        manifest.upsert(updated);
         assert_eq!(manifest.drafts.len(), 1);
         assert_eq!(manifest.drafts[0].saved_at_secs, 9999);
     }

@@ -12,6 +12,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{gio, glib};
 
 use crate::model::workspace::WorkspaceEntry;
+use crate::services;
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
 
 use super::LushtextWorkspaceSection;
@@ -41,18 +42,19 @@ impl LushtextWorkspaceSection {
         for entry in roots {
             let root_path = entry.path().to_path_buf();
             let is_dir = entry.is_dir();
-            let is_empty = if is_dir {
-                Some(crate::services::file_tree::is_dir_empty(&root_path))
-            } else {
-                None
-            };
-            let item = FileTreeItem::new(root_path.clone(), is_dir, is_empty);
-            let index = root_store.n_items() as usize;
+            let item = FileTreeItem::new(root_path.clone(), is_dir, None);
+            let index = root_store.n_items();
             root_store.append(&item);
-            self.cache_root_item(root_path, index);
+            self.cache_root_item(root_path.clone(), index as usize);
+            if is_dir {
+                schedule_root_empty_check(self, &root_store, &item, root_path, index);
+            }
         }
 
         let section_weak = self.downgrade();
+        // GTK4 trees are built from three pieces: ListStore holds observable row
+        // data, TreeListModel flattens parent/child stores, and ListView/TreeExpander
+        // render the flattened rows with indentation and arrows.
         let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, move |item| {
             let section = section_weak.upgrade()?;
             let file_item = item.downcast_ref::<FileTreeItem>()?;
@@ -70,7 +72,7 @@ impl LushtextWorkspaceSection {
         let imp = self.imp();
         imp.file_tree_view.set_model(Some(&selection));
         *imp.root_store.borrow_mut() = Some(root_store);
-        *imp.tree_model.borrow_mut() = Some(tree_model.clone());
+        *imp.tree_model.borrow_mut() = Some(tree_model);
         self.update_button_state();
         self.restore_root_model_state(auto_expand);
         self.restart_workspace_watch();
@@ -96,22 +98,23 @@ impl LushtextWorkspaceSection {
                 .iter()
                 .any(|entry| entry.path() == path);
             if !already_exists {
-                self.imp()
-                    .original_roots
-                    .borrow_mut()
-                    .push(new_entry.clone());
+                self.imp().original_roots.borrow_mut().push(new_entry);
                 if self.imp().drilldown_stack.borrow().is_empty() {
                     let store_ref = self.imp().root_store.borrow();
                     if let Some(root_store) = store_ref.as_ref() {
-                        let is_empty = if is_dir {
-                            Some(crate::services::file_tree::is_dir_empty(path))
-                        } else {
-                            None
-                        };
-                        let item = FileTreeItem::new(path.to_path_buf(), is_dir, is_empty);
-                        let index = root_store.n_items() as usize;
+                        let item = FileTreeItem::new(path.to_path_buf(), is_dir, None);
+                        let index = root_store.n_items();
                         root_store.append(&item);
-                        self.cache_root_item(path.to_path_buf(), index);
+                        self.cache_root_item(path.to_path_buf(), index as usize);
+                        if is_dir {
+                            schedule_root_empty_check(
+                                self,
+                                root_store,
+                                &item,
+                                path.to_path_buf(),
+                                index,
+                            );
+                        }
                     }
                 }
             }
@@ -305,4 +308,27 @@ impl LushtextWorkspaceSection {
             }
         });
     }
+}
+
+fn schedule_root_empty_check(
+    section: &LushtextWorkspaceSection,
+    root_store: &gio::ListStore,
+    item: &FileTreeItem,
+    root_path: std::path::PathBuf,
+    index: u32,
+) {
+    let path_for_check = root_path.clone();
+    services::async_task::spawn_blocking_then(
+        (section.clone(), root_store.clone(), item.clone(), root_path),
+        move || services::file_tree::is_dir_empty(&path_for_check),
+        move |(section, root_store, item, root_path), is_empty| {
+            if section.imp().drilldown_stack.borrow().is_empty()
+                && item.path().as_deref() == Some(root_path.as_path())
+                && index < root_store.n_items()
+            {
+                item.set_is_empty(Some(is_empty));
+                root_store.splice(index, 1, &[item]);
+            }
+        },
+    );
 }

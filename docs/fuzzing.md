@@ -44,7 +44,7 @@ sudo dnf install -y gcc-c++
 
 # Rust tooling
 rustup toolchain install nightly
-cargo install --locked cargo-fuzz
+cargo install --locked cargo-fuzz --version 0.13.1
 ```
 
 List configured targets:

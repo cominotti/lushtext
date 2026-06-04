@@ -60,8 +60,8 @@ fn test_session_save_restore_roundtrip() {
 
     let session = SessionData {
         tabs: vec![
-            tab_with_position(file1.clone(), 1, 0, 0),
-            tab_with_position(file2.clone(), 15, 8, 10),
+            tab_with_position(file1, 1, 0, 0),
+            tab_with_position(file2, 15, 8, 10),
         ],
         active_tab_index: Some(1),
     };

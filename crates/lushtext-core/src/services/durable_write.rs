@@ -95,6 +95,11 @@ impl std::fmt::Display for DurableWriteError {
 
 impl std::error::Error for DurableWriteError {}
 
+#[cfg(test)]
+fn atomic_write_bytes(path: &Path, tmp_tag: &str, bytes: &[u8]) -> std::io::Result<()> {
+    atomic_write_bytes_classified(path, tmp_tag, bytes).map_err(DurableWriteError::into_io_error)
+}
+
 /// Atomically replace `path` with `bytes`, classifying any failure by phase.
 ///
 /// The full durability contract runs in order: write the bytes to a uniquely
@@ -111,11 +116,6 @@ impl std::error::Error for DurableWriteError {}
 /// Returns [`DurableWriteError::BeforeRename`] when the destination's previous
 /// bytes are still intact, or [`DurableWriteError::AfterRename`] when the new
 /// bytes are in place but the directory `fsync` failed.
-#[cfg(test)]
-fn atomic_write_bytes(path: &Path, tmp_tag: &str, bytes: &[u8]) -> std::io::Result<()> {
-    atomic_write_bytes_classified(path, tmp_tag, bytes).map_err(DurableWriteError::into_io_error)
-}
-
 pub fn atomic_write_bytes_classified(
     path: &Path,
     tmp_tag: &str,
@@ -208,6 +208,11 @@ where
     )
 }
 
+/// Core state machine for streaming temp-file writes, metadata, rename, and sync.
+///
+/// This private helper owns the exact failure-boundary classification: every
+/// operation before the rename reports `BeforeRename`, while parent-directory
+/// sync after a successful rename reports `AfterRename`.
 fn atomic_write_stream_with_metadata<F>(
     path: &Path,
     tmp_tag: &str,
@@ -334,12 +339,15 @@ impl TargetWriteGuard {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while active.contains(&key) {
+            // Condition variables may wake spuriously; the active set is the
+            // actual write-exclusion contract, so recheck it on every wake.
             active = locks
                 .available
                 .wait(active)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         active.insert(key.clone());
+        drop(active);
         Self { key }
     }
 }
@@ -347,11 +355,13 @@ impl TargetWriteGuard {
 impl Drop for TargetWriteGuard {
     fn drop(&mut self) {
         let locks = write_target_locks();
-        let mut active = locks
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        active.remove(&self.key);
+        {
+            let mut active = locks
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            active.remove(&self.key);
+        }
         locks.available.notify_all();
     }
 }
@@ -546,6 +556,7 @@ fn sync_temp_after_metadata(file: &sys::File) -> std::io::Result<()> {
 #[cfg(test)]
 type TempObserver = Box<dyn Fn(&Path) + Send + Sync + 'static>;
 
+/// Test-only hook that observes a temp file before metadata and final sync.
 #[cfg(test)]
 static TEMP_AFTER_CONTENT_OBSERVER: OnceLock<Mutex<Option<TempObserver>>> = OnceLock::new();
 
@@ -738,7 +749,7 @@ mod tests {
 
         let lock = TargetWriteGuard::acquire(&path).expect("lock file");
         let (tx, rx) = mpsc::channel();
-        let path_for_thread = path.clone();
+        let path_for_thread = path;
         let thread = std::thread::spawn(move || {
             let _lock = TargetWriteGuard::acquire(&path_for_thread).expect("second lock");
             tx.send(()).expect("notify acquired");
@@ -768,7 +779,7 @@ mod tests {
 
         let lock = TargetWriteGuard::acquire(&link).expect("lock symlink target");
         let (tx, rx) = mpsc::channel();
-        let target_for_thread = target.clone();
+        let target_for_thread = target;
         let thread = std::thread::spawn(move || {
             let _lock = TargetWriteGuard::acquire(&target_for_thread).expect("lock target");
             tx.send(()).expect("notify acquired");

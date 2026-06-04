@@ -1407,6 +1407,16 @@ impl LushtextMarkdownPreview {
         self.imp().showing_content.get()
     }
 
+    /// Current placeholder description, exposed only for widget assertions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn placeholder_description_for_test(&self) -> Option<String> {
+        self.imp()
+            .placeholder
+            .description()
+            .map(|description| description.to_string())
+    }
+
     /// Get the rendered text content from the internal buffer.
     ///
     /// GTK child anchors are not plain text, so embedded table and image

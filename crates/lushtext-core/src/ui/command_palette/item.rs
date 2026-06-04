@@ -11,9 +11,10 @@ use gtk4::glib;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
-// Private implementation module.
+// The imp module owns private GObject storage; the public wrapper below is the
+// ListStore-facing API.
 mod imp {
-    use super::*;
+    use super::{Cell, ObjectImpl, ObjectSubclass, PathBuf, RefCell, glib};
 
     // GObject methods take &self; RefCell/Cell provide interior mutability.
     #[derive(Default)]
@@ -44,6 +45,9 @@ mod imp {
 // glib::wrapper! generates the public wrapper type. Since PaletteItem is a
 // pure data GObject (not a widget), the @extends chain is empty.
 glib::wrapper! {
+    /// Public GObject row model used by GTK list stores for palette results.
+    ///
+    /// This is a data-only wrapper; domain search logic stays in `model::palette`.
     pub struct PaletteItem(ObjectSubclass<imp::PaletteItem>);
 }
 

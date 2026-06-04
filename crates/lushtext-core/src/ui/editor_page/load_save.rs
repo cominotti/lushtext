@@ -6,15 +6,12 @@
 //! widgets directly, but the extraction keeps `mod.rs` focused on the public
 //! facade while this file owns the async file-I/O choreography.
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
+use gtk4;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::{self, glib};
 use sourceview5::prelude::*;
 
 use crate::model::encoding::{
@@ -23,12 +20,12 @@ use crate::model::encoding::{
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::services::{async_task, editor_io, filesystem::metadata as fs_metadata};
+use crate::ui::buffer_snapshot;
 
 use super::{LushtextEditorPage, SaveError};
 use editor_io::LoadError;
 
 type SaveCallback = Box<dyn FnOnce(Result<(), SaveError>)>;
-type ChunkedCallback = Rc<RefCell<Option<Box<dyn FnOnce(String)>>>>;
 
 /// Temporary view flags captured while chunked snapshotting makes the editor read-only.
 #[derive(Clone, Copy)]
@@ -36,13 +33,6 @@ struct ViewInteractivityState {
     editable: bool,
     cursor_visible: bool,
 }
-
-/// Files at or above 10MB use chunked snapshotting to avoid a long
-/// single-frame pause when copying GtkTextBuffer content to a String.
-const LARGE_SAVE_SNAPSHOT_THRESHOLD: u64 = 10_000_000;
-/// Characters per slice when chunking large buffer snapshots. 64k chars
-/// completes in under 1ms on the GTK main thread, keeping frame times stable.
-const SAVE_SNAPSHOT_CHUNK_CHARS: i32 = 64 * 1024;
 
 impl LushtextEditorPage {
     /// Start loading a file asynchronously. Sets the file path immediately
@@ -314,16 +304,14 @@ impl LushtextEditorPage {
 
         if self.live_buffer_requires_chunked_snapshot() {
             let editor = self.clone();
-            snapshot_buffer_text_async(self.buffer(), move |text| {
+            buffer_snapshot::snapshot_buffer_text_async(self.buffer(), move |text| {
                 editor.write_snapshot_async(path, text, restore_state, callback);
             });
             return;
         }
 
         let buffer = self.buffer();
-        let text = buffer
-            .text(&buffer.start_iter(), &buffer.end_iter(), true)
-            .to_string();
+        let text = buffer_snapshot::snapshot_buffer_text_direct(&buffer);
         self.write_snapshot_async(path, text, restore_state, callback);
     }
 
@@ -529,54 +517,7 @@ impl LushtextEditorPage {
     }
 
     /// Decide whether save snapshotting should yield through the main loop.
-    ///
-    /// GtkTextBuffer exposes a cheap character count, not a UTF-8 byte count.
-    /// Multiplying by four is a conservative upper bound that sends large or
-    /// unknown-size buffers through chunked capture without first copying the
-    /// whole text just to measure it.
     fn live_buffer_requires_chunked_snapshot(&self) -> bool {
-        let char_count = u64::try_from(self.buffer().char_count()).unwrap_or(u64::MAX);
-        char_count.saturating_mul(4) >= LARGE_SAVE_SNAPSHOT_THRESHOLD
+        buffer_snapshot::buffer_requires_chunked_snapshot(&self.buffer())
     }
-}
-
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "GtkSource buffers are ref-counted GObjects, so pass-by-value keeps the async snapshot helper idiomatic"
-)]
-fn snapshot_buffer_text_async<F: FnOnce(String) + 'static>(
-    buffer: sourceview5::Buffer,
-    callback: F,
-) {
-    let text = Rc::new(RefCell::new(String::new()));
-    let callback: ChunkedCallback = Rc::new(RefCell::new(Some(Box::new(callback))));
-    snapshot_buffer_text_chunk(buffer.clone(), buffer.start_iter(), text, callback);
-}
-
-fn snapshot_buffer_text_chunk(
-    buffer: sourceview5::Buffer,
-    start: gtk4::TextIter,
-    text: Rc<RefCell<String>>,
-    callback: ChunkedCallback,
-) {
-    let mut end = start;
-    if !end.forward_chars(SAVE_SNAPSHOT_CHUNK_CHARS) {
-        end = buffer.end_iter();
-    }
-
-    let chunk = buffer.text(&start, &end, true);
-    text.borrow_mut().push_str(chunk.as_str());
-
-    if end == buffer.end_iter() {
-        if let Some(callback) = callback.borrow_mut().take() {
-            callback(std::mem::take(&mut *text.borrow_mut()));
-        }
-        return;
-    }
-
-    // A 1ms timeout yields back to the GTK main loop between slices so large
-    // saves stay responsive without starving rendering like a tight idle loop would.
-    glib::timeout_add_local_once(Duration::from_millis(1), move || {
-        snapshot_buffer_text_chunk(buffer, end, text, callback);
-    });
 }

@@ -45,7 +45,8 @@ they are not default PR gates:
   AT-SPI path, complementing widget tests that intentionally set
   `NO_AT_BRIDGE=1`.
 - `make performance-smoke` runs a small Criterion smoke filter with coarse
-  timing artifacts.
+  timing artifacts, including worker-side Replace preview generation so preview
+  responsiveness changes have a lightweight elapsed-time tripwire.
 - Full fuzz smoke, deep property runs, full mutation, and full benchmark reports
   remain opt-in or scheduled because they are intentionally more expensive.
 

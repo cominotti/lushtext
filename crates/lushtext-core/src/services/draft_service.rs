@@ -32,6 +32,13 @@ const MANIFEST_FILE: &str = "manifest.json";
 /// startup memory before normal editor buffer accounting is active.
 pub const MAX_DRAFT_PRELOAD_BYTES: u64 = 64 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DraftPreloadDecision {
+    Read,
+    SkipOversized,
+    SkipBudget,
+}
+
 fn manifest_write_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -153,9 +160,17 @@ pub fn load_restore_state(
             continue;
         };
         if entry.original_path.is_some() {
-            if should_skip_draft_preload(data_dir, &draft_id, &mut preloaded_bytes) {
-                tracing::warn!("Skipped eager preload for large draft {draft_id}");
-                continue;
+            match draft_preload_decision(data_dir, &draft_id, &mut preloaded_bytes) {
+                DraftPreloadDecision::Read => {}
+                DraftPreloadDecision::SkipOversized => {
+                    tracing::warn!("Skipped automatic restore for oversized draft {draft_id}");
+                    preloaded.insert(draft_id, PreloadedDraftRestore::SkipOversized);
+                    continue;
+                }
+                DraftPreloadDecision::SkipBudget => {
+                    tracing::warn!("Skipped eager preload for large draft {draft_id}");
+                    continue;
+                }
             }
             match resolve_file_draft_restore(data_dir, &entry) {
                 Ok(FileDraftRestoreResolution::Restore { content }) => {
@@ -166,6 +181,9 @@ pub fn load_restore_state(
                     if !stale_draft_ids.contains(&draft_id) {
                         stale_draft_ids.push(draft_id);
                     }
+                }
+                Ok(FileDraftRestoreResolution::SkipOversized) => {
+                    preloaded.insert(draft_id, PreloadedDraftRestore::SkipOversized);
                 }
                 Ok(
                     FileDraftRestoreResolution::SkipUnavailable
@@ -178,9 +196,17 @@ pub fn load_restore_state(
             continue;
         }
 
-        if should_skip_draft_preload(data_dir, &draft_id, &mut preloaded_bytes) {
-            tracing::warn!("Skipped eager preload for large draft {draft_id}");
-            continue;
+        match draft_preload_decision(data_dir, &draft_id, &mut preloaded_bytes) {
+            DraftPreloadDecision::Read => {}
+            DraftPreloadDecision::SkipOversized => {
+                tracing::warn!("Skipped automatic restore for oversized draft {draft_id}");
+                preloaded.insert(draft_id, PreloadedDraftRestore::SkipOversized);
+                continue;
+            }
+            DraftPreloadDecision::SkipBudget => {
+                tracing::warn!("Skipped eager preload for large draft {draft_id}");
+                continue;
+            }
         }
         match read_draft(data_dir, &draft_id) {
             Ok(Some(content)) => {
@@ -197,20 +223,32 @@ pub fn load_restore_state(
     (manifest, session, preloaded)
 }
 
-fn should_skip_draft_preload(data_dir: &Path, draft_id: &str, preloaded_bytes: &mut u64) -> bool {
+fn draft_preload_decision(
+    data_dir: &Path,
+    draft_id: &str,
+    preloaded_bytes: &mut u64,
+) -> DraftPreloadDecision {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
     let Ok(facts) = fs_metadata::file_facts(&path) else {
-        return false;
+        return DraftPreloadDecision::Read;
     };
     let size = facts.byte_size;
     if size > MAX_DRAFT_PRELOAD_BYTES {
-        return true;
+        return DraftPreloadDecision::SkipOversized;
     }
     if preloaded_bytes.saturating_add(size) > MAX_DRAFT_PRELOAD_BYTES {
-        return true;
+        return DraftPreloadDecision::SkipBudget;
     }
     *preloaded_bytes = preloaded_bytes.saturating_add(size);
-    false
+    DraftPreloadDecision::Read
+}
+
+fn oversized_draft_size(data_dir: &Path, draft_id: &str) -> Option<u64> {
+    let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
+    fs_metadata::file_facts(&path)
+        .ok()
+        .map(|facts| facts.byte_size)
+        .filter(|size| *size > MAX_DRAFT_PRELOAD_BYTES)
 }
 
 /// Resolve whether a file-backed draft is still safe to restore.
@@ -237,6 +275,10 @@ pub fn resolve_file_draft_restore(
         if current_mtime != saved_mtime {
             return Ok(FileDraftRestoreResolution::SkipStale);
         }
+    }
+
+    if oversized_draft_size(data_dir, &entry.draft_id).is_some() {
+        return Ok(FileDraftRestoreResolution::SkipOversized);
     }
 
     match read_draft(data_dir, &entry.draft_id)? {
@@ -311,6 +353,14 @@ pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()>
 /// Returns an error if an existing draft file cannot be read as UTF-8 text.
 pub fn read_draft(data_dir: &Path, draft_id: &str) -> Result<Option<String>> {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
+    if let Some(size) = oversized_draft_size(data_dir, draft_id) {
+        return Err(anyhow::anyhow!(
+            "draft {} is too large to restore automatically ({} bytes, limit {} bytes)",
+            path.display(),
+            size,
+            MAX_DRAFT_PRELOAD_BYTES
+        ));
+    }
     match fs_read::text(&path) {
         Ok(content) => Ok(Some(content)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -367,10 +417,19 @@ pub fn cleanup_orphans(data_dir: &Path, manifest: &mut DraftManifest) -> Result<
     if let Ok(entries) = fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace()) {
         for entry in entries {
             let name = entry.file_name;
-            if !name.ends_with(".draft") || name.starts_with('.') {
+            let name_path = Path::new(&name);
+            // Match draft files by parsed extension so case-insensitive `.draft`
+            // names are cleaned up while hidden/temp files stay out of orphan deletion.
+            if name.starts_with('.')
+                || !name_path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("draft"))
+            {
                 continue;
             }
-            let draft_id = name.trim_end_matches(".draft");
+            let Some(draft_id) = name_path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
             if manifest.find_by_id(draft_id).is_none() {
                 let _ = fs_mutate::remove_file_if_exists(&entry.path);
                 cleaned += 1;
@@ -655,6 +714,28 @@ mod tests {
     }
 
     #[test]
+    fn resolve_file_draft_restore_skips_oversized_draft() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("file.txt");
+        fixture::write_text(&path, "disk content");
+        let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
+        let draft_id = "draft";
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        fixture::create_sparse_file(
+            &draft_path(dir.path(), draft_id),
+            MAX_DRAFT_PRELOAD_BYTES + 1,
+        );
+
+        let resolution = resolve_file_draft_restore(
+            dir.path(),
+            &file_entry(draft_id, &path, Some(current_mtime)),
+        )
+        .expect("expected operation to succeed");
+
+        assert_eq!(resolution, FileDraftRestoreResolution::SkipOversized);
+    }
+
+    #[test]
     fn load_restore_state_removes_stale_file_draft_from_manifest_and_disk() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
@@ -739,7 +820,10 @@ mod tests {
 
         let (manifest, session, preloaded) = load_restore_state(dir.path());
 
-        assert!(preloaded.is_empty());
+        assert_eq!(
+            preloaded.get(draft_id),
+            Some(&PreloadedDraftRestore::SkipOversized)
+        );
         assert_eq!(session.tabs.len(), 1, "session tab still restores");
         assert_eq!(session.tabs[0].draft_id.as_deref(), Some(draft_id));
         assert!(
@@ -749,6 +833,26 @@ mod tests {
         assert!(
             fs_metadata::exists(&draft_path),
             "oversized draft file must not be deleted"
+        );
+    }
+
+    #[test]
+    fn read_draft_rejects_oversized_draft_without_deleting_it() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "oversized-read";
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        let draft_path = draft_path(dir.path(), draft_id);
+        fixture::create_sparse_file(&draft_path, MAX_DRAFT_PRELOAD_BYTES + 1);
+
+        let error = read_draft(dir.path(), draft_id).expect_err("oversized draft should not load");
+
+        assert!(
+            error.to_string().contains("too large to restore"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            fs_metadata::exists(&draft_path),
+            "oversized draft file must remain available for manual recovery"
         );
     }
 

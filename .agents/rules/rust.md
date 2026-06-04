@@ -53,6 +53,29 @@ Use `services::async_task::spawn_blocking_then(state, work, then)` for any I/O t
 
 Never pass GTK objects directly across threads — they are not `Send`/`Sync`. Use `glib::thread_guard::ThreadGuard` or `glib::SendWeakRef`.
 
+## GTK Main-Thread Snapshot Boundaries
+
+GTK text buffers must only be read on the GTK main thread, but whole-buffer
+copies can still freeze the UI when they happen in one callback. Reuse
+`ui::buffer_snapshot` for editor text snapshots that feed saves, draft
+autosave, encoding analysis, preview flows, or optional marker scans.
+
+- Small buffers may use `snapshot_buffer_text_direct()` before handing owned
+  text to a worker.
+- Unknown, grown-in-memory, or large buffers must use
+  `snapshot_buffer_text_async()` or an explicit paused/limited state.
+- Worker results that mutate UI state must carry a generation counter and a
+  weak editor/window identity check. Reject results when the editor was closed,
+  switched paths, edited again, or superseded by a newer request.
+- Optional UI hints such as Markdown preview rendering and minimap long-line
+  markers may skip or pause for large buffers; do not trade editor
+  responsiveness for secondary decoration.
+- Save As canonical bookkeeping must not call canonicalization on the GTK
+  thread after the chooser returns. Use the background save result immediately
+  for UI identity and schedule any follow-up canonical refresh through
+  `spawn_blocking_then`, applying it only while the editor is still mounted and
+  still owns the same path.
+
 ## Filesystem Boundary
 
 Production code must use `services::filesystem` for file reads, metadata,
@@ -144,9 +167,12 @@ do not show a clean tab whose visible text differs from disk.
 
 ## Lint Suppression
 
-- Prefer `#[expect(lint)]` over `#[allow(lint)]` when suppressing a lint for a known reason (e.g., using a deprecated API that has no replacement yet). `#[expect]` is self-policing: it causes a compile error if the lint no longer fires, so stale suppressions are caught automatically.
+- Prefer `#[expect(lint, reason = "...")]` over `#[allow(lint)]` when suppressing a lint for a known reason (e.g., using a deprecated API that has no replacement yet). `#[expect]` is self-policing: it causes a compile error if the lint no longer fires, so stale suppressions are caught automatically. The reason must name the local GTK, generated-code, test, benchmark, or ownership invariant.
 - Reserve `#[allow(lint)]` only for cases where the lint may or may not fire depending on configuration or feature flags.
-- Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, and `manual_noop_waker` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents.
+- The workspace Clippy table is curated lint-by-lint after cleanup. Broad groups such as `clippy::restriction`, `clippy::pedantic`, `clippy::nursery`, and `clippy::cargo` are advisory discovery inputs only; do not enable them wholesale as blocking policy.
+- Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, `manual_noop_waker`, `manual_midpoint`, `unchecked_time_subtraction`, `case_sensitive_file_extension_comparisons`, `significant_drop_tightening`, `needless_collect`, `redundant_clone`, `derive_partial_eq_without_eq`, and `wildcard_imports` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents.
+- `make lint-advisory` runs broad Clippy, selected design-smell Clippy, and selected rustc probes. Every current category is classified in `scripts/lint-advisory-policy.toml` as `blocking_candidate`, `must_stay_zero`, `accepted_advisory`, `generated_code_noise`, or `resolved_policy_exception`; refresh that policy only after fixing, promoting, or intentionally classifying new output.
+- No `clippy.toml` is currently checked in because this review found no globally safe disallowed method/type ban that applies across backend, fixture, generated, test, and build-support paths without broad suppressions. Add `clippy.toml` only when a future globally safe ban can include reason and replacement metadata. Path-sensitive rules such as filesystem-boundary ownership stay in `scripts/check-filesystem-boundary.sh`, where backend, fixture, build-support, and approved engine-adapter exceptions can be expressed by path.
 
 ## Modern Rust Idioms
 

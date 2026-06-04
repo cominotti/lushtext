@@ -1,0 +1,254 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Classification policy for `make lint-advisory`.
+# Broad Clippy groups stay advisory; only named, cleaned lints belong in the
+# blocking workspace lint table.
+
+schema = 1
+toolchain = "1.96.0"
+
+[[rules]]
+code = "clippy::manual_midpoint"
+classification = "blocking_candidate"
+max_count = 0
+rationale = "Promoted into the blocking lint table after replacing overflow-prone midpoint arithmetic."
+
+[[rules]]
+code = "clippy::unchecked_time_subtraction"
+classification = "blocking_candidate"
+max_count = 0
+rationale = "Promoted into the blocking lint table after replacing unchecked duration subtraction."
+
+[[rules]]
+code = "clippy::case_sensitive_file_extension_comparisons"
+classification = "blocking_candidate"
+max_count = 0
+rationale = "Promoted into the blocking lint table after case-insensitive suffix checks are used."
+
+[[rules]]
+code = "clippy::significant_drop_tightening"
+classification = "blocking_candidate"
+max_count = 0
+rationale = "Promoted into the blocking lint table once significant drop spans are tightened or justified."
+
+[[rules]]
+code = "clippy::needless_collect"
+classification = "blocking_candidate"
+max_count = 0
+rationale = "Promoted into the blocking lint table once avoidable temporary Vecs are removed or justified."
+
+[[rules]]
+code = "clippy::redundant_clone"
+classification = "blocking_candidate"
+max_count = 0
+rationale = "Promoted into the blocking lint table after redundant clones are removed."
+
+[[rules]]
+code = "clippy::derive_partial_eq_without_eq"
+classification = "blocking_candidate"
+max_count = 0
+rationale = "Promoted into the blocking lint table after Eq is derived where PartialEq has no float-like caveat."
+
+[[rules]]
+code = "clippy::wildcard_imports"
+classification = "blocking_candidate"
+max_count = 0
+rationale = "Promoted into the blocking lint table after wildcard imports are replaced with explicit prelude imports."
+
+[[rules]]
+code = "clippy::doc_markdown"
+classification = "accepted_advisory"
+rationale = "Pedantic Markdown spelling/backtick style is useful review signal but not a blocking LushText policy."
+
+[[rules]]
+code = "clippy::missing_const_for_fn"
+classification = "accepted_advisory"
+rationale = "Const promotion would create widespread churn in GTK adapters and model helpers with limited value."
+
+[[rules]]
+code = "clippy::too_many_lines"
+classification = "accepted_advisory"
+rationale = "Large workflow functions are tracked as refactor candidates, not blanket lint failures."
+
+[[rules]]
+code = "clippy::float_cmp"
+classification = "accepted_advisory"
+path_globs = ["<rustc>/**"]
+rationale = "Current findings originate inside Rust macro expansion rather than LushText comparison code."
+
+[[rules]]
+code = "clippy::option_if_let_else"
+classification = "accepted_advisory"
+rationale = "Existing if-let control flow is often clearer in GTK setup and callback code."
+
+[[rules]]
+code = "clippy::cast_precision_loss"
+classification = "accepted_advisory"
+rationale = "GTK geometry math frequently crosses integer allocation and floating drawing APIs."
+
+[[rules]]
+code = "clippy::cast_possible_wrap"
+classification = "accepted_advisory"
+rationale = "Current findings are reviewed conversion sites; blocking cast policy remains curated separately."
+
+[[rules]]
+code = "clippy::format_push_string"
+classification = "accepted_advisory"
+rationale = "Build and report helpers may assemble strings imperatively when it keeps generation logic readable."
+
+[[rules]]
+code = "clippy::needless_raw_string_hashes"
+classification = "accepted_advisory"
+rationale = "Raw-string delimiter style is readability noise unless a local cleanup is already touching the literal."
+
+[[rules]]
+code = "clippy::use_self"
+classification = "accepted_advisory"
+rationale = "Explicit type names are sometimes clearer in model impls and generated-adjacent GTK code."
+
+[[rules]]
+code = "clippy::struct_field_names"
+classification = "accepted_advisory"
+rationale = "GTK state structs often group similarly named handler fields for lifecycle clarity."
+
+[[rules]]
+code = "clippy::items_after_statements"
+classification = "accepted_advisory"
+rationale = "Local helper items inside long GTK setup functions remain advisory refactor signal."
+
+[[rules]]
+code = "clippy::branches_sharing_code"
+classification = "accepted_advisory"
+rationale = "Shared branch prefixes are reviewed case by case to avoid obscuring editor rendering logic."
+
+[[rules]]
+code = "clippy::struct_excessive_bools"
+classification = "accepted_advisory"
+rationale = "Search option value objects intentionally hold multiple booleans until a domain split is warranted."
+
+[[rules]]
+code = "clippy::similar_names"
+classification = "accepted_advisory"
+rationale = "GTK object graphs often use related local names; review for clarity without blanket blocking."
+
+[[rules]]
+code = "clippy::needless_continue"
+classification = "accepted_advisory"
+rationale = "Loop-control readability is advisory in complex replace/search workflows."
+
+[[rules]]
+code = "clippy::iter_on_single_items"
+classification = "accepted_advisory"
+rationale = "Single-item iterator use is minor style signal and not a blocking policy."
+
+[[rules]]
+code = "clippy::fn_params_excessive_bools"
+classification = "accepted_advisory"
+rationale = "Boolean-heavy constructors are tracked for value-object refactors when behavior changes justify them."
+
+[[rules]]
+code = "clippy::implicit_hasher"
+classification = "accepted_advisory"
+rationale = "HashSet parameters are internal and not currently part of a generic public API surface."
+
+[[rules]]
+code = "clippy::useless_let_if_seq"
+classification = "accepted_advisory"
+rationale = "Expression-style cleanups are welcome locally but too stylistic for a repository-wide gate."
+
+[[rules]]
+code = "clippy::unnecessary_wraps"
+classification = "accepted_advisory"
+rationale = "Some helper return shapes preserve workflow symmetry or future error plumbing."
+
+[[rules]]
+code = "clippy::unnecessary_struct_initialization"
+classification = "accepted_advisory"
+rationale = "Struct literal clarity can be preferable to unit construction in service boundary code."
+
+[[rules]]
+code = "clippy::redundant_pub_crate"
+classification = "accepted_advisory"
+rationale = "Visibility wording in UI modules is reviewed with GTK subclass and test access in mind."
+
+[[rules]]
+code = "clippy::suboptimal_flops"
+classification = "accepted_advisory"
+rationale = "Single drawing-math micro-optimizations stay advisory unless a measured hot path requires them."
+
+[[rules]]
+code = "clippy::format_collect"
+classification = "generated_code_noise"
+path_globs = ["<generated>/**"]
+rationale = "Widget registry code is generated and normalized separately from hand-written lint policy."
+
+[[rules]]
+code = "clippy::duration_suboptimal_units"
+classification = "accepted_advisory"
+rationale = "Duration readability cleanups are low-risk but not a blocking style requirement."
+
+[[rules]]
+code = "clippy::cognitive_complexity"
+classification = "accepted_advisory"
+rationale = "Complex GTK rendering and Markdown projection functions need architectural review before splitting."
+
+[[rules]]
+code = "clippy::expect_used"
+classification = "accepted_advisory"
+rationale = "The broad restriction lint is too noisy for tests/builders; `unwrap_used` remains the blocking panic gate."
+
+[[rules]]
+code = "clippy::indexing_slicing"
+classification = "accepted_advisory"
+rationale = "Indexing and slicing are reviewed in context; current findings are largely tests and parser helpers."
+
+[[rules]]
+code = "clippy::panic"
+classification = "accepted_advisory"
+rationale = "GTK subclass assertions, tests, and harness behavior keep this as advisory inventory."
+
+[[rules]]
+code = "clippy::print_stdout"
+classification = "accepted_advisory"
+rationale = "Current stdout findings are test harness and build-script output; production UI should prefer tracing or notifications."
+
+[[rules]]
+code = "clippy::print_stderr"
+classification = "accepted_advisory"
+rationale = "Current stderr findings are test skip diagnostics; production diagnostics should prefer tracing or notifications."
+
+[[rules]]
+code = "clippy::multiple_crate_versions"
+classification = "resolved_policy_exception"
+max_count = 8
+rationale = "cargo-deny denies duplicate versions by default and carries narrow skip-tree exceptions for foundational transitive crates."
+
+[[rules]]
+code = "unreachable_pub"
+classification = "accepted_advisory"
+rationale = "Public visibility in private modules is reviewed alongside GTK subclass, integration-test, and workflow ownership needs."
+
+[[rules]]
+code = "unused_qualifications"
+classification = "accepted_advisory"
+rationale = "Shorten noisy paths where useful; retain explicit paths for GTK trait disambiguation and macro clarity."
+
+[[rules]]
+code = "unused_crate_dependencies"
+classification = "accepted_advisory"
+rationale = "cargo-hakari, dev, bench, generated, and build dependencies require explicit review rather than a blanket rustc gate."
+
+[[rules]]
+code = "missing_docs"
+classification = "accepted_advisory"
+rationale = "Public documentation coverage is handled by Rust comment/review guidance, not a blanket rustc lint."
+
+[[rules]]
+code = "missing_debug_implementations"
+classification = "accepted_advisory"
+rationale = "GTK object and subclass types rarely benefit from automatic Debug derives."
+
+[[rules]]
+code = "unsafe_code"
+classification = "accepted_advisory"
+rationale = "Unsafe inventory stays visible while existing `undocumented_unsafe_blocks` enforces local safety explanations."

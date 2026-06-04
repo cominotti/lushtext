@@ -14,6 +14,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_FUZZ_VERSION: "0.13.1"
   FUZZ_SMOKE_RUNS: "64"
   FUZZ_SMOKE_SECONDS: "5"
   FUZZ_SMOKE_MAX_LEN: "4096"
@@ -49,7 +50,7 @@ jobs:
           shared-key: fedora-44-fuzz-smoke
 
       - name: Install cargo-fuzz
-        run: cargo install --locked cargo-fuzz
+        run: cargo install --locked cargo-fuzz --version "${CARGO_FUZZ_VERSION}"
 
       - name: Run bounded fuzz smoke
         # `make fuzz-smoke` supplies target, run, time, and max-input bounds.

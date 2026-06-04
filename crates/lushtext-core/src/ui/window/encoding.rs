@@ -10,7 +10,11 @@ use crate::config::keys;
 use crate::model::encoding::{
     DocumentEncoding, FileHealthFindingKind, InvisibleCharactersMode, LineEnding,
 };
-use crate::services::editor_io::{self, LossyEncodingPreview};
+use crate::services::{
+    async_task,
+    editor_io::{self, LossyEncodingPreview},
+};
+use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use gtk4::glib;
@@ -19,10 +23,21 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const RESPONSE_CLOSE: &str = "close";
 const RESPONSE_CONTINUE: &str = "continue";
 const RESPONSE_CANCEL: &str = "cancel";
+
+#[cfg(feature = "test-utils")]
+static LOSSY_ENCODING_ANALYSIS_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Configure an artificial lossy-encoding analysis delay for window tests.
+#[cfg(feature = "test-utils")]
+pub fn set_lossy_encoding_analysis_delay_for_test(delay_ms: u64) {
+    LOSSY_ENCODING_ANALYSIS_DELAY_MS.store(delay_ms, Ordering::Release);
+}
 
 impl super::LushtextWindow {
     /// Present the summary encoding surface for the active tab.
@@ -339,16 +354,62 @@ impl super::LushtextWindow {
             return;
         };
 
-        let buffer = editor.buffer();
-        let text = buffer
-            .text(&buffer.start_iter(), &buffer.end_iter(), true)
-            .to_string();
-        if let Some(preview) = editor_io::analyze_lossy_encoding(&text, encoding) {
-            self.show_lossy_encoding_dialog(&editor, encoding, &preview);
+        if !editor.size_check().syntax_enabled() {
+            // Large-file mode avoids synchronous whole-buffer scans on the GTK
+            // thread; the existing save path will still block lossy writes and
+            // ask for confirmation before bytes are written.
+            self.apply_save_encoding_choice(&editor, encoding);
+            self.publish_status_message(
+                "Lossy conversion will be checked when saving.",
+                MessageKind::Warning,
+            );
             return;
         }
 
-        self.apply_save_encoding_choice(&editor, encoding);
+        let analysis_generation = editor.advance_lossy_analysis_generation();
+        let content_generation = editor.draft_dirty_generation();
+        let buffer = editor.buffer();
+        let editor_weak = editor.downgrade();
+        let window = self.clone();
+        let run_analysis = move |text: String| {
+            let editor_weak = editor_weak.clone();
+            async_task::spawn_blocking_then(
+                window,
+                move || {
+                    delay_lossy_encoding_analysis_for_test();
+                    editor_io::analyze_lossy_encoding(&text, encoding)
+                },
+                move |window, preview| {
+                    let Some(editor) = editor_weak.upgrade() else {
+                        return;
+                    };
+                    if editor.lossy_analysis_generation() != analysis_generation
+                        || editor.draft_dirty_generation() != content_generation
+                        || !window.is_active_editor(&editor)
+                    {
+                        return;
+                    }
+                    if let Some(preview) = preview {
+                        window.show_lossy_encoding_dialog(
+                            &editor,
+                            encoding,
+                            &preview,
+                            analysis_generation,
+                            content_generation,
+                        );
+                        return;
+                    }
+
+                    window.apply_save_encoding_choice(&editor, encoding);
+                },
+            );
+        };
+
+        if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
+            buffer_snapshot::snapshot_buffer_text_async(buffer, run_analysis);
+        } else {
+            run_analysis(buffer_snapshot::snapshot_buffer_text_direct(&buffer));
+        }
     }
 
     /// Apply a confirmed save-encoding choice to one editor.
@@ -367,6 +428,8 @@ impl super::LushtextWindow {
         editor: &LushtextEditorPage,
         encoding: DocumentEncoding,
         preview: &LossyEncodingPreview,
+        analysis_generation: u32,
+        content_generation: u64,
     ) {
         let dialog = libadwaita::AlertDialog::builder()
             .heading("Lossy Encoding Conversion")
@@ -401,6 +464,12 @@ impl super::LushtextWindow {
         let editor_weak = editor.downgrade();
         dialog.connect_response(Some(RESPONSE_CONTINUE), move |_, _| {
             if let (Some(window), Some(editor)) = (window_weak.upgrade(), editor_weak.upgrade()) {
+                if editor.lossy_analysis_generation() != analysis_generation
+                    || editor.draft_dirty_generation() != content_generation
+                    || !window.is_active_editor(&editor)
+                {
+                    return;
+                }
                 window.apply_save_encoding_choice(&editor, encoding);
             }
         });
@@ -501,7 +570,7 @@ impl super::LushtextWindow {
 
         let retry_save = Rc::new(RefCell::new(Some(retry_save)));
         let editor_weak = editor.downgrade();
-        let retry_save_closure = retry_save.clone();
+        let retry_save_closure = retry_save;
         dialog.connect_response(Some(RESPONSE_CONTINUE), move |_, _| {
             if let Some(editor) = editor_weak.upgrade() {
                 editor.arm_lossy_save_once();
@@ -511,6 +580,16 @@ impl super::LushtextWindow {
             }
         });
         dialog.present(Some(self));
+    }
+}
+
+fn delay_lossy_encoding_analysis_for_test() {
+    #[cfg(feature = "test-utils")]
+    {
+        let delay_ms = LOSSY_ENCODING_ANALYSIS_DELAY_MS.load(Ordering::Acquire);
+        if delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
     }
 }
 

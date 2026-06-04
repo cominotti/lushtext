@@ -5,6 +5,7 @@
 //! Each widget follows the two-module GObject pattern: `mod.rs` (public wrapper
 //! type + API) and `imp.rs` (private struct + trait implementations).
 
+pub(crate) mod buffer_snapshot;
 pub mod command_palette;
 pub mod editor_page;
 pub mod info_bar;

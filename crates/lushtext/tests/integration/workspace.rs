@@ -32,7 +32,7 @@ fn test_add_workspace_persists_single_root_and_scope() {
     let restored = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
 
     assert_eq!(restored.workspaces.len(), 1);
-    assert_eq!(restored.workspaces[0].id, workspace_id.clone());
+    assert_eq!(restored.workspaces[0].id, workspace_id);
     assert_eq!(restored.workspaces[0].name, "my project");
     assert_eq!(restored.workspaces[0].root, project_dir);
     assert_eq!(

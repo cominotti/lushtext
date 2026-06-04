@@ -8,6 +8,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
 description = "workspace-hack package, managed by hakari"
+license = "GPL-3.0-or-later"
 publish = false
 
 ### BEGIN HAKARI SECTION

@@ -654,6 +654,48 @@ fn test_file_that_grew_in_memory_uses_chunked_save_snapshot_policy() {
 }
 
 #[test]
+fn test_minimap_long_line_warning_scan_preserves_small_document_markers() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&format!("short\n{}", "x".repeat(121)));
+
+    assert_eq!(page.long_line_warning_count_for_test(), 1);
+}
+
+#[test]
+fn test_minimap_long_line_warning_scan_skips_large_buffer_threshold() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&"x".repeat(2_500_001));
+
+    assert_eq!(
+        page.long_line_warning_count_for_test(),
+        0,
+        "large-buffer minimap warnings should skip the full text copy/scan path"
+    );
+}
+
+#[test]
+fn test_minimap_wrapped_budget_skips_large_buffer_line_scan() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+
+    let page = LushtextEditorPage::new();
+    page.imp().file_size.set(Some(3 * 1024 * 1024));
+    page.buffer().set_text(&"x".repeat(2_500_001));
+    let _window = present_editor_page_with_size(&page, 1000, 520);
+
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.minimap_availability() == MinimapAvailability::TooLarge
+    });
+
+    assert!(!page.is_minimap_visible());
+}
+
+#[test]
 fn test_stale_load_generation_result_does_not_mutate_current_editor_state() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();

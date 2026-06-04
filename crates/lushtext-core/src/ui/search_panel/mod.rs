@@ -15,6 +15,9 @@ mod replace;
 mod results;
 mod runtime;
 
+#[cfg(feature = "test-utils")]
+pub use replace::{set_replace_preview_delay_for_test, set_undo_backup_disk_delay_for_test};
+
 use std::path::{Path, PathBuf};
 
 use crate::model::content_search::{Replacement, SearchQuerySpec};

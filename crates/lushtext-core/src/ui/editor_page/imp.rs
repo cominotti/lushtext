@@ -112,6 +112,12 @@ pub struct MonitorState {
 pub struct DraftState {
     /// Whether the buffer has been modified since the last draft save.
     pub draft_dirty: Cell<bool>,
+    /// Monotonic counter used to reject stale autosave completions.
+    ///
+    /// Every user edit bumps this value. Draft autosave captures the counter with
+    /// the text snapshot and clears `draft_dirty` only if the background write
+    /// succeeds for the same generation.
+    pub dirty_generation: Cell<u64>,
     /// Stable draft identifier for this tab across autosave cycles.
     pub draft_id: RefCell<Option<String>>,
     /// Whether this tab is currently showing draft-restored content.
@@ -153,6 +159,13 @@ pub struct DocumentMetadataState {
     /// One-shot guard that allows the next save to proceed even if the current
     /// encoding conversion is known to be lossy.
     pub allow_lossy_save_once: Cell<bool>,
+    /// Monotonic request counter for async lossy-encoding analysis.
+    ///
+    /// Save-encoding choices can be made from a dialog while the user keeps
+    /// editing or switches tabs. Capturing this counter with the request lets
+    /// the window ignore stale worker results instead of showing an outdated
+    /// lossy-conversion confirmation.
+    pub lossy_analysis_generation: Cell<u32>,
 }
 
 /// File-load lifecycle callbacks that need to survive repeated reloads.

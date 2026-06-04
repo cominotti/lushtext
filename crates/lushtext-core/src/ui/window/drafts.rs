@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::model::draft::{DraftEntry, FileDraftRestoreResolution, PreloadedDraftRestore};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::services::{async_task, draft_service, editor_io, json_store};
+use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
 use anyhow::Result;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -28,14 +29,36 @@ struct DirtyDraftSnapshot {
     original_path: Option<PathBuf>,
 }
 
+/// Main-thread editor token paired with one accepted autosave snapshot.
+struct DirtyDraftCompletion {
+    draft_id: String,
+    dirty_generation: u64,
+    editor: glib::WeakRef<LushtextEditorPage>,
+}
+
+/// Dirty editor state captured before autosave starts copying buffer text.
+struct DirtyDraftCandidate {
+    draft_id: String,
+    original_path: Option<PathBuf>,
+    dirty_generation: u64,
+    editor: glib::WeakRef<LushtextEditorPage>,
+    buffer: sourceview5::Buffer,
+}
+
 /// Result of one autosave batch after background I/O finishes.
 struct DraftAutosaveResult {
     manifest: Option<crate::model::draft::DraftManifest>,
     failed_ids: Vec<String>,
+    succeeded_ids: Vec<String>,
 }
 
 impl super::LushtextWindow {
     /// Write all dirty drafts synchronously during window close.
+    ///
+    /// Regular autosave uses chunked snapshots plus background writes. Close
+    /// handling is the intentional exception: the process is about to exit, so
+    /// this blocks briefly to preserve the last recoverable buffer state before
+    /// GTK tears down the window.
     ///
     /// # Errors
     ///
@@ -132,6 +155,9 @@ impl super::LushtextWindow {
                         "Untitled draft {draft_id} unexpectedly carried a stale file warning"
                     );
                 }
+                PreloadedDraftRestore::SkipOversized => {
+                    Self::show_oversized_draft_skipped(editor);
+                }
             }
             return;
         }
@@ -154,6 +180,9 @@ impl super::LushtextWindow {
                     Ok(None) => {}
                     Err(e) => {
                         tracing::error!("Failed to read draft from disk: {e}");
+                        if e.to_string().contains("too large to restore") {
+                            Self::show_oversized_draft_skipped(&editor);
+                        }
                     }
                 }
             },
@@ -208,6 +237,18 @@ impl super::LushtextWindow {
             style: InlineNotificationStyle::Warning,
             title: "Draft Not Restored".to_string(),
             body: "Unsaved changes from a previous session were not restored because the file changed on disk.".to_string(),
+            primary_button: None,
+            secondary_button: None,
+        });
+    }
+
+    /// Warn that a draft was preserved on disk but skipped because it is too large.
+    fn show_oversized_draft_skipped(editor: &LushtextEditorPage) {
+        editor.set_draft_restored(false);
+        editor.emit_inline_notification(InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Draft Not Restored".to_string(),
+            body: "Unsaved changes from a previous session were not restored automatically because the draft is very large.".to_string(),
             primary_button: None,
             secondary_button: None,
         });
@@ -280,9 +321,31 @@ impl super::LushtextWindow {
             return;
         }
 
+        let dirty_tabs = self.collect_dirty_draft_candidates();
+        if dirty_tabs.is_empty() {
+            return;
+        }
+
+        self.imp().drafts.autosave_inflight.set(true);
+        self.collect_dirty_draft_snapshots(dirty_tabs, Vec::new(), Vec::new());
+    }
+
+    /// Drive one autosave pass without waiting for the production timer.
+    #[cfg(feature = "test-utils")]
+    pub fn autosave_tick_for_test(&self) {
+        self.autosave_tick();
+    }
+
+    /// Whether a draft autosave batch is currently snapshotting or writing.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn draft_autosave_inflight_for_test(&self) -> bool {
+        self.imp().drafts.autosave_inflight.get()
+    }
+
+    fn collect_dirty_draft_candidates(&self) -> Vec<DirtyDraftCandidate> {
         let tab_view = &self.imp().tab_view;
         let mut dirty_tabs = Vec::new();
-
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
             let child = page.child();
@@ -295,26 +358,72 @@ impl super::LushtextWindow {
             let Some(draft_id) = editor.draft_id() else {
                 continue;
             };
-            let buffer = editor.buffer();
-            let text = buffer
-                .text(&buffer.start_iter(), &buffer.end_iter(), true)
-                .to_string();
-            dirty_tabs.push(DirtyDraftSnapshot {
+            dirty_tabs.push(DirtyDraftCandidate {
                 draft_id,
-                text,
                 original_path: editor.file_path(),
+                dirty_generation: editor.draft_dirty_generation(),
+                editor: editor.downgrade(),
+                buffer: editor.buffer(),
             });
-            editor.set_draft_dirty(false);
         }
+        dirty_tabs
+    }
 
+    fn collect_dirty_draft_snapshots(
+        &self,
+        mut candidates: Vec<DirtyDraftCandidate>,
+        snapshots: Vec<DirtyDraftSnapshot>,
+        completions: Vec<DirtyDraftCompletion>,
+    ) {
+        let Some(candidate) = candidates.pop() else {
+            self.write_dirty_draft_snapshots(snapshots, completions);
+            return;
+        };
+
+        let window = self.clone();
+        let finish_snapshot = move |text: String| {
+            let mut snapshots = snapshots;
+            let mut completions = completions;
+            if let Some(editor) = candidate.editor.upgrade()
+                && editor.draft_id().as_deref() == Some(candidate.draft_id.as_str())
+                && editor.is_modified()
+                && !editor.is_evicted()
+            {
+                snapshots.push(DirtyDraftSnapshot {
+                    draft_id: candidate.draft_id.clone(),
+                    text,
+                    original_path: candidate.original_path.clone(),
+                });
+                completions.push(DirtyDraftCompletion {
+                    draft_id: candidate.draft_id,
+                    dirty_generation: candidate.dirty_generation,
+                    editor: candidate.editor,
+                });
+            }
+            window.collect_dirty_draft_snapshots(candidates, snapshots, completions);
+        };
+
+        if buffer_snapshot::buffer_requires_chunked_snapshot(&candidate.buffer) {
+            buffer_snapshot::snapshot_buffer_text_async(candidate.buffer, finish_snapshot);
+        } else {
+            finish_snapshot(buffer_snapshot::snapshot_buffer_text_direct(
+                &candidate.buffer,
+            ));
+        }
+    }
+
+    fn write_dirty_draft_snapshots(
+        &self,
+        dirty_tabs: Vec<DirtyDraftSnapshot>,
+        completions: Vec<DirtyDraftCompletion>,
+    ) {
         if dirty_tabs.is_empty() {
+            self.finish_empty_autosave_batch();
             return;
         }
-
         let manifest = self.imp().drafts.manifest.borrow().clone();
         let data_dir = json_store::data_dir();
         let window_weak = self.downgrade();
-        self.imp().drafts.autosave_inflight.set(true);
 
         async_task::spawn_blocking_then(
             (),
@@ -322,6 +431,7 @@ impl super::LushtextWindow {
                 let now = editor_io::now_epoch_secs();
                 let mut manifest_updates = Vec::new();
                 let mut failed_ids = Vec::new();
+                let mut succeeded_ids = Vec::new();
 
                 for draft in &dirty_tabs {
                     if let Err(e) =
@@ -341,6 +451,7 @@ impl super::LushtextWindow {
                         original_mtime_secs: mtime,
                         saved_at_secs: now,
                     });
+                    succeeded_ids.push(draft.draft_id.clone());
                 }
 
                 let manifest = if manifest_updates.is_empty() {
@@ -356,6 +467,7 @@ impl super::LushtextWindow {
                             tracing::warn!("Failed to save draft manifest: {e}");
                             failed_ids
                                 .extend(dirty_tabs.iter().map(|draft| draft.draft_id.clone()));
+                            succeeded_ids.clear();
                             None
                         }
                     }
@@ -364,6 +476,7 @@ impl super::LushtextWindow {
                 DraftAutosaveResult {
                     manifest,
                     failed_ids,
+                    succeeded_ids,
                 }
             },
             move |(), result| {
@@ -386,6 +499,19 @@ impl super::LushtextWindow {
                             }
                         }
                     }
+                    for completion in completions {
+                        if !result.succeeded_ids.contains(&completion.draft_id) {
+                            continue;
+                        }
+                        let Some(editor) = completion.editor.upgrade() else {
+                            continue;
+                        };
+                        if editor.draft_id().as_deref() == Some(completion.draft_id.as_str())
+                            && editor.draft_dirty_generation() == completion.dirty_generation
+                        {
+                            editor.set_draft_dirty(false);
+                        }
+                    }
                     let rerun = window.imp().drafts.autosave_pending.get();
                     window.imp().drafts.autosave_pending.set(false);
                     if rerun {
@@ -394,6 +520,15 @@ impl super::LushtextWindow {
                 }
             },
         );
+    }
+
+    fn finish_empty_autosave_batch(&self) {
+        self.imp().drafts.autosave_inflight.set(false);
+        let rerun = self.imp().drafts.autosave_pending.get();
+        self.imp().drafts.autosave_pending.set(false);
+        if rerun {
+            self.autosave_tick();
+        }
     }
 
     /// Remember that a fresh autosave pass is needed after the active batch.
@@ -413,6 +548,9 @@ impl super::LushtextWindow {
                 }
                 PreloadedDraftRestore::SkipStaleFile => {
                     Self::show_stale_draft_skipped(editor);
+                }
+                PreloadedDraftRestore::SkipOversized => {
+                    Self::show_oversized_draft_skipped(editor);
                 }
             }
             return;
@@ -451,6 +589,9 @@ impl super::LushtextWindow {
                         if let Some(window) = window_weak.upgrade() {
                             window.delete_draft_by_id(&draft_id);
                         }
+                    }
+                    Ok(FileDraftRestoreResolution::SkipOversized) => {
+                        Self::show_oversized_draft_skipped(&editor);
                     }
                     Ok(
                         FileDraftRestoreResolution::SkipUnavailable

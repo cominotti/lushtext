@@ -18,6 +18,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_MUTANTS_VERSION: "27.0.0"
+  CARGO_NEXTEST_VERSION: "0.9.137"
   MUTANTS_TIMEOUT: "300"
 
 jobs:
@@ -73,10 +75,10 @@ jobs:
           shared-key: fedora-44-mutants
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+        run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Install cargo-mutants
-        run: cargo install --locked cargo-mutants --version 27.0.0
+        run: cargo install --locked cargo-mutants --version "${CARGO_MUTANTS_VERSION}"
 
       - name: Prove non-widget baseline
         # Do not enable `lushtext-core/property-tests` here. Generated property
@@ -124,7 +126,7 @@ jobs:
           shared-key: fedora-44-mutants
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+        run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Prove non-widget baseline
         # Do not enable `lushtext-core/property-tests` here. Generated property
@@ -167,10 +169,10 @@ jobs:
           shared-key: fedora-44-mutants
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+        run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Install cargo-mutants
-        run: cargo install --locked cargo-mutants --version 27.0.0
+        run: cargo install --locked cargo-mutants --version "${CARGO_MUTANTS_VERSION}"
 
       - name: Run full-scope mutation shard
         run: |

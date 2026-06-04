@@ -24,8 +24,8 @@ owns Mutter, D-Bus, renderer settings, retries, and warning filtering.
 Install the tools once:
 
 ```sh
-cargo install --locked cargo-mutants
-cargo install cargo-nextest --locked
+cargo install --locked cargo-mutants --version 27.0.0
+curl -LsSf "https://get.nexte.st/0.9.137/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 ```
 
 The wrapper checks for both binaries before running.

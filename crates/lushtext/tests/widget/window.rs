@@ -46,7 +46,8 @@ use lushtext_core::ui::editor_page::{
 use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::window::{
-    LushtextWindow, PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test,
+    LushtextWindow, PrintDocumentSnapshot, PrintOutcome, set_canonical_refresh_delay_for_test,
+    set_lossy_encoding_analysis_delay_for_test, with_print_runner_for_test,
 };
 use sourceview5::prelude::*;
 use std::cell::RefCell;
@@ -56,6 +57,22 @@ use std::time::{Duration, Instant};
 
 fn test_window() -> LushtextWindow {
     crate::common::test_window()
+}
+
+struct CanonicalRefreshDelayReset;
+
+impl Drop for CanonicalRefreshDelayReset {
+    fn drop(&mut self) {
+        set_canonical_refresh_delay_for_test(0);
+    }
+}
+
+struct LossyEncodingAnalysisDelayReset;
+
+impl Drop for LossyEncodingAnalysisDelayReset {
+    fn drop(&mut self) {
+        set_lossy_encoding_analysis_delay_for_test(0);
+    }
 }
 
 /// Return whether the message area has any severity or animation-restart pulse state.
@@ -3674,6 +3691,98 @@ fn test_draft_autosave_marks_pending_when_editing_during_inflight_batch() {
 }
 
 #[test]
+fn test_draft_autosave_failure_keeps_editor_retry_eligible() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.buffer().set_text("retryable draft\n");
+    editor.buffer().set_modified(true);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    let drafts_dir = draft_service::drafts_dir(&data_dir);
+    let manifest_path = drafts_dir.join("manifest.json");
+    let _ = draft_service::delete_draft_file(&data_dir, &draft_id);
+    if fs_metadata::path_status(&manifest_path)
+        .expect("manifest path status")
+        .is_present()
+    {
+        if fs_metadata::path_status(&manifest_path)
+            .expect("manifest path status")
+            .is_directory()
+        {
+            fixture::remove_dir_all(&manifest_path);
+        } else {
+            fixture::remove_file(&manifest_path);
+        }
+    }
+    fixture::create_dir_all(&manifest_path);
+
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(3), || {
+        !window.draft_autosave_inflight_for_test()
+    });
+
+    assert!(
+        editor.draft_dirty(),
+        "failed autosave manifest persistence must keep the editor eligible for retry",
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read draft"),
+        Some("retryable draft\n".to_string())
+    );
+
+    fixture::remove_dir_all(&manifest_path);
+    draft_service::delete_draft_file(&data_dir, &draft_id).expect("delete draft file");
+}
+
+#[test]
+fn test_draft_autosave_large_dirty_tabs_snapshot_across_main_loop_chunks() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let first = active_editor(&window);
+    let large_text = "x".repeat(2_500_001);
+    first.buffer().set_text(&large_text);
+    first.buffer().set_modified(true);
+
+    window.new_tab();
+    flush_events();
+    let second = active_editor(&window);
+    second.buffer().set_text(&large_text);
+    second.buffer().set_modified(true);
+
+    let first_id = first.draft_id().expect("first draft id");
+    let second_id = second.draft_id().expect("second draft id");
+    let data_dir = json_store::data_dir();
+    let _ = draft_service::delete_draft_file(&data_dir, &first_id);
+    let _ = draft_service::delete_draft_file(&data_dir, &second_id);
+
+    window.autosave_tick_for_test();
+
+    assert!(window.draft_autosave_inflight_for_test());
+    assert!(first.draft_dirty());
+    assert!(second.draft_dirty());
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_autosave_inflight_for_test()
+            && draft_service::read_draft(&data_dir, &first_id)
+                .expect("read first draft")
+                .is_some_and(|content| content.len() == large_text.len())
+            && draft_service::read_draft(&data_dir, &second_id)
+                .expect("read second draft")
+                .is_some_and(|content| content.len() == large_text.len())
+    });
+
+    assert!(!first.draft_dirty());
+    assert!(!second.draft_dirty());
+
+    draft_service::delete_draft_file(&data_dir, &first_id).expect("delete first draft");
+    draft_service::delete_draft_file(&data_dir, &second_id).expect("delete second draft");
+}
+
+#[test]
 fn test_properties_pane_collapses_before_workspace_pane() {
     ensure_gtk_init();
 
@@ -4536,6 +4645,7 @@ fn test_complete_save_as_failure_keeps_existing_editor_identity() {
     window.complete_save_as(
         &editor,
         None,
+        None,
         Some(old_draft_id.as_str()),
         &path,
         Err(SaveError::WriteTemp {
@@ -4576,7 +4686,7 @@ fn test_complete_save_as_success_updates_editor_identity_and_cleans_old_draft() 
     let path = dir.path().join("saved.txt");
     fixture::write_text(&path, "saved content");
 
-    window.complete_save_as(&editor, None, Some(old_draft_id.as_str()), &path, Ok(()));
+    window.complete_save_as(&editor, None, None, Some(old_draft_id.as_str()), &path, Ok(()));
 
     assert_eq!(editor.file_path(), Some(path.clone()));
     assert_eq!(editor.title(), "saved.txt");
@@ -4684,6 +4794,82 @@ fn test_file_chooser_save_as_existing_symlink_updates_target_without_replacing_l
             .contains(&fs_metadata::canonical_path(&target).expect("canonical target")),
         "Save As should register the canonical target for duplicate detection"
     );
+}
+
+#[test]
+fn test_save_as_stale_canonical_refresh_does_not_reinsert_previous_destination() {
+    ensure_gtk_init();
+    let _reset = CanonicalRefreshDelayReset;
+    set_canonical_refresh_delay_for_test(300);
+    let dir = tempfile::tempdir().expect("save-as canonical tempdir");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("save as canonical refresh\n");
+    editor.buffer().set_modified(true);
+
+    window.select_save_as_destination_for_test(&first_path);
+    wait_until(Duration::from_secs(2), || {
+        editor.file_path() == Some(first_path.clone()) && !editor.is_modified()
+    });
+    let first_canonical = fs_metadata::canonical_path(&first_path).expect("canonical first path");
+
+    window.select_save_as_destination_for_test(&second_path);
+    wait_until(Duration::from_secs(2), || {
+        editor.file_path() == Some(second_path.clone()) && !editor.is_modified()
+    });
+    let second_canonical =
+        fs_metadata::canonical_path(&second_path).expect("canonical second path");
+
+    flush_after_delay(Duration::from_millis(450));
+
+    let open_paths = window.imp().open_paths.borrow();
+    assert!(!open_paths.contains(&first_path));
+    assert!(!open_paths.contains(&first_canonical));
+    assert!(open_paths.contains(&second_path));
+    assert!(open_paths.contains(&second_canonical));
+}
+
+#[test]
+fn test_save_as_canonical_refresh_after_tab_close_does_not_reopen_path_key() {
+    ensure_gtk_init();
+    let _reset = CanonicalRefreshDelayReset;
+    set_canonical_refresh_delay_for_test(300);
+    let dir = tempfile::tempdir().expect("save-as close canonical tempdir");
+    let path = dir.path().join("closed-after-save.txt");
+
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("close before canonical refresh\n");
+    editor.buffer().set_modified(true);
+
+    window.select_save_as_destination_for_test(&path);
+    wait_until(Duration::from_secs(2), || {
+        editor.file_path() == Some(path.clone()) && !editor.is_modified()
+    });
+    let canonical = fs_metadata::canonical_path(&path).expect("canonical saved path");
+
+    let page = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("saved tab selected");
+    window.imp().tab_view.close_page(&page);
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+
+    flush_after_delay(Duration::from_millis(450));
+
+    let open_paths = window.imp().open_paths.borrow();
+    assert!(!open_paths.contains(&path));
+    assert!(!open_paths.contains(&canonical));
 }
 
 #[test]
@@ -5447,6 +5633,9 @@ fn test_status_bar_encoding_label_stays_short_after_save_policy_change() {
     let dialog = visible_alert_dialog(&window).expect("save encoding dialog visible");
     click_alert_extra_button(&dialog, "Windows-1252");
 
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).save_encoding() == DocumentEncoding::Windows1252
+    });
     assert_eq!(
         active_editor(&window).save_encoding(),
         DocumentEncoding::Windows1252
@@ -5501,6 +5690,50 @@ fn test_save_encoding_choice_surfaces_lossy_confirmation() {
         active_editor(&window).save_encoding(),
         DocumentEncoding::Utf8
     );
+}
+
+#[test]
+fn test_stale_lossy_encoding_analysis_result_is_rejected_after_buffer_change() {
+    ensure_gtk_init();
+    let _reset = LossyEncodingAnalysisDelayReset;
+    set_lossy_encoding_analysis_delay_for_test(300);
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("stale-lossy.txt");
+    fixture::write_text(&path, "hello");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("emoji 😀");
+    editor.buffer().set_modified(true);
+
+    activate_action(&window, "show-encoding-controls");
+    let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
+    click_alert_extra_button(&dialog, "Save Using Encoding…");
+
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Save Using Encoding"))
+    });
+    let dialog = visible_alert_dialog(&window).expect("save encoding dialog visible");
+    click_alert_extra_button(&dialog, "Windows-1252");
+
+    editor.buffer().set_text("plain ascii now");
+    editor.buffer().set_modified(true);
+    flush_after_delay(Duration::from_millis(450));
+
+    assert!(
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_none_or(|heading| !heading.contains("Lossy Encoding Conversion")),
+        "stale lossy analysis must not show a confirmation for old buffer content",
+    );
+    assert_eq!(active_editor(&window).save_encoding(), DocumentEncoding::Utf8);
 }
 
 #[test]
@@ -6477,6 +6710,28 @@ fn test_primary_menu_markdown_preview_renders_active_markdown_buffer() {
     assert!(
         !rendered.contains("# Menu Heading"),
         "preview should hide raw heading markers"
+    );
+}
+
+#[test]
+fn test_primary_menu_markdown_preview_pauses_large_markdown_buffer() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("large markdown preview tempdir");
+    let editor = active_editor(&window);
+    editor.set_file_path(&dir.path().join("large-preview.md"));
+    editor.buffer().set_text(&"x".repeat(2_500_001));
+
+    activate_primary_menu_item(&window, "Markdown Preview");
+
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get() && !window.imp().markdown_preview.is_showing_content()
+    });
+    assert_eq!(
+        window.imp().markdown_preview.placeholder_description_for_test(),
+        Some("Markdown preview paused for this large document".to_string())
     );
 }
 
@@ -7606,7 +7861,7 @@ fn test_local_history_startup_restore_uses_restored_draft_as_baseline() {
         &data_dir,
         &DraftManifest {
             drafts: vec![DraftEntry {
-                draft_id: draft_id.clone(),
+                draft_id,
                 original_path: Some(file_path.clone()),
                 original_mtime_secs: Some(current_mtime),
                 saved_at_secs: 1,
@@ -7694,7 +7949,7 @@ fn test_startup_restore_applies_matching_file_backed_draft() {
         &data_dir,
         &DraftManifest {
             drafts: vec![DraftEntry {
-                draft_id: draft_id.clone(),
+                draft_id,
                 original_path: Some(file_path.clone()),
                 original_mtime_secs: Some(current_mtime),
                 saved_at_secs: 1,

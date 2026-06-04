@@ -9,7 +9,7 @@
 
 use super::item::SearchResultItem;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
-use crate::model::content_search::{Replacement, SavedSearch, SearchHistoryEntry};
+use crate::model::content_search::{Replacement, SavedSearch, SearchHistoryEntry, SearchMatch};
 use crate::services::content_search::ReplaceUndoBackup;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
@@ -45,6 +45,11 @@ pub struct SearchRuntimeState {
     pub root_store: gio::ListStore,
     /// Per-file child stores keyed by absolute file path.
     pub file_groups: RefCell<HashMap<PathBuf, SearchFileGroup>>,
+    /// Plain match data in arrival order for non-rendering workflows.
+    ///
+    /// Preview generation must not walk GTK tree models on the action path;
+    /// this Rust snapshot lets the worker handoff clone service data directly.
+    pub search_matches: RefCell<Vec<SearchMatch>>,
     /// Cancel token for the currently running worker thread, if any.
     pub cancel_token: RefCell<Option<Arc<AtomicBool>>>,
     /// Generation counter for debouncing search-entry input.
@@ -70,6 +75,7 @@ impl Default for SearchRuntimeState {
         Self {
             root_store: gio::ListStore::new::<SearchResultItem>(),
             file_groups: RefCell::new(HashMap::new()),
+            search_matches: RefCell::new(Vec::new()),
             cancel_token: RefCell::new(None),
             search_generation: Cell::new(0),
             glob_generation: Cell::new(0),
@@ -105,6 +111,10 @@ pub struct SearchPreviewState {
     pub undo_backup: RefCell<Option<ReplaceUndoBackup>>,
     /// Generation counter invalidating stale backup loads and deletes.
     pub undo_backup_generation: Arc<AtomicU32>,
+    /// Generation counter invalidating stale async preview generation results.
+    pub preview_generation: Cell<u32>,
+    /// Whether pure replacement preview construction is currently running.
+    pub preview_pending: Cell<bool>,
     /// Replacement previews currently displayed in preview mode.
     pub preview_replacements: RefCell<Vec<Replacement>>,
     /// Indices of preview rows the user chose to apply.
@@ -482,6 +492,7 @@ impl LushtextSearchPanel {
             let Some(panel) = panel_weak.upgrade() else {
                 return;
             };
+            panel.invalidate_replace_preview_request();
             panel.update_replace_button_sensitivity();
         });
 
@@ -535,15 +546,19 @@ impl LushtextSearchPanel {
             let generation = imp.runtime.search_generation.get().wrapping_add(1);
             imp.runtime.search_generation.set(generation);
 
+            let spec = panel.current_query_spec();
+            if spec.query.is_empty() {
+                panel.start_search(&spec);
+                return;
+            }
+
             schedule_panel_debounce(
                 &panel,
                 generation,
                 |panel| panel.imp().runtime.search_generation.get(),
                 move |panel| {
                     let spec = panel.current_query_spec();
-                    if !spec.query.is_empty() {
-                        panel.start_search(&spec);
-                    }
+                    panel.start_search(&spec);
                 },
             );
         });

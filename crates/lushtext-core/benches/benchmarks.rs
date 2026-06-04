@@ -15,7 +15,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tempfile::TempDir;
 
-use lushtext_core::model::content_search::{ContentSearchOptions, Replacement};
+use lushtext_core::model::content_search::{
+    ContentSearchOptions, Replacement, SearchMatch, generate_replacement_preview,
+};
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::encoding::{DocumentEncoding, LineEnding};
 use lushtext_core::model::palette::IndexedFile;
@@ -249,6 +251,18 @@ fn make_replace_all_fixture(
     }
 
     (dir, replacements)
+}
+
+/// Create in-memory search matches for Replace preview generation benchmarks.
+fn make_replace_preview_matches(match_count: usize) -> Vec<SearchMatch> {
+    (0..match_count)
+        .map(|index| SearchMatch {
+            path: PathBuf::from(format!("/synthetic/preview/file_{}.rs", index % 250)),
+            line_number: u64::try_from(index + 1).expect("benchmark match index fits in u64"),
+            line_content: format!("let needle_{index} = needle;"),
+            match_range: 4..10,
+        })
+        .collect()
 }
 
 /// Create one file near the Replace All accepted-size cap with a single match.
@@ -748,6 +762,33 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_replace_preview_generation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("replace_preview_generation");
+    group.sample_size(10);
+
+    for &match_count in &[1_000usize, 10_000usize] {
+        group.bench_with_input(
+            BenchmarkId::new("literal_matches", match_count),
+            &match_count,
+            |b, &match_count| {
+                let matches = make_replace_preview_matches(match_count);
+                let options = ContentSearchOptions::default();
+                b.iter(|| {
+                    let previews = generate_replacement_preview(
+                        black_box(&matches),
+                        black_box("needle"),
+                        black_box("thread"),
+                        black_box(&options),
+                    );
+                    black_box(previews.len());
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 fn bench_tree_population(c: &mut Criterion) {
     let mut group = c.benchmark_group("tree_population");
     group.sample_size(20);
@@ -1201,6 +1242,7 @@ criterion_group!(
     bench_json_persistence,
     bench_utf8_validation,
     bench_editor_file_io,
+    bench_replace_preview_generation,
     bench_replace_undo_workflows,
     bench_tree_population,
     bench_file_size_classify,

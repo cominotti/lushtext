@@ -283,7 +283,7 @@ fn capture_snapshot_for_identity_locked(
         return Ok(LocalHistoryCaptureOutcome::SkippedDuplicate);
     }
 
-    let meta = LocalHistorySnapshotMeta::new(origin, normalized.len() as u64, content_hash.clone());
+    let meta = LocalHistorySnapshotMeta::new(origin, normalized.len() as u64, content_hash);
     let doc_dir = document_dir(data_dir, &identity);
     fs_write::create_dir_all_durable(&doc_dir)
         .with_context(|| format!("failed to create {}", doc_dir.display()))?;

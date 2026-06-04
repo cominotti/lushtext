@@ -143,6 +143,27 @@ impl LushtextEditorPage {
         self.set_document_encoding_state(state);
     }
 
+    /// Advance the per-editor lossy-encoding request generation.
+    pub(crate) fn advance_lossy_analysis_generation(&self) -> u32 {
+        let generation = self
+            .imp()
+            .document_metadata
+            .lossy_analysis_generation
+            .get()
+            .wrapping_add(1);
+        self.imp()
+            .document_metadata
+            .lossy_analysis_generation
+            .set(generation);
+        generation
+    }
+
+    /// Current generation for lossy-encoding analysis requests.
+    #[must_use]
+    pub(crate) fn lossy_analysis_generation(&self) -> u32 {
+        self.imp().document_metadata.lossy_analysis_generation.get()
+    }
+
     /// Current line-ending state detected during the last load.
     #[must_use]
     pub fn detected_line_ending(&self) -> LineEnding {
@@ -333,7 +354,18 @@ impl LushtextEditorPage {
     }
 
     pub fn set_draft_dirty(&self, dirty: bool) {
+        if dirty {
+            self.imp()
+                .draft
+                .dirty_generation
+                .set(self.imp().draft.dirty_generation.get().wrapping_add(1));
+        }
         self.imp().draft.draft_dirty.set(dirty);
+    }
+
+    #[must_use]
+    pub(crate) fn draft_dirty_generation(&self) -> u64 {
+        self.imp().draft.dirty_generation.get()
     }
 
     #[must_use]

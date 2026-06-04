@@ -323,7 +323,7 @@ fn test_open_activation_keeps_explicit_file_active_after_session_restore() {
         &json_store::data_dir(),
         &SessionData {
             tabs: vec![SessionTab {
-                path: Some(restored.clone()),
+                path: Some(restored),
                 draft_id: None,
                 cursor_line: 0,
                 cursor_col: 0,

@@ -300,7 +300,7 @@ impl LushtextWindow {
         }
         dialog.set_extra_child(Some(&entry));
 
-        let editor = editor.clone();
+        let editor = editor;
         let window = self.clone();
         dialog.choose(Some(self), gio::Cancellable::NONE, move |response| {
             if response != RESPONSE_SAVE {
@@ -428,8 +428,10 @@ impl LushtextWindow {
     pub(super) fn show_notes_dialog(&self) {
         let workspaces_file = self.imp().sidebar.workspaces_file();
         let scope = workspaces_file.current_scope();
+        // Snapshot the current scope before background I/O; the sidebar can
+        // change while notes are being listed.
         let visible_workspaces: Vec<WorkspaceConfig> = match &scope {
-            WorkspaceScope::All => workspaces_file.workspaces.clone(),
+            WorkspaceScope::All => workspaces_file.workspaces,
             WorkspaceScope::Workspace(workspace_id) => workspaces_file
                 .workspaces
                 .into_iter()
@@ -492,7 +494,7 @@ impl LushtextWindow {
     fn open_document_note_for_path_with_roots(&self, path: &Path, workspace_roots: Vec<PathBuf>) {
         let path = path.to_path_buf();
         let path_for_load = path.clone();
-        let path_for_dialog = path.clone();
+        let path_for_dialog = path;
         let window_weak = self.downgrade();
         async_task::spawn_blocking_then(
             (),
@@ -531,7 +533,7 @@ impl LushtextWindow {
         let workspace_name = workspace_name.to_string();
         let root = root.to_path_buf();
         let root_for_load = root.clone();
-        let root_for_dialog = root.clone();
+        let root_for_dialog = root;
         let window_weak = self.downgrade();
         async_task::spawn_blocking_then(
             (),
@@ -619,7 +621,7 @@ impl LushtextWindow {
             if response == RESPONSE_CLEAR {
                 let path_for_delete = path.clone();
                 async_task::spawn_blocking_then(
-                    window.clone(),
+                    window,
                     move || {
                         let data_dir = json_store::data_dir();
                         document_note_service::delete_for_path(&data_dir, &path_for_delete)
@@ -660,7 +662,7 @@ impl LushtextWindow {
 
                 let path_for_save = path.clone();
                 async_task::spawn_blocking_then(
-                    window.clone(),
+                    window,
                     move || {
                         let data_dir = json_store::data_dir();
                         document_note_service::save_for_path(&data_dir, &path_for_save, &note)
@@ -743,7 +745,7 @@ impl LushtextWindow {
             if response == RESPONSE_CLEAR {
                 let root_for_delete = root.clone();
                 async_task::spawn_blocking_then(
-                    window.clone(),
+                    window,
                     move || {
                         let data_dir = json_store::data_dir();
                         workspace_note_service::delete_for_root(&data_dir, &root_for_delete)
@@ -784,7 +786,7 @@ impl LushtextWindow {
 
                 let root_for_save = root.clone();
                 async_task::spawn_blocking_then(
-                    window.clone(),
+                    window,
                     move || {
                         let data_dir = json_store::data_dir();
                         workspace_note_service::save_for_root(&data_dir, &root_for_save, &note)
@@ -1045,21 +1047,43 @@ impl LushtextWindow {
         let bookmarks = Rc::new(bookmarks);
         rebuild_bookmark_rows(self, &dialog, &rows_box, &bookmarks, "");
 
-        let window = self.clone();
+        let window_weak = self.downgrade();
         let dialog_weak = dialog.downgrade();
-        let rows_box = rows_box.clone();
-        let bookmarks_for_search = bookmarks.clone();
+        let rows_box_weak = rows_box.downgrade();
+        let bookmarks_for_search = bookmarks;
+        let search_generation = Rc::new(Cell::new(0u32));
         search_entry.connect_search_changed(move |entry| {
-            let Some(dialog) = dialog_weak.upgrade() else {
+            let generation = search_generation.get().wrapping_add(1);
+            search_generation.set(generation);
+            let query = entry.text().to_string();
+            if query.is_empty() {
+                if let (Some(window), Some(dialog), Some(rows_box)) = (
+                    window_weak.upgrade(),
+                    dialog_weak.upgrade(),
+                    rows_box_weak.upgrade(),
+                ) {
+                    rebuild_bookmark_rows(&window, &dialog, &rows_box, &bookmarks_for_search, "");
+                }
                 return;
-            };
-            rebuild_bookmark_rows(
-                &window,
-                &dialog,
-                &rows_box,
-                &bookmarks_for_search,
-                entry.text().as_str(),
-            );
+            }
+            let window_weak = window_weak.clone();
+            let dialog_weak = dialog_weak.clone();
+            let rows_box_weak = rows_box_weak.clone();
+            let bookmarks_for_search = bookmarks_for_search.clone();
+            let search_generation = search_generation.clone();
+            glib::timeout_add_local_once(Duration::from_millis(150), move || {
+                if search_generation.get() != generation {
+                    return;
+                }
+                let (Some(window), Some(dialog), Some(rows_box)) = (
+                    window_weak.upgrade(),
+                    dialog_weak.upgrade(),
+                    rows_box_weak.upgrade(),
+                ) else {
+                    return;
+                };
+                rebuild_bookmark_rows(&window, &dialog, &rows_box, &bookmarks_for_search, &query);
+            });
         });
 
         dialog.present(Some(self));
@@ -1330,12 +1354,17 @@ fn build_note_editor_surface(
     let render_context_clone = render_context.clone();
     stack.connect_notify_local(Some("visible-child-name"), move |stack, _| {
         if stack.visible_child_name().as_deref() == Some("render") {
-            render_note_preview(
-                &preview_clone,
-                &buffer,
-                &render_context_clone,
-                empty_preview_description,
-            );
+            let preview = preview_clone.clone();
+            let buffer = buffer.clone();
+            let render_context = render_context_clone.clone();
+            glib::idle_add_local_once(move || {
+                render_note_preview(
+                    &preview,
+                    &buffer,
+                    &render_context,
+                    empty_preview_description,
+                );
+            });
         }
     });
 
@@ -1763,6 +1792,10 @@ impl NotesBrowserState {
 fn schedule_notes_browser_search(state: &Rc<NotesBrowserState>, query: String) {
     let generation = state.search_generation.get().wrapping_add(1);
     state.search_generation.set(generation);
+    if query.is_empty() {
+        rebuild_notes_browser_sidebar(state, "");
+        return;
+    }
     let state = Rc::downgrade(state);
     glib::timeout_add_local_once(Duration::from_millis(150), move || {
         let Some(state) = state.upgrade() else {
@@ -2063,41 +2096,61 @@ fn rebuild_bookmark_rows(
 ) {
     clear_box_children(rows_box);
 
-    let filtered: Vec<_> = bookmarks
+    let mut rendered = 0usize;
+    let mut truncated = false;
+
+    for bookmark in bookmarks
         .iter()
         .filter(|bookmark| bookmark_matches_query(bookmark, query))
-        .cloned()
-        .collect();
-    if filtered.is_empty() {
+    {
+        if rendered >= NOTES_BROWSER_RENDER_LIMIT {
+            truncated = true;
+            break;
+        }
+        rendered = rendered.saturating_add(1);
+        append_bookmark_browser_row(window, dialog, rows_box, bookmark.clone());
+    }
+
+    if rendered == 0 {
         rows_box.append(&empty_browser_label("No bookmarks match that search"));
-        return;
     }
 
-    for bookmark in filtered {
-        let button = gtk4::Button::new();
-        button.add_css_class("flat");
-        button.set_hexpand(true);
-        button.set_halign(gtk4::Align::Fill);
-        button.set_child(Some(&browser_row_content(
-            &bookmark.display_label(),
-            &format!(
-                "{} · Line {}",
-                bookmark.path.display(),
-                bookmark.line.saturating_add(1)
-            ),
-            None,
-        )));
-
-        let window = window.clone();
-        let dialog_weak = dialog.downgrade();
-        button.connect_clicked(move |_| {
-            open_editor_at_line(&window, &bookmark.path, bookmark.line.saturating_add(1));
-            if let Some(dialog) = dialog_weak.upgrade() {
-                dialog.close();
-            }
-        });
-        rows_box.append(&button);
+    if truncated {
+        rows_box.append(&empty_browser_label(
+            "Showing first 500 bookmark matches. Refine the search to narrow results.",
+        ));
     }
+}
+
+fn append_bookmark_browser_row(
+    window: &LushtextWindow,
+    dialog: &libadwaita::Dialog,
+    rows_box: &gtk4::Box,
+    bookmark: bookmark_service::WorkspaceBookmark,
+) {
+    let button = gtk4::Button::new();
+    button.add_css_class("flat");
+    button.set_hexpand(true);
+    button.set_halign(gtk4::Align::Fill);
+    button.set_child(Some(&browser_row_content(
+        &bookmark.display_label(),
+        &format!(
+            "{} · Line {}",
+            bookmark.path.display(),
+            bookmark.line.saturating_add(1)
+        ),
+        None,
+    )));
+
+    let window = window.clone();
+    let dialog_weak = dialog.downgrade();
+    button.connect_clicked(move |_| {
+        open_editor_at_line(&window, &bookmark.path, bookmark.line.saturating_add(1));
+        if let Some(dialog) = dialog_weak.upgrade() {
+            dialog.close();
+        }
+    });
+    rows_box.append(&button);
 }
 
 /// Build the content widget used inside bookmark browser rows.

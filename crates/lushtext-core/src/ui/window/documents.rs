@@ -3,6 +3,8 @@
 //! Document lifecycle and window chrome helpers for the main window.
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
@@ -17,6 +19,15 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
+
+#[cfg(feature = "test-utils")]
+static CANONICAL_REFRESH_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Configure an artificial canonical-refresh delay for window identity tests.
+#[cfg(feature = "test-utils")]
+pub fn set_canonical_refresh_delay_for_test(delay_ms: u64) {
+    CANONICAL_REFRESH_DELAY_MS.store(delay_ms, Ordering::Release);
+}
 
 /// Return the key used for duplicate-tab bookkeeping.
 ///
@@ -82,7 +93,7 @@ impl LushtextWindow {
         let window_weak = self.downgrade();
         let editor_weak = editor_page.downgrade();
         let page_weak = page.downgrade();
-        let key_for_failure = key.clone();
+        let key_for_failure = key;
         let path_for_failure = path.to_path_buf();
         *editor_page.imp().load.load_failed_callback.borrow_mut() = Some(Box::new(move |error| {
             let Some(window) = window_weak.upgrade() else {
@@ -100,6 +111,8 @@ impl LushtextWindow {
                     .remove(&key_for_failure);
                 return;
             };
+            // A failed load can arrive after the user typed into the tab; keep
+            // that buffer instead of demoting the page and rewriting its draft identity.
             if editor.is_modified() {
                 return;
             }
@@ -583,6 +596,18 @@ impl LushtextWindow {
             .is_some_and(|active| active.as_ptr() == editor.as_ptr())
     }
 
+    /// Whether `editor` is still mounted as an open tab in this window.
+    pub(crate) fn contains_editor(&self, editor: &LushtextEditorPage) -> bool {
+        let tab_view = &self.imp().tab_view;
+        (0..tab_view.n_pages()).any(|index| {
+            tab_view
+                .nth_page(index)
+                .child()
+                .downcast_ref::<LushtextEditorPage>()
+                .is_some_and(|candidate| candidate.as_ptr() == editor.as_ptr())
+        })
+    }
+
     /// Update the file path and title for any tab matching `old_path`.
     /// For directory renames, rewrites paths of all files inside the directory.
     pub fn update_tab_path(&self, old_path: &Path, new_path: &Path) {
@@ -608,20 +633,51 @@ impl LushtextWindow {
                     paths.remove(&canonical_path);
                 }
                 paths.insert(open_path_key(&updated));
-                if let Ok(canonical_updated) = fs_metadata::canonical_path(&updated) {
-                    paths.insert(canonical_updated.clone());
-                    drop(paths);
-                    editor.set_file_path_with_canonical(&updated, Some(canonical_updated));
-                } else {
-                    drop(paths);
-                    editor.set_file_path(&updated);
-                }
+                drop(paths);
+                editor.set_file_path(&updated);
+                self.refresh_canonical_path_after_rename(editor, &updated);
                 page.set_title(&editor.title());
             }
         }
         self.refresh_header_bar();
         self.refresh_command_palette_sources();
         self.refresh_status_bar();
+    }
+
+    pub(super) fn refresh_canonical_path_after_rename(
+        &self,
+        editor: &LushtextEditorPage,
+        updated: &Path,
+    ) {
+        let updated_for_probe = updated.to_path_buf();
+        let updated_for_apply = updated.to_path_buf();
+        let editor_weak = editor.downgrade();
+        async_task::spawn_blocking_then(
+            self.clone(),
+            move || {
+                delay_canonical_refresh_for_test();
+                fs_metadata::canonical_path(&updated_for_probe).ok()
+            },
+            move |window, canonical| {
+                let Some(canonical) = canonical else {
+                    return;
+                };
+                let Some(editor) = editor_weak.upgrade() else {
+                    return;
+                };
+                if !window.contains_editor(&editor)
+                    || editor.file_path().as_deref() != Some(updated_for_apply.as_path())
+                {
+                    return;
+                }
+                window
+                    .imp()
+                    .open_paths
+                    .borrow_mut()
+                    .insert(canonical.clone());
+                editor.set_file_path_with_canonical(&updated_for_apply, Some(canonical));
+            },
+        );
     }
 
     /// Close any tab whose file path matches `path` or is inside it (for directories).
@@ -651,5 +707,15 @@ impl LushtextWindow {
         self.update_content_stack();
         self.refresh_command_palette_sources();
         self.refresh_status_bar();
+    }
+}
+
+fn delay_canonical_refresh_for_test() {
+    #[cfg(feature = "test-utils")]
+    {
+        let delay_ms = CANONICAL_REFRESH_DELAY_MS.load(Ordering::Acquire);
+        if delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
     }
 }

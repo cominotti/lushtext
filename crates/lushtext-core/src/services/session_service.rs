@@ -63,6 +63,7 @@ pub fn save_ordered(data_dir: &Path, session: &SessionData, generation: u64) -> 
 
     save(data_dir, session)?;
     generations.insert(data_dir.to_path_buf(), generation);
+    drop(generations);
     Ok(true)
 }
 

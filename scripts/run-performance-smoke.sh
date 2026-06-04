@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/smoke-common.sh"
 
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/performance}"
-FILTERS="${LUSHTEXT_PERFORMANCE_SMOKE_FILTER:-file_index_search file_index_rebuild content_search_smoke json_persistence editor_file_io replace_undo_workflows}"
+FILTERS="${LUSHTEXT_PERFORMANCE_SMOKE_FILTER:-file_index_search file_index_rebuild content_search_smoke json_persistence editor_file_io replace_preview_generation replace_undo_workflows}"
 SAMPLE_SIZE="${LUSHTEXT_PERFORMANCE_SMOKE_SAMPLE_SIZE:-10}"
 MEASUREMENT_TIME="${LUSHTEXT_PERFORMANCE_SMOKE_MEASUREMENT_TIME:-1}"
 WARM_UP_TIME="${LUSHTEXT_PERFORMANCE_SMOKE_WARM_UP_TIME:-1}"
@@ -56,6 +56,9 @@ smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
     echo "warm_up_time=$WARM_UP_TIME"
     echo "measurement_time=$MEASUREMENT_TIME"
     echo "profile=bench"
+    echo "cargo=$(cargo --version 2>/dev/null || true)"
+    echo "rustc=$(rustc --version 2>/dev/null || true)"
+    echo "host=$(rustc -vV 2>/dev/null | awk -F': ' '/^host:/ { print $2 }' || true)"
 } >"$ARTIFACT_DIR/config.txt"
 
 cat >"$ARTIFACT_DIR/fixtures.txt" <<'EOF'
@@ -64,6 +67,7 @@ file_index_rebuild: generated workspace file lists at representative file counts
 content_search_smoke: generated 200-file trees plus one 10k-line file
 json_persistence: generated workspace/session JSON save and load fixtures
 editor_file_io: generated text files for load, save, and Save As-equivalent explicit-path writes
+replace_preview_generation: generated 1k and 10k in-memory match sets for worker-side Replace preview generation
 replace_undo_workflows: generated disposable files for Replace All and undo restore
 EOF
 
@@ -75,6 +79,7 @@ Coarse smoke thresholds:
 - representative small/medium file open: target under 500ms; investigate over 2s
 - command-palette searches: target interactive-scale, not multi-second
 - workspace/content search: must complete every generated fixture without stalling
+- Replace preview generation: 10k generated matches should stay sub-second on a developer workstation; investigate multi-second results before shipping preview-flow changes
 - persistence, editor file I/O, Replace All, and undo restore: must complete every smoke sample successfully
 
 Use make bench-report or make bench-report-full for enforceable release analysis.

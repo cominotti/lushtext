@@ -226,7 +226,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
         };
 
         async_task::spawn_blocking_then(
-            window.clone(),
+            window,
             move || content_search::undo_replacements(&backup),
             move |window, outcome| {
                 let restored_paths: HashSet<std::path::PathBuf> =
@@ -559,15 +559,28 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
             && !editor.is_modified()
             && !editor.is_saving()
         {
-            // Update mtime to suppress file monitor "changed" detection for our own write.
-            if let Ok(facts) = fs_metadata::file_facts(&path) {
-                editor
-                    .imp()
-                    .monitor
-                    .last_known_mtime
-                    .set(facts.modified_at_secs);
-            }
-            editor.load_file_async(&path);
+            let editor_weak = editor.downgrade();
+            let path_for_facts = path.clone();
+            async_task::spawn_blocking_then(
+                path,
+                move || {
+                    fs_metadata::file_facts(&path_for_facts)
+                        .ok()
+                        .and_then(|facts| facts.modified_at_secs)
+                },
+                move |path, modified_at_secs| {
+                    let Some(editor) = editor_weak.upgrade() else {
+                        return;
+                    };
+                    if editor.file_path().as_deref() != Some(path.as_path()) {
+                        return;
+                    }
+                    // Update mtime before reload to suppress the file monitor's
+                    // "changed" warning for writes made by Replace All/Undo.
+                    editor.imp().monitor.last_known_mtime.set(modified_at_secs);
+                    editor.load_file_async(&path);
+                },
+            );
         }
     }
 }
