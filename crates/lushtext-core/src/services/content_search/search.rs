@@ -248,6 +248,7 @@ fn find_match_range(matcher: &grep_regex::RegexMatcher, line: &[u8]) -> std::ops
 mod tests {
     use super::*;
     use crate::services::filesystem::{fixture, read as fs_read};
+    use std::assert_matches;
     use tempfile::tempdir;
 
     /// Helper: run a search and collect all events into a Vec.
@@ -272,11 +273,7 @@ mod tests {
 
     /// Check that the last event is Done.
     fn assert_ends_with_done(events: &[SearchEvent]) {
-        assert!(
-            matches!(events.last(), Some(SearchEvent::Done)),
-            "last event should be Done, got: {:?}",
-            events.last()
-        );
+        assert_matches!(events.last(), Some(SearchEvent::Done));
     }
 
     #[test]
@@ -624,7 +621,7 @@ mod tests {
         let events = search_collect("", &[dir.path()], &ContentSearchOptions::default());
 
         assert_eq!(events.len(), 1, "should only contain Done");
-        assert!(matches!(events[0], SearchEvent::Done));
+        assert_matches!(events[0], SearchEvent::Done);
     }
 
     #[test]
@@ -696,7 +693,7 @@ mod tests {
     #[test]
     fn progress_variant_construction() {
         let event = SearchEvent::Progress(42);
-        assert!(matches!(event, SearchEvent::Progress(42)));
+        assert_matches!(event, SearchEvent::Progress(42));
     }
 
     #[test]
@@ -758,7 +755,7 @@ mod tests {
         let events = search_collect(r"fn\s+[", &[dir.path()], &opts);
 
         assert!(events.len() >= 2);
-        assert!(matches!(events[0], SearchEvent::Error(_)));
+        assert_matches!(events[0], SearchEvent::Error(_));
         assert_ends_with_done(&events);
     }
 }

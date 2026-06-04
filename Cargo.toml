@@ -12,7 +12,7 @@ exclude = ["fuzz"]
 default-members = ["crates/lushtext"]
 
 [workspace.package]
-rust-version = "1.95.0"
+rust-version = "1.96.0"
 
 # --- Centralized dependencies (union of features across all crates) ---
 
@@ -105,6 +105,9 @@ manual_let_else               = "deny"
 manual_string_new             = "deny"
 manual_is_variant_and         = "deny"
 manual_assert                 = "deny"
+manual_option_zip             = "deny"
+manual_pop_if                 = "deny"
+manual_noop_waker             = "deny"
 
 # --- Idiomatic Rust ---
 redundant_closure_for_method_calls = "deny"

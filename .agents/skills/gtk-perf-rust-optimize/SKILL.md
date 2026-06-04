@@ -112,7 +112,7 @@ You are reviewing Rust code in a GTK4/Libadwaita text editor for modern Rust idi
 Changed files to review:
 {changed_files}
 
-The project uses Rust edition 2024 with MSRV 1.95.0. thiserror = "2.0" is in workspace dependencies.
+The project uses Rust edition 2024 with MSRV 1.96.0. thiserror = "2.0" is in workspace dependencies.
 
 IMPORTANT: Only flag improvements that make the code BOTH more correct AND more readable. Do NOT flag micro allocation patterns, Cow<str> opportunities, format!() vs push_str, or clone avoidance.
 
@@ -121,12 +121,15 @@ Review criteria:
 2. Error string comparison: flag any `if err == "some string"` or `err.contains("...")` patterns. These are fragile (typo = silent bug) and hard to review. Enum pattern matching is clearer.
 3. let-else usage: only flag when let-else would significantly improve readability over a match arm that just extracts or early-returns. Do not flag cases where the match is already clear.
 4. Edition 2024 readiness: if the crate still uses edition = "2021", note that Edition 2024 is available. Key change: `unsafe_op_in_unsafe_fn` becomes deny-by-default — any existing `unsafe` blocks inside `unsafe fn` will need explicit `unsafe {}` wrappers. Relevant because the codebase uses `unsafe { String::from_utf8_unchecked(bytes) }`.
-5. #[expect] vs #[allow]: flag `#[allow(lint)]` when `#[expect(lint)]` would be more appropriate. `#[expect]` is self-policing — it causes a compile error if the lint no longer fires, catching stale suppressions automatically. Available since Rust 1.81, well within MSRV 1.95.0. Reserve `#[allow]` only for cases where the lint may or may not fire depending on configuration.
-6. if-let match guards: prefer Rust 1.95 match guards such as `Some(x) if let Ok(y) = parse(x) => ...` when the guard removes a nested `if let` and keeps the match exhaustive and easy to read. Do not use them when they duplicate arms or obscure fallback behavior.
+5. #[expect] vs #[allow]: flag `#[allow(lint)]` when `#[expect(lint)]` would be more appropriate. `#[expect]` is self-policing — it causes a compile error if the lint no longer fires, catching stale suppressions automatically. Available since Rust 1.81, well within MSRV 1.96.0. Reserve `#[allow]` only for cases where the lint may or may not fire depending on configuration.
+6. if-let match guards: prefer Rust 1.96 match guards such as `Some(x) if let Ok(y) = parse(x) => ...` when the guard removes a nested `if let` and keeps the match exhaustive and easy to read. Do not use them when they duplicate arms or obscure fallback behavior.
 7. Atomic updates: flag hand-written compare-exchange loops when `Atomic*::update` or `Atomic*::try_update` expresses the same transition more clearly with the same ordering.
 8. Fixed-size slice windows: flag `.windows(N)` plus positional indexing when `.array_windows::<N>()` enables named destructuring.
 9. Peekable helpers: flag manual `peek()` + `next()` pairs when `next_if`, `next_if_eq`, `next_if_map`, or `next_if_map_mut` states the intent directly.
 10. cfg_select!: consider `cfg_select!` for expression-level or tightly grouped cfg branches. Do not flag item-level `#[cfg]` implementations that are already clearer.
+11. Pattern assertions: flag `assert!(matches!(...))` in tests when Rust 1.96's `std::assert_matches` gives clearer failure output and the asserted value implements `Debug`. Require an explicit macro import; the macro is not in the prelude.
+12. Copyable ranges: consider `core::range::Range` only for named byte-span values where `Copy` removes real clone or move friction. Do not recommend a broad rewrite while range syntax still produces legacy `std::ops` ranges.
+13. New Clippy 1.96 lints: expect the workspace to deny `manual_option_zip`, `manual_pop_if`, and `manual_noop_waker`; flag code that recreates those patterns if Clippy cannot see it.
 
 Anti-patterns to flag:
 - [RECOMMEND] Result<T, String> with format!() in service functions — thiserror enum is both more correct and more readable
@@ -137,13 +140,16 @@ Anti-patterns to flag:
 - [CONSIDER] manual compare-exchange loop where `try_update` captures the state transition in one closure
 - [CONSIDER] `.windows(2)` with `window[0]` and `window[1]` where `array_windows::<2>()` destructuring is clearer
 - [CONSIDER] manual `peek()` + `next()` on `Peekable` where a `next_if*` helper names the condition
-- [CONSIDER] nested `if let` inside a match arm where a Rust 1.95 if-let guard keeps the arm readable
+- [CONSIDER] nested `if let` inside a match arm where a Rust 1.96 if-let guard keeps the arm readable
+- [CONSIDER] `assert!(matches!(...))` in tests where `assert_matches!` would produce a clearer failure
+- [CONSIDER] stored byte-span range clone where `core::range::Range` would remove move friction without conversion noise
 - [GOOD] Correct use of let-else for early returns
 - [GOOD] Correct use of if-let match guards for short fallible conditions
 - [GOOD] Atomic `try_update` with explicit success and failure orderings on shared counters
 - [GOOD] anyhow::Result with .context() in service error propagation
 - [GOOD] thiserror-derived error enums with exhaustive matching
 - [GOOD] #[expect(deprecated)] for APIs with no current replacement
+- [GOOD] Explicit `use std::assert_matches;` in test modules that use `assert_matches!`
 
 Output format — return findings as:
 **[SEVERITY] Title** — file:line
@@ -195,7 +201,9 @@ When implementing new features (not reviewing existing code), check:
 5. Is this a manual atomic CAS loop? → Prefer `Atomic*::try_update` if it keeps the transition readable
 6. Is this fixed-size window parsing? → Prefer `array_windows::<N>()` destructuring over positional indexing
 7. Is this a `peek()` + `next()` pair? → Prefer the matching `Peekable::next_if*` helper
-8. Is a match arm immediately doing `if let`? → Consider a Rust 1.95 if-let guard when it keeps fallback behavior obvious
+8. Is a match arm immediately doing `if let`? → Consider a Rust 1.96 if-let guard when it keeps fallback behavior obvious
+9. Is a test using `assert!(matches!(...))`? → Prefer `assert_matches!` when the asserted value implements `Debug`
+10. Is a stored byte-span range cloned just to keep using its bounds? → Consider `core::range::Range` only if conversion noise stays lower than the clone it removes
 
 ## Tone
 

@@ -49,7 +49,7 @@ apps:
     # lose data silently.
 
 parts:
-  # Ubuntu 24.04 packages rustc ~1.75, below LushText's 1.95 MSRV (edition 2024).
+  # Ubuntu 24.04 packages rustc ~1.75, below LushText's 1.96 MSRV (edition 2024).
   # Bootstrap the pinned toolchain via rustup so the meson part can compile.
   # CARGO_HOME/RUSTUP_HOME use a fixed shared path so the toolchain survives into
   # the lushtext part's build environment.
@@ -63,7 +63,7 @@ parts:
       export RUSTUP_HOME=/root/.rustup
       export CARGO_HOME=/root/.cargo
       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.95.0
+        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.96.0
     prime: []
 
   lushtext:

@@ -62,7 +62,7 @@ These patterns are replicated from invowk-rust and must be maintained:
 2. **rust-lld** — default linker on x86_64-linux since Rust 1.90 (~10x faster than BFD, zero config). No manual linker override needed.
 3. **cargo-hakari** — run `cargo hakari generate` after any dependency change.
 4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here.
-5. **`rust-version`** — keep `rust-version = "1.95.0"` in `[workspace.package]` and inherited by every package so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` pins the local toolchain to the same version.
+5. **`rust-version`** — keep `rust-version = "1.96.0"` in `[workspace.package]` and inherited by every package so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` pins the local toolchain to the same version.
 
 ## Adding Dependencies
 
@@ -252,6 +252,10 @@ Meson wraps Cargo for installed and Flatpak builds:
 
 - Manifest: `build-aux/dev.cominotti.lushtext.Flatpak.json` (local builds, `type: "dir"`)
 - Runtime: `org.gnome.Platform` 50, SDK extension: `org.freedesktop.Sdk.Extension.rust-stable`
+- The Rust stable extension must satisfy the workspace MSRV. If a local user
+  installation is stale after an MSRV bump, update it explicitly with
+  `flatpak update --user org.freedesktop.Sdk.Extension.rust-stable//25.08`
+  before treating a Flatpak build failure as an application regression.
 - Use `make flatpak` for a local build without installing it; it first ensures the user Flathub remote and manifest runtime/SDK dependencies are available
 - Use `make flatpak-install` to build and install the latest checkout into the user Flatpak installation; the target is idempotent and installs missing runtime/SDK dependencies from Flathub
 - Use `make verify-flatpak-identity` after install/export changes to catch stale same-ID dev launchers and verify `X-Flatpak`, permissions, and MIME registration
@@ -277,7 +281,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 - Manifest: `snap/snapcraft.yaml`. Strict confinement + `home` / `removable-media` plugs; the `gnome` extension supplies Wayland/X11/GPU/portals. Identity stays `dev.cominotti.lushtext` via `common-id`; the snap NAME (`lushtext`) lives in Snap's flat namespace.
 - **Reuses the Meson/Cargo build**: the `meson` plugin drives the same `meson.build` → `cargo.sh` path as the Flatpak. A `layout:` bind-mounts the baked `LUSHTEXT_PKGDATADIR` (`/usr/share/lushtext`) to `$SNAP/usr/share/lushtext`, so `register_resources()` / `init_schema_dir()` work under confinement with no Rust changes.
 - **No `cargo-sources.json` for Snap**: snap builds are online by default, so the Flatpak vendoring artifact is not required here; crates are fetched during the build.
-- **Rust toolchain**: Ubuntu 24.04 packages `rustc` below the 1.95 MSRV (edition 2024), so the manifest bootstraps the pinned toolchain via rustup in a `rust-toolchain` part.
+- **Rust toolchain**: Ubuntu 24.04 packages `rustc` below the 1.96 MSRV (edition 2024), so the manifest bootstraps the pinned toolchain via rustup in a `rust-toolchain` part.
 - **App schema compile**: meson's `gnome.post_install()` skips `glib-compile-schemas` under DESTDIR staging and the extension does not compile the app's own schema, so the part compiles `dev.cominotti.lushtext.gschema.xml` explicitly in `override-build`.
 - **GATED on the GNOME 50 platform snap**: LushText needs GTK 4.22; the extension currently provides only `gnome-46-2404` (GTK 4.14, `core24`). The matching `core26` / GNOME 50 platform snap (`gnome-50-2604` or equivalent) is not published yet, so `make snap` is expected to fail until `base:` is switched to `core26` (the `core26` base itself is published). Do not vendor the GNOME stack from source or lower the GTK floor to work around this.
 - `make snap` (LXD build), `make snap-smoke` (confined smoke test — skips cleanly until the platform snap exists), `make verify-snap-identity` (confinement/plugs/common-id). Smoke test fails on AppArmor/seccomp denials.

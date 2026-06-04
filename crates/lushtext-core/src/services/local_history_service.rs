@@ -539,6 +539,7 @@ fn local_history_lock() -> &'static Mutex<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::time::Duration;
 
     use tempfile::TempDir;
@@ -652,7 +653,7 @@ mod tests {
         )
         .expect("capture duplicate");
 
-        assert!(matches!(first, LocalHistoryCaptureOutcome::Stored(_)));
+        assert_matches!(first, LocalHistoryCaptureOutcome::Stored(_));
         assert_eq!(second, LocalHistoryCaptureOutcome::SkippedDuplicate);
         assert_eq!(
             list_snapshots_for_path(dir.path(), &path)

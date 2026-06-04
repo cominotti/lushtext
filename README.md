@@ -380,7 +380,7 @@ The full shortcut list is available in **Main Menu > Keyboard Shortcuts**.
 
 | Component | Technology |
 |-----------|------------|
-| Language | Rust (Edition 2024, MSRV 1.95.0) |
+| Language | Rust (Edition 2024, MSRV 1.96.0) |
 | GUI | GTK4 0.11 + Libadwaita 0.9 + GtkSourceView 5 0.11 |
 | Config | GSettings |
 | Build | Cargo workspace + Makefile (dev), Meson (Flatpak/installed) |
@@ -391,7 +391,7 @@ The full shortcut list is available in **Main Menu > Keyboard Shortcuts**.
 
 ### Dependencies
 
-- Rust 1.95.0+
+- Rust 1.96.0+
 - GTK4 development libraries
 - Libadwaita development libraries
 - GtkSourceView 5 development libraries

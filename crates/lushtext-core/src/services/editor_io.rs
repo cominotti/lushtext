@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const MAX_LOSSY_PREVIEW_ISSUES: usize = 8;
 
 /// Successful result from `load_text_file`.
+#[derive(Debug)]
 pub struct LoadResult {
     pub content: String,
     pub size: u64,
@@ -828,6 +829,7 @@ fn is_zero_width(character: char) -> bool {
 mod tests {
     use super::*;
     use crate::services::filesystem::{fixture, metadata as fs_metadata};
+    use std::assert_matches;
     use std::sync::atomic::AtomicBool;
     use tempfile::NamedTempFile;
 
@@ -1124,7 +1126,7 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let result = load_text_file(file.path(), &cancel);
 
-        assert!(matches!(result, Err(LoadError::Cancelled)));
+        assert_matches!(result, Err(LoadError::Cancelled));
     }
 
     #[test]
@@ -1137,10 +1139,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel);
 
-        assert!(matches!(
-            result,
-            Err(LoadError::TooLarge { size_mb: 501, .. })
-        ));
+        assert_matches!(result, Err(LoadError::TooLarge { size_mb: 501, .. }));
     }
 
     #[test]
@@ -1300,10 +1299,7 @@ mod tests {
             false,
         );
 
-        assert!(
-            matches!(result, Err(SaveError::WriteTemp { .. })),
-            "broken symlink save should fail before replacing the link"
-        );
+        assert_matches!(result, Err(SaveError::WriteTemp { .. }));
         assert!(
             fixture::is_symlink(&link),
             "failed save must leave the symlink untouched"
@@ -1364,7 +1360,7 @@ mod tests {
             false,
         );
 
-        assert!(matches!(result, Err(SaveError::MixedLineEndings)));
+        assert_matches!(result, Err(SaveError::MixedLineEndings));
     }
 
     #[test]
@@ -1441,7 +1437,7 @@ mod tests {
             false,
         );
 
-        assert!(matches!(result, Err(SaveError::LossyEncoding { .. })));
+        assert_matches!(result, Err(SaveError::LossyEncoding { .. }));
         assert!(
             !fs_metadata::exists(&path),
             "the file should not be written when lossy conversion is blocked"
@@ -1456,19 +1452,13 @@ mod tests {
             fs_write::DurableWriteError::BeforeRename(std::io::Error::other("temp failed")),
             path,
         );
-        assert!(
-            matches!(before, SaveError::WriteTemp { .. }),
-            "a before-rename failure must read as an unwritten save"
-        );
+        assert_matches!(before, SaveError::WriteTemp { .. });
 
         let after = save_error_from_durable(
             fs_write::DurableWriteError::AfterRename(std::io::Error::other("dir sync failed")),
             path,
         );
-        assert!(
-            matches!(after, SaveError::DurabilityUnconfirmed { .. }),
-            "an after-rename failure must read as durability-unconfirmed, not a lost save"
-        );
+        assert_matches!(after, SaveError::DurabilityUnconfirmed { .. });
     }
 
     #[cfg(unix)]

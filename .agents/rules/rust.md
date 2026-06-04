@@ -146,6 +146,7 @@ do not show a clean tab whose visible text differs from disk.
 
 - Prefer `#[expect(lint)]` over `#[allow(lint)]` when suppressing a lint for a known reason (e.g., using a deprecated API that has no replacement yet). `#[expect]` is self-policing: it causes a compile error if the lint no longer fires, so stale suppressions are caught automatically.
 - Reserve `#[allow(lint)]` only for cases where the lint may or may not fire depending on configuration or feature flags.
+- Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, and `manual_noop_waker` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents.
 
 ## Modern Rust Idioms
 
@@ -167,7 +168,7 @@ if let Some(obj) = obj_weak.upgrade() {
 }
 ```
 
-With Rust 1.95.0, also use `if let` match guards when a match arm needs both the matched value and a short fallible guard:
+With Rust 1.96.0, also use `if let` match guards when a match arm needs both the matched value and a short fallible guard:
 
 ```rust
 match encoding {
@@ -180,11 +181,14 @@ match encoding {
 
 Prefer the new standard-library helpers when they make intent clearer:
 
+- Use `std::assert_matches` or `std::debug_assert_matches` in tests when a pattern assertion benefits from clearer failure output. Import the macro explicitly in each module; it is not in the prelude.
 - Use `slice.array_windows::<N>()` over `slice.windows(N)` when the window width is fixed and every element is indexed.
 - Use `Atomic*::try_update` / `Atomic*::update` instead of hand-written compare-exchange loops when the closure expresses the complete state transition clearly.
 - Use `Peekable::next_if_eq`, `next_if`, `next_if_map`, or `next_if_map_mut` instead of manual `peek()` + `next()` pairs.
 - Use `Vec::push_mut` / `insert_mut` only when the caller immediately needs a mutable reference to the inserted value; plain `push` remains clearer otherwise.
 - Use `cfg_select!` for expression-level or tightly grouped cfg choices. Keep item-level `#[cfg]` when separate Unix/non-Unix implementations are already clearer.
+
+Use the Rust 1.96 `core::range` value types only when they reduce real range-moving friction in named byte-span values. Range syntax still produces the legacy `std::ops` range types today, so do not mechanically rewrite every `std::ops::Range<usize>` import. Keep legacy ranges for proptest strategies, third-party APIs, and APIs meant to accept ordinary range syntax; prefer `impl RangeBounds<usize>` for new caller-facing range inputs.
 
 ## Error Handling
 

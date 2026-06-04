@@ -1,7 +1,7 @@
 # Tech Stack
 
 ## Language
-- **Rust (Edition 2024, MSRV 1.95.0):** The core programming language for the application, ensuring performance and safety.
+- **Rust (Edition 2024, MSRV 1.96.0):** The core programming language for the application, ensuring performance and safety.
 
 ## GUI Framework
 - **GTK4 (0.11):** The foundational toolkit for building the modern, touch-friendly graphical user interface.

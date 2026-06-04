@@ -16,6 +16,7 @@ use lushtext_core::ui::editor_page::{
     MinimapMarkerKind,
 };
 use sourceview5::prelude::*;
+use std::assert_matches;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -588,10 +589,10 @@ fn test_save_file_no_path_returns_error() {
         *result_clone.borrow_mut() = Some(r);
     });
     let result = result.borrow_mut().take().expect("expected operation to succeed");
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(lushtext_core::ui::editor_page::SaveError::NoPath)
-    ));
+    );
 }
 
 #[test]
@@ -778,10 +779,10 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
         .borrow_mut()
         .take()
         .expect("duplicate save should finish synchronously");
-    assert!(matches!(
+    assert_matches!(
         duplicate_result,
         Err(lushtext_core::ui::editor_page::SaveError::SaveInProgress)
-    ));
+    );
 
     wait_until(std::time::Duration::from_secs(2), || first_done.get());
     assert!(!page.is_saving());

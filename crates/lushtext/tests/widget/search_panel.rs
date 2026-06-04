@@ -21,6 +21,7 @@ use lushtext_core::ui::search_panel::{
 };
 use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
+use std::assert_matches;
 use std::time::Duration;
 
 fn replace_undo_entry(original: &[u8], replaced: &[u8]) -> ReplaceUndoEntry {
@@ -481,7 +482,7 @@ fn test_search_event_progress_variant() {
     ensure_gtk_init();
     // Progress variant can be constructed and pattern-matched.
     let event = SearchEvent::Progress(42);
-    assert!(matches!(event, SearchEvent::Progress(42)));
+    assert_matches!(event, SearchEvent::Progress(42));
 }
 
 // ---------------------------------------------------------------------------
@@ -646,10 +647,10 @@ fn test_connect_search_progress_callback_stored() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.connect_search_progress(|update| {
-        assert!(matches!(
+        assert_matches!(
             update,
             SearchProgressUpdate::Progress { .. } | SearchProgressUpdate::Done { .. }
-        ));
+        );
     });
     assert!(panel.imp().callbacks.progress_callback.borrow().is_some());
 }
