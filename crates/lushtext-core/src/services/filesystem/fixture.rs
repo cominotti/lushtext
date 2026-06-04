@@ -16,7 +16,7 @@ use super::{DirectoryScanPolicy, metadata, mutate, read, sys, tree, write};
 ///
 /// Panics when the fixture cannot be written.
 pub fn write_text(path: &Path, contents: &str) {
-    write::write_bytes(path, contents.as_bytes()).expect("write fixture text");
+    sys::write(path, contents.as_bytes()).expect("write fixture text");
 }
 
 /// Write fixture bytes to a path.
@@ -25,7 +25,7 @@ pub fn write_text(path: &Path, contents: &str) {
 ///
 /// Panics when the fixture cannot be written.
 pub fn write_bytes(path: &Path, contents: impl AsRef<[u8]>) {
-    write::write_bytes(path, contents).expect("write fixture bytes");
+    sys::write(path, contents).expect("write fixture bytes");
 }
 
 /// Write a fixture file by repeating `pattern` until `size` bytes are present.

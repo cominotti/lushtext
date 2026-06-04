@@ -2,16 +2,15 @@
 
 //! Durable write operations exposed through the filesystem boundary.
 //!
-//! This module preserves the existing crash-durable write contract while moving
-//! caller-facing entry points toward `services::filesystem`.
+//! This module preserves the existing crash-durable write contract while keeping
+//! caller-facing entry points inside `services::filesystem`.
 
 use std::io::Write;
 use std::path::Path;
 
 use crate::services::durable_write;
 
-use super::sys;
-use super::types::WriteLabel;
+use super::{sys, types::WriteLabel};
 
 pub use durable_write::{DurableWriteError, TargetWriteGuard, WriteTargetIdentity};
 
@@ -64,6 +63,15 @@ pub fn create_dir_all_durable(path: &Path) -> std::io::Result<()> {
     durable_write::create_dir_all_durable(path)
 }
 
+/// Create one directory and sync its parent directory.
+///
+/// # Errors
+///
+/// Returns an error when creation or sync fails.
+pub fn create_dir_durable(path: &Path) -> std::io::Result<()> {
+    durable_write::create_dir_durable(path)
+}
+
 /// Rename a path and sync the affected parent directories.
 ///
 /// # Errors
@@ -101,13 +109,4 @@ pub fn create_new_empty_file_durable(path: &Path) -> std::io::Result<()> {
 /// Returns an error when the parent directory cannot be opened or synced.
 pub fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     durable_write::sync_parent_dir(path)
-}
-
-/// Create or replace a non-durable fixture file through the boundary.
-///
-/// # Errors
-///
-/// Returns an error when the path cannot be written.
-pub fn write_bytes(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
-    sys::write(path, contents)
 }

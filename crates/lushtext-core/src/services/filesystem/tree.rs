@@ -64,12 +64,3 @@ where
         })
     })
 }
-
-/// Sync a directory through the descriptor-oriented backend path.
-///
-/// # Errors
-///
-/// Returns an error when the directory cannot be opened or synced.
-pub fn sync_directory(path: &Path) -> std::io::Result<()> {
-    sys::sync_dir_descriptor(path)
-}

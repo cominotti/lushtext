@@ -36,13 +36,11 @@ Durable writes should keep the durability state machine, but raw operations used
 
 Alternative considered: leave `durable_write.rs` as an approved raw exception. Rejected because it preserves two places where raw platform behavior can drift, and it makes future audits treat a large implementation file as a permanent exception.
 
-### Decision: Rustix-first does not mean rustix-only at all costs
+### Decision: Rustix covers the current Unix backend contract
 
-Use `rustix` wherever it directly supports the needed filesystem syscall with safe I/O ownership and good path support. If the current rustix version lacks a specific operation needed for Linux identity metadata, such as an xattr helper, isolate the minimal `libc` usage in a backend submodule with a narrow API and an explicit audit allowlist. Ordinary callers must never see raw descriptors, syscall flags, C strings, or backend errno values.
+Use `rustix` for the filesystem syscalls LushText needs when it provides safe I/O ownership and good path support. The pinned `rustix` 1.1.x API includes the xattr helpers needed for Linux ACL and user-xattr preservation (`listxattr`, `getxattr`, `setxattr`, and `fsetxattr`), so this change has no remaining direct-`libc` filesystem gap. Ordinary callers must never see raw descriptors, syscall flags, C strings, or backend errno values.
 
-Alternative considered: ban all `libc` from filesystem code. Rejected unless implementation proves rustix covers every required xattr/ACL operation, because preserving ACLs and security xattrs is part of the durable-write contract.
-
-Implementation note: the pinned `rustix` 1.1.x API includes the xattr helpers needed for Linux ACL and user-xattr preservation (`listxattr`, `getxattr`, `setxattr`, and `fsetxattr`), so this change does not need a remaining direct-`libc` filesystem gap.
+Alternative considered: keep a documented direct-`libc` fallback for future metadata gaps. Rejected because implementation proved rustix covers the required xattr and ACL-preservation operations, and a speculative fallback would weaken the no-leftovers audit.
 
 ### Decision: Public mutation semantics need one owner
 
@@ -75,7 +73,7 @@ Alternative considered: rely on code review for these subtler cases. Rejected be
 ## Risks / Trade-offs
 
 - [Risk] Moving durable write internals can accidentally weaken crash-durability ordering. -> Mitigation: preserve existing durable-write tests first, add focused backend parity tests, and run the data-safety validation path before marking tasks complete.
-- [Risk] Rustix APIs may not cover every Linux metadata operation currently implemented with `libc`. -> Mitigation: isolate any remaining `libc` in a tiny backend module with tests and comments naming the exact rustix gap.
+- [Risk] A future metadata operation may need a syscall that the pinned rustix version does not expose. -> Mitigation: treat that as new design work rather than preserving a speculative direct-`libc` escape hatch in this completed change.
 - [Risk] API consolidation can become a broad mechanical churn. -> Mitigation: migrate callers by workflow, keep public names where they are already correct, and add compatibility aliases only inside the change if needed for staged implementation; final state must remove aliases that exist only for transition.
 - [Risk] Sidecar helper adoption could blur domain-specific note/bookmark identity logic. -> Mitigation: keep identity rebasing and domain decisions in note/bookmark/local-history services; only centralize filesystem mechanics such as ensure/list/move/remove.
 - [Risk] Audit checks for unused helpers can be brittle. -> Mitigation: keep checks narrow to known boundary artifacts and pair them with code-search evidence in tasks.

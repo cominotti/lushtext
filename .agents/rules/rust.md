@@ -70,7 +70,8 @@ Approved raw filesystem exceptions are limited to:
 Do not import the private durable implementation from callers. The public
 durability surface is `services::filesystem::write`, including
 `atomic_replace`, `atomic_replace_stream`, `rename_durable`,
-`copy_file_durable`, `sync_parent_dir`, and `TargetWriteGuard`.
+`copy_file_durable`, `create_dir_durable`, `sync_parent_dir`, and
+`TargetWriteGuard`.
 
 Tests and benches should use `services::filesystem::fixture` helpers such as
 `write_text`, `write_bytes`, `create_dir_all`, `create_sparse_file`,
@@ -87,8 +88,9 @@ probe metadata, create the temp file with safe permissions, write and flush
 content, apply required metadata, call `sync_all()` on the temp file after those
 metadata mutations, `rename()`, then sync the parent directory so ext4, XFS, and
 Btrfs cannot lose the renamed directory entry across power loss. Use
-`services::filesystem::write::sync_parent_dir()` for the directory half instead of
-leaving it to each call site.
+`services::filesystem::write::create_dir_durable()` for single-directory
+creation that must be durable, and `sync_parent_dir()` only when an existing
+durable workflow explicitly needs to seal a namespace mutation.
 
 Prefer the shared `services::filesystem::write::atomic_replace` (or
 `atomic_replace_stream` when you need streaming serialization) over hand-rolling

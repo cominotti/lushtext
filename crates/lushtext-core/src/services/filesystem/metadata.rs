@@ -35,15 +35,6 @@ pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
     sys::canonicalize(path)
 }
 
-/// Read symlink-aware metadata without following links.
-///
-/// # Errors
-///
-/// Returns an error when the path cannot be inspected.
-pub fn symlink_facts(path: &Path) -> std::io::Result<FileKind> {
-    sys::symlink_metadata(path).map(|metadata| kind_from_metadata(&metadata))
-}
-
 /// Return whether `path` itself is a symbolic link.
 ///
 /// # Errors

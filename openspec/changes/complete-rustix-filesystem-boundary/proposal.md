@@ -5,7 +5,7 @@ LushText already has a strong public filesystem boundary, but the private implem
 ## What Changes
 
 - Consolidate raw filesystem, Unix extension, direct `libc`, and direct `rustix` usage behind the filesystem boundary's approved private backend modules.
-- Make `rustix` the preferred private backend for descriptor-owned Unix filesystem operations where the crate supports the required syscall safely, while keeping any unavoidable Linux-only syscall gaps explicitly isolated and documented.
+- Make `rustix` the private backend for descriptor-owned Unix filesystem operations used by LushText, including the Linux metadata operations needed by durable writes.
 - Move durable-write platform operations behind the same private filesystem backend instead of letting durable writes own a second raw `std::fs`/Unix/`libc` island.
 - Resolve overlapping mutation APIs so rename, durable rename, parent sync, directory creation, removal, target identity, and write coordination each have one clear public home.
 - Either adopt the existing sidecar filesystem helper surface across bookmark, document-note, workspace-note, and local-history workflows, or remove it if the already-used note/local-history helpers are the better abstraction.
@@ -28,5 +28,5 @@ LushText already has a strong public filesystem boundary, but the private implem
 
 - Affected code: `crates/lushtext-core/src/services/filesystem/**`, `crates/lushtext-core/src/services/durable_write.rs`, filesystem callers in editor save, Replace All, local history, notes/bookmarks, drafts, JSON persistence, sidebar mutation flows, tests, benches, and boundary-audit scripts.
 - Affected guidance: root/nested `AGENTS.md`, `.agents/rules/rust.md`, and any filesystem-sensitive skills or docs that name approved raw filesystem exceptions.
-- Dependencies: `rustix` remains the private backend dependency; direct `libc` use must be removed where rustix covers the operation or isolated to documented Linux-only backend gaps.
+- Dependencies: `rustix` remains the private backend dependency; direct `libc` is not part of the final filesystem backend because rustix covers the required xattr and ACL-preservation operations.
 - Behavior: no user-facing feature behavior changes are intended; this is a correctness, maintainability, and architecture-completion change.

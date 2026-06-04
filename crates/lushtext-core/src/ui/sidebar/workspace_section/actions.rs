@@ -389,7 +389,7 @@ fn create_unique(dir: &Path, base: &str, is_dir: bool) -> std::io::Result<PathBu
 
         let path = dir.join(&name);
         let result = if is_dir {
-            fs_mutate::create_dir(&path).and_then(|()| fs_write::sync_parent_dir(&path))
+            fs_write::create_dir_durable(&path)
         } else {
             fs_write::create_new_empty_file_durable(&path)
         };

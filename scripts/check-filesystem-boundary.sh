@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-patterns='std::fs::|use std::fs|std::os::unix::fs|std::os::unix::io|libc::|rustix::|\.canonicalize\(|\.exists\('
+patterns='std::fs\b|use std::fs|std::os::unix::fs|std::os::unix::io|libc::|rustix::|\.canonicalize\(|\.exists\('
 
 scan_roots=(
   AGENTS.md
@@ -40,7 +40,7 @@ if [[ -n "$violations" ]]; then
 fi
 
 direct_sys_imports="$(
-  rg -n '(^use .*filesystem::sys|crate::services::filesystem::sys|super::filesystem::sys)' crates/lushtext-core/src 2>/dev/null \
+  rg -n -U '(^use[^\n;]*filesystem::sys|filesystem::\{[^;]*\bsys\b|crate::services::filesystem::sys|super::filesystem::sys)' crates/lushtext-core/src 2>/dev/null \
     | rg -v '(^crates/lushtext-core/src/services/filesystem/|^crates/lushtext-core/src/services/durable_write\.rs:)' \
     || true
 )"
@@ -52,7 +52,7 @@ if [[ -n "$direct_sys_imports" ]]; then
 fi
 
 direct_durable_imports="$(
-  rg -n '(crate::services::durable_write|super::durable_write|services::durable_write|durable_write::)' crates/lushtext-core/src 2>/dev/null \
+  rg -n -U '(^use[^\n;]*(crate::services|super|services)::durable_write|(^use[^\n;]*(crate::services|super|services)::\{[^;]*\bdurable_write\b)|crate::services::durable_write|super::durable_write|services::durable_write|durable_write::)' crates/lushtext-core/src 2>/dev/null \
     | rg -v '(^crates/lushtext-core/src/services/filesystem/write\.rs:|^crates/lushtext-core/src/services/durable_write\.rs:)' \
     || true
 )"
@@ -69,6 +69,10 @@ leftovers="$(
       crates/lushtext-core/src crates/lushtext-core/tests crates/lushtext-core/benches \
       crates/lushtext/src crates/lushtext/tests AGENTS.md README.md .agents/rules .agents/skills 2>/dev/null || true
     rg -n 'rename_path' crates/lushtext-core/src/services/filesystem 2>/dev/null || true
+    rg -n 'pub fn (write_bytes|sync_directory|symlink_facts)\b' \
+      crates/lushtext-core/src/services/filesystem/metadata.rs \
+      crates/lushtext-core/src/services/filesystem/tree.rs \
+      crates/lushtext-core/src/services/filesystem/write.rs 2>/dev/null || true
     find crates/lushtext-core/src/services/filesystem -maxdepth 1 \( -name error.rs -o -name sidecar.rs \) -print
   } | sed '/^$/d'
 )"
@@ -86,22 +90,39 @@ fi
 controlled_backend_crates=(libc)
 
 for crate in "${controlled_backend_crates[@]}"; do
-  declared="$(
-    rg -n "^[[:space:]]*${crate}[[:space:]]*=" Cargo.toml crates/*/Cargo.toml 2>/dev/null || true
-  )"
-  [[ -z "$declared" ]] && continue
+  for manifest in Cargo.toml crates/*/Cargo.toml; do
+    [[ -f "$manifest" ]] || continue
+    declared="$(
+      rg -n "^[[:space:]]*${crate}[[:space:]]*=|^\[(workspace\.)?(dependencies|dev-dependencies|build-dependencies)\.${crate}\]" \
+        "$manifest" 2>/dev/null || true
+    )"
+    [[ -z "$declared" ]] && continue
 
-  used="$(
-    rg -n "\b${crate}::|use[[:space:]]+${crate}\b|extern[[:space:]]+crate[[:space:]]+${crate}\b" \
-      crates --glob '*.rs' 2>/dev/null || true
-  )"
+    if [[ "$manifest" == "Cargo.toml" ]]; then
+      source_roots=(crates)
+    else
+      crate_root="${manifest%/Cargo.toml}"
+      source_roots=()
+      for source_root in "$crate_root/src" "$crate_root/tests" "$crate_root/benches" "$crate_root/build.rs"; do
+        [[ -e "$source_root" ]] && source_roots+=("$source_root")
+      done
+    fi
 
-  if [[ -z "$used" ]]; then
-    printf 'Controlled backend crate "%s" is declared but unused:\n\n' "$crate" >&2
-    printf '%s\n' "$declared" >&2
-    printf '\nRemove the dependency or restore its backend usage.\n' >&2
-    exit 1
-  fi
+    used=""
+    if [[ ${#source_roots[@]} -gt 0 ]]; then
+      used="$(
+        rg -n "\b${crate}::|use[[:space:]]+${crate}\b|extern[[:space:]]+crate[[:space:]]+${crate}\b" \
+          "${source_roots[@]}" --glob '*.rs' 2>/dev/null || true
+      )"
+    fi
+
+    if [[ -z "$used" ]]; then
+      printf 'Controlled backend crate "%s" is declared but unused in %s:\n\n' "$crate" "$manifest" >&2
+      printf '%s\n' "$declared" >&2
+      printf '\nRemove the dependency or restore its backend usage in the declaring crate.\n' >&2
+      exit 1
+    fi
+  done
 done
 
 printf 'Filesystem boundary audit passed.\n'

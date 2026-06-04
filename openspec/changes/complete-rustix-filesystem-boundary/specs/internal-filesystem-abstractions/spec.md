@@ -14,17 +14,17 @@ The filesystem boundary SHALL keep direct `std::fs`, Unix filesystem extension, 
 - **AND** it does not import private backend modules, raw descriptors, syscall flags, or direct backend error types
 
 ### Requirement: Rustix-first backend adoption is complete
-The private filesystem backend SHALL prefer `rustix` for Unix filesystem operations that require descriptor ownership, descriptor-relative behavior, precise metadata, namespace mutation, directory traversal, file or directory syncing, permission preservation, or ownership preservation when the current rustix version supports the operation safely. Direct `libc` usage MUST remain only for documented Linux filesystem operations not covered by rustix and MUST be isolated behind a narrow backend helper.
+The private filesystem backend SHALL use `rustix` for Unix filesystem operations that require descriptor ownership, descriptor-relative behavior, precise metadata, namespace mutation, directory traversal, file or directory syncing, permission preservation, ownership preservation, or Linux extended-attribute preservation when the current rustix version supports the operation safely. The completed implementation MUST NOT retain a direct `libc` filesystem fallback or allowlist because the pinned rustix version covers the metadata-preservation operations LushText needs.
 
 #### Scenario: Supported Unix filesystem operations use rustix
 - **WHEN** the backend implements open, stat, directory iteration, rename, unlink, mkdir, chmod, chown, file sync, or directory sync behavior that rustix supports
 - **THEN** the implementation uses rustix rather than direct `std::os::unix` extension traits or direct `libc`
 - **AND** callers receive app-facing types and `std::io::Error` or app-facing error wrappers
 
-#### Scenario: Unsupported metadata gaps stay isolated
-- **WHEN** preserving required identity metadata needs a Linux filesystem syscall that rustix does not expose in the pinned version
-- **THEN** the implementation isolates the direct `libc` call in the private backend
-- **AND** the audit allowlist and code comments name the exact operation and why it remains outside rustix
+#### Scenario: Required metadata preservation has no direct libc fallback
+- **WHEN** preserving required identity metadata copies Linux extended attributes or ACL-backed metadata
+- **THEN** the implementation uses rustix xattr helpers through the private backend
+- **AND** no direct `libc` filesystem dependency, source call, or audit allowlist remains for that metadata path
 
 ### Requirement: Public filesystem operation families have no duplicate safety contracts
 The filesystem boundary SHALL expose one clear public entry point for each safety policy. Callers MUST NOT have to choose between duplicate helpers that appear to provide the same rename, durable rename, parent sync, directory creation, removal, write coordination, target identity, or sidecar filesystem semantics.

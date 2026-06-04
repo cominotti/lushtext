@@ -387,6 +387,20 @@ pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Create one directory and sync the parent directory that received the entry.
+///
+/// `create_dir()` mutates a directory namespace just like `rename()`, so callers
+/// that create user-visible workspace entries need the same parent-sync policy.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be created or the parent directory
+/// cannot be synced after creation.
+pub fn create_dir_durable(path: &Path) -> std::io::Result<()> {
+    sys::create_dir(path)?;
+    sync_parent_dir(path)
+}
+
 /// Copy a file with a durable target write, then remove and sync the source.
 ///
 /// This is a cross-filesystem fallback for `rename_durable()`. The source is not
@@ -537,7 +551,10 @@ static TEMP_AFTER_CONTENT_OBSERVER: OnceLock<Mutex<Option<TempObserver>>> = Once
 
 #[cfg(test)]
 thread_local! {
+    /// Test hook for failures that happen after metadata is applied but before rename.
     static FAIL_FINAL_TEMP_SYNC_AFTER_METADATA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook for the post-rename parent-directory sync failure path.
+    static FAIL_NEXT_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Create a directory tree and sync each directory entry that was newly created.
@@ -571,6 +588,13 @@ pub fn create_dir_all_durable(path: &Path) -> std::io::Result<()> {
 ///
 /// Returns an error if the parent directory cannot be opened or synced.
 pub fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_NEXT_PARENT_SYNC.with(|fail| fail.replace(false)) {
+        return Err(std::io::Error::other(
+            "injected parent directory sync failure",
+        ));
+    }
+
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     sync_dir(parent)
 }
@@ -609,6 +633,16 @@ mod tests {
         create_dir_all_durable(&nested).expect("expected operation to succeed");
 
         assert!(nested.is_dir());
+    }
+
+    #[test]
+    fn create_dir_durable_creates_single_directory() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let child = dir.path().join("child");
+
+        create_dir_durable(&child).expect("expected operation to succeed");
+
+        assert!(child.is_dir());
     }
 
     #[test]
@@ -998,6 +1032,27 @@ mod tests {
         );
         assert_eq!(fixture::read_bytes(&path), b"old");
         assert_eq!(fixture::mode(&path) & 0o777, 0o600);
+    }
+
+    #[test]
+    fn atomic_write_parent_sync_failure_is_after_rename() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("data.txt");
+        fixture::write_bytes(&path, b"old");
+
+        FAIL_NEXT_PARENT_SYNC.with(|fail| fail.set(true));
+        let error = atomic_write_bytes_classified(&path, "test", b"new")
+            .expect_err("injected parent sync failure should fail");
+
+        assert!(
+            matches!(error, DurableWriteError::AfterRename(_)),
+            "parent sync failure happens after the rename has landed"
+        );
+        assert_eq!(
+            fixture::read_bytes(&path),
+            b"new",
+            "after-rename failure means the new bytes are already visible"
+        );
     }
 
     #[cfg(unix)]

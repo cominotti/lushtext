@@ -207,7 +207,7 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > **Patterns to check:**
 >
 > **AW-1: Non-atomic write for persistent data**
-> Grep: direct raw writes, `write_all`, or non-durable `filesystem::write::write_bytes` in functions that write to persistent paths
+> Grep: direct raw writes, `write_all`, or public non-durable filesystem write helpers in functions that write to persistent paths
 > Tree: Writing to a persistent path (under `data_dir()` or similar)? → No: SAFE. Uses `filesystem::write::atomic_replace`, `atomic_replace_stream`, or another durable temp-file sync + rename + parent-directory sync pattern? → Yes: SAFE.
 > FLAG HIGH: "Direct write to persistent file without atomic temp+rename. Crash during write corrupts file."
 >

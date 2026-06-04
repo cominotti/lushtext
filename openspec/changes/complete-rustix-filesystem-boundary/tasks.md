@@ -2,14 +2,14 @@
 
 - [x] 1.1 Inventory all direct `std::fs`, Unix filesystem extension, direct filesystem `libc`, direct `rustix`, `.canonicalize()`, and `.exists()` occurrences across production code, tests, benches, rules, skills, and guidance.
 - [x] 1.2 Inventory all public `services::filesystem` helpers and record which have production, test, or benchmark callers.
-- [x] 1.3 Decide the final private backend module layout for shared platform primitives, including where any unavoidable Linux-only `libc` xattr gap will live.
+- [x] 1.3 Decide the final private backend module layout for shared platform primitives, including confirming that no unavoidable Linux-only `libc` xattr gap remains.
 - [x] 1.4 Decide whether durable namespace helpers remain under `filesystem::write` or move to a clearer filesystem operation family, then record the decision in code comments or guidance as appropriate.
 
 ## 2. Shared Filesystem Backend Primitives
 
 - [x] 2.1 Move or add private backend helpers for temp-file creation with mode, atomic rename, unlink cleanup, read bytes, metadata probing, canonical identity, file length, directory sync, and parent-directory sync.
 - [x] 2.2 Replace direct Unix extension or `libc` calls with `rustix` where rustix supports the needed filesystem operation safely.
-- [x] 2.3 Isolate any remaining direct `libc` filesystem calls behind a narrow private backend helper with tests and comments naming the unsupported rustix gap.
+- [x] 2.3 Confirm no direct `libc` filesystem calls remain because rustix covers the required Linux xattr and ACL-preservation operations.
 - [x] 2.4 Keep ordinary caller-facing return values as app-facing types and `std::io::Error` or the chosen app-facing filesystem error wrapper, with no leaked rustix errno types.
 
 ## 3. Durable Write Consolidation
@@ -35,7 +35,7 @@
 - [x] 5.2 Add deterministic no-leftovers checks for direct durable-write implementation imports and stale exported filesystem helper surfaces introduced or evaluated by this change.
 - [x] 5.3 Update `AGENTS.md`, nested guidance, and `.agents/rules/rust.md` so approved raw filesystem exceptions match the final backend shape.
 - [x] 5.4 Update filesystem-sensitive skills or local guidance that still name obsolete exception modules, helper names, or validation commands.
-- [x] 5.5 Ensure the delta specs remain aligned with implementation decisions before archive, especially any remaining documented `libc` backend gap.
+- [x] 5.5 Ensure the delta specs remain aligned with implementation decisions before archive, especially the decision that no direct `libc` backend gap remains.
 
 ## 6. Validation and Closure
 

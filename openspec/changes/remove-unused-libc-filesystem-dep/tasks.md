@@ -16,7 +16,7 @@
 
 ## 4. Close the audit gap
 
-- [x] 4.1 Add a deterministic check to `scripts/check-filesystem-boundary.sh` that fails when a controlled raw-backend crate (currently `libc`) is declared in a crate manifest but has no `::`/`use` reference anywhere in that crate's source.
+- [x] 4.1 Add a deterministic check to `scripts/check-filesystem-boundary.sh` that fails when a controlled raw-backend crate (currently `libc`) is declared in a crate manifest but has no `::`/`use` reference in that declaring crate's source.
 - [x] 4.2 Keep the check scoped to a small named allowlist of controlled backend crates so cfg-gated-but-present usage still counts as used and unrelated crates are unaffected.
 
 ## 5. Validate and close
