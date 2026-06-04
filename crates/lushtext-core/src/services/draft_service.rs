@@ -359,7 +359,7 @@ pub fn cleanup_orphans(data_dir: &Path, manifest: &mut DraftManifest) -> Result<
     let before = manifest.drafts.len();
     manifest.drafts.retain(|entry| {
         let path = dir.join(format!("{}.draft", entry.draft_id));
-        fs_metadata::file_facts(&path).is_ok()
+        fs_metadata::exists(&path)
     });
     cleaned += before - manifest.drafts.len();
 
@@ -747,7 +747,7 @@ mod tests {
             "manifest entry should remain available for later recovery"
         );
         assert!(
-            fs_metadata::file_facts(&draft_path).is_ok(),
+            fs_metadata::exists(&draft_path),
             "oversized draft file must not be deleted"
         );
     }
@@ -853,7 +853,7 @@ mod tests {
             cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
 
         assert_eq!(cleaned, 0);
-        assert!(fs_metadata::file_facts(&hidden_path).is_ok());
+        assert!(fs_metadata::exists(&hidden_path));
     }
 
     #[test]

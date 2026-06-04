@@ -100,7 +100,7 @@ Anything that doesn't need a GTK type to operate belongs in services:
 ```rust
 // services/session_service.rs
 pub fn filter_existing_tabs(data: &mut SessionData) {
-    data.tabs.retain(|tab| filesystem::metadata::file_facts(&tab.path).is_ok());
+    data.tabs.retain(|tab| filesystem::metadata::exists(&tab.path));
     if let Some(ref active) = data.active_tab {
         if !data.tabs.iter().any(|t| t.path == *active) {
             data.active_tab = None;

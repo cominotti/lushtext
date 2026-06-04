@@ -63,6 +63,64 @@ if [[ -n "$direct_durable_imports" ]]; then
   exit 1
 fi
 
+status_probe_roots=(
+  crates/lushtext-core/src
+  crates/lushtext-core/tests
+  crates/lushtext-core/benches
+  crates/lushtext/src
+  crates/lushtext/tests
+  crates/lushtext/benches
+)
+
+status_probe_hits="$(
+  {
+    rg -n -U 'file_facts\([^\n;]*\)\s*\.is_(ok|err)(_and)?\(' "${status_probe_roots[@]}" --glob '*.rs' 2>/dev/null || true
+    rg -n 'fn[[:space:]]+path_exists[[:space:]]*\(' "${status_probe_roots[@]}" --glob '*.rs' 2>/dev/null || true
+  } | rg -v '^crates/lushtext-core/src/services/filesystem/sys\.rs:' || true
+)"
+
+if [[ -n "$status_probe_hits" ]]; then
+  printf 'Status-only filesystem probes should use services::filesystem::metadata::{path_status, exists}:\n\n' >&2
+  printf '%s\n' "$status_probe_hits" >&2
+  exit 1
+fi
+
+unused_status_helpers=""
+for helper in path_status exists; do
+  declaration="$(
+    rg -n "pub fn ${helper}[[:space:]]*\\(" crates/lushtext-core/src/services/filesystem/metadata.rs 2>/dev/null || true
+  )"
+  [[ -z "$declaration" ]] && continue
+
+  uses="$(
+    rg -n "(fs_metadata|metadata)::${helper}[[:space:]]*\\(" crates/lushtext-core/src --glob '*.rs' 2>/dev/null \
+      | rg -v '^crates/lushtext-core/src/services/filesystem/metadata\.rs:' \
+      || true
+  )"
+  if [[ -z "$uses" ]]; then
+    unused_status_helpers+="${declaration}"$'\n'
+  fi
+done
+
+if [[ -n "$unused_status_helpers" ]]; then
+  printf 'Filesystem status helpers are declared without call sites outside metadata.rs:\n\n' >&2
+  printf '%s\n' "$unused_status_helpers" >&2
+  exit 1
+fi
+
+engine_adapter_hits="$(
+  rg -n -U '(^use[^\n;]*(grep_searcher|ignore)::|grep_searcher::|ignore::|WalkBuilder::|SearcherBuilder::)' \
+    crates/lushtext-core/src crates/lushtext/src --glob '*.rs' 2>/dev/null \
+    | rg -v '^crates/lushtext-core/src/services/content_search/search\.rs:' \
+    || true
+)"
+
+if [[ -n "$engine_adapter_hits" ]]; then
+  printf 'Filesystem engine adapters are only approved in content_search/search.rs:\n\n' >&2
+  printf '%s\n' "$engine_adapter_hits" >&2
+  exit 1
+fi
+
 leftovers="$(
   {
     rg -n 'FileWriteLock|FilesystemError|filesystem::sidecar|pub mod sidecar;|pub mod error;|pub use error::|pub type FileWriteLock' \

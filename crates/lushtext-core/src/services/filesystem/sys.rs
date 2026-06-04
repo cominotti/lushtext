@@ -12,6 +12,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use super::types::FileKind;
+
 pub(in crate::services) type File = fs::File;
 pub(in crate::services) type Metadata = fs::Metadata;
 
@@ -26,7 +28,7 @@ pub(in crate::services) struct UnixMetadata {
 pub(in crate::services) struct RawDirectoryEntry {
     pub path: PathBuf,
     pub file_name: OsString,
-    pub metadata: fs::Metadata,
+    pub kind: FileKind,
 }
 
 pub(in crate::services) fn read(path: &Path) -> io::Result<Vec<u8>> {
@@ -60,6 +62,29 @@ pub(in crate::services) fn canonicalize(path: &Path) -> io::Result<PathBuf> {
 
 pub(in crate::services) fn path_exists(path: &Path) -> bool {
     metadata(path).is_ok()
+}
+
+#[cfg(not(unix))]
+fn kind_from_std_metadata(metadata: &fs::Metadata) -> FileKind {
+    let file_type = metadata.file_type();
+    if file_type.is_file() {
+        FileKind::File
+    } else if file_type.is_dir() {
+        FileKind::Directory
+    } else {
+        FileKind::Other
+    }
+}
+
+#[cfg(unix)]
+fn kind_from_rustix_file_type(file_type: rustix::fs::FileType) -> FileKind {
+    if file_type.is_file() {
+        FileKind::File
+    } else if file_type.is_dir() {
+        FileKind::Directory
+    } else {
+        FileKind::Other
+    }
 }
 
 #[cfg(unix)]
@@ -160,13 +185,18 @@ where
         }
         let file_name = OsString::from_vec(name_bytes.to_vec());
         let child_path = path.join(&file_name);
-        let Ok(metadata) = metadata(&child_path) else {
+        let Ok(dir_fd) = dir.fd() else {
             continue;
         };
+        let Ok(stat) = rustix::fs::statat(dir_fd, entry.file_name(), rustix::fs::AtFlags::empty())
+        else {
+            continue;
+        };
+        let kind = kind_from_rustix_file_type(rustix::fs::FileType::from_raw_mode(stat.st_mode));
         if !visit(RawDirectoryEntry {
             path: child_path,
             file_name,
-            metadata,
+            kind,
         }) {
             break;
         }
@@ -188,7 +218,7 @@ where
         if !visit(RawDirectoryEntry {
             path: entry.path(),
             file_name: entry.file_name(),
-            metadata,
+            kind: kind_from_std_metadata(&metadata),
         }) {
             break;
         }

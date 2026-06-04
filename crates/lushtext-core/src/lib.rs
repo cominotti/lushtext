@@ -91,7 +91,7 @@ pub fn init_schema_dir() {
     // Dev builds: point to source tree's compiled schemas
     if std::env::var_os("GSETTINGS_SCHEMA_DIR").is_none() {
         let dev_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        if fs_metadata::file_facts(&dev_dir.join("gschemas.compiled")).is_ok() {
+        if fs_metadata::exists(&dev_dir.join("gschemas.compiled")) {
             // SAFETY: set_var is unsafe because concurrent env access is UB.
             // This runs during run(), before app.run() starts the GTK main
             // loop and before any background threads are spawned.

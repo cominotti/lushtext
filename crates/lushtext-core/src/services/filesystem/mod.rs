@@ -18,7 +18,7 @@ pub mod write;
 
 pub use types::{
     DirectoryEntryInfo, DirectoryScanPolicy, FileFacts, FileKind, FileSnapshot, MutationOutcome,
-    WriteLabel,
+    PathStatus, WriteLabel,
 };
 
 #[cfg(test)]
@@ -55,6 +55,69 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].file_name, "visible.txt");
+    }
+
+    #[test]
+    fn path_status_reports_missing_file_directory_and_errors() {
+        let dir = TempDir::new().expect("temp dir");
+        let file_path = dir.path().join("note.txt");
+        let child_of_file = file_path.join("child.txt");
+        fixture::write_text(&file_path, "hello\n");
+
+        assert_eq!(
+            metadata::path_status(&file_path).expect("file status"),
+            PathStatus::File
+        );
+        assert_eq!(
+            metadata::path_status(dir.path()).expect("directory status"),
+            PathStatus::Directory
+        );
+        assert_eq!(
+            metadata::path_status(&dir.path().join("missing.txt")).expect("missing status"),
+            PathStatus::Missing
+        );
+        assert!(metadata::path_status(&child_of_file).is_err());
+    }
+
+    #[test]
+    fn exists_reports_present_paths_without_rich_facts() {
+        let dir = TempDir::new().expect("temp dir");
+        let file_path = dir.path().join("note.txt");
+        fixture::write_text(&file_path, "hello\n");
+
+        assert!(metadata::exists(&file_path));
+        assert!(metadata::exists(dir.path()));
+        assert!(!metadata::exists(&dir.path().join("missing.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_scan_reports_symlink_targets_through_boundary_kind() {
+        let dir = TempDir::new().expect("temp dir");
+        let target = dir.path().join("target.txt");
+        let link = dir.path().join("link.txt");
+        fixture::write_text(&target, "linked\n");
+        fixture::symlink(&target, &link);
+
+        let entries = tree::scan_directory(dir.path(), DirectoryScanPolicy::visible_workspace())
+            .expect("scan directory");
+        let link = entries
+            .iter()
+            .find(|entry| entry.file_name == "link.txt")
+            .expect("symlink entry");
+
+        assert_eq!(link.kind, FileKind::File);
+    }
+
+    #[test]
+    fn tree_scan_reports_missing_directories_as_errors() {
+        let dir = TempDir::new().expect("temp dir");
+        let result = tree::scan_directory(
+            &dir.path().join("missing"),
+            DirectoryScanPolicy::visible_workspace(),
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

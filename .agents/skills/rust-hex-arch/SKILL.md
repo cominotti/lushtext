@@ -71,7 +71,7 @@ These principles override pattern-matching instinct. When in doubt, favor the si
 
 2. **Free functions are the default service boundary.** `workspace_manager::load(path)` is usually clearer than `dyn WorkspaceStore`. Only introduce a trait when multiple implementations, mock seams, or a named domain boundary justify it. See `references/port-patterns.md`.
 
-3. **`services::filesystem` is the filesystem adapter.** Prefer its concrete operation-family APIs over adding a virtual filesystem trait unless a change proves multiple implementations or a named testing seam is truly needed.
+3. **`services::filesystem` is the filesystem adapter.** Prefer its concrete operation-family APIs over adding a virtual filesystem trait unless a change proves multiple implementations or a named testing seam is truly needed. Use cheap status helpers for presence/kind questions and rich metadata facts only when canonical identity, byte size, or mtime are part of the workflow.
 
 4. **`RefCell<T>` and `Cell<T>` in `imp` structs are normal.** GObject methods take `&self`; interior mutability is the standard GTK4-rs pattern, not a smell by itself.
 

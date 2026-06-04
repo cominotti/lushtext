@@ -9,7 +9,6 @@
 //! browse work can run on background threads.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -26,7 +25,7 @@ use crate::services::{
         DirectoryScanPolicy, FileKind, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
         read as fs_read, tree as fs_tree, write as fs_write,
     },
-    json_store,
+    json_store, note_storage,
 };
 
 /// Directory name that stores one local-history lineage per saved document.
@@ -120,13 +119,7 @@ pub fn local_history_dir(data_dir: &Path) -> PathBuf {
 ///
 /// Returns an error if the path cannot be canonicalized.
 pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
-    let display_path = path.to_path_buf();
-    let canonical_path = fs_metadata::canonical_path(path)
-        .with_context(|| format!("failed to canonicalize {}", path.display()))?;
-    Ok(DocumentSidecarIdentity::from_paths(
-        display_path,
-        canonical_path,
-    ))
+    note_storage::resolve_document_identity(path)
 }
 
 /// Map the editor's existing large-file policy onto local-history behavior.
@@ -225,7 +218,7 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
         .lock()
         .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
     let base_dir = local_history_dir(data_dir);
-    if fs_metadata::file_facts(&base_dir).is_err() {
+    if !fs_metadata::path_status(&base_dir)?.is_present() {
         return Ok(0);
     }
 
@@ -233,7 +226,7 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
     let mut loaded_documents = load_all_documents_from_base(&base_dir)?;
     for loaded in &mut loaded_documents {
         let Some((display_path, canonical_path)) =
-            rebase_identity_paths(&loaded.document.identity, old_path, new_path)
+            note_storage::rebase_identity_paths(&loaded.document.identity, old_path, new_path)
         else {
             continue;
         };
@@ -313,7 +306,7 @@ fn load_document_for_identity(
     identity: DocumentSidecarIdentity,
 ) -> Result<LocalHistoryDocument> {
     let dir = document_dir(data_dir, &identity);
-    match load_json_file::<LocalHistoryDocument>(&dir.join(INDEX_FILENAME))? {
+    match note_storage::load_json_file::<LocalHistoryDocument>(&dir.join(INDEX_FILENAME))? {
         Some(mut document) => {
             document.sort_newest_first();
             Ok(document)
@@ -357,7 +350,7 @@ fn trim_document_to_retention(
 
 fn enforce_global_retention_locked(data_dir: &Path, retention: RetentionPolicy) -> Result<()> {
     let base_dir = local_history_dir(data_dir);
-    if fs_metadata::file_facts(&base_dir).is_err() {
+    if !fs_metadata::path_status(&base_dir)?.is_present() {
         return Ok(());
     }
 
@@ -434,7 +427,7 @@ fn load_all_documents_from_base(base_dir: &Path) -> Result<Vec<LoadedHistoryDocu
         }
 
         let Some(mut document) =
-            load_json_file::<LocalHistoryDocument>(&path.join(INDEX_FILENAME))?
+            note_storage::load_json_file::<LocalHistoryDocument>(&path.join(INDEX_FILENAME))?
         else {
             continue;
         };
@@ -460,7 +453,7 @@ fn migrate_loaded_document(
         return Ok(());
     }
 
-    if fs_metadata::file_facts(&target_dir).is_err() {
+    if !fs_metadata::path_status(&target_dir)?.is_present() {
         if let Some(parent) = target_dir.parent() {
             fs_write::create_dir_all_durable(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -479,19 +472,22 @@ fn migrate_loaded_document(
         return Ok(());
     }
 
-    let mut target_document =
-        match load_json_file::<LocalHistoryDocument>(&target_dir.join(INDEX_FILENAME))? {
-            Some(mut document) => {
-                document.sort_newest_first();
-                document
-            }
-            None => LocalHistoryDocument::empty(new_identity.clone()),
-        };
+    let mut target_document = match note_storage::load_json_file::<LocalHistoryDocument>(
+        &target_dir.join(INDEX_FILENAME),
+    )? {
+        Some(mut document) => {
+            document.sort_newest_first();
+            document
+        }
+        None => LocalHistoryDocument::empty(new_identity.clone()),
+    };
 
     for meta in &loaded.document.snapshots {
         let from = snapshot_path(&loaded.dir, &meta.snapshot_id);
         let to = snapshot_path(&target_dir, &meta.snapshot_id);
-        if fs_metadata::file_facts(&from).is_err() || fs_metadata::file_facts(&to).is_ok() {
+        if !fs_metadata::path_status(&from)?.is_present()
+            || fs_metadata::path_status(&to)?.is_present()
+        {
             continue;
         }
         fs_write::rename_durable(&from, &to)
@@ -533,64 +529,6 @@ fn remove_snapshot_files(document_dir: &Path, snapshots: &[LocalHistorySnapshotM
                 path.display()
             );
         }
-    }
-}
-
-fn rebase_identity_paths(
-    identity: &DocumentSidecarIdentity,
-    old_path: &Path,
-    new_path: &Path,
-) -> Option<(PathBuf, PathBuf)> {
-    if identity.display_path == old_path || identity.display_path.starts_with(old_path) {
-        let suffix = identity
-            .display_path
-            .strip_prefix(old_path)
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let display_path = if suffix.as_os_str().is_empty() {
-            new_path.to_path_buf()
-        } else {
-            new_path.join(suffix)
-        };
-        let canonical_path =
-            fs_metadata::canonical_path(&display_path).unwrap_or_else(|_| display_path.clone());
-        return Some((display_path, canonical_path));
-    }
-
-    if identity.canonical_path == old_path || identity.canonical_path.starts_with(old_path) {
-        let suffix = identity
-            .canonical_path
-            .strip_prefix(old_path)
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let display_path = if suffix.as_os_str().is_empty() {
-            new_path.to_path_buf()
-        } else {
-            new_path.join(suffix)
-        };
-        let canonical_path =
-            fs_metadata::canonical_path(&display_path).unwrap_or_else(|_| display_path.clone());
-        return Some((display_path, canonical_path));
-    }
-
-    None
-}
-
-fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
-    match fs_read::bytes(path) {
-        Ok(bytes) => {
-            let value = serde_json::from_slice(&bytes)
-                .with_context(|| format!("failed to parse {}", path.display()))?;
-            Ok(Some(value))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to read {}: {}",
-            path.display(),
-            error
-        )),
     }
 }
 
@@ -831,7 +769,7 @@ mod tests {
             "oldest metadata should be trimmed"
         );
         assert!(
-            fs_metadata::file_facts(&snapshot_path(&doc_dir, &first_meta.snapshot_id)).is_err(),
+            !fs_metadata::exists(&snapshot_path(&doc_dir, &first_meta.snapshot_id)),
             "oldest snapshot file should be deleted with its metadata"
         );
     }
@@ -895,15 +833,15 @@ mod tests {
         assert_eq!(second_snapshots.len(), 1);
         assert_eq!(third_snapshots.len(), 1);
         assert!(
-            fs_metadata::file_facts(&first_doc_dir).is_err(),
+            !fs_metadata::exists(&first_doc_dir),
             "empty pruned lineage should be removed"
         );
         assert_eq!(stable_bytes_hash(b"b1\n"), second_snapshots[0].content_hash);
         assert_eq!(stable_bytes_hash(b"c1\n"), third_snapshots[0].content_hash);
-        assert!(
-            fs_metadata::file_facts(&snapshot_path(&first_doc_dir, &first_meta.snapshot_id))
-                .is_err()
-        );
+        assert!(!fs_metadata::exists(&snapshot_path(
+            &first_doc_dir,
+            &first_meta.snapshot_id
+        )));
         assert_eq!(
             load_snapshot_for_path(dir.path(), &second, &second_meta.snapshot_id)
                 .expect("load kept second")
@@ -1062,7 +1000,7 @@ mod tests {
 
         assert_eq!(migrated, 1);
         assert!(
-            fs_metadata::file_facts(&old_doc_dir).is_err(),
+            !fs_metadata::exists(&old_doc_dir),
             "source lineage should be removed"
         );
         let snapshots = list_snapshots_for_path(dir.path(), &new_path).expect("list merged");
@@ -1134,51 +1072,7 @@ mod tests {
 
         remove_snapshot_files(dir.path(), &[present, missing]);
 
-        assert!(fs_metadata::file_facts(&present_path).is_err());
-    }
-
-    #[test]
-    fn rebase_identity_paths_handles_display_and_canonical_prefixes() {
-        let old_root = Path::new("/project/old");
-        let new_root = Path::new("/project/new");
-        let display_nested = DocumentSidecarIdentity::from_paths(
-            PathBuf::from("/project/old/src/file.txt"),
-            PathBuf::from("/canonical/elsewhere/file.txt"),
-        );
-        let canonical_nested = DocumentSidecarIdentity::from_paths(
-            PathBuf::from("/visible/elsewhere/file.txt"),
-            PathBuf::from("/project/old/src/file.txt"),
-        );
-        let unrelated = DocumentSidecarIdentity::from_paths(
-            PathBuf::from("/project/other/file.txt"),
-            PathBuf::from("/canonical/other/file.txt"),
-        );
-
-        let (display_path, canonical_path) =
-            rebase_identity_paths(&display_nested, old_root, new_root)
-                .expect("display path should rebase");
-        assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
-        assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
-
-        let (display_path, canonical_path) =
-            rebase_identity_paths(&canonical_nested, old_root, new_root)
-                .expect("canonical path should rebase");
-        assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
-        assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
-
-        assert!(rebase_identity_paths(&unrelated, old_root, new_root).is_none());
-    }
-
-    #[test]
-    fn load_json_file_reports_non_missing_read_errors() {
-        let dir = TempDir::new().expect("tempdir");
-
-        let error = load_json_file::<serde_json::Value>(dir.path()).expect_err("directory read");
-
-        assert!(
-            error.to_string().contains("failed to read"),
-            "unexpected error: {error}"
-        );
+        assert!(!fs_metadata::exists(&present_path));
     }
 
     #[test]

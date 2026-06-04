@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use super::sys;
-use super::types::{FileFacts, FileKind};
+use super::types::{FileFacts, FileKind, PathStatus};
 
 /// Read coarse metadata facts for `path`.
 ///
@@ -24,6 +24,32 @@ pub fn file_facts(path: &Path) -> std::io::Result<FileFacts> {
         byte_size: sys::descriptor_file_len(path).unwrap_or(metadata.len()),
         modified_at_secs: modified_at_secs(&metadata),
     })
+}
+
+/// Read only existence and coarse kind for `path`.
+///
+/// Missing paths are reported as [`PathStatus::Missing`]; other metadata
+/// failures are returned so callers can decide whether to surface them.
+///
+/// # Errors
+///
+/// Returns an error when the platform reports a metadata failure other than
+/// the target being absent.
+pub fn path_status(path: &Path) -> std::io::Result<PathStatus> {
+    match sys::metadata(path) {
+        Ok(metadata) => Ok(PathStatus::from(kind_from_metadata(&metadata))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(PathStatus::Missing),
+        Err(error) => Err(error),
+    }
+}
+
+/// Return whether `path` currently exists, treating metadata errors as absent.
+///
+/// Use [`path_status`] when the caller must distinguish missing paths from
+/// permission, parent, or other platform errors.
+#[must_use]
+pub fn exists(path: &Path) -> bool {
+    sys::path_exists(path)
 }
 
 /// Canonicalize a path through the filesystem boundary.

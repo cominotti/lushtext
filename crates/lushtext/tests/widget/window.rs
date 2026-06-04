@@ -4488,9 +4488,9 @@ fn test_flush_dirty_drafts_fails_when_manifest_cannot_be_saved() {
     let data_dir = json_store::data_dir();
     let drafts_dir = draft_service::drafts_dir(&data_dir);
     let manifest_path = drafts_dir.join("manifest.json");
-    if fs_metadata::file_facts(&manifest_path).is_ok_and(|facts| {
-        facts.kind == lushtext_core::services::filesystem::FileKind::Directory
-    }) {
+    if fs_metadata::path_status(&manifest_path)
+        .is_ok_and(lushtext_core::services::filesystem::PathStatus::is_directory)
+    {
         fixture::remove_dir_all(&manifest_path);
     } else {
         fixture::remove_file(&manifest_path);
@@ -4630,7 +4630,7 @@ fn test_file_chooser_save_as_selection_adopts_destination_after_write() {
     window.select_save_as_destination_for_test(&path);
 
     wait_until(Duration::from_secs(2), || {
-        fs_metadata::file_facts(&path).is_ok()
+        fs_metadata::exists(&path)
             && editor.file_path() == Some(path.clone())
             && !editor.is_modified()
     });
@@ -5747,7 +5747,7 @@ fn test_close_modified_file_tab_save_failure_keeps_tab_modified() {
     assert_tab_count(&window, 1);
     assert_eq!(editor_buffer_text(&editor), "still unsaved\n");
     assert!(editor.is_modified());
-    assert!(fs_metadata::file_facts(&bad_path).is_err());
+    assert!(!fs_metadata::exists(&bad_path));
 }
 
 #[test]

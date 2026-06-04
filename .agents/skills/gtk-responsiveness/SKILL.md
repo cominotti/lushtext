@@ -106,6 +106,7 @@ While reviewing, also check for genuine memory leaks: strong reference cycles th
 Review criteria:
 - Is any blocking I/O (`services::filesystem` reads/writes/scans/metadata or `Command::new`) called on the main thread outside `spawn_blocking_then`?
 - Does the code bypass `services::filesystem` with raw filesystem calls outside approved backend or fixture modules?
+- Does a hot path call rich metadata helpers when a cheap existence/kind status helper would answer the question?
 - Is heavy work done in the `then` callback? (Large JSON parsing, file processing should be in the `work` closure, not `then`)
 - For file operations: is the path cloned/moved into the closure correctly? (Borrowed paths can't cross thread boundaries)
 - Cancel tokens: for large file loads, does EditorPage store an Arc<AtomicBool> checked before AND after the I/O call?

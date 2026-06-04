@@ -14,6 +14,7 @@ This crate owns the application's real behavior: domain types, services, and GTK
 - Treat `ui/` as driving adapters. Split big widget folders by workflow before inventing new abstraction layers.
 - Treat `services/` as application logic and driven adapters. Prefer free functions unless a trait is clearly justified.
 - Treat `model/` as the home for invariants, value objects, and repeated field bundles.
+- Treat `services::filesystem` as the only production filesystem adapter. Prefer `metadata::exists` or `metadata::path_status` for cheap status probes and keep `metadata::file_facts` for workflows that need canonical identity, byte size, or mtime.
 
 ## Editing Rules
 

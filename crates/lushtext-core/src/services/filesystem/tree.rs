@@ -7,7 +7,6 @@
 
 use std::path::Path;
 
-use super::metadata::kind_from_metadata;
 use super::sys;
 use super::types::{DirectoryEntryInfo, DirectoryScanPolicy};
 
@@ -60,7 +59,7 @@ where
         visit(DirectoryEntryInfo {
             path: entry.path,
             file_name: entry.file_name.to_string_lossy().into_owned(),
-            kind: kind_from_metadata(&entry.metadata),
+            kind: entry.kind,
         })
     })
 }

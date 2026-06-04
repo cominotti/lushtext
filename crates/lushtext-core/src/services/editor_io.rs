@@ -1443,7 +1443,7 @@ mod tests {
 
         assert!(matches!(result, Err(SaveError::LossyEncoding { .. })));
         assert!(
-            fs_metadata::file_facts(&path).is_err(),
+            !fs_metadata::exists(&path),
             "the file should not be written when lossy conversion is blocked"
         );
     }

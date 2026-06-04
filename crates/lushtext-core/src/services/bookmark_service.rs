@@ -7,16 +7,14 @@
 //! in-app renames, and collect bookmark rows for browse surfaces.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 
 use crate::model::bookmark::{BookmarkDocument, BookmarkId, BookmarkRecord};
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
 use crate::services::filesystem::{
-    DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, read as fs_read,
-    tree as fs_tree,
+    DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
 };
-use crate::services::json_store;
+use crate::services::{json_store, note_storage};
 
 /// Directory name that stores per-file bookmark sidecars.
 const BOOKMARKS_DIR: &str = "bookmarks";
@@ -56,13 +54,7 @@ pub fn bookmarks_dir(data_dir: &Path) -> PathBuf {
 ///
 /// Returns an error if the path cannot be canonicalized.
 pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
-    let display_path = path.to_path_buf();
-    let canonical_path = fs_metadata::canonical_path(path)
-        .with_context(|| format!("failed to canonicalize {}", path.display()))?;
-    Ok(DocumentSidecarIdentity::from_paths(
-        display_path,
-        canonical_path,
-    ))
+    note_storage::resolve_document_identity(path)
 }
 
 /// Load bookmarks for a saved file, returning an empty document if no sidecar exists yet.
@@ -80,9 +72,9 @@ fn load_for_identity(
     data_dir: &Path,
     identity: DocumentSidecarIdentity,
 ) -> Result<BookmarkDocument> {
-    let filename = sidecar_filename(&identity);
+    let filename = note_storage::sidecar_filename(&identity.sidecar_id);
     let path = bookmarks_dir(data_dir).join(&filename);
-    match load_json_file::<BookmarkDocument>(&path) {
+    match note_storage::load_json_file::<BookmarkDocument>(&path) {
         Ok(Some(mut document)) => {
             document.sort_stable();
             Ok(document)
@@ -128,7 +120,7 @@ pub fn save_document(data_dir: &Path, mut document: BookmarkDocument) -> Result<
 
     json_store::save(
         &bookmarks_dir(data_dir),
-        &sidecar_filename(&document.identity),
+        &note_storage::sidecar_filename(&document.identity.sidecar_id),
         &document,
     )
 }
@@ -145,7 +137,7 @@ pub fn delete_for_path(data_dir: &Path, path: &Path) -> Result<()> {
 }
 
 fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> Result<()> {
-    let path = bookmarks_dir(data_dir).join(sidecar_filename(identity));
+    let path = bookmarks_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
     match fs_mutate::remove_file_if_exists(&path) {
         Ok(_) => Ok(()),
         Err(error) => Err(anyhow::anyhow!(
@@ -166,7 +158,7 @@ fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> R
 /// document cannot be read, rewritten, or cleaned up.
 pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Result<usize> {
     let dir = bookmarks_dir(data_dir);
-    if fs_metadata::file_facts(&dir).is_err() {
+    if !fs_metadata::path_status(&dir)?.is_present() {
         return Ok(0);
     }
 
@@ -179,17 +171,20 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
             continue;
         }
 
-        let Some(mut document) = load_json_file::<BookmarkDocument>(&sidecar_path)? else {
+        let Some(mut document) = note_storage::load_json_file::<BookmarkDocument>(&sidecar_path)?
+        else {
             continue;
         };
         let Some((display_path, canonical_path)) =
-            rebase_identity_paths(&document.identity, old_path, new_path)
+            note_storage::rebase_identity_paths(&document.identity, old_path, new_path)
         else {
             continue;
         };
 
         document.identity = DocumentSidecarIdentity::from_paths(display_path, canonical_path);
-        let new_sidecar_path = dir.join(sidecar_filename(&document.identity));
+        let new_sidecar_path = dir.join(note_storage::sidecar_filename(
+            &document.identity.sidecar_id,
+        ));
         save_document(data_dir, document)?;
         if sidecar_path != new_sidecar_path {
             let _ = fs_mutate::remove_file_if_exists(&sidecar_path);
@@ -210,9 +205,9 @@ pub fn list_workspace_bookmarks(
     data_dir: &Path,
     workspace_roots: &[PathBuf],
 ) -> Result<Vec<WorkspaceBookmark>> {
-    let canonical_roots = canonicalize_roots(workspace_roots);
+    let canonical_roots = note_storage::canonicalize_roots(workspace_roots);
     let dir = bookmarks_dir(data_dir);
-    if fs_metadata::file_facts(&dir).is_err() {
+    if !fs_metadata::path_status(&dir)?.is_present() {
         return Ok(Vec::new());
     }
 
@@ -220,10 +215,10 @@ pub fn list_workspace_bookmarks(
     for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
         .with_context(|| format!("failed to read {}", dir.display()))?
     {
-        let Some(document) = load_json_file::<BookmarkDocument>(&entry.path)? else {
+        let Some(document) = note_storage::load_json_file::<BookmarkDocument>(&entry.path)? else {
             continue;
         };
-        if !matches_any_root(&document.identity, &canonical_roots) {
+        if !note_storage::matches_any_root(&document.identity, &canonical_roots) {
             continue;
         }
         let display_path = document.identity.display_path.clone();
@@ -250,81 +245,6 @@ pub fn list_workspace_bookmarks(
     Ok(bookmarks)
 }
 
-fn sidecar_filename(identity: &DocumentSidecarIdentity) -> String {
-    format!("{}.json", identity.sidecar_id)
-}
-
-fn canonicalize_roots(workspace_roots: &[PathBuf]) -> Vec<PathBuf> {
-    workspace_roots
-        .iter()
-        .map(|root| fs_metadata::canonical_path(root).unwrap_or_else(|_| root.clone()))
-        .collect()
-}
-
-fn matches_any_root(identity: &DocumentSidecarIdentity, workspace_roots: &[PathBuf]) -> bool {
-    workspace_roots.iter().any(|root| {
-        identity.canonical_path.starts_with(root) || identity.display_path.starts_with(root)
-    })
-}
-
-fn rebase_identity_paths(
-    identity: &DocumentSidecarIdentity,
-    old_path: &Path,
-    new_path: &Path,
-) -> Option<(PathBuf, PathBuf)> {
-    if identity.display_path == old_path || identity.display_path.starts_with(old_path) {
-        let suffix = identity
-            .display_path
-            .strip_prefix(old_path)
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let display_path = if suffix.as_os_str().is_empty() {
-            new_path.to_path_buf()
-        } else {
-            new_path.join(suffix)
-        };
-        let canonical_path =
-            fs_metadata::canonical_path(&display_path).unwrap_or_else(|_| display_path.clone());
-        return Some((display_path, canonical_path));
-    }
-
-    if identity.canonical_path == old_path || identity.canonical_path.starts_with(old_path) {
-        let suffix = identity
-            .canonical_path
-            .strip_prefix(old_path)
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let display_path = if suffix.as_os_str().is_empty() {
-            new_path.to_path_buf()
-        } else {
-            new_path.join(suffix)
-        };
-        let canonical_path =
-            fs_metadata::canonical_path(&display_path).unwrap_or_else(|_| display_path.clone());
-        return Some((display_path, canonical_path));
-    }
-
-    None
-}
-
-fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
-    match fs_read::bytes(path) {
-        Ok(bytes) => {
-            let value = serde_json::from_slice(&bytes)
-                .with_context(|| format!("failed to parse {}", path.display()))?;
-            Ok(Some(value))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to read {}: {}",
-            path.display(),
-            error
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,7 +260,7 @@ mod tests {
     }
 
     fn sidecar_path_for_identity(data_dir: &Path, identity: &DocumentSidecarIdentity) -> PathBuf {
-        bookmarks_dir(data_dir).join(sidecar_filename(identity))
+        bookmarks_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id))
     }
 
     #[test]
@@ -391,8 +311,8 @@ mod tests {
             .expect("expected operation to succeed");
         save_for_path(dir.path(), &file_path, &[]).expect("expected operation to succeed");
 
-        let sidecar_path = bookmarks_dir(dir.path()).join(format!("{}.json", identity.sidecar_id));
-        assert!(fs_metadata::file_facts(&sidecar_path).is_err());
+        let sidecar_path = sidecar_path_for_identity(dir.path(), &identity);
+        assert!(!fs_metadata::exists(&sidecar_path));
     }
 
     #[test]
@@ -406,7 +326,7 @@ mod tests {
 
         delete_for_path(dir.path(), &file_path).expect("delete sidecar");
 
-        assert!(fs_metadata::file_facts(&sidecar_path).is_err());
+        assert!(!fs_metadata::exists(&sidecar_path));
         delete_for_path(dir.path(), &file_path).expect("missing sidecar should be ignored");
     }
 
@@ -450,7 +370,7 @@ mod tests {
 
         assert_eq!(migrated, 1);
         assert!(
-            fs_metadata::file_facts(&old_sidecar_path).is_err(),
+            !fs_metadata::exists(&old_sidecar_path),
             "old sidecar should be removed"
         );
         let loaded = load_for_path(dir.path(), &new_file).expect("expected operation to succeed");
@@ -503,82 +423,6 @@ mod tests {
         assert!(
             bookmarks.iter().all(|bookmark| bookmark.path != outside),
             "outside workspace bookmarks should be filtered out"
-        );
-    }
-
-    #[test]
-    fn matches_any_root_accepts_display_or_canonical_roots_only() {
-        let root = PathBuf::from("/workspace");
-        let canonical_match = DocumentSidecarIdentity::from_paths(
-            PathBuf::from("/visible/file.rs"),
-            PathBuf::from("/workspace/file.rs"),
-        );
-        let display_match = DocumentSidecarIdentity::from_paths(
-            PathBuf::from("/workspace/visible.rs"),
-            PathBuf::from("/canonical/file.rs"),
-        );
-        let outside = DocumentSidecarIdentity::from_paths(
-            PathBuf::from("/outside/visible.rs"),
-            PathBuf::from("/canonical/file.rs"),
-        );
-
-        assert!(matches_any_root(
-            &canonical_match,
-            std::slice::from_ref(&root)
-        ));
-        assert!(matches_any_root(
-            &display_match,
-            std::slice::from_ref(&root)
-        ));
-        assert!(!matches_any_root(&outside, &[root]));
-    }
-
-    #[test]
-    fn rebase_identity_paths_handles_display_and_canonical_prefixes() {
-        let old_root = Path::new("/project/old");
-        let new_root = Path::new("/project/new");
-        let display_nested = DocumentSidecarIdentity::from_paths(
-            PathBuf::from("/project/old/src/file.txt"),
-            PathBuf::from("/canonical/elsewhere/file.txt"),
-        );
-        let canonical_nested = DocumentSidecarIdentity::from_paths(
-            PathBuf::from("/visible/elsewhere/file.txt"),
-            PathBuf::from("/project/old/src/file.txt"),
-        );
-        let unrelated = DocumentSidecarIdentity::from_paths(
-            PathBuf::from("/project/other/file.txt"),
-            PathBuf::from("/canonical/other/file.txt"),
-        );
-
-        let (display_path, canonical_path) =
-            rebase_identity_paths(&display_nested, old_root, new_root)
-                .expect("display path should rebase");
-        assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
-        assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
-
-        let (display_path, canonical_path) =
-            rebase_identity_paths(&canonical_nested, old_root, new_root)
-                .expect("canonical path should rebase");
-        assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
-        assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
-
-        assert!(rebase_identity_paths(&unrelated, old_root, new_root).is_none());
-    }
-
-    #[test]
-    fn load_json_file_distinguishes_missing_from_other_read_errors() {
-        let dir = TempDir::new().expect("expected operation to succeed");
-        let missing_path = dir.path().join("missing.json");
-
-        assert!(
-            load_json_file::<serde_json::Value>(&missing_path)
-                .expect("missing file should be accepted")
-                .is_none()
-        );
-        let error = load_json_file::<serde_json::Value>(dir.path()).expect_err("directory read");
-        assert!(
-            error.to_string().contains("failed to read"),
-            "unexpected error: {error}"
         );
     }
 }

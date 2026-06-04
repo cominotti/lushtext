@@ -36,6 +36,7 @@ Automatic guidance must not create or encourage responsiveness regressions.
 - Do not suggest per-frame, per-animation-tick, per-keystroke, or per-notify safety validation. Safety checks on interactive paths must stay O(1) on the GTK main thread.
 - For animations, timers, signal handlers, and rapid input flows, prefer existing project patterns such as `spawn_blocking_then`, generation counters, and success-gated state transitions.
 - For save-time formatting rewrites, preserve the disk-to-buffer contract: if the bytes written to disk differ from the captured buffer snapshot, update the live buffer after the write succeeds before clearing the modified state, or leave the buffer modified.
+- For path presence or kind checks, prefer `services::filesystem::metadata::exists` or `path_status`; reserve `file_facts` for workflows that also need canonical identity, byte size, or mtime.
 - If deeper review would require repo-wide inspection, many-file greps, or parallel audit subagents, recommend explicit `/data-safety` instead of doing it automatically.
 - When safety and responsiveness pull in different directions, preserve both: do not propose data-loss fixes that introduce UI jank, animation stutter, or "Application Not Responding" risks.
 

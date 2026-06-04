@@ -58,14 +58,23 @@ Never pass GTK objects directly across threads — they are not `Send`/`Sync`. U
 Production code must use `services::filesystem` for file reads, metadata,
 canonical identity, traversal, mutation, sidecar helpers, and durable writes.
 Call sites should read in LushText terms, such as
-`filesystem::read::text`, `filesystem::metadata::file_facts`,
+`filesystem::read::text`, `filesystem::metadata::exists`,
+`filesystem::metadata::path_status`, `filesystem::metadata::file_facts`,
 `filesystem::tree::scan_directory`, `filesystem::mutate::remove_file_if_exists`,
-and `filesystem::write::atomic_replace`.
+and `filesystem::write::atomic_replace`. Use `exists` or `path_status` for
+presence/kind checks so callers do not pay for canonicalization, file length, or
+mtime conversion they do not use. Reserve `file_facts` for workflows that
+actually need canonical identity, byte size, or modification time.
 
 Approved raw filesystem exceptions are limited to:
 
 - `services::filesystem::sys` for the private descriptor and platform backend.
 - `services::filesystem::fixture` for test and benchmark setup/assertions.
+- Documented, read-only engine adapters with an audit allowlist. Today this is
+  limited to the content-search query path, whose walker/searcher stack may own
+  traversal, ignore/glob filtering, binary detection, and streaming reads. Its
+  command side must still route Replace All writes, undo journals, cleanup, and
+  persistence through `services::filesystem`.
 
 Do not import the private durable implementation from callers. The public
 durability surface is `services::filesystem::write`, including

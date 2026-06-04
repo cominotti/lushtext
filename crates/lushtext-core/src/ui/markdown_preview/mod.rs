@@ -30,7 +30,6 @@ use sourceview5::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::services::filesystem::metadata as fs_metadata;
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
 
 use imp::{
@@ -328,11 +327,11 @@ struct DefinitionRenderState {
 /// Result of trying to resolve a local filesystem path from Markdown content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LocalPathResolution {
-    /// One unambiguous local path was found.
+    /// One unambiguous local path candidate was formed.
     Resolved(PathBuf),
-    /// No matching local path exists.
+    /// No document or workspace base can produce a local path candidate.
     Missing,
-    /// More than one workspace-relative path matched, so preview should not guess.
+    /// More than one workspace-relative path is possible, so preview should not guess.
     Ambiguous(Vec<PathBuf>),
 }
 
@@ -1915,13 +1914,10 @@ fn resolve_link_target(
         if scheme.as_str() == "file" {
             let file = gio::File::for_uri(raw_target);
             let path = file.path()?;
-            if path_exists(&path) {
-                return Some(PreviewLaunchTarget {
-                    uri: raw_target.to_string(),
-                    local_path: Some(path),
-                });
-            }
-            return None;
+            return Some(PreviewLaunchTarget {
+                uri: raw_target.to_string(),
+                local_path: Some(path),
+            });
         }
 
         return Some(PreviewLaunchTarget {
@@ -1955,7 +1951,7 @@ fn resolve_image_target(
         if scheme.as_str() == "file" {
             let file = gio::File::for_uri(raw_target);
             return match file.path() {
-                Some(path) if path_exists(&path) => ResolvedImageTarget::LocalFile(path),
+                Some(path) => ResolvedImageTarget::LocalFile(path),
                 _ => ResolvedImageTarget::Fallback {
                     title: "Image file not found",
                     body: raw_target.to_string(),
@@ -1993,38 +1989,28 @@ fn resolve_local_path(
 ) -> LocalPathResolution {
     let path = Path::new(raw_target);
     if path.is_absolute() {
-        return if path_exists(path) {
-            LocalPathResolution::Resolved(path.to_path_buf())
-        } else {
-            LocalPathResolution::Missing
-        };
+        return LocalPathResolution::Resolved(path.to_path_buf());
     }
 
     if let Some(document_path) = &context.document_path
         && let Some(parent) = document_path.parent()
     {
-        let candidate = parent.join(path);
-        if path_exists(&candidate) {
-            return LocalPathResolution::Resolved(candidate);
-        }
+        return LocalPathResolution::Resolved(parent.join(path));
     }
 
-    let matches = context
+    let candidates = context
         .workspace_roots
         .iter()
         .map(|root| root.join(path))
-        .filter(|candidate| path_exists(candidate))
         .collect::<Vec<_>>();
 
-    match matches.len() {
+    match candidates.len() {
         0 => LocalPathResolution::Missing,
-        1 => LocalPathResolution::Resolved(matches.into_iter().next().expect("one match exists")),
-        _ => LocalPathResolution::Ambiguous(matches),
+        1 => LocalPathResolution::Resolved(
+            candidates.into_iter().next().expect("one candidate exists"),
+        ),
+        _ => LocalPathResolution::Ambiguous(candidates),
     }
-}
-
-fn path_exists(path: &Path) -> bool {
-    fs_metadata::file_facts(path).is_ok()
 }
 
 /// Assign or look up the stable preview-local number for one footnote label.
@@ -2525,7 +2511,24 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_local_path_reports_ambiguous_workspace_matches() {
+    fn test_resolve_local_path_defers_existence_checks_to_activation() {
+        let tempdir = tempdir().expect("tempdir");
+        let document_path = tempdir.path().join("docs/guide.md");
+        let context = MarkdownPreviewRenderContext::new(Some(document_path.clone()), Vec::new());
+
+        assert_eq!(
+            resolve_local_path("missing.png", &context),
+            LocalPathResolution::Resolved(
+                document_path
+                    .parent()
+                    .expect("document path has parent")
+                    .join("missing.png")
+            )
+        );
+    }
+
+    #[test]
+    fn test_resolve_local_path_reports_ambiguous_workspace_candidates() {
         let tempdir = tempdir().expect("tempdir");
         let root_a = tempdir.path().join("root-a");
         let root_b = tempdir.path().join("root-b");

@@ -83,7 +83,7 @@ proptest! {
         fs_write::copy_file_durable(&from, &to, WriteLabel::from("prop-copy"))
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
 
-        prop_assert!(fs_metadata::file_facts(&from).is_err());
+        prop_assert!(!fs_metadata::exists(&from));
         let written = fs_read::bytes(&to).map_err(|e| TestCaseError::fail(e.to_string()))?;
         prop_assert_eq!(written, source_bytes);
         prop_assert_eq!(file_mode(&to), expected_mode);

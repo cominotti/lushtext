@@ -8,8 +8,8 @@
 use crate::services::content_search::{ReplaceUndoBackup, ReplaceUndoEntry};
 use crate::services::{
     filesystem::{
-        DirectoryScanPolicy, FileKind, metadata as fs_metadata, mutate as fs_mutate,
-        tree as fs_tree, write as fs_write,
+        DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
+        write as fs_write,
     },
     json_store,
 };
@@ -42,7 +42,7 @@ struct ReplaceBackupDiskEntry {
 /// converted back into UTF-8 file content.
 pub fn load(data_dir: &Path) -> Result<ReplaceUndoBackup> {
     let journal_dir = data_dir.join(JOURNAL_DIR);
-    if fs_metadata::file_facts(&journal_dir).is_ok_and(|facts| facts.kind == FileKind::Directory) {
+    if fs_metadata::path_status(&journal_dir)?.is_directory() {
         return load_journal(&journal_dir);
     }
 
@@ -173,7 +173,7 @@ pub fn delete(data_dir: &Path) -> Result<()> {
     let journal_dir = data_dir.join(JOURNAL_DIR);
     match fs_mutate::remove_dir_all_if_exists(&journal_dir) {
         Ok(_) => {
-            if fs_metadata::file_facts(data_dir).is_ok()
+            if fs_metadata::exists(data_dir)
                 && let Err(error) = fs_write::sync_parent_dir(&journal_dir)
             {
                 tracing::warn!("Failed to sync replace journal cleanup: {error}");
@@ -265,8 +265,7 @@ mod tests {
             "saving a new file's journal entry must not rewrite older entries"
         );
         assert!(
-            fs_metadata::file_facts(&dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_b)))
-                .is_ok(),
+            fs_metadata::exists(&dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_b))),
             "the second per-file journal entry should be created independently"
         );
     }

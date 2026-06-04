@@ -19,6 +19,43 @@ pub enum FileKind {
     Other,
 }
 
+/// Cheap existence and kind status for callers that do not need rich metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PathStatus {
+    /// The path did not exist when inspected.
+    Missing,
+    /// The path exists and is a regular file.
+    File,
+    /// The path exists and is a directory.
+    Directory,
+    /// The existing target is neither a regular file nor a directory after following symlinks.
+    Other,
+}
+
+impl PathStatus {
+    /// Return whether the path existed when inspected.
+    #[must_use]
+    pub const fn is_present(self) -> bool {
+        !matches!(self, Self::Missing)
+    }
+
+    /// Return whether the path existed as a directory.
+    #[must_use]
+    pub const fn is_directory(self) -> bool {
+        matches!(self, Self::Directory)
+    }
+}
+
+impl From<FileKind> for PathStatus {
+    fn from(kind: FileKind) -> Self {
+        match kind {
+            FileKind::File => Self::File,
+            FileKind::Directory => Self::Directory,
+            FileKind::Other => Self::Other,
+        }
+    }
+}
+
 /// Metadata facts most LushText workflows need before reading or writing a file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileFacts {

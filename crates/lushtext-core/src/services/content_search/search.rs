@@ -5,6 +5,11 @@
 //! This is the query side of the content-search service. It stays pure Rust
 //! and sends `SearchEvent` values over a channel so GTK adapters can render
 //! incremental results without taking a dependency on the ripgrep engine here.
+//! Its direct `ignore` and `grep_searcher` calls are an approved read-only
+//! engine adapter exception to the normal filesystem boundary: traversal,
+//! gitignore/glob filtering, binary detection, and streaming file reads stay
+//! inside the ripgrep stack, while mutation, undo backup, and persistence remain
+//! routed through `services::filesystem`.
 
 use std::path::Path;
 use std::sync::Arc;

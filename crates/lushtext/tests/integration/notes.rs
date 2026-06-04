@@ -31,7 +31,7 @@ fn bookmark_sidecar_roundtrip_uses_saved_file_identity() {
     let sidecar_path = bookmark_service::bookmarks_dir(ctx.data_dir())
         .join(format!("{}.json", identity.sidecar_id));
     assert!(
-        fs_metadata::file_facts(&sidecar_path).is_ok(),
+        fs_metadata::exists(&sidecar_path),
         "bookmark sidecar should be written"
     );
     assert_eq!(loaded.identity.display_path, file_path);
@@ -90,7 +90,7 @@ fn document_note_roundtrip_uses_saved_file_identity() {
     let sidecar_path = document_note_service::document_notes_dir(ctx.data_dir())
         .join(format!("{}.json", identity.sidecar_id));
     assert!(
-        fs_metadata::file_facts(&sidecar_path).is_ok(),
+        fs_metadata::exists(&sidecar_path),
         "document note sidecar should be written"
     );
     assert_eq!(loaded.identity.display_path, file_path);
@@ -115,7 +115,7 @@ fn workspace_note_roundtrip_uses_root_identity_and_scope_listing() {
     let sidecar_path = workspace_note_service::workspace_notes_dir(ctx.data_dir())
         .join(format!("{}.json", identity.sidecar_id));
     assert!(
-        fs_metadata::file_facts(&sidecar_path).is_ok(),
+        fs_metadata::exists(&sidecar_path),
         "workspace note sidecar should be written"
     );
     assert_eq!(loaded.identity.display_root, root);

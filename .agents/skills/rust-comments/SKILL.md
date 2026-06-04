@@ -61,7 +61,7 @@ Each category has a **density rule** indicating when comments are required. See 
 - Threading model: main thread only? Spawns background work? Safe to call from any thread?
 - Notable side effects: modifies shared state? Emits signals? Writes to disk?
 - For filesystem helpers: comment backend invariants such as descriptor lifetime,
-  canonical identity, metadata preservation, and durability ordering; do not
+  cheap status versus rich facts, canonical identity, metadata preservation, and durability ordering; do not
   comment ordinary `services::filesystem` wrapper calls whose names already say
   what they do.
 - For signal handlers: what triggers them and the expected control flow

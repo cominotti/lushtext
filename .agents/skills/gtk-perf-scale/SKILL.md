@@ -114,7 +114,7 @@ Scale Thresholds (calibrated for GTK4/GtkSourceView5 on 4-core, 8-16GB RAM, SSD)
 | Thread spawn guard | 8 concurrent | Queue additional calls |
 
 Review criteria:
-- Size-gated loading: does the code check file size through `services::filesystem::metadata` BEFORE reading? Are thresholds applied (1MB toast, 10MB no syntax, 50MB no undo, 500MB refuse)?
+- Size-gated loading: does the code check file size through `services::filesystem::metadata` BEFORE reading? Are thresholds applied (1MB toast, 10MB no syntax, 50MB no undo, 500MB refuse)? For probes that only need existence or file kind, use the cheap status helpers instead of full metadata facts.
 - Background save: is file writing moved to spawn_blocking_then? Does it use the durable atomic-write helper, keep the editor state protected while saving, reject duplicate in-flight saves, and clear buffer.modified only after success?
 - Cancel token: does EditorPage store Arc<AtomicBool>? Is it checked before AND after the filesystem read? Is cancel_load() called on tab close?
 - Syntax gate: is reapply_language() skipped for files >10MB?

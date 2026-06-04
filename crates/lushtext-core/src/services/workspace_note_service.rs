@@ -149,7 +149,7 @@ fn delete_sidecar_file(data_dir: &Path, identity: &WorkspaceRootIdentity) -> Res
 /// sidecar cannot be read, rewritten, or cleaned up.
 pub fn move_root_tree(data_dir: &Path, old_root: &Path, new_root: &Path) -> Result<usize> {
     let dir = workspace_notes_dir(data_dir);
-    if fs_metadata::file_facts(&dir).is_err() {
+    if !fs_metadata::path_status(&dir)?.is_present() {
         return Ok(0);
     }
 
@@ -302,7 +302,7 @@ mod tests {
 
         let sidecar_path = workspace_notes_dir(dir.path())
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
-        assert!(fs_metadata::file_facts(&sidecar_path).is_err());
+        assert!(!fs_metadata::exists(&sidecar_path));
     }
 
     #[test]
@@ -317,7 +317,7 @@ mod tests {
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
 
         delete_for_root(dir.path(), &root).expect("expected operation to succeed");
-        assert!(fs_metadata::file_facts(&sidecar_path).is_err());
+        assert!(!fs_metadata::exists(&sidecar_path));
         delete_for_root(dir.path(), &root).expect("expected missing sidecar to be a no-op");
     }
 
@@ -372,7 +372,7 @@ mod tests {
             .expect("expected operation to succeed");
 
         assert_eq!(migrated, 1);
-        assert!(fs_metadata::file_facts(&old_sidecar_path).is_err());
+        assert!(!fs_metadata::exists(&old_sidecar_path));
         let loaded = load_for_root(dir.path(), &new_root).expect("expected operation to succeed");
         let loaded = loaded.expect("expected moved workspace note");
         assert_eq!(loaded.identity.display_root, new_root);
