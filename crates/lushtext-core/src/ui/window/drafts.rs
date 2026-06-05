@@ -540,19 +540,7 @@ impl super::LushtextWindow {
 
     /// Check whether a file-backed editor has restored draft content available.
     pub fn check_draft_on_open(&self, editor: &LushtextEditorPage, path: &Path) {
-        let draft_id = draft_service::draft_id_for_path(path);
-        if let Some(preloaded) = self.imp().drafts.preloaded.borrow_mut().remove(&draft_id) {
-            match preloaded {
-                PreloadedDraftRestore::Content(draft_content) => {
-                    Self::apply_draft(editor, &draft_content);
-                }
-                PreloadedDraftRestore::SkipStaleFile => {
-                    Self::show_stale_draft_skipped(editor);
-                }
-                PreloadedDraftRestore::SkipOversized => {
-                    Self::show_oversized_draft_skipped(editor);
-                }
-            }
+        if self.apply_preloaded_draft_for_path(editor, path) {
             return;
         }
 
@@ -603,6 +591,33 @@ impl super::LushtextWindow {
                 }
             },
         );
+    }
+
+    /// Apply startup-preloaded draft data for a path, if one was prepared.
+    ///
+    /// Failed first-open placeholders use this before their path identity is
+    /// cleared so crash-recovered edits remain tied to the user-requested file.
+    pub(crate) fn apply_preloaded_draft_for_path(
+        &self,
+        editor: &LushtextEditorPage,
+        path: &Path,
+    ) -> bool {
+        let draft_id = draft_service::draft_id_for_path(path);
+        let Some(preloaded) = self.imp().drafts.preloaded.borrow_mut().remove(&draft_id) else {
+            return false;
+        };
+        match preloaded {
+            PreloadedDraftRestore::Content(draft_content) => {
+                Self::apply_draft(editor, &draft_content);
+            }
+            PreloadedDraftRestore::SkipStaleFile => {
+                Self::show_stale_draft_skipped(editor);
+            }
+            PreloadedDraftRestore::SkipOversized => {
+                Self::show_oversized_draft_skipped(editor);
+            }
+        }
+        true
     }
 
     /// Delete the draft for a given file path.

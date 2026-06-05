@@ -10,13 +10,20 @@ source "$REPO_ROOT/scripts/smoke-common.sh"
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/portal-sandbox}"
 APP_ID="${LUSHTEXT_FLATPAK_APP_ID:-dev.cominotti.lushtext}"
 FLATPAK_HOST_DIR=""
+TEMP_RUNTIME_DIRS=()
 
-cleanup_flatpak_host_dir() {
+cleanup_smoke_temp_dirs() {
     if [[ -n "$FLATPAK_HOST_DIR" && -d "$FLATPAK_HOST_DIR" ]]; then
         rm -rf "$FLATPAK_HOST_DIR"
     fi
+    local runtime_dir
+    for runtime_dir in "${TEMP_RUNTIME_DIRS[@]}"; do
+        if [[ -n "$runtime_dir" && -d "$runtime_dir" ]]; then
+            rm -rf "$runtime_dir"
+        fi
+    done
 }
-trap cleanup_flatpak_host_dir EXIT
+trap cleanup_smoke_temp_dirs EXIT
 
 usage() {
     cat <<'EOF'
@@ -48,6 +55,11 @@ done
 ARTIFACT_DIR="$(smoke_artifact_dir "$ARTIFACT_DIR")"
 smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
 mkdir -p "$ARTIFACT_DIR/fixtures"
+{
+    echo "unsupported_uri=smb://example.test/share/remote.txt"
+    echo "diagnostic_tests=window::test_file_chooser app::test_non_path_uri_activation_reports_feedback_without_fake_document_tab app::test_mixed_uri_and_local_activation_reports_uri_while_opening_local_file app::test_existing_window_receives_non_path_uri_feedback_without_losing_active_tab"
+    echo "note=unsupported URI activation is validated through widget-level GFile inputs; confined local-file launch checks stay separate below"
+} >"$ARTIFACT_DIR/unsupported-uri-diagnostic.txt"
 
 collect_runtime_denials() {
     local output="$1"
@@ -77,6 +89,9 @@ run_chooser_widget_smoke() {
         --headless \
         --retries 0 \
         -- window::test_file_chooser \
+        app::test_non_path_uri_activation_reports_feedback_without_fake_document_tab \
+        app::test_mixed_uri_and_local_activation_reports_uri_while_opening_local_file \
+        app::test_existing_window_receives_non_path_uri_feedback_without_losing_active_tab \
         >"$log" 2>&1; then
         return 0
     fi
@@ -93,7 +108,8 @@ run_flatpak_launch_case() {
     local name="$1"
     local file_path="$2"
     local log="$ARTIFACT_DIR/flatpak-${name}.log"
-    local runtime_dir="$ARTIFACT_DIR/flatpak-${name}-runtime"
+    local runtime_base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+    local runtime_dir
 
     for command_name in dbus-run-session mutter timeout; do
         if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -102,9 +118,10 @@ run_flatpak_launch_case() {
         fi
     done
 
-    rm -rf "$runtime_dir"
-    mkdir -p "$runtime_dir"
+    runtime_dir="$(mktemp -d "$runtime_base/lushtext-${name}.XXXXXX")"
+    TEMP_RUNTIME_DIRS+=("$runtime_dir")
     chmod 700 "$runtime_dir"
+    echo "$runtime_dir" >"$ARTIFACT_DIR/flatpak-${name}-runtime-dir.txt"
 
     set +e
     env XDG_RUNTIME_DIR="$runtime_dir" GDK_BACKEND=wayland \

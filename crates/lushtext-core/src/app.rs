@@ -70,7 +70,9 @@ mod imp {
             window.present();
             for file in files {
                 if let Some(path) = file.path() {
-                    window.open_document(&path);
+                    window.open_document_from_activation(&path);
+                } else {
+                    window.report_unsupported_open_file(file);
                 }
             }
 

@@ -21,7 +21,8 @@ use libadwaita::prelude::{
 use lushtext_core::config::keys;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::encoding::{
-    DocumentEncoding, FileHealthFindingKind, InvisibleCharactersMode, LineEnding,
+    DocumentEncoding, DocumentEncodingState, FileHealthFindingKind, InvisibleCharactersMode,
+    LineEnding,
 };
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
@@ -4720,6 +4721,27 @@ fn test_file_chooser_open_selection_opens_selected_document() {
 }
 
 #[test]
+fn test_file_chooser_open_uri_reports_feedback_without_creating_tab() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let uri = "smb://example.test/share/chooser-open.txt";
+
+    window.select_open_file_uri_for_test(uri);
+
+    assert_eq!(window.imp().tab_view.n_pages(), 0);
+    assert!(
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains(uri)
+                && status.text.contains("only local files are supported")),
+        "chooser URI selection should produce visible feedback"
+    );
+}
+
+#[test]
 fn test_file_chooser_save_as_selection_adopts_destination_after_write() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("chooser tempdir");
@@ -4753,6 +4775,78 @@ fn test_file_chooser_save_as_selection_adopts_destination_after_write() {
             .expect("read draft")
             .is_none()
     });
+}
+
+#[test]
+fn test_file_chooser_save_as_uri_preserves_modified_editor_identity() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("keep this unsaved text");
+    editor.buffer().set_modified(true);
+    let uri = "smb://example.test/share/save-as.txt";
+
+    window.select_save_as_uri_for_test(uri);
+
+    assert_eq!(editor.file_path(), None);
+    assert!(editor.is_modified());
+    assert_eq!(editor_buffer_text(&editor), "keep this unsaved text");
+    assert!(
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains(uri)
+                && status.text.contains("only local files are supported")),
+        "Save As URI selection should produce visible feedback"
+    );
+}
+
+#[test]
+fn test_file_chooser_save_as_cancels_pending_load_result_before_adopting_destination() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("save-as stale load tempdir");
+    let source = dir.path().join("source.txt");
+    let destination = dir.path().join("destination.txt");
+    fixture::write_text(&source, "source disk bytes\n");
+
+    let window = test_window();
+    window.open_document(&source);
+    let editor = active_editor(&window);
+    let stale_generation = editor.load_generation_for_test();
+    editor.buffer().set_text("save before load settles\n");
+    editor.buffer().set_modified(true);
+
+    window.select_save_as_destination_for_test(&destination);
+    wait_until(Duration::from_secs(3), || {
+        fs_metadata::exists(&destination)
+            && editor.file_path() == Some(destination.clone())
+            && !editor.is_saving()
+            && !editor.is_modified()
+    });
+
+    let stale_result = editor_io::LoadResult {
+        content: "source disk bytes\n".to_string(),
+        size: 18,
+        size_check: FileSizeCheck::Normal,
+        canonical_path: Some(fs_metadata::canonical_path(&source).expect("canonical source")),
+        mtime: Some(123),
+        encoding_state: DocumentEncodingState::default(),
+        has_bom: false,
+        file_health: Vec::new(),
+    };
+    assert!(
+        !editor.apply_load_result_for_test(stale_generation, Ok(stale_result)),
+        "Save As must cancel the pending load generation before adopting the destination",
+    );
+    assert_eq!(editor_buffer_text(&editor), "save before load settles\n");
+    assert_eq!(
+        fs_read::text(&destination).expect("read save-as destination"),
+        "save before load settles\n"
+    );
 }
 
 #[cfg(unix)]

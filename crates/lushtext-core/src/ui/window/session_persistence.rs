@@ -12,7 +12,7 @@ use std::time::Duration;
 use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
 use crate::model::session::{SessionData, SessionTab};
 use crate::services::{async_task, draft_service, json_store, session_service};
-use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
@@ -42,7 +42,12 @@ impl super::LushtextWindow {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
                 let (cursor_line, cursor_col) = editor.cursor_position();
-                let path = editor.file_path();
+                let path =
+                    if editor.load_state() == EditorLoadState::Failed && !editor.is_modified() {
+                        None
+                    } else {
+                        editor.file_path()
+                    };
                 let draft_id = if path.is_none() {
                     editor.draft_id()
                 } else {

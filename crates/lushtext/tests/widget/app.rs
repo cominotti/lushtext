@@ -2,8 +2,9 @@
 
 //! Tests for LushtextApplication.
 
-use crate::common::{ensure_gtk_init, fixture, flush_events, fs_metadata, wait_until};
+use crate::common::{ensure_gtk_init, fixture, flush_events, fs_metadata, fs_read, wait_until};
 use gio::prelude::*;
+use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{IconTheme, gdk};
 use gtk4::prelude::{GtkApplicationExt, TextBufferExt};
@@ -11,7 +12,7 @@ use lushtext_core::app::LushtextApplication;
 use lushtext_core::config;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::services::{json_store, session_service};
-use lushtext_core::ui::editor_page::LushtextEditorPage;
+use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use lushtext_core::ui::window::LushtextWindow;
 use sourceview5::StyleSchemeManager;
 use std::path::{Path, PathBuf};
@@ -137,9 +138,19 @@ fn status_text_contains(window: &LushtextWindow, needle: &str) -> bool {
         .is_some_and(|status| status.text.contains(needle))
 }
 
+fn clear_session() {
+    session_service::save(&json_store::data_dir(), &SessionData::default())
+        .expect("clear test session");
+}
+
 fn open_files(app: &LushtextApplication, paths: &[&Path]) {
     let files: Vec<_> = paths.iter().map(gio::File::for_path).collect();
     app.open(&files, "");
+    flush_events();
+}
+
+fn open_gfiles(app: &LushtextApplication, files: &[gio::File]) {
+    app.open(files, "");
     flush_events();
 }
 
@@ -198,19 +209,25 @@ fn test_open_activation_deduplicates_canonical_paths_and_focuses_duplicate() {
     let window = active_window(&app);
     wait_for_loaded_tabs(&window, 2);
 
+    let canonical_alpha = fs_metadata::canonical_path(&alpha).expect("canonical alpha");
+    let canonical_beta = fs_metadata::canonical_path(&beta).expect("canonical beta");
     let canonical_paths: Vec<_> = tab_paths(&window)
         .into_iter()
         .map(|path| fs_metadata::canonical_path(&path).expect("canonical tab path"))
         .collect();
-    assert!(canonical_paths.contains(&fs_metadata::canonical_path(&alpha).expect("canonical alpha")));
-    assert!(canonical_paths.contains(&fs_metadata::canonical_path(&beta).expect("canonical beta")));
+    assert!(canonical_paths.contains(&canonical_alpha));
+    assert!(canonical_paths.contains(&canonical_beta));
     assert_eq!(
         active_editor(&window)
             .file_path()
             .as_deref()
             .and_then(|path| fs_metadata::canonical_path(path).ok()),
-        Some(fs_metadata::canonical_path(&alpha).expect("canonical alpha")),
+        Some(canonical_alpha.clone()),
         "the duplicate activation should focus the already-open canonical file",
+    );
+    assert!(
+        window.imp().open_paths.borrow().contains(&canonical_alpha),
+        "canonical duplicate close must leave the surviving owner keyed by canonical path",
     );
 }
 
@@ -250,6 +267,7 @@ fn test_open_activation_reports_failed_paths_without_stale_bookkeeping() {
     wait_until(Duration::from_secs(3), || {
         window.imp().tab_view.n_pages() == 1
             && active_editor(&window).file_path().is_none()
+            && active_editor(&window).load_state() == EditorLoadState::Failed
             && status_text_contains(&window, &missing_status)
     });
     assert!(
@@ -345,4 +363,329 @@ fn test_open_activation_keeps_explicit_file_active_after_session_restore() {
         Some(explicit.as_path()),
         "explicit desktop or CLI activation should remain selected after session restore",
     );
+}
+
+#[test]
+fn test_open_activation_bypasses_restored_failed_placeholder_after_file_becomes_readable() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let restored_missing = dir.path().join("restored-missing.txt");
+    session_service::save(
+        &json_store::data_dir(),
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: Some(restored_missing.clone()),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("seed missing restored session");
+    let app = test_lushtext_application();
+
+    app.activate();
+    flush_events();
+    let window = active_window(&app);
+    let missing_status = restored_missing.display().to_string();
+    wait_until(Duration::from_secs(3), || {
+        window.imp().tab_view.n_pages() == 1
+            && active_editor(&window).load_state() == EditorLoadState::Failed
+            && status_text_contains(&window, &missing_status)
+    });
+
+    fixture::write_text(&restored_missing, "now readable\n");
+    open_files(&app, &[restored_missing.as_path()]);
+    wait_for_active_loaded_path(&window, &restored_missing);
+
+    assert_eq!(window.imp().tab_view.n_pages(), 2);
+    assert_eq!(editor_text(&active_editor(&window)), "now readable\n");
+    assert!(
+        (0..window.imp().tab_view.n_pages()).any(|index| window
+            .imp()
+            .tab_view
+            .nth_page(index)
+            .child()
+            .downcast_ref::<LushtextEditorPage>()
+            .is_some_and(|editor| editor.load_state() == EditorLoadState::Failed)),
+        "the restored failed placeholder should remain visible",
+    );
+}
+
+#[test]
+fn test_open_activation_modified_failed_placeholder_remains_recoverable_without_blocking_reopen() {
+    ensure_gtk_init();
+    clear_session();
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let missing = dir.path().join("modified-failed.txt");
+    let app = test_lushtext_application();
+    let files = [gio::File::for_path(&missing)];
+
+    app.open(&files, "");
+    let window = active_window(&app);
+    let failed_editor = active_editor(&window);
+    failed_editor.buffer().set_text("typed into failed placeholder");
+    failed_editor.buffer().set_modified(true);
+    let missing_status = missing.display().to_string();
+    wait_until(Duration::from_secs(3), || {
+        failed_editor.load_state() == EditorLoadState::Failed
+            && failed_editor.file_path().as_deref() == Some(missing.as_path())
+            && !window.imp().open_paths.borrow().contains(&missing)
+            && status_text_contains(&window, &missing_status)
+    });
+
+    fixture::write_text(&missing, "fresh file from desktop\n");
+    open_files(&app, &[missing.as_path()]);
+    wait_for_active_loaded_path(&window, &missing);
+    let active = active_editor(&window);
+
+    assert_eq!(window.imp().tab_view.n_pages(), 2);
+    assert_ne!(active.as_ptr(), failed_editor.as_ptr());
+    assert_eq!(editor_text(&active), "fresh file from desktop\n");
+    assert_eq!(editor_text(&failed_editor), "typed into failed placeholder");
+    assert!(failed_editor.is_modified());
+    assert_eq!(failed_editor.load_state(), EditorLoadState::Failed);
+}
+
+#[test]
+fn test_open_activation_modified_failed_placeholder_restores_draft_after_restart() {
+    ensure_gtk_init();
+    clear_session();
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let missing = dir.path().join("restart-missing.txt");
+    let app = test_lushtext_application();
+    let files = [gio::File::for_path(&missing)];
+
+    app.open(&files, "");
+    let window = active_window(&app);
+    let failed_editor = active_editor(&window);
+    failed_editor
+        .buffer()
+        .set_text("recover this failed placeholder");
+    failed_editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(3), || {
+        failed_editor.load_state() == EditorLoadState::Failed
+            && failed_editor.file_path().as_deref() == Some(missing.as_path())
+    });
+    window.flush_dirty_drafts().expect("flush failed-placeholder draft");
+    window.save_session_sync();
+
+    let restored_app = test_lushtext_application();
+    restored_app.activate();
+    flush_events();
+    let restored_window = active_window(&restored_app);
+    wait_until(Duration::from_secs(3), || {
+        let editor = active_editor(&restored_window);
+        editor.load_state() == EditorLoadState::Failed
+            && editor.file_path().as_deref() == Some(missing.as_path())
+            && editor_text(&editor) == "recover this failed placeholder"
+            && editor.is_modified()
+    });
+}
+
+#[test]
+fn test_save_after_modified_failed_placeholder_restores_duplicate_bookkeeping() {
+    ensure_gtk_init();
+    clear_session();
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let missing = dir.path().join("save-after-failed.txt");
+    let app = test_lushtext_application();
+    let files = [gio::File::for_path(&missing)];
+
+    app.open(&files, "");
+    let window = active_window(&app);
+    let failed_editor = active_editor(&window);
+    failed_editor.buffer().set_text("save from failed tab\n");
+    failed_editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(3), || {
+        failed_editor.load_state() == EditorLoadState::Failed
+            && failed_editor.file_path().as_deref() == Some(missing.as_path())
+            && !window.imp().open_paths.borrow().contains(&missing)
+    });
+
+    window.activate_action("save", None);
+    flush_events();
+    wait_until(Duration::from_secs(3), || {
+        !failed_editor.is_saving()
+            && !failed_editor.is_modified()
+            && window.imp().open_paths.borrow().contains(&missing)
+    });
+
+    assert_eq!(
+        fs_read::text(&missing).expect("read saved failed placeholder"),
+        "save from failed tab\n"
+    );
+    open_files(&app, &[missing.as_path()]);
+    wait_until(Duration::from_secs(3), || window.imp().tab_view.n_pages() == 1);
+    assert_eq!(active_editor(&window).as_ptr(), failed_editor.as_ptr());
+}
+
+#[test]
+fn test_reload_failure_keeps_loaded_tab_file_backed_for_session_restore() {
+    ensure_gtk_init();
+    clear_session();
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let path = dir.path().join("reload-removed.txt");
+    fixture::write_text(&path, "loaded before reload failure\n");
+    let app = test_lushtext_application();
+
+    open_files(&app, &[path.as_path()]);
+    let window = active_window(&app);
+    wait_for_active_loaded_path(&window, &path);
+    let editor = active_editor(&window);
+    assert_eq!(editor.load_state(), EditorLoadState::Loaded);
+
+    fixture::remove_file(&path);
+    editor.load_file_async(&path);
+    wait_until(Duration::from_secs(3), || {
+        editor.load_state() == EditorLoadState::Loaded
+            && editor
+                .info_bar()
+                .imp()
+                .alert_revealer
+                .property::<bool>("reveal-child")
+    });
+
+    assert_eq!(editor.file_path().as_deref(), Some(path.as_path()));
+    assert_eq!(editor_text(&editor), "loaded before reload failure\n");
+    window.save_session_sync();
+    let restored_session = session_service::load(&json_store::data_dir()).expect("load session");
+    assert_eq!(
+        restored_session.tabs.first().and_then(|tab| tab.path.as_ref()),
+        Some(&path),
+        "a reload failure on an already-loaded tab must not turn the clean tab into an untitled session entry",
+    );
+}
+
+#[test]
+fn test_open_activation_stays_selected_after_session_restore_failure_settles() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let restored_missing = dir.path().join("restored-missing-late.txt");
+    let explicit = dir.path().join("explicit-after-restore-failure.txt");
+    fixture::write_text(&explicit, "explicit activation survives\n");
+    session_service::save(
+        &json_store::data_dir(),
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: Some(restored_missing.clone()),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("seed failing restored session");
+    let app = test_lushtext_application();
+
+    open_files(&app, &[explicit.as_path()]);
+    let window = active_window(&app);
+    let missing_status = restored_missing.display().to_string();
+    wait_until(Duration::from_secs(3), || {
+        window.imp().tab_view.n_pages() == 2
+            && active_editor(&window).file_path().as_deref() == Some(explicit.as_path())
+            && active_editor(&window).file_size().is_some()
+            && status_text_contains(&window, &missing_status)
+    });
+
+    assert_eq!(
+        editor_text(&active_editor(&window)),
+        "explicit activation survives\n"
+    );
+}
+
+#[test]
+fn test_repeated_open_activation_focuses_existing_loaded_file_without_duplication() {
+    ensure_gtk_init();
+    clear_session();
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let path = dir.path().join("repeat.txt");
+    fixture::write_text(&path, "repeat activation\n");
+    let app = test_lushtext_application();
+
+    open_files(&app, &[path.as_path()]);
+    let window = active_window(&app);
+    wait_for_loaded_tabs(&window, 1);
+    open_files(&app, &[path.as_path()]);
+    wait_for_loaded_tabs(&window, 1);
+
+    assert_eq!(
+        active_editor(&window).file_path().as_deref(),
+        Some(path.as_path())
+    );
+    assert_eq!(editor_text(&active_editor(&window)), "repeat activation\n");
+}
+
+#[test]
+fn test_non_path_uri_activation_reports_feedback_without_fake_document_tab() {
+    ensure_gtk_init();
+    clear_session();
+    let app = test_lushtext_application();
+    let remote_uri = "smb://example.test/share/remote.txt";
+    let remote = gio::File::for_uri(remote_uri);
+    assert!(remote.path().is_none());
+
+    open_gfiles(&app, &[remote]);
+    let window = active_window(&app);
+    wait_until(Duration::from_secs(3), || {
+        status_text_contains(&window, remote_uri)
+    });
+
+    assert_eq!(window.imp().tab_view.n_pages(), 0);
+    assert!(status_text_contains(
+        &window,
+        "only local files are supported"
+    ));
+}
+
+#[test]
+fn test_mixed_uri_and_local_activation_reports_uri_while_opening_local_file() {
+    ensure_gtk_init();
+    clear_session();
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let local = dir.path().join("local-after-uri.txt");
+    fixture::write_text(&local, "local still opens\n");
+    let remote_uri = "smb://example.test/share/mixed.txt";
+    let files = [gio::File::for_uri(remote_uri), gio::File::for_path(&local)];
+    let app = test_lushtext_application();
+
+    open_gfiles(&app, &files);
+    let window = active_window(&app);
+    wait_for_active_loaded_path(&window, &local);
+
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
+    assert_eq!(editor_text(&active_editor(&window)), "local still opens\n");
+    assert!(status_text_contains(&window, remote_uri));
+}
+
+#[test]
+fn test_existing_window_receives_non_path_uri_feedback_without_losing_active_tab() {
+    ensure_gtk_init();
+    clear_session();
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let local = dir.path().join("already-open.txt");
+    fixture::write_text(&local, "already open\n");
+    let remote_uri = "smb://example.test/share/existing-window.txt";
+    let app = test_lushtext_application();
+
+    open_files(&app, &[local.as_path()]);
+    let window = active_window(&app);
+    wait_for_loaded_tabs(&window, 1);
+    open_gfiles(&app, &[gio::File::for_uri(remote_uri)]);
+    wait_until(Duration::from_secs(3), || {
+        status_text_contains(&window, remote_uri)
+    });
+
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
+    assert_eq!(
+        active_editor(&window).file_path().as_deref(),
+        Some(local.as_path())
+    );
+    assert_eq!(editor_text(&active_editor(&window)), "already open\n");
 }

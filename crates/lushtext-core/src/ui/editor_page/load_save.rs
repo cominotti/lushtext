@@ -22,7 +22,7 @@ use crate::services::notifications::{InlineActionNotification, InlineNotificatio
 use crate::services::{async_task, editor_io, filesystem::metadata as fs_metadata};
 use crate::ui::buffer_snapshot;
 
-use super::{LushtextEditorPage, SaveError};
+use super::{EditorLoadState, LushtextEditorPage, SaveError};
 use editor_io::LoadError;
 
 type SaveCallback = Box<dyn FnOnce(Result<(), SaveError>)>;
@@ -44,8 +44,16 @@ impl LushtextEditorPage {
     /// Start loading a file asynchronously, optionally forcing a reopen encoding.
     pub fn load_file_async_with_encoding(&self, path: &Path, reopen_as: Option<DocumentEncoding>) {
         let file_path = path.to_path_buf();
+        let previous_load_state = self.imp().load_state.get();
+        let error_state = if previous_load_state == EditorLoadState::Loaded {
+            EditorLoadState::Loaded
+        } else {
+            EditorLoadState::Failed
+        };
         self.imp().file_path.replace(Some(file_path.clone()));
         self.imp().canonical_file_path.borrow_mut().take();
+        self.imp().file_size.set(None);
+        self.imp().load_state.set(EditorLoadState::Loading);
 
         self.imp()
             .cancel_token
@@ -60,7 +68,7 @@ impl LushtextEditorPage {
             self.clone(),
             move || editor_io::load_text_file_with_encoding(&file_path, &cancel, reopen_as),
             move |editor, result| {
-                editor.apply_load_result_if_current(load_generation, result);
+                editor.apply_load_result_if_current(load_generation, result, error_state);
             },
         );
     }
@@ -74,6 +82,7 @@ impl LushtextEditorPage {
         &self,
         load_generation: u64,
         result: Result<editor_io::LoadResult, LoadError>,
+        error_state: EditorLoadState,
     ) -> bool {
         if self.imp().load_generation.get() != load_generation {
             return false;
@@ -85,6 +94,7 @@ impl LushtextEditorPage {
                 self.imp()
                     .canonical_file_path
                     .replace(loaded.canonical_path);
+                self.imp().load_state.set(EditorLoadState::Loaded);
                 self.imp().evicted.set(false);
                 self.set_document_encoding_state(loaded.encoding_state);
                 self.set_has_bom(loaded.has_bom);
@@ -118,6 +128,7 @@ impl LushtextEditorPage {
                     );
                 }
                 self.refresh_minimap();
+                self.imp().load.load_failed_callback.borrow_mut().take();
                 if let Some(callback) = self.imp().load.load_completed_callback.take() {
                     callback();
                 }
@@ -129,6 +140,7 @@ impl LushtextEditorPage {
             Err(error) => {
                 tracing::error!("{error}");
                 let error_text = error.to_string();
+                self.imp().load_state.set(error_state);
                 self.emit_inline_notification(InlineActionNotification {
                     style: InlineNotificationStyle::Error,
                     title: "Could Not Open File".to_string(),
@@ -154,6 +166,7 @@ impl LushtextEditorPage {
         let size_check = FileSizeCheck::classify(reported_size);
         self.imp().file_size.set(Some(reported_size));
         self.imp().size_check.set(size_check);
+        self.imp().load_state.set(EditorLoadState::Loaded);
         self.imp().evicted.set(false);
         self.apply_loaded_content(content, size_check);
         self.seed_local_history_from_loaded_content(content);
@@ -228,7 +241,7 @@ impl LushtextEditorPage {
         load_generation: u64,
         result: Result<editor_io::LoadResult, LoadError>,
     ) -> bool {
-        self.apply_load_result_if_current(load_generation, result)
+        self.apply_load_result_if_current(load_generation, result, EditorLoadState::Failed)
     }
 
     /// Set the file path (used by Save As) and refresh syntax highlighting.
@@ -244,6 +257,19 @@ impl LushtextEditorPage {
     ) {
         self.imp().file_path.replace(Some(path.to_path_buf()));
         self.imp().canonical_file_path.replace(canonical_path);
+        self.imp().load_state.set(EditorLoadState::Loaded);
+        if self.imp().size_check.get().syntax_enabled() {
+            self.reapply_language();
+        }
+        self.schedule_minimap_refresh();
+    }
+
+    /// Set a provisional path before an async load result is available.
+    pub(crate) fn set_file_path_for_pending_load(&self, path: &Path) {
+        self.imp().file_path.replace(Some(path.to_path_buf()));
+        self.imp().canonical_file_path.borrow_mut().take();
+        self.imp().file_size.set(None);
+        self.imp().load_state.set(EditorLoadState::Loading);
         if self.imp().size_check.get().syntax_enabled() {
             self.reapply_language();
         }
@@ -257,6 +283,8 @@ impl LushtextEditorPage {
     pub(crate) fn clear_file_path_after_failed_load(&self) {
         self.imp().file_path.replace(None);
         self.imp().canonical_file_path.borrow_mut().take();
+        self.imp().file_size.set(None);
+        self.imp().load_state.set(EditorLoadState::Failed);
         self.buffer().set_language(None::<&sourceview5::Language>);
         self.schedule_minimap_refresh();
     }
@@ -293,6 +321,7 @@ impl LushtextEditorPage {
             return;
         }
 
+        self.cancel_load();
         self.imp().save.inflight.set(true);
         let view = self.source_view().clone();
         let restore_state = ViewInteractivityState {
@@ -450,6 +479,7 @@ impl LushtextEditorPage {
                         editor.buffer().set_modified(false);
                         editor.imp().file_size.set(Some(size));
                         editor.imp().size_check.set(FileSizeCheck::classify(size));
+                        editor.imp().load_state.set(EditorLoadState::Loaded);
                         let mut state = editor.document_encoding_state();
                         state.opened_encoding = state.save_encoding;
                         state.detected_line_ending = state.save_line_ending;

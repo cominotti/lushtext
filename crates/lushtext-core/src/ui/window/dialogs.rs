@@ -10,7 +10,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 const RESPONSE_CANCEL: &str = "cancel";
@@ -26,10 +26,8 @@ impl super::LushtextWindow {
 
         let window = self.clone();
         dialog.open(Some(self), gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result
-                && let Some(path) = file.path()
-            {
-                window.handle_open_file_selection(&path);
+            if let Ok(file) = result {
+                window.handle_open_file_selection(&file);
             }
         });
     }
@@ -51,25 +49,37 @@ impl super::LushtextWindow {
 
         let window = self.clone();
         dialog.save(Some(self), gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result
-                && let Some(path) = file.path()
-            {
-                window.handle_save_as_selection(&editor, path);
+            if let Ok(file) = result {
+                window.handle_save_as_selection(&editor, &file);
             }
         });
     }
 
-    /// Complete the Open File chooser after GTK or a portal has produced a
-    /// selected path. Cancellation intentionally does not call this helper, so
-    /// no document state changes until a concrete file is selected.
-    fn handle_open_file_selection(&self, path: &Path) {
-        self.open_document(path);
+    /// Complete the Open File chooser after GTK or a portal has produced a file.
+    ///
+    /// Cancellation intentionally does not call this helper, so no document
+    /// state changes until a concrete selection is available.
+    fn handle_open_file_selection(&self, file: &gio::File) {
+        if let Some(path) = file.path() {
+            self.open_document(&path);
+        } else {
+            self.report_unsupported_open_file(file);
+        }
     }
 
     /// Complete the Save As chooser after the user selects a destination.
     /// The editor adopts the new identity only inside `complete_save_as`, after
     /// the background durable write reports success.
-    fn handle_save_as_selection(&self, editor: &LushtextEditorPage, path: PathBuf) {
+    fn handle_save_as_selection(&self, editor: &LushtextEditorPage, file: &gio::File) {
+        let Some(path) = file.path() else {
+            let uri = file.uri();
+            self.publish_status_message(
+                &format!("Could not save to {uri}: only local files are supported"),
+                MessageKind::Error,
+            );
+            self.refresh_status_bar();
+            return;
+        };
         let old_path = editor.file_path();
         let old_canonical_path = editor.canonical_file_path();
         let old_draft_id = editor.draft_id();
@@ -91,7 +101,13 @@ impl super::LushtextWindow {
     /// Test helper for the file chooser's successful Open File result.
     #[cfg(feature = "test-utils")]
     pub fn select_open_file_for_test(&self, path: &Path) {
-        self.handle_open_file_selection(path);
+        self.handle_open_file_selection(&gio::File::for_path(path));
+    }
+
+    /// Test helper for the file chooser selecting an unsupported non-local file.
+    #[cfg(feature = "test-utils")]
+    pub fn select_open_file_uri_for_test(&self, uri: &str) {
+        self.handle_open_file_selection(&gio::File::for_uri(uri));
     }
 
     /// Test helper for Open File cancellation. Kept explicit so chooser tests
@@ -103,7 +119,15 @@ impl super::LushtextWindow {
     #[cfg(feature = "test-utils")]
     pub fn select_save_as_destination_for_test(&self, path: &Path) {
         if let Some(editor) = self.active_editor() {
-            self.handle_save_as_selection(&editor, path.to_path_buf());
+            self.handle_save_as_selection(&editor, &gio::File::for_path(path));
+        }
+    }
+
+    /// Test helper for the Save As chooser selecting an unsupported non-local file.
+    #[cfg(feature = "test-utils")]
+    pub fn select_save_as_uri_for_test(&self, uri: &str) {
+        if let Some(editor) = self.active_editor() {
+            self.handle_save_as_selection(&editor, &gio::File::for_uri(uri));
         }
     }
 

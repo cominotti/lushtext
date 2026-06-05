@@ -15,7 +15,7 @@ use crate::services::async_task;
 use crate::services::editorconfig;
 use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::notifications::InlineActionNotification;
-use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
@@ -37,34 +37,58 @@ pub(super) fn open_path_key(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Source of a document-open request.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OpenDocumentIntent {
+    /// In-app navigation such as sidebar rows, command palette results, and
+    /// session restore.
+    InApp,
+    /// Desktop, CLI, or file-manager activation explicitly requesting a file.
+    ExternalActivation,
+}
+
 impl LushtextWindow {
+    /// Report an activation input that GTK could not expose as a local path.
+    pub fn report_unsupported_open_file(&self, file: &gio::File) {
+        let uri = file.uri();
+        self.publish_status_message(
+            &format!("Could not open {uri}: only local files are supported"),
+            MessageKind::Error,
+        );
+        self.refresh_status_bar();
+    }
+
     /// Open a file in a new tab, or focus the existing tab if already open.
     ///
     /// This remains the single authority for real document opening, so sidebar
     /// double-click, `Enter`, Save As handoff, and file-peek promotion all
     /// reuse the same duplicate-tab and editor-focus behavior.
     pub fn open_document(&self, path: &Path) {
+        self.open_document_with_intent(path, OpenDocumentIntent::InApp);
+    }
+
+    /// Open a file requested by desktop, CLI, or file-manager activation.
+    ///
+    /// Unlike ordinary in-app opens, explicit activation bypasses failed
+    /// placeholders for the same path so the requested file can load in a fresh
+    /// selected tab while any recoverable failed buffer remains visible.
+    pub fn open_document_from_activation(&self, path: &Path) {
+        self.open_document_with_intent(path, OpenDocumentIntent::ExternalActivation);
+    }
+
+    fn open_document_with_intent(&self, path: &Path, intent: OpenDocumentIntent) {
         let tab_view = &self.imp().tab_view;
         let key = open_path_key(path);
-        if self.imp().open_paths.borrow().contains(&key) {
-            for i in 0..tab_view.n_pages() {
-                let page = tab_view.nth_page(i);
-                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
-                    && editor
-                        .file_path()
-                        .is_some_and(|editor_path| open_path_key(&editor_path) == key)
-                {
-                    tab_view.set_selected_page(&page);
-                    return;
-                }
-            }
+        if let Some(page) = self.find_open_document_page(&key, intent) {
+            tab_view.set_selected_page(&page);
+            return;
         }
 
         self.imp().open_paths.borrow_mut().insert(key.clone());
         let editor_page = LushtextEditorPage::new();
         self.wire_info_bar(&editor_page);
         self.wire_note_callbacks(&editor_page);
-        editor_page.set_file_path(path);
+        editor_page.set_file_path_for_pending_load(path);
         self.resolve_editorconfig_for_editor(&editor_page, path);
         self.assign_draft_id(&editor_page);
 
@@ -104,22 +128,32 @@ impl LushtextWindow {
                 MessageKind::Error,
             );
             let Some(editor) = editor_weak.upgrade() else {
-                window
-                    .imp()
-                    .open_paths
-                    .borrow_mut()
-                    .remove(&key_for_failure);
+                let mut open_paths = window.imp().open_paths.borrow_mut();
+                open_paths.remove(&key_for_failure);
+                open_paths.remove(path_for_failure.as_path());
                 return;
             };
-            // A failed load can arrive after the user typed into the tab; keep
-            // that buffer instead of demoting the page and rewriting its draft identity.
-            if editor.is_modified() {
+            let first_open_failed = editor.load_state() == EditorLoadState::Failed;
+            if !first_open_failed {
+                window.refresh_header_bar();
+                window.refresh_status_bar();
                 return;
             }
             {
                 let mut open_paths = window.imp().open_paths.borrow_mut();
                 open_paths.remove(&key_for_failure);
                 open_paths.remove(path_for_failure.as_path());
+                if let Some(canonical_path) = editor.canonical_file_path() {
+                    open_paths.remove(&canonical_path);
+                }
+            }
+            window.apply_preloaded_draft_for_path(&editor, &path_for_failure);
+            // A failed load can arrive after the user typed into the tab; keep
+            // that buffer instead of demoting the page and rewriting its draft identity.
+            if editor.is_modified() {
+                window.refresh_header_bar();
+                window.refresh_status_bar();
+                return;
             }
             editor.clear_file_path_after_failed_load();
             window.assign_draft_id(&editor);
@@ -135,6 +169,38 @@ impl LushtextWindow {
         self.refresh_command_palette_sources();
         self.refresh_status_bar();
         editor_page.load_file_async(path);
+    }
+
+    fn find_open_document_page(
+        &self,
+        key: &Path,
+        intent: OpenDocumentIntent,
+    ) -> Option<libadwaita::TabPage> {
+        if !self.imp().open_paths.borrow().contains(key) {
+            return None;
+        }
+
+        let tab_view = &self.imp().tab_view;
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            let child = page.child();
+            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
+                continue;
+            };
+            let matches_key = editor
+                .file_path()
+                .is_some_and(|editor_path| open_path_key(&editor_path) == key);
+            if !matches_key {
+                continue;
+            }
+            if intent == OpenDocumentIntent::ExternalActivation
+                && editor.load_state() == EditorLoadState::Failed
+            {
+                continue;
+            }
+            return Some(page);
+        }
+        None
     }
 
     /// Close a just-loaded tab when another open tab already owns the same canonical file.
@@ -174,6 +240,8 @@ impl LushtextWindow {
             return false;
         };
 
+        self.imp().open_paths.borrow_mut().insert(canonical_path);
+        editor.imp().canonical_file_path.borrow_mut().take();
         tab_view.set_selected_page(&existing_page);
         tab_view.close_page(&current_page);
         true
@@ -195,6 +263,11 @@ impl LushtextWindow {
             Ok(()) => {
                 if let Some(ref path) = save_path {
                     window.delete_draft_for_path(path);
+                    let mut open_paths = window.imp().open_paths.borrow_mut();
+                    open_paths.insert(open_path_key(path));
+                    if let Some(canonical_path) = editor_for_retry.canonical_file_path() {
+                        open_paths.insert(canonical_path);
+                    }
                 }
                 if let Some(editor) = window.active_editor() {
                     editor.set_draft_restored(false);

@@ -31,7 +31,7 @@ use gtk4::prelude::*;
 pub use crate::services::editor_io::SaveError;
 pub use bookmarks::{BookmarkNavigationDirection, BookmarkToggleState};
 pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
-pub use imp::PendingWarningAction;
+pub use imp::{EditorLoadState, PendingWarningAction};
 pub use minimap::{MinimapAvailability, MinimapMarkerBounds, MinimapMarkerKind};
 
 glib::wrapper! {
@@ -111,6 +111,12 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn file_size(&self) -> Option<u64> {
         self.imp().file_size.get()
+    }
+
+    /// Current file-load lifecycle state for this tab.
+    #[must_use]
+    pub fn load_state(&self) -> EditorLoadState {
+        self.imp().load_state.get()
     }
 
     /// Current encoding and line-ending facts for this tab.

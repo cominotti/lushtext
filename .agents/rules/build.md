@@ -47,6 +47,12 @@ also pass `make check-agent-docs`; that target verifies the
 `services::filesystem` guidance in rules and skills, then runs the raw
 filesystem no-leftovers audit.
 
+Portal and headless smoke scripts must keep their temporary runtime directories
+short (for example directly under `$XDG_RUNTIME_DIR` or `/tmp`) rather than
+under long artifact paths. Mutter/Wayland socket paths are length-limited, and
+an otherwise-valid smoke can fail before exercising the app if the runtime
+directory path is too deep.
+
 Run `make lint-advisory` after Rust/Clippy toolchain updates or lint-policy
 reviews. It runs broad advisory Clippy groups plus selected rustc probes,
 summarizes findings by lint code, and fails if a new category appears without a

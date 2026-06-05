@@ -185,6 +185,20 @@ pub struct LoadState {
     pub file_loaded_callbacks: RefCell<Vec<FileLoadedCallback>>,
 }
 
+/// User-visible file-load lifecycle for one editor tab.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EditorLoadState {
+    /// An untitled tab with no saved-file identity.
+    #[default]
+    Untitled,
+    /// A file-backed tab whose background read has not settled yet.
+    Loading,
+    /// A file-backed tab whose content has loaded successfully.
+    Loaded,
+    /// A tab showing a failed load placeholder or recoverable user edits.
+    Failed,
+}
+
 /// Deferred cursor and scroll restoration applied after async file load.
 #[derive(Default)]
 pub struct RestoreState {
@@ -335,6 +349,8 @@ pub struct LushtextEditorPage {
     /// On-disk file size in bytes, populated after async load completes.
     /// Used for memory estimation and status bar display.
     pub file_size: Cell<Option<u64>>,
+    /// Explicit file-load lifecycle state for duplicate ownership decisions.
+    pub load_state: Cell<EditorLoadState>,
     /// Feature gate classification based on file size (syntax, undo thresholds).
     pub size_check: Cell<FileSizeCheck>,
     /// Whether this tab's buffer was evicted to free memory. Evicted tabs
@@ -405,6 +421,7 @@ impl Default for LushtextEditorPage {
             file_path: RefCell::default(),
             canonical_file_path: RefCell::default(),
             file_size: Cell::default(),
+            load_state: Cell::new(EditorLoadState::Untitled),
             size_check: Cell::new(FileSizeCheck::Normal),
             evicted: Cell::new(false),
             cancel_token: RefCell::new(Arc::new(AtomicBool::new(false))),

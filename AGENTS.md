@@ -21,7 +21,7 @@ A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text
 
 Keep this index in sync with `.agents/rules/*.md`. When a new rule file is added or an existing rule is materially changed, update this section in the same change.
 
-- `build.md` — build, dependency, property-testing, and test command rules
+- `build.md` — build, dependency, property-testing, test, and smoke command rules
 - `documentation.md` — documentation maintenance requirements
 - `git.md` — git workflow and commit conventions
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
