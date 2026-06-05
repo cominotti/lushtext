@@ -14,6 +14,7 @@ use crate::model::sidecar_identity::DocumentSidecarIdentity;
 use crate::services::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
 };
+use crate::services::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
 use crate::services::{json_store, note_storage};
 
 /// Directory name that stores per-file bookmark sidecars.
@@ -30,6 +31,15 @@ pub struct WorkspaceBookmark {
     pub line: u32,
     /// Optional label shown in the bookmark list.
     pub label: Option<String>,
+}
+
+/// Workspace bookmark rows plus diagnostics for sidecars skipped during listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceBookmarkListing {
+    /// Bookmark rows safe to display in browse surfaces.
+    pub bookmarks: Vec<WorkspaceBookmark>,
+    /// Recovery diagnostics for malformed or unreadable bookmark sidecars.
+    pub diagnostics: Vec<RecoveryDiagnostic>,
 }
 
 impl WorkspaceBookmark {
@@ -61,8 +71,9 @@ pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity>
 ///
 /// # Errors
 ///
-/// Returns an error if the document identity cannot be resolved, the sidecar
-/// cannot be read, or the stored JSON cannot be parsed.
+/// Returns an error if the document identity cannot be resolved or the sidecar
+/// directory cannot be scanned. Malformed or unreadable sidecars are preserved
+/// through recovery diagnostics and treated as absent.
 pub fn load_for_path(data_dir: &Path, path: &Path) -> Result<BookmarkDocument> {
     let identity = resolve_document_identity(path)?;
     load_for_identity(data_dir, identity)
@@ -74,13 +85,18 @@ fn load_for_identity(
 ) -> Result<BookmarkDocument> {
     let filename = note_storage::sidecar_filename(&identity.sidecar_id);
     let path = bookmarks_dir(data_dir).join(&filename);
-    match note_storage::load_json_file::<BookmarkDocument>(&path) {
-        Ok(Some(mut document)) => {
+    let load = note_storage::load_json_file_recovering::<BookmarkDocument>(
+        data_dir,
+        &path,
+        RecoveryMetadataClass::BookmarkSidecar,
+    );
+    note_storage::trace_recovery_diagnostics(&load.diagnostics);
+    match load.value {
+        Some(mut document) => {
             document.sort_stable();
             Ok(document)
         }
-        Ok(None) => Ok(BookmarkDocument::empty(identity)),
-        Err(error) => Err(error),
+        None => Ok(BookmarkDocument::empty(identity)),
     }
 }
 
@@ -171,8 +187,13 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
             continue;
         }
 
-        let Some(mut document) = note_storage::load_json_file::<BookmarkDocument>(&sidecar_path)?
-        else {
+        let load = note_storage::load_json_file_recovering::<BookmarkDocument>(
+            data_dir,
+            &sidecar_path,
+            RecoveryMetadataClass::BookmarkSidecar,
+        );
+        note_storage::trace_recovery_diagnostics(&load.diagnostics);
+        let Some(document) = load.value else {
             continue;
         };
         let Some((display_path, canonical_path)) =
@@ -181,18 +202,72 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
             continue;
         };
 
-        document.identity = DocumentSidecarIdentity::from_paths(display_path, canonical_path);
-        let new_sidecar_path = dir.join(note_storage::sidecar_filename(
-            &document.identity.sidecar_id,
-        ));
+        let new_identity = DocumentSidecarIdentity::from_paths(display_path, canonical_path);
+        let new_sidecar_path = dir.join(note_storage::sidecar_filename(&new_identity.sidecar_id));
+        let document = merge_bookmark_target(data_dir, &new_sidecar_path, document, new_identity)?;
         save_document(data_dir, document)?;
         if sidecar_path != new_sidecar_path {
-            let _ = fs_mutate::remove_file_if_exists(&sidecar_path);
+            remove_obsolete_sidecar(&sidecar_path)?;
         }
         migrated += 1;
     }
 
     Ok(migrated)
+}
+
+fn merge_bookmark_target(
+    data_dir: &Path,
+    target_path: &Path,
+    mut source: BookmarkDocument,
+    target_identity: DocumentSidecarIdentity,
+) -> Result<BookmarkDocument> {
+    let load = note_storage::load_json_file_recovering::<BookmarkDocument>(
+        data_dir,
+        target_path,
+        RecoveryMetadataClass::BookmarkSidecar,
+    );
+    note_storage::trace_recovery_diagnostics(&load.diagnostics);
+    let Some(target) = load.value else {
+        source.identity = target_identity;
+        return Ok(source);
+    };
+
+    Ok(merge_bookmark_documents(source, target, target_identity))
+}
+
+/// Merge a moved sidecar into an existing target sidecar without guessing on conflicts.
+fn merge_bookmark_documents(
+    source: BookmarkDocument,
+    mut target: BookmarkDocument,
+    target_identity: DocumentSidecarIdentity,
+) -> BookmarkDocument {
+    for source_bookmark in source.bookmarks {
+        match target
+            .bookmarks
+            .iter_mut()
+            .find(|bookmark| bookmark.id == source_bookmark.id)
+        {
+            Some(existing) if source_bookmark.updated_at_secs > existing.updated_at_secs => {
+                *existing = source_bookmark;
+            }
+            Some(_) => {}
+            None => target.bookmarks.push(source_bookmark),
+        }
+    }
+    target.identity = target_identity;
+    target.sort_stable();
+    target
+}
+
+fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
+    match fs_mutate::remove_file_if_exists(path) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(anyhow::anyhow!(
+            "failed to delete obsolete bookmark sidecar {}: {}",
+            path.display(),
+            error
+        )),
+    }
 }
 
 /// Collect all bookmarks under the current workspace roots for browse dialogs.
@@ -205,17 +280,40 @@ pub fn list_workspace_bookmarks(
     data_dir: &Path,
     workspace_roots: &[PathBuf],
 ) -> Result<Vec<WorkspaceBookmark>> {
+    Ok(list_workspace_bookmarks_recovering(data_dir, workspace_roots)?.bookmarks)
+}
+
+/// Collect workspace bookmarks and preserve partial-recovery diagnostics.
+///
+/// # Errors
+///
+/// Returns an error only when the sidecar directory itself cannot be scanned.
+pub fn list_workspace_bookmarks_recovering(
+    data_dir: &Path,
+    workspace_roots: &[PathBuf],
+) -> Result<WorkspaceBookmarkListing> {
     let canonical_roots = note_storage::canonicalize_roots(workspace_roots);
     let dir = bookmarks_dir(data_dir);
     if !fs_metadata::path_status(&dir)?.is_present() {
-        return Ok(Vec::new());
+        return Ok(WorkspaceBookmarkListing {
+            bookmarks: Vec::new(),
+            diagnostics: Vec::new(),
+        });
     }
 
     let mut bookmarks = Vec::new();
+    let mut diagnostics = Vec::new();
     for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
         .with_context(|| format!("failed to read {}", dir.display()))?
     {
-        let Some(document) = note_storage::load_json_file::<BookmarkDocument>(&entry.path)? else {
+        let load = note_storage::load_json_file_recovering::<BookmarkDocument>(
+            data_dir,
+            &entry.path,
+            RecoveryMetadataClass::BookmarkSidecar,
+        );
+        note_storage::trace_recovery_diagnostics(&load.diagnostics);
+        diagnostics.extend(load.diagnostics);
+        let Some(document) = load.value else {
             continue;
         };
         if !note_storage::matches_any_root(&document.identity, &canonical_roots) {
@@ -242,7 +340,10 @@ pub fn list_workspace_bookmarks(
             .then_with(|| left.line.cmp(&right.line))
             .then_with(|| left.bookmark_id.0.cmp(&right.bookmark_id.0))
     });
-    Ok(bookmarks)
+    Ok(WorkspaceBookmarkListing {
+        bookmarks,
+        diagnostics,
+    })
 }
 
 #[cfg(test)]
@@ -380,6 +481,57 @@ mod tests {
     }
 
     #[test]
+    fn move_path_tree_merges_duplicate_bookmark_sidecars_before_cleanup() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let old_file = dir.path().join("workspace/old.rs");
+        let new_file = dir.path().join("workspace/new.rs");
+        write_file(&old_file, "fn old() {}\n");
+        write_file(&new_file, "fn new() {}\n");
+        let old_identity = resolve_document_identity(&old_file).expect("old identity");
+        let new_identity = resolve_document_identity(&new_file).expect("new identity");
+        let mut older_target = BookmarkRecord::new(2, Some("target-old-label".to_string()));
+        older_target.id = BookmarkId("bookmark-shared".to_string());
+        older_target.updated_at_secs = 10;
+        let mut newer_source = BookmarkRecord::new(8, Some("source-new-label".to_string()));
+        newer_source.id = BookmarkId("bookmark-shared".to_string());
+        newer_source.updated_at_secs = 20;
+        let extra_target = BookmarkRecord::new(1, Some("target-extra".to_string()));
+
+        save_document(
+            dir.path(),
+            BookmarkDocument {
+                identity: old_identity.clone(),
+                bookmarks: vec![newer_source],
+            },
+        )
+        .expect("save old bookmark sidecar");
+        save_document(
+            dir.path(),
+            BookmarkDocument {
+                identity: new_identity,
+                bookmarks: vec![older_target, extra_target],
+            },
+        )
+        .expect("save target bookmark sidecar");
+        let old_sidecar_path = sidecar_path_for_identity(dir.path(), &old_identity);
+
+        let migrated = move_path_tree(dir.path(), &old_file, &new_file)
+            .expect("duplicate bookmark sidecars should merge");
+
+        assert_eq!(migrated, 1);
+        assert!(!fs_metadata::exists(&old_sidecar_path));
+        let loaded = load_for_path(dir.path(), &new_file).expect("load merged bookmarks");
+        assert_eq!(loaded.bookmarks.len(), 2);
+        let shared = loaded
+            .bookmarks
+            .iter()
+            .find(|bookmark| bookmark.id.0 == "bookmark-shared")
+            .expect("shared bookmark should survive");
+        assert_eq!(shared.line, 8);
+        assert_eq!(shared.label.as_deref(), Some("source-new-label"));
+    }
+
+    #[test]
     fn list_workspace_bookmarks_filters_roots_and_sorts_rows() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let inside_a = dir.path().join("workspace/a.rs");
@@ -423,6 +575,40 @@ mod tests {
         assert!(
             bookmarks.iter().all(|bookmark| bookmark.path != outside),
             "outside workspace bookmarks should be filtered out"
+        );
+    }
+
+    #[test]
+    fn corrupt_bookmark_sidecar_is_quarantined_without_hiding_valid_bookmarks() {
+        let dir = TempDir::new().expect("tempdir");
+        let valid_path = dir.path().join("workspace/valid.rs");
+        let corrupt_path = dir.path().join("workspace/corrupt.rs");
+        write_file(&valid_path, "valid\n");
+        write_file(&corrupt_path, "corrupt\n");
+        save_for_path(
+            dir.path(),
+            &valid_path,
+            &[BookmarkRecord::new(4, Some("valid".to_string()))],
+        )
+        .expect("save valid bookmark");
+        let corrupt_identity = resolve_document_identity(&corrupt_path).expect("corrupt identity");
+        let corrupt_sidecar = sidecar_path_for_identity(dir.path(), &corrupt_identity);
+        fixture::write_text(&corrupt_sidecar, "not bookmark json");
+
+        let listing =
+            list_workspace_bookmarks_recovering(dir.path(), &[dir.path().join("workspace")])
+                .expect("list bookmarks despite corrupt sidecar");
+
+        assert_eq!(listing.bookmarks.len(), 1);
+        assert_eq!(listing.bookmarks[0].path, valid_path);
+        assert_eq!(listing.diagnostics.len(), 1);
+        assert_eq!(
+            listing.diagnostics[0].class,
+            RecoveryMetadataClass::BookmarkSidecar
+        );
+        assert!(
+            !fs_metadata::exists(&corrupt_sidecar),
+            "corrupt sidecar should be moved out of normal browse path"
         );
     }
 }

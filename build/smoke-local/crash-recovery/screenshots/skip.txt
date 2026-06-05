@@ -1,0 +1,1 @@
+SKIP: PipeWire screenshot support unavailable: PipeWire did not become ready in the isolated runtime directory.

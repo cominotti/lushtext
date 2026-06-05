@@ -1,0 +1,8 @@
+file_index_search: generated command-palette indexes at representative file counts
+file_index_rebuild: generated workspace file lists at representative file counts
+content_search_smoke: generated 200-file trees plus one 10k-line file
+json_persistence: generated workspace/session JSON save and load fixtures
+editor_file_io: generated text files for load, save, and Save As-equivalent explicit-path writes
+replace_preview_generation: generated 1k and 10k in-memory match sets for worker-side Replace preview generation
+replace_undo_workflows: generated disposable files for Replace All and undo restore
+recovery_performance: generated malformed metadata, pending migration ledgers, duplicate bookmark sidecars, many local-history lineages, and first-dirty autosave persistence batches

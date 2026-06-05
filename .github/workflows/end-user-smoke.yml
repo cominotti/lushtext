@@ -32,6 +32,9 @@ jobs:
           - lane: visual
             command: make visual-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/visual
+          - lane: crash-recovery
+            command: make crash-recovery-smoke SMOKE_ARTIFACT_DIR=build/smoke
+            artifact_path: build/smoke/crash-recovery
           - lane: portal-sandbox
             command: make portal-sandbox-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/portal-sandbox

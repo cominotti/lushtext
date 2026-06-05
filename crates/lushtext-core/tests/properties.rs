@@ -19,11 +19,17 @@ mod inline_footnotes;
 mod palette;
 #[path = "properties/path_rebasing.rs"]
 mod path_rebasing;
+#[path = "properties/recovery_metadata.rs"]
+mod recovery_metadata;
+#[path = "properties/replace_journal_recovery.rs"]
+mod replace_journal_recovery;
 #[path = "properties/replace_undo.rs"]
 mod replace_undo;
 #[path = "properties/search_replacement.rs"]
 mod search_replacement;
 #[path = "properties/session_draft_roundtrip.rs"]
 mod session_draft_roundtrip;
+#[path = "properties/sidecar_reconciliation.rs"]
+mod sidecar_reconciliation;
 #[path = "properties/support.rs"]
 mod support;

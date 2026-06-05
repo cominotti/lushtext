@@ -1,0 +1,147 @@
+    Finished `bench` profile [optimized] target(s) in 0.11s
+     Running benches/benchmarks.rs (target/release/deps/benchmarks-cbd9ce7550beac88)
+Gnuplot not found, using plotters backend
+Benchmarking file_index_search/query_match/100
+Benchmarking file_index_search/query_match/100: Warming up for 1.0000 s
+Benchmarking file_index_search/query_match/100: Collecting 10 samples in estimated 1.0001 s (245k iterations)
+Benchmarking file_index_search/query_match/100: Analyzing
+file_index_search/query_match/100
+                        time:   [3.9640 µs 4.0478 µs 4.1270 µs]
+                        change: [+41.931% +46.398% +52.892%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+Benchmarking file_index_search/empty_query/100
+Benchmarking file_index_search/empty_query/100: Warming up for 1.0000 s
+Benchmarking file_index_search/empty_query/100: Collecting 10 samples in estimated 1.0000 s (15M iterations)
+Benchmarking file_index_search/empty_query/100: Analyzing
+file_index_search/empty_query/100
+                        time:   [67.402 ns 69.218 ns 70.522 ns]
+                        change: [+41.596% +49.349% +61.910%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+Benchmarking file_index_search/no_match/100
+Benchmarking file_index_search/no_match/100: Warming up for 1.0000 s
+Benchmarking file_index_search/no_match/100: Collecting 10 samples in estimated 1.0001 s (360k iterations)
+Benchmarking file_index_search/no_match/100: Analyzing
+file_index_search/no_match/100
+                        time:   [2.6900 µs 2.8631 µs 2.9973 µs]
+                        change: [+50.593% +56.372% +62.898%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking file_index_search/query_match/1000
+Benchmarking file_index_search/query_match/1000: Warming up for 1.0000 s
+Benchmarking file_index_search/query_match/1000: Collecting 10 samples in estimated 1.0008 s (32k iterations)
+Benchmarking file_index_search/query_match/1000: Analyzing
+file_index_search/query_match/1000
+                        time:   [28.521 µs 29.225 µs 29.893 µs]
+                        change: [+46.367% +49.798% +53.927%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking file_index_search/empty_query/1000
+Benchmarking file_index_search/empty_query/1000: Warming up for 1.0000 s
+Benchmarking file_index_search/empty_query/1000: Collecting 10 samples in estimated 1.0000 s (14M iterations)
+Benchmarking file_index_search/empty_query/1000: Analyzing
+file_index_search/empty_query/1000
+                        time:   [67.484 ns 69.180 ns 71.356 ns]
+                        change: [+49.241% +51.420% +54.432%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+Benchmarking file_index_search/no_match/1000
+Benchmarking file_index_search/no_match/1000: Warming up for 1.0000 s
+Benchmarking file_index_search/no_match/1000: Collecting 10 samples in estimated 1.0002 s (83k iterations)
+Benchmarking file_index_search/no_match/1000: Analyzing
+file_index_search/no_match/1000
+                        time:   [11.393 µs 11.537 µs 11.825 µs]
+                        change: [+48.394% +51.284% +55.479%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 10 measurements (30.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+Benchmarking file_index_search/query_match/10000
+Benchmarking file_index_search/query_match/10000: Warming up for 1.0000 s
+Benchmarking file_index_search/query_match/10000: Collecting 10 samples in estimated 1.0005 s (3300 iterations)
+Benchmarking file_index_search/query_match/10000: Analyzing
+file_index_search/query_match/10000
+                        time:   [296.11 µs 298.50 µs 301.88 µs]
+                        change: [+43.368% +48.761% +54.461%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+Benchmarking file_index_search/empty_query/10000
+Benchmarking file_index_search/empty_query/10000: Warming up for 1.0000 s
+Benchmarking file_index_search/empty_query/10000: Collecting 10 samples in estimated 1.0000 s (15M iterations)
+Benchmarking file_index_search/empty_query/10000: Analyzing
+file_index_search/empty_query/10000
+                        time:   [70.314 ns 73.076 ns 75.884 ns]
+                        change: [+52.231% +58.126% +64.470%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking file_index_search/no_match/10000
+Benchmarking file_index_search/no_match/10000: Warming up for 1.0000 s
+Benchmarking file_index_search/no_match/10000: Collecting 10 samples in estimated 1.0059 s (8800 iterations)
+Benchmarking file_index_search/no_match/10000: Analyzing
+file_index_search/no_match/10000
+                        time:   [104.82 µs 105.29 µs 105.53 µs]
+                        change: [+46.203% +46.660% +47.115%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking file_index_search/query_match/50000
+Benchmarking file_index_search/query_match/50000: Warming up for 1.0000 s
+Benchmarking file_index_search/query_match/50000: Collecting 10 samples in estimated 1.0410 s (550 iterations)
+Benchmarking file_index_search/query_match/50000: Analyzing
+file_index_search/query_match/50000
+                        time:   [1.8496 ms 1.8705 ms 1.8847 ms]
+                        change: [+54.090% +55.760% +57.358%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking file_index_search/empty_query/50000
+Benchmarking file_index_search/empty_query/50000: Warming up for 1.0000 s
+Benchmarking file_index_search/empty_query/50000: Collecting 10 samples in estimated 1.0000 s (15M iterations)
+Benchmarking file_index_search/empty_query/50000: Analyzing
+file_index_search/empty_query/50000
+                        time:   [66.873 ns 67.307 ns 67.669 ns]
+                        change: [+45.995% +47.339% +48.704%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking file_index_search/no_match/50000
+Benchmarking file_index_search/no_match/50000: Warming up for 1.0000 s
+Benchmarking file_index_search/no_match/50000: Collecting 10 samples in estimated 1.0098 s (1705 iterations)
+Benchmarking file_index_search/no_match/50000: Analyzing
+file_index_search/no_match/50000
+                        time:   [548.43 µs 558.27 µs 564.28 µs]
+                        change: [+46.487% +48.814% +50.512%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low severe
+Benchmarking file_index_search/query_match/100000
+Benchmarking file_index_search/query_match/100000: Warming up for 1.0000 s
+Benchmarking file_index_search/query_match/100000: Collecting 10 samples in estimated 1.0395 s (275 iterations)
+Benchmarking file_index_search/query_match/100000: Analyzing
+file_index_search/query_match/100000
+                        time:   [3.5507 ms 3.6454 ms 3.7334 ms]
+                        change: [+56.763% +62.551% +67.569%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking file_index_search/empty_query/100000
+Benchmarking file_index_search/empty_query/100000: Warming up for 1.0000 s
+Benchmarking file_index_search/empty_query/100000: Collecting 10 samples in estimated 1.0000 s (15M iterations)
+Benchmarking file_index_search/empty_query/100000: Analyzing
+file_index_search/empty_query/100000
+                        time:   [65.557 ns 66.996 ns 68.104 ns]
+                        change: [+43.017% +45.085% +47.270%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking file_index_search/no_match/100000
+Benchmarking file_index_search/no_match/100000: Warming up for 1.0000 s
+Benchmarking file_index_search/no_match/100000: Collecting 10 samples in estimated 1.0870 s (550 iterations)
+Benchmarking file_index_search/no_match/100000: Analyzing
+file_index_search/no_match/100000
+                        time:   [1.7999 ms 1.8774 ms 1.9541 ms]
+                        change: [+137.61% +143.44% +149.66%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+

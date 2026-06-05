@@ -7,6 +7,9 @@
 
 use crate::model::session::SessionData;
 use crate::services::json_store;
+use crate::services::recovery_metadata::{
+    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_json_or_default,
+};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -27,6 +30,21 @@ fn ordered_session_saves() -> &'static Mutex<HashMap<std::path::PathBuf, u64>> {
 /// Returns an error if the session file exists but cannot be read or parsed.
 pub fn load(data_dir: &Path) -> Result<SessionData> {
     json_store::load(data_dir, SESSION_FILENAME)
+}
+
+/// Load the global session through recovery-aware metadata handling.
+///
+/// Startup restore uses this path so malformed session JSON becomes a
+/// diagnostic and preserved evidence instead of silently behaving like a normal
+/// empty session.
+#[must_use]
+pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<SessionData> {
+    let path = data_dir.join(SESSION_FILENAME);
+    load_json_or_default(&RecoveryLoadConfig::new(
+        data_dir,
+        &path,
+        RecoveryMetadataClass::Session,
+    ))
 }
 
 /// Save the global session to disk.
@@ -103,6 +121,27 @@ mod tests {
         let session = load(dir.path()).expect("expected operation to succeed");
         assert!(session.tabs.is_empty());
         assert_eq!(session.active_tab_index, None);
+    }
+
+    #[test]
+    fn recovering_load_preserves_malformed_session_with_diagnostics() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        crate::services::filesystem::fixture::write_text(&dir.path().join(SESSION_FILENAME), "bad");
+
+        let load = load_recovering(dir.path());
+
+        assert!(load.value.tabs.is_empty());
+        assert_eq!(load.diagnostics.len(), 1);
+        assert!(matches!(
+            load.diagnostics[0].problem,
+            crate::services::recovery_metadata::RecoveryProblem::Malformed { .. }
+        ));
+        assert!(load.replacement_allowed());
+        let quarantine_path = load.diagnostics[0]
+            .preservation
+            .quarantine_path()
+            .expect("quarantine path");
+        crate::services::filesystem::fixture::assert_text(quarantine_path, "bad");
     }
 
     #[test]

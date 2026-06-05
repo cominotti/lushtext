@@ -6,23 +6,17 @@
 //! startup restore orchestration. Draft-specific lifecycle work stays in
 //! `drafts.rs`, even when restore needs to hand draft state across the split.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
 use crate::model::session::{SessionData, SessionTab};
+use crate::services::notifications::NotificationSeverity;
+use crate::services::recovery_metadata::{
+    RecoveryDiagnostic, RecoveryPreservation, RecoveryProblem,
+};
 use crate::services::{async_task, draft_service, json_store, session_service};
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-
-/// Draft + session state loaded together on startup so restore only needs one
-/// background round-trip before it can rebuild tabs.
-struct LoadedRestoreState {
-    manifest: DraftManifest,
-    session: SessionData,
-    preloaded_drafts: HashMap<String, PreloadedDraftRestore>,
-}
 
 impl super::LushtextWindow {
     /// Snapshot current tab state into one persisted `SessionData` value object.
@@ -91,15 +85,19 @@ impl super::LushtextWindow {
             }
             let session = window.collect_session();
             let data_dir = json_store::data_dir();
-            let generation = u64::from(generation);
+            let ordered_generation = u64::from(generation);
             async_task::spawn_blocking_then(
-                (),
-                move || {
-                    if let Err(e) = session_service::save_ordered(&data_dir, &session, generation) {
-                        tracing::error!("Failed to save session: {e}");
+                window,
+                move || session_service::save_ordered(&data_dir, &session, ordered_generation),
+                move |window, result| match result {
+                    Ok(true) => window.clear_session_save_failure(generation),
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::error!("Failed to save session: {error}");
+                        let detail = error.to_string();
+                        window.record_session_save_failure(generation, &detail, true);
                     }
                 },
-                |(), ()| {},
             );
         });
     }
@@ -110,9 +108,39 @@ impl super::LushtextWindow {
         self.imp().session.save_generation.set(generation);
         let session = self.collect_session();
         let data_dir = json_store::data_dir();
-        if let Err(e) = session_service::save_ordered(&data_dir, &session, u64::from(generation)) {
-            tracing::error!("Failed to save session on close: {e}");
+        match session_service::save_ordered(&data_dir, &session, u64::from(generation)) {
+            Ok(true) => self.clear_session_save_failure(generation),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!("Failed to save session on close: {error}");
+                let detail = error.to_string();
+                self.record_session_save_failure(generation, &detail, true);
+            }
         }
+    }
+
+    /// Save session for close on a background worker, then continue the close flow.
+    pub fn save_session_for_close_async<F: FnOnce() + 'static>(&self, on_done: F) {
+        let generation = self.imp().session.save_generation.get().wrapping_add(1);
+        self.imp().session.save_generation.set(generation);
+        let session = self.collect_session();
+        let data_dir = json_store::data_dir();
+        async_task::spawn_blocking_then(
+            self.clone(),
+            move || session_service::save_ordered(&data_dir, &session, u64::from(generation)),
+            move |window, result| {
+                match result {
+                    Ok(true) => window.clear_session_save_failure(generation),
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::error!("Failed to save session on close: {error}");
+                        let detail = error.to_string();
+                        window.record_session_save_failure(generation, &detail, true);
+                    }
+                }
+                on_done();
+            },
+        );
     }
 
     /// Load the session file plus draft restore state in one background task.
@@ -120,20 +148,16 @@ impl super::LushtextWindow {
         let data_dir = json_store::data_dir();
         async_task::spawn_blocking_then(
             self.clone(),
-            move || {
-                let (manifest, session, preloaded_drafts) =
-                    draft_service::load_restore_state(&data_dir);
-                LoadedRestoreState {
-                    manifest,
-                    session,
-                    preloaded_drafts,
-                }
-            },
+            move || draft_service::load_restore_state(&data_dir),
             |window, loaded| {
                 *window.imp().drafts.manifest.borrow_mut() = loaded.manifest;
                 *window.imp().drafts.preloaded.borrow_mut() = loaded.preloaded_drafts;
+                for diagnostic in &loaded.diagnostics {
+                    tracing::warn!("{}", diagnostic.summary());
+                }
                 window.restore_tabs(&loaded.session);
-                window.schedule_orphan_cleanup();
+                window.publish_startup_recovery_diagnostics(&loaded.diagnostics);
+                window.schedule_orphan_cleanup(loaded.orphan_cleanup_allowed);
             },
         );
     }
@@ -200,5 +224,138 @@ impl super::LushtextWindow {
         self.imp().session.restoring.set(false);
         self.update_content_stack();
         self.refresh_status_bar();
+    }
+
+    fn publish_startup_recovery_diagnostics(&self, diagnostics: &[RecoveryDiagnostic]) {
+        if diagnostics.is_empty() {
+            return;
+        }
+        let message = startup_recovery_status_message(diagnostics);
+        self.publish_status_message(&message, NotificationSeverity::Warning);
+    }
+
+    fn record_session_save_failure(&self, generation: u32, detail: &str, visible: bool) {
+        let session = &self.imp().session;
+        session.save_failed.set(true);
+        session.failed_generation.set(generation);
+        *session.failure_detail.borrow_mut() = Some(detail.to_string());
+        if visible {
+            self.publish_status_message(
+                &format!("Session layout may not restore: {detail}"),
+                NotificationSeverity::Warning,
+            );
+        }
+    }
+
+    fn clear_session_save_failure(&self, generation: u32) {
+        let session = &self.imp().session;
+        // A late successful save must not clear a newer failure banner, so only
+        // the same or newer generation may mark the session state healthy again.
+        if session.save_failed.get() && generation >= session.failed_generation.get() {
+            session.save_failed.set(false);
+            session.failed_generation.set(0);
+            session.failure_detail.borrow_mut().take();
+        }
+    }
+}
+
+fn startup_recovery_status_message(diagnostics: &[RecoveryDiagnostic]) -> String {
+    let damaged = diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic.problem,
+                RecoveryProblem::Malformed { .. }
+                    | RecoveryProblem::Unreadable { .. }
+                    | RecoveryProblem::UnsupportedFileKind { .. }
+                    | RecoveryProblem::Oversized { .. }
+            )
+        })
+        .count();
+    let repaired = diagnostics
+        .iter()
+        .filter(|diagnostic| matches!(diagnostic.problem, RecoveryProblem::Repaired { .. }))
+        .count();
+    let skipped = diagnostics
+        .iter()
+        .filter(|diagnostic| matches!(diagnostic.problem, RecoveryProblem::RepairSkipped { .. }))
+        .count();
+    let preserved = diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic.preservation,
+                RecoveryPreservation::Quarantined { .. }
+                    | RecoveryPreservation::CopiedToQuarantine { .. }
+                    | RecoveryPreservation::PreservedInPlace
+            )
+        })
+        .count();
+
+    match (damaged > 0, repaired > 0, skipped > 0, preserved > 0) {
+        (true, true, _, true) => format!(
+            "Some recovery data was repaired; {damaged} issue(s) were preserved for inspection"
+        ),
+        (true, false, true, true) => format!(
+            "Some recovery data could not be loaded; {damaged} issue(s) were preserved for inspection"
+        ),
+        (true, _, _, _) => {
+            format!("Some recovery data could not be loaded ({damaged} issue(s))")
+        }
+        (false, true, true, _) => {
+            "Some recovery data was partially repaired; other items were preserved".to_string()
+        }
+        (false, true, false, _) => "Some recovery data was repaired".to_string(),
+        (false, false, true, _) => {
+            "Some recovery data could not be repaired automatically".to_string()
+        }
+        (false, false, false, _) => "Recovery data changed during startup".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::services::recovery_metadata::{RecoveryMetadataClass, RecoveryPreservation};
+
+    #[test]
+    fn startup_recovery_status_groups_damage_and_repair() {
+        let diagnostics = vec![
+            RecoveryDiagnostic::with_preservation(
+                RecoveryMetadataClass::DraftManifest,
+                PathBuf::from("/tmp/manifest.json"),
+                RecoveryProblem::Malformed {
+                    detail: "bad JSON".to_string(),
+                },
+                RecoveryPreservation::Quarantined {
+                    path: PathBuf::from("/tmp/quarantine/manifest.json"),
+                },
+            ),
+            RecoveryDiagnostic::repaired(
+                RecoveryMetadataClass::DraftManifest,
+                PathBuf::from("/tmp/manifest.json"),
+                "rebuilt one draft",
+            ),
+        ];
+
+        let message = startup_recovery_status_message(&diagnostics);
+
+        assert!(message.contains("repaired"));
+        assert!(message.contains("preserved"));
+    }
+
+    #[test]
+    fn startup_recovery_status_mentions_unrepaired_items() {
+        let diagnostics = vec![RecoveryDiagnostic::repair_skipped(
+            RecoveryMetadataClass::DraftManifest,
+            PathBuf::from("/tmp/manifest.json"),
+            "ambiguous draft",
+        )];
+
+        let message = startup_recovery_status_message(&diagnostics);
+
+        assert!(message.contains("could not be repaired"));
     }
 }

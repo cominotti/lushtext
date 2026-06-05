@@ -108,9 +108,7 @@ fn expected_replaced_text(
         let Ok(line_idx) = usize::try_from(replacement.line_number.saturating_sub(1)) else {
             continue;
         };
-        let Some(line) = expected_lines.get_mut(line_idx) else {
-            continue;
-        };
+        let line = expected_lines.get_mut(line_idx)?;
         let start = replacement.match_range.start.min(line.len());
         let end = replacement.match_range.end.min(line.len());
         if start <= end {

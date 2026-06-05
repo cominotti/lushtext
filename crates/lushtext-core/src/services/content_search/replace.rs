@@ -288,12 +288,20 @@ pub fn apply_replacements(
         return Err(anyhow::anyhow!("{}", errors.join("; ")));
     }
 
-    let result = ReplaceResult {
+    let mut result = ReplaceResult {
         replaced_count,
         files_affected,
         skipped_paths,
         errors,
     };
+    if let Some(data_dir) = journal_data_dir
+        && !backup.is_empty()
+        && let Err(e) = search_backup::mark_journal_active(data_dir, &backup)
+    {
+        result.errors.push(format!(
+            "Replaced files, but the undo journal could not be marked active: {e}"
+        ));
+    }
 
     Ok((result, backup))
 }
@@ -364,7 +372,9 @@ fn build_replaced_text(
         )]
         let line_idx = replacement.line_number.saturating_sub(1) as usize;
         let Some(line_span) = line_spans.get(line_idx).cloned() else {
-            continue;
+            return ReplacementTextOutcome::StaleLine {
+                line_number: replacement.line_number,
+            };
         };
         let line = &original_text[line_span.clone()];
         if line != replacement.original_line {
@@ -475,6 +485,24 @@ pub fn undo_replacements(backup: &ReplaceUndoBackup) -> UndoReplaceOutcome {
             remaining_backup.insert(path.clone(), entry.clone());
             continue;
         };
+
+        let Ok(current_facts) = fs_metadata::file_facts(path) else {
+            failed_paths.push(path.clone());
+            remaining_backup.insert(path.clone(), entry.clone());
+            continue;
+        };
+        let original_len = u64::try_from(entry.original_bytes.len()).unwrap_or(u64::MAX);
+        let replaced_len = u64::try_from(entry.replaced_bytes.len()).unwrap_or(u64::MAX);
+        if current_facts.byte_size != original_len && current_facts.byte_size != replaced_len {
+            skipped_paths.push(path.clone());
+            remaining_backup.insert(path.clone(), entry.clone());
+            continue;
+        }
+        if current_facts.byte_size > MAX_REPLACE_FILE_BYTES {
+            skipped_paths.push(path.clone());
+            remaining_backup.insert(path.clone(), entry.clone());
+            continue;
+        }
 
         let Ok(current_bytes) = fs_read::bytes(path) else {
             failed_paths.push(path.clone());
@@ -850,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_replacements_ignores_line_numbers_past_eof() {
+    fn test_apply_replacements_treats_line_numbers_past_eof_as_stale() {
         let dir = tempdir().expect("expected operation to succeed");
         let file = dir.path().join("test.rs");
         fixture::write_text(&file, "needle\n");
@@ -858,13 +886,14 @@ mod tests {
         let replacements = vec![make_replacement(&file, 2, "needle", "replaced", 0..6)];
 
         let cancel = AtomicBool::new(false);
-        let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("out-of-range search rows should be ignored without panicking");
+        let result = apply_replacements(&replacements, &HashSet::new(), &cancel, None);
 
-        assert_eq!(result.replaced_count, 0);
-        assert_eq!(result.files_affected, 0);
-        assert!(result.errors.is_empty());
-        assert!(backup.is_empty());
+        assert!(
+            result
+                .expect_err("out-of-range search row should make the preview stale")
+                .to_string()
+                .contains("line 2 changed since search")
+        );
         assert_eq!(fixture::read_text(&file), "needle\n");
     }
 
@@ -1011,6 +1040,30 @@ mod tests {
             fixture::read_text(&file),
             "let user_edit = 42;\n",
             "undo must not overwrite edits made after Replace All",
+        );
+    }
+
+    #[test]
+    fn test_undo_replacements_skips_externally_grown_file_before_reading() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("test.rs");
+        fixture::write_text(&file, "after\n");
+        let mut backup = ReplaceUndoBackup::new();
+        backup.insert(
+            file.clone(),
+            ReplaceUndoEntry::new(b"before\n".to_vec(), b"after\n".to_vec()),
+        );
+        fixture::write_text(&file, "after plus a large external edit\n");
+
+        let outcome = undo_replacements(&backup);
+
+        assert_eq!(outcome.restored_count(), 0);
+        assert_eq!(outcome.skipped_paths, vec![file.clone()]);
+        assert!(outcome.failed_paths.is_empty());
+        assert_eq!(outcome.remaining_backup, backup);
+        assert_eq!(
+            fixture::read_text(&file),
+            "after plus a large external edit\n"
         );
     }
 
@@ -1195,6 +1248,33 @@ mod tests {
                 .contains("changed since search")
         );
         assert_eq!(fixture::read_text(&file), "needle changed\n");
+    }
+
+    #[test]
+    fn test_apply_replacements_skips_whole_file_when_preview_line_is_missing() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("stale-missing-line.rs");
+        fixture::write_text(&file, "needle one\n");
+
+        let replacements = vec![
+            make_replacement(&file, 1, "needle one", "replaced one", 0..6),
+            make_replacement(&file, 2, "needle two", "replaced two", 0..6),
+        ];
+
+        let cancel = AtomicBool::new(false);
+        let result = apply_replacements(&replacements, &HashSet::new(), &cancel, None);
+
+        assert!(
+            result
+                .expect_err("missing preview line should make the file stale")
+                .to_string()
+                .contains("line 2 changed since search")
+        );
+        assert_eq!(
+            fixture::read_text(&file),
+            "needle one\n",
+            "stale preview data must not partially replace earlier lines"
+        );
     }
 
     #[cfg(unix)]

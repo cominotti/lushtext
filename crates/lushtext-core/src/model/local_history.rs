@@ -22,6 +22,8 @@ pub enum LocalHistorySnapshotOrigin {
     Save,
     /// Snapshot captured immediately before restoring older history into the buffer.
     RestoreSafety,
+    /// Snapshot reconstructed from a surviving text file after metadata repair.
+    Recovered,
 }
 
 impl LocalHistorySnapshotOrigin {
@@ -33,6 +35,7 @@ impl LocalHistorySnapshotOrigin {
             Self::Periodic => "While editing",
             Self::Save => "Saved",
             Self::RestoreSafety => "Before restore",
+            Self::Recovered => "Recovered snapshot",
         }
     }
 }
@@ -123,6 +126,10 @@ mod tests {
         assert_eq!(
             LocalHistorySnapshotOrigin::RestoreSafety.label(),
             "Before restore"
+        );
+        assert_eq!(
+            LocalHistorySnapshotOrigin::Recovered.label(),
+            "Recovered snapshot"
         );
     }
 

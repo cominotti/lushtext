@@ -1,0 +1,21 @@
+Running widget tests under mutter --headless...
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/widget.rs (target/debug/deps/widget-8b093bb89656a91e)
+running 11 tests
+
+ok
+
+ok
+ok
+
+ok
+
+ok
+test window::test_file_chooser_save_as_selection_adopts_destination_after_write ... ok
+test window::test_file_chooser_save_as_uri_preserves_modified_editor_identity ... ok
+test window::test_file_chooser_save_as_cancels_pending_load_result_before_adopting_destination ... ok
+test window::test_file_chooser_save_as_existing_symlink_updates_target_without_replacing_link ... ok
+test window::test_file_chooser_workspace_folder_selection_adds_workspace ... ok
+test window::test_file_chooser_cancellation_preserves_document_workspace_and_draft_state ... ok
+
+test result: ok. all tests passed

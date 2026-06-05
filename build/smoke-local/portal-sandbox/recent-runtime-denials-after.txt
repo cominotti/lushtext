@@ -1,0 +1,13 @@
+Jun 05 11:17:50 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-239215130.scope.
+Jun 05 11:18:03 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-2855050557.scope.
+Jun 05 11:18:15 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-3283276592.scope.
+Jun 05 11:18:27 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-371649899.scope.
+Jun 05 11:19:25 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-3756830975.scope.
+Jun 05 11:19:37 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-2644950076.scope.
+Jun 05 11:19:50 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-1503987361.scope.
+Jun 05 11:20:02 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-4129102360.scope.
+Jun 05 11:21:06 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-1094679691.scope.
+Jun 05 11:21:18 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-1210416495.scope.
+Jun 05 11:21:31 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-2973142809.scope.
+Jun 05 11:21:43 sophia.localdomain systemd[4708]: Started app-flatpak-dev.cominotti.lushtext-1390292648.scope.
+Jun 05 11:21:50 sophia.localdomain systemd[4708]: Started app-flatpak-org.gnome.Connections-918215996.scope.

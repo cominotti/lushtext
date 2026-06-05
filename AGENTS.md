@@ -57,6 +57,7 @@ src/
 │   ├── encoding.rs     # DocumentEncodingState, LineEnding, FileHealthFinding, InvisibleCharactersMode
 │   ├── sidecar_identity.rs # DocumentSidecarIdentity — canonical-path sidecar keys for notes and history
 │   ├── workspace_note.rs # WorkspaceRootIdentity, WorkspaceNoteDocument — one rich note per workspace root
+│   ├── migration_ledger.rs # MigrationLedgerDocument — retry state for post-rename sidecar/history migrations
 │   └── formatting_overrides.rs  # FormattingOverrides — per-file EditorConfig overrides
 ├── services/           # Business logic
 │   ├── async_task.rs   # spawn_blocking_then, MAX_CONCURRENT_SPAWNS, concurrency guard
@@ -75,6 +76,8 @@ src/
 │   ├── file_tree.rs    # Directory scanning (pure I/O, bounded/cancellable helpers for sidebar)
 │   ├── json_store.rs   # Generic JSON load/save + data_dir()
 │   ├── notifications.rs # Window-scoped status and inline notification store
+│   ├── migration_ledger.rs # Durable retry ledger and startup reconciliation for sidecar/history migrations
+│   ├── recovery_metadata.rs # Recovery-aware metadata integrity, quarantine, repair diagnostics, and bounded JSON loading
 │   ├── saved_searches.rs # Named saved search persistence: load/save/add/remove (permanent)
 │   ├── search_backup.rs # Replace All per-file undo journal persistence within the active safety window
 │   ├── search_history.rs # Search history persistence: load/save/dedup (capped at 20)
@@ -187,6 +190,7 @@ make test-int    # Integration tests only
 make test-widget # Widget tests with the private headless runner
 make test-widget-headless # Widget tests with the CI mutter/dbus path
 make visual-smoke # Real-session screenshot smoke with artifacts
+make crash-recovery-smoke # Real-process SIGKILL/relaunch recovery smoke with artifacts
 make portal-sandbox-smoke # Available Flatpak/Snap confinement diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # Lightweight Criterion performance smoke
@@ -245,7 +249,7 @@ Replicated from invowk-rust:
 - Unit tests: `#[cfg(test)]` modules across models, services, and selected GTK-free UI helper modules
 - Integration tests: `crates/lushtext/tests/integration.rs` with `#[path]` split binary pattern
 - Widget tests: `crates/lushtext/tests/widget.rs` uses a custom single-threaded harness so GTK tests stay on one stable thread for the life of the process. The harness is Cargo-visible by default, but non-list executions self-supervise into a private `mutter --headless` session before GTK initializes; `scripts/run-widget-tests.sh`, `make test-widget`, and `make test-widget-headless` are all headless-only. The runner defaults to `GSK_RENDERER=cairo` to avoid headless Mesa/EGL device-probe warnings in CI while still allowing explicit renderer overrides. Presented widget tests do not reliably advance `AdwTimedAnimation` frame clocks, so animation-dependent assertions should use deterministic end-state checks or a narrow `LUSHTEXT_WIDGET_CHILD` immediate-completion path.
-- End-user smoke lanes: `docs/end-user-coverage.md` maps which behavior belongs in unit, integration, property, fuzz, widget, visual, portal/sandbox, accessibility, performance, and mutation lanes. Use `make visual-smoke`, `make portal-sandbox-smoke`, `make accessibility-smoke`, and `make performance-smoke` when the widget harness cannot prove rendered desktop, confinement, AT-SPI, or user-visible latency behavior; those scripts must preserve artifacts and skip explicitly when host support is unavailable.
+- End-user smoke lanes: `docs/end-user-coverage.md` maps which behavior belongs in unit, integration, property, fuzz, widget, visual, crash-recovery, portal/sandbox, accessibility, performance, and mutation lanes. Use `make visual-smoke`, `make crash-recovery-smoke`, `make portal-sandbox-smoke`, `make accessibility-smoke`, and `make performance-smoke` when the widget harness cannot prove rendered desktop, real-process recovery, confinement, AT-SPI, or user-visible latency behavior; those scripts must preserve artifacts and skip explicitly when host support is unavailable.
 - `TestContext` struct: isolated tempdir with simulated XDG data directory
 - Non-widget tests exercise models, services, and GTK-free helper code with no display server required; widget tests cover real GTK flows and require a display server plus the custom harness
 

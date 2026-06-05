@@ -1,0 +1,6 @@
+chooser=passed
+flatpak=skipped
+flatpak_recovery=2
+snap=skipped
+portal=detected
+artifacts=/var/home/danilo/Workspace/github/cominotti/lushtext/build/smoke-local/portal-sandbox

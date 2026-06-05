@@ -124,6 +124,11 @@ impl WriteLabel {
     pub const DRAFT: Self = Self("draft");
     /// Replace All write label.
     pub const REPLACE: Self = Self("replace");
+    /// Recovery quarantine copy label.
+    ///
+    /// Quarantine writes preserve broken app-owned metadata before any caller is
+    /// allowed to replace it with a repaired or default file.
+    pub const RECOVERY_QUARANTINE: Self = Self("recovery-quarantine");
     /// Local-history snapshot migration copy label.
     pub const LOCAL_HISTORY_COPY: Self = Self("local-history-copy");
 

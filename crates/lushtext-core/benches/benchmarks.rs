@@ -13,16 +13,22 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 use tempfile::TempDir;
 
+use lushtext_core::model::bookmark::BookmarkRecord;
 use lushtext_core::model::content_search::{
     ContentSearchOptions, Replacement, SearchMatch, generate_replacement_preview,
 };
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::encoding::{DocumentEncoding, LineEnding};
+use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
+use lushtext_core::model::local_history::{LocalHistoryDocument, LocalHistorySnapshotMeta};
+use lushtext_core::model::migration_ledger::MigrationKind;
 use lushtext_core::model::palette::IndexedFile;
 use lushtext_core::model::palette::SearchMode;
 use lushtext_core::model::session::{SessionData, SessionTab};
+use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, stable_bytes_hash};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
@@ -34,7 +40,11 @@ use lushtext_core::services::filesystem::{fixture, read as fs_read};
 use lushtext_core::services::json_store;
 use lushtext_core::services::palette::{self, FileIndex};
 use lushtext_core::services::workspace_manager;
-use lushtext_core::services::{draft_service, session_service};
+use lushtext_core::services::{
+    bookmark_service, draft_service,
+    local_history_service::{self, LocalHistoryCapturePolicy},
+    migration_ledger, session_service,
+};
 use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
 
 // ---------------------------------------------------------------------------
@@ -304,6 +314,156 @@ fn make_replace_all_over_cap_fixture() -> (TempDir, Vec<Replacement>) {
             match_range: 0..6,
         }],
     )
+}
+
+fn make_malformed_recovery_fixture(corrupt_sidecars: usize) -> (TempDir, PathBuf) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let workspace = dir.path().join("workspace");
+    fixture::create_dir_all(&workspace);
+    fixture::write_text(&dir.path().join("session.json"), "{ malformed session");
+    fixture::create_dir_all(&draft_service::drafts_dir(dir.path()));
+    fixture::write_text(
+        &draft_service::drafts_dir(dir.path()).join("manifest.json"),
+        "{ malformed manifest",
+    );
+    fixture::write_text(
+        &migration_ledger::ledger_path(dir.path()),
+        "{ malformed migration ledger",
+    );
+    let bookmarks_dir = bookmark_service::bookmarks_dir(dir.path());
+    fixture::create_dir_all(&bookmarks_dir);
+    for i in 0..corrupt_sidecars {
+        fixture::write_text(
+            &bookmarks_dir.join(format!("corrupt-{i}.json")),
+            "{ malformed bookmark sidecar",
+        );
+    }
+    (dir, workspace)
+}
+
+fn make_pending_migration_fixture(entry_count: usize) -> TempDir {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let old_root = dir.path().join("old");
+    let new_root = dir.path().join("new");
+    fixture::create_dir_all(&old_root);
+    fixture::create_dir_all(&new_root);
+    for i in 0..entry_count {
+        migration_ledger::record_pending(
+            dir.path(),
+            &old_root.join(format!("file-{i}.txt")),
+            &new_root.join(format!("file-{i}.txt")),
+            &[MigrationKind::Bookmarks, MigrationKind::DocumentNotes],
+        )
+        .expect("expected operation to succeed");
+    }
+    dir
+}
+
+fn make_duplicate_bookmark_sidecar_fixture() -> (TempDir, PathBuf, PathBuf) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let workspace = dir.path().join("workspace");
+    fixture::create_dir_all(&workspace);
+    let old_path = workspace.join("old.txt");
+    let new_path = workspace.join("new.txt");
+    fixture::write_text(&old_path, "old\n");
+    fixture::write_text(&new_path, "new\n");
+    bookmark_service::save_for_path(
+        dir.path(),
+        &old_path,
+        &[BookmarkRecord::new(1, Some("old bookmark".to_string()))],
+    )
+    .expect("expected operation to succeed");
+    bookmark_service::save_for_path(
+        dir.path(),
+        &new_path,
+        &[BookmarkRecord::new(2, Some("new bookmark".to_string()))],
+    )
+    .expect("expected operation to succeed");
+    (dir, old_path, new_path)
+}
+
+fn make_many_local_history_lineages_fixture(lineage_count: usize) -> (TempDir, PathBuf, PathBuf) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let old_root = dir.path().join("old-root");
+    let new_root = dir.path().join("new-root");
+    fixture::create_dir_all(&old_root);
+    fixture::create_dir_all(&new_root);
+    for i in 0..lineage_count {
+        let old_path = old_root.join(format!("file-{i}.txt"));
+        let new_path = new_root.join(format!("file-{i}.txt"));
+        fixture::write_text(&old_path, "old\n");
+        fixture::write_text(&new_path, "new\n");
+        local_history_service::capture_snapshot_for_path(
+            dir.path(),
+            &old_path,
+            &format!("old snapshot {i}\n"),
+            LocalHistorySnapshotOrigin::Save,
+            LocalHistoryCapturePolicy::PreserveDuplicate,
+        )
+        .expect("expected operation to succeed");
+        if i % 4 == 0 {
+            local_history_service::capture_snapshot_for_path(
+                dir.path(),
+                &new_path,
+                &format!("target snapshot {i}\n"),
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::PreserveDuplicate,
+            )
+            .expect("expected operation to succeed");
+        }
+    }
+    (dir, old_root, new_root)
+}
+
+fn make_mismatched_local_history_lineages_fixture(lineage_count: usize) -> TempDir {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let workspace = dir.path().join("workspace");
+    fixture::create_dir_all(&workspace);
+    for i in 0..lineage_count {
+        let path = workspace.join(format!("reconcile-{i}.txt"));
+        fixture::write_text(&path, "file\n");
+        let identity = local_history_service::resolve_document_identity(&path)
+            .expect("expected operation to succeed");
+        let lineage_dir =
+            local_history_service::local_history_dir(dir.path()).join(format!("stale-{i}"));
+        fixture::create_dir_all(&lineage_dir);
+        let text = format!("mismatched local-history body {i}\n");
+        let meta = LocalHistorySnapshotMeta {
+            snapshot_id: next_record_id("history"),
+            captured_at_millis: now_epoch_millis(),
+            origin: LocalHistorySnapshotOrigin::Save,
+            byte_len: text.len() as u64,
+            content_hash: stable_bytes_hash(text.as_bytes()),
+        };
+        fixture::write_text(
+            &lineage_dir.join(format!("{}.txt", meta.snapshot_id)),
+            &text,
+        );
+        json_store::save(
+            &lineage_dir,
+            "index.json",
+            &LocalHistoryDocument {
+                identity,
+                snapshots: vec![meta],
+            },
+        )
+        .expect("expected operation to succeed");
+    }
+    dir
+}
+
+fn make_first_dirty_autosave_fixture(
+    draft_count: usize,
+    draft_size: usize,
+) -> (TempDir, Vec<String>) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let ids = (0..draft_count)
+        .map(|i| format!("untitled-{i:016x}"))
+        .collect::<Vec<_>>();
+    fixture::create_dir_all(&draft_service::drafts_dir(dir.path()));
+    fixture::write_text(&dir.path().join("seed.txt"), "seed\n");
+    let _content = "x".repeat(draft_size);
+    (dir, ids)
 }
 
 // ---------------------------------------------------------------------------
@@ -955,9 +1115,13 @@ fn bench_draft_restore(c: &mut Criterion) {
             b.iter_batched(
                 || make_draft_fixtures(n_tabs, n_drafts, draft_kb * 1024),
                 |(dir, _session)| {
-                    let (manifest, session, preloaded) =
-                        draft_service::load_restore_state(black_box(dir.path()));
-                    (manifest, session, preloaded, dir)
+                    let restore = draft_service::load_restore_state(black_box(dir.path()));
+                    (
+                        restore.manifest,
+                        restore.session,
+                        restore.preloaded_drafts,
+                        dir,
+                    )
                 },
                 BatchSize::SmallInput,
             );
@@ -1020,6 +1184,142 @@ fn bench_draft_restore(c: &mut Criterion) {
             );
         });
     }
+
+    group.finish();
+}
+
+fn bench_recovery_performance(c: &mut Criterion) {
+    let mut group = c.benchmark_group("recovery_performance");
+    group.sample_size(10);
+
+    group.bench_function("malformed_metadata/startup_and_sidecar_diagnostics", |b| {
+        b.iter_batched(
+            || make_malformed_recovery_fixture(12),
+            |(dir, workspace)| {
+                let restore = draft_service::load_restore_state(black_box(dir.path()));
+                let ledger = migration_ledger::load_recovering(black_box(dir.path()));
+                let bookmarks = bookmark_service::list_workspace_bookmarks_recovering(
+                    black_box(dir.path()),
+                    black_box(&[workspace]),
+                )
+                .expect("expected operation to succeed");
+                black_box((
+                    restore.diagnostics.len(),
+                    ledger.diagnostics.len(),
+                    bookmarks.diagnostics.len(),
+                    dir,
+                ));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    for entry_count in [10usize, 100usize] {
+        group.bench_function(
+            BenchmarkId::new("pending_migrations/reconcile", entry_count),
+            |b| {
+                b.iter_batched(
+                    || make_pending_migration_fixture(entry_count),
+                    |dir| {
+                        let report = migration_ledger::reconcile_pending(black_box(dir.path()))
+                            .expect("expected operation to succeed");
+                        black_box((report.considered, report.attempted, report.completed, dir));
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.bench_function("duplicate_sidecars/bookmark_merge", |b| {
+        b.iter_batched(
+            make_duplicate_bookmark_sidecar_fixture,
+            |(dir, old_path, new_path)| {
+                let migrated = bookmark_service::move_path_tree(
+                    black_box(dir.path()),
+                    black_box(&old_path),
+                    black_box(&new_path),
+                )
+                .expect("expected operation to succeed");
+                black_box((migrated, dir));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    for lineage_count in [24usize, 120usize] {
+        group.bench_function(
+            BenchmarkId::new("local_history_many_lineages/move_tree", lineage_count),
+            |b| {
+                b.iter_batched(
+                    || make_many_local_history_lineages_fixture(lineage_count),
+                    |(dir, old_root, new_root)| {
+                        let migrated = local_history_service::move_path_tree(
+                            black_box(dir.path()),
+                            black_box(&old_root),
+                            black_box(&new_root),
+                        )
+                        .expect("expected operation to succeed");
+                        black_box((migrated, dir));
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+        group.bench_function(
+            BenchmarkId::new(
+                "local_history_many_lineages/reconcile_bounded",
+                lineage_count,
+            ),
+            |b| {
+                b.iter_batched(
+                    || make_mismatched_local_history_lineages_fixture(lineage_count),
+                    |dir| {
+                        let budget = local_history_service::LocalHistoryReconcileBudget::new(
+                            lineage_count / 2,
+                            Duration::from_secs(60),
+                        );
+                        let report = local_history_service::reconcile_lineages_with_budget(
+                            black_box(dir.path()),
+                            black_box(budget),
+                        )
+                        .expect("expected operation to succeed");
+                        black_box((
+                            report.scanned_lineages,
+                            report.reconciled_lineages,
+                            report.deferred_lineages,
+                            dir,
+                        ));
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.bench_function("first_dirty_autosave/persist_manifest_batch", |b| {
+        b.iter_batched(
+            || make_first_dirty_autosave_fixture(20, 4 * 1024),
+            |(dir, ids)| {
+                let content = "x".repeat(4 * 1024);
+                let mut manifest = DraftManifest::default();
+                for draft_id in ids {
+                    draft_service::write_draft(black_box(dir.path()), &draft_id, &content)
+                        .expect("expected operation to succeed");
+                    manifest.upsert(DraftEntry {
+                        draft_id,
+                        original_path: None,
+                        original_mtime_secs: None,
+                        saved_at_secs: 2000,
+                    });
+                }
+                draft_service::save_manifest(black_box(dir.path()), black_box(&manifest))
+                    .expect("expected operation to succeed");
+                black_box((manifest.drafts.len(), dir));
+            },
+            BatchSize::SmallInput,
+        );
+    });
 
     group.finish();
 }
@@ -1247,6 +1547,7 @@ criterion_group!(
     bench_tree_population,
     bench_file_size_classify,
     bench_draft_restore,
+    bench_recovery_performance,
     bench_content_search,
     bench_content_search_smoke,
 );

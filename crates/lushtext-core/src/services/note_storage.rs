@@ -12,7 +12,12 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
-use crate::services::filesystem::{metadata as fs_metadata, read as fs_read};
+use crate::services::filesystem::metadata as fs_metadata;
+#[cfg(test)]
+use crate::services::filesystem::read as fs_read;
+use crate::services::recovery_metadata::{
+    RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_json_optional,
+};
 
 /// Resolve the stable identity for one saved document path.
 ///
@@ -96,11 +101,12 @@ pub fn rebase_identity_paths(
     None
 }
 
-/// Load one optional JSON sidecar payload.
+/// Load one optional JSON sidecar payload for legacy strict-load tests.
 ///
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or parsed.
+#[cfg(test)]
 pub fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     match fs_read::bytes(path) {
         Ok(bytes) => {
@@ -114,6 +120,23 @@ pub fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
             path.display(),
             error
         )),
+    }
+}
+
+/// Load one optional JSON sidecar through recovery-aware metadata handling.
+#[must_use]
+pub fn load_json_file_recovering<T: DeserializeOwned>(
+    data_dir: &Path,
+    path: &Path,
+    class: RecoveryMetadataClass,
+) -> RecoveryLoad<Option<T>> {
+    load_json_optional(&RecoveryLoadConfig::new(data_dir, path, class))
+}
+
+/// Send recovery diagnostics to tracing without changing a service's public API.
+pub fn trace_recovery_diagnostics(diagnostics: &[RecoveryDiagnostic]) {
+    for diagnostic in diagnostics {
+        tracing::warn!("{}", diagnostic.summary());
     }
 }
 

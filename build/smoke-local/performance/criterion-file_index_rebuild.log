@@ -1,0 +1,54 @@
+    Finished `bench` profile [optimized] target(s) in 0.14s
+     Running benches/benchmarks.rs (target/release/deps/benchmarks-cbd9ce7550beac88)
+Gnuplot not found, using plotters backend
+Benchmarking file_index_rebuild/50
+Benchmarking file_index_rebuild/50: Warming up for 1.0000 s
+Benchmarking file_index_rebuild/50: Collecting 20 samples in estimated 1.0161 s (2940 iterations)
+Benchmarking file_index_rebuild/50: Analyzing
+file_index_rebuild/50   time:   [77.495 µs 80.866 µs 83.604 µs]
+                        change: [+61.332% +80.571% +108.68%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking file_index_rebuild/500
+Benchmarking file_index_rebuild/500: Warming up for 1.0000 s
+Benchmarking file_index_rebuild/500: Collecting 20 samples in estimated 1.3571 s (420 iterations)
+Benchmarking file_index_rebuild/500: Analyzing
+file_index_rebuild/500  time:   [686.88 µs 712.53 µs 731.59 µs]
+                        change: [+57.147% +68.979% +79.487%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking file_index_rebuild/5000
+Benchmarking file_index_rebuild/5000: Warming up for 1.0000 s
+Benchmarking file_index_rebuild/5000: Collecting 20 samples in estimated 1.5138 s (40 iterations)
+Benchmarking file_index_rebuild/5000: Analyzing
+file_index_rebuild/5000 time:   [8.9592 ms 9.3843 ms 10.055 ms]
+                        change: [+71.396% +80.422% +94.521%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) high severe
+Benchmarking file_index_rebuild/10000
+Benchmarking file_index_rebuild/10000: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 1.0s. You may wish to increase target time to 1.6s, or reduce sample count to 10.
+Benchmarking file_index_rebuild/10000: Collecting 20 samples in estimated 1.5902 s (20 iterations)
+Benchmarking file_index_rebuild/10000: Analyzing
+file_index_rebuild/10000
+                        time:   [18.984 ms 19.439 ms 20.163 ms]
+                        change: [+56.775% +65.561% +75.372%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) low severe
+  1 (5.00%) high severe
+Benchmarking file_index_rebuild/100000
+Benchmarking file_index_rebuild/100000: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 1.0s. You may wish to increase target time to 15.8s, or reduce sample count to 10.
+Benchmarking file_index_rebuild/100000: Collecting 20 samples in estimated 15.785 s (20 iterations)
+Benchmarking file_index_rebuild/100000: Analyzing
+file_index_rebuild/100000
+                        time:   [231.00 ms 233.41 ms 236.39 ms]
+                        change: [+44.744% +46.383% +48.295%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+

@@ -1,0 +1,78 @@
+    Finished `bench` profile [optimized] target(s) in 0.09s
+     Running benches/benchmarks.rs (target/release/deps/benchmarks-cbd9ce7550beac88)
+Gnuplot not found, using plotters backend
+Benchmarking replace_undo_workflows/replace_all/small
+Benchmarking replace_undo_workflows/replace_all/small: Warming up for 1.0000 s
+Benchmarking replace_undo_workflows/replace_all/small: Collecting 10 samples in estimated 1.0220 s (2365 iterations)
+Benchmarking replace_undo_workflows/replace_all/small: Analyzing
+replace_undo_workflows/replace_all/small
+                        time:   [384.24 µs 390.35 µs 400.66 µs]
+                        change: [+13.106% +18.783% +25.596%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+Benchmarking replace_undo_workflows/undo_replace_all/small
+Benchmarking replace_undo_workflows/undo_replace_all/small: Warming up for 1.0000 s
+Benchmarking replace_undo_workflows/undo_replace_all/small: Collecting 10 samples in estimated 1.0079 s (1540 iterations)
+Benchmarking replace_undo_workflows/undo_replace_all/small: Analyzing
+replace_undo_workflows/undo_replace_all/small
+                        time:   [214.23 µs 224.13 µs 232.94 µs]
+                        change: [+75.022% +81.086% +88.527%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking replace_undo_workflows/replace_all/medium
+Benchmarking replace_undo_workflows/replace_all/medium: Warming up for 1.0000 s
+Benchmarking replace_undo_workflows/replace_all/medium: Collecting 10 samples in estimated 1.0641 s (220 iterations)
+Benchmarking replace_undo_workflows/replace_all/medium: Analyzing
+replace_undo_workflows/replace_all/medium
+                        time:   [4.2102 ms 4.3540 ms 4.5087 ms]
+                        change: [+53.071% +57.557% +62.285%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high mild
+Benchmarking replace_undo_workflows/undo_replace_all/medium
+Benchmarking replace_undo_workflows/undo_replace_all/medium: Warming up for 1.0000 s
+Benchmarking replace_undo_workflows/undo_replace_all/medium: Collecting 10 samples in estimated 1.1364 s (165 iterations)
+Benchmarking replace_undo_workflows/undo_replace_all/medium: Analyzing
+replace_undo_workflows/undo_replace_all/medium
+                        time:   [2.3662 ms 2.4210 ms 2.5199 ms]
+                        change: [+74.392% +89.858% +105.60%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high mild
+Benchmarking replace_undo_workflows/replace_all/many_files_journal
+Benchmarking replace_undo_workflows/replace_all/many_files_journal: Warming up for 1.0000 s
+Benchmarking replace_undo_workflows/replace_all/many_files_journal: Collecting 10 samples in estimated 1.3284 s (30 iterations)
+Benchmarking replace_undo_workflows/replace_all/many_files_journal: Analyzing
+replace_undo_workflows/replace_all/many_files_journal
+                        time:   [38.262 ms 39.819 ms 42.426 ms]
+                        change: [+51.653% +58.535% +68.584%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high severe
+Benchmarking replace_undo_workflows/undo_replace_all/many_files_journal
+Benchmarking replace_undo_workflows/undo_replace_all/many_files_journal: Warming up for 1.0000 s
+Benchmarking replace_undo_workflows/undo_replace_all/many_files_journal: Collecting 10 samples in estimated 1.2472 s (20 iterations)
+Benchmarking replace_undo_workflows/undo_replace_all/many_files_journal: Analyzing
+replace_undo_workflows/undo_replace_all/many_files_journal
+                        time:   [24.251 ms 24.661 ms 25.100 ms]
+                        change: [+63.960% +67.482% +71.299%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking replace_undo_workflows/replace_all/accepted_10mb_file
+Benchmarking replace_undo_workflows/replace_all/accepted_10mb_file: Warming up for 1.0000 s
+Benchmarking replace_undo_workflows/replace_all/accepted_10mb_file: Collecting 10 samples in estimated 1.0350 s (20 iterations)
+Benchmarking replace_undo_workflows/replace_all/accepted_10mb_file: Analyzing
+replace_undo_workflows/replace_all/accepted_10mb_file
+                        time:   [39.365 ms 39.840 ms 40.382 ms]
+                        change: [+16.900% +20.885% +24.981%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking replace_undo_workflows/replace_all/skipped_over_cap_file
+Benchmarking replace_undo_workflows/replace_all/skipped_over_cap_file: Warming up for 1.0000 s
+Benchmarking replace_undo_workflows/replace_all/skipped_over_cap_file: Collecting 10 samples in estimated 1.0001 s (64k iterations)
+Benchmarking replace_undo_workflows/replace_all/skipped_over_cap_file: Analyzing
+replace_undo_workflows/replace_all/skipped_over_cap_file
+                        time:   [8.7135 µs 8.9478 µs 9.1158 µs]
+                        change: [+61.766% +68.926% +76.020%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+

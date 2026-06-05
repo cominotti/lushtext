@@ -1,0 +1,9 @@
+name=main-search-minimap
+fixture=/var/home/danilo/Workspace/github/cominotti/lushtext/build/smoke-local/visual/fixtures/visual-smoke.txt
+output=/var/home/danilo/Workspace/github/cominotti/lushtext/build/smoke-local/visual/screenshots/main-search-minimap.png
+width=1600
+height=1000
+search=needle
+minimap=1
+color_scheme=default
+actions= 

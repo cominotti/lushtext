@@ -8,7 +8,7 @@
 
 use crate::common::{
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
-    fs_metadata, fs_read, wait_until,
+    fs_metadata, fs_mutate, fs_read, wait_until,
 };
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
 use glib::prelude::{Cast, IsA, ObjectExt, ToValue};
@@ -33,6 +33,7 @@ use lushtext_core::model::workspace::{
 use lushtext_core::services::file_limits::{
     DISABLE_SYNTAX_HIGHLIGHTING, DISABLE_UNDO_HISTORY, FileSizeCheck, REFUSE_TO_OPEN,
 };
+use lushtext_core::services::filesystem::PathStatus;
 use lushtext_core::services::notifications::{
     InlineActionNotification, InlineNotificationStyle, NotificationOwner, NotificationPayload,
     NotificationSeverity, NotificationSurface, StatusMessage,
@@ -48,7 +49,8 @@ use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::window::{
     LushtextWindow, PrintDocumentSnapshot, PrintOutcome, set_canonical_refresh_delay_for_test,
-    set_lossy_encoding_analysis_delay_for_test, with_print_runner_for_test,
+    set_first_dirty_autosave_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
+    with_print_runner_for_test,
 };
 use sourceview5::prelude::*;
 use std::cell::RefCell;
@@ -73,6 +75,14 @@ struct LossyEncodingAnalysisDelayReset;
 impl Drop for LossyEncodingAnalysisDelayReset {
     fn drop(&mut self) {
         set_lossy_encoding_analysis_delay_for_test(0);
+    }
+}
+
+struct FirstDirtyAutosaveDelayReset;
+
+impl Drop for FirstDirtyAutosaveDelayReset {
+    fn drop(&mut self) {
+        set_first_dirty_autosave_delay_for_test(750);
     }
 }
 
@@ -402,6 +412,14 @@ fn close_selected_tab(window: &LushtextWindow) {
         .expect("selected tab");
     window.imp().tab_view.close_page(&page);
     flush_events();
+}
+
+fn remove_session_path_for_test(path: &Path) {
+    match fs_metadata::path_status(path).expect("session path status") {
+        PathStatus::Missing => {}
+        PathStatus::Directory => fixture::remove_dir_all(path),
+        PathStatus::File | PathStatus::Other => fixture::remove_file(path),
+    }
 }
 
 fn respond_to_save_changes_dialog(window: &LushtextWindow, response: &str) {
@@ -3678,6 +3696,8 @@ fn test_close_tab_is_blocked_while_save_is_in_progress() {
 #[test]
 fn test_draft_autosave_marks_pending_when_editing_during_inflight_batch() {
     ensure_gtk_init();
+    let _reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(25);
     let window = test_window();
     window.new_tab();
     present_window(&window);
@@ -3692,14 +3712,41 @@ fn test_draft_autosave_marks_pending_when_editing_during_inflight_batch() {
 }
 
 #[test]
-fn test_draft_autosave_failure_keeps_editor_retry_eligible() {
+fn test_first_dirty_autosave_writes_small_buffer_before_periodic_tick() {
     ensure_gtk_init();
+    let _reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(25);
     let window = test_window();
     window.new_tab();
     present_window(&window);
     let editor = active_editor(&window);
-    editor.buffer().set_text("retryable draft\n");
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    let _ = draft_service::delete_draft_file(&data_dir, &draft_id);
+
+    editor.buffer().set_text("first dirty draft\n");
     editor.buffer().set_modified(true);
+
+    wait_until(Duration::from_secs(3), || {
+        !window.draft_autosave_inflight_for_test()
+            && !editor.draft_dirty()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read first-dirty draft")
+                .is_some_and(|content| content == "first dirty draft\n")
+    });
+
+    draft_service::delete_draft_file(&data_dir, &draft_id).expect("delete draft file");
+}
+
+#[test]
+fn test_first_dirty_autosave_failure_keeps_editor_retry_eligible() {
+    ensure_gtk_init();
+    let _reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(25);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
     let draft_id = editor.draft_id().expect("draft id");
     let data_dir = json_store::data_dir();
     let drafts_dir = draft_service::drafts_dir(&data_dir);
@@ -3720,9 +3767,14 @@ fn test_draft_autosave_failure_keeps_editor_retry_eligible() {
     }
     fixture::create_dir_all(&manifest_path);
 
-    window.autosave_tick_for_test();
+    editor.buffer().set_text("retryable draft\n");
+    editor.buffer().set_modified(true);
+
     wait_until(Duration::from_secs(3), || {
         !window.draft_autosave_inflight_for_test()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read retryable draft")
+                .is_some()
     });
 
     assert!(
@@ -3735,52 +3787,45 @@ fn test_draft_autosave_failure_keeps_editor_retry_eligible() {
     );
 
     fixture::remove_dir_all(&manifest_path);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(3), || {
+        !window.draft_autosave_inflight_for_test() && !editor.draft_dirty()
+    });
+
     draft_service::delete_draft_file(&data_dir, &draft_id).expect("delete draft file");
 }
 
 #[test]
-fn test_draft_autosave_large_dirty_tabs_snapshot_across_main_loop_chunks() {
+fn test_first_dirty_autosave_large_buffer_snapshots_across_main_loop_chunks() {
     ensure_gtk_init();
+    let _reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(25);
     let window = test_window();
     window.new_tab();
     present_window(&window);
-    let first = active_editor(&window);
+    let editor = active_editor(&window);
     let large_text = "x".repeat(2_500_001);
-    first.buffer().set_text(&large_text);
-    first.buffer().set_modified(true);
-
-    window.new_tab();
-    flush_events();
-    let second = active_editor(&window);
-    second.buffer().set_text(&large_text);
-    second.buffer().set_modified(true);
-
-    let first_id = first.draft_id().expect("first draft id");
-    let second_id = second.draft_id().expect("second draft id");
+    let draft_id = editor.draft_id().expect("draft id");
     let data_dir = json_store::data_dir();
-    let _ = draft_service::delete_draft_file(&data_dir, &first_id);
-    let _ = draft_service::delete_draft_file(&data_dir, &second_id);
+    let _ = draft_service::delete_draft_file(&data_dir, &draft_id);
 
-    window.autosave_tick_for_test();
+    editor.buffer().set_text(&large_text);
+    editor.buffer().set_modified(true);
 
-    assert!(window.draft_autosave_inflight_for_test());
-    assert!(first.draft_dirty());
-    assert!(second.draft_dirty());
+    wait_until(Duration::from_secs(3), || {
+        window.draft_autosave_inflight_for_test()
+    });
+    assert!(editor.draft_dirty());
     wait_until(Duration::from_secs(10), || {
         !window.draft_autosave_inflight_for_test()
-            && draft_service::read_draft(&data_dir, &first_id)
-                .expect("read first draft")
-                .is_some_and(|content| content.len() == large_text.len())
-            && draft_service::read_draft(&data_dir, &second_id)
-                .expect("read second draft")
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read draft")
                 .is_some_and(|content| content.len() == large_text.len())
     });
 
-    assert!(!first.draft_dirty());
-    assert!(!second.draft_dirty());
+    assert!(!editor.draft_dirty());
 
-    draft_service::delete_draft_file(&data_dir, &first_id).expect("delete first draft");
-    draft_service::delete_draft_file(&data_dir, &second_id).expect("delete second draft");
+    draft_service::delete_draft_file(&data_dir, &draft_id).expect("delete draft");
 }
 
 #[test]
@@ -5206,6 +5251,57 @@ fn test_local_history_browser_explains_empty_snapshot_and_disables_copy() {
 }
 
 #[test]
+fn test_local_history_browser_warns_and_shows_repaired_snapshot() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("repaired-history.txt");
+    fixture::write_text(&path, "one\n");
+
+    let data_dir = json_store::data_dir();
+    let body = "recoverable history\n";
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        body,
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed recoverable snapshot");
+    let identity = local_history_service::resolve_document_identity(&path).expect("history identity");
+    let index_path = local_history_service::local_history_dir(&data_dir)
+        .join(identity.sidecar_id)
+        .join("index.json");
+    fixture::write_text(&index_path, "not local-history json");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some() && action_enabled(&window, "show-local-history")
+    });
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    let recovered_label = format!("Recovered snapshot · {} B", body.len());
+    wait_until(Duration::from_secs(2), || {
+        find_label_by_text(&child, &recovered_label).is_some()
+            && window
+                .imp()
+                .notification_bus
+                .status_bar_view()
+                .is_some_and(|status| {
+                    status
+                        .text
+                        .contains("Some local-history metadata needed recovery")
+                })
+    });
+}
+
+#[test]
 fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
     ensure_gtk_init();
     let window = test_window();
@@ -6134,6 +6230,47 @@ fn test_window_close_request_save_persists_session_and_cleans_file_draft() {
     assert_eq!(session.tabs.len(), 1);
     assert_eq!(session.tabs[0].path.as_deref(), Some(path.as_path()));
     assert_eq!(session.active_tab_index, Some(0));
+}
+
+#[test]
+fn test_sync_session_save_failure_keeps_retry_state_and_warns_user() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    let data_dir = json_store::data_dir();
+    let session_path = data_dir.join("session.json");
+    remove_session_path_for_test(&session_path);
+    fixture::create_dir(&session_path);
+
+    window.save_session_sync();
+
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Session layout may not restore"))
+    });
+    assert!(window.imp().session.save_failed.get());
+    assert!(
+        window
+            .imp()
+            .session
+            .failure_detail
+            .borrow()
+            .as_deref()
+            .is_some_and(|detail| detail.contains("session.json"))
+    );
+
+    fs_mutate::remove_dir_all_if_exists(&session_path).expect("remove blocking session dir");
+    window.save_session_sync();
+
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().session.save_failed.get()
+            && window.imp().session.failure_detail.borrow().is_none()
+    });
+    let session = session_service::load(&data_dir).expect("retry should write clean session");
+    assert_eq!(session.tabs.len(), 1);
 }
 
 #[test]
@@ -7348,6 +7485,56 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
 }
 
 #[test]
+fn test_notes_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let valid_path = left_root.join("valid-note.md");
+    let corrupt_path = left_root.join("corrupt-note.md");
+    fixture::write_text(&valid_path, "# Valid\n");
+    fixture::write_text(&corrupt_path, "# Corrupt\n");
+
+    let data_dir = json_store::data_dir();
+    document_note_service::save_for_path(
+        &data_dir,
+        &valid_path,
+        &RichNoteBody::new("visible note body"),
+    )
+    .expect("save valid document note");
+    let corrupt_identity =
+        bookmark_service::resolve_document_identity(&corrupt_path).expect("corrupt identity");
+    let corrupt_sidecar = document_note_service::document_notes_dir(&data_dir)
+        .join(format!("{}.json", corrupt_identity.sidecar_id));
+    fixture::create_dir_all(corrupt_sidecar.parent().expect("sidecar parent"));
+    fixture::write_text(&corrupt_sidecar, "not document note json");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(2), || {
+        sidebar.items().n_items() == 1
+            && window
+                .imp()
+                .notification_bus
+                .status_bar_view()
+                .is_some_and(|status| status.text.contains("Some note data could not be loaded"))
+    });
+    assert!(
+        sidebar
+            .item(0)
+            .and_then(|item| item.title())
+            .is_some_and(|title| title == "Document Note · valid-note.md"),
+        "valid document notes should remain browsable when one sidecar is corrupt"
+    );
+}
+
+#[test]
 fn test_browse_notes_opens_bookmark_for_selected_row() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
@@ -7398,6 +7585,55 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
     wait_until(Duration::from_secs(2), || {
         active_editor(&window).file_path() == Some(path.clone())
             && active_editor(&window).cursor_position().0 == 1
+    });
+}
+
+#[test]
+fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let valid_path = left_root.join("valid-bookmark.rs");
+    let corrupt_path = left_root.join("corrupt-bookmark.rs");
+    fixture::write_text(&valid_path, "one\ntwo\n");
+    fixture::write_text(&corrupt_path, "bad\n");
+
+    let data_dir = json_store::data_dir();
+    bookmark_service::save_for_path(
+        &data_dir,
+        &valid_path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            1,
+            Some("valid bookmark".to_string()),
+        )],
+    )
+    .expect("save valid bookmark");
+    let corrupt_identity =
+        bookmark_service::resolve_document_identity(&corrupt_path).expect("corrupt identity");
+    let corrupt_sidecar =
+        bookmark_service::bookmarks_dir(&data_dir).join(format!("{}.json", corrupt_identity.sidecar_id));
+    fixture::create_dir_all(corrupt_sidecar.parent().expect("sidecar parent"));
+    fixture::write_text(&corrupt_sidecar, "not bookmark json");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+
+    activate_action(&window, "show-bookmarks");
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("bookmark browser dialog");
+    let child = dialog.child().expect("bookmark browser child");
+    wait_until(Duration::from_secs(2), || {
+        find_label_by_text(&child, "valid bookmark").is_some()
+            && window
+                .imp()
+                .notification_bus
+                .status_bar_view()
+                .is_some_and(|status| {
+                    status
+                        .text
+                        .contains("Some bookmark data could not be loaded")
+                })
     });
 }
 
@@ -7938,6 +8174,31 @@ fn test_session_restore_keeps_pinned_tabs_ahead_of_unpinned_tabs() {
             .as_str(),
         "gamma.txt"
     );
+}
+
+#[test]
+fn test_startup_restore_surfaces_grouped_recovery_diagnostics() {
+    ensure_gtk_init();
+    let data_dir = json_store::data_dir();
+    let session_path = data_dir.join("session.json");
+    remove_session_path_for_test(&session_path);
+    fixture::write_text(&session_path, "not valid session json");
+
+    let window = test_window();
+    present_window(&window);
+
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Some recovery data could not be loaded"))
+    });
+    assert!(
+        !fs_metadata::exists(&session_path),
+        "malformed session should be moved away before replacement is allowed"
+    );
+    session_service::save(&data_dir, &SessionData::default()).expect("restore clean session");
 }
 
 #[test]

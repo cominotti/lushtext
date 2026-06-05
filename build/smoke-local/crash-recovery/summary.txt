@@ -1,0 +1,4 @@
+result=skipped
+reason=AT-SPI setup unavailable: AT-SPI registry did not register on the private accessibility bus.
+data_dir=/var/home/danilo/Workspace/github/cominotti/lushtext/build/smoke-local/crash-recovery/state/data/lushtext
+artifacts={'logs': 'logs', 'assertions': 'assertions', 'screenshots': 'screenshots'}

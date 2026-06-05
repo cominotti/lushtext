@@ -1,0 +1,86 @@
+    Finished `bench` profile [optimized] target(s) in 0.12s
+     Running benches/benchmarks.rs (target/release/deps/benchmarks-cbd9ce7550beac88)
+Gnuplot not found, using plotters backend
+Benchmarking recovery_performance/malformed_metadata/startup_and_sidecar_diagnostics
+Benchmarking recovery_performance/malformed_metadata/startup_and_sidecar_diagnostics: Warming up for 1.0000 s
+Benchmarking recovery_performance/malformed_metadata/startup_and_sidecar_diagnostics: Collecting 10 samples in estimated 1.0008 s (3245 iterations)
+Benchmarking recovery_performance/malformed_metadata/startup_and_sidecar_diagnostics: Analyzing
+recovery_performance/malformed_metadata/startup_and_sidecar_diagnostics
+                        time:   [240.55 µs 246.83 µs 253.48 µs]
+                        change: [+0.4660% +4.0567% +8.1305%] (p = 0.06 > 0.05)
+                        No change in performance detected.
+Benchmarking recovery_performance/pending_migrations/reconcile/10
+Benchmarking recovery_performance/pending_migrations/reconcile/10: Warming up for 1.0000 s
+Benchmarking recovery_performance/pending_migrations/reconcile/10: Collecting 10 samples in estimated 1.0152 s (1210 iterations)
+Benchmarking recovery_performance/pending_migrations/reconcile/10: Analyzing
+recovery_performance/pending_migrations/reconcile/10
+                        time:   [541.83 µs 548.08 µs 553.92 µs]
+                        change: [+0.8762% +2.2551% +3.7405%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+Benchmarking recovery_performance/pending_migrations/reconcile/100
+Benchmarking recovery_performance/pending_migrations/reconcile/100: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 1.0s. You may wish to increase target time to 1.6s or enable flat sampling.
+Benchmarking recovery_performance/pending_migrations/reconcile/100: Collecting 10 samples in estimated 1.6298 s (55 iterations)
+Benchmarking recovery_performance/pending_migrations/reconcile/100: Analyzing
+recovery_performance/pending_migrations/reconcile/100
+                        time:   [18.988 ms 19.295 ms 19.711 ms]
+                        change: [−4.6708% −2.4529% −0.1827%] (p = 0.06 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking recovery_performance/duplicate_sidecars/bookmark_merge
+Benchmarking recovery_performance/duplicate_sidecars/bookmark_merge: Warming up for 1.0000 s
+Benchmarking recovery_performance/duplicate_sidecars/bookmark_merge: Collecting 10 samples in estimated 1.0007 s (9570 iterations)
+Benchmarking recovery_performance/duplicate_sidecars/bookmark_merge: Analyzing
+recovery_performance/duplicate_sidecars/bookmark_merge
+                        time:   [57.264 µs 58.690 µs 59.341 µs]
+                        change: [−6.4619% −1.0783% +4.2983%] (p = 0.72 > 0.05)
+                        No change in performance detected.
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/24
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/24: Warming up for 1.0000 s
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/24: Collecting 10 samples in estimated 1.2373 s (220 iterations)
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/24: Analyzing
+recovery_performance/local_history_many_lineages/move_tree/24
+                        time:   [1.2991 ms 1.3098 ms 1.3181 ms]
+                        change: [−0.2336% +3.9131% +7.7419%] (p = 0.08 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low severe
+  1 (10.00%) low mild
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/24
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/24: Warming up for 1.0000 s
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/24: Collecting 10 samples in estimated 1.0289 s (825 iterations)
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/24: Analyzing
+recovery_performance/local_history_many_lineages/reconcile_bounded/24
+                        time:   [590.26 µs 604.97 µs 615.65 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/120
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/120: Warming up for 1.0000 s
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/120: Collecting 10 samples in estimated 1.6174 s (20 iterations)
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/120: Analyzing
+recovery_performance/local_history_many_lineages/move_tree/120
+                        time:   [6.2909 ms 6.4677 ms 6.6608 ms]
+                        change: [+3.9164% +8.4585% +12.785%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low severe
+  1 (10.00%) high severe
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/120
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/120: Warming up for 1.0000 s
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/120: Collecting 10 samples in estimated 1.0478 s (165 iterations)
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/120: Analyzing
+recovery_performance/local_history_many_lineages/reconcile_bounded/120
+                        time:   [3.0334 ms 3.0580 ms 3.0888 ms]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking recovery_performance/first_dirty_autosave/persist_manifest_batch
+Benchmarking recovery_performance/first_dirty_autosave/persist_manifest_batch: Warming up for 1.0000 s
+Benchmarking recovery_performance/first_dirty_autosave/persist_manifest_batch: Collecting 10 samples in estimated 1.0006 s (3520 iterations)
+Benchmarking recovery_performance/first_dirty_autosave/persist_manifest_batch: Analyzing
+recovery_performance/first_dirty_autosave/persist_manifest_batch
+                        time:   [258.89 µs 263.51 µs 267.79 µs]
+                        change: [+0.2900% +3.3518% +6.4798%] (p = 0.05 > 0.05)
+                        No change in performance detected.
+

@@ -1,0 +1,39 @@
+recovery_performance fixture report:
+- malformed_metadata/startup_and_sidecar_diagnostics:
+  fixture_count=15 malformed metadata files per iteration
+  metadata_classes=session.json,drafts/manifest.json,migration-ledger.json,bookmark sidecars
+  metadata_size=small bounded JSON fragments; 12 bookmark sidecars plus 3 top-level metadata files
+  expected_quarantine_or_preservation_count=15
+  expected_repaired_count=0
+- pending_migrations/reconcile/10:
+  fixture_count=10 ledger entries, 20 incomplete kind states
+  metadata_size=one generated migration-ledger.json
+  expected_completed_or_deferred_count=20
+- pending_migrations/reconcile/100:
+  fixture_count=100 ledger entries, 200 incomplete kind states
+  metadata_size=one generated migration-ledger.json
+  expected_completed_or_deferred_count=200
+- duplicate_sidecars/bookmark_merge:
+  fixture_count=2 bookmark sidecars for one old/new file identity pair
+  metadata_size=two small bookmark JSON documents
+  expected_merged_target_count=1
+- local_history_many_lineages/move_tree/24:
+  fixture_count=24 source lineages plus 6 duplicate target lineages
+  metadata_size=30 small index/snapshot pairs
+  expected_completed_or_deferred_count=24 source lineages
+- local_history_many_lineages/reconcile_bounded/24:
+  fixture_count=24 mismatched lineage directories
+  metadata_size=24 small index/snapshot pairs
+  expected_reconciled_count=12 lineages with deferred_work=true
+- local_history_many_lineages/move_tree/120:
+  fixture_count=120 source lineages plus 30 duplicate target lineages
+  metadata_size=150 small index/snapshot pairs
+  expected_completed_or_deferred_count=120 source lineages
+- local_history_many_lineages/reconcile_bounded/120:
+  fixture_count=120 mismatched lineage directories
+  metadata_size=120 small index/snapshot pairs
+  expected_reconciled_count=60 lineages with deferred_work=true
+- first_dirty_autosave/persist_manifest_batch:
+  fixture_count=20 draft files
+  metadata_size=20 drafts at 4 KiB each plus one generated manifest
+  expected_saved_manifest_entries=20

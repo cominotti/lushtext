@@ -19,6 +19,7 @@
 #   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make visual-smoke - Real-session screenshot smoke under headless Mutter
+#   make crash-recovery-smoke - Real-process crash/restart recovery smoke with artifacts
 #   make portal-sandbox-smoke - Confined runtime smoke for available Flatpak/Snap paths
 #   make accessibility-smoke - AT-SPI-enabled accessibility smoke
 #   make performance-smoke - Lightweight Criterion performance smoke
@@ -44,7 +45,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless visual-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-policy lint-advisory check check-agent-docs pre-commit dev-tools install-git-hooks clean help \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -218,6 +219,13 @@ visual-smoke: build-debug
 	@echo "Running visual smoke lane..."
 	./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual"
 
+# Real-process crash/restart smoke under isolated headless Mutter. This lane
+# creates draft/session recovery state through the app, SIGKILLs the process,
+# relaunches with the same app data, and preserves recovery artifacts.
+crash-recovery-smoke: build-debug
+	@echo "Running crash recovery smoke lane..."
+	./scripts/run-crash-recovery-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/crash-recovery"
+
 # Confined runtime smoke for available Flatpak/Snap paths. This records runtime
 # identity and skips clearly when neither confined runtime is installed.
 portal-sandbox-smoke:
@@ -239,8 +247,8 @@ performance-smoke:
 	./scripts/run-performance-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/performance"
 
 # Run all host-supported end-user smoke lanes. Individual scripts own their
-# dependency checks and skip messages.
-end-user-smoke: visual-smoke portal-sandbox-smoke accessibility-smoke performance-smoke
+# dependency checks, artifact paths, and skip messages.
+end-user-smoke: visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke
 
 # Small mutation pass for checking cargo-mutants tooling and timeout behavior.
 mutants-smoke:

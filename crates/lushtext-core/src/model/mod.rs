@@ -13,6 +13,7 @@ pub mod draft;
 pub mod encoding;
 pub mod formatting_overrides;
 pub mod local_history;
+pub mod migration_ledger;
 pub mod note;
 pub mod palette;
 pub mod session;

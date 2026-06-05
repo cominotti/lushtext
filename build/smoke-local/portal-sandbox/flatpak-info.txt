@@ -1,0 +1,20 @@
+
+LushText - A minimalist text editor with workspace support
+
+            ID: dev.cominotti.lushtext
+           Ref: app/dev.cominotti.lushtext/x86_64/master
+          Arch: x86_64
+        Branch: master
+       Version: 0.1.0
+       License: GPL-3.0-or-later
+        Origin: lushtext-origin
+    Collection: 
+  Installation: user
+Installed Size: 6.7 MB
+       Runtime: org.gnome.Platform/x86_64/50
+           Sdk: org.gnome.Sdk/x86_64/50
+
+        Commit: 1fa6b692de613d5de97b37a0953726b49680e7d9a2cdc7050314facc95e112d2
+        Parent: 1c2480514d671c38fef981f09bad8172d2e571be40fdc9146fc9f5a1c1a97466
+       Subject: Export dev.cominotti.lushtext
+          Date: 2026-05-22 04:41:17 +0000

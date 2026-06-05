@@ -157,6 +157,93 @@ run_flatpak_launch_case() {
     return 0
 }
 
+run_flatpak_recovery_case() {
+    local log_first="$ARTIFACT_DIR/flatpak-recovery-first.log"
+    local log_second="$ARTIFACT_DIR/flatpak-recovery-second.log"
+    local runtime_base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+    local runtime_dir
+    local data_dir="$FLATPAK_HOST_DIR/recovery-data"
+
+    for command_name in dbus-run-session mutter timeout; do
+        if ! command -v "$command_name" >/dev/null 2>&1; then
+            echo "SKIP: ${command_name} is not installed, cannot run Flatpak recovery smoke." >"$log_first"
+            return 2
+        fi
+    done
+
+    rm -rf "$data_dir"
+    mkdir -p "$data_dir/drafts"
+    printf '{ malformed confined session\n' >"$data_dir/session.json"
+    printf '{ malformed confined draft manifest\n' >"$data_dir/drafts/manifest.json"
+    printf 'Confined recovery smoke draft body\n' >"$data_dir/drafts/untitled-confined-recovery.draft"
+    echo "$data_dir" >"$ARTIFACT_DIR/flatpak-recovery-data-dir.txt"
+
+    runtime_dir="$(mktemp -d "$runtime_base/lushtext-flatpak-recovery.XXXXXX")"
+    TEMP_RUNTIME_DIRS+=("$runtime_dir")
+    chmod 700 "$runtime_dir"
+    echo "$runtime_dir" >"$ARTIFACT_DIR/flatpak-recovery-runtime-dir.txt"
+
+    set +e
+    env XDG_RUNTIME_DIR="$runtime_dir" GDK_BACKEND=wayland \
+        dbus-run-session -- \
+        mutter --headless --wayland --no-x11 --virtual-monitor 1280x800 -- \
+        timeout 12s flatpak run \
+        --no-a11y-bus \
+        --env=LUSHTEXT_DATA_DIR="$data_dir" \
+        --env=NO_AT_BRIDGE=1 \
+        --unset-env=AT_SPI_BUS_ADDRESS \
+        "$APP_ID" \
+        >"$log_first" 2>&1
+    local first_status=$?
+
+    env XDG_RUNTIME_DIR="$runtime_dir" GDK_BACKEND=wayland \
+        dbus-run-session -- \
+        mutter --headless --wayland --no-x11 --virtual-monitor 1280x800 -- \
+        timeout 12s flatpak run \
+        --no-a11y-bus \
+        --env=LUSHTEXT_DATA_DIR="$data_dir" \
+        --env=NO_AT_BRIDGE=1 \
+        --unset-env=AT_SPI_BUS_ADDRESS \
+        "$APP_ID" \
+        >"$log_second" 2>&1
+    local second_status=$?
+
+    for status in "$first_status" "$second_status"; do
+        local expected_mutter_timeout=0
+        if [[ "$status" == "1" ]] \
+            && { grep -q "nonzero status: 31744" "$log_first" || grep -q "nonzero status: 31744" "$log_second"; }; then
+            expected_mutter_timeout=1
+        fi
+        if [[ "$status" != "0" && "$status" != "124" && "$expected_mutter_timeout" != "1" ]]; then
+            tail -n 120 "$log_first" >&2 || true
+            tail -n 120 "$log_second" >&2 || true
+            smoke_fail "Flatpak recovery launch exited with status ${status}. Artifacts: $ARTIFACT_DIR"
+        fi
+    done
+    if grep -qiE "$(flatpak_hard_failure_regex)" "$log_first" "$log_second"; then
+        tail -n 120 "$log_first" >&2 || true
+        tail -n 120 "$log_second" >&2 || true
+        smoke_fail "Flatpak recovery launch emitted resource/schema/crash failures. Artifacts: $ARTIFACT_DIR"
+    fi
+
+    {
+        echo "data_dir=$data_dir"
+        if [[ -d "$data_dir/recovery-quarantine" ]]; then
+            find "$data_dir/recovery-quarantine" -type f -printf '%P size=%s\n' | sort
+        else
+            echo "quarantine=<missing>"
+        fi
+    } >"$ARTIFACT_DIR/flatpak-recovery-quarantine.txt"
+    if ! grep -q 'size=' "$ARTIFACT_DIR/flatpak-recovery-quarantine.txt"; then
+        {
+            echo "SKIP: Flatpak recovery smoke did not observe quarantine evidence."
+            echo "The installed Flatpak may be older than this checkout, may ignore the LUSHTEXT_DATA_DIR override, or may lack recovery support in this runtime."
+        } >>"$ARTIFACT_DIR/flatpak-recovery-quarantine.txt"
+        return 2
+    fi
+    return 0
+}
+
 chooser_status="skipped"
 if run_chooser_widget_smoke; then
     chooser_status="passed"
@@ -187,6 +274,7 @@ fi
 collect_runtime_denials "$ARTIFACT_DIR/recent-runtime-denials-before.txt"
 
 flatpak_status="skipped"
+flatpak_recovery_status="skipped"
 if command -v flatpak >/dev/null 2>&1; then
     if flatpak info "$APP_ID" >"$ARTIFACT_DIR/flatpak-info.txt" 2>&1; then
         flatpak info --show-permissions "$APP_ID" >"$ARTIFACT_DIR/flatpak-permissions.txt" 2>&1 || true
@@ -204,11 +292,18 @@ if command -v flatpak >/dev/null 2>&1; then
         accessible_status=$?
         run_flatpak_launch_case "inaccessible-open" "$INACCESSIBLE_FILE"
         inaccessible_status=$?
+        run_flatpak_recovery_case
+        recovery_status=$?
         set -e
         chmod 600 "$INACCESSIBLE_FILE" || true
-        if [[ "$accessible_status" == "0" && "$inaccessible_status" == "0" ]]; then
+        if [[ "$recovery_status" == "0" ]]; then
+            flatpak_recovery_status="passed"
+        elif [[ "$recovery_status" == "2" ]]; then
+            flatpak_recovery_status="skipped"
+        fi
+        if [[ "$accessible_status" == "0" && "$inaccessible_status" == "0" && "$recovery_status" == "0" ]]; then
             flatpak_status="passed"
-        elif [[ "$accessible_status" == "2" || "$inaccessible_status" == "2" ]]; then
+        elif [[ "$accessible_status" == "2" || "$inaccessible_status" == "2" || "$recovery_status" == "2" ]]; then
             flatpak_status="skipped"
         fi
     else
@@ -239,6 +334,7 @@ collect_runtime_denials "$ARTIFACT_DIR/recent-runtime-denials-after.txt"
 {
     echo "chooser=$chooser_status"
     echo "flatpak=$flatpak_status"
+    echo "flatpak_recovery=$flatpak_recovery_status"
     echo "snap=$snap_status"
     echo "portal=$portal_status"
     echo "artifacts=$ARTIFACT_DIR"

@@ -15,10 +15,13 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, AlertDialogExtManual, SidebarItemExt};
 
+use crate::model::migration_ledger::MigrationKind;
 use crate::model::note::{NoteViewMode, RichNoteBody, note_preview_line};
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScope};
+use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{
-    async_task, bookmark_service, document_note_service, json_store, workspace_note_service,
+    async_task, bookmark_service, document_note_service, json_store, local_history_service,
+    migration_ledger, workspace_note_service,
 };
 use crate::ui::editor_page::{
     BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
@@ -63,6 +66,12 @@ const NOTE_EDITOR_SURFACE_HEIGHT_SP: i32 = 300;
 const NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP: i32 = 12;
 /// Shared vertical text inset for edit and rendered note bodies.
 const NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP: i32 = 10;
+
+/// Result of loading the unified notes browser off the GTK main thread.
+struct NotesBrowserLoadResult {
+    entries: Vec<NotesBrowserEntry>,
+    diagnostics: Vec<RecoveryDiagnostic>,
+}
 
 /// One entry shown in the unified notes browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +216,9 @@ impl LushtextWindow {
     }
 
     /// Migrate sidecar documents after an in-app sidebar rename.
+    ///
+    /// Pending ledger state is recorded before sidecar moves begin so interrupted
+    /// partial work can retry on startup by generation.
     pub(super) fn migrate_note_sidecars_after_rename(&self, old_path: &Path, new_path: &Path) {
         let old_path = old_path.to_path_buf();
         let new_path = new_path.to_path_buf();
@@ -217,20 +229,51 @@ impl LushtextWindow {
             (),
             move || {
                 let data_dir = json_store::data_dir();
-                let bookmark_count = bookmark_service::move_path_tree(
+                let generation = migration_ledger::record_pending(
                     &data_dir,
                     &old_path_for_move,
                     &new_path_for_move,
+                    &[
+                        MigrationKind::Bookmarks,
+                        MigrationKind::DocumentNotes,
+                        MigrationKind::WorkspaceNotes,
+                    ],
                 )?;
-                let document_note_count = document_note_service::move_path_tree(
+                let bookmark_count = migration_ledger::run_tracked_kind(
                     &data_dir,
-                    &old_path_for_move,
-                    &new_path_for_move,
+                    generation,
+                    MigrationKind::Bookmarks,
+                    || {
+                        bookmark_service::move_path_tree(
+                            &data_dir,
+                            &old_path_for_move,
+                            &new_path_for_move,
+                        )
+                    },
                 )?;
-                let workspace_note_count = workspace_note_service::move_root_tree(
+                let document_note_count = migration_ledger::run_tracked_kind(
                     &data_dir,
-                    &old_path_for_move,
-                    &new_path_for_move,
+                    generation,
+                    MigrationKind::DocumentNotes,
+                    || {
+                        document_note_service::move_path_tree(
+                            &data_dir,
+                            &old_path_for_move,
+                            &new_path_for_move,
+                        )
+                    },
+                )?;
+                let workspace_note_count = migration_ledger::run_tracked_kind(
+                    &data_dir,
+                    generation,
+                    MigrationKind::WorkspaceNotes,
+                    || {
+                        workspace_note_service::move_root_tree(
+                            &data_dir,
+                            &old_path_for_move,
+                            &new_path_for_move,
+                        )
+                    },
                 )?;
                 Ok::<_, anyhow::Error>((bookmark_count, document_note_count, workspace_note_count))
             },
@@ -244,6 +287,77 @@ impl LushtextWindow {
                     if let Some(window) = window_weak.upgrade() {
                         window.publish_status_message(
                             "Rename succeeded, but note sidecars could not be moved",
+                            MessageKind::Warning,
+                        );
+                    }
+                }
+            },
+        );
+    }
+
+    /// Retry persisted sidecar or local-history migrations left by an
+    /// interrupted rename flow.
+    pub(super) fn reconcile_pending_migrations_on_startup(&self) {
+        let window_weak = self.downgrade();
+        async_task::spawn_blocking_then(
+            (),
+            move || {
+                let data_dir = json_store::data_dir();
+                let migration_report = migration_ledger::reconcile_pending(&data_dir)?;
+                let local_history_report = local_history_service::reconcile_lineages(&data_dir)?;
+                Ok::<_, anyhow::Error>((migration_report, local_history_report))
+            },
+            move |(), result| match result {
+                Ok((migration_report, local_history_report)) => {
+                    if migration_report.completed > 0 {
+                        tracing::info!(
+                            "Recovered {} pending migration kind(s)",
+                            migration_report.completed
+                        );
+                    }
+                    if local_history_report.reconciled_lineages > 0 {
+                        tracing::info!(
+                            "Reconciled {} local-history lineage(s)",
+                            local_history_report.reconciled_lineages
+                        );
+                    }
+                    if local_history_report.has_deferred_work() {
+                        tracing::warn!(
+                            "Deferred local-history reconciliation after scanning {} lineage(s)",
+                            local_history_report.scanned_lineages
+                        );
+                    }
+                    if !migration_report.diagnostics.is_empty()
+                        || !local_history_report.diagnostics.is_empty()
+                        || local_history_report.has_deferred_work()
+                    {
+                        for diagnostic in &migration_report.diagnostics {
+                            tracing::warn!(
+                                "Migration recovery {} generation {}: {}",
+                                diagnostic.kind.label(),
+                                diagnostic.generation,
+                                diagnostic.message
+                            );
+                        }
+                        for diagnostic in &local_history_report.diagnostics {
+                            tracing::warn!(
+                                "Local-history recovery diagnostic: {}",
+                                diagnostic.summary()
+                            );
+                        }
+                        if let Some(window) = window_weak.upgrade() {
+                            window.publish_status_message(
+                                "Some rename recovery work still needs attention",
+                                MessageKind::Warning,
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to reconcile pending migrations: {error}");
+                    if let Some(window) = window_weak.upgrade() {
+                        window.publish_status_message(
+                            "Rename recovery state could not be checked",
                             MessageKind::Warning,
                         );
                     }
@@ -349,19 +463,33 @@ impl LushtextWindow {
             self.clone(),
             move || {
                 let data_dir = json_store::data_dir();
-                bookmark_service::list_workspace_bookmarks(&data_dir, &scope_paths)
+                bookmark_service::list_workspace_bookmarks_recovering(&data_dir, &scope_paths)
             },
             |window, result| match result {
-                Ok(bookmarks) => {
-                    if bookmarks.is_empty() {
-                        window.publish_status_message(
-                            "No bookmarks exist in the current workspace",
-                            MessageKind::Info,
-                        );
+                Ok(listing) => {
+                    Self::trace_browse_recovery_diagnostics(&listing.diagnostics);
+                    if listing.bookmarks.is_empty() {
+                        if listing.diagnostics.is_empty() {
+                            window.publish_status_message(
+                                "No bookmarks exist in the current workspace",
+                                MessageKind::Info,
+                            );
+                        } else {
+                            window.publish_status_message(
+                                "Some bookmark data could not be loaded",
+                                MessageKind::Warning,
+                            );
+                        }
                         return;
                     }
 
-                    window.present_bookmark_browser(bookmarks);
+                    window.present_bookmark_browser(listing.bookmarks);
+                    if !listing.diagnostics.is_empty() {
+                        window.publish_status_message(
+                            "Some bookmark data could not be loaded",
+                            MessageKind::Warning,
+                        );
+                    }
                 }
                 Err(error) => {
                     tracing::error!("Failed to list workspace bookmarks: {error}");
@@ -454,33 +582,59 @@ impl LushtextWindow {
             self.clone(),
             move || {
                 let data_dir = json_store::data_dir();
-                let workspace_notes = workspace_note_service::list_workspace_notes_for_scope(
-                    &data_dir,
-                    &visible_workspaces,
-                    &scope,
-                )?;
+                let workspace_notes =
+                    workspace_note_service::list_workspace_notes_for_scope_recovering(
+                        &data_dir,
+                        &visible_workspaces,
+                        &scope,
+                    )?;
                 let bookmarks =
-                    bookmark_service::list_workspace_bookmarks(&data_dir, &scope_roots)?;
+                    bookmark_service::list_workspace_bookmarks_recovering(&data_dir, &scope_roots)?;
                 let document_notes =
-                    document_note_service::list_workspace_document_notes(&data_dir, &scope_roots)?;
-                Ok::<_, anyhow::Error>(build_notes_browser_entries(
+                    document_note_service::list_workspace_document_notes_recovering(
+                        &data_dir,
+                        &scope_roots,
+                    )?;
+                let mut diagnostics = Vec::new();
+                diagnostics.extend(workspace_notes.diagnostics);
+                diagnostics.extend(bookmarks.diagnostics);
+                diagnostics.extend(document_notes.diagnostics);
+                let entries = build_notes_browser_entries(
                     &visible_workspaces,
-                    bookmarks,
-                    workspace_notes,
-                    document_notes,
-                ))
+                    bookmarks.bookmarks,
+                    workspace_notes.notes,
+                    document_notes.notes,
+                );
+                Ok::<_, anyhow::Error>(NotesBrowserLoadResult {
+                    entries,
+                    diagnostics,
+                })
             },
             |window, result| match result {
-                Ok(entries) => {
-                    if entries.is_empty() {
-                        window.publish_status_message(
-                            "No notes exist in the current workspace",
-                            MessageKind::Info,
-                        );
+                Ok(result) => {
+                    Self::trace_browse_recovery_diagnostics(&result.diagnostics);
+                    if result.entries.is_empty() {
+                        if result.diagnostics.is_empty() {
+                            window.publish_status_message(
+                                "No notes exist in the current workspace",
+                                MessageKind::Info,
+                            );
+                        } else {
+                            window.publish_status_message(
+                                "Some note data could not be loaded",
+                                MessageKind::Warning,
+                            );
+                        }
                         return;
                     }
 
-                    window.present_notes_browser(entries);
+                    window.present_notes_browser(result.entries);
+                    if !result.diagnostics.is_empty() {
+                        window.publish_status_message(
+                            "Some note data could not be loaded",
+                            MessageKind::Warning,
+                        );
+                    }
                 }
                 Err(error) => {
                     tracing::error!("Failed to list notes: {error}");
@@ -488,6 +642,12 @@ impl LushtextWindow {
                 }
             },
         );
+    }
+
+    fn trace_browse_recovery_diagnostics(diagnostics: &[RecoveryDiagnostic]) {
+        for diagnostic in diagnostics {
+            tracing::warn!("{}", diagnostic.summary());
+        }
     }
 
     /// Load and present the document note attached to one saved file.

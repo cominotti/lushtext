@@ -66,12 +66,23 @@ impl LushtextSearchPanel {
                     .lock()
                     .map_err(|_| anyhow::anyhow!("replace undo backup disk lock poisoned"))?;
                 if generation_counter.load(Ordering::Acquire) != generation {
-                    return Ok(());
+                    return Ok::<search_backup::ReplaceBackupCleanupReport, anyhow::Error>(
+                        search_backup::ReplaceBackupCleanupReport::default(),
+                    );
                 }
-                search_backup::delete(&data_dir)
+                Ok::<search_backup::ReplaceBackupCleanupReport, anyhow::Error>(
+                    search_backup::cleanup_stale(&data_dir),
+                )
             },
             move |_panel, result| match result {
-                Ok(()) => {}
+                Ok(report) => {
+                    for diagnostic in report.diagnostics {
+                        tracing::warn!(
+                            "Replace undo backup cleanup diagnostic: {}",
+                            diagnostic.summary()
+                        );
+                    }
+                }
                 Err(e) => {
                     tracing::warn!("Failed to clear stale replace backup: {e}");
                 }
@@ -234,6 +245,10 @@ impl LushtextSearchPanel {
         }
     }
 
+    /// Cancel any pending or visible replace preview after search state changes.
+    ///
+    /// Advancing the generation prevents late background preview results from
+    /// restoring stale replacements.
     pub(crate) fn invalidate_replace_preview_request(&self) {
         let imp = self.imp();
         if !imp.preview.preview_pending.get() && !imp.preview.preview_mode.get() {

@@ -1,0 +1,8 @@
+LushText smoke fixture
+
+This file is intentionally tiny. It gives visual, accessibility, portal, and
+performance smoke lanes a stable document to open without touching user data.
+
+needle one
+needle two
+needle three

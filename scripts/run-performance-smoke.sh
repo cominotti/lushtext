@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/smoke-common.sh"
 
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/performance}"
-FILTERS="${LUSHTEXT_PERFORMANCE_SMOKE_FILTER:-file_index_search file_index_rebuild content_search_smoke json_persistence editor_file_io replace_preview_generation replace_undo_workflows}"
+FILTERS="${LUSHTEXT_PERFORMANCE_SMOKE_FILTER:-file_index_search file_index_rebuild content_search_smoke json_persistence editor_file_io replace_preview_generation replace_undo_workflows recovery_performance}"
 SAMPLE_SIZE="${LUSHTEXT_PERFORMANCE_SMOKE_SAMPLE_SIZE:-10}"
 MEASUREMENT_TIME="${LUSHTEXT_PERFORMANCE_SMOKE_MEASUREMENT_TIME:-1}"
 WARM_UP_TIME="${LUSHTEXT_PERFORMANCE_SMOKE_WARM_UP_TIME:-1}"
@@ -69,6 +69,7 @@ json_persistence: generated workspace/session JSON save and load fixtures
 editor_file_io: generated text files for load, save, and Save As-equivalent explicit-path writes
 replace_preview_generation: generated 1k and 10k in-memory match sets for worker-side Replace preview generation
 replace_undo_workflows: generated disposable files for Replace All and undo restore
+recovery_performance: generated malformed metadata, pending migration ledgers, duplicate bookmark sidecars, many local-history lineages, and first-dirty autosave persistence batches
 EOF
 
 cat >"$ARTIFACT_DIR/thresholds.txt" <<'EOF'
@@ -81,8 +82,51 @@ Coarse smoke thresholds:
 - workspace/content search: must complete every generated fixture without stalling
 - Replace preview generation: 10k generated matches should stay sub-second on a developer workstation; investigate multi-second results before shipping preview-flow changes
 - persistence, editor file I/O, Replace All, and undo restore: must complete every smoke sample successfully
+- recovery_performance: malformed metadata, pending migration, duplicate sidecar, local-history lineage, and first-dirty autosave fixtures must complete every smoke sample successfully; investigate multi-second recovery timings before shipping startup or close-flow reliability changes
 
 Use make bench-report or make bench-report-full for enforceable release analysis.
+EOF
+
+cat >"$ARTIFACT_DIR/recovery-fixtures.txt" <<'EOF'
+recovery_performance fixture report:
+- malformed_metadata/startup_and_sidecar_diagnostics:
+  fixture_count=15 malformed metadata files per iteration
+  metadata_classes=session.json,drafts/manifest.json,migration-ledger.json,bookmark sidecars
+  metadata_size=small bounded JSON fragments; 12 bookmark sidecars plus 3 top-level metadata files
+  expected_quarantine_or_preservation_count=15
+  expected_repaired_count=0
+- pending_migrations/reconcile/10:
+  fixture_count=10 ledger entries, 20 incomplete kind states
+  metadata_size=one generated migration-ledger.json
+  expected_completed_or_deferred_count=20
+- pending_migrations/reconcile/100:
+  fixture_count=100 ledger entries, 200 incomplete kind states
+  metadata_size=one generated migration-ledger.json
+  expected_completed_or_deferred_count=200
+- duplicate_sidecars/bookmark_merge:
+  fixture_count=2 bookmark sidecars for one old/new file identity pair
+  metadata_size=two small bookmark JSON documents
+  expected_merged_target_count=1
+- local_history_many_lineages/move_tree/24:
+  fixture_count=24 source lineages plus 6 duplicate target lineages
+  metadata_size=30 small index/snapshot pairs
+  expected_completed_or_deferred_count=24 source lineages
+- local_history_many_lineages/reconcile_bounded/24:
+  fixture_count=24 mismatched lineage directories
+  metadata_size=24 small index/snapshot pairs
+  expected_reconciled_count=12 lineages with deferred_work=true
+- local_history_many_lineages/move_tree/120:
+  fixture_count=120 source lineages plus 30 duplicate target lineages
+  metadata_size=150 small index/snapshot pairs
+  expected_completed_or_deferred_count=120 source lineages
+- local_history_many_lineages/reconcile_bounded/120:
+  fixture_count=120 mismatched lineage directories
+  metadata_size=120 small index/snapshot pairs
+  expected_reconciled_count=60 lineages with deferred_work=true
+- first_dirty_autosave/persist_manifest_batch:
+  fixture_count=20 draft files
+  metadata_size=20 drafts at 4 KiB each plus one generated manifest
+  expected_saved_manifest_entries=20
 EOF
 
 cd "$REPO_ROOT"

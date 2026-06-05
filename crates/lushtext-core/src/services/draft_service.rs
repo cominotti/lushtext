@@ -11,6 +11,10 @@ use crate::model::draft::{
     DraftEntry, DraftManifest, FileDraftRestoreResolution, PreloadedDraftRestore,
 };
 use crate::model::session::SessionData;
+use crate::services::recovery_metadata::{
+    RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryLoadOutcome,
+    RecoveryMetadataClass, RecoveryRepair, RecoveryRepairContext, load_json_with_repair,
+};
 use crate::services::{
     editor_io,
     filesystem::{
@@ -20,7 +24,7 @@ use crate::services::{
     json_store, session_service,
 };
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -31,6 +35,43 @@ const MANIFEST_FILE: &str = "manifest.json";
 /// Draft files remain on disk when this cap is reached; the limit only protects
 /// startup memory before normal editor buffer accounting is active.
 pub const MAX_DRAFT_PRELOAD_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum draft files inspected while rebuilding a missing or corrupt manifest.
+///
+/// Repair runs during startup restore, so it must be bounded. The cap is large
+/// enough for ordinary crash recovery while preventing one damaged data
+/// directory from monopolizing the background restore task.
+pub const MAX_MANIFEST_REPAIR_DRAFT_SCAN: usize = 2048;
+/// Maximum draft files inspected while cleaning orphan draft bodies after restore.
+///
+/// Cleanup is deferred and repeatable, so a bounded pass is better than letting a
+/// damaged drafts directory allocate every entry in one worker task.
+pub const MAX_ORPHAN_CLEANUP_DRAFT_SCAN: usize = 2048;
+
+/// Draft, session, and diagnostics loaded for startup restore.
+#[derive(Debug)]
+pub struct RestoreState {
+    /// Manifest snapshot used by the window after startup.
+    pub manifest: DraftManifest,
+    /// Session snapshot used to recreate tabs.
+    pub session: SessionData,
+    /// Draft bodies or skip markers preloaded for restored tabs.
+    pub preloaded_drafts: HashMap<String, PreloadedDraftRestore>,
+    /// Recovery diagnostics that should be logged or surfaced after restore.
+    pub diagnostics: Vec<RecoveryDiagnostic>,
+    /// Whether it is safe to run orphan cleanup after this startup.
+    pub orphan_cleanup_allowed: bool,
+}
+
+/// Typed failures from reading one draft body.
+#[derive(Debug, thiserror::Error)]
+pub enum DraftReadError {
+    /// The draft exists but is above the startup/preload restore budget.
+    #[error("draft {path} is too large to restore automatically ({size} bytes, limit {max} bytes)")]
+    Oversized { path: PathBuf, size: u64, max: u64 },
+    /// The draft exists but cannot be read or decoded as UTF-8.
+    #[error("failed to read draft {path}: {detail}")]
+    Read { path: PathBuf, detail: String },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DraftPreloadDecision {
@@ -40,6 +81,8 @@ enum DraftPreloadDecision {
 }
 
 fn manifest_write_lock() -> &'static Mutex<()> {
+    // Process-local mutex serializes manifest read-modify-write sequences;
+    // `OnceLock` creates it lazily without global constructor order.
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -48,6 +91,10 @@ fn manifest_write_lock() -> &'static Mutex<()> {
 #[must_use]
 pub fn drafts_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(DRAFTS_DIR)
+}
+
+fn manifest_path(data_dir: &Path) -> PathBuf {
+    drafts_dir(data_dir).join(MANIFEST_FILE)
 }
 
 /// Generate a stable draft ID from an absolute file path using the
@@ -135,15 +182,17 @@ where
 /// This intentionally preserves file-backed session tabs even when their paths
 /// are temporarily unavailable, so startup does not turn a transient mount
 /// outage into permanent session loss on the next save.
-pub fn load_restore_state(
-    data_dir: &Path,
-) -> (
-    DraftManifest,
-    SessionData,
-    HashMap<String, PreloadedDraftRestore>,
-) {
-    let mut manifest = load_manifest(data_dir).unwrap_or_default();
-    let session = session_service::load(data_dir).unwrap_or_default();
+pub fn load_restore_state(data_dir: &Path) -> RestoreState {
+    let session_load = session_service::load_recovering(data_dir);
+    let session = session_load.value;
+    let mut diagnostics = session_load.diagnostics;
+
+    let manifest_load = load_manifest_for_restore(data_dir, &session);
+    let mut manifest = manifest_load.value;
+    let orphan_cleanup_allowed = manifest_load.outcome == RecoveryLoadOutcome::Loaded
+        || (manifest_load.outcome == RecoveryLoadOutcome::MissingDefault
+            && manifest_load.diagnostics.is_empty());
+    diagnostics.extend(manifest_load.diagnostics);
 
     let mut preloaded = HashMap::new();
     let mut stale_draft_ids = Vec::new();
@@ -220,7 +269,212 @@ pub fn load_restore_state(
     }
 
     cleanup_stale_restore_entries(data_dir, &mut manifest, &stale_draft_ids);
-    (manifest, session, preloaded)
+    RestoreState {
+        manifest,
+        session,
+        preloaded_drafts: preloaded,
+        diagnostics,
+        orphan_cleanup_allowed,
+    }
+}
+
+/// Load the manifest through recovery repair rules used only by startup restore.
+fn load_manifest_for_restore(
+    data_dir: &Path,
+    session: &SessionData,
+) -> RecoveryLoad<DraftManifest> {
+    let path = manifest_path(data_dir);
+    let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest);
+    let mut load = load_json_with_repair(&config, |context| {
+        repair_manifest_from_draft_files(data_dir, session, &context)
+    });
+
+    if load.outcome == RecoveryLoadOutcome::MissingDefault {
+        let missing_problem = crate::services::recovery_metadata::RecoveryProblem::RepairSkipped {
+            detail: "manifest is missing".to_string(),
+        };
+        let missing_preservation =
+            crate::services::recovery_metadata::RecoveryPreservation::NotNeeded;
+        let missing_context = RecoveryRepairContext {
+            class: RecoveryMetadataClass::DraftManifest,
+            path: &path,
+            bytes: None,
+            problem: &missing_problem,
+            preservation: &missing_preservation,
+        };
+        let repair = repair_manifest_from_draft_files(data_dir, session, &missing_context);
+        apply_manifest_repair_to_missing_load(&mut load, repair);
+    }
+
+    if load.outcome == RecoveryLoadOutcome::Partial
+        && load.replacement_allowed()
+        && let Err(error) = save_manifest(data_dir, &load.value)
+    {
+        load.diagnostics.push(RecoveryDiagnostic::repair_skipped(
+            RecoveryMetadataClass::DraftManifest,
+            &path,
+            format!("failed to write repaired manifest: {error}"),
+        ));
+    }
+
+    load
+}
+
+/// Rebuild only draft manifest entries that can be proven safe from surviving draft files.
+///
+/// Untitled draft IDs are recoverable from session state or their `untitled-`
+/// prefix. File-backed hash IDs are preserved but not trusted because the
+/// original path was lost with the manifest.
+fn repair_manifest_from_draft_files(
+    data_dir: &Path,
+    session: &SessionData,
+    context: &RecoveryRepairContext<'_>,
+) -> RecoveryRepair<DraftManifest> {
+    let draft_ids = match recoverable_draft_file_ids(data_dir) {
+        Ok(ids) => ids,
+        Err(error) => {
+            return RecoveryRepair::Skipped {
+                diagnostics: vec![RecoveryDiagnostic::repair_skipped(
+                    context.class,
+                    context.path,
+                    format!("could not scan draft files for repair: {error}"),
+                )],
+            };
+        }
+    };
+
+    if draft_ids.is_empty() {
+        return RecoveryRepair::Unavailable;
+    }
+
+    let session_untitled_ids = session_untitled_draft_ids(session);
+    let mut manifest = DraftManifest::default();
+    let mut skipped = 0usize;
+    for draft_id in draft_ids {
+        if session_untitled_ids.contains(&draft_id) || draft_id.starts_with("untitled-") {
+            manifest.upsert(DraftEntry {
+                draft_id,
+                original_path: None,
+                original_mtime_secs: None,
+                saved_at_secs: editor_io::now_epoch_secs(),
+            });
+        } else {
+            skipped += 1;
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+    if !manifest.drafts.is_empty() {
+        diagnostics.push(RecoveryDiagnostic::repaired(
+            context.class,
+            context.path,
+            format!(
+                "rebuilt {} untitled draft manifest entries from surviving draft files",
+                manifest.drafts.len()
+            ),
+        ));
+    }
+    if skipped > 0 {
+        diagnostics.push(RecoveryDiagnostic::repair_skipped(
+            context.class,
+            context.path,
+            format!(
+                "preserved {skipped} draft files whose original paths could not be proven safely"
+            ),
+        ));
+    }
+
+    if manifest.drafts.is_empty() {
+        RecoveryRepair::Skipped { diagnostics }
+    } else {
+        RecoveryRepair::Repaired {
+            value: manifest,
+            diagnostics,
+        }
+    }
+}
+
+/// Return draft IDs from a bounded scan that could participate in manifest repair.
+fn recoverable_draft_file_ids(data_dir: &Path) -> Result<Vec<String>> {
+    let dir = drafts_dir(data_dir);
+    match fs_metadata::path_status(&dir) {
+        Ok(crate::services::filesystem::PathStatus::Missing) => return Ok(Vec::new()),
+        Ok(crate::services::filesystem::PathStatus::Directory) => {}
+        Ok(status) => {
+            return Err(anyhow::anyhow!(
+                "drafts path is not a directory during repair: {status:?}"
+            ));
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "failed to inspect drafts directory {}: {error}",
+                dir.display()
+            ));
+        }
+    }
+
+    let entries = fs_tree::scan_directory(
+        &dir,
+        DirectoryScanPolicy {
+            max_entries: MAX_MANIFEST_REPAIR_DRAFT_SCAN,
+            include_hidden: false,
+        },
+    )?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| draft_id_from_draft_file_name(&entry.file_name))
+        .collect())
+}
+
+fn session_untitled_draft_ids(session: &SessionData) -> HashSet<String> {
+    session
+        .tabs
+        .iter()
+        .filter(|tab| tab.path.is_none())
+        .filter_map(|tab| tab.draft_id.clone())
+        .collect()
+}
+
+fn draft_id_from_draft_file_name(name: &str) -> Option<String> {
+    if name.starts_with('.') {
+        return None;
+    }
+    let name_path = Path::new(name);
+    if !name_path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("draft"))
+    {
+        return None;
+    }
+    name_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Apply synthetic repair diagnostics for the missing-manifest path.
+///
+/// Missing files do not pass through the malformed-file recovery hook, so startup
+/// creates an equivalent context before trusting any rebuilt manifest entries.
+fn apply_manifest_repair_to_missing_load(
+    load: &mut RecoveryLoad<DraftManifest>,
+    repair: RecoveryRepair<DraftManifest>,
+) {
+    match repair {
+        RecoveryRepair::Unavailable => {}
+        RecoveryRepair::Skipped { mut diagnostics } => {
+            load.diagnostics.append(&mut diagnostics);
+        }
+        RecoveryRepair::Repaired {
+            value,
+            mut diagnostics,
+        } => {
+            load.value = value;
+            load.outcome = RecoveryLoadOutcome::Partial;
+            load.diagnostics.append(&mut diagnostics);
+        }
+    }
 }
 
 fn draft_preload_decision(
@@ -354,21 +608,29 @@ pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()>
 pub fn read_draft(data_dir: &Path, draft_id: &str) -> Result<Option<String>> {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
     if let Some(size) = oversized_draft_size(data_dir, draft_id) {
-        return Err(anyhow::anyhow!(
-            "draft {} is too large to restore automatically ({} bytes, limit {} bytes)",
-            path.display(),
+        return Err(DraftReadError::Oversized {
+            path,
             size,
-            MAX_DRAFT_PRELOAD_BYTES
-        ));
+            max: MAX_DRAFT_PRELOAD_BYTES,
+        }
+        .into());
     }
-    match fs_read::text(&path) {
-        Ok(content) => Ok(Some(content)),
+    match fs_read::bytes(&path) {
+        Ok(bytes) => {
+            let content = simdutf8::basic::from_utf8(&bytes)
+                .map_err(|error| DraftReadError::Read {
+                    path: path.clone(),
+                    detail: error.to_string(),
+                })?
+                .to_string();
+            Ok(Some(content))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(anyhow::anyhow!(
-            "failed to read draft {}: {}",
-            path.display(),
-            e
-        )),
+        Err(e) => Err(DraftReadError::Read {
+            path,
+            detail: e.to_string(),
+        }
+        .into()),
     }
 }
 
@@ -413,24 +675,26 @@ pub fn cleanup_orphans(data_dir: &Path, manifest: &mut DraftManifest) -> Result<
     });
     cleaned += before - manifest.drafts.len();
 
-    // Remove draft files with no manifest entry.
-    if let Ok(entries) = fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace()) {
+    let manifest_ids = manifest
+        .drafts
+        .iter()
+        .map(|entry| entry.draft_id.as_str())
+        .collect::<HashSet<_>>();
+
+    // Remove draft files with no manifest entry, bounded so damaged draft
+    // directories cannot make deferred startup cleanup scan every orphan.
+    if let Ok(entries) = fs_tree::scan_directory(
+        &dir,
+        DirectoryScanPolicy {
+            max_entries: MAX_ORPHAN_CLEANUP_DRAFT_SCAN,
+            include_hidden: false,
+        },
+    ) {
         for entry in entries {
-            let name = entry.file_name;
-            let name_path = Path::new(&name);
-            // Match draft files by parsed extension so case-insensitive `.draft`
-            // names are cleaned up while hidden/temp files stay out of orphan deletion.
-            if name.starts_with('.')
-                || !name_path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("draft"))
-            {
-                continue;
-            }
-            let Some(draft_id) = name_path.file_stem().and_then(|stem| stem.to_str()) else {
+            let Some(draft_id) = draft_id_from_draft_file_name(&entry.file_name) else {
                 continue;
             };
-            if manifest.find_by_id(draft_id).is_none() {
+            if !manifest_ids.contains(draft_id.as_str()) {
                 let _ = fs_mutate::remove_file_if_exists(&entry.path);
                 cleaned += 1;
             }
@@ -763,13 +1027,13 @@ mod tests {
         )
         .expect("expected operation to succeed");
 
-        let (manifest, _session, preloaded) = load_restore_state(dir.path());
+        let restore = load_restore_state(dir.path());
 
         assert_eq!(
-            preloaded.get(&draft_id),
+            restore.preloaded_drafts.get(&draft_id),
             Some(&PreloadedDraftRestore::SkipStaleFile)
         );
-        assert!(manifest.find_by_id(&draft_id).is_none());
+        assert!(restore.manifest.find_by_id(&draft_id).is_none());
         assert!(
             load_manifest(dir.path())
                 .expect("expected operation to succeed")
@@ -818,22 +1082,119 @@ mod tests {
         )
         .expect("save session");
 
-        let (manifest, session, preloaded) = load_restore_state(dir.path());
+        let restore = load_restore_state(dir.path());
 
         assert_eq!(
-            preloaded.get(draft_id),
+            restore.preloaded_drafts.get(draft_id),
             Some(&PreloadedDraftRestore::SkipOversized)
         );
-        assert_eq!(session.tabs.len(), 1, "session tab still restores");
-        assert_eq!(session.tabs[0].draft_id.as_deref(), Some(draft_id));
+        assert_eq!(restore.session.tabs.len(), 1, "session tab still restores");
+        assert_eq!(restore.session.tabs[0].draft_id.as_deref(), Some(draft_id));
         assert!(
-            manifest.find_by_id(draft_id).is_some(),
+            restore.manifest.find_by_id(draft_id).is_some(),
             "manifest entry should remain available for later recovery"
         );
         assert!(
             fs_metadata::exists(&draft_path),
             "oversized draft file must not be deleted"
         );
+    }
+
+    #[test]
+    fn load_restore_state_repairs_corrupt_manifest_for_untitled_draft() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "untitled-0000000000000042";
+        write_draft(dir.path(), draft_id, "restored untitled")
+            .expect("expected operation to succeed");
+        fixture::write_text(&manifest_path(dir.path()), "not json");
+        session_service::save(
+            dir.path(),
+            &SessionData {
+                tabs: vec![SessionTab {
+                    path: None,
+                    draft_id: Some(draft_id.to_string()),
+                    cursor_line: 0,
+                    cursor_col: 0,
+                    scroll_line: 0,
+                    pinned: false,
+                }],
+                active_tab_index: Some(0),
+            },
+        )
+        .expect("save session");
+
+        let restore = load_restore_state(dir.path());
+
+        assert_eq!(
+            restore.preloaded_drafts.get(draft_id),
+            Some(&PreloadedDraftRestore::Content(
+                "restored untitled".to_string()
+            ))
+        );
+        assert!(
+            restore.manifest.find_by_id(draft_id).is_some(),
+            "repaired manifest should include the safe untitled draft"
+        );
+        assert!(
+            !restore.orphan_cleanup_allowed,
+            "startup cleanup stays disabled after manifest corruption"
+        );
+        assert!(restore.diagnostics.iter().any(|diagnostic| {
+            diagnostic.class == RecoveryMetadataClass::DraftManifest
+                && matches!(
+                    diagnostic.problem,
+                    crate::services::recovery_metadata::RecoveryProblem::Malformed { .. }
+                )
+        }));
+        assert!(restore.diagnostics.iter().any(|diagnostic| {
+            diagnostic.class == RecoveryMetadataClass::DraftManifest
+                && matches!(
+                    diagnostic.problem,
+                    crate::services::recovery_metadata::RecoveryProblem::Repaired { .. }
+                )
+        }));
+        assert!(
+            load_manifest(dir.path())
+                .expect("repaired manifest should be durable")
+                .find_by_id(draft_id)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn load_restore_state_preserves_ambiguous_draft_after_corrupt_manifest() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "abcdef0123456789";
+        write_draft(dir.path(), draft_id, "ambiguous file-backed draft")
+            .expect("expected operation to succeed");
+        fixture::write_text(&manifest_path(dir.path()), "not json");
+        session_service::save(
+            dir.path(),
+            &SessionData {
+                tabs: Vec::new(),
+                active_tab_index: None,
+            },
+        )
+        .expect("save session");
+
+        let restore = load_restore_state(dir.path());
+
+        assert!(restore.manifest.drafts.is_empty());
+        assert!(
+            !restore.orphan_cleanup_allowed,
+            "orphan cleanup must not delete ambiguous surviving drafts"
+        );
+        assert_eq!(
+            read_draft(dir.path(), draft_id).expect("draft should still be readable"),
+            Some("ambiguous file-backed draft".to_string())
+        );
+        assert!(restore.diagnostics.iter().any(|diagnostic| {
+            diagnostic.class == RecoveryMetadataClass::DraftManifest
+                && matches!(
+                    diagnostic.problem,
+                    crate::services::recovery_metadata::RecoveryProblem::RepairSkipped { .. }
+                )
+        }));
     }
 
     #[test]

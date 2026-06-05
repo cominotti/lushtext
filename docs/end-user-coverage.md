@@ -16,6 +16,7 @@ in the cheapest lane that can prove it honestly.
 | Fuzz smoke | `make fuzz-smoke` | Coverage-guided discovery for hostile byte and operation-script surfaces | No, scheduled or manual |
 | Widget tests | `make test-widget-headless` | Real GTK widget state, signal wiring, focus, action, and allocation contracts under Mutter | Yes |
 | Visual smoke | `make visual-smoke` | Rendered desktop screenshots, coarse pixel sanity, compositor behavior, and visual artifacts | No, local, scheduled, or release validation |
+| Crash recovery smoke | `make crash-recovery-smoke` | Real-process draft/session recovery across `SIGKILL` and relaunch, with recovery metadata and runtime artifacts | No, local, scheduled, or release validation |
 | Portal and sandbox smoke | `make portal-sandbox-smoke` | Confined Flatpak/Snap state, portal/sandbox runtime diagnostics, and host support reporting | No, local, scheduled, or release validation |
 | Accessibility smoke | `make accessibility-smoke` | AT-SPI-enabled focus and accessible metadata checks outside the accessibility-disabled widget harness | No, local or scheduled |
 | Performance smoke | `make performance-smoke` | Lightweight latency and throughput sanity checks distinct from full Criterion reports | No by default |
@@ -38,6 +39,10 @@ they are not default PR gates:
 
 - `make visual-smoke` captures a representative real-session screenshot using
   isolated XDG state and preserves logs and environment metadata.
+- `make crash-recovery-smoke` launches the real debug binary in isolated app
+  state, creates file-backed and untitled draft/session recovery data through
+  GTK, sends `SIGKILL`, relaunches with the same data directory, and preserves
+  before/after metadata summaries, logs, assertions, and a relaunch screenshot.
 - `make portal-sandbox-smoke` records available Flatpak/Snap runtime state and
   runs supported confined smoke checks while skipping clearly when runtimes are
   unavailable.
@@ -45,15 +50,16 @@ they are not default PR gates:
   AT-SPI path, complementing widget tests that intentionally set
   `NO_AT_BRIDGE=1`.
 - `make performance-smoke` runs a small Criterion smoke filter with coarse
-  timing artifacts, including worker-side Replace preview generation so preview
-  responsiveness changes have a lightweight elapsed-time tripwire.
+  timing artifacts, including worker-side Replace preview generation and
+  recovery fixtures for malformed metadata, pending migrations, duplicate
+  sidecars, many local-history lineages, and first-dirty autosave persistence.
 - Full fuzz smoke, deep property runs, full mutation, and full benchmark reports
   remain opt-in or scheduled because they are intentionally more expensive.
 
 GitHub Actions mirrors that split: `.github/workflows/ci.yml` owns the bounded
 pull-request lanes, `.github/workflows/end-user-smoke.yml` runs visual,
-portal/sandbox, accessibility, performance-smoke, and full benchmark-report
-artifact lanes on a schedule or manual dispatch, and
+crash-recovery, portal/sandbox, accessibility, performance-smoke, and full
+benchmark-report artifact lanes on a schedule or manual dispatch, and
 `.github/workflows/release-benchmark.yml` attaches a full benchmark report to
 tagged release validation.
 
@@ -69,6 +75,7 @@ make test-widget-headless
 make test-prop
 make fuzz-corpus-replay
 make visual-smoke
+make crash-recovery-smoke
 make portal-sandbox-smoke
 make accessibility-smoke
 make performance-smoke

@@ -237,6 +237,7 @@ record host details and skip clearly when a machine lacks the required runtime:
 
 ```sh
 make visual-smoke          # headless Mutter screenshot smoke with artifacts
+make crash-recovery-smoke  # SIGKILL/relaunch recovery smoke with artifacts
 make portal-sandbox-smoke  # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke   # AT-SPI-enabled smoke outside the widget harness
 make performance-smoke     # lightweight Criterion timing smoke
@@ -245,7 +246,8 @@ make end-user-smoke        # run all host-supported smoke lanes
 
 See [`docs/end-user-coverage.md`](docs/end-user-coverage.md) for the coverage
 map and the expected pull-request, scheduled, release, and local validation
-boundaries.
+boundaries. See [`docs/recovery-reliability.md`](docs/recovery-reliability.md)
+for recovery metadata, quarantine, migration-ledger, and crash-smoke triage.
 
 ## First Run
 
@@ -318,6 +320,8 @@ Stored state can include document text:
 | `document-notes/` | Per-file document notes |
 | `workspace-notes/` | Per-workspace-root notes |
 | `local-history/` | Local-history snapshots for saved files |
+| `migration-ledger.json` | Retryable sidecar and local-history migration work after in-app renames |
+| `recovery-quarantine/` | Preserved malformed or unsupported app-owned recovery metadata |
 | `search-history.json` | Recent workspace search queries and options |
 | `saved-searches.json` | Named saved searches |
 | `replace-backup-journal/` | Temporary per-file undo journal for multi-file Replace All |
@@ -656,6 +660,7 @@ lushtext-core/src/
     bookmark.rs      Bookmark sidecar model
     document_note.rs Saved-file document-note model
     local_history.rs Local-history snapshot metadata
+    migration_ledger.rs Retry state for post-rename sidecar/history migrations
     content_search.rs  Content search types (SearchMatch, SearchEvent, etc.)
     encoding.rs      Document encoding, line endings, file health, and invisible-character modes
     sidecar_identity.rs  Canonical-path sidecar identity helpers for notes and history
@@ -675,6 +680,8 @@ lushtext-core/src/
     notifications.rs Window-scoped status and inline notification store
     file_tree.rs     Directory scanning
     draft_service.rs Draft autosave
+    migration_ledger.rs   Durable retry ledger for sidecar/history migrations
+    recovery_metadata.rs  Recovery-aware app-data metadata quarantine and diagnostics
     search_backup.rs Replace All per-file undo journal persistence for the active safety window
     search_history.rs  Search history persistence
     saved_searches.rs  Named saved search persistence
@@ -705,6 +712,7 @@ make test-int    # Integration tests only
 make test-widget # Widget tests with shared native/headless runner
 make test-widget-headless # Widget tests with the CI mutter/dbus setup
 make visual-smoke # Headless Mutter screenshot smoke with artifacts
+make crash-recovery-smoke # SIGKILL/relaunch recovery smoke with artifacts
 make portal-sandbox-smoke # Confined Flatpak/Snap smoke diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # Lightweight Criterion performance smoke
@@ -719,6 +727,8 @@ separate smoke lanes documented in
 [`docs/end-user-coverage.md`](docs/end-user-coverage.md). Those lanes preserve
 artifacts and record explicit skip reasons instead of treating missing desktop,
 portal, accessibility, or packaging support as a pass.
+Recovery metadata, quarantine, migration-ledger, and crash-smoke triage details
+live in [`docs/recovery-reliability.md`](docs/recovery-reliability.md).
 
 ## Benchmarks
 

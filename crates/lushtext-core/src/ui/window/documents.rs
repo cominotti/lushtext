@@ -372,6 +372,9 @@ impl LushtextWindow {
         if let Some(previous) = editor.imp().modified_handler_id.borrow_mut().take() {
             buffer.disconnect(previous);
         }
+        // Buffer signals stay connected until the editor is rewired or dropped;
+        // storing handler IDs lets us disconnect stale closures before attaching
+        // new tab-title and draft-dirty listeners to the same buffer.
         let page_weak = page.downgrade();
         let window_weak = self.downgrade();
         let handler_id = buffer.connect_modified_changed(move |buf| {
@@ -380,8 +383,12 @@ impl LushtextWindow {
             {
                 let name = editor.title();
                 if buf.is_modified() {
+                    let was_draft_dirty = editor.draft_dirty();
                     page.set_title(&format!("• {name}"));
                     editor.set_draft_dirty(true);
+                    if !was_draft_dirty && let Some(window) = window_weak.upgrade() {
+                        window.schedule_first_dirty_draft_autosave();
+                    }
                 } else {
                     page.set_title(&name);
                 }
@@ -398,13 +405,19 @@ impl LushtextWindow {
         let window_weak = self.downgrade();
         let page_weak = page.downgrade();
         let changed_handler_id = buffer.connect_changed(move |_| {
+            let mut became_draft_dirty = false;
             if let Some(page) = page_weak.upgrade()
                 && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
             {
+                became_draft_dirty = !editor.draft_dirty();
                 editor.set_draft_dirty(true);
             }
             if let Some(window) = window_weak.upgrade() {
-                window.mark_draft_autosave_pending_if_inflight();
+                if became_draft_dirty {
+                    window.schedule_first_dirty_draft_autosave();
+                } else {
+                    window.mark_draft_autosave_pending_if_inflight();
+                }
                 if let Some(page) = page_weak.upgrade()
                     && window.imp().tab_view.selected_page().as_ref() == Some(&page)
                 {

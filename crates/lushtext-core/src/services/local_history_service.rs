@@ -12,15 +12,19 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::model::local_history::{
     LocalHistoryDocument, LocalHistorySnapshot, LocalHistorySnapshotMeta,
     LocalHistorySnapshotOrigin,
 };
 use crate::model::sidecar_identity::{DocumentSidecarIdentity, stable_bytes_hash};
+use crate::services::recovery_metadata::{
+    RecoveryDiagnostic, RecoveryLoad, RecoveryLoadOutcome, RecoveryMetadataClass,
+};
 use crate::services::{
     editor_io,
-    file_limits::FileSizeCheck,
+    file_limits::{DISABLE_UNDO_HISTORY, FileSizeCheck},
     filesystem::{
         DirectoryScanPolicy, FileKind, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
         read as fs_read, tree as fs_tree, write as fs_write,
@@ -46,6 +50,24 @@ const PER_DOCUMENT_SNAPSHOT_CAP: usize = 48;
 /// many files in one session, while still leaving enough room for several active
 /// documents to retain rich history.
 const GLOBAL_SNAPSHOT_CAP: usize = 240;
+/// Maximum lineage directories scanned during one startup reconciliation pass.
+///
+/// This keeps recovery work bounded on very large history stores. Any deferred
+/// work remains on disk for the next startup or browse-triggered pass.
+const DEFAULT_RECONCILE_MAX_LINEAGES: usize = 512;
+/// Maximum wall-clock time spent on one startup lineage reconciliation pass.
+///
+/// Fifty milliseconds is intentionally short because this command can run
+/// before browse surfaces are ready; deeper manual or benchmark runs can pass a
+/// larger budget.
+const DEFAULT_RECONCILE_MAX_MILLIS: u64 = 50;
+/// Maximum total snapshot body bytes read while repairing one corrupt index.
+///
+/// Local-history browse still allows one large-but-supported snapshot, but index
+/// repair must not sequentially load a whole retained history for a damaged
+/// lineage. When this budget is exceeded, all snapshot files stay preserved and
+/// the index remains unavailable until a manual or future streaming repair path.
+const MAX_INDEX_REPAIR_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Size-policy view used by the editor and window layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +112,82 @@ pub enum LocalHistoryCaptureOutcome {
     SkippedDuplicate,
 }
 
+/// Snapshot metadata plus diagnostics from a recovery-aware history listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalHistorySnapshotListing {
+    /// Snapshot metadata safe to show in the history browser.
+    pub snapshots: Vec<LocalHistorySnapshotMeta>,
+    /// Recovery diagnostics produced while loading or repairing the lineage index.
+    pub diagnostics: Vec<RecoveryDiagnostic>,
+}
+
+/// Bounded work budget for local-history lineage reconciliation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalHistoryReconcileBudget {
+    /// Maximum lineage directories to inspect in this pass.
+    pub max_lineages: usize,
+    /// Maximum elapsed time before remaining work is deferred.
+    pub max_elapsed: Duration,
+}
+
+impl Default for LocalHistoryReconcileBudget {
+    fn default() -> Self {
+        Self {
+            max_lineages: DEFAULT_RECONCILE_MAX_LINEAGES,
+            max_elapsed: Duration::from_millis(DEFAULT_RECONCILE_MAX_MILLIS),
+        }
+    }
+}
+
+impl LocalHistoryReconcileBudget {
+    /// Build an explicit reconciliation budget for tests, benchmarks, or tools.
+    #[must_use]
+    pub const fn new(max_lineages: usize, max_elapsed: Duration) -> Self {
+        Self {
+            max_lineages,
+            max_elapsed,
+        }
+    }
+
+    fn scan_policy(self) -> DirectoryScanPolicy {
+        DirectoryScanPolicy {
+            max_entries: self.max_lineages.saturating_add(1),
+            include_hidden: false,
+        }
+    }
+
+    fn elapsed(self, started_at: Instant) -> bool {
+        self.max_elapsed.is_zero() || started_at.elapsed() >= self.max_elapsed
+    }
+}
+
+/// Summary of one local-history lineage reconciliation pass.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LocalHistoryReconcileReport {
+    /// Directory lineages inspected during this pass.
+    pub scanned_lineages: usize,
+    /// Lineages with no trusted index or a non-directory entry in the history root.
+    pub orphaned_lineages: usize,
+    /// Valid indexes stored in the wrong lineage directory.
+    pub mismatched_lineages: usize,
+    /// Mismatched or duplicate lineages merged into their canonical directory.
+    pub reconciled_lineages: usize,
+    /// Reconciliations whose target write succeeded but obsolete cleanup failed.
+    pub cleanup_failures: usize,
+    /// Work intentionally left for a later pass because a bound was reached.
+    pub deferred_lineages: usize,
+    /// Recovery diagnostics produced while loading or reconciling lineages.
+    pub diagnostics: Vec<RecoveryDiagnostic>,
+}
+
+impl LocalHistoryReconcileReport {
+    /// Return whether another reconciliation pass may still have useful work.
+    #[must_use]
+    pub const fn has_deferred_work(&self) -> bool {
+        self.deferred_lineages > 0
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RetentionPolicy {
     per_document_cap: usize,
@@ -105,6 +203,12 @@ const DEFAULT_RETENTION_POLICY: RetentionPolicy = RetentionPolicy {
 struct LoadedHistoryDocument {
     dir: PathBuf,
     document: LocalHistoryDocument,
+}
+
+/// Outcome of deterministic index repair from surviving snapshot text files.
+enum LocalHistoryIndexRepair {
+    Repaired(LocalHistoryDocument),
+    Skipped(String),
 }
 
 /// Resolve the local-history base directory under the app data home.
@@ -161,18 +265,35 @@ pub fn capture_snapshot_for_path(
 ///
 /// # Errors
 ///
-/// Returns an error if the document identity cannot be resolved or the stored
-/// metadata cannot be read.
+/// Returns an error if the document identity cannot be resolved. Malformed or
+/// unreadable indexes are repaired or treated as empty here; use
+/// [`list_snapshots_for_path_recovering`] when callers need the diagnostics.
 pub fn list_snapshots_for_path(
     data_dir: &Path,
     path: &Path,
 ) -> Result<Vec<LocalHistorySnapshotMeta>> {
+    Ok(list_snapshots_for_path_recovering(data_dir, path)?.snapshots)
+}
+
+/// List snapshot metadata and preserve recovery diagnostics for the browser UI.
+///
+/// # Errors
+///
+/// Returns an error if the document identity cannot be resolved or a
+/// deterministic repair cannot be durably recorded.
+pub fn list_snapshots_for_path_recovering(
+    data_dir: &Path,
+    path: &Path,
+) -> Result<LocalHistorySnapshotListing> {
     let _guard = local_history_lock()
         .lock()
         .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
     let identity = resolve_document_identity(path)?;
-    let document = load_document_for_identity(data_dir, identity)?;
-    Ok(document.snapshots)
+    let load = load_document_for_identity_recovering(data_dir, identity)?;
+    Ok(LocalHistorySnapshotListing {
+        snapshots: load.value.snapshots,
+        diagnostics: load.diagnostics,
+    })
 }
 
 /// Load one snapshot body for the saved document.
@@ -180,7 +301,7 @@ pub fn list_snapshots_for_path(
 /// # Errors
 ///
 /// Returns an error if the document identity cannot be resolved, metadata
-/// cannot be read, or the selected snapshot file cannot be read as UTF-8.
+/// cannot be read, or the selected snapshot file cannot be read as bounded UTF-8.
 pub fn load_snapshot_for_path(
     data_dir: &Path,
     path: &Path,
@@ -201,8 +322,7 @@ pub fn load_snapshot_for_path(
     };
 
     let snapshot_path = snapshot_path(&document_dir(data_dir, &identity), &meta.snapshot_id);
-    let text = fs_read::text(&snapshot_path)
-        .with_context(|| format!("failed to read {}", snapshot_path.display()))?;
+    let text = load_snapshot_text_bounded(&snapshot_path)?;
     Ok(Some(LocalHistorySnapshot { meta, text }))
 }
 
@@ -223,7 +343,7 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
     }
 
     let mut migrated = 0usize;
-    let mut loaded_documents = load_all_documents_from_base(&base_dir)?;
+    let mut loaded_documents = load_all_documents_from_base(data_dir, &base_dir)?;
     for loaded in &mut loaded_documents {
         let Some((display_path, canonical_path)) =
             note_storage::rebase_identity_paths(&loaded.document.identity, old_path, new_path)
@@ -236,8 +356,39 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
         migrated += 1;
     }
 
+    cleanup_empty_fallback_lineage(data_dir, old_path)?;
     enforce_global_retention_locked(data_dir, DEFAULT_RETENTION_POLICY)?;
     Ok(migrated)
+}
+
+/// Reconcile interrupted or duplicate local-history lineages with the default startup budget.
+///
+/// # Errors
+///
+/// Returns an error if the history root cannot be scanned. Per-lineage merge or
+/// cleanup failures are preserved in the returned diagnostics so startup can
+/// continue with unaffected lineages.
+pub fn reconcile_lineages(data_dir: &Path) -> Result<LocalHistoryReconcileReport> {
+    reconcile_lineages_with_budget(data_dir, LocalHistoryReconcileBudget::default())
+}
+
+/// Reconcile interrupted or duplicate local-history lineages within an explicit budget.
+///
+/// This command only repairs evidence that is deterministic: a valid index in
+/// the wrong directory is moved or merged into that index's canonical lineage
+/// directory. Corrupt or orphaned directories are reported and preserved.
+///
+/// # Errors
+///
+/// Returns an error if the history root cannot be scanned.
+pub fn reconcile_lineages_with_budget(
+    data_dir: &Path,
+    budget: LocalHistoryReconcileBudget,
+) -> Result<LocalHistoryReconcileReport> {
+    let _guard = local_history_lock()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
+    reconcile_lineages_locked(data_dir, budget)
 }
 
 fn capture_snapshot_for_path_with_retention(
@@ -287,6 +438,8 @@ fn capture_snapshot_for_identity_locked(
     let doc_dir = document_dir(data_dir, &identity);
     fs_write::create_dir_all_durable(&doc_dir)
         .with_context(|| format!("failed to create {}", doc_dir.display()))?;
+    // Write the body before the index so a crash leaves repairable text
+    // evidence instead of metadata that points at a missing snapshot.
     editor_io::write_snapshot_to_path(&snapshot_path(&doc_dir, &meta.snapshot_id), &normalized)
         .map(|_| ())
         .map_err(anyhow::Error::from)?;
@@ -301,17 +454,180 @@ fn capture_snapshot_for_identity_locked(
     Ok(LocalHistoryCaptureOutcome::Stored(meta))
 }
 
+fn reconcile_lineages_locked(
+    data_dir: &Path,
+    budget: LocalHistoryReconcileBudget,
+) -> Result<LocalHistoryReconcileReport> {
+    let mut report = LocalHistoryReconcileReport::default();
+    let base_dir = local_history_dir(data_dir);
+    if !fs_metadata::path_status(&base_dir)?.is_present() {
+        return Ok(report);
+    }
+
+    let started_at = Instant::now();
+    let mut entries = fs_tree::scan_directory(&base_dir, budget.scan_policy())
+        .with_context(|| format!("failed to read {}", base_dir.display()))?;
+    if entries.len() > budget.max_lineages {
+        entries.truncate(budget.max_lineages);
+        report.deferred_lineages += 1;
+    }
+
+    let mut mismatched = Vec::new();
+    for entry in entries {
+        if budget.elapsed(started_at) {
+            report.deferred_lineages += 1;
+            break;
+        }
+
+        if entry.kind != FileKind::Directory {
+            report.orphaned_lineages += 1;
+            report.diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                RecoveryMetadataClass::LocalHistoryIndex,
+                &entry.path,
+                "local-history root contained a non-directory entry; evidence was preserved",
+            ));
+            continue;
+        }
+
+        report.scanned_lineages += 1;
+        let index_path = entry.path.join(INDEX_FILENAME);
+        let load = load_history_index(data_dir, &index_path);
+        note_storage::trace_recovery_diagnostics(&load.diagnostics);
+        report.diagnostics.extend(load.diagnostics);
+        let Some(mut document) = load.value else {
+            report.orphaned_lineages += 1;
+            if !fs_metadata::exists(&index_path)
+                && remove_empty_lineage_dir_if_exists(&entry.path).with_context(|| {
+                    format!("failed to clean empty lineage {}", entry.path.display())
+                })?
+            {
+                report.reconciled_lineages += 1;
+            } else if !fs_metadata::exists(&index_path) {
+                report.diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                    RecoveryMetadataClass::LocalHistoryIndex,
+                    &index_path,
+                    "lineage directory has no trusted index; snapshot bodies were preserved",
+                ));
+            }
+            continue;
+        };
+
+        document.sort_newest_first();
+        let expected_dir = document_dir(data_dir, &document.identity);
+        if expected_dir != entry.path {
+            report.mismatched_lineages += 1;
+            mismatched.push(LoadedHistoryDocument {
+                dir: entry.path,
+                document,
+            });
+        }
+    }
+
+    for mut loaded in mismatched {
+        if budget.elapsed(started_at) {
+            report.deferred_lineages += 1;
+            break;
+        }
+
+        let source_dir = loaded.dir.clone();
+        let index_path = source_dir.join(INDEX_FILENAME);
+        let identity = loaded.document.identity.clone();
+        match migrate_loaded_document(data_dir, &mut loaded, identity) {
+            Ok(()) => report.reconciled_lineages += 1,
+            Err(error) => {
+                if is_obsolete_lineage_cleanup_error(&error) {
+                    report.cleanup_failures += 1;
+                }
+                report.diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                    RecoveryMetadataClass::LocalHistoryIndex,
+                    &index_path,
+                    format!("lineage reconciliation was incomplete: {error}"),
+                ));
+            }
+        }
+    }
+
+    Ok(report)
+}
+
 fn load_document_for_identity(
     data_dir: &Path,
     identity: DocumentSidecarIdentity,
 ) -> Result<LocalHistoryDocument> {
+    Ok(load_document_for_identity_recovering(data_dir, identity)?.value)
+}
+
+fn load_document_for_identity_recovering(
+    data_dir: &Path,
+    identity: DocumentSidecarIdentity,
+) -> Result<RecoveryLoad<LocalHistoryDocument>> {
     let dir = document_dir(data_dir, &identity);
-    match note_storage::load_json_file::<LocalHistoryDocument>(&dir.join(INDEX_FILENAME))? {
-        Some(mut document) => {
+    let index_path = dir.join(INDEX_FILENAME);
+    let load = load_history_index(data_dir, &index_path);
+    note_storage::trace_recovery_diagnostics(&load.diagnostics);
+    let mut diagnostics = load.diagnostics;
+    if let Some(mut document) = load.value {
+        document.sort_newest_first();
+        return Ok(RecoveryLoad {
+            value: document,
+            outcome: load.outcome,
+            diagnostics,
+        });
+    }
+
+    if diagnostics.is_empty() {
+        return Ok(RecoveryLoad {
+            value: LocalHistoryDocument::empty(identity),
+            outcome: load.outcome,
+            diagnostics,
+        });
+    }
+
+    if !diagnostics
+        .iter()
+        .all(|diagnostic| diagnostic.replacement_allowed)
+    {
+        diagnostics.push(RecoveryDiagnostic::repair_skipped(
+            RecoveryMetadataClass::LocalHistoryIndex,
+            &index_path,
+            "lineage index was preserved in place, so automatic repair cannot replace it safely",
+        ));
+        return Ok(RecoveryLoad {
+            value: LocalHistoryDocument::empty(identity),
+            outcome: RecoveryLoadOutcome::PreservedDefault,
+            diagnostics,
+        });
+    }
+
+    match repair_history_index_from_snapshots(&dir, &index_path, identity.clone())? {
+        LocalHistoryIndexRepair::Repaired(mut document) => {
             document.sort_newest_first();
-            Ok(document)
+            diagnostics.push(RecoveryDiagnostic::repaired(
+                RecoveryMetadataClass::LocalHistoryIndex,
+                &index_path,
+                format!(
+                    "rebuilt local-history index from {} snapshot text file(s)",
+                    document.snapshots.len()
+                ),
+            ));
+            Ok(RecoveryLoad {
+                value: document,
+                outcome: RecoveryLoadOutcome::Partial,
+                diagnostics,
+            })
         }
-        None => Ok(LocalHistoryDocument::empty(identity)),
+        LocalHistoryIndexRepair::Skipped(detail) => {
+            diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                RecoveryMetadataClass::LocalHistoryIndex,
+                &index_path,
+                detail,
+            ));
+            Ok(RecoveryLoad {
+                value: LocalHistoryDocument::empty(identity),
+                outcome: RecoveryLoadOutcome::QuarantinedDefault,
+                diagnostics,
+            })
+        }
     }
 }
 
@@ -321,6 +637,147 @@ fn document_dir(data_dir: &Path, identity: &DocumentSidecarIdentity) -> PathBuf 
 
 fn snapshot_path(document_dir: &Path, snapshot_id: &str) -> PathBuf {
     document_dir.join(format!("{snapshot_id}.{SNAPSHOT_EXTENSION}"))
+}
+
+fn repair_history_index_from_snapshots(
+    document_dir: &Path,
+    index_path: &Path,
+    identity: DocumentSidecarIdentity,
+) -> Result<LocalHistoryIndexRepair> {
+    if !fs_metadata::path_status(document_dir)?.is_present() {
+        return Ok(LocalHistoryIndexRepair::Skipped(
+            "lineage directory is missing".to_string(),
+        ));
+    }
+
+    let mut snapshots = Vec::new();
+    let mut repair_body_bytes = 0u64;
+    for entry in fs_tree::scan_directory(document_dir, DirectoryScanPolicy::visible_workspace())
+        .with_context(|| format!("failed to read {}", document_dir.display()))?
+    {
+        if entry.kind != FileKind::File
+            || entry.path.file_name().and_then(|name| name.to_str()) == Some(INDEX_FILENAME)
+        {
+            continue;
+        }
+        if entry.path.extension().and_then(|ext| ext.to_str()) != Some(SNAPSHOT_EXTENSION) {
+            return Ok(LocalHistoryIndexRepair::Skipped(format!(
+                "unsupported local-history file {} prevents deterministic repair",
+                entry.path.display()
+            )));
+        }
+        let Some(snapshot_id) = entry
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(ToOwned::to_owned)
+        else {
+            return Ok(LocalHistoryIndexRepair::Skipped(format!(
+                "snapshot filename {} is not valid UTF-8",
+                entry.path.display()
+            )));
+        };
+        let Some(captured_at_millis) = captured_millis_from_snapshot_id(&snapshot_id) else {
+            return Ok(LocalHistoryIndexRepair::Skipped(format!(
+                "snapshot filename {} cannot prove capture time",
+                entry.path.display()
+            )));
+        };
+        let snapshot_bytes = match validate_snapshot_body_size(&entry.path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Ok(LocalHistoryIndexRepair::Skipped(format!(
+                    "snapshot body {} cannot be read for deterministic repair: {error}",
+                    entry.path.display()
+                )));
+            }
+        };
+        if repair_body_bytes.saturating_add(snapshot_bytes) > MAX_INDEX_REPAIR_SNAPSHOT_BYTES {
+            return Ok(LocalHistoryIndexRepair::Skipped(format!(
+                "snapshot repair would exceed the {} MiB local-history repair read budget",
+                MAX_INDEX_REPAIR_SNAPSHOT_BYTES / 1024 / 1024
+            )));
+        }
+        repair_body_bytes = repair_body_bytes.saturating_add(snapshot_bytes);
+        let text = match read_snapshot_text_after_size_check(&entry.path) {
+            Ok(text) => text,
+            Err(error) => {
+                return Ok(LocalHistoryIndexRepair::Skipped(format!(
+                    "snapshot body {} cannot be read for deterministic repair: {error}",
+                    entry.path.display()
+                )));
+            }
+        };
+        snapshots.push(LocalHistorySnapshotMeta {
+            snapshot_id,
+            captured_at_millis,
+            origin: LocalHistorySnapshotOrigin::Recovered,
+            byte_len: text.len() as u64,
+            content_hash: stable_bytes_hash(text.as_bytes()),
+        });
+    }
+
+    if snapshots.is_empty() {
+        return Ok(LocalHistoryIndexRepair::Skipped(
+            "no snapshot text files were available to rebuild the lineage".to_string(),
+        ));
+    }
+
+    let mut document = LocalHistoryDocument {
+        identity,
+        snapshots,
+    };
+    document.sort_newest_first();
+    save_document_index(document_dir, &document).with_context(|| {
+        format!(
+            "failed to save repaired local-history index {}",
+            index_path.display()
+        )
+    })?;
+    Ok(LocalHistoryIndexRepair::Repaired(document))
+}
+
+fn load_snapshot_text_bounded(path: &Path) -> Result<String> {
+    validate_snapshot_body_size(path)?;
+    read_snapshot_text_after_size_check(path)
+}
+
+fn validate_snapshot_body_size(path: &Path) -> Result<u64> {
+    let facts = fs_metadata::file_facts(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    if facts.kind != FileKind::File {
+        anyhow::bail!("local-history snapshot {} is not a file", path.display());
+    }
+    if !availability_for_size_check(FileSizeCheck::classify(facts.byte_size)).allows_browsing() {
+        anyhow::bail!(
+            "local-history snapshot {} is larger than the {} MB browse limit",
+            path.display(),
+            DISABLE_UNDO_HISTORY / 1_000_000
+        );
+    }
+    Ok(facts.byte_size)
+}
+
+fn read_snapshot_text_after_size_check(path: &Path) -> Result<String> {
+    let bytes =
+        fs_read::bytes(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let text = simdutf8::basic::from_utf8(&bytes)
+        .map_err(|error| anyhow::anyhow!("{} is not valid UTF-8: {error}", path.display()))?;
+    Ok(text.to_string())
+}
+
+fn captured_millis_from_snapshot_id(snapshot_id: &str) -> Option<u64> {
+    let mut parts = snapshot_id.split('-');
+    if parts.next()? != "history" {
+        return None;
+    }
+    let nanos_hex = parts.next()?;
+    let counter_hex = parts.next()?;
+    if parts.next().is_some() || nanos_hex.len() != 32 || counter_hex.len() != 16 {
+        return None;
+    }
+    let nanos = u128::from_str_radix(nanos_hex, 16).ok()?;
+    u64::try_from(nanos / 1_000_000).ok()
 }
 
 fn normalize_snapshot_text(text: &str) -> String {
@@ -354,7 +811,7 @@ fn enforce_global_retention_locked(data_dir: &Path, retention: RetentionPolicy) 
         return Ok(());
     }
 
-    let mut documents = load_all_documents_from_base(&base_dir)?;
+    let mut documents = load_all_documents_from_base(data_dir, &base_dir)?;
     let total_snapshots: usize = documents
         .iter()
         .map(|loaded| loaded.document.snapshots.len())
@@ -416,7 +873,10 @@ fn enforce_global_retention_locked(data_dir: &Path, retention: RetentionPolicy) 
     Ok(())
 }
 
-fn load_all_documents_from_base(base_dir: &Path) -> Result<Vec<LoadedHistoryDocument>> {
+fn load_all_documents_from_base(
+    data_dir: &Path,
+    base_dir: &Path,
+) -> Result<Vec<LoadedHistoryDocument>> {
     let mut documents = Vec::new();
     for entry in fs_tree::scan_directory(base_dir, DirectoryScanPolicy::visible_workspace())
         .with_context(|| format!("failed to read {}", base_dir.display()))?
@@ -426,9 +886,9 @@ fn load_all_documents_from_base(base_dir: &Path) -> Result<Vec<LoadedHistoryDocu
             continue;
         }
 
-        let Some(mut document) =
-            note_storage::load_json_file::<LocalHistoryDocument>(&path.join(INDEX_FILENAME))?
-        else {
+        let load = load_history_index(data_dir, &path.join(INDEX_FILENAME));
+        note_storage::trace_recovery_diagnostics(&load.diagnostics);
+        let Some(mut document) = load.value else {
             continue;
         };
         document.sort_newest_first();
@@ -472,9 +932,10 @@ fn migrate_loaded_document(
         return Ok(());
     }
 
-    let mut target_document = match note_storage::load_json_file::<LocalHistoryDocument>(
-        &target_dir.join(INDEX_FILENAME),
-    )? {
+    let target_index = target_dir.join(INDEX_FILENAME);
+    let target_load = load_history_index(data_dir, &target_index);
+    note_storage::trace_recovery_diagnostics(&target_load.diagnostics);
+    let mut target_document = match target_load.value {
         Some(mut document) => {
             document.sort_newest_first();
             document
@@ -482,37 +943,102 @@ fn migrate_loaded_document(
         None => LocalHistoryDocument::empty(new_identity.clone()),
     };
 
+    let mut migrated_snapshots = Vec::new();
     for meta in &loaded.document.snapshots {
         let from = snapshot_path(&loaded.dir, &meta.snapshot_id);
         let to = snapshot_path(&target_dir, &meta.snapshot_id);
-        if !fs_metadata::path_status(&from)?.is_present()
-            || fs_metadata::path_status(&to)?.is_present()
-        {
+        let source_present = fs_metadata::path_status(&from)?.is_present();
+        let target_present = fs_metadata::path_status(&to)?.is_present();
+        if !source_present && !target_present {
             continue;
         }
-        fs_write::rename_durable(&from, &to)
-            .or_else(|_| fs_write::copy_file_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY))
-            .with_context(|| {
-                format!(
-                    "failed to move snapshot {} to {}",
-                    from.display(),
-                    to.display()
-                )
-            })?;
+        if source_present && !target_present {
+            // Prefer rename to preserve metadata. Copy fallback is safe because
+            // the source lineage is deleted only after the target index has been
+            // rewritten, leaving retryable evidence if cleanup later fails.
+            fs_write::rename_durable(&from, &to)
+                .or_else(|_| {
+                    fs_write::copy_file_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY)
+                })
+                .with_context(|| {
+                    format!(
+                        "failed to move snapshot {} to {}",
+                        from.display(),
+                        to.display()
+                    )
+                })?;
+        }
+        migrated_snapshots.push(meta.clone());
     }
 
     target_document.identity = new_identity;
-    target_document
-        .snapshots
-        .extend(loaded.document.snapshots.iter().cloned());
+    target_document.snapshots.extend(migrated_snapshots);
     deduplicate_snapshot_ids(&mut target_document.snapshots);
     target_document.sort_newest_first();
     trim_document_to_retention(&target_dir, &mut target_document, PER_DOCUMENT_SNAPSHOT_CAP);
     save_document_index(&target_dir, &target_document)?;
-    let _ = fs_mutate::remove_dir_all_if_exists(&loaded.dir);
+    remove_obsolete_lineage(&loaded.dir)?;
     loaded.dir = target_dir;
     loaded.document = target_document;
     Ok(())
+}
+
+fn remove_obsolete_lineage(path: &Path) -> Result<()> {
+    fs_mutate::remove_dir_all_if_exists(path)
+        .map(|_| ())
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to remove obsolete local-history lineage {}: {}",
+                path.display(),
+                error
+            )
+        })
+}
+
+fn is_obsolete_lineage_cleanup_error(error: &anyhow::Error) -> bool {
+    error
+        .to_string()
+        .contains("failed to remove obsolete local-history lineage")
+}
+
+fn cleanup_empty_fallback_lineage(data_dir: &Path, old_path: &Path) -> Result<bool> {
+    // Fallback identities used the displayed path as their canonical key. Only
+    // an empty directory is removed here, so any non-empty or symlink-derived
+    // evidence stays available for the general reconciliation pass.
+    let fallback_identity =
+        DocumentSidecarIdentity::from_paths(old_path.to_path_buf(), old_path.to_path_buf());
+    let fallback_dir = document_dir(data_dir, &fallback_identity);
+    remove_empty_lineage_dir_if_exists(&fallback_dir)
+}
+
+fn remove_empty_lineage_dir_if_exists(path: &Path) -> Result<bool> {
+    if !fs_metadata::path_status(path)?.is_directory() {
+        return Ok(false);
+    }
+    let entries = fs_tree::scan_directory(
+        path,
+        DirectoryScanPolicy {
+            max_entries: 1,
+            include_hidden: true,
+        },
+    )
+    .with_context(|| format!("failed to inspect {}", path.display()))?;
+    if !entries.is_empty() {
+        return Ok(false);
+    }
+    remove_obsolete_lineage(path)?;
+    Ok(true)
+}
+
+fn load_history_index(
+    data_dir: &Path,
+    index_path: &Path,
+) -> crate::services::recovery_metadata::RecoveryLoad<Option<LocalHistoryDocument>> {
+    note_storage::load_json_file_recovering(
+        data_dir,
+        index_path,
+        RecoveryMetadataClass::LocalHistoryIndex,
+    )
 }
 
 fn deduplicate_snapshot_ids(snapshots: &mut Vec<LocalHistorySnapshotMeta>) {
@@ -533,6 +1059,8 @@ fn remove_snapshot_files(document_dir: &Path, snapshots: &[LocalHistorySnapshotM
 }
 
 fn local_history_lock() -> &'static Mutex<()> {
+    // Process-local mutex serializes read-modify-write sequences for history
+    // indexes; `OnceLock` creates it lazily without global constructor order.
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -569,6 +1097,26 @@ mod tests {
     fn history_dir_for_path(data_dir: &Path, path: &Path) -> PathBuf {
         let identity = resolve_document_identity(path).expect("resolve identity");
         document_dir(data_dir, &identity)
+    }
+
+    fn seed_lineage_in_dir(document_dir: &Path, identity: DocumentSidecarIdentity, text: &str) {
+        fixture::create_dir_all(document_dir);
+        let meta = LocalHistorySnapshotMeta {
+            snapshot_id: crate::model::sidecar_identity::next_record_id("history"),
+            captured_at_millis: crate::model::sidecar_identity::now_epoch_millis(),
+            origin: LocalHistorySnapshotOrigin::Save,
+            byte_len: text.len() as u64,
+            content_hash: stable_bytes_hash(text.as_bytes()),
+        };
+        fixture::write_text(&snapshot_path(document_dir, &meta.snapshot_id), text);
+        save_document_index(
+            document_dir,
+            &LocalHistoryDocument {
+                identity,
+                snapshots: vec![meta],
+            },
+        )
+        .expect("save seeded lineage index");
     }
 
     #[test]
@@ -716,6 +1264,172 @@ mod tests {
         assert_eq!(snapshots.len(), 2);
         assert_eq!(snapshots[0].origin, LocalHistorySnapshotOrigin::Save);
         assert_eq!(snapshots[1].origin, LocalHistorySnapshotOrigin::Baseline);
+    }
+
+    #[test]
+    fn corrupt_index_is_repaired_from_snapshot_text_without_deleting_body() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "one\n");
+        let meta = stored_meta(
+            capture_snapshot_for_path(
+                dir.path(),
+                &path,
+                "recoverable body\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture snapshot"),
+        );
+        let doc_dir = history_dir_for_path(dir.path(), &path);
+        let index_path = doc_dir.join(INDEX_FILENAME);
+        let snapshot_file = snapshot_path(&doc_dir, &meta.snapshot_id);
+        fixture::write_text(&index_path, "not local-history json");
+
+        let listing =
+            list_snapshots_for_path_recovering(dir.path(), &path).expect("list snapshots");
+
+        assert_eq!(listing.snapshots.len(), 1);
+        assert_eq!(listing.snapshots[0].snapshot_id, meta.snapshot_id);
+        assert_eq!(
+            listing.snapshots[0].origin,
+            LocalHistorySnapshotOrigin::Recovered
+        );
+        assert_eq!(
+            listing.snapshots[0].byte_len,
+            "recoverable body\n".len() as u64
+        );
+        assert_eq!(
+            listing.snapshots[0].content_hash,
+            stable_bytes_hash(b"recoverable body\n")
+        );
+        assert!(
+            listing
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.summary().contains("repaired")),
+            "repair should be diagnostic"
+        );
+        assert!(
+            fs_metadata::exists(&snapshot_file),
+            "snapshot text must survive corrupt index recovery"
+        );
+        assert!(
+            fs_metadata::exists(&index_path),
+            "a repaired index should be durably written"
+        );
+    }
+
+    #[test]
+    fn load_snapshot_refuses_body_above_browse_limit_before_reading() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "one\n");
+        let meta = stored_meta(
+            capture_snapshot_for_path(
+                dir.path(),
+                &path,
+                "small body\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture snapshot"),
+        );
+        let doc_dir = history_dir_for_path(dir.path(), &path);
+        let snapshot_file = snapshot_path(&doc_dir, &meta.snapshot_id);
+        fixture::create_sparse_file(&snapshot_file, DISABLE_UNDO_HISTORY + 1);
+
+        let error = load_snapshot_for_path(dir.path(), &path, &meta.snapshot_id)
+            .expect_err("oversized snapshot body should be refused before read");
+
+        assert!(
+            error.to_string().contains("browse limit"),
+            "unexpected oversized snapshot error: {error}"
+        );
+        assert!(
+            fs_metadata::exists(&snapshot_file),
+            "oversized snapshot evidence should remain on disk"
+        );
+    }
+
+    #[test]
+    fn corrupt_index_repair_skips_oversized_snapshot_body_without_reading() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "one\n");
+        let meta = stored_meta(
+            capture_snapshot_for_path(
+                dir.path(),
+                &path,
+                "recoverable body\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture snapshot"),
+        );
+        let doc_dir = history_dir_for_path(dir.path(), &path);
+        let index_path = doc_dir.join(INDEX_FILENAME);
+        let snapshot_file = snapshot_path(&doc_dir, &meta.snapshot_id);
+        fixture::create_sparse_file(&snapshot_file, DISABLE_UNDO_HISTORY + 1);
+        fixture::write_text(&index_path, "not local-history json");
+
+        let listing =
+            list_snapshots_for_path_recovering(dir.path(), &path).expect("list snapshots");
+
+        assert!(
+            listing.snapshots.is_empty(),
+            "oversized repair should not expose guessed history"
+        );
+        assert!(
+            listing.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.problem,
+                crate::services::recovery_metadata::RecoveryProblem::RepairSkipped { detail }
+                    if detail.contains("browse limit")
+            )),
+            "oversized repair skip should preserve the detailed reason"
+        );
+        assert!(
+            fs_metadata::exists(&snapshot_file),
+            "oversized snapshot text must remain for manual inspection"
+        );
+    }
+
+    #[test]
+    fn ambiguous_corrupt_index_repair_preserves_snapshot_text_without_exposing() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "one\n");
+        let meta = stored_meta(
+            capture_snapshot_for_path(
+                dir.path(),
+                &path,
+                "ambiguous body\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture snapshot"),
+        );
+        let doc_dir = history_dir_for_path(dir.path(), &path);
+        let index_path = doc_dir.join(INDEX_FILENAME);
+        let snapshot_file = snapshot_path(&doc_dir, &meta.snapshot_id);
+        let ambiguous_snapshot = doc_dir.join("snapshot-without-time.txt");
+        fixture::rename(&snapshot_file, &ambiguous_snapshot);
+        fixture::write_text(&index_path, "not local-history json");
+
+        let listing =
+            list_snapshots_for_path_recovering(dir.path(), &path).expect("list snapshots");
+
+        assert!(
+            listing.snapshots.is_empty(),
+            "ambiguous repair should not expose guessed history"
+        );
+        assert!(
+            listing
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.summary().contains("repair-skipped")),
+            "skipped repair should be diagnostic"
+        );
+        assert!(
+            fs_metadata::exists(&ambiguous_snapshot),
+            "ambiguous snapshot text must remain for manual inspection"
+        );
     }
 
     #[test]
@@ -1011,10 +1725,185 @@ mod tests {
                 .any(|meta| meta.snapshot_id == moved_meta.snapshot_id),
             "metadata for moved snapshot should be merged"
         );
+        assert!(
+            !snapshots
+                .iter()
+                .any(|meta| meta.snapshot_id == missing_meta.snapshot_id),
+            "metadata without a surviving snapshot body should not be merged"
+        );
         let loaded = load_snapshot_for_path(dir.path(), &new_path, &moved_meta.snapshot_id)
             .expect("load moved snapshot")
             .expect("moved snapshot should exist");
         assert_eq!(loaded.text, "moved body\n");
+    }
+
+    #[test]
+    fn reconcile_lineages_moves_mismatched_index_into_canonical_directory() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "file\n");
+        let identity = resolve_document_identity(&path).expect("identity");
+        let mismatched_dir = local_history_dir(dir.path()).join("stale-lineage");
+        seed_lineage_in_dir(&mismatched_dir, identity.clone(), "recovered body\n");
+
+        let report = reconcile_lineages_with_budget(
+            dir.path(),
+            LocalHistoryReconcileBudget::new(8, Duration::from_secs(60)),
+        )
+        .expect("reconcile lineages");
+
+        assert_eq!(report.scanned_lineages, 1);
+        assert_eq!(report.mismatched_lineages, 1);
+        assert_eq!(report.reconciled_lineages, 1);
+        assert!(!fs_metadata::exists(&mismatched_dir));
+        let snapshots = list_snapshots_for_path(dir.path(), &path).expect("list reconciled");
+        assert_eq!(snapshots.len(), 1);
+        let loaded = load_snapshot_for_path(dir.path(), &path, &snapshots[0].snapshot_id)
+            .expect("load reconciled")
+            .expect("snapshot exists");
+        assert_eq!(loaded.text, "recovered body\n");
+        assert_eq!(
+            history_dir_for_path(dir.path(), &path),
+            document_dir(dir.path(), &identity)
+        );
+    }
+
+    #[test]
+    fn reconcile_lineages_merges_duplicate_identity_before_cleanup() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "file\n");
+        capture_snapshot_for_path(
+            dir.path(),
+            &path,
+            "target body\n",
+            LocalHistorySnapshotOrigin::Save,
+            LocalHistoryCapturePolicy::PreserveDuplicate,
+        )
+        .expect("capture target");
+        let identity = resolve_document_identity(&path).expect("identity");
+        let duplicate_dir = local_history_dir(dir.path()).join("duplicate-lineage");
+        seed_lineage_in_dir(&duplicate_dir, identity, "duplicate body\n");
+
+        let report = reconcile_lineages_with_budget(
+            dir.path(),
+            LocalHistoryReconcileBudget::new(8, Duration::from_secs(60)),
+        )
+        .expect("reconcile duplicate");
+
+        assert_eq!(report.mismatched_lineages, 1);
+        assert_eq!(report.reconciled_lineages, 1);
+        assert!(!fs_metadata::exists(&duplicate_dir));
+        let snapshots = list_snapshots_for_path(dir.path(), &path).expect("list merged");
+        assert_eq!(snapshots.len(), 2);
+        let bodies = snapshots
+            .iter()
+            .map(|meta| {
+                load_snapshot_for_path(dir.path(), &path, &meta.snapshot_id)
+                    .expect("load snapshot")
+                    .expect("snapshot exists")
+                    .text
+            })
+            .collect::<Vec<_>>();
+        assert!(bodies.iter().any(|body| body == "target body\n"));
+        assert!(bodies.iter().any(|body| body == "duplicate body\n"));
+    }
+
+    #[test]
+    fn reconcile_lineages_preserves_orphan_directory_and_reports_diagnostic() {
+        let dir = TempDir::new().expect("tempdir");
+        let orphan_dir = local_history_dir(dir.path()).join("orphan-lineage");
+        fixture::create_dir_all(&orphan_dir);
+        fixture::write_text(&orphan_dir.join("history-without-index.txt"), "body\n");
+
+        let report = reconcile_lineages_with_budget(
+            dir.path(),
+            LocalHistoryReconcileBudget::new(8, Duration::from_secs(60)),
+        )
+        .expect("reconcile orphan");
+
+        assert_eq!(report.scanned_lineages, 1);
+        assert_eq!(report.orphaned_lineages, 1);
+        assert!(
+            fs_metadata::exists(&orphan_dir),
+            "orphaned evidence must remain on disk"
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.summary().contains("repair-skipped")),
+            "orphan should be diagnostic"
+        );
+    }
+
+    #[test]
+    fn reconcile_lineages_defers_work_when_scan_budget_is_reached() {
+        let dir = TempDir::new().expect("tempdir");
+        for index in 0..3 {
+            let path = seed_file(&dir, &format!("workspace/file-{index}.txt"), "file\n");
+            let identity = resolve_document_identity(&path).expect("identity");
+            let mismatched_dir = local_history_dir(dir.path()).join(format!("stale-{index}"));
+            seed_lineage_in_dir(&mismatched_dir, identity, "body\n");
+        }
+
+        let report = reconcile_lineages_with_budget(
+            dir.path(),
+            LocalHistoryReconcileBudget::new(1, Duration::from_secs(60)),
+        )
+        .expect("bounded reconcile");
+
+        assert_eq!(report.scanned_lineages, 1);
+        assert!(report.has_deferred_work());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn move_path_tree_reports_cleanup_failure_after_target_write() {
+        let dir = TempDir::new().expect("tempdir");
+        let old_path = seed_file(&dir, "workspace/old.txt", "old\n");
+        let new_path = seed_file(&dir, "workspace/new.txt", "new\n");
+        let moved_meta = stored_meta(
+            capture_snapshot_for_path(
+                dir.path(),
+                &old_path,
+                "moved body\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture source"),
+        );
+        capture_snapshot_for_path(
+            dir.path(),
+            &new_path,
+            "target body\n",
+            LocalHistorySnapshotOrigin::Save,
+            LocalHistoryCapturePolicy::DeduplicateLatest,
+        )
+        .expect("capture target");
+        let old_doc_dir = history_dir_for_path(dir.path(), &old_path);
+        let base_dir = local_history_dir(dir.path());
+
+        fixture::set_mode(&base_dir, 0o500);
+        let result = move_path_tree(dir.path(), &old_path, &new_path);
+        fixture::set_mode(&base_dir, 0o700);
+        let error = result.expect_err("source cleanup should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to remove obsolete local-history lineage"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            fs_metadata::exists(&old_doc_dir),
+            "cleanup failure should leave source lineage for retry"
+        );
+        let snapshots = list_snapshots_for_path(dir.path(), &new_path).expect("list target");
+        assert!(
+            snapshots
+                .iter()
+                .any(|meta| meta.snapshot_id == moved_meta.snapshot_id),
+            "target index should already contain the moved snapshot before cleanup"
+        );
     }
 
     #[test]

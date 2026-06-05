@@ -114,6 +114,41 @@ scan_visual_logs() {
     echo "PASS: no unexpected GTK/Adwaita/GDK/accessibility warnings for ${name}" >>"$report"
 }
 
+prepare_recovery_capture_state() {
+    local capture_dir="$1"
+    local data_dir="$capture_dir/data/lushtext"
+    mkdir -p "$data_dir/drafts"
+
+    printf '{ malformed session metadata\n' >"$data_dir/session.json"
+    printf '{ malformed draft manifest\n' >"$data_dir/drafts/manifest.json"
+    printf 'Visual smoke recovered draft body\n' >"$data_dir/drafts/untitled-visual-smoke.draft"
+}
+
+assert_recovery_capture_artifacts() {
+    local name="$1"
+    local capture_dir="$2"
+    local data_dir="$capture_dir/data/lushtext"
+    local tree_path="$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+    local summary_path="$ARTIFACT_DIR/assertions/${name}-recovery-summary.txt"
+    local quarantine_dir="$data_dir/recovery-quarantine"
+
+    {
+        echo "data_dir=$data_dir"
+        if [[ -d "$quarantine_dir" ]]; then
+            find "$quarantine_dir" -type f -printf '%P size=%s\n' | sort
+        else
+            echo "quarantine=<missing>"
+        fi
+    } >"$summary_path"
+
+    if ! grep -q 'size=' "$summary_path"; then
+        smoke_fail "recovery visual smoke did not preserve a quarantine summary"
+    fi
+    if ! grep -Eiq 'recovery|could not be loaded|draft|session' "$tree_path"; then
+        smoke_fail "recovery visual smoke did not expose recovery diagnostics in the AT-SPI tree"
+    fi
+}
+
 run_capture() {
     local name="$1"
     local fixture="$2"
@@ -130,6 +165,9 @@ run_capture() {
     local manifest="$ARTIFACT_DIR/assertions/${name}-state.txt"
 
     mkdir -p "$capture_dir"
+    if [[ "$name" == "recovery-startup" ]]; then
+        prepare_recovery_capture_state "$capture_dir"
+    fi
     {
         echo "name=$name"
         echo "fixture=$fixture"
@@ -164,11 +202,21 @@ run_capture() {
     if [[ "$color_scheme" != "default" ]]; then
         capture_args+=(--color-scheme "$color_scheme")
     fi
+    if [[ "$name" == "recovery-startup" ]]; then
+        capture_args+=(
+            --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+            --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
+        )
+    fi
     for action in "${actions[@]}"; do
         capture_args+=(--window-action "$action")
     done
 
     if ! /usr/bin/python3 "${capture_args[@]}" >"$session_log" 2>&1; then
+        if grep -qE 'AT-SPI registry did not register|Missing at-spi2-registryd|PipeWire did not become ready|Missing required command' "$session_log"; then
+            tail -n 120 "$session_log" >&2 || true
+            smoke_skip "visual smoke host support unavailable during '${name}'. Artifacts: $ARTIFACT_DIR"
+        fi
         tail -n 120 "$session_log" >&2 || true
         smoke_fail "visual smoke capture '${name}' failed. Artifacts: $ARTIFACT_DIR"
     fi
@@ -182,6 +230,9 @@ run_capture() {
         --require-bottom-band-detail \
         >"$ARTIFACT_DIR/assertions/${name}-png.txt"
     scan_visual_logs "$name" "$capture_dir"
+    if [[ "$name" == "recovery-startup" ]]; then
+        assert_recovery_capture_artifacts "$name" "$capture_dir"
+    fi
     if command -v file >/dev/null 2>&1; then
         file "$output" >"$ARTIFACT_DIR/assertions/${name}-file.txt" || true
     fi
@@ -193,6 +244,7 @@ run_capture "compact-properties" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/comp
 run_capture "short-layout" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/short-layout.png" "1200" "420" "" "0" "default"
 run_capture "markdown-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview.png" "1280" "860" "" "0" "default" "toggle-preview-mode"
 run_capture "dark-style" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/dark-style.png" "$WIDTH" "$HEIGHT" "" "0" "force-dark"
+run_capture "recovery-startup" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/recovery-startup.png" "1280" "860" "" "0" "default"
 
 {
     echo "screenshots=$ARTIFACT_DIR/screenshots"
