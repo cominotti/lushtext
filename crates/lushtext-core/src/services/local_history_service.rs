@@ -11,6 +11,8 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+#[cfg(any(test, feature = "test-utils"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -68,6 +70,14 @@ const DEFAULT_RECONCILE_MAX_MILLIS: u64 = 50;
 /// lineage. When this budget is exceeded, all snapshot files stay preserved and
 /// the index remains unavailable until a manual or future streaming repair path.
 const MAX_INDEX_REPAIR_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Test-only switch for deterministic obsolete-lineage cleanup failures.
+///
+/// Permission-bit fixtures do not fail when CI containers run tests as root, so
+/// integration tests use this seam to exercise the retryable cleanup path
+/// without depending on host user privileges.
+#[cfg(any(test, feature = "test-utils"))]
+static FAIL_NEXT_OBSOLETE_LINEAGE_CLEANUP: AtomicBool = AtomicBool::new(false);
 
 /// Size-policy view used by the editor and window layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +246,12 @@ pub fn availability_for_size_check(size_check: FileSizeCheck) -> LocalHistoryAva
             LocalHistoryAvailability::Unavailable
         }
     }
+}
+
+/// Fail the next obsolete local-history lineage cleanup in test builds.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn fail_next_obsolete_lineage_cleanup_for_test() {
+    FAIL_NEXT_OBSOLETE_LINEAGE_CLEANUP.store(true, Ordering::Release);
 }
 
 /// Capture one snapshot for a saved document path using the default retention policy.
@@ -984,6 +1000,7 @@ fn migrate_loaded_document(
 }
 
 fn remove_obsolete_lineage(path: &Path) -> Result<()> {
+    maybe_fail_obsolete_lineage_cleanup_for_test(path)?;
     fs_mutate::remove_dir_all_if_exists(path)
         .map(|_| ())
         .map_err(|error| {
@@ -993,6 +1010,23 @@ fn remove_obsolete_lineage(path: &Path) -> Result<()> {
                 error
             )
         })
+}
+
+/// Inject the cleanup failure used by cross-environment retry tests.
+#[cfg(any(test, feature = "test-utils"))]
+fn maybe_fail_obsolete_lineage_cleanup_for_test(path: &Path) -> Result<()> {
+    if FAIL_NEXT_OBSOLETE_LINEAGE_CLEANUP.swap(false, Ordering::AcqRel) {
+        return Err(anyhow::anyhow!(
+            "failed to remove obsolete local-history lineage {}: injected cleanup failure",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(test, feature = "test-utils")))]
+fn maybe_fail_obsolete_lineage_cleanup_for_test(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn is_obsolete_lineage_cleanup_error(error: &anyhow::Error) -> bool {
@@ -1855,7 +1889,6 @@ mod tests {
         assert!(report.has_deferred_work());
     }
 
-    #[cfg(unix)]
     #[test]
     fn move_path_tree_reports_cleanup_failure_after_target_write() {
         let dir = TempDir::new().expect("tempdir");
@@ -1880,11 +1913,9 @@ mod tests {
         )
         .expect("capture target");
         let old_doc_dir = history_dir_for_path(dir.path(), &old_path);
-        let base_dir = local_history_dir(dir.path());
 
-        fixture::set_mode(&base_dir, 0o500);
+        fail_next_obsolete_lineage_cleanup_for_test();
         let result = move_path_tree(dir.path(), &old_path, &new_path);
-        fixture::set_mode(&base_dir, 0o700);
         let error = result.expect_err("source cleanup should fail");
 
         assert!(

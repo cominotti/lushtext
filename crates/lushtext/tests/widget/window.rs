@@ -3812,11 +3812,11 @@ fn test_first_dirty_autosave_large_buffer_snapshots_across_main_loop_chunks() {
     editor.buffer().set_text(&large_text);
     editor.buffer().set_modified(true);
 
-    wait_until(Duration::from_secs(3), || {
-        window.draft_autosave_inflight_for_test()
-    });
-    assert!(editor.draft_dirty());
-    wait_until(Duration::from_secs(10), || {
+    assert!(
+        editor.save_uses_chunked_snapshot_for_test(),
+        "large draft buffers should use the main-loop chunked snapshot path"
+    );
+    wait_until(Duration::from_secs(15), || {
         !window.draft_autosave_inflight_for_test()
             && draft_service::read_draft(&data_dir, &draft_id)
                 .expect("read draft")

@@ -184,7 +184,6 @@ fn save_as_lineage_stays_separate_from_pending_rename_migration() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn local_history_cleanup_failure_remains_diagnostic_and_retryable() {
     let ctx = TestContext::new();
@@ -210,7 +209,6 @@ fn local_history_cleanup_failure_remains_diagnostic_and_retryable() {
         local_history_service::resolve_document_identity(&old_file).expect("old identity");
     let old_history_dir =
         local_history_service::local_history_dir(ctx.data_dir()).join(old_identity.sidecar_id);
-    let base_dir = local_history_service::local_history_dir(ctx.data_dir());
     migration_ledger::record_pending(
         ctx.data_dir(),
         &old_file,
@@ -219,10 +217,9 @@ fn local_history_cleanup_failure_remains_diagnostic_and_retryable() {
     )
     .expect("record pending local-history migration");
 
-    fixture::set_mode(&base_dir, 0o500);
+    local_history_service::fail_next_obsolete_lineage_cleanup_for_test();
     let failed_report = migration_ledger::reconcile_pending(ctx.data_dir())
         .expect("cleanup failure should stay diagnostic");
-    fixture::set_mode(&base_dir, 0o700);
 
     assert_eq!(failed_report.attempted, 1);
     assert_eq!(failed_report.completed, 0);
