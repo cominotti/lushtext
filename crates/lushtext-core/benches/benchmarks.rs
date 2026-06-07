@@ -8,19 +8,27 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use gtk4::gio;
 use gtk4::prelude::ListModelExt;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::hint::black_box;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 use tempfile::TempDir;
 
-use lushtext_core::model::content_search::ContentSearchOptions;
+use lushtext_core::model::bookmark::BookmarkRecord;
+use lushtext_core::model::content_search::{
+    ContentSearchOptions, Replacement, SearchMatch, generate_replacement_preview,
+};
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::encoding::{DocumentEncoding, LineEnding};
+use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
+use lushtext_core::model::local_history::{LocalHistoryDocument, LocalHistorySnapshotMeta};
+use lushtext_core::model::migration_ledger::MigrationKind;
 use lushtext_core::model::palette::IndexedFile;
 use lushtext_core::model::palette::SearchMode;
 use lushtext_core::model::session::{SessionData, SessionTab};
+use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, stable_bytes_hash};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
@@ -28,10 +36,18 @@ use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::file_tree::{self, DirectoryEntry};
-use lushtext_core::services::json_store;
+use lushtext_core::services::filesystem::{fixture, read as fs_read};
+use lushtext_core::services::json_format::KIND_LOCAL_HISTORY_INDEX;
 use lushtext_core::services::palette::{self, FileIndex};
+use lushtext_core::services::recovery_metadata::{
+    RecoveryLoadConfig, RecoveryMetadataClass, save_enveloped_json_path,
+};
 use lushtext_core::services::workspace_manager;
-use lushtext_core::services::{draft_service, session_service};
+use lushtext_core::services::{
+    bookmark_service, draft_service,
+    local_history_service::{self, LocalHistoryCapturePolicy},
+    migration_ledger, session_service,
+};
 use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
 
 // ---------------------------------------------------------------------------
@@ -75,12 +91,11 @@ fn make_temp_dir_tree(file_count: usize) -> TempDir {
     let dir = TempDir::new().expect("expected operation to succeed");
     let subdirs = ["src", "src/model", "src/services", "tests", "docs"];
     for subdir in &subdirs {
-        std::fs::create_dir_all(dir.path().join(subdir)).expect("expected operation to succeed");
+        fixture::create_dir_all(&dir.path().join(subdir));
     }
     for i in 0..file_count {
         let subdir = subdirs[i % subdirs.len()];
-        std::fs::write(dir.path().join(format!("{subdir}/file_{i}.rs")), "")
-            .expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join(format!("{subdir}/file_{i}.rs")), "");
     }
     dir
 }
@@ -90,12 +105,10 @@ fn make_flat_dir(entry_count: usize) -> TempDir {
     let dir = TempDir::new().expect("expected operation to succeed");
     let n_dirs = entry_count / 2;
     for i in 0..n_dirs {
-        std::fs::create_dir(dir.path().join(format!("dir_{i}")))
-            .expect("expected operation to succeed");
+        fixture::create_dir(&dir.path().join(format!("dir_{i}")));
     }
     for i in 0..(entry_count - n_dirs) {
-        std::fs::write(dir.path().join(format!("file_{i}.rs")), "")
-            .expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join(format!("file_{i}.rs")), "");
     }
     dir
 }
@@ -155,11 +168,11 @@ fn make_draft_fixtures(
 
     // Create real files for session tabs (filter_existing_tabs will stat them).
     let tab_dir = dir.path().join("project");
-    std::fs::create_dir_all(&tab_dir).expect("expected operation to succeed");
+    fixture::create_dir_all(&tab_dir);
     let mut tabs = Vec::with_capacity(n_tabs);
     for i in 0..n_tabs {
         let file_path = tab_dir.join(format!("file_{i}.rs"));
-        std::fs::write(&file_path, "fn main() {}").expect("expected operation to succeed");
+        fixture::write_text(&file_path, "fn main() {}");
         tabs.push(SessionTab {
             path: Some(file_path),
             draft_id: None,
@@ -218,6 +231,248 @@ fn make_session_data(n_tabs: usize) -> SessionData {
             .collect(),
         active_tab_index: Some(0),
     }
+}
+
+/// Create disposable files and preview records for Replace All benchmarks.
+fn make_replace_all_fixture(
+    file_count: usize,
+    lines_per_file: usize,
+) -> (TempDir, Vec<Replacement>) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let original_line = "prefix needle suffix";
+    let replaced_line = "prefix thread suffix";
+    let mut replacements = Vec::with_capacity(file_count * lines_per_file);
+
+    for file_index in 0..file_count {
+        let path = dir.path().join(format!("replace_{file_index}.txt"));
+        let content = std::iter::repeat_n(original_line, lines_per_file)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fixture::write_text(&path, &content);
+        for line_index in 0..lines_per_file {
+            replacements.push(Replacement {
+                path: path.clone(),
+                line_number: u64::try_from(line_index + 1)
+                    .expect("benchmark line index fits in u64"),
+                original_line: original_line.to_string(),
+                replaced_line: replaced_line.to_string(),
+                replacement: "thread".to_string(),
+                match_range: 7..13,
+            });
+        }
+    }
+
+    (dir, replacements)
+}
+
+/// Create in-memory search matches for Replace preview generation benchmarks.
+fn make_replace_preview_matches(match_count: usize) -> Vec<SearchMatch> {
+    (0..match_count)
+        .map(|index| SearchMatch {
+            path: PathBuf::from(format!("/synthetic/preview/file_{}.rs", index % 250)),
+            line_number: u64::try_from(index + 1).expect("benchmark match index fits in u64"),
+            line_content: format!("let needle_{index} = needle;"),
+            match_range: 4..10,
+        })
+        .collect()
+}
+
+/// Create one file near the Replace All accepted-size cap with a single match.
+fn make_replace_all_10mb_fixture() -> (TempDir, Vec<Replacement>) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let path = dir.path().join("accepted-10mb.txt");
+    let original_line = "prefix needle suffix";
+    let mut content = String::with_capacity(10 * 1024 * 1024);
+    content.push_str(original_line);
+    content.push('\n');
+    content.extend(std::iter::repeat_n('x', (10 * 1024 * 1024) - content.len()));
+    fixture::write_text(&path, &content);
+    (
+        dir,
+        vec![Replacement {
+            path,
+            line_number: 1,
+            original_line: original_line.to_string(),
+            replaced_line: "prefix thread suffix".to_string(),
+            replacement: "thread".to_string(),
+            match_range: 7..13,
+        }],
+    )
+}
+
+/// Create one sparse file just over the Replace All cap so the benchmark tracks skip cost.
+fn make_replace_all_over_cap_fixture() -> (TempDir, Vec<Replacement>) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let path = dir.path().join("over-cap.txt");
+    fixture::create_sparse_file(&path, content_search::MAX_REPLACE_FILE_BYTES + 1);
+    (
+        dir,
+        vec![Replacement {
+            path,
+            line_number: 1,
+            original_line: "needle".to_string(),
+            replaced_line: "thread".to_string(),
+            replacement: "thread".to_string(),
+            match_range: 0..6,
+        }],
+    )
+}
+
+fn make_malformed_recovery_fixture(corrupt_sidecars: usize) -> (TempDir, PathBuf) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let workspace = dir.path().join("workspace");
+    fixture::create_dir_all(&workspace);
+    fixture::write_text(&dir.path().join("session.json"), "{ malformed session");
+    fixture::create_dir_all(&draft_service::drafts_dir(dir.path()));
+    fixture::write_text(
+        &draft_service::drafts_dir(dir.path()).join("manifest.json"),
+        "{ malformed manifest",
+    );
+    fixture::write_text(
+        &migration_ledger::ledger_path(dir.path()),
+        "{ malformed migration ledger",
+    );
+    let bookmarks_dir = bookmark_service::bookmarks_dir(dir.path());
+    fixture::create_dir_all(&bookmarks_dir);
+    for i in 0..corrupt_sidecars {
+        fixture::write_text(
+            &bookmarks_dir.join(format!("corrupt-{i}.json")),
+            "{ malformed bookmark sidecar",
+        );
+    }
+    (dir, workspace)
+}
+
+fn make_pending_migration_fixture(entry_count: usize) -> TempDir {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let old_root = dir.path().join("old");
+    let new_root = dir.path().join("new");
+    fixture::create_dir_all(&old_root);
+    fixture::create_dir_all(&new_root);
+    for i in 0..entry_count {
+        migration_ledger::record_pending(
+            dir.path(),
+            &old_root.join(format!("file-{i}.txt")),
+            &new_root.join(format!("file-{i}.txt")),
+            &[MigrationKind::Bookmarks, MigrationKind::DocumentNotes],
+        )
+        .expect("expected operation to succeed");
+    }
+    dir
+}
+
+fn make_duplicate_bookmark_sidecar_fixture() -> (TempDir, PathBuf, PathBuf) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let workspace = dir.path().join("workspace");
+    fixture::create_dir_all(&workspace);
+    let old_path = workspace.join("old.txt");
+    let new_path = workspace.join("new.txt");
+    fixture::write_text(&old_path, "old\n");
+    fixture::write_text(&new_path, "new\n");
+    bookmark_service::save_for_path(
+        dir.path(),
+        &old_path,
+        &[BookmarkRecord::new(1, Some("old bookmark".to_string()))],
+    )
+    .expect("expected operation to succeed");
+    bookmark_service::save_for_path(
+        dir.path(),
+        &new_path,
+        &[BookmarkRecord::new(2, Some("new bookmark".to_string()))],
+    )
+    .expect("expected operation to succeed");
+    (dir, old_path, new_path)
+}
+
+fn make_many_local_history_lineages_fixture(lineage_count: usize) -> (TempDir, PathBuf, PathBuf) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let old_root = dir.path().join("old-root");
+    let new_root = dir.path().join("new-root");
+    fixture::create_dir_all(&old_root);
+    fixture::create_dir_all(&new_root);
+    for i in 0..lineage_count {
+        let old_path = old_root.join(format!("file-{i}.txt"));
+        let new_path = new_root.join(format!("file-{i}.txt"));
+        fixture::write_text(&old_path, "old\n");
+        fixture::write_text(&new_path, "new\n");
+        local_history_service::capture_snapshot_for_path(
+            dir.path(),
+            &old_path,
+            &format!("old snapshot {i}\n"),
+            LocalHistorySnapshotOrigin::Save,
+            LocalHistoryCapturePolicy::PreserveDuplicate,
+        )
+        .expect("expected operation to succeed");
+        if i % 4 == 0 {
+            local_history_service::capture_snapshot_for_path(
+                dir.path(),
+                &new_path,
+                &format!("target snapshot {i}\n"),
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::PreserveDuplicate,
+            )
+            .expect("expected operation to succeed");
+        }
+    }
+    (dir, old_root, new_root)
+}
+
+fn make_mismatched_local_history_lineages_fixture(lineage_count: usize) -> TempDir {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let workspace = dir.path().join("workspace");
+    fixture::create_dir_all(&workspace);
+    for i in 0..lineage_count {
+        let path = workspace.join(format!("reconcile-{i}.txt"));
+        fixture::write_text(&path, "file\n");
+        let identity = local_history_service::resolve_document_identity(&path)
+            .expect("expected operation to succeed");
+        let lineage_dir =
+            local_history_service::local_history_dir(dir.path()).join(format!("stale-{i}"));
+        fixture::create_dir_all(&lineage_dir);
+        let text = format!("mismatched local-history body {i}\n");
+        let meta = LocalHistorySnapshotMeta {
+            snapshot_id: next_record_id("history"),
+            captured_at_millis: now_epoch_millis(),
+            origin: LocalHistorySnapshotOrigin::Save,
+            byte_len: text.len() as u64,
+            content_hash: stable_bytes_hash(text.as_bytes()),
+        };
+        fixture::write_text(
+            &lineage_dir.join(format!("{}.txt", meta.snapshot_id)),
+            &text,
+        );
+        let index_path = lineage_dir.join("index.json");
+        let document = LocalHistoryDocument {
+            identity,
+            snapshots: vec![meta],
+        };
+        save_enveloped_json_path(
+            &RecoveryLoadConfig::new(
+                dir.path(),
+                &index_path,
+                RecoveryMetadataClass::LocalHistoryIndex,
+            ),
+            KIND_LOCAL_HISTORY_INDEX,
+            &document,
+        )
+        .expect("expected operation to succeed");
+    }
+    dir
+}
+
+fn make_first_dirty_autosave_fixture(
+    draft_count: usize,
+    draft_size: usize,
+) -> (TempDir, Vec<String>) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let ids = (0..draft_count)
+        .map(|i| format!("untitled-{i:016x}"))
+        .collect::<Vec<_>>();
+    fixture::create_dir_all(&draft_service::drafts_dir(dir.path()));
+    fixture::write_text(&dir.path().join("seed.txt"), "seed\n");
+    let _content = "x".repeat(draft_size);
+    (dir, ids)
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +624,7 @@ fn bench_json_persistence(c: &mut Criterion) {
                 dir
             },
             |dir| {
-                let _: WorkspacesFile = json_store::load(black_box(dir.path()), "workspaces.json")
+                let _: WorkspacesFile = workspace_manager::load(black_box(dir.path()))
                     .expect("expected operation to succeed");
             },
             BatchSize::SmallInput,
@@ -384,7 +639,7 @@ fn bench_json_persistence(c: &mut Criterion) {
                 dir
             },
             |dir| {
-                let _: WorkspacesFile = json_store::load(black_box(dir.path()), "workspaces.json")
+                let _: WorkspacesFile = workspace_manager::load(black_box(dir.path()))
                     .expect("expected operation to succeed");
             },
             BatchSize::SmallInput,
@@ -397,7 +652,7 @@ fn bench_json_persistence(c: &mut Criterion) {
         b.iter_batched(
             || TempDir::new().expect("expected operation to succeed"),
             |dir| {
-                json_store::save(dir.path(), "session-bench.json", black_box(&session))
+                session_service::save(dir.path(), black_box(&session))
                     .expect("expected operation to succeed");
                 dir // keep TempDir alive past timing
             },
@@ -409,12 +664,11 @@ fn bench_json_persistence(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let dir = TempDir::new().expect("expected operation to succeed");
-                json_store::save(dir.path(), "session-bench.json", &session)
-                    .expect("expected operation to succeed");
+                session_service::save(dir.path(), &session).expect("expected operation to succeed");
                 dir
             },
             |dir| {
-                let _: SessionData = json_store::load(black_box(dir.path()), "session-bench.json")
+                let _: SessionData = session_service::load(black_box(dir.path()))
                     .expect("expected operation to succeed");
             },
             BatchSize::SmallInput,
@@ -434,18 +688,18 @@ fn bench_utf8_validation(c: &mut Criterion) {
         let content = "a".repeat(size);
 
         group.bench_function(
-            BenchmarkId::new("read_to_string", format!("{size_mb}MB")),
+            BenchmarkId::new("boundary_text", format!("{size_mb}MB")),
             |b| {
                 b.iter_batched(
                     || {
                         let dir = TempDir::new().expect("expected operation to succeed");
                         let path = dir.path().join("bench.txt");
-                        std::fs::write(&path, &content).expect("expected operation to succeed");
+                        fixture::write_text(&path, &content);
                         (dir, path)
                     },
                     |(dir, path)| {
-                        let _s = std::fs::read_to_string(black_box(&path))
-                            .expect("expected operation to succeed");
+                        let _s =
+                            fs_read::text(black_box(&path)).expect("expected operation to succeed");
                         dir // keep alive
                     },
                     BatchSize::SmallInput,
@@ -460,12 +714,12 @@ fn bench_utf8_validation(c: &mut Criterion) {
                     || {
                         let dir = TempDir::new().expect("expected operation to succeed");
                         let path = dir.path().join("bench.txt");
-                        std::fs::write(&path, &content).expect("expected operation to succeed");
+                        fixture::write_text(&path, &content);
                         (dir, path)
                     },
                     |(dir, path)| {
-                        let bytes =
-                            std::fs::read(black_box(&path)).expect("expected operation to succeed");
+                        let bytes = fs_read::bytes(black_box(&path))
+                            .expect("expected operation to succeed");
                         simdutf8::basic::from_utf8(&bytes).expect("expected operation to succeed");
                         // SAFETY: `simdutf8` just validated that `bytes` is well-formed UTF-8.
                         let _s = unsafe { String::from_utf8_unchecked(bytes) };
@@ -494,7 +748,7 @@ fn bench_editor_file_io(c: &mut Criterion) {
                     || {
                         let dir = TempDir::new().expect("expected operation to succeed");
                         let path = dir.path().join("bench.txt");
-                        std::fs::write(&path, &content).expect("expected operation to succeed");
+                        fixture::write_text(&path, &content);
                         (dir, path, AtomicBool::new(false))
                     },
                     |(dir, path, cancel)| {
@@ -541,8 +795,7 @@ fn bench_editor_file_io(c: &mut Criterion) {
                         let (bytes, _, _) = DocumentEncoding::Windows1252
                             .codec()
                             .encode(&windows_1252_text);
-                        std::fs::write(&path, bytes.as_ref())
-                            .expect("expected operation to succeed");
+                        fixture::write_bytes(&path, bytes.as_ref());
                         (dir, path, AtomicBool::new(false))
                     },
                     |(dir, path, cancel)| {
@@ -581,6 +834,122 @@ fn bench_editor_file_io(c: &mut Criterion) {
                     },
                     BatchSize::SmallInput,
                 );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_replace_undo_workflows(c: &mut Criterion) {
+    let mut group = c.benchmark_group("replace_undo_workflows");
+    group.sample_size(10);
+
+    for &(label, file_count, lines_per_file) in &[
+        ("small", 10usize, 20usize),
+        ("medium", 100, 20),
+        ("many_files_journal", 1_000, 1),
+    ] {
+        group.bench_function(BenchmarkId::new("replace_all", label), |b| {
+            b.iter_batched(
+                || make_replace_all_fixture(file_count, lines_per_file),
+                |(dir, replacements)| {
+                    let cancel = AtomicBool::new(false);
+                    let (result, backup) = content_search::apply_replacements(
+                        black_box(&replacements),
+                        black_box(&HashSet::new()),
+                        black_box(&cancel),
+                        Some(dir.path()),
+                    )
+                    .expect("expected operation to succeed");
+                    black_box((result.replaced_count, backup.len(), dir));
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        group.bench_function(BenchmarkId::new("undo_replace_all", label), |b| {
+            b.iter_batched(
+                || {
+                    let (dir, replacements) = make_replace_all_fixture(file_count, lines_per_file);
+                    let cancel = AtomicBool::new(false);
+                    let (_, backup) = content_search::apply_replacements(
+                        &replacements,
+                        &HashSet::new(),
+                        &cancel,
+                        Some(dir.path()),
+                    )
+                    .expect("expected operation to succeed");
+                    (dir, backup)
+                },
+                |(dir, backup)| {
+                    let outcome = content_search::undo_replacements(black_box(&backup));
+                    black_box((outcome.restored_count(), outcome.remaining_count(), dir));
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.bench_function("replace_all/accepted_10mb_file", |b| {
+        b.iter_batched(
+            make_replace_all_10mb_fixture,
+            |(dir, replacements)| {
+                let cancel = AtomicBool::new(false);
+                let (result, backup) = content_search::apply_replacements(
+                    black_box(&replacements),
+                    black_box(&HashSet::new()),
+                    black_box(&cancel),
+                    Some(dir.path()),
+                )
+                .expect("expected operation to succeed");
+                black_box((result.replaced_count, backup.len(), dir));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("replace_all/skipped_over_cap_file", |b| {
+        b.iter_batched(
+            make_replace_all_over_cap_fixture,
+            |(dir, replacements)| {
+                let cancel = AtomicBool::new(false);
+                let (result, backup) = content_search::apply_replacements(
+                    black_box(&replacements),
+                    black_box(&HashSet::new()),
+                    black_box(&cancel),
+                    Some(dir.path()),
+                )
+                .expect("expected operation to succeed");
+                black_box((result.skipped_paths.len(), backup.len(), dir));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+fn bench_replace_preview_generation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("replace_preview_generation");
+    group.sample_size(10);
+
+    for &match_count in &[1_000usize, 10_000usize] {
+        group.bench_with_input(
+            BenchmarkId::new("literal_matches", match_count),
+            &match_count,
+            |b, &match_count| {
+                let matches = make_replace_preview_matches(match_count);
+                let options = ContentSearchOptions::default();
+                b.iter(|| {
+                    let previews = generate_replacement_preview(
+                        black_box(&matches),
+                        black_box("needle"),
+                        black_box("thread"),
+                        black_box(&options),
+                    );
+                    black_box(previews.len());
+                });
             },
         );
     }
@@ -754,9 +1123,13 @@ fn bench_draft_restore(c: &mut Criterion) {
             b.iter_batched(
                 || make_draft_fixtures(n_tabs, n_drafts, draft_kb * 1024),
                 |(dir, _session)| {
-                    let (manifest, session, preloaded) =
-                        draft_service::load_restore_state(black_box(dir.path()));
-                    (manifest, session, preloaded, dir)
+                    let restore = draft_service::load_restore_state(black_box(dir.path()));
+                    (
+                        restore.manifest,
+                        restore.session,
+                        restore.preloaded_drafts,
+                        dir,
+                    )
                 },
                 BatchSize::SmallInput,
             );
@@ -798,8 +1171,7 @@ fn bench_draft_restore(c: &mut Criterion) {
                         });
                     }
                     // Create the drafts directory for orphan files.
-                    std::fs::create_dir_all(draft_service::drafts_dir(dir.path()))
-                        .expect("expected operation to succeed");
+                    fixture::create_dir_all(&draft_service::drafts_dir(dir.path()));
                     // Orphan draft files (no manifest entries).
                     for i in 0..n_orphan_files {
                         draft_service::write_draft(
@@ -824,6 +1196,142 @@ fn bench_draft_restore(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_recovery_performance(c: &mut Criterion) {
+    let mut group = c.benchmark_group("recovery_performance");
+    group.sample_size(10);
+
+    group.bench_function("malformed_metadata/startup_and_sidecar_diagnostics", |b| {
+        b.iter_batched(
+            || make_malformed_recovery_fixture(12),
+            |(dir, workspace)| {
+                let restore = draft_service::load_restore_state(black_box(dir.path()));
+                let ledger = migration_ledger::load_recovering(black_box(dir.path()));
+                let bookmarks = bookmark_service::list_workspace_bookmarks_recovering(
+                    black_box(dir.path()),
+                    black_box(&[workspace]),
+                )
+                .expect("expected operation to succeed");
+                black_box((
+                    restore.diagnostics.len(),
+                    ledger.diagnostics.len(),
+                    bookmarks.diagnostics.len(),
+                    dir,
+                ));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    for entry_count in [10usize, 100usize] {
+        group.bench_function(
+            BenchmarkId::new("pending_migrations/reconcile", entry_count),
+            |b| {
+                b.iter_batched(
+                    || make_pending_migration_fixture(entry_count),
+                    |dir| {
+                        let report = migration_ledger::reconcile_pending(black_box(dir.path()))
+                            .expect("expected operation to succeed");
+                        black_box((report.considered, report.attempted, report.completed, dir));
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.bench_function("duplicate_sidecars/bookmark_merge", |b| {
+        b.iter_batched(
+            make_duplicate_bookmark_sidecar_fixture,
+            |(dir, old_path, new_path)| {
+                let migrated = bookmark_service::move_path_tree(
+                    black_box(dir.path()),
+                    black_box(&old_path),
+                    black_box(&new_path),
+                )
+                .expect("expected operation to succeed");
+                black_box((migrated, dir));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    for lineage_count in [24usize, 120usize] {
+        group.bench_function(
+            BenchmarkId::new("local_history_many_lineages/move_tree", lineage_count),
+            |b| {
+                b.iter_batched(
+                    || make_many_local_history_lineages_fixture(lineage_count),
+                    |(dir, old_root, new_root)| {
+                        let migrated = local_history_service::move_path_tree(
+                            black_box(dir.path()),
+                            black_box(&old_root),
+                            black_box(&new_root),
+                        )
+                        .expect("expected operation to succeed");
+                        black_box((migrated, dir));
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+        group.bench_function(
+            BenchmarkId::new(
+                "local_history_many_lineages/reconcile_bounded",
+                lineage_count,
+            ),
+            |b| {
+                b.iter_batched(
+                    || make_mismatched_local_history_lineages_fixture(lineage_count),
+                    |dir| {
+                        let budget = local_history_service::LocalHistoryReconcileBudget::new(
+                            lineage_count / 2,
+                            Duration::from_secs(60),
+                        );
+                        let report = local_history_service::reconcile_lineages_with_budget(
+                            black_box(dir.path()),
+                            black_box(budget),
+                        )
+                        .expect("expected operation to succeed");
+                        black_box((
+                            report.scanned_lineages,
+                            report.reconciled_lineages,
+                            report.deferred_lineages,
+                            dir,
+                        ));
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.bench_function("first_dirty_autosave/persist_manifest_batch", |b| {
+        b.iter_batched(
+            || make_first_dirty_autosave_fixture(20, 4 * 1024),
+            |(dir, ids)| {
+                let content = "x".repeat(4 * 1024);
+                let mut manifest = DraftManifest::default();
+                for draft_id in ids {
+                    draft_service::write_draft(black_box(dir.path()), &draft_id, &content)
+                        .expect("expected operation to succeed");
+                    manifest.upsert(DraftEntry {
+                        draft_id,
+                        original_path: None,
+                        original_mtime_secs: None,
+                        saved_at_secs: 2000,
+                    });
+                }
+                draft_service::save_manifest(black_box(dir.path()), black_box(&manifest))
+                    .expect("expected operation to succeed");
+                black_box((manifest.drafts.len(), dir));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
 fn bench_content_search(c: &mut Criterion) {
     let mut group = c.benchmark_group("content_search");
     group.sample_size(20);
@@ -834,15 +1342,14 @@ fn bench_content_search(c: &mut Criterion) {
     for i in 0..10_000 {
         let subdir = format!("dir_{}", i / 500);
         let dir_path = search_root.join(&subdir);
-        std::fs::create_dir_all(&dir_path).expect("expected operation to succeed");
+        fixture::create_dir_all(&dir_path);
         // Every 5th file contains the search target.
         let content = if i % 5 == 0 {
             format!("fn handler_{i}() {{ TODO: implement }}\nlet x = {i};\n")
         } else {
             format!("let value_{i} = {i};\nlet other = true;\n")
         };
-        std::fs::write(dir_path.join(format!("file_{i}.rs")), content)
-            .expect("expected operation to succeed");
+        fixture::write_text(&dir_path.join(format!("file_{i}.rs")), &content);
     }
 
     // 1. Literal search across 10k files.
@@ -899,8 +1406,7 @@ fn bench_content_search(c: &mut Criterion) {
                 content.push_str(&format!("line {i}: normal content here\n"));
             }
         }
-        std::fs::write(large_root.join("huge.txt"), content)
-            .expect("expected operation to succeed");
+        fixture::write_text(&large_root.join("huge.txt"), &content);
     }
 
     // 3. Large file search (100k lines).
@@ -925,9 +1431,8 @@ fn bench_content_search(c: &mut Criterion) {
     let gitignore_dir = TempDir::new().expect("expected operation to succeed");
     let gitignore_root = gitignore_dir.path();
     {
-        std::fs::create_dir(gitignore_root.join(".git")).expect("expected operation to succeed");
-        std::fs::write(gitignore_root.join(".gitignore"), "ignored_*/\n")
-            .expect("expected operation to succeed");
+        fixture::create_dir(&gitignore_root.join(".git"));
+        fixture::write_text(&gitignore_root.join(".gitignore"), "ignored_*/\n");
         for i in 0..20 {
             let name = if i < 10 {
                 format!("ignored_{i}")
@@ -935,10 +1440,9 @@ fn bench_content_search(c: &mut Criterion) {
                 format!("visible_{i}")
             };
             let dir_path = gitignore_root.join(&name);
-            std::fs::create_dir_all(&dir_path).expect("expected operation to succeed");
+            fixture::create_dir_all(&dir_path);
             for j in 0..500 {
-                std::fs::write(dir_path.join(format!("file_{j}.rs")), "fn needle() {}\n")
-                    .expect("expected operation to succeed");
+                fixture::write_text(&dir_path.join(format!("file_{j}.rs")), "fn needle() {}\n");
             }
         }
     }
@@ -951,6 +1455,73 @@ fn bench_content_search(c: &mut Criterion) {
             content_search::search(
                 black_box("needle"),
                 black_box(&[gitignore_root]),
+                &ContentSearchOptions::default(),
+                tx,
+                cancel,
+                None,
+                None,
+            );
+            for _ in &rx {}
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_content_search_smoke(c: &mut Criterion) {
+    let mut group = c.benchmark_group("content_search_smoke");
+
+    let search_dir = TempDir::new().expect("expected operation to succeed");
+    let search_root = search_dir.path();
+    for i in 0..200 {
+        let dir_path = search_root.join(format!("dir_{}", i / 50));
+        fixture::create_dir_all(&dir_path);
+        let content = if i % 5 == 0 {
+            format!("fn handler_{i}() {{ TODO: implement }}\nlet x = {i};\n")
+        } else {
+            format!("let value_{i} = {i};\nlet other = true;\n")
+        };
+        fixture::write_text(&dir_path.join(format!("file_{i}.rs")), &content);
+    }
+
+    group.bench_function("literal_200_files", |b| {
+        b.iter(|| {
+            let (tx, rx) = crossbeam_channel::bounded(1024);
+            let cancel = Arc::new(AtomicBool::new(false));
+            content_search::search(
+                black_box("TODO"),
+                black_box(&[search_root]),
+                &ContentSearchOptions::default(),
+                tx,
+                cancel,
+                None,
+                None,
+            );
+            for _ in &rx {}
+        });
+    });
+
+    let large_dir = TempDir::new().expect("expected operation to succeed");
+    let large_root = large_dir.path();
+    {
+        let mut content = String::with_capacity(10_000 * 30);
+        for i in 0..10_000 {
+            if i % 500 == 0 {
+                content.push_str(&format!("line {i}: TODO fix this\n"));
+            } else {
+                content.push_str(&format!("line {i}: normal content here\n"));
+            }
+        }
+        fixture::write_text(&large_root.join("medium.txt"), &content);
+    }
+
+    group.bench_function("medium_file_10k_lines", |b| {
+        b.iter(|| {
+            let (tx, rx) = crossbeam_channel::bounded(1024);
+            let cancel = Arc::new(AtomicBool::new(false));
+            content_search::search(
+                black_box("TODO"),
+                black_box(&[large_root]),
                 &ContentSearchOptions::default(),
                 tx,
                 cancel,
@@ -979,9 +1550,13 @@ criterion_group!(
     bench_json_persistence,
     bench_utf8_validation,
     bench_editor_file_io,
+    bench_replace_preview_generation,
+    bench_replace_undo_workflows,
     bench_tree_population,
     bench_file_size_classify,
     bench_draft_restore,
+    bench_recovery_performance,
     bench_content_search,
+    bench_content_search_smoke,
 );
 criterion_main!(benches);

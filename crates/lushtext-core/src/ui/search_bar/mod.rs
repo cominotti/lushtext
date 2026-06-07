@@ -6,6 +6,8 @@
 //! match highlighting, and navigation. Attaches to an EditorPage's buffer/view
 //! for each search session and detaches on close.
 
+// gtk-rs splits each custom widget into a private implementation module for
+// fields and trait impls, plus a public wrapper API in this file.
 mod imp;
 
 use glib::Object;
@@ -15,6 +17,10 @@ use gtk4::prelude::*;
 use sourceview5::prelude::*;
 
 glib::wrapper! {
+    /// Public GTK widget wrapper for the editor find/replace bar.
+    ///
+    /// The private implementation owns template children and signal wiring; this
+    /// wrapper exposes the small API used by `EditorPage`.
     pub struct LushtextSearchBar(ObjectSubclass<imp::LushtextSearchBar>)
         @extends gtk4::Grid, gtk4::Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;
@@ -95,7 +101,7 @@ impl LushtextSearchBar {
     /// reaching through unrelated widget internals.
     pub fn connect_search_state_changed<F: Fn() + Clone + 'static>(&self, f: F) {
         *self.imp().search_state_changed_callback.borrow_mut() = Some(Box::new(f.clone()));
-        let f2 = f.clone();
+        let f2 = f;
         self.search_entry().connect_stop_search(move |_| f2());
     }
 
@@ -320,35 +326,36 @@ impl LushtextSearchBar {
             return;
         };
 
-        // Helper: look up a boolean action and wire its state → SearchSettings.
-        let wire = |name: &str, setter: Box<dyn Fn(bool)>| {
+        // Apply current action states for the new SearchContext. Future toggles
+        // update settings from the action activation handler, avoiding one
+        // notify::state handler per attach/detach cycle.
+        for name in ["regex", "case-sensitive", "whole-word"] {
             if let Some(action) = group.lookup_action(name) {
                 let simple = action
                     .downcast::<gio::SimpleAction>()
                     .expect("option action is SimpleAction");
-                // Apply current state immediately.
                 let current: bool = simple.state().and_then(|v| v.get()).unwrap_or(false);
-                setter(current);
-                // React to future toggles.
-                simple.connect_notify_local(Some("state"), move |action: &gio::SimpleAction, _| {
-                    let on: bool = action.state().and_then(|v| v.get()).unwrap_or(false);
-                    setter(on);
-                });
+                match name {
+                    "regex" => settings.set_regex_enabled(current),
+                    "case-sensitive" => settings.set_case_sensitive(current),
+                    "whole-word" => settings.set_at_word_boundaries(current),
+                    _ => {}
+                }
             }
+        }
+    }
+
+    pub(crate) fn apply_option_state(&self, name: &str, enabled: bool) {
+        let Some(settings) = self.imp().search_settings.borrow().clone() else {
+            return;
         };
 
-        let s = settings.clone();
-        wire("regex", Box::new(move |on| s.set_regex_enabled(on)));
-        let s = settings.clone();
-        wire(
-            "case-sensitive",
-            Box::new(move |on| s.set_case_sensitive(on)),
-        );
-        let s = settings.clone();
-        wire(
-            "whole-word",
-            Box::new(move |on| s.set_at_word_boundaries(on)),
-        );
+        match name {
+            "regex" => settings.set_regex_enabled(enabled),
+            "case-sensitive" => settings.set_case_sensitive(enabled),
+            "whole-word" => settings.set_at_word_boundaries(enabled),
+            _ => {}
+        }
     }
 }
 

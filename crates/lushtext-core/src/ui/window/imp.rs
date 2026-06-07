@@ -94,6 +94,8 @@ impl PropertiesPresentation {
     }
 }
 
+// GObject subclass methods receive `&self` while GTK owns the instance, so
+// window state uses `Cell`/`RefCell` for single-threaded interior mutability.
 /// Requested-versus-rendered visibility state for compact secondary-surface arbitration.
 #[derive(Default)]
 pub struct SecondarySurfaceState {
@@ -170,6 +172,16 @@ pub struct SessionState {
     pub save_generation: Cell<u32>,
     /// Guard flag while restoring session state from disk.
     pub restoring: Cell<bool>,
+    /// Whether the newest attempted session save failed and still needs retry.
+    pub save_failed: Cell<bool>,
+    /// Generation of the newest failed session save.
+    pub failed_generation: Cell<u32>,
+    /// Last failure detail kept for close-flow warnings and widget tests.
+    pub failure_detail: RefCell<Option<String>>,
+    /// Whether draft/session close-safety work is already running.
+    pub close_safety_inflight: Cell<bool>,
+    /// One-shot bypass for the final close after async safety work succeeds.
+    pub close_safety_bypass: Cell<bool>,
 }
 
 /// Reversible shell state owned by Focus Mode.
@@ -192,6 +204,8 @@ pub struct FocusModeState {
 pub struct DraftState {
     /// Source ID for the global autosave timer. Removed on dispose.
     pub autosave_source_id: RefCell<Option<glib::SourceId>>,
+    /// Short debounce source for the first dirty draft after a clean cycle.
+    pub first_dirty_autosave_source_id: RefCell<Option<glib::SourceId>>,
     /// In-memory draft manifest kept in sync with disk.
     pub manifest: RefCell<DraftManifest>,
     /// Draft restore outcomes preloaded during session restore and consumed once.
@@ -237,6 +251,8 @@ impl Default for TabManagementState {
     }
 }
 
+// `CompositeTemplate` loads `window.ui` from the compiled GResource, and each
+// `TemplateChild` below is bound by the matching template ID.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
 pub struct LushtextWindow {
@@ -244,6 +260,10 @@ pub struct LushtextWindow {
     pub header_bar: TemplateChild<libadwaita::HeaderBar>,
     #[template_child]
     pub title_widget: TemplateChild<libadwaita::WindowTitle>,
+    #[template_child]
+    pub new_tab_button: TemplateChild<gtk4::Button>,
+    #[template_child]
+    pub open_button: TemplateChild<gtk4::Button>,
     #[template_child]
     pub document_properties_toggle_button: TemplateChild<gtk4::ToggleButton>,
     #[template_child]
@@ -276,6 +296,8 @@ pub struct LushtextWindow {
     pub focus_mode_revealer: TemplateChild<gtk4::Revealer>,
     #[template_child]
     pub focus_mode_affordance: TemplateChild<gtk4::Box>,
+    #[template_child]
+    pub leave_focus_mode_button: TemplateChild<gtk4::Button>,
     /// Dedicated secondary menu for bookmark and note workflows.
     #[template_child]
     pub notes_menu_button: TemplateChild<gtk4::MenuButton>,
@@ -363,6 +385,8 @@ impl Default for LushtextWindow {
         Self {
             header_bar: TemplateChild::default(),
             title_widget: TemplateChild::default(),
+            new_tab_button: TemplateChild::default(),
+            open_button: TemplateChild::default(),
             document_properties_toggle_button: TemplateChild::default(),
             tab_bar: TemplateChild::default(),
             window_overlay: TemplateChild::default(),
@@ -379,6 +403,7 @@ impl Default for LushtextWindow {
             command_palette: TemplateChild::default(),
             focus_mode_revealer: TemplateChild::default(),
             focus_mode_affordance: TemplateChild::default(),
+            leave_focus_mode_button: TemplateChild::default(),
             notes_menu_button: TemplateChild::default(),
             primary_menu_button: TemplateChild::default(),
             preview_paned: TemplateChild::default(),
@@ -419,6 +444,8 @@ impl Default for LushtextWindow {
     }
 }
 
+// `ObjectSubclass` registers this Rust type with GLib's runtime type system so
+// GTK can construct it from templates, properties, and signal dispatch.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextWindow {
     const NAME: &'static str = "LushtextWindow";
@@ -426,6 +453,9 @@ impl ObjectSubclass for LushtextWindow {
     type ParentType = libadwaita::ApplicationWindow;
 
     fn class_init(klass: &mut Self::Class) {
+        // Custom child widgets must be registered before `bind_template()`
+        // parses `window.ui`, otherwise template construction cannot resolve
+        // their type names.
         LushtextSidebar::ensure_type();
         LushtextEditorPage::ensure_type();
         LushtextStatusBar::ensure_type();
@@ -449,6 +479,8 @@ impl ObjectImpl for LushtextWindow {
 
         let obj = self.obj();
         let settings = &self.settings;
+
+        self.apply_accessibility_metadata();
 
         let w = settings.int(keys::WINDOW_WIDTH);
         let h = settings.int(keys::WINDOW_HEIGHT);
@@ -478,6 +510,9 @@ impl ObjectImpl for LushtextWindow {
 
         {
             let settings = settings.clone();
+            // GObject property notifications fire on the main thread here; the
+            // `_local` variant lets the closure capture GTK objects that are not
+            // `Send`.
             obj.connect_notify_local(Some("default-width"), move |window, _| {
                 if !window.is_maximized() {
                     let (w, _) = window.default_size();
@@ -793,7 +828,12 @@ impl ObjectImpl for LushtextWindow {
                 window.forget_tab_page(page);
                 if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
                     if let Some(ref path) = editor.file_path() {
-                        window.imp().open_paths.borrow_mut().remove(path.as_path());
+                        let mut paths = window.imp().open_paths.borrow_mut();
+                        paths.remove(path.as_path());
+                        paths.remove(&super::documents::open_path_key(path));
+                        if let Some(canonical_path) = editor.canonical_file_path() {
+                            paths.remove(&canonical_path);
+                        }
                     }
                     window.dismiss_editor_notifications(editor);
                     window.untrack_editor_memory(editor);
@@ -808,6 +848,7 @@ impl ObjectImpl for LushtextWindow {
         });
 
         obj.update_content_stack();
+        obj.reconcile_pending_migrations_on_startup();
         self.sidebar.load_workspaces();
         obj.refresh_workspace_scope_consumers();
         obj.load_session_and_drafts();
@@ -818,12 +859,53 @@ impl ObjectImpl for LushtextWindow {
         if let Some(source_id) = self.drafts.autosave_source_id.take() {
             source_id.remove();
         }
+        if let Some(source_id) = self.drafts.first_dirty_autosave_source_id.take() {
+            source_id.remove();
+        }
         if let Some(source_id) = self.notification_sweep_source_id.take() {
             source_id.remove();
         }
         if let Some(source_id) = self.search_progress.heartbeat_source_id.take() {
             source_id.remove();
         }
+    }
+}
+
+impl LushtextWindow {
+    /// Assign stable labels to compact shell controls whose visible content is
+    /// mostly symbolic. Assistive technology reads these labels through GTK's
+    /// accessibility layer, and the smoke lane uses them as durable anchors.
+    fn apply_accessibility_metadata(&self) {
+        self.new_tab_button
+            .update_property(&[gtk4::accessible::Property::Label("New file")]);
+        self.open_button
+            .update_property(&[gtk4::accessible::Property::Label("Open file")]);
+        self.document_properties_toggle_button.update_property(&[
+            gtk4::accessible::Property::Label("Toggle document properties"),
+            gtk4::accessible::Property::Description(
+                "Show or hide metadata and formatting controls for the active document",
+            ),
+        ]);
+        self.primary_menu_button
+            .update_property(&[gtk4::accessible::Property::Label("Main menu")]);
+        self.notes_menu_button
+            .update_property(&[gtk4::accessible::Property::Label("Notes menu")]);
+        self.tab_bar
+            .set_accessible_role(gtk4::AccessibleRole::TabList);
+        self.tab_bar.update_property(&[
+            gtk4::accessible::Property::Label("Open document tabs"),
+            gtk4::accessible::Property::Description("Switch between open documents"),
+        ]);
+        self.tab_view.update_property(&[
+            gtk4::accessible::Property::Label("Editor tab content"),
+            gtk4::accessible::Property::Description("Content for the selected document tab"),
+        ]);
+        self.focus_mode_affordance.update_property(&[
+            gtk4::accessible::Property::Label("Focus mode controls"),
+            gtk4::accessible::Property::Description("Shows that focus mode is active"),
+        ]);
+        self.leave_focus_mode_button
+            .update_property(&[gtk4::accessible::Property::Label("Leave focus mode")]);
     }
 }
 
@@ -847,6 +929,16 @@ impl WidgetImpl for LushtextWindow {
 impl WindowImpl for LushtextWindow {
     fn close_request(&self) -> glib::Propagation {
         let window = self.obj().clone();
+        // GTK asks for a synchronous close decision. We stop the first request,
+        // finish draft/session persistence asynchronously, then re-enter the
+        // normal close path with this bypass flag once it is safe to destroy.
+        if self.session.close_safety_bypass.replace(false) {
+            return self.parent_close_request();
+        }
+        if self.session.close_safety_inflight.get() {
+            window.publish_status_message("Finishing close safety checks…", MessageKind::Info);
+            return glib::Propagation::Stop;
+        }
         window.clear_close_discard_drafts();
         if window.has_saving_editors() {
             window.publish_save_in_progress_warning();
@@ -855,29 +947,14 @@ impl WindowImpl for LushtextWindow {
         let modified = window.modified_editors();
 
         if modified.is_empty() {
-            self.search_panel.close();
-            if let Err(e) = window.flush_dirty_drafts() {
-                window
-                    .publish_status_message(&format!("Draft save failed: {e}"), MessageKind::Error);
-                return glib::Propagation::Stop;
-            }
-            window.save_session_sync();
-            return self.parent_close_request();
+            begin_async_close_safety(&window);
+            return glib::Propagation::Stop;
         }
 
         let window_for_close = window.clone();
         window.show_save_changes_dialog(&modified, move |confirmed| {
             if confirmed {
-                window_for_close.imp().search_panel.close();
-                if let Err(e) = window_for_close.flush_dirty_drafts() {
-                    window_for_close.publish_status_message(
-                        &format!("Draft save failed: {e}"),
-                        MessageKind::Error,
-                    );
-                    return;
-                }
-                window_for_close.save_session_sync();
-                window_for_close.destroy();
+                begin_async_close_safety(&window_for_close);
             }
         });
         glib::Propagation::Stop
@@ -886,6 +963,46 @@ impl WindowImpl for LushtextWindow {
 
 impl ApplicationWindowImpl for LushtextWindow {}
 impl AdwApplicationWindowImpl for LushtextWindow {}
+
+fn begin_async_close_safety(window: &super::LushtextWindow) {
+    // Keep the close transaction single-flight: duplicate close requests report
+    // progress while the background draft flush and ordered session save finish.
+    if window.imp().session.close_safety_inflight.get() {
+        window.publish_status_message("Finishing close safety checks…", MessageKind::Info);
+        return;
+    }
+    window.imp().session.close_safety_inflight.set(true);
+    window.imp().search_panel.close();
+    let window_for_draft = window.clone();
+    window.flush_dirty_drafts_async(move |draft_result| match draft_result {
+        Ok(()) => {
+            let window_for_session = window_for_draft.clone();
+            let window_for_destroy = window_for_draft;
+            window_for_session.save_session_for_close_async(move || {
+                window_for_destroy
+                    .imp()
+                    .session
+                    .close_safety_inflight
+                    .set(false);
+                window_for_destroy
+                    .imp()
+                    .session
+                    .close_safety_bypass
+                    .set(true);
+                window_for_destroy.destroy();
+            });
+        }
+        Err(error) => {
+            window_for_draft
+                .imp()
+                .session
+                .close_safety_inflight
+                .set(false);
+            window_for_draft
+                .publish_status_message(&format!("Draft save failed: {error}"), MessageKind::Error);
+        }
+    });
+}
 
 fn configure_split_views(
     workspace_split_view: &libadwaita::OverlaySplitView,

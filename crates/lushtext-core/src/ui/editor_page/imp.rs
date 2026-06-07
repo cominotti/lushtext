@@ -11,7 +11,11 @@ use crate::model::bookmark::BookmarkRecord;
 use crate::model::encoding::{DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode};
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::notifications::InlineActionNotification;
-use crate::services::{async_task, durable_write, file_limits::FileSizeCheck};
+use crate::services::{
+    async_task,
+    file_limits::FileSizeCheck,
+    filesystem::{WriteLabel, read as fs_read, write as fs_write},
+};
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
 use gtk4::gio;
@@ -31,8 +35,10 @@ use super::minimap::{MinimapAvailability, MinimapMarker};
 type MemoryChangedCallback = Box<dyn Fn(u64)>;
 type NotificationCallback = Box<dyn Fn(InlineActionNotification)>;
 type LoadCompletedCallback = Box<dyn FnOnce()>;
+type LoadFailedCallback = Box<dyn FnOnce(String)>;
 type FileLoadedCallback = Box<dyn Fn()>;
 type NotesChangedCallback = Box<dyn Fn()>;
+type BookmarkActivatedCallback = Box<dyn Fn(BookmarkRecord)>;
 
 /// Derived style-scheme IDs currently being generated on background threads.
 ///
@@ -107,6 +113,12 @@ pub struct MonitorState {
 pub struct DraftState {
     /// Whether the buffer has been modified since the last draft save.
     pub draft_dirty: Cell<bool>,
+    /// Monotonic counter used to reject stale autosave completions.
+    ///
+    /// Every user edit bumps this value. Draft autosave captures the counter with
+    /// the text snapshot and clears `draft_dirty` only if the background write
+    /// succeeds for the same generation.
+    pub dirty_generation: Cell<u64>,
     /// Stable draft identifier for this tab across autosave cycles.
     pub draft_id: RefCell<Option<String>>,
     /// Whether this tab is currently showing draft-restored content.
@@ -148,6 +160,13 @@ pub struct DocumentMetadataState {
     /// One-shot guard that allows the next save to proceed even if the current
     /// encoding conversion is known to be lossy.
     pub allow_lossy_save_once: Cell<bool>,
+    /// Monotonic request counter for async lossy-encoding analysis.
+    ///
+    /// Save-encoding choices can be made from a dialog while the user keeps
+    /// editing or switches tabs. Capturing this counter with the request lets
+    /// the window ignore stale worker results instead of showing an outdated
+    /// lossy-conversion confirmation.
+    pub lossy_analysis_generation: Cell<u32>,
 }
 
 /// File-load lifecycle callbacks that need to survive repeated reloads.
@@ -155,11 +174,30 @@ pub struct DocumentMetadataState {
 pub struct LoadState {
     /// One-shot callback fired after the first successful file load.
     pub load_completed_callback: RefCell<Option<LoadCompletedCallback>>,
+    /// One-shot callback fired after the first failed file load.
+    ///
+    /// Window-level open flows use this to undo provisional tab/path state only
+    /// after the background load has actually failed.
+    pub load_failed_callback: RefCell<Option<LoadFailedCallback>>,
     /// Recurring callbacks fired after every successful file load or reload.
     ///
     /// Notes, local history, and future tab-local workflows all need the same
     /// "a real file just finished loading" hook, so this stays fan-out friendly.
     pub file_loaded_callbacks: RefCell<Vec<FileLoadedCallback>>,
+}
+
+/// User-visible file-load lifecycle for one editor tab.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EditorLoadState {
+    /// An untitled tab with no saved-file identity.
+    #[default]
+    Untitled,
+    /// A file-backed tab whose background read has not settled yet.
+    Loading,
+    /// A file-backed tab whose content has loaded successfully.
+    Loaded,
+    /// A tab showing a failed load placeholder or recoverable user edits.
+    Failed,
 }
 
 /// Deferred cursor and scroll restoration applied after async file load.
@@ -200,6 +238,12 @@ pub struct BookmarkState {
     pub entries: RefCell<Vec<LiveBookmark>>,
     /// Callback invoked when bookmark state changes and should be persisted.
     pub changed_callback: RefCell<Option<NotesChangedCallback>>,
+    /// Window callback installed after editor construction to route gutter activation
+    /// into bookmark editing UI.
+    ///
+    /// Stored in a `RefCell` because GObject-style methods receive `&self`, so
+    /// callback wiring mutates implementation state through interior mutability.
+    pub activated_callback: RefCell<Option<BookmarkActivatedCallback>>,
     /// Debounced sidecar persistence state for bookmark saves.
     pub persistence: NotesPersistenceState,
 }
@@ -304,17 +348,28 @@ pub struct LushtextEditorPage {
 
     /// Absolute path of the file being edited. `None` for untitled tabs.
     pub file_path: RefCell<Option<PathBuf>>,
+    /// Canonical file identity resolved by the background load path.
+    ///
+    /// Duplicate-tab reconciliation uses this after load completion so the GTK
+    /// thread never has to call `Path::canonicalize()` while opening files.
+    pub canonical_file_path: RefCell<Option<PathBuf>>,
     /// On-disk file size in bytes, populated after async load completes.
     /// Used for memory estimation and status bar display.
     pub file_size: Cell<Option<u64>>,
+    /// Explicit file-load lifecycle state for duplicate ownership decisions.
+    pub load_state: Cell<EditorLoadState>,
     /// Feature gate classification based on file size (syntax, undo thresholds).
     pub size_check: Cell<FileSizeCheck>,
     /// Whether this tab's buffer was evicted to free memory. Evicted tabs
     /// reload from disk when re-focused.
     pub evicted: Cell<bool>,
-    /// Cooperative cancellation token for background file loads. `Arc<AtomicBool>`
-    /// is Send+Sync, allowing the background thread to check it.
-    pub cancel_token: Arc<AtomicBool>,
+    /// Cooperative cancellation token for the current background file load.
+    /// A fresh `Arc<AtomicBool>` per load prevents a newer request from
+    /// uncancelling an older background worker.
+    pub cancel_token: RefCell<Arc<AtomicBool>>,
+    /// Monotonic identity for file loads so stale background completions cannot
+    /// apply after a newer open or reopen starts for the same editor tab.
+    pub load_generation: Cell<u64>,
     /// Last style-scheme ID actually applied to this buffer.
     pub applied_style_scheme_id: RefCell<Option<String>>,
     /// Current document-surface opacity for the main editor text area.
@@ -371,10 +426,13 @@ impl Default for LushtextEditorPage {
             search_revealer: TemplateChild::default(),
             search_bar: TemplateChild::default(),
             file_path: RefCell::default(),
+            canonical_file_path: RefCell::default(),
             file_size: Cell::default(),
+            load_state: Cell::new(EditorLoadState::Untitled),
             size_check: Cell::new(FileSizeCheck::Normal),
             evicted: Cell::new(false),
-            cancel_token: Arc::new(AtomicBool::new(false)),
+            cancel_token: RefCell::new(Arc::new(AtomicBool::new(false))),
+            load_generation: Cell::new(0),
             applied_style_scheme_id: RefCell::new(None),
             document_surface_opacity: Cell::new(1.0),
             settings: gio::Settings::new(crate::config::APP_ID),
@@ -1052,43 +1110,43 @@ fn write_transparency_style_scheme_if_needed(
     file_path: &Path,
     xml: &str,
 ) -> std::io::Result<()> {
-    if std::fs::read_to_string(file_path).is_ok_and(|existing| existing == xml) {
+    if fs_read::text(file_path).is_ok_and(|existing| existing == xml) {
         return Ok(());
     }
 
-    durable_write::create_dir_all_durable(scheme_dir)?;
-    durable_write::atomic_write_bytes(file_path, "style-scheme", xml.as_bytes())
+    fs_write::create_dir_all_durable(scheme_dir)?;
+    fs_write::atomic_replace(file_path, WriteLabel::from("style-scheme"), xml.as_bytes()).map_err(
+        |error| match error {
+            fs_write::DurableWriteError::BeforeRename(source)
+            | fs_write::DurableWriteError::AfterRename(source) => source,
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::write_transparency_style_scheme_if_needed;
+    use crate::services::filesystem::{DirectoryScanPolicy, fixture, tree as fs_tree};
     use tempfile::TempDir;
 
     #[test]
     fn transparency_style_scheme_rewrites_corrupt_existing_file() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let scheme_dir = dir.path().join("style-schemes");
-        std::fs::create_dir_all(&scheme_dir).expect("expected operation to succeed");
+        fixture::create_dir_all(&scheme_dir);
         let file_path = scheme_dir.join("lushtext-opacity-test.xml");
-        std::fs::write(&file_path, "<truncated").expect("expected operation to succeed");
+        fixture::write_text(&file_path, "<truncated");
         let xml = "<?xml version=\"1.0\"?><style-scheme id=\"ok\"/>";
 
         write_transparency_style_scheme_if_needed(&scheme_dir, &file_path, xml)
             .expect("style-scheme rewrite should succeed");
 
-        assert_eq!(
-            std::fs::read_to_string(&file_path).expect("expected operation to succeed"),
-            xml
-        );
+        assert_eq!(fixture::read_text(&file_path), xml);
         assert!(
-            std::fs::read_dir(&scheme_dir)
+            fs_tree::scan_directory(&scheme_dir, DirectoryScanPolicy::visible_workspace())
                 .expect("expected operation to succeed")
-                .all(|entry| !entry
-                    .expect("expected operation to succeed")
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".style-scheme."))
+                .into_iter()
+                .all(|entry| !entry.file_name.contains(".style-scheme."))
         );
     }
 }

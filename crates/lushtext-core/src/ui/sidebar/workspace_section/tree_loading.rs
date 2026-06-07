@@ -48,6 +48,8 @@ pub(super) fn build_children_model(
     section: &LushtextWorkspaceSection,
     dir_path: &Path,
 ) -> gio::ListStore {
+    // ListStore is GObject's observable list; TreeListModel/ListView react when
+    // rows are appended or replaced.
     let store = gio::ListStore::new::<FileTreeItem>();
     // Expanding a directory materializes a new visible scope, so restart the
     // scoped watcher set now that this directory participates in auto-refresh.
@@ -71,6 +73,8 @@ pub(super) fn populate_child_store(
         .borrow_mut()
         .insert(path.clone(), store.downgrade());
 
+    // One active scan owns each directory; replacing the token tells older scans
+    // not to publish rows over a newer expansion or refresh.
     if let Some(previous) = section
         .imp()
         .child_scan_tokens
@@ -84,8 +88,10 @@ pub(super) fn populate_child_store(
     let lookahead_cap = gtk4::gio::Settings::new(crate::config::APP_ID)
         .uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP)
         as usize;
+    // Move only the store handle, path, and cancel token across the worker
+    // boundary; the callback revalidates the token before touching visible GTK state.
     services::async_task::spawn_blocking_then(
-        (store.clone(), path.clone(), Arc::clone(&cancel)),
+        (store, path.clone(), Arc::clone(&cancel)),
         move || {
             services::file_tree::scan_directory_bounded(
                 &path,
@@ -140,14 +146,11 @@ pub(super) fn clear_dir_state(section: &LushtextWorkspaceSection, dir_path: &Pat
 
     let cancelled: Vec<_> = {
         let mut tokens = section.imp().child_scan_tokens.borrow_mut();
-        let paths: Vec<_> = tokens
-            .keys()
-            .filter(|path| path.as_path() == dir_path || path.starts_with(dir_path))
-            .cloned()
-            .collect();
-        paths
-            .into_iter()
-            .filter_map(|path| tokens.remove(&path))
+        // Remove matching tokens while collecting them so callbacks see the
+        // subtree as inactive before their cancellation flags are flipped.
+        tokens
+            .extract_if(|path, _| path.as_path() == dir_path || path.starts_with(dir_path))
+            .map(|(_, token)| token)
             .collect()
     };
 
@@ -263,6 +266,8 @@ fn append_next_child_batch(
             .borrow()
             .get(&dir_path)
             .map_or(0, Vec::len);
+        // splice() emits one items-changed signal for the whole batch, avoiding
+        // one relayout per child row while large directories stream in.
         store.splice(store.n_items(), 0, &batch);
 
         let mut to_expand = Vec::new();
@@ -352,6 +357,8 @@ fn reconcile_child_store(
     let desired = desired_child_rows(entries, truncated);
 
     if current != desired {
+        // Preserve matching edges and splice only the changed middle so
+        // refreshes avoid rebuilding stable rows and losing expansion/selection state.
         let prefix = common_prefix_len(&current, &desired);
         let suffix = common_suffix_len(&current[prefix..], &desired[prefix..]);
         let removed = current.len().saturating_sub(prefix + suffix);

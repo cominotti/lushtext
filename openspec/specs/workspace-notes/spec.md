@@ -57,28 +57,146 @@ The system SHALL persist workspace notes under app data using a stable identity 
 - **THEN** the different root uses its own workspace-note identity
 - **AND** the previous root keeps its existing workspace note data for a future remove-and-readd flow
 
+### Requirement: Workspace-note sidecars use the public v1 JSON envelope
+The system SHALL persist workspace-note sidecars as supported v1 app-owned JSON envelopes under `$XDG_DATA_HOME/lushtext/workspace-notes/`. Runtime loading MUST require the workspace-note sidecar kind and supported version before reading the note payload.
+
+#### Scenario: Save workspace note as v1
+- **WHEN** a workspace root's note is persisted
+- **THEN** the workspace-note sidecar is written as a pretty JSON envelope with the workspace-note document kind
+- **AND** the payload stores the workspace-root identity and rich note body
+
+#### Scenario: Unsupported workspace-note sidecar is isolated
+- **WHEN** a workspace-note sidecar is bare pre-public JSON, wrong-kind JSON, unsupported-version JSON, or malformed JSON
+- **THEN** that sidecar is preserved through recovery diagnostics before replacement is allowed
+- **AND** unrelated valid workspace notes continue to load
+
 ### Requirement: Users can browse notes within the current workspace scope
-The system SHALL provide a workspace-scoped `Browse Notes…` surface that lists bookmarks, workspace notes, and document notes that fall inside the current shared workspace scope. In a concrete workspace scope, the browser MUST be limited to that workspace. In `All workspaces`, the browser MUST aggregate bookmarks and notes across restored workspace roots while preserving each item's scope in the list presentation.
+The system SHALL provide a `Browse Notes...` surface that lists workspace-scoped bookmarks, workspace notes, and document notes that fall inside the current shared workspace scope, plus a clearly separated `Open Tabs` section for saved open files that have bookmarks or document notes but fall outside that current scope. In a concrete workspace scope, normal workspace sections MUST be limited to that workspace. In `All workspaces`, normal workspace sections MUST aggregate bookmarks and notes across restored workspace roots. Supplemental open-tab rows MUST preserve their open-tab source explicitly and MUST NOT be represented as belonging to a fake workspace.
 
 #### Scenario: Browse notes inside one workspace
-- **WHEN** a concrete workspace is the current shared scope and the user opens `Browse Notes…`
+- **WHEN** a concrete workspace is the current shared scope and the user opens `Browse Notes...`
 - **THEN** the browser lists that workspace's bookmarks and workspace note together with document notes that belong to files inside that workspace root
-- **AND** bookmarks and notes from other workspaces are excluded
+- **AND** bookmarks and notes from files outside that workspace are excluded from the workspace sections
+- **AND** bookmarks or document notes attached to saved open tabs outside that workspace appear only in a dedicated `Open Tabs` section
 
 #### Scenario: Browse notes across all workspaces
-- **WHEN** the current shared scope is `All workspaces` and the user opens `Browse Notes…`
+- **WHEN** the current shared scope is `All workspaces` and the user opens `Browse Notes...`
 - **THEN** the browser aggregates bookmarks, workspace notes, and document notes from every restored workspace root
-- **AND** each row preserves enough scope metadata for the user to tell which workspace it belongs to
+- **AND** each workspace row preserves enough scope metadata for the user to tell which workspace it belongs to
+- **AND** bookmarks or document notes attached to saved open tabs outside every restored workspace root appear only in the `Open Tabs` section
+
+#### Scenario: Browse open-tab notes with no restored workspace
+- **WHEN** no workspace roots are restored
+- **AND** at least one saved open tab has a bookmark or an existing document note
+- **AND** the user opens `Browse Notes...`
+- **THEN** the browser opens successfully
+- **AND** it lists the eligible rows in the `Open Tabs` section without requiring the user to add a workspace first
+
+#### Scenario: No notes remain explicit when there are no workspaces or open-tab rows
+- **WHEN** no workspace roots are restored
+- **AND** no saved open tab has a bookmark or an existing document note
+- **AND** the user opens `Browse Notes...`
+- **THEN** the system reports that there are no browsable notes or bookmarks
+- **AND** it does not create workspace, bookmark, or document-note data implicitly
 
 #### Scenario: Open a workspace note from the notes browser
-- **WHEN** the user activates a workspace-note row in `Browse Notes…`
+- **WHEN** the user activates a workspace-note row in `Browse Notes...`
 - **THEN** the system opens that workspace note's surface
 - **AND** the system does not require an active document tab for that workspace
 
 #### Scenario: Open a bookmark from the notes browser
-- **WHEN** the user activates a bookmark row in `Browse Notes…`
+- **WHEN** the user activates a bookmark row in `Browse Notes...`
 - **THEN** the system opens or focuses the associated saved file tab
 - **AND** the editor moves the cursor to the bookmarked line
+
+### Requirement: Notes browser loads bookmark excerpts lazily and safely
+The system SHALL load bookmark source excerpts in `Browse Notes...` only when a bookmark row is selected. Closed-file excerpt loading MUST run off the GTK main thread, MUST be bounded by explicit size, line, and scan budgets, and MUST ignore stale completions after selection changes. Loading, unavailable, and rendered states MUST preserve the existing notes-browser layout, search field, sidebar selection, preview-only row activation behavior, and Open action semantics.
+
+#### Scenario: Selecting a bookmark starts a lazy preview load
+- **WHEN** `Browse Notes...` is open with bookmark rows
+- **AND** the user selects a bookmark whose source file is not already open
+- **THEN** the preview pane shows a bookmark-specific loading state
+- **AND** the notes sidebar remains interactive while the excerpt is loaded
+- **AND** the browser does not pre-load excerpts for unselected bookmark rows
+
+#### Scenario: Stale bookmark preview completion is ignored
+- **WHEN** a closed-file bookmark excerpt load is in progress
+- **AND** the user selects a different notes-browser row before that load completes
+- **THEN** the earlier load completion does not replace the currently selected row's preview
+- **AND** the currently selected row's Open action target is not changed by the stale completion
+
+#### Scenario: Bookmark excerpt preview keeps dialog geometry stable
+- **WHEN** the user changes selection between bookmark rows, workspace-note rows, and document-note rows
+- **THEN** the notes-browser dialog keeps its settled outer allocation stable
+- **AND** the preview pane uses internal scrolling or clipping rather than resizing the dialog around the excerpt
+
+#### Scenario: Bookmark excerpt text does not drive browser search
+- **WHEN** the user searches in `Browse Notes...`
+- **THEN** bookmark filtering continues to use bookmark label, saved file metadata, source metadata, and line number
+- **AND** the browser does not read closed-file excerpt text merely to decide whether a bookmark row matches the search
+
+#### Scenario: Markdown and raw bookmark previews coexist with note previews
+- **WHEN** the user selects Markdown bookmark rows, raw text bookmark rows, workspace-note rows, and document-note rows in one `Browse Notes...` session
+- **THEN** each selection renders through the correct preview mode for that row
+- **AND** switching preview modes does not leave stale Markdown, raw text, loading, or unavailable content visible for the next selected row
+
+#### Scenario: Open-tab bookmark rows use the same preview behavior
+- **WHEN** a bookmark row appears in the `Open Tabs` section
+- **AND** the user selects that bookmark
+- **THEN** the preview pane uses the live open-editor excerpt behavior for that row
+- **AND** the row remains labeled as an open-tab source rather than a fake workspace row
+
+### Requirement: Notes browser exposes reliable dismissal controls
+The system SHALL provide a visible Close affordance in the workspace-scoped `Browse Notes...` surface. The close affordance MUST be available in populated and empty browser states, and keyboard dismissal MUST NOT require the user to first click inside the dialog content.
+
+#### Scenario: Close populated notes browser from the sidebar page
+- **WHEN** `Browse Notes...` is open with at least one result
+- **AND** the sidebar page is visible
+- **THEN** the user can invoke a visible Close control to dismiss the dialog
+
+#### Scenario: Close populated notes browser from the preview page
+- **WHEN** `Browse Notes...` is open with at least one result
+- **AND** the preview page is visible
+- **THEN** the user can invoke a visible Close control to dismiss the dialog
+
+#### Scenario: Close empty notes browser
+- **WHEN** `Browse Notes...` opens in its empty state
+- **THEN** the user can invoke a visible Close control to dismiss the dialog
+
+#### Scenario: Dismiss notes browser with Escape after opening
+- **WHEN** `Browse Notes...` is open
+- **AND** the user presses `Escape` without first clicking inside the dialog
+- **THEN** the dialog closes
+
+### Requirement: Notes browser exposes a single adaptive close affordance
+The system SHALL provide a visible Close/X affordance in the `Browse Notes...` surface without showing duplicate equivalent dialog-close controls. In populated unfolded layouts where the notes sidebar and preview are both visible at the same time, the browser MUST expose exactly one visible Close/X control for the dialog. In populated collapsed layouts, the currently visible notes-browser page MUST still have an obvious visible Close/X control available, whether that page is the sidebar or the preview. The empty notes-browser state MUST also expose one visible Close/X control. Keyboard dismissal with `Escape` MUST close the dialog immediately after opening without requiring the user to first click inside the dialog content.
+
+#### Scenario: Unfolded notes browser has one close control
+- **WHEN** `Browse Notes...` is open with at least one result
+- **AND** the notes browser is wide enough to show the sidebar and preview at the same time
+- **THEN** the user sees exactly one visible Close/X control for dismissing the dialog
+- **AND** invoking that Close/X control dismisses the dialog
+
+#### Scenario: Collapsed sidebar page remains visibly dismissible
+- **WHEN** `Browse Notes...` is open with at least one result
+- **AND** the notes browser is collapsed with the sidebar page visible
+- **THEN** the user can invoke a visible Close/X control to dismiss the dialog
+
+#### Scenario: Collapsed preview page remains visibly dismissible
+- **WHEN** `Browse Notes...` is open with at least one result
+- **AND** the notes browser is collapsed with the preview page visible
+- **THEN** the user can invoke a visible Close/X control to dismiss the dialog
+- **AND** the preview page's Back control remains navigation rather than dialog dismissal
+
+#### Scenario: Empty notes browser remains visibly dismissible
+- **WHEN** `Browse Notes...` opens in its empty state
+- **THEN** the user sees exactly one visible Close/X control for dismissing the dialog
+- **AND** invoking that Close/X control dismisses the dialog
+
+#### Scenario: Escape closes notes browser immediately after opening
+- **WHEN** `Browse Notes...` is open
+- **AND** the user presses `Escape` without first clicking inside the dialog
+- **THEN** the dialog closes
 
 ### Requirement: Workspace-note browser entries use the native Adwaita sidebar rail
 The system SHALL present workspace-note entries in the workspace-scoped `Browse Notes...` surface through an `AdwSidebar` section rather than a hand-built `GtkListBox` rail. The sidebar section MUST preserve the existing workspace-scope filtering, workspace-note preview, preview-only pointer selection, and explicit Open behavior.
@@ -122,3 +240,73 @@ The system SHALL keep the shared workspace-note editor popup visually stable whe
 - **AND** the user switches to Render for the first time
 - **THEN** the popup keeps the same outer size with no visible shrink or expansion
 - **AND** the rendered text starts at the same visual origin as the editable text
+
+### Requirement: Workspace-note sidecar corruption is isolated and diagnostic
+The system SHALL isolate malformed workspace-note sidecars from valid workspace-note state. A malformed workspace-note sidecar MUST be preserved when possible, reported through recovery diagnostics, and excluded from normal note restoration until repaired or replaced.
+
+#### Scenario: Malformed workspace note does not block unrelated notes
+- **WHEN** one workspace-note sidecar cannot be parsed during notes browser listing
+- **THEN** valid workspace notes and document notes continue to load and appear in the notes browser
+- **AND** the malformed workspace note is reported as a recovery diagnostic
+
+#### Scenario: Opening a workspace with corrupt note keeps workspace usable
+- **WHEN** a workspace root has a malformed workspace-note sidecar
+- **THEN** the workspace loads and remains selectable
+- **AND** the workspace-note workflow reports that the saved note could not be loaded
+
+#### Scenario: Replacement preserves corrupt workspace-note evidence
+- **WHEN** the user saves a new workspace note for a root whose previous note sidecar was malformed
+- **THEN** the malformed sidecar is quarantined or otherwise preserved before replacement
+
+### Requirement: Workspace-note root migrations are retryable
+The system SHALL record pending workspace-note migrations before or as part of the post-rename workspace-root migration workflow. If migration or cleanup fails, the pending state MUST survive restart and be retried during startup reconciliation.
+
+#### Scenario: Pending workspace-note migration survives restart
+- **WHEN** an in-app workspace root rename succeeds but workspace-note migration fails before completion
+- **THEN** a pending migration record remains in app data
+- **AND** restarting LushText retries the workspace-note migration
+
+#### Scenario: Completed workspace-note migration clears pending state
+- **WHEN** workspace-note migration succeeds and obsolete sidecars are cleaned up or safely reconciled
+- **THEN** the pending workspace-note migration record is removed durably
+
+#### Scenario: Migration failure warns without losing root note text
+- **WHEN** workspace-note migration fails after the root rename succeeded
+- **THEN** the user receives warning feedback
+- **AND** the existing workspace-note sidecar remains preserved for retry or inspection
+
+### Requirement: Workspace-note reconciliation preserves root-note content
+The system SHALL reconcile duplicate old and new workspace-note sidecars conservatively. It MUST preserve root-note text when deterministic identity or timestamp evidence makes a safe merge possible, and MUST preserve evidence instead of guessing when the conflict is ambiguous.
+
+#### Scenario: Duplicate workspace notes choose deterministic newest body
+- **WHEN** old and new workspace-note sidecars both exist and one can be identified as the newer durable save
+- **THEN** the newer note body is kept for the migrated root identity
+- **AND** the older copy is removed only after the target note is durably written
+
+#### Scenario: Ambiguous workspace-note conflict is preserved
+- **WHEN** duplicate workspace notes conflict and the newest body cannot be determined safely
+- **THEN** the system does not discard either note body silently
+- **AND** it reports that automatic workspace-note reconciliation was incomplete
+
+#### Scenario: Aggregate notes browser reports partial workspace-note recovery
+- **WHEN** the notes browser omits or quarantines a malformed workspace note in `All workspaces`
+- **THEN** it still displays valid notes from other workspaces
+- **AND** it exposes a warning that some workspace-note data could not be loaded
+
+### Requirement: Workspace-note reliability has layered automated coverage
+The project SHALL add deterministic service, integration, and widget coverage for workspace-note corruption, root-rename retry state, duplicate reconciliation, and partial notes-browser behavior.
+
+#### Scenario: Service tests cover corrupt workspace-note sidecars
+- **WHEN** service tests load malformed workspace-note sidecar bytes
+- **THEN** the result preserves or quarantines the sidecar and returns recovery diagnostics
+- **AND** unrelated valid workspace notes still load
+
+#### Scenario: Migration tests cover workspace-note retry state
+- **WHEN** tests simulate a workspace root rename whose workspace-note migration fails after the root rename
+- **THEN** a pending migration record survives restart
+- **AND** a later successful retry removes the record durably
+
+#### Scenario: Widget tests cover partial workspace-note browsing
+- **WHEN** the notes browser sees one corrupt workspace note and at least one valid note
+- **THEN** the valid notes remain browsable
+- **AND** visible partial-recovery feedback is shown

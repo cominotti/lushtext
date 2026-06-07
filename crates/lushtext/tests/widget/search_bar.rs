@@ -95,6 +95,26 @@ fn test_replace_entry_initially_empty() {
     assert_eq!(bar.replace_entry().text().as_str(), "");
 }
 
+#[test]
+fn test_search_controls_expose_accessibility_roles() {
+    ensure_gtk_init();
+    let bar = LushtextSearchBar::new();
+
+    assert_eq!(
+        bar.search_entry().accessible_role(),
+        gtk4::AccessibleRole::SearchBox
+    );
+    assert_eq!(
+        bar.replace_entry().accessible_role(),
+        gtk4::AccessibleRole::TextBox
+    );
+    assert_eq!(bar.close_button().accessible_role(), gtk4::AccessibleRole::Button);
+    assert_eq!(
+        bar.replace_mode_button().accessible_role(),
+        gtk4::AccessibleRole::ToggleButton
+    );
+}
+
 // --- Close button ---
 
 #[test]

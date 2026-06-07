@@ -16,8 +16,14 @@ use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, SidebarItemExt};
 
 use crate::model::local_history::{LocalHistorySnapshot, LocalHistorySnapshotMeta};
+use crate::model::migration_ledger::MigrationKind;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use crate::services::{async_task, json_store, local_history_service};
+use crate::services::recovery_metadata::RecoveryDiagnostic;
+use crate::services::{
+    async_task, filesystem::metadata as fs_metadata, json_store, local_history_service,
+    migration_ledger,
+};
+use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::{LushtextEditorPage, PendingWarningAction};
 use crate::ui::status_bar::MessageKind;
 
@@ -89,6 +95,23 @@ struct RestoreWorkState {
     restore_text: String,
 }
 
+/// Background outcome for opening local history from a path rather than an already-loaded tab.
+enum LocalHistoryPathLoadOutcome {
+    /// The target exceeds the editor's local-history size policy.
+    Unavailable,
+    /// Snapshot metadata was loaded and can be presented once the tab is selected.
+    Loaded {
+        /// Saved file path whose lineage was loaded.
+        path: PathBuf,
+        /// Snapshot metadata for the browser sidebar.
+        snapshots: Vec<LocalHistorySnapshotMeta>,
+        /// Recovery diagnostics found while loading the lineage.
+        diagnostics: Vec<RecoveryDiagnostic>,
+    },
+    /// Snapshot metadata could not be read.
+    Failed(String),
+}
+
 impl LushtextWindow {
     /// Open the local-history browser for the active saved document.
     pub(super) fn show_local_history_dialog(&self) {
@@ -102,44 +125,91 @@ impl LushtextWindow {
             );
             return;
         };
-        self.show_local_history_for_path(&path);
-    }
-
-    /// Open local history for an explicit saved file path, selecting or opening its tab first.
-    pub(super) fn show_local_history_for_path(&self, path: &Path) {
-        let availability = local_history_availability_for_path(path);
-        if !availability.allows_browsing() {
+        if !editor.local_history_availability().allows_browsing() {
             self.publish_status_message(
                 "Local history is unavailable for files above 50 MB",
                 MessageKind::Warning,
             );
             return;
         }
+        self.load_local_history_for_editor(editor, path);
+    }
 
-        self.open_document(path);
-        let Some(editor) = self.active_editor() else {
-            self.publish_status_message(
-                "Local history could not find an editor for that file",
-                MessageKind::Warning,
-            );
-            return;
-        };
-        let Some(editor_path) = editor.file_path() else {
-            self.publish_status_message(
-                "Local history requires a saved file",
-                MessageKind::Warning,
-            );
-            return;
-        };
-
+    /// Open local history for an explicit saved file path, selecting or opening its tab first.
+    pub(super) fn show_local_history_for_path(&self, path: &Path) {
+        let path = path.to_path_buf();
         async_task::spawn_blocking_then(
-            (self.clone(), editor, editor_path.clone()),
+            self.clone(),
+            move || {
+                let availability = fs_metadata::file_facts(&path).ok().map_or(
+                    local_history_service::LocalHistoryAvailability::Unavailable,
+                    |facts| {
+                        local_history_service::availability_for_size_check(
+                            crate::services::file_limits::FileSizeCheck::classify(facts.byte_size),
+                        )
+                    },
+                );
+                if !availability.allows_browsing() {
+                    return LocalHistoryPathLoadOutcome::Unavailable;
+                }
+                let data_dir = json_store::data_dir();
+                match local_history_service::list_snapshots_for_path_recovering(&data_dir, &path) {
+                    Ok(listing) => LocalHistoryPathLoadOutcome::Loaded {
+                        path,
+                        snapshots: listing.snapshots,
+                        diagnostics: listing.diagnostics,
+                    },
+                    Err(error) => LocalHistoryPathLoadOutcome::Failed(error.to_string()),
+                }
+            },
+            |window, result| match result {
+                LocalHistoryPathLoadOutcome::Unavailable => {
+                    window.publish_status_message(
+                        "Local history is unavailable for files above 50 MB",
+                        MessageKind::Warning,
+                    );
+                }
+                LocalHistoryPathLoadOutcome::Loaded {
+                    path,
+                    snapshots,
+                    diagnostics,
+                } => {
+                    window.open_document(&path);
+                    let Some(editor) = window.active_editor() else {
+                        window.publish_status_message(
+                            "Local history could not find an editor for that file",
+                            MessageKind::Warning,
+                        );
+                        return;
+                    };
+                    let editor_path = editor.file_path().unwrap_or(path);
+                    window.present_local_history_browser(editor, editor_path, snapshots);
+                    window.publish_local_history_recovery_diagnostics(&diagnostics);
+                }
+                LocalHistoryPathLoadOutcome::Failed(error) => {
+                    tracing::error!("Failed to list local-history snapshots: {error}");
+                    window.publish_status_message(
+                        "Local history could not be loaded",
+                        MessageKind::Error,
+                    );
+                }
+            },
+        );
+    }
+
+    /// Load snapshot metadata for an already-open eligible editor.
+    fn load_local_history_for_editor(&self, editor: LushtextEditorPage, path: PathBuf) {
+        async_task::spawn_blocking_then(
+            (self.clone(), editor, path.clone()),
             move || {
                 let data_dir = json_store::data_dir();
-                local_history_service::list_snapshots_for_path(&data_dir, &editor_path)
+                local_history_service::list_snapshots_for_path_recovering(&data_dir, &path)
             },
             |(window, editor, path), result| match result {
-                Ok(snapshots) => window.present_local_history_browser(editor, path, snapshots),
+                Ok(listing) => {
+                    window.present_local_history_browser(editor, path, listing.snapshots);
+                    window.publish_local_history_recovery_diagnostics(&listing.diagnostics);
+                }
                 Err(error) => {
                     tracing::error!("Failed to list local-history snapshots: {error}");
                     window.publish_status_message(
@@ -148,6 +218,19 @@ impl LushtextWindow {
                     );
                 }
             },
+        );
+    }
+
+    fn publish_local_history_recovery_diagnostics(&self, diagnostics: &[RecoveryDiagnostic]) {
+        if diagnostics.is_empty() {
+            return;
+        }
+        for diagnostic in diagnostics {
+            tracing::warn!("{}", diagnostic.summary());
+        }
+        self.publish_status_message(
+            "Some local-history metadata needed recovery",
+            MessageKind::Warning,
         );
     }
 
@@ -175,7 +258,24 @@ impl LushtextWindow {
             (),
             move || {
                 let data_dir = json_store::data_dir();
-                local_history_service::move_path_tree(&data_dir, &old_for_move, &new_for_move)
+                let generation = migration_ledger::record_pending(
+                    &data_dir,
+                    &old_for_move,
+                    &new_for_move,
+                    &[MigrationKind::LocalHistory],
+                )?;
+                migration_ledger::run_tracked_kind(
+                    &data_dir,
+                    generation,
+                    MigrationKind::LocalHistory,
+                    || {
+                        local_history_service::move_path_tree(
+                            &data_dir,
+                            &old_for_move,
+                            &new_for_move,
+                        )
+                    },
+                )
             },
             move |(), result| {
                 if let Err(error) = result {
@@ -237,8 +337,15 @@ impl LushtextWindow {
             .build();
 
         let sidebar = libadwaita::Sidebar::new();
+        sidebar.set_accessible_role(gtk4::AccessibleRole::List);
         sidebar.set_mode(libadwaita::SidebarMode::Sidebar);
         sidebar.set_vexpand(true);
+        sidebar.update_property(&[
+            gtk4::accessible::Property::Label("Local history snapshots"),
+            gtk4::accessible::Property::Description(
+                "Choose a saved snapshot for the active document",
+            ),
+        ]);
 
         let preview_title = gtk4::Label::new(Some("Loading snapshot…"));
         preview_title.set_halign(gtk4::Align::Start);
@@ -283,14 +390,19 @@ impl LushtextWindow {
         let restore_button = gtk4::Button::with_label("Restore");
         restore_button.add_css_class("suggested-action");
         restore_button.set_sensitive(false);
+        restore_button.update_property(&[gtk4::accessible::Property::Label(
+            "Restore selected snapshot",
+        )]);
         let copy_button = gtk4::Button::with_label("Copy");
         copy_button.set_sensitive(false);
+        copy_button.update_property(&[gtk4::accessible::Property::Label("Copy selected snapshot")]);
 
         let back_button = gtk4::Button::builder()
             .icon_name("go-previous-symbolic")
             .tooltip_text("Back to Snapshots")
             .visible(false)
             .build();
+        back_button.update_property(&[gtk4::accessible::Property::Label("Back to snapshots")]);
 
         let split_view = libadwaita::NavigationSplitView::new();
         split_view.set_min_sidebar_width(LOCAL_HISTORY_VIEWER_MIN_SIDEBAR_WIDTH_SP);
@@ -334,20 +446,27 @@ impl LushtextWindow {
 
         populate_history_sidebar(&state);
         state.back_button.connect_clicked({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |_| {
-                state.split_view.set_show_content(false);
+                if let Some(state) = state.upgrade() {
+                    state.split_view.set_show_content(false);
+                }
             }
         });
         state.split_view.connect_collapsed_notify({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |split| {
-                state.back_button.set_visible(split.is_collapsed());
+                if let Some(state) = state.upgrade() {
+                    state.back_button.set_visible(split.is_collapsed());
+                }
             }
         });
         state.copy_button.connect_clicked({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |_| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let Some(snapshot) = state.loaded_snapshot.borrow().clone() else {
                     return;
                 };
@@ -360,8 +479,11 @@ impl LushtextWindow {
             }
         });
         state.restore_button.connect_clicked({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |_| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let Some(snapshot) = state.loaded_snapshot.borrow().clone() else {
                     return;
                 };
@@ -374,19 +496,35 @@ impl LushtextWindow {
         state.sidebar.set_selected(0);
         state.load_preview_for_index(0, false);
         state.sidebar.connect_selected_item_notify({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |sidebar| {
-                if let Some(index) = history_sidebar_item_index(sidebar.selected_item()) {
+                if let Some(state) = state.upgrade()
+                    && let Some(index) = history_sidebar_item_index(sidebar.selected_item())
+                {
                     state.load_preview_for_index(index, true);
                 }
             }
         });
         state.sidebar.connect_activated({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |_sidebar, index| {
-                if let Ok(index) = usize::try_from(index) {
+                if let Some(state) = state.upgrade()
+                    && let Ok(index) = usize::try_from(index)
+                {
                     state.load_preview_for_index(index, true);
                 }
+            }
+        });
+
+        // The dialog owns this holder while it is visible, keeping browser
+        // state alive without child-widget signal closures strongly owning the
+        // whole dialog subtree. The `closed` signal drops the state and breaks
+        // the temporary dialog -> holder -> state -> dialog cycle.
+        let state_holder = Rc::new(RefCell::new(Some(Rc::clone(&state))));
+        state.dialog.connect_closed({
+            let state_holder = Rc::clone(&state_holder);
+            move |_| {
+                state_holder.borrow_mut().take();
             }
         });
 
@@ -418,74 +556,81 @@ impl LushtextWindow {
         snapshot: LocalHistorySnapshot,
     ) {
         let buffer = browser.editor.buffer();
-        let undo_text = buffer
-            .text(&buffer.start_iter(), &buffer.end_iter(), true)
-            .to_string();
         let restore_text = snapshot.text;
-        let path = browser.path.clone();
+        let run_restore = move |undo_text: String| {
+            let path = browser.path.clone();
+            async_task::spawn_blocking_then(
+                RestoreWorkState {
+                    browser,
+                    undo_text: undo_text.clone(),
+                    restore_text,
+                },
+                move || {
+                    let data_dir = json_store::data_dir();
+                    local_history_service::capture_snapshot_for_path(
+                        &data_dir,
+                        &path,
+                        &undo_text,
+                        crate::model::local_history::LocalHistorySnapshotOrigin::RestoreSafety,
+                        crate::services::local_history_service::LocalHistoryCapturePolicy::PreserveDuplicate,
+                    )
+                },
+                move |state, result| {
+                    if let Err(error) = result {
+                        tracing::error!("Failed to capture local-history safety snapshot: {error}");
+                        state.browser.restore_button.set_sensitive(true);
+                        state.browser.copy_button.set_sensitive(true);
+                        state.browser.window.publish_status_message(
+                            "Local history restore could not be prepared safely",
+                            MessageKind::Error,
+                        );
+                        return;
+                    }
 
-        async_task::spawn_blocking_then(
-            RestoreWorkState {
-                browser,
-                undo_text: undo_text.clone(),
-                restore_text,
-            },
-            move || {
-                let data_dir = json_store::data_dir();
-                local_history_service::capture_snapshot_for_path(
-                    &data_dir,
-                    &path,
-                    &undo_text,
-                    crate::model::local_history::LocalHistorySnapshotOrigin::RestoreSafety,
-                    crate::services::local_history_service::LocalHistoryCapturePolicy::PreserveDuplicate,
-                )
-            },
-            move |state, result| {
-                if let Err(error) = result {
-                    tracing::error!("Failed to capture local-history safety snapshot: {error}");
-                    state.browser.restore_button.set_sensitive(true);
-                    state.browser.copy_button.set_sensitive(true);
-                    state.browser.window.publish_status_message(
-                        "Local history restore could not be prepared safely",
-                        MessageKind::Error,
+                    state
+                        .browser
+                        .editor
+                        .set_local_history_restore_undo_text(Some(state.undo_text));
+                    state
+                        .browser
+                        .editor
+                        .replace_buffer_with_local_history_text(&state.restore_text);
+                    state
+                        .browser
+                        .window
+                        .dismiss_editor_notifications(&state.browser.editor);
+                    state.browser.window.resolve_notes_for_editor(
+                        &state.browser.editor,
+                        state.browser.path.as_path(),
                     );
-                    return;
-                }
+                    state
+                        .browser
+                        .editor
+                        .emit_inline_notification_with_warning_action(
+                            InlineActionNotification {
+                                style: InlineNotificationStyle::Warning,
+                                title: "Restored from Local History".to_string(),
+                                body: "The previous buffer state was saved as a safety snapshot. Use Undo Restore to switch back immediately.".to_string(),
+                                primary_button: Some("Undo Restore".to_string()),
+                                secondary_button: None,
+                            },
+                            PendingWarningAction::UndoLocalHistoryRestore,
+                        );
+                    state.browser.window.publish_status_message(
+                        "Snapshot restored into the editor",
+                        MessageKind::Info,
+                    );
+                    state.browser.window.refresh_status_bar();
+                    state.browser.dialog.close();
+                },
+            );
+        };
 
-                state
-                    .browser
-                    .editor
-                    .set_local_history_restore_undo_text(Some(state.undo_text));
-                state
-                    .browser
-                    .editor
-                    .replace_buffer_with_local_history_text(&state.restore_text);
-                state
-                    .browser
-                    .window
-                    .dismiss_editor_notifications(&state.browser.editor);
-                state
-                    .browser
-                    .window
-                    .resolve_notes_for_editor(&state.browser.editor, state.browser.path.as_path());
-                state.browser.editor.emit_inline_notification_with_warning_action(
-                    InlineActionNotification {
-                        style: InlineNotificationStyle::Warning,
-                        title: "Restored from Local History".to_string(),
-                        body: "The previous buffer state was saved as a safety snapshot. Use Undo Restore to switch back immediately.".to_string(),
-                        primary_button: Some("Undo Restore".to_string()),
-                        secondary_button: None,
-                    },
-                    PendingWarningAction::UndoLocalHistoryRestore,
-                );
-                state
-                    .browser
-                    .window
-                    .publish_status_message("Snapshot restored into the editor", MessageKind::Info);
-                state.browser.window.refresh_status_bar();
-                state.browser.dialog.close();
-            },
-        );
+        if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
+            buffer_snapshot::snapshot_buffer_text_async(buffer, run_restore);
+        } else {
+            run_restore(buffer_snapshot::snapshot_buffer_text_direct(&buffer));
+        }
     }
 }
 
@@ -517,7 +662,7 @@ impl LocalHistoryBrowserState {
             Rc::clone(self),
             {
                 let path = self.path.clone();
-                let snapshot_id = meta.snapshot_id.clone();
+                let snapshot_id = meta.snapshot_id;
                 move || {
                     let data_dir = json_store::data_dir();
                     local_history_service::load_snapshot_for_path(&data_dir, &path, &snapshot_id)
@@ -816,17 +961,4 @@ fn format_bytes(byte_len: u64) -> String {
     } else {
         format!("{byte_len} B")
     }
-}
-
-fn local_history_availability_for_path(
-    path: &Path,
-) -> local_history_service::LocalHistoryAvailability {
-    std::fs::metadata(path).ok().map_or(
-        local_history_service::LocalHistoryAvailability::Unavailable,
-        |metadata| {
-            local_history_service::availability_for_size_check(
-                crate::services::file_limits::FileSizeCheck::classify(metadata.len()),
-            )
-        },
-    )
 }

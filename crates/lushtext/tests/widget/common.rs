@@ -11,6 +11,9 @@ use glib::prelude::IsA;
 use glib::prelude::ToValue;
 use gtk4::prelude::{GtkWindowExt, WidgetExt};
 use lushtext_core::config::APP_ID;
+pub use lushtext_core::services::filesystem::{
+    fixture, metadata as fs_metadata, mutate as fs_mutate, read as fs_read,
+};
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
@@ -23,7 +26,7 @@ static GTK_INIT: Once = Once::new();
 /// Uses the in-memory GSettings backend so tests don't pollute user's dconf.
 /// Sets `LUSHTEXT_DATA_DIR` to a temp directory so session/draft I/O doesn't
 /// touch the user's real data.
-/// Requires a display server — use `mutter --headless` for headless environments.
+/// Requires the private headless compositor owned by the widget harness.
 pub fn ensure_gtk_init() {
     GTK_INIT.call_once(|| {
         // Widget tests run in one isolated process before GTK startup, so they
@@ -36,8 +39,8 @@ pub fn ensure_gtk_init() {
         // interfering with each other via shared session files.
         let test_data_dir =
             std::env::temp_dir().join(format!("lushtext-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&test_data_dir);
-        let _ = std::fs::create_dir_all(&test_data_dir);
+        let _ = fs_mutate::remove_dir_all_if_exists(&test_data_dir);
+        let _ = fs_mutate::create_dir_all(&test_data_dir);
         // SAFETY: widget tests set these process environment variables before
         // GTK startup and before any background worker threads are spawned.
         unsafe { std::env::set_var("LUSHTEXT_DATA_DIR", &test_data_dir) };
@@ -86,14 +89,33 @@ pub fn flush_after_delay(delay: Duration) {
     flush_events();
 }
 
+/// Interval between `wait_until` predicate checks.
+const WAIT_UNTIL_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
 /// Poll until the predicate becomes true or the timeout expires.
+///
+/// Each poll sleeps briefly and then **drains every ready main-loop source** via
+/// `flush_events()` (`while iteration(false) {}`). Draining to exhaustion is the
+/// important part: `spawn_blocking_then` delivers its completion through
+/// `glib::idle_add_once`, a *low-priority idle source*. A loop that only blocks
+/// on `MainContext::iteration(true)` with a higher-priority timeout source can
+/// starve that idle indefinitely, so the async result never lands and the wait
+/// times out even though the work finished. Drain-all dispatches the idle as
+/// soon as nothing higher-priority is pending, which is exactly how these tests
+/// observe background completion. Do not "optimize" this into a single blocking
+/// iteration — that regresses every `spawn_blocking_then`-backed wait.
+///
+/// The flake this guards against is a *budget* problem, not a polling-gap one:
+/// give async/realization waits a generous timeout (see callers) rather than
+/// changing the poll mechanism.
 pub fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if predicate() {
             return;
         }
-        flush_after_delay(Duration::from_millis(20));
+        std::thread::sleep(WAIT_UNTIL_POLL_INTERVAL);
+        flush_events();
     }
     panic!("condition was not met within {timeout:?}");
 }

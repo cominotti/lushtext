@@ -260,7 +260,7 @@ mod tests {
         let id = file.add_workspace("project", "/tmp/project".into());
 
         assert_eq!(file.workspaces.len(), 1);
-        assert_eq!(file.current_scope(), WorkspaceScope::workspace(id.clone()));
+        assert_eq!(file.current_scope(), WorkspaceScope::workspace(id));
         assert_eq!(file.workspaces[0].root, Path::new("/tmp/project"));
     }
 

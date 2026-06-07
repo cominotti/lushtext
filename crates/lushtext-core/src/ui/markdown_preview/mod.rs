@@ -43,6 +43,63 @@ use imp::{
 };
 use inline_footnotes::lower_inline_footnotes;
 
+/// Result of fuzzing Markdown preprocessing without constructing GTK widgets.
+///
+/// The fuzz target only needs to know that the preprocessing and parser setup
+/// completed. Counts keep the helper useful for sanity checks without exposing
+/// renderer internals as a stable public API.
+#[cfg(feature = "fuzzing")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FuzzedMarkdownPreprocess {
+    /// Number of pulldown-cmark events produced after preprocessing.
+    pub parser_event_count: usize,
+    /// Byte length of the Markdown text passed to the parser.
+    pub parser_input_len: usize,
+    /// Whether markdown-it-style inline footnotes were lowered first.
+    pub lowered_inline_footnotes: bool,
+}
+
+/// Run the preview's real inline-footnote lowering for feature-gated generated tests.
+///
+/// Keeping this as a narrow feature-only hook lets generated tests and fuzzing
+/// exercise the production lowering path without making the private scanner
+/// part of the normal application API.
+#[cfg(any(feature = "property-tests", feature = "fuzzing"))]
+#[must_use]
+fn lower_inline_footnotes_for_generated_test(markdown: &str) -> Option<String> {
+    lower_inline_footnotes(markdown, markdown_render_options())
+}
+
+/// Run the preview's real inline-footnote lowering for feature-gated property tests.
+///
+/// This preserves the original property-test API while sharing the same
+/// generated-input hook used by fuzzing.
+#[cfg(feature = "property-tests")]
+#[must_use]
+pub fn lower_inline_footnotes_for_property_test(markdown: &str) -> Option<String> {
+    lower_inline_footnotes_for_generated_test(markdown)
+}
+
+/// Exercise Markdown preprocessing and parser setup for fuzz targets.
+///
+/// The helper stops before renderer code that touches `GtkTextBuffer`,
+/// `LushtextMarkdownPreview`, links, images, GSettings, or other GTK state.
+#[cfg(feature = "fuzzing")]
+#[must_use]
+pub fn preprocess_markdown_for_fuzzing(markdown: &str) -> FuzzedMarkdownPreprocess {
+    let lowered = lower_inline_footnotes_for_generated_test(markdown);
+    let lowered_inline_footnotes = lowered.is_some();
+    let parser_input = lowered.as_deref().unwrap_or(markdown);
+    let options = markdown_render_options();
+    let parser_event_count = Parser::new_ext(parser_input, options).count();
+
+    FuzzedMarkdownPreprocess {
+        parser_event_count,
+        parser_input_len: parser_input.len(),
+        lowered_inline_footnotes,
+    }
+}
+
 /// Maximum width for one rendered preview image before we scale it down.
 ///
 /// The preview lives inside a `GtkTextView` child-anchor slot, so very large
@@ -270,11 +327,11 @@ struct DefinitionRenderState {
 /// Result of trying to resolve a local filesystem path from Markdown content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LocalPathResolution {
-    /// One unambiguous local path was found.
+    /// One unambiguous local path candidate was formed.
     Resolved(PathBuf),
-    /// No matching local path exists.
+    /// No document or workspace base can produce a local path candidate.
     Missing,
-    /// More than one workspace-relative path matched, so preview should not guess.
+    /// More than one workspace-relative path is possible, so preview should not guess.
     Ambiguous(Vec<PathBuf>),
 }
 
@@ -1350,6 +1407,16 @@ impl LushtextMarkdownPreview {
         self.imp().showing_content.get()
     }
 
+    /// Current placeholder description, exposed only for widget assertions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn placeholder_description_for_test(&self) -> Option<String> {
+        self.imp()
+            .placeholder
+            .description()
+            .map(|description| description.to_string())
+    }
+
     /// Get the rendered text content from the internal buffer.
     ///
     /// GTK child anchors are not plain text, so embedded table and image
@@ -1857,13 +1924,10 @@ fn resolve_link_target(
         if scheme.as_str() == "file" {
             let file = gio::File::for_uri(raw_target);
             let path = file.path()?;
-            if path.exists() {
-                return Some(PreviewLaunchTarget {
-                    uri: raw_target.to_string(),
-                    local_path: Some(path),
-                });
-            }
-            return None;
+            return Some(PreviewLaunchTarget {
+                uri: raw_target.to_string(),
+                local_path: Some(path),
+            });
         }
 
         return Some(PreviewLaunchTarget {
@@ -1897,7 +1961,7 @@ fn resolve_image_target(
         if scheme.as_str() == "file" {
             let file = gio::File::for_uri(raw_target);
             return match file.path() {
-                Some(path) if path.exists() => ResolvedImageTarget::LocalFile(path),
+                Some(path) => ResolvedImageTarget::LocalFile(path),
                 _ => ResolvedImageTarget::Fallback {
                     title: "Image file not found",
                     body: raw_target.to_string(),
@@ -1935,33 +1999,27 @@ fn resolve_local_path(
 ) -> LocalPathResolution {
     let path = Path::new(raw_target);
     if path.is_absolute() {
-        return if path.exists() {
-            LocalPathResolution::Resolved(path.to_path_buf())
-        } else {
-            LocalPathResolution::Missing
-        };
+        return LocalPathResolution::Resolved(path.to_path_buf());
     }
 
     if let Some(document_path) = &context.document_path
         && let Some(parent) = document_path.parent()
     {
-        let candidate = parent.join(path);
-        if candidate.exists() {
-            return LocalPathResolution::Resolved(candidate);
-        }
+        return LocalPathResolution::Resolved(parent.join(path));
     }
 
-    let matches = context
+    let candidates = context
         .workspace_roots
         .iter()
         .map(|root| root.join(path))
-        .filter(|candidate| candidate.exists())
         .collect::<Vec<_>>();
 
-    match matches.len() {
+    match candidates.len() {
         0 => LocalPathResolution::Missing,
-        1 => LocalPathResolution::Resolved(matches.into_iter().next().expect("one match exists")),
-        _ => LocalPathResolution::Ambiguous(matches),
+        1 => LocalPathResolution::Resolved(
+            candidates.into_iter().next().expect("one candidate exists"),
+        ),
+        _ => LocalPathResolution::Ambiguous(candidates),
     }
 }
 
@@ -2292,6 +2350,7 @@ fn pop_tag(stack: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use crate::ui::markdown_preview::imp::list_item_text_margin;
     use pulldown_cmark::LinkType;
     use tempfile::tempdir;
@@ -2445,10 +2504,10 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let document_dir = tempdir.path().join("docs");
         let workspace_root = tempdir.path().join("workspace");
-        std::fs::create_dir_all(&document_dir).expect("document dir");
-        std::fs::create_dir_all(workspace_root.join("images")).expect("workspace dir");
-        std::fs::write(document_dir.join("logo.png"), b"doc").expect("document-relative file");
-        std::fs::write(workspace_root.join("logo.png"), b"workspace").expect("workspace file");
+        fixture::create_dir_all(&document_dir);
+        fixture::create_dir_all(&workspace_root.join("images"));
+        fixture::write_bytes(&document_dir.join("logo.png"), b"doc");
+        fixture::write_bytes(&workspace_root.join("logo.png"), b"workspace");
 
         let context = MarkdownPreviewRenderContext::new(
             Some(document_dir.join("guide.md")),
@@ -2462,14 +2521,31 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_local_path_reports_ambiguous_workspace_matches() {
+    fn test_resolve_local_path_defers_existence_checks_to_activation() {
+        let tempdir = tempdir().expect("tempdir");
+        let document_path = tempdir.path().join("docs/guide.md");
+        let context = MarkdownPreviewRenderContext::new(Some(document_path.clone()), Vec::new());
+
+        assert_eq!(
+            resolve_local_path("missing.png", &context),
+            LocalPathResolution::Resolved(
+                document_path
+                    .parent()
+                    .expect("document path has parent")
+                    .join("missing.png")
+            )
+        );
+    }
+
+    #[test]
+    fn test_resolve_local_path_reports_ambiguous_workspace_candidates() {
         let tempdir = tempdir().expect("tempdir");
         let root_a = tempdir.path().join("root-a");
         let root_b = tempdir.path().join("root-b");
-        std::fs::create_dir_all(root_a.join("images")).expect("root a dir");
-        std::fs::create_dir_all(root_b.join("images")).expect("root b dir");
-        std::fs::write(root_a.join("images/logo.png"), b"a").expect("root a file");
-        std::fs::write(root_b.join("images/logo.png"), b"b").expect("root b file");
+        fixture::create_dir_all(&root_a.join("images"));
+        fixture::create_dir_all(&root_b.join("images"));
+        fixture::write_bytes(&root_a.join("images/logo.png"), b"a");
+        fixture::write_bytes(&root_b.join("images/logo.png"), b"b");
 
         let context = MarkdownPreviewRenderContext::new(None, vec![root_a.clone(), root_b.clone()]);
 

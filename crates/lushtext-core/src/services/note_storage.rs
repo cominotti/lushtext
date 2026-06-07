@@ -8,10 +8,22 @@
 //! here avoids subtle drift between the different persistence services.
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
+use crate::services::filesystem::metadata as fs_metadata;
+#[cfg(test)]
+use crate::services::filesystem::read as fs_read;
+use crate::services::json_format::{
+    KIND_BOOKMARK_SIDECAR, KIND_DOCUMENT_NOTE_SIDECAR, KIND_LOCAL_HISTORY_INDEX,
+    KIND_WORKSPACE_NOTE_SIDECAR,
+};
+use crate::services::recovery_metadata::{
+    RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass,
+    load_enveloped_json_optional, save_enveloped_json_path,
+};
 
 /// Resolve the stable identity for one saved document path.
 ///
@@ -20,8 +32,7 @@ use crate::model::sidecar_identity::DocumentSidecarIdentity;
 /// Returns an error if the path cannot be canonicalized.
 pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
     let display_path = path.to_path_buf();
-    let canonical_path = path
-        .canonicalize()
+    let canonical_path = fs_metadata::canonical_path(path)
         .with_context(|| format!("failed to canonicalize {}", path.display()))?;
     Ok(DocumentSidecarIdentity::from_paths(
         display_path,
@@ -40,7 +51,7 @@ pub fn sidecar_filename(sidecar_id: &str) -> String {
 pub fn canonicalize_roots(workspace_roots: &[PathBuf]) -> Vec<PathBuf> {
     workspace_roots
         .iter()
-        .map(|root| root.canonicalize().unwrap_or_else(|_| root.clone()))
+        .map(|root| fs_metadata::canonical_path(root).unwrap_or_else(|_| root.clone()))
         .collect()
 }
 
@@ -71,9 +82,8 @@ pub fn rebase_identity_paths(
         } else {
             new_path.join(suffix)
         };
-        let canonical_path = display_path
-            .canonicalize()
-            .unwrap_or_else(|_| display_path.clone());
+        let canonical_path =
+            fs_metadata::canonical_path(&display_path).unwrap_or_else(|_| display_path.clone());
         return Some((display_path, canonical_path));
     }
 
@@ -89,22 +99,22 @@ pub fn rebase_identity_paths(
         } else {
             new_path.join(suffix)
         };
-        let canonical_path = display_path
-            .canonicalize()
-            .unwrap_or_else(|_| display_path.clone());
+        let canonical_path =
+            fs_metadata::canonical_path(&display_path).unwrap_or_else(|_| display_path.clone());
         return Some((display_path, canonical_path));
     }
 
     None
 }
 
-/// Load one optional JSON sidecar payload.
+/// Load one optional JSON sidecar payload for legacy strict-load tests.
 ///
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or parsed.
+#[cfg(test)]
 pub fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
-    match std::fs::read(path) {
+    match fs_read::bytes(path) {
         Ok(bytes) => {
             let value = serde_json::from_slice(&bytes)
                 .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -119,9 +129,64 @@ pub fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     }
 }
 
+/// Load one optional JSON sidecar through recovery-aware metadata handling.
+#[must_use]
+pub fn load_json_file_recovering<T: DeserializeOwned>(
+    data_dir: &Path,
+    path: &Path,
+    class: RecoveryMetadataClass,
+) -> RecoveryLoad<Option<T>> {
+    load_enveloped_json_optional(
+        &RecoveryLoadConfig::new(data_dir, path, class),
+        sidecar_document_kind(class),
+    )
+}
+
+/// Save one sidecar payload as a v1 envelope after preservation checks.
+///
+/// # Errors
+///
+/// Returns an error if the current sidecar is unsafe to replace or the durable
+/// v1 write fails.
+pub fn save_json_file_recovering<T>(
+    data_dir: &Path,
+    path: &Path,
+    class: RecoveryMetadataClass,
+    value: &T,
+) -> Result<()>
+where
+    T: Serialize + DeserializeOwned,
+{
+    let config = RecoveryLoadConfig::new(data_dir, path, class);
+    let diagnostics = save_enveloped_json_path(&config, sidecar_document_kind(class), value)?;
+    trace_recovery_diagnostics(&diagnostics);
+    Ok(())
+}
+
+/// Send recovery diagnostics to tracing without changing a service's public API.
+pub fn trace_recovery_diagnostics(diagnostics: &[RecoveryDiagnostic]) {
+    for diagnostic in diagnostics {
+        tracing::warn!("{}", diagnostic.summary());
+    }
+}
+
+fn sidecar_document_kind(class: RecoveryMetadataClass) -> &'static str {
+    match class {
+        RecoveryMetadataClass::BookmarkSidecar => KIND_BOOKMARK_SIDECAR,
+        RecoveryMetadataClass::DocumentNoteSidecar => KIND_DOCUMENT_NOTE_SIDECAR,
+        RecoveryMetadataClass::WorkspaceNoteSidecar => KIND_WORKSPACE_NOTE_SIDECAR,
+        RecoveryMetadataClass::LocalHistoryIndex => KIND_LOCAL_HISTORY_INDEX,
+        other => panic!(
+            "recovery class {} does not map to a note-storage sidecar kind",
+            other.slug()
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     #[test]
@@ -129,13 +194,13 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let existing = dir.path().join("workspace");
         let missing = dir.path().join("missing");
-        std::fs::create_dir_all(&existing).expect("create workspace");
+        fixture::create_dir_all(&existing);
 
         let roots = canonicalize_roots(&[existing.clone(), missing.clone()]);
 
         assert_eq!(
             roots[0],
-            existing.canonicalize().expect("canonical workspace")
+            fs_metadata::canonical_path(&existing).expect("canonical workspace")
         );
         assert_eq!(roots[1], missing);
     }

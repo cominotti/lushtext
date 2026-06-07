@@ -19,9 +19,10 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Minimap** -- toggleable right-edge document overview with semantic markers for bookmarks, active in-tab search matches, modified-since-save regions, and long-line warnings on supported files
 - **Session persistence** -- tabs, pinned state, cursor positions, and scroll offsets restored on restart
 - **Draft recovery** -- unsaved changes auto-saved to disk and recovered after crash
+- **Crash-safe saves** -- atomic temp-file-then-rename writes with safe temp permissions, metadata applied before the final temp sync, the full Linux fsync durability contract (data + parent directory), stable target coordination across saves and Replace All, symlink-backed saves that update the resolved target, and an explicit warning when a change reaches disk but its durability cannot be confirmed
 - **Print** -- native GTK print dialog with syntax highlighting and editor settings preserved
 - **Workspace content search** -- Ctrl+Shift+F parallel grep across the current workspace scope (`All workspaces` or one selected workspace) with streaming results, regex/literal/whole-word modes, .gitignore toggle, glob file filter, F4/Shift+F4 match navigation, progress reporting, search history with full state recall, and named saved searches
-- **Multi-file Replace All** -- preview proposed changes with per-match checkboxes, atomic file writes, skip-modified-tabs safety, and full undo support
+- **Multi-file Replace All** -- preview proposed changes with per-match checkboxes, atomic file writes, stable save/replace coordination, file and undo-memory caps, per-file durable undo journals, skip-modified-tabs safety, and full undo support within the active safety window
 - **Find and replace** -- per-tab search bar with match highlighting
 - **Command palette** -- Ctrl+P fuzzy search for files and commands, scoped to the current workspace selection unless `All workspaces` is active (SIMD-accelerated via nucleo)
 - **Large file handling** -- graceful degradation: >1MB toast, >10MB disable syntax, >50MB disable undo, >500MB refuse
@@ -205,15 +206,15 @@ to close, the launcher fails instead of activating stale code.
 LushText uses `cargo-mutants` for deterministic model, service, and pure helper
 coverage. It complements, rather than replaces, the normal gates: `cargo nextest`
 proves the non-widget baseline, the GTK widget runner keeps Mutter and warning
-behavior covered, benchmark compilation protects Criterion coverage, Clippy and
-rustfmt protect code quality, and `cargo deny` remains the dependency-policy
-gate.
+behavior covered, benchmark compilation protects Criterion coverage, all-feature
+Clippy and rustfmt protect code quality, and `cargo deny check advisories bans
+sources licenses` remains the dependency-policy gate.
 
 Install the local mutation tools once:
 
 ```sh
-cargo install --locked cargo-mutants
-cargo install cargo-nextest --locked
+cargo install --locked cargo-mutants --version 27.0.0
+cargo install --locked cargo-nextest --version 0.9.137
 ```
 
 Then use the wrapper targets:
@@ -227,6 +228,26 @@ make mutants-full  # configured deterministic model/service/helper scope
 Generated `mutants.out` directories are ignored locally and uploaded from CI
 when present. See [`docs/mutation-testing.md`](docs/mutation-testing.md) for
 triage rules, CI behavior, sharding, and equivalent-mutant exclusion policy.
+
+### End-user smoke coverage
+
+The default test suite is intentionally deterministic. Live desktop, portal,
+accessibility, and performance checks are exposed as separate lanes so they can
+record host details and skip clearly when a machine lacks the required runtime:
+
+```sh
+make visual-smoke          # headless Mutter screenshot smoke with artifacts
+make crash-recovery-smoke  # SIGKILL/relaunch recovery smoke with artifacts
+make portal-sandbox-smoke  # available Flatpak/Snap confinement diagnostics
+make accessibility-smoke   # AT-SPI-enabled smoke outside the widget harness
+make performance-smoke     # lightweight Criterion timing smoke
+make end-user-smoke        # run all host-supported smoke lanes
+```
+
+See [`docs/end-user-coverage.md`](docs/end-user-coverage.md) for the coverage
+map and the expected pull-request, scheduled, release, and local validation
+boundaries. See [`docs/recovery-reliability.md`](docs/recovery-reliability.md)
+for recovery metadata, quarantine, migration-ledger, and crash-smoke triage.
 
 ## First Run
 
@@ -299,9 +320,12 @@ Stored state can include document text:
 | `document-notes/` | Per-file document notes |
 | `workspace-notes/` | Per-workspace-root notes |
 | `local-history/` | Local-history snapshots for saved files |
+| `migration-ledger.json` | Retryable sidecar and local-history migration work after in-app renames |
+| `recovery-quarantine/` | Preserved malformed or unsupported app-owned recovery metadata |
 | `search-history.json` | Recent workspace search queries and options |
 | `saved-searches.json` | Named saved searches |
-| `replace-backup.json` | Temporary undo data for multi-file Replace All |
+| `replace-backup-journal/` | Temporary per-file undo journal for multi-file Replace All |
+| `replace-backup.json` | Legacy temporary Replace All undo file, cleared with stale journal state |
 
 To fully reset LushText state, close the app and remove that app-data directory.
 For Flatpak installs, also reset the sandboxed GSettings if you want preferences
@@ -360,7 +384,7 @@ The full shortcut list is available in **Main Menu > Keyboard Shortcuts**.
 
 | Component | Technology |
 |-----------|------------|
-| Language | Rust (Edition 2024, MSRV 1.95.0) |
+| Language | Rust (Edition 2024, MSRV 1.96.0) |
 | GUI | GTK4 0.11 + Libadwaita 0.9 + GtkSourceView 5 0.11 |
 | Config | GSettings |
 | Build | Cargo workspace + Makefile (dev), Meson (Flatpak/installed) |
@@ -371,7 +395,7 @@ The full shortcut list is available in **Main Menu > Keyboard Shortcuts**.
 
 ### Dependencies
 
-- Rust 1.95.0+
+- Rust 1.96.0+
 - GTK4 development libraries
 - Libadwaita development libraries
 - GtkSourceView 5 development libraries
@@ -397,12 +421,15 @@ make build-debug # Debug build
 make run         # Debug build + force a fresh run with temporary GNOME desktop staging
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
 make test        # All tests (unit + integration + widget)
-make check       # clippy + fmt check
-make pre-commit  # repo pre-commit gate (fmt + clippy)
+make check       # fmt + all-feature Clippy + fast policy audits
+make lint-advisory # grouped advisory Rust lint discovery
+make pre-commit  # repo pre-commit gate (fmt + all-feature Clippy + policy audits)
 make install-git-hooks
 ```
 
-LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hooks` once per checkout to configure `core.hooksPath`; after that, each commit runs the same rustfmt + Clippy gate locally before Git creates the commit.
+LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hooks` once per checkout to configure `core.hooksPath`; after that, each commit runs the same rustfmt, all-targets/all-features Clippy, and fast policy-audit gate locally before Git creates the commit.
+
+The blocking Rust lint command is `cargo clippy --workspace --all-targets --all-features -- -D warnings`. Broad Clippy groups stay advisory instead of blanket-blocking; run `make lint-advisory` after Rust or Clippy updates to get grouped Clippy/rustc findings and fail on any new unclassified category. CI pins validation helpers in workflow env variables, including cargo-deny `0.19.8`, cargo-nextest `0.9.137`, cargo-fuzz `0.13.1`, and cargo-mutants `27.0.0`.
 
 The Makefile auto-detects [cargo-nextest](https://nexte.st/) for parallel non-widget execution (optional), but it always runs widget tests explicitly through the shared `scripts/run-widget-tests.sh` runner so `make test` still means the full suite. Rust 1.90+ uses [rust-lld](https://blog.rust-lang.org/2025/09/01/rust-lld-on-1.90.0-stable/) as the default linker on Linux for fast linking.
 
@@ -467,14 +494,14 @@ LushText includes non-destructive notes for saved files and explicit workspace r
 - **Bookmarks** live in the GtkSourceView gutter, can carry an optional label, and support next/previous navigation with `F2` / `Shift+F2`.
 - **Document notes** store one markdown-capable note for a saved file as a whole.
 - **Workspace notes** store one markdown-capable note for each workspace root.
-- **Browse** flows operate on the currently selected workspace scope, so the bookmark browser and unified notes browser stay aligned with the sidebar filter.
+- **Browse bookmarks** operates on the currently selected workspace scope, while **Browse notes** keeps workspace results scoped and adds an `Open Tabs` section for saved open files outside that scope.
 
 ### Shortcuts
 
 | Workflow | Shortcut |
 |----------|----------|
 | Toggle bookmark | `Ctrl+F2` |
-| Edit bookmark label | `Ctrl+Shift+F2` |
+| Edit bookmark | `Ctrl+Shift+F2` |
 | Next / previous bookmark | `F2` / `Shift+F2` |
 | Browse bookmarks | `Ctrl+Alt+B` |
 | Browse notes | `Ctrl+Alt+A` |
@@ -487,14 +514,14 @@ Use this checklist to exercise the full shipped bookmark and rich-note flow:
 2. Add a workspace folder and open a saved text file from the sidebar.
 3. Press `Ctrl+F2` on the current line.
    Expected: a bookmark appears in the gutter and the file content does not change.
-4. Press `Ctrl+Shift+F2` on that bookmarked line and add a label.
-   Expected: the label saves and later appears in bookmark browse surfaces.
+4. Press `Ctrl+Shift+F2` on that bookmarked line, add a label, and change the line.
+   Expected: the label saves, the gutter mark moves to the new line, and later bookmark browse surfaces show the updated label.
 5. Add a second bookmark on another line, then use `F2` and `Shift+F2`.
    Expected: the cursor jumps forward and backward through bookmarks in the active file.
 6. Press `Ctrl+Alt+B`.
    Expected: the bookmark browser opens for the current workspace scope, supports search, and clicking a row opens or focuses the bookmarked file and jumps to its line.
 7. Press `Ctrl+Alt+A`.
-   Expected: the unified notes browser opens for the current workspace scope, previews bookmarks, document notes, and workspace notes, and clicking Open on a row routes to the right surface.
+   Expected: the unified notes browser opens for the current workspace scope, previews bookmarks, document notes, and workspace notes, shows saved out-of-scope open-tab notes in `Open Tabs`, and clicking Open on a row routes to the right surface.
 8. Open **Document Note…** for the active saved file.
     Expected: the file-level note opens, supports Edit/Render switching, and Save persists it without changing the file bytes.
 9. Select one concrete workspace and open **Workspace Note…**.
@@ -633,6 +660,7 @@ lushtext-core/src/
     bookmark.rs      Bookmark sidecar model
     document_note.rs Saved-file document-note model
     local_history.rs Local-history snapshot metadata
+    migration_ledger.rs Retry state for post-rename sidecar/history migrations
     content_search.rs  Content search types (SearchMatch, SearchEvent, etc.)
     encoding.rs      Document encoding, line endings, file health, and invisible-character modes
     sidecar_identity.rs  Canonical-path sidecar identity helpers for notes and history
@@ -640,19 +668,22 @@ lushtext-core/src/
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
     bookmark_service.rs  Bookmark sidecar load/save/move/list helpers
+    bookmark_excerpt.rs  Bounded source excerpts for bookmark previews
     document_note_service.rs  Saved-file document-note load/save/move/list helpers
     local_history_service.rs  Local-history capture/list/load/prune/move helpers
     note_storage.rs  Shared sidecar identity/load/filter helpers for note workflows
     content_search/  Parallel workspace grep plus replace/undo helpers
     palette/         Command registry, SIMD fuzzy search, and file indexing
-    durable_write.rs Parent-directory fsync helpers for crash-durable atomic writes
+    durable_write.rs Private crash-durable write state machine over the filesystem backend
     editor_io.rs     Encoding-aware text file load/save helpers, health analysis, and mtimes
     editorconfig.rs  .editorconfig resolution
     file_peek.rs     Bounded read-only snapshots for sidebar file peek
     notifications.rs Window-scoped status and inline notification store
     file_tree.rs     Directory scanning
     draft_service.rs Draft autosave
-    search_backup.rs Replace All undo backup persistence for the active session
+    migration_ledger.rs   Durable retry ledger for sidecar/history migrations
+    recovery_metadata.rs  Recovery-aware app-data metadata quarantine and diagnostics
+    search_backup.rs Replace All per-file undo journal persistence for the active safety window
     search_history.rs  Search history persistence
     saved_searches.rs  Named saved search persistence
     session_service.rs  Session load/save
@@ -681,11 +712,24 @@ make test-unit   # Unit tests only
 make test-int    # Integration tests only
 make test-widget # Widget tests with shared native/headless runner
 make test-widget-headless # Widget tests with the CI mutter/dbus setup
+make visual-smoke # Headless Mutter screenshot smoke with artifacts
+make crash-recovery-smoke # SIGKILL/relaunch recovery smoke with artifacts
+make portal-sandbox-smoke # Confined Flatpak/Snap smoke diagnostics
+make accessibility-smoke # AT-SPI-enabled accessibility smoke
+make performance-smoke # Lightweight Criterion performance smoke
 ```
 
 Widget tests require a display server. `make test` and `make test-widget-headless` use the CI-style `mutter --headless` path for deterministic full-suite runs. `make test-widget` uses `scripts/run-widget-tests.sh`, which runs against the current display session when one is available and otherwise falls back to headless mode if the required tools are installed. The runner defaults to GTK's Cairo renderer so headless containers do not fail the warning gate while probing unavailable GPU devices; set `GSK_RENDERER` explicitly when debugging a renderer-specific issue.
 
 GTK widget tests run through the custom harness in [`crates/lushtext/tests/widget.rs`](./crates/lushtext/tests/widget.rs), which executes each widget test in its own process so GTK objects stay on a real main thread and test state cannot leak across cases. Because that binary is not owned by nextest, the shared runner keeps the native and headless `cargo test --test widget` paths aligned in one place.
+
+For end-user risks that the widget harness cannot honestly prove, use the
+separate smoke lanes documented in
+[`docs/end-user-coverage.md`](docs/end-user-coverage.md). Those lanes preserve
+artifacts and record explicit skip reasons instead of treating missing desktop,
+portal, accessibility, or packaging support as a pass.
+Recovery metadata, quarantine, migration-ledger, and crash-smoke triage details
+live in [`docs/recovery-reliability.md`](docs/recovery-reliability.md).
 
 ## Benchmarks
 

@@ -1,0 +1,13 @@
+timestamp=2026-06-05T14:17:31Z
+repo=/var/home/danilo/Workspace/github/cominotti/lushtext
+kernel=Linux 7.0.10-201.fc44.x86_64 x86_64 GNU/Linux
+gsk_renderer=
+gdk_backend=
+wayland_display=wayland-0
+display=:0
+xdg_session_type=wayland
+gsettings_backend=
+gtk4_version=4.22.4
+libadwaita-1_version=1.9.0
+gtksourceview-5_version=5.20.0
+flatpak=Flatpak 1.17.7

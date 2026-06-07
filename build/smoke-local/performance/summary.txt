@@ -1,0 +1,47 @@
+## recovery_performance
+Benchmarking recovery_performance/malformed_metadata/startup_and_sidecar_diagnostics
+Benchmarking recovery_performance/malformed_metadata/startup_and_sidecar_diagnostics: Warming up for 1.0000 s
+Benchmarking recovery_performance/malformed_metadata/startup_and_sidecar_diagnostics: Collecting 10 samples in estimated 1.0008 s (3245 iterations)
+Benchmarking recovery_performance/malformed_metadata/startup_and_sidecar_diagnostics: Analyzing
+                        time:   [240.55 µs 246.83 µs 253.48 µs]
+Benchmarking recovery_performance/pending_migrations/reconcile/10
+Benchmarking recovery_performance/pending_migrations/reconcile/10: Warming up for 1.0000 s
+Benchmarking recovery_performance/pending_migrations/reconcile/10: Collecting 10 samples in estimated 1.0152 s (1210 iterations)
+Benchmarking recovery_performance/pending_migrations/reconcile/10: Analyzing
+                        time:   [541.83 µs 548.08 µs 553.92 µs]
+Benchmarking recovery_performance/pending_migrations/reconcile/100
+Benchmarking recovery_performance/pending_migrations/reconcile/100: Warming up for 1.0000 s
+Benchmarking recovery_performance/pending_migrations/reconcile/100: Collecting 10 samples in estimated 1.6298 s (55 iterations)
+Benchmarking recovery_performance/pending_migrations/reconcile/100: Analyzing
+                        time:   [18.988 ms 19.295 ms 19.711 ms]
+Benchmarking recovery_performance/duplicate_sidecars/bookmark_merge
+Benchmarking recovery_performance/duplicate_sidecars/bookmark_merge: Warming up for 1.0000 s
+Benchmarking recovery_performance/duplicate_sidecars/bookmark_merge: Collecting 10 samples in estimated 1.0007 s (9570 iterations)
+Benchmarking recovery_performance/duplicate_sidecars/bookmark_merge: Analyzing
+                        time:   [57.264 µs 58.690 µs 59.341 µs]
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/24
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/24: Warming up for 1.0000 s
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/24: Collecting 10 samples in estimated 1.2373 s (220 iterations)
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/24: Analyzing
+                        time:   [1.2991 ms 1.3098 ms 1.3181 ms]
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/24
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/24: Warming up for 1.0000 s
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/24: Collecting 10 samples in estimated 1.0289 s (825 iterations)
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/24: Analyzing
+                        time:   [590.26 µs 604.97 µs 615.65 µs]
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/120
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/120: Warming up for 1.0000 s
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/120: Collecting 10 samples in estimated 1.6174 s (20 iterations)
+Benchmarking recovery_performance/local_history_many_lineages/move_tree/120: Analyzing
+                        time:   [6.2909 ms 6.4677 ms 6.6608 ms]
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/120
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/120: Warming up for 1.0000 s
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/120: Collecting 10 samples in estimated 1.0478 s (165 iterations)
+Benchmarking recovery_performance/local_history_many_lineages/reconcile_bounded/120: Analyzing
+                        time:   [3.0334 ms 3.0580 ms 3.0888 ms]
+Benchmarking recovery_performance/first_dirty_autosave/persist_manifest_batch
+Benchmarking recovery_performance/first_dirty_autosave/persist_manifest_batch: Warming up for 1.0000 s
+Benchmarking recovery_performance/first_dirty_autosave/persist_manifest_batch: Collecting 10 samples in estimated 1.0006 s (3520 iterations)
+Benchmarking recovery_performance/first_dirty_autosave/persist_manifest_batch: Analyzing
+                        time:   [258.89 µs 263.51 µs 267.79 µs]
+

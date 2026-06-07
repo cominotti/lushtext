@@ -11,6 +11,25 @@ MUTANTS_BASE="${MUTANTS_BASE:-origin/main}"
 MUTANTS_SHARD="${MUTANTS_SHARD:-}"
 MUTANTS_BASELINE_SKIP="${MUTANTS_BASELINE_SKIP:-0}"
 MUTANTS_IN_PLACE="${MUTANTS_IN_PLACE:-0}"
+MUTANTS_JOBS="${MUTANTS_JOBS:-}"
+MUTANTS_TEST_THREADS="${MUTANTS_TEST_THREADS:-}"
+MUTANTS_BUILD_JOBS="${MUTANTS_BUILD_JOBS:-}"
+
+# Cap per-job parallelism so concurrent jobs do not oversubscribe the host.
+# cargo-mutants runs MUTANTS_JOBS build/test pipelines at once; each one launches
+# its own cargo build AND its own nextest, both of which otherwise grab every
+# core. Capping each phase so jobs x per-job-parallelism stays near the logical
+# CPU count is what makes --jobs a speedup instead of thrash:
+#   - NEXTEST_TEST_THREADS bounds the test phase.
+#   - CARGO_BUILD_JOBS bounds the build phase (the one that spikes load average,
+#     since six concurrent cold builds each fan out to every core by default).
+# CI leaves all three unset, so sharded runners stay serial and uncapped.
+if [[ -n "${MUTANTS_TEST_THREADS}" ]]; then
+    export NEXTEST_TEST_THREADS="${MUTANTS_TEST_THREADS}"
+fi
+if [[ -n "${MUTANTS_BUILD_JOBS}" ]]; then
+    export CARGO_BUILD_JOBS="${MUTANTS_BUILD_JOBS}"
+fi
 
 usage() {
     cat <<'EOF'
@@ -32,6 +51,9 @@ Environment:
   MUTANTS_SHARD         Shard identity, for example 0/4.
   MUTANTS_BASELINE_SKIP Set to 1 to pass --baseline=skip.
   MUTANTS_IN_PLACE      Set to 1 to pass --in-place; guarded outside CI.
+  MUTANTS_JOBS          Build/test this many mutants in parallel (default: serial).
+  MUTANTS_TEST_THREADS  Cap nextest threads per mutant job (pairs with MUTANTS_JOBS).
+  MUTANTS_BUILD_JOBS    Cap cargo build jobs per mutant job (pairs with MUTANTS_JOBS).
 EOF
 }
 
@@ -77,6 +99,8 @@ mutants_args() {
         --timeout
         "${MUTANTS_TIMEOUT}"
     )
+    # Do not pass `--features property-tests` here. Property tests run in their
+    # own lane so generated cases are not multiplied by every mutant.
 
     if [[ "${MUTANTS_BASELINE_SKIP}" == "1" ]]; then
         args+=(--baseline=skip)
@@ -89,6 +113,12 @@ mutants_args() {
 
     if [[ -n "${MUTANTS_SHARD}" ]]; then
         args+=(--shard "${MUTANTS_SHARD}")
+    fi
+
+    # Local runs set this to fan out across cores; CI leaves it empty so the
+    # sharded small runners keep cargo-mutants' serial default.
+    if [[ -n "${MUTANTS_JOBS}" ]]; then
+        args+=(--jobs "${MUTANTS_JOBS}")
     fi
 
     printf '%s\n' "${args[@]}"

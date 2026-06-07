@@ -12,11 +12,12 @@ use crate::model::encoding::{
     FileHealthFindingKind, FileHealthSeverity, LineEnding,
 };
 use crate::model::formatting_overrides::FormattingOverrides;
-use crate::services::durable_write;
 use crate::services::file_limits::FileSizeCheck;
+use crate::services::filesystem::{
+    WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write,
+};
 use std::borrow::Cow;
 use std::fmt::Write as _;
-use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -27,10 +28,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const MAX_LOSSY_PREVIEW_ISSUES: usize = 8;
 
 /// Successful result from `load_text_file`.
+#[derive(Debug)]
 pub struct LoadResult {
     pub content: String,
     pub size: u64,
     pub size_check: FileSizeCheck,
+    /// Canonical filesystem identity resolved on the background load thread.
+    pub canonical_path: Option<PathBuf>,
     /// File mtime (epoch seconds), extracted from the metadata already
     /// read for size classification — no extra stat() needed by callers.
     pub mtime: Option<u64>,
@@ -39,6 +43,24 @@ pub struct LoadResult {
     /// Whether the loaded bytes carried a leading byte-order mark.
     pub has_bom: bool,
     /// File-health findings surfaced for the current document.
+    pub file_health: Vec<FileHealthFinding>,
+}
+
+/// Decoded byte-ingestion snapshot returned only to fuzz targets.
+///
+/// Fuzzing needs to drive the same in-memory decode and health-classification
+/// logic as file loading without touching the filesystem or widening the normal
+/// application API. The `fuzzing` feature keeps this type out of ordinary builds.
+#[cfg(feature = "fuzzing")]
+#[derive(Debug, Clone)]
+pub struct FuzzedEditorBytes {
+    /// Decoded text produced by the load pipeline.
+    pub content: String,
+    /// Encoding and line-ending facts inferred from the raw bytes.
+    pub encoding_state: DocumentEncodingState,
+    /// Whether a matching byte-order mark was consumed during decoding.
+    pub has_bom: bool,
+    /// File-health findings that the editor would surface for these bytes.
     pub file_health: Vec<FileHealthFinding>,
 }
 
@@ -145,10 +167,12 @@ pub enum SaveError {
         #[source]
         source: std::io::Error,
     },
-    #[error("Failed to finalize {to} from {from}: {source}")]
-    Finalize {
-        from: PathBuf,
-        to: PathBuf,
+    /// The new bytes reached `path`, but the directory `fsync` that proves the
+    /// rename durable failed. The save is on disk yet not confirmed crash-safe,
+    /// so callers must report this differently from a lost write.
+    #[error("Saved {path}, but durability could not be confirmed: {source}")]
+    DurabilityUnconfirmed {
+        path: PathBuf,
         #[source]
         source: std::io::Error,
     },
@@ -187,13 +211,14 @@ pub fn load_text_file_with_encoding(
         return Err(LoadError::Cancelled);
     }
 
-    let meta = std::fs::metadata(path).map_err(|source| LoadError::Metadata {
+    let facts = fs_metadata::file_facts(path).map_err(|source| LoadError::Metadata {
         path: path.to_path_buf(),
         source,
     })?;
-    let size = meta.len();
+    let size = facts.byte_size;
     let size_check = FileSizeCheck::classify(size);
-    let mtime = mtime_from_metadata(&meta);
+    let canonical_path = facts.canonical_path;
+    let mtime = facts.modified_at_secs;
 
     if size_check == FileSizeCheck::TooLarge {
         return Err(LoadError::TooLarge {
@@ -206,7 +231,7 @@ pub fn load_text_file_with_encoding(
         return Err(LoadError::Cancelled);
     }
 
-    let bytes = std::fs::read(path).map_err(|source| LoadError::Read {
+    let bytes = fs_read::bytes(path).map_err(|source| LoadError::Read {
         path: path.to_path_buf(),
         source,
     })?;
@@ -221,11 +246,34 @@ pub fn load_text_file_with_encoding(
         content: decoded.content,
         size,
         size_check,
+        canonical_path,
         mtime,
         encoding_state: decoded.encoding_state,
         has_bom: decoded.has_bom,
         file_health,
     })
+}
+
+/// Classify raw editor bytes without filesystem access for fuzz targets.
+///
+/// This deliberately reuses `decode_document()` and `build_file_health()` so
+/// fuzzing exercises the production byte-ingestion path while staying free of
+/// disk I/O, GTK widgets, and cancellation timing.
+#[cfg(feature = "fuzzing")]
+#[must_use]
+pub fn classify_bytes_for_fuzzing(
+    bytes: &[u8],
+    reopen_as: Option<DocumentEncoding>,
+) -> FuzzedEditorBytes {
+    let decoded = decode_document(bytes, reopen_as);
+    let file_health = build_file_health(&decoded.content, &decoded, bytes);
+
+    FuzzedEditorBytes {
+        content: decoded.content,
+        encoding_state: decoded.encoding_state,
+        has_bom: decoded.has_bom,
+        file_health,
+    }
 }
 
 /// Atomically write a UTF-8/LF snapshot to a file using temp-file-then-rename.
@@ -263,9 +311,9 @@ pub fn write_document_to_path(
     let bytes = encode_text(&normalized, encoding, allow_lossy)?;
     let bytes_written = bytes.len() as u64;
     write_bytes_to_path(path, &bytes)?;
-    let mtime = std::fs::metadata(path)
+    let mtime = fs_metadata::file_facts(path)
         .ok()
-        .and_then(|metadata| mtime_from_metadata(&metadata));
+        .and_then(|facts| facts.modified_at_secs);
     Ok((bytes_written, mtime))
 }
 
@@ -348,23 +396,15 @@ pub fn analyze_lossy_encoding(
     }
 }
 
-/// Extract mtime as epoch seconds from already-fetched metadata.
-fn mtime_from_metadata(meta: &std::fs::Metadata) -> Option<u64> {
-    meta.modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())
-}
-
 /// Read a file's mtime as seconds since the UNIX epoch.
 /// Returns `None` if the file doesn't exist or metadata can't be read.
 ///
 /// **Threading:** Performs a blocking stat syscall.
 #[must_use]
 pub fn mtime_secs(path: &Path) -> Option<u64> {
-    std::fs::metadata(path)
+    fs_metadata::file_facts(path)
         .ok()
-        .and_then(|metadata| mtime_from_metadata(&metadata))
+        .and_then(|facts| facts.modified_at_secs)
 }
 
 /// Current wall-clock time as seconds since the UNIX epoch.
@@ -710,49 +750,44 @@ fn encode_text(
 }
 
 /// Write already-prepared bytes to disk atomically.
+///
+/// The advisory write lock keeps an in-app save from racing a workspace-wide
+/// Replace All on the same path; the shared durable-write helper owns the
+/// temp-file-then-rename ordering, the destination metadata preservation, and
+/// the before/after-rename failure classification. A pre-rename failure leaves
+/// the previous bytes intact (`WriteTemp`); a post-rename directory-sync failure
+/// means the new bytes are on disk but not yet crash-durable
+/// (`DurabilityUnconfirmed`).
 fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
-    let _path_lock =
-        durable_write::FileWriteLock::acquire(path).map_err(|source| SaveError::WriteTemp {
+    let identity =
+        fs_write::resolve_target_identity(path).map_err(|source| SaveError::WriteTemp {
             path: path.to_path_buf(),
             source,
         })?;
-    let tmp_path = durable_write::unique_temp_path(path, "save");
-    let file = std::fs::File::create(&tmp_path).map_err(|source| SaveError::WriteTemp {
-        path: tmp_path.clone(),
-        source,
-    })?;
-    let mut writer = BufWriter::new(file);
-    writer
-        .write_all(bytes)
-        .map_err(|source| SaveError::WriteTemp {
-            path: tmp_path.clone(),
+    let write_path = identity.as_path().to_path_buf();
+    let _path_lock = fs_write::TargetWriteGuard::from_identity(identity);
+    fs_write::atomic_replace(&write_path, WriteLabel::SAVE, bytes)
+        .map_err(|error| save_error_from_durable(error, path))
+}
+
+/// Translate a classified durable-write failure into the save-facing error.
+///
+/// A before-rename failure means the document was never written, so the user
+/// must keep their unsaved-work signal (`WriteTemp`). An after-rename failure
+/// means the bytes are already on disk but not yet crash-durable, which must be
+/// reported distinctly (`DurabilityUnconfirmed`) so a directory-sync hiccup is
+/// not mistaken for a lost save.
+fn save_error_from_durable(error: fs_write::DurableWriteError, path: &Path) -> SaveError {
+    match error {
+        fs_write::DurableWriteError::BeforeRename(source) => SaveError::WriteTemp {
+            path: path.to_path_buf(),
             source,
-        })?;
-    writer.flush().map_err(|source| SaveError::WriteTemp {
-        path: tmp_path.clone(),
-        source,
-    })?;
-    writer
-        .get_ref()
-        .sync_all()
-        .map_err(|source| SaveError::WriteTemp {
-            path: tmp_path.clone(),
+        },
+        fs_write::DurableWriteError::AfterRename(source) => SaveError::DurabilityUnconfirmed {
+            path: path.to_path_buf(),
             source,
-        })?;
-    std::fs::rename(&tmp_path, path).map_err(|source| {
-        let _ = std::fs::remove_file(&tmp_path);
-        SaveError::Finalize {
-            from: tmp_path.clone(),
-            to: path.to_path_buf(),
-            source,
-        }
-    })?;
-    durable_write::sync_parent_dir(path).map_err(|source| SaveError::Finalize {
-        from: tmp_path.clone(),
-        to: path.to_path_buf(),
-        source,
-    })?;
-    Ok(())
+        },
+    }
 }
 
 /// Return the BOM prefix bytes for save encodings that write one.
@@ -793,13 +828,15 @@ fn is_zero_width(character: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::{fixture, metadata as fs_metadata};
+    use std::assert_matches;
     use std::sync::atomic::AtomicBool;
     use tempfile::NamedTempFile;
 
     #[test]
     fn load_text_file_reads_utf8_and_classifies_size() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), "hello\nworld").expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), "hello\nworld");
 
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
@@ -821,8 +858,7 @@ mod tests {
     #[test]
     fn load_text_file_detects_utf8_bom_and_crlf() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), [0xEF, 0xBB, 0xBF, b'a', b'\r', b'\n'])
-            .expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), [0xEF, 0xBB, 0xBF, b'a', b'\r', b'\n']);
 
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
@@ -845,8 +881,7 @@ mod tests {
     #[test]
     fn load_text_file_explicit_reopen_strips_only_matching_bom() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), [0xEF, 0xBB, 0xBF, b'a'])
-            .expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), [0xEF, 0xBB, 0xBF, b'a']);
 
         let cancel = AtomicBool::new(false);
         let matching =
@@ -865,8 +900,7 @@ mod tests {
     #[test]
     fn load_text_file_decodes_windows_1252_when_utf8_fails() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), [0x63, 0x61, 0x66, 0xE9])
-            .expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), [0x63, 0x61, 0x66, 0xE9]);
 
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
@@ -891,12 +925,10 @@ mod tests {
     #[test]
     fn load_text_file_guesses_utf16_without_bom_when_signal_is_strong() {
         let le_file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(le_file.path(), [b'H', 0, 0xE9, 0, b'\n', 0])
-            .expect("expected operation to succeed");
+        fixture::write_bytes(le_file.path(), [b'H', 0, 0xE9, 0, b'\n', 0]);
 
         let be_file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(be_file.path(), [0, b'H', 0, 0xE9, 0, b'\n'])
-            .expect("expected operation to succeed");
+        fixture::write_bytes(be_file.path(), [0, b'H', 0, 0xE9, 0, b'\n']);
 
         let cancel = AtomicBool::new(false);
         let le_result =
@@ -951,10 +983,10 @@ mod tests {
     #[test]
     fn load_text_file_does_not_guess_utf16_for_short_or_odd_inputs() {
         let short_file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(short_file.path(), [0xFF, 0]).expect("expected operation to succeed");
+        fixture::write_bytes(short_file.path(), [0xFF, 0]);
 
         let odd_file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(odd_file.path(), [0, 0xFF, 0]).expect("expected operation to succeed");
+        fixture::write_bytes(odd_file.path(), [0, 0xFF, 0]);
 
         let cancel = AtomicBool::new(false);
         let short_result =
@@ -975,7 +1007,7 @@ mod tests {
     #[test]
     fn load_text_file_detects_mixed_line_endings() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), "a\r\nb\nc\r").expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), "a\r\nb\nc\r");
 
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
@@ -1019,7 +1051,7 @@ mod tests {
     #[test]
     fn load_text_file_does_not_mark_utf16_nul_bytes_as_binary_like() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), [0xFF, 0xFE, b'A', 0]).expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), [0xFF, 0xFE, b'A', 0]);
 
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
@@ -1045,8 +1077,7 @@ mod tests {
     #[test]
     fn load_text_file_reports_space_and_zero_width_health_counts() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), "a\u{00a0}b\u{00a0}c\u{200b}")
-            .expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), "a\u{00a0}b\u{00a0}c\u{200b}");
 
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
@@ -1068,7 +1099,7 @@ mod tests {
     #[test]
     fn load_text_file_omits_absent_space_character_health_findings() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), "plain text").expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), "plain text");
 
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
@@ -1090,12 +1121,12 @@ mod tests {
     #[test]
     fn load_text_file_honors_cancellation() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), "hello").expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), "hello");
 
         let cancel = AtomicBool::new(true);
         let result = load_text_file(file.path(), &cancel);
 
-        assert!(matches!(result, Err(LoadError::Cancelled)));
+        assert_matches!(result, Err(LoadError::Cancelled));
     }
 
     #[test]
@@ -1108,16 +1139,13 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel);
 
-        assert!(matches!(
-            result,
-            Err(LoadError::TooLarge { size_mb: 501, .. })
-        ));
+        assert_matches!(result, Err(LoadError::TooLarge { size_mb: 501, .. }));
     }
 
     #[test]
     fn load_text_file_supports_explicit_reopen_encoding() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), [0x82, 0xA0]).expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), [0x82, 0xA0]);
 
         let cancel = AtomicBool::new(false);
         let result =
@@ -1227,9 +1255,54 @@ mod tests {
 
         assert_eq!(size, 11);
         assert!(mtime.is_some(), "mtime should be populated after write");
-        assert_eq!(
-            std::fs::read_to_string(path).expect("expected operation to succeed"),
-            "saved\r\ntext"
+        assert_eq!(fixture::read_text(&path), "saved\r\ntext");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_document_to_path_updates_symlink_target_without_replacing_link() {
+        let dir = tempfile::tempdir().expect("symlink save tempdir");
+        let target = dir.path().join("target.txt");
+        let link = dir.path().join("link.txt");
+        fixture::write_bytes(&target, "old target");
+        fixture::symlink(&target, &link);
+
+        write_document_to_path(
+            &link,
+            "new target",
+            DocumentEncoding::Utf8,
+            LineEnding::Lf,
+            false,
+        )
+        .expect("save through symlink");
+
+        assert!(
+            fixture::is_symlink(&link),
+            "the display path must remain a symlink"
+        );
+        assert_eq!(fixture::read_text(&target), "new target");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_document_to_path_fails_broken_symlink_before_replacement() {
+        let dir = tempfile::tempdir().expect("broken symlink save tempdir");
+        let missing_target = dir.path().join("missing-target.txt");
+        let link = dir.path().join("link.txt");
+        fixture::symlink(&missing_target, &link);
+
+        let result = write_document_to_path(
+            &link,
+            "new target",
+            DocumentEncoding::Utf8,
+            LineEnding::Lf,
+            false,
+        );
+
+        assert_matches!(result, Err(SaveError::WriteTemp { .. }));
+        assert!(
+            fixture::is_symlink(&link),
+            "failed save must leave the symlink untouched"
         );
     }
 
@@ -1265,24 +1338,13 @@ mod tests {
         )
         .expect("expected operation to succeed");
 
-        assert_eq!(
-            std::fs::read(utf8_path).expect("expected operation to succeed"),
-            [0xEF, 0xBB, 0xBF, b'A']
-        );
+        assert_eq!(fixture::read_bytes(&utf8_path), [0xEF, 0xBB, 0xBF, b'A']);
         assert_eq!(
             bom_bytes_for_encoding(DocumentEncoding::Utf8Bom),
             &[0xEF, 0xBB, 0xBF]
         );
-        assert!(
-            std::fs::read(utf16le_path)
-                .expect("expected operation to succeed")
-                .starts_with(&[0xFF, 0xFE])
-        );
-        assert!(
-            std::fs::read(utf16be_path)
-                .expect("expected operation to succeed")
-                .starts_with(&[0xFE, 0xFF])
-        );
+        assert!(fixture::read_bytes(&utf16le_path).starts_with(&[0xFF, 0xFE]));
+        assert!(fixture::read_bytes(&utf16be_path).starts_with(&[0xFE, 0xFF]));
     }
 
     #[test]
@@ -1298,7 +1360,7 @@ mod tests {
             false,
         );
 
-        assert!(matches!(result, Err(SaveError::MixedLineEndings)));
+        assert_matches!(result, Err(SaveError::MixedLineEndings));
     }
 
     #[test]
@@ -1356,7 +1418,7 @@ mod tests {
     #[test]
     fn mtime_and_now_epoch_helpers_report_current_nonzero_seconds() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), "mtime").expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), "mtime");
 
         assert!(now_epoch_secs() > 1_700_000_000);
         assert!(mtime_secs(file.path()).expect("mtime should exist") > 1_700_000_000);
@@ -1375,10 +1437,68 @@ mod tests {
             false,
         );
 
-        assert!(matches!(result, Err(SaveError::LossyEncoding { .. })));
+        assert_matches!(result, Err(SaveError::LossyEncoding { .. }));
         assert!(
-            !path.exists(),
+            !fs_metadata::exists(&path),
             "the file should not be written when lossy conversion is blocked"
+        );
+    }
+
+    #[test]
+    fn save_error_from_durable_maps_failure_phases_to_distinct_variants() {
+        let path = std::path::Path::new("/tmp/does-not-matter.txt");
+
+        let before = save_error_from_durable(
+            fs_write::DurableWriteError::BeforeRename(std::io::Error::other("temp failed")),
+            path,
+        );
+        assert_matches!(before, SaveError::WriteTemp { .. });
+
+        let after = save_error_from_durable(
+            fs_write::DurableWriteError::AfterRename(std::io::Error::other("dir sync failed")),
+            path,
+        );
+        assert_matches!(after, SaveError::DurabilityUnconfirmed { .. });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_document_to_path_preserves_existing_mode_and_executable_bit() {
+        let dir = tempfile::tempdir().expect("expected operation to succeed");
+
+        let private = dir.path().join("private.txt");
+        fixture::write_bytes(&private, "old");
+        fixture::set_mode(&private, 0o600);
+        write_document_to_path(
+            &private,
+            "new",
+            DocumentEncoding::Utf8,
+            LineEnding::Lf,
+            false,
+        )
+        .expect("save private file");
+        let private_mode = fixture::mode(&private) & 0o777;
+        assert_eq!(
+            private_mode, 0o600,
+            "saving must not widen a 0600 file's permissions"
+        );
+
+        let script = dir.path().join("script.sh");
+        fixture::write_bytes(&script, "#!/bin/sh\necho old\n");
+        fixture::set_mode(&script, 0o755);
+        write_document_to_path(
+            &script,
+            "#!/bin/sh\necho new\n",
+            DocumentEncoding::Utf8,
+            LineEnding::Lf,
+            false,
+        )
+        .expect("save script");
+        let script_mode = fixture::mode(&script);
+        assert_ne!(
+            script_mode & 0o111,
+            0,
+            "saving an executable script must keep it executable"
         );
     }
 }

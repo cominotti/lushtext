@@ -2,19 +2,25 @@
 
 //! Tests for the LushtextEditorPage widget.
 
-use crate::common::{ensure_gtk_init, present_window, test_application, wait_until};
+use crate::common::{ensure_gtk_init, fixture, fs_read, present_window, test_application, wait_until};
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::config::{APP_ID, keys};
+use lushtext_core::model::encoding::DocumentEncodingState;
+use lushtext_core::services::editor_io::LoadResult;
+use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::editor_page::{
-    BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage, MinimapAvailability,
-    MinimapMarkerKind,
+    BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
+    MinimapAvailability, MinimapMarkerKind,
 };
 use sourceview5::prelude::*;
-use std::cell::Cell;
+use std::assert_matches;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 fn button_label(button: &gtk4::Button) -> gtk4::Label {
     button
@@ -22,6 +28,13 @@ fn button_label(button: &gtk4::Button) -> gtk4::Label {
         .expect("button child")
         .downcast::<gtk4::Label>()
         .expect("button label")
+}
+
+fn editor_buffer_text(page: &LushtextEditorPage) -> String {
+    let buffer = page.buffer();
+    buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string()
 }
 
 fn same_widget(widget: &gtk4::Widget, target: &impl IsA<gtk4::Widget>) -> bool {
@@ -576,10 +589,10 @@ fn test_save_file_no_path_returns_error() {
         *result_clone.borrow_mut() = Some(r);
     });
     let result = result.borrow_mut().take().expect("expected operation to succeed");
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(lushtext_core::ui::editor_page::SaveError::NoPath)
-    ));
+    );
 }
 
 #[test]
@@ -608,7 +621,7 @@ fn test_save_file_writes_content() {
     while !done.get() {
         glib::MainContext::default().iteration(true);
     }
-    let saved = std::fs::read_to_string(&path).expect("expected operation to succeed");
+    let saved = fs_read::text(&path).expect("expected operation to succeed");
     assert_eq!(saved, "saved content");
 
     // Buffer should no longer be modified after save
@@ -616,7 +629,135 @@ fn test_save_file_writes_content() {
 }
 
 #[test]
-fn test_save_keeps_document_dirty_until_background_write_finishes() {
+fn test_large_untitled_buffer_uses_chunked_save_snapshot_policy() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&"x".repeat(2_500_000));
+
+    assert!(
+        page.save_uses_chunked_snapshot_for_test(),
+        "large untitled buffers should not be copied in one synchronous snapshot"
+    );
+}
+
+#[test]
+fn test_file_that_grew_in_memory_uses_chunked_save_snapshot_policy() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.imp().file_size.set(Some(1_024));
+    page.buffer().set_text(&"x".repeat(2_500_000));
+
+    assert!(
+        page.save_uses_chunked_snapshot_for_test(),
+        "snapshot policy should follow live buffer size, not only loaded file size"
+    );
+}
+
+#[test]
+fn test_minimap_long_line_warning_scan_preserves_small_document_markers() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&format!("short\n{}", "x".repeat(121)));
+
+    assert_eq!(page.long_line_warning_count_for_test(), 1);
+}
+
+#[test]
+fn test_minimap_long_line_warning_scan_skips_large_buffer_threshold() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&"x".repeat(2_500_001));
+
+    assert_eq!(
+        page.long_line_warning_count_for_test(),
+        0,
+        "large-buffer minimap warnings should skip the full text copy/scan path"
+    );
+}
+
+#[test]
+fn test_minimap_wrapped_budget_skips_large_buffer_line_scan() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+
+    let page = LushtextEditorPage::new();
+    page.imp().file_size.set(Some(3 * 1024 * 1024));
+    page.buffer().set_text(&"x".repeat(2_500_001));
+    let _window = present_editor_page_with_size(&page, 1000, 520);
+
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.minimap_availability() == MinimapAvailability::TooLarge
+    });
+
+    assert!(!page.is_minimap_visible());
+}
+
+#[test]
+fn test_stale_load_generation_result_does_not_mutate_current_editor_state() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text("current buffer\n");
+
+    let stale_generation = page.load_generation_for_test();
+    page.cancel_load();
+    let stale_result = LoadResult {
+        content: "stale disk bytes\n".to_string(),
+        size: 17,
+        size_check: FileSizeCheck::Normal,
+        canonical_path: Some(std::path::PathBuf::from("/tmp/stale.txt")),
+        mtime: Some(123),
+        encoding_state: DocumentEncodingState::default(),
+        has_bom: false,
+        file_health: Vec::new(),
+    };
+
+    assert!(
+        !page.apply_load_result_for_test(stale_generation, Ok(stale_result)),
+        "stale load generations should be rejected before touching the editor"
+    );
+    assert_eq!(editor_buffer_text(&page), "current buffer\n");
+    assert_eq!(page.file_size(), None);
+}
+
+#[test]
+fn test_new_load_cancels_previous_token_without_reusing_identity() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("load token tempdir");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+    fixture::write_text(&first_path, "first\n");
+    fixture::write_text(&second_path, "second\n");
+
+    let page = LushtextEditorPage::new();
+    page.load_file_async(&first_path);
+    let first_token = page.load_cancel_token_for_test();
+    assert!(
+        !first_token.load(Ordering::Acquire),
+        "newly started load token should begin active"
+    );
+
+    page.load_file_async(&second_path);
+    let second_token = page.load_cancel_token_for_test();
+
+    assert!(
+        first_token.load(Ordering::Acquire),
+        "starting a newer load must permanently cancel the previous token"
+    );
+    assert!(
+        !second_token.load(Ordering::Acquire),
+        "the replacement token should remain active for the newer load"
+    );
+    assert!(
+        !Arc::ptr_eq(&first_token, &second_token),
+        "new loads should rotate token identity instead of clearing the old token"
+    );
+}
+
+#[test]
+fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
     let buffer = page.buffer();
@@ -638,15 +779,14 @@ fn test_save_keeps_document_dirty_until_background_write_finishes() {
     assert!(page.is_saving());
     assert!(page.is_modified());
     assert!(!page.source_view().is_editable());
+    assert!(!page.source_view().is_cursor_visible());
 
     wait_until(std::time::Duration::from_secs(2), || done.get());
     assert!(!page.is_saving());
     assert!(!page.is_modified());
     assert!(page.source_view().is_editable());
-    assert_eq!(
-        std::fs::read_to_string(path).expect("expected operation to succeed"),
-        content
-    );
+    assert!(page.source_view().is_cursor_visible());
+    assert_eq!(fs_read::text(&path).expect("expected operation to succeed"), content);
 }
 
 #[test]
@@ -665,6 +805,9 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
         r.expect("expected operation to succeed");
         first_done_clone.set(true);
     });
+    assert!(page.is_saving());
+    assert!(!page.source_view().is_editable());
+    assert!(!page.source_view().is_cursor_visible());
 
     let duplicate_result: std::rc::Rc<
         std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::SaveError>>>,
@@ -678,12 +821,19 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
         .borrow_mut()
         .take()
         .expect("duplicate save should finish synchronously");
-    assert!(matches!(
+    assert_matches!(
         duplicate_result,
         Err(lushtext_core::ui::editor_page::SaveError::SaveInProgress)
-    ));
+    );
 
     wait_until(std::time::Duration::from_secs(2), || first_done.get());
+    assert!(!page.is_saving());
+    assert!(page.source_view().is_editable());
+    assert!(page.source_view().is_cursor_visible());
+    assert_eq!(
+        fs_read::text(tmp.path()).expect("saved duplicate test file"),
+        "x".repeat(70_000)
+    );
 }
 
 #[test]
@@ -1180,6 +1330,127 @@ fn test_bookmark_toggle_and_navigation() {
         .expect("expected operation to succeed");
     assert_eq!(wrapped.line, 4);
     assert_eq!(page.cursor_position().0, 4);
+}
+
+#[test]
+fn test_bookmark_edit_moves_existing_id_across_lines() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+    buffer.set_text("one\ntwo\nthree\nfour\nfive");
+
+    let line_three = buffer.iter_at_line(2).expect("line three");
+    buffer.place_cursor(&line_three);
+    assert_eq!(
+        page.toggle_bookmark_at_cursor(),
+        BookmarkToggleState::Added(2)
+    );
+
+    let bookmark_id = page.bookmark_records()[0].id.clone();
+    let outcome = page
+        .update_bookmark(&bookmark_id, Some("  Last line  ".to_string()), 5)
+        .expect("move to last line");
+    assert_eq!(outcome.line, 4);
+    let updated = page.bookmark_at_line(4).expect("moved bookmark");
+    assert_eq!(updated.id, bookmark_id);
+    assert_eq!(updated.label.as_deref(), Some("Last line"));
+    assert_eq!(
+        page.bookmark_at_line(4).map(|bookmark| bookmark.id),
+        Some(bookmark_id.clone())
+    );
+
+    let outcome = page
+        .update_bookmark(&bookmark_id, Some("First line".to_string()), 1)
+        .expect("move to first line");
+    assert_eq!(outcome.line, 0);
+    assert_eq!(
+        page.bookmark_at_line(0).map(|bookmark| bookmark.id),
+        Some(bookmark_id.clone())
+    );
+
+    let outcome = page
+        .update_bookmark(&bookmark_id, Some("Middle line".to_string()), 3)
+        .expect("move back to middle line");
+    assert_eq!(outcome.line, 2);
+    assert_eq!(
+        page.bookmark_records()
+            .into_iter()
+            .map(|bookmark| (bookmark.id, bookmark.line, bookmark.label))
+            .collect::<Vec<_>>(),
+        vec![(bookmark_id, 2, Some("Middle line".to_string()))]
+    );
+}
+
+#[test]
+fn test_bookmark_edit_rejects_invalid_lines_without_mutating() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+    buffer.set_text("one\ntwo\nthree\nfour");
+
+    let line_one = buffer.iter_at_line(0).expect("line one");
+    buffer.place_cursor(&line_one);
+    let _ = page.toggle_bookmark_at_cursor();
+    let first_id = page.bookmark_records()[0].id.clone();
+
+    let line_three = buffer.iter_at_line(2).expect("line three");
+    buffer.place_cursor(&line_three);
+    let _ = page.toggle_bookmark_at_cursor();
+    let before = page.bookmark_records();
+
+    assert_eq!(
+        page.update_bookmark(&first_id, Some("changed".to_string()), 3),
+        Err(BookmarkEditError::LineOccupied { line: 3 })
+    );
+    assert_eq!(page.bookmark_records(), before);
+
+    assert_matches!(
+        page.update_bookmark(&first_id, Some("changed".to_string()), 0),
+        Err(BookmarkEditError::LineOutOfRange {
+            requested_line: 0,
+            max_line: 4
+        })
+    );
+    assert_eq!(page.bookmark_records(), before);
+
+    assert_matches!(
+        page.update_bookmark(&first_id, Some("changed".to_string()), 99),
+        Err(BookmarkEditError::LineOutOfRange {
+            requested_line: 99,
+            max_line: 4
+        })
+    );
+    assert_eq!(page.bookmark_records(), before);
+}
+
+#[test]
+fn test_bookmark_activation_callback_only_fires_for_bookmark_lines() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+    buffer.set_text("one\ntwo\nthree");
+
+    let line_two = buffer.iter_at_line(1).expect("line two");
+    buffer.place_cursor(&line_two);
+    let _ = page.toggle_bookmark_at_cursor();
+    let bookmark_id = page.bookmark_records()[0].id.clone();
+
+    let activated = Rc::new(RefCell::new(Vec::new()));
+    let activated_for_callback = activated.clone();
+    page.connect_bookmark_activated(move |bookmark| {
+        activated_for_callback.borrow_mut().push(bookmark);
+    });
+
+    let activated_bookmark = page
+        .activate_bookmark_at_line(1)
+        .expect("bookmark activation");
+    assert_eq!(activated_bookmark.id, bookmark_id);
+    assert!(page.activate_bookmark_at_line(0).is_none());
+
+    let activated = activated.borrow();
+    assert_eq!(activated.len(), 1);
+    assert_eq!(activated[0].id, bookmark_id);
+    assert_eq!(activated[0].line, 1);
 }
 
 // --- Search bar integration ---

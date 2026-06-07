@@ -5,6 +5,7 @@
 //! The primary primitive is [`TestContext`], which creates an isolated temporary
 //! directory with helpers for writing fixture files.
 
+use lushtext_core::services::filesystem::fixture;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -22,7 +23,7 @@ impl TestContext {
     pub fn new() -> Self {
         let dir = TempDir::new().expect("failed to create temp dir");
         let data_dir = dir.path().join("data/lushtext");
-        std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
+        fixture::create_dir_all(&data_dir);
         Self { dir, data_dir }
     }
 
@@ -40,16 +41,16 @@ impl TestContext {
     pub fn write_file(&self, rel: &str, content: &str) -> PathBuf {
         let full = self.dir.path().join(rel);
         if let Some(p) = full.parent() {
-            std::fs::create_dir_all(p).expect("expected operation to succeed");
+            fixture::create_dir_all(p);
         }
-        std::fs::write(&full, content).expect("expected operation to succeed");
+        fixture::write_text(&full, content);
         full
     }
 
     /// Create a directory relative to context root.
     pub fn mkdir(&self, rel: &str) -> PathBuf {
         let full = self.dir.path().join(rel);
-        std::fs::create_dir_all(&full).expect("expected operation to succeed");
+        fixture::create_dir_all(&full);
         full
     }
 }

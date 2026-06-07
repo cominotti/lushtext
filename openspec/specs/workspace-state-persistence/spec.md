@@ -16,6 +16,32 @@ The system SHALL persist workspace state to `$XDG_DATA_HOME/lushtext/workspaces.
 - **THEN** that workspace stores exactly one root directory
 - **AND** persisted workspace state does not preserve mixed directory or standalone-file root collections as a supported shape
 
+### Requirement: Workspace state uses the public v1 JSON envelope
+The system SHALL persist `workspaces.json` as a supported v1 app-owned JSON envelope. Runtime loading MUST require the workspace document kind and supported version before reading workspace data.
+
+#### Scenario: Persist workspace state as v1
+- **WHEN** workspace state is saved after the format hardening change
+- **THEN** `workspaces.json` is written as a pretty JSON envelope with the workspace document kind
+- **AND** its payload stores the current workspace scope and single-root workspace list
+
+#### Scenario: Load supported workspace state
+- **WHEN** startup loads `workspaces.json` with the workspace document kind and supported version
+- **THEN** the sidebar restores the workspace names, roots, and current scope from the payload
+- **AND** missing selected-workspace targets still normalize to `All workspaces`
+
+### Requirement: Unsupported workspace JSON is preserved before reset
+The system SHALL treat pre-public bare workspace JSON, wrong-kind envelopes, unsupported versions, malformed files, and unsupported file kinds as recovery metadata problems. The system MUST preserve that metadata before writing a default v1 workspace file.
+
+#### Scenario: Unsupported workspace file resets safely
+- **WHEN** startup finds unsupported workspace metadata and preservation succeeds
+- **THEN** the original metadata is available in quarantine or diagnostic evidence
+- **AND** the app may continue with an empty v1 workspace state
+
+#### Scenario: Workspace preservation failure blocks overwrite
+- **WHEN** startup finds unsupported workspace metadata and preservation fails
+- **THEN** the app does not overwrite the original workspace file
+- **AND** it reports that workspace recovery could not safely replace the file
+
 ### Requirement: Workspace state always restores to a usable active workspace model
 The system SHALL restore workspace state to a usable current workspace scope even when persisted state is empty or the previously selected workspace no longer exists. A fresh or empty state MUST preserve zero persisted workspaces and the intentional empty sidebar shell. If the previously selected workspace no longer exists, the restored scope MUST fall back to the explicit aggregate scope `All workspaces`.
 
@@ -41,16 +67,3 @@ The system SHALL persist at most one root directory per workspace, and rapid wor
 - **WHEN** the user makes several workspace mutations in quick succession and then restarts the app after persistence completes
 - **THEN** the restored workspace state reflects the latest completed in-memory state
 - **AND** an older debounced snapshot does not overwrite the newer one
-
-### Requirement: Legacy persisted workspaces migrate safely to single-root form
-The system SHALL normalize legacy persisted workspace data into the single-root contract before that data is rendered or re-saved. Extra directory roots from one legacy workspace MUST become additional sibling workspaces. Standalone file roots MUST be promoted to parent-directory workspaces when their parent directory can be determined.
-
-#### Scenario: Legacy multi-root workspace is split into single-root workspaces
-- **WHEN** persisted workspace data from an older version contains multiple directory roots in one workspace
-- **THEN** the loader normalizes that data into multiple single-root workspaces before rendering it
-- **AND** each resulting workspace owns exactly one root directory
-
-#### Scenario: Legacy file root is promoted to a parent-directory workspace
-- **WHEN** persisted workspace data from an older version contains a standalone file root whose parent directory can be determined
-- **THEN** the loader normalizes that legacy entry into a workspace rooted at that parent directory
-- **AND** the normalized persisted state no longer treats the standalone file as a supported workspace root

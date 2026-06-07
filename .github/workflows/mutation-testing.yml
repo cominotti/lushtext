@@ -1,5 +1,8 @@
 name: Mutation Testing
 
+# Mutation tests are local-only by default. Set the repository variable
+# LUSHTEXT_ENABLE_MUTATION_CI=true to re-enable the PR, scheduled, and manual
+# CI lanes without editing this workflow.
 on:
   pull_request:
   schedule:
@@ -15,25 +18,37 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_MUTANTS_VERSION: "27.0.0"
+  CARGO_NEXTEST_VERSION: "0.9.137"
   MUTANTS_TIMEOUT: "300"
 
 jobs:
+  mutation-ci-mode:
+    name: Mutation CI Mode
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report mutation CI mode
+        run: |
+          if [[ "${{ vars.LUSHTEXT_ENABLE_MUTATION_CI }}" == "true" ]]; then
+            echo "Mutation CI is enabled."
+          else
+            echo "Mutation CI is disabled; mutation tests are local-only."
+            echo "Use make mutants-smoke, make mutants-diff, or make mutants-full locally."
+            echo "Set repository variable LUSHTEXT_ENABLE_MUTATION_CI=true to re-enable CI mutation lanes."
+          fi
+
   pr-mutants:
     name: PR Mutation Diff
-    if: github.event_name == 'pull_request'
+    if: ${{ vars.LUSHTEXT_ENABLE_MUTATION_CI == 'true' && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
       image: registry.fedoraproject.org/fedora:44
 
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
@@ -42,24 +57,33 @@ jobs:
             git \
             curl
 
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate pull-request diff
+        run: |
+          curl --fail --location --silent --show-error \
+            "${{ github.event.pull_request.diff_url }}" > git.diff
+          test -s git.diff
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: fedora-44-mutants
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+        run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Install cargo-mutants
-        run: cargo install --locked cargo-mutants --version 27.0.0
+        run: cargo install --locked cargo-mutants --version "${CARGO_MUTANTS_VERSION}"
 
       - name: Prove non-widget baseline
+        # Do not enable `lushtext-core/property-tests` here. Generated property
+        # cases have their own CI lane and must not multiply mutation runtime.
         run: cargo nextest run --workspace
-
-      - name: Generate pull-request diff
-        run: git diff "origin/${{ github.base_ref }}..." > git.diff
 
       - name: Run changed-code mutation
         run: MUTANTS_IN_PLACE=1 ./scripts/run-mutants.sh ci-pr git.diff
@@ -74,18 +98,16 @@ jobs:
 
   full-baseline:
     name: Full Mutation Baseline
-    if: github.event_name != 'pull_request'
+    if: ${{ vars.LUSHTEXT_ENABLE_MUTATION_CI == 'true' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
       image: registry.fedoraproject.org/fedora:44
 
     steps:
-      - uses: actions/checkout@v6
-
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
@@ -94,22 +116,26 @@ jobs:
             git \
             curl
 
+      - uses: actions/checkout@v6
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: fedora-44-mutants
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+        run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Prove non-widget baseline
+        # Do not enable `lushtext-core/property-tests` here. Generated property
+        # cases have their own CI lane and must not multiply mutation runtime.
         run: cargo nextest run --workspace
 
   full-mutants:
     name: Full Mutation Scope ${{ matrix.shard }}/4
-    if: github.event_name != 'pull_request'
+    if: ${{ vars.LUSHTEXT_ENABLE_MUTATION_CI == 'true' && github.event_name != 'pull_request' }}
     needs: full-baseline
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -122,11 +148,9 @@ jobs:
       image: registry.fedoraproject.org/fedora:44
 
     steps:
-      - uses: actions/checkout@v6
-
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
@@ -135,18 +159,20 @@ jobs:
             git \
             curl
 
+      - uses: actions/checkout@v6
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: fedora-44-mutants
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+        run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Install cargo-mutants
-        run: cargo install --locked cargo-mutants --version 27.0.0
+        run: cargo install --locked cargo-mutants --version "${CARGO_MUTANTS_VERSION}"
 
       - name: Run full-scope mutation shard
         run: |

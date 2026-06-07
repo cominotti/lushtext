@@ -2,7 +2,9 @@
 
 //! Tests for the LushtextStatusBar widget.
 
-use crate::common::ensure_gtk_init;
+use std::time::Duration;
+
+use crate::common::{ensure_gtk_init, flush_after_delay};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::services::notifications::StatusMessage;
@@ -29,6 +31,29 @@ fn test_initially_no_message() {
     assert_eq!(bar.imp().message_label.label().as_str(), "");
 }
 
+#[test]
+fn test_status_controls_expose_accessibility_roles() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+
+    assert_eq!(
+        bar.imp().sidebar_toggle_button.accessible_role(),
+        gtk4::AccessibleRole::ToggleButton
+    );
+    assert_eq!(
+        bar.imp().metadata_box.accessible_role(),
+        gtk4::AccessibleRole::Group
+    );
+    assert_eq!(
+        bar.imp().line_ending_button.accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        bar.imp().encoding_button.accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+}
+
 fn status_message(text: &str, severity: MessageKind) -> StatusMessage {
     StatusMessage {
         text: text.to_string(),
@@ -36,7 +61,38 @@ fn status_message(text: &str, severity: MessageKind) -> StatusMessage {
     }
 }
 
+/// Return whether the message area has any severity or animation-restart pulse state.
+fn message_area_has_any_pulse_class(bar: &LushtextStatusBar) -> bool {
+    let area = &bar.imp().message_area_box;
+    area.has_css_class("status-pulse-info")
+        || area.has_css_class("status-pulse-warning")
+        || area.has_css_class("status-pulse-error")
+        || area.has_css_class("status-pulse-a")
+        || area.has_css_class("status-pulse-b")
+}
+
 // --- Message rendering ---
+
+#[test]
+fn test_message_area_contains_expanding_label() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    let area = &bar.imp().message_area_box;
+    let label = &bar.imp().message_label;
+
+    assert!(area.has_css_class("status-message-area"));
+    assert!(label.has_css_class("status-message-label"));
+    assert_eq!(
+        label.parent().as_ref(),
+        Some(area.upcast_ref::<gtk4::Widget>())
+    );
+    assert!(area.hexpands());
+    assert!(label.hexpands());
+    assert!((4..=8).contains(&area.margin_start()));
+    assert_eq!(label.margin_start(), 12);
+    assert_eq!(label.margin_top(), 4);
+    assert_eq!(label.margin_bottom(), 4);
+}
 
 #[test]
 fn test_render_message_sets_label() {
@@ -112,6 +168,82 @@ fn test_render_none_removes_css_classes() {
     assert!(!bar.imp().message_label.has_css_class("status-error"));
     assert!(!bar.imp().message_label.has_css_class("status-warning"));
     assert!(!bar.imp().message_label.has_css_class("status-info"));
+}
+
+#[test]
+fn test_render_none_clears_message_area_pulse() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    bar.pulse_message_area(MessageKind::Info);
+    assert!(message_area_has_any_pulse_class(&bar));
+
+    bar.render_message(None);
+    assert!(!message_area_has_any_pulse_class(&bar));
+}
+
+// --- Message-area pulse ---
+
+#[test]
+fn test_info_pulse_applies_to_message_area_not_label() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    bar.pulse_message_area(MessageKind::Info);
+
+    assert!(bar.imp().message_area_box.has_css_class("status-pulse-info"));
+    assert!(bar.imp().message_area_box.has_css_class("status-pulse-a"));
+    assert!(!bar.imp().message_label.has_css_class("status-pulse-info"));
+    assert!(!bar.imp().sidebar_toggle_button.has_css_class("status-pulse-info"));
+    assert!(!bar.imp().metadata_box.has_css_class("status-pulse-info"));
+    assert_eq!(bar.imp().message_area_box.margin_start(), 6);
+}
+
+#[test]
+fn test_warning_and_error_pulses_choose_severity_classes() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+
+    bar.pulse_message_area(MessageKind::Warning);
+    assert!(bar.imp().message_area_box.has_css_class("status-pulse-warning"));
+    assert!(!bar.imp().message_area_box.has_css_class("status-pulse-info"));
+    assert!(!bar.imp().message_area_box.has_css_class("status-pulse-error"));
+
+    bar.pulse_message_area(MessageKind::Error);
+    assert!(bar.imp().message_area_box.has_css_class("status-pulse-error"));
+    assert!(!bar.imp().message_area_box.has_css_class("status-pulse-info"));
+    assert!(!bar.imp().message_area_box.has_css_class("status-pulse-warning"));
+}
+
+#[test]
+fn test_repeated_pulse_restarts_with_new_generation_and_alternating_class() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+
+    bar.pulse_message_area(MessageKind::Info);
+    let first_generation = bar.imp().pulse_generation.get();
+    let first_used_a = bar.imp().message_area_box.has_css_class("status-pulse-a");
+    let first_used_b = bar.imp().message_area_box.has_css_class("status-pulse-b");
+
+    bar.pulse_message_area(MessageKind::Info);
+    let second_generation = bar.imp().pulse_generation.get();
+    let second_used_a = bar.imp().message_area_box.has_css_class("status-pulse-a");
+    let second_used_b = bar.imp().message_area_box.has_css_class("status-pulse-b");
+
+    assert!(second_generation > first_generation);
+    assert_ne!(first_used_a, second_used_a);
+    assert_ne!(first_used_b, second_used_b);
+    assert!(bar.imp().message_area_box.has_css_class("status-pulse-info"));
+}
+
+#[test]
+fn test_message_area_pulse_cleans_up_after_duration() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    bar.pulse_message_area(MessageKind::Error);
+    assert!(message_area_has_any_pulse_class(&bar));
+
+    // The delay intentionally exceeds the 420ms pulse cleanup duration.
+    flush_after_delay(Duration::from_millis(500));
+    assert!(!message_area_has_any_pulse_class(&bar));
 }
 
 // --- Metadata visibility ---

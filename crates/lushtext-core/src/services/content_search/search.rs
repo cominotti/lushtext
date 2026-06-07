@@ -5,6 +5,11 @@
 //! This is the query side of the content-search service. It stays pure Rust
 //! and sends `SearchEvent` values over a channel so GTK adapters can render
 //! incremental results without taking a dependency on the ripgrep engine here.
+//! Its direct `ignore` and `grep_searcher` calls are an approved read-only
+//! engine adapter exception to the normal filesystem boundary: traversal,
+//! gitignore/glob filtering, binary detection, and streaming file reads stay
+//! inside the ripgrep stack, while mutation, undo backup, and persistence remain
+//! routed through `services::filesystem`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -242,7 +247,8 @@ fn find_match_range(matcher: &grep_regex::RegexMatcher, line: &[u8]) -> std::ops
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use crate::services::filesystem::{fixture, read as fs_read};
+    use std::assert_matches;
     use tempfile::tempdir;
 
     /// Helper: run a search and collect all events into a Vec.
@@ -267,11 +273,7 @@ mod tests {
 
     /// Check that the last event is Done.
     fn assert_ends_with_done(events: &[SearchEvent]) {
-        assert!(
-            matches!(events.last(), Some(SearchEvent::Done)),
-            "last event should be Done, got: {:?}",
-            events.last()
-        );
+        assert_matches!(events.last(), Some(SearchEvent::Done));
     }
 
     #[test]
@@ -279,11 +281,9 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
-        fs::write(root.join("a.rs"), "fn hello() {}\nfn world() {}\n")
-            .expect("expected operation to succeed");
-        fs::write(root.join("b.rs"), "fn hello_again() {}\n")
-            .expect("expected operation to succeed");
-        fs::write(root.join("c.rs"), "no match here\n").expect("expected operation to succeed");
+        fixture::write_text(&root.join("a.rs"), "fn hello() {}\nfn world() {}\n");
+        fixture::write_text(&root.join("b.rs"), "fn hello_again() {}\n");
+        fixture::write_text(&root.join("c.rs"), "no match here\n");
 
         let events = search_collect("hello", &[root], &ContentSearchOptions::default());
         assert_ends_with_done(&events);
@@ -315,8 +315,7 @@ mod tests {
         let root = dir.path();
 
         for i in 0..200 {
-            fs::write(root.join(format!("file_{i}.txt")), "needle\n".repeat(100))
-                .expect("expected operation to succeed");
+            fixture::write_text(&root.join(format!("file_{i}.txt")), &"needle\n".repeat(100));
         }
 
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -363,9 +362,8 @@ mod tests {
 
         let mut png_data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         png_data.extend_from_slice(b"needle somewhere in binary\x00\x00");
-        fs::write(root.join("image.png"), &png_data).expect("expected operation to succeed");
-        fs::write(root.join("code.rs"), "let needle = 42;\n")
-            .expect("expected operation to succeed");
+        fixture::write_bytes(&root.join("image.png"), &png_data);
+        fixture::write_text(&root.join("code.rs"), "let needle = 42;\n");
 
         let events = search_collect("needle", &[root], &ContentSearchOptions::default());
         assert_ends_with_done(&events);
@@ -385,40 +383,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unreadable_file_does_not_abort_search() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
         let visible = root.join("visible.rs");
         let unreadable = root.join("secret.rs");
 
-        fs::write(&visible, "needle\n").expect("expected operation to succeed");
-        fs::write(&unreadable, "needle\n").expect("expected operation to succeed");
+        fixture::write_text(&visible, "needle\n");
+        fixture::write_text(&unreadable, "needle\n");
 
-        let mut perms = fs::metadata(&unreadable)
-            .expect("expected operation to succeed")
-            .permissions();
-        perms.set_mode(0o000);
-        fs::set_permissions(&unreadable, perms).expect("expected operation to succeed");
-        if fs::File::open(&unreadable).is_ok() {
+        fixture::set_mode(&unreadable, 0o000);
+        if fs_read::bytes(&unreadable).is_ok() {
             // Some environments (notably privileged CI containers) can still
             // read a 0o000 file, so this fixture cannot prove the unreadable
             // path there. Restore permissions and skip the assertion-only test.
-            let mut restore = fs::metadata(&unreadable)
-                .expect("expected operation to succeed")
-                .permissions();
-            restore.set_mode(0o644);
-            fs::set_permissions(&unreadable, restore).expect("expected operation to succeed");
+            fixture::set_mode(&unreadable, 0o644);
             return;
         }
 
         let events = search_collect("needle", &[root], &ContentSearchOptions::default());
 
-        let mut restore = fs::metadata(&unreadable)
-            .expect("expected operation to succeed")
-            .permissions();
-        restore.set_mode(0o644);
-        fs::set_permissions(&unreadable, restore).expect("expected operation to succeed");
+        fixture::set_mode(&unreadable, 0o644);
 
         assert_ends_with_done(&events);
         let matches: Vec<_> = events
@@ -437,13 +421,12 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
-        fs::create_dir(root.join(".git")).expect("expected operation to succeed");
-        fs::write(root.join(".gitignore"), "target/\n").expect("expected operation to succeed");
+        fixture::create_dir(&root.join(".git"));
+        fixture::write_text(&root.join(".gitignore"), "target/\n");
 
-        fs::create_dir(root.join("target")).expect("expected operation to succeed");
-        fs::write(root.join("target/ignored.rs"), "needle\n")
-            .expect("expected operation to succeed");
-        fs::write(root.join("visible.rs"), "needle\n").expect("expected operation to succeed");
+        fixture::create_dir(&root.join("target"));
+        fixture::write_text(&root.join("target/ignored.rs"), "needle\n");
+        fixture::write_text(&root.join("visible.rs"), "needle\n");
 
         let events = search_collect("needle", &[root], &ContentSearchOptions::default());
         assert_ends_with_done(&events);
@@ -473,8 +456,7 @@ mod tests {
 
         for i in 0..20 {
             let content = "needle\n".repeat(600);
-            fs::write(root.join(format!("big_{i}.txt")), content)
-                .expect("expected operation to succeed");
+            fixture::write_text(&root.join(format!("big_{i}.txt")), &content);
         }
 
         let events = search_collect("needle", &[root], &ContentSearchOptions::default());
@@ -496,11 +478,10 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
-        fs::write(
-            root.join("code.rs"),
+        fixture::write_text(
+            &root.join("code.rs"),
             "fn hello() {}\nlet x = 42;\nfn world() {}\n",
-        )
-        .expect("expected operation to succeed");
+        );
 
         let opts = ContentSearchOptions {
             regex: true,
@@ -532,8 +513,7 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
-        fs::write(root.join("code.rs"), "Error happened\nerror happened\n")
-            .expect("expected operation to succeed");
+        fixture::write_text(&root.join("code.rs"), "Error happened\nerror happened\n");
 
         let opts = ContentSearchOptions {
             case_sensitive: true,
@@ -559,11 +539,10 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
-        fs::write(
-            root.join("code.rs"),
+        fixture::write_text(
+            &root.join("code.rs"),
             "let port = 8080;\nlet report = true;\nlet export = false;\n",
-        )
-        .expect("expected operation to succeed");
+        );
 
         let opts = ContentSearchOptions {
             whole_word: true,
@@ -589,9 +568,9 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let root = dir.path();
 
-        fs::write(root.join("code.rs"), "needle\n").expect("expected operation to succeed");
-        fs::write(root.join("notes.txt"), "needle\n").expect("expected operation to succeed");
-        fs::write(root.join("data.json"), "needle\n").expect("expected operation to succeed");
+        fixture::write_text(&root.join("code.rs"), "needle\n");
+        fixture::write_text(&root.join("notes.txt"), "needle\n");
+        fixture::write_text(&root.join("data.json"), "needle\n");
 
         let opts = ContentSearchOptions {
             glob: Some("*.rs".to_string()),
@@ -617,8 +596,8 @@ mod tests {
         let dir1 = tempdir().expect("expected operation to succeed");
         let dir2 = tempdir().expect("expected operation to succeed");
 
-        fs::write(dir1.path().join("a.rs"), "needle\n").expect("expected operation to succeed");
-        fs::write(dir2.path().join("b.rs"), "needle\n").expect("expected operation to succeed");
+        fixture::write_text(&dir1.path().join("a.rs"), "needle\n");
+        fixture::write_text(&dir2.path().join("b.rs"), "needle\n");
 
         let events = search_collect(
             "needle",
@@ -637,13 +616,12 @@ mod tests {
     #[test]
     fn empty_query_returns_done() {
         let dir = tempdir().expect("expected operation to succeed");
-        fs::write(dir.path().join("a.rs"), "some content\n")
-            .expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("a.rs"), "some content\n");
 
         let events = search_collect("", &[dir.path()], &ContentSearchOptions::default());
 
         assert_eq!(events.len(), 1, "should only contain Done");
-        assert!(matches!(events[0], SearchEvent::Done));
+        assert_matches!(events[0], SearchEvent::Done);
     }
 
     #[test]
@@ -652,8 +630,7 @@ mod tests {
         let root = dir.path();
 
         for i in 0..250 {
-            fs::write(root.join(format!("file_{i}.txt")), "content\n")
-                .expect("expected operation to succeed");
+            fixture::write_text(&root.join(format!("file_{i}.txt")), "content\n");
         }
 
         let events = search_collect(
@@ -691,8 +668,7 @@ mod tests {
         let root = dir.path();
 
         for i in 0..250 {
-            fs::write(root.join(format!("file_{i}.txt")), "content\n")
-                .expect("expected operation to succeed");
+            fixture::write_text(&root.join(format!("file_{i}.txt")), "content\n");
         }
 
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -717,7 +693,7 @@ mod tests {
     #[test]
     fn progress_variant_construction() {
         let event = SearchEvent::Progress(42);
-        assert!(matches!(event, SearchEvent::Progress(42)));
+        assert_matches!(event, SearchEvent::Progress(42));
     }
 
     #[test]
@@ -726,8 +702,7 @@ mod tests {
         let root = dir.path().to_path_buf();
 
         for i in 0..100 {
-            fs::write(root.join(format!("file_{i}.txt")), "content\n")
-                .expect("expected operation to succeed");
+            fixture::write_text(&root.join(format!("file_{i}.txt")), "content\n");
         }
 
         let (tx, rx) = crossbeam_channel::bounded(1);
@@ -771,7 +746,7 @@ mod tests {
     #[test]
     fn invalid_regex_returns_error() {
         let dir = tempdir().expect("expected operation to succeed");
-        fs::write(dir.path().join("a.rs"), "content\n").expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("a.rs"), "content\n");
 
         let opts = ContentSearchOptions {
             regex: true,
@@ -780,7 +755,7 @@ mod tests {
         let events = search_collect(r"fn\s+[", &[dir.path()], &opts);
 
         assert!(events.len() >= 2);
-        assert!(matches!(events[0], SearchEvent::Error(_)));
+        assert_matches!(events[0], SearchEvent::Error(_));
         assert_ends_with_done(&events);
     }
 }

@@ -1,21 +1,24 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/lushtext-build-support",
     "crates/lushtext-core",
     "crates/lushtext",
     "workspace-hack",
 ]
+exclude = ["fuzz"]
 
 # Default binary for `cargo run`
 default-members = ["crates/lushtext"]
 
 [workspace.package]
-rust-version = "1.95.0"
+rust-version = "1.96.0"
 
 # --- Centralized dependencies (union of features across all crates) ---
 
 [workspace.dependencies]
 # Internal crates
+lushtext-build-support = { path = "crates/lushtext-build-support" }
 lushtext-core = { path = "crates/lushtext-core" }
 
 # GTK / GNOME stack
@@ -44,8 +47,8 @@ thiserror = "2.0"
 
 # Filesystem
 dirs = "6.0"
-libc = "0.2"
 notify-debouncer-full = "0.7"
+rustix = { version = "1.1.4", features = ["fs", "std"] }
 
 # Logging
 tracing            = "0.1"
@@ -78,6 +81,7 @@ assert_cmd = "2.0"
 predicates = "3.0"
 criterion  = { version = "0.8", features = ["html_reports"] }
 libtest-mimic = "0.8"
+proptest = "1.11.0"
 
 # --- Workspace-wide lint configuration ---
 # Crates opt in with `[lints] workspace = true`.
@@ -89,6 +93,7 @@ return_self_not_must_use      = "deny"
 needless_pass_by_value        = "deny"
 trivially_copy_pass_by_ref    = "deny"
 large_types_passed_by_value   = "deny"
+derive_partial_eq_without_eq  = "deny"
 unused_self                   = "deny"
 allow_attributes              = "deny"
 allow_attributes_without_reason = "deny"
@@ -101,10 +106,15 @@ manual_let_else               = "deny"
 manual_string_new             = "deny"
 manual_is_variant_and         = "deny"
 manual_assert                 = "deny"
+manual_option_zip             = "deny"
+manual_pop_if                 = "deny"
+manual_noop_waker             = "deny"
+manual_midpoint               = "deny"
 
 # --- Idiomatic Rust ---
 redundant_closure_for_method_calls = "deny"
 implicit_clone                     = "deny"
+redundant_clone                   = "deny"
 map_unwrap_or                      = "deny"
 single_match_else                  = "deny"
 match_same_arms                    = "deny"
@@ -132,18 +142,23 @@ cast_lossless                 = "deny"
 cast_possible_truncation      = "deny"
 cast_sign_loss                = "deny"
 checked_conversions           = "deny"
+unchecked_time_subtraction    = "deny"
 unwrap_used                   = "deny"
 
 # --- Performance ---
 inefficient_to_string         = "deny"
+needless_collect              = "deny"
 large_stack_arrays            = "deny"
 unnecessary_box_returns       = "deny"
 stable_sort_primitive         = "deny"
 iter_with_drain               = "deny"
+significant_drop_tightening   = "deny"
 
 # --- Clarity ---
 unreadable_literal            = "deny"
 separated_literal_suffix      = "deny"
+case_sensitive_file_extension_comparisons = "deny"
+wildcard_imports              = "deny"
 
 # --- Safety docs ---
 missing_safety_doc            = "deny"

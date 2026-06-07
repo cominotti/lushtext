@@ -8,10 +8,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
 description = "workspace-hack package, managed by hakari"
+license = "GPL-3.0-or-later"
 publish = false
 
 ### BEGIN HAKARI SECTION
 [dependencies]
+bitflags = { version = "2", default-features = false, features = ["std"] }
 clap = { version = "4", features = ["derive"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "help", "std", "suggestions", "usage"] }
 crossbeam-utils = { version = "0.8" }
@@ -28,27 +30,24 @@ smallvec = { version = "1", default-features = false, features = ["const_new", "
 tracing-core = { version = "0.1" }
 
 [build-dependencies]
+bitflags = { version = "2", default-features = false, features = ["std"] }
+clap = { version = "4", features = ["derive"] }
+clap_builder = { version = "4", default-features = false, features = ["color", "help", "std", "suggestions", "usage"] }
+crossbeam-utils = { version = "0.8" }
 gio = { version = "0.22", default-features = false, features = ["v2_88"] }
 gio-sys = { version = "0.22", default-features = false, features = ["v2_88"] }
 glib = { version = "0.22", features = ["v2_88"] }
 glib-sys = { version = "0.22", default-features = false, features = ["v2_88"] }
 gobject-sys = { version = "0.22", default-features = false, features = ["v2_76", "v2_86"] }
+log = { version = "0.4", default-features = false, features = ["std"] }
+num-traits = { version = "0.2" }
+serde = { version = "1", features = ["alloc", "derive"] }
+serde_core = { version = "1", default-features = false, features = ["alloc", "result", "std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "union"] }
 syn = { version = "2", features = ["extra-traits", "full", "visit-mut"] }
 toml_datetime = { version = "1" }
 toml_parser = { version = "1" }
+tracing-core = { version = "0.1" }
 winnow = { version = "1" }
-
-[target.x86_64-unknown-linux-gnu.dependencies]
-bitflags = { version = "2", default-features = false, features = ["std"] }
-
-[target.x86_64-unknown-linux-gnu.build-dependencies]
-bitflags = { version = "2", default-features = false, features = ["std"] }
-
-[target.aarch64-unknown-linux-gnu.dependencies]
-bitflags = { version = "2", default-features = false, features = ["std"] }
-
-[target.aarch64-unknown-linux-gnu.build-dependencies]
-bitflags = { version = "2", default-features = false, features = ["std"] }
 
 ### END HAKARI SECTION

@@ -15,6 +15,9 @@ Important repo facts:
 - `crates/lushtext/tests/widget.rs` is a custom single-threaded harness, not the default libtest runner.
 - Each widget test runs in its own child process via `LUSHTEXT_WIDGET_CHILD`.
 - The harness supports `--list --format terse`, which matters for nextest-style discovery.
+- Non-list harness executions self-supervise into a private `mutter --headless`
+  session before GTK initializes, so plain Cargo and Makefile runs cannot place
+  widget windows on the developer's live desktop.
 - `crates/lushtext/tests/widget/common.rs` already sets up GTK, GResources, in-memory GSettings, isolated data dirs, and unique application IDs.
 
 Prefer the existing helpers:
@@ -27,17 +30,18 @@ use crate::common::{ensure_gtk_init, test_application, test_window};
 
 Prefer `mutter --headless` for GTK4 and Libadwaita:
 
-Use `scripts/run-widget-tests.sh --headless` or `make test-widget-headless` when possible so CI and local repro share the same wrapper, retry policy, and monitor size.
+Use `scripts/run-widget-tests.sh --headless` or `make test-widget-headless` when possible so CI and local repro share the same wrapper, retry policy, and monitor size. Plain `cargo test --test widget` is still Cargo-visible by default, but it must re-launch itself into headless Mutter before running tests.
 
 ```bash
 export XDG_RUNTIME_DIR="$(mktemp -d)"
 export GDK_BACKEND=wayland
+export LUSHTEXT_WIDGET_HEADLESS_RUNNER=1
 dbus-run-session -- \
   mutter --headless --wayland --no-x11 --virtual-monitor 2560x1600 -- \
     cargo test --test widget
 ```
 
-Use `make test-widget` when a display server is already available.
+Never run widget tests against a live display server. The runner intentionally rejects native/live-display modes.
 
 The shared runner and widget harness default `GSK_RENDERER` to `cairo`. This
 keeps CI on GTK's CPU fallback renderer so a headless Fedora container does not
@@ -47,27 +51,22 @@ renderer-specific GTK bug.
 
 ## Waiting for Async UI State
 
-Many widget changes land through idle callbacks, timeouts, or `spawn_blocking_then`. Use a local wait helper with a timeout instead of hard-coded sleeps:
+Many widget changes land through idle callbacks, timeouts, or `spawn_blocking_then`. Use the **shared** wait helpers from `crates/lushtext/tests/widget/common.rs` — do not paste a private copy into your module:
 
 ```rust
-use std::time::{Duration, Instant};
+use crate::common::{flush_events, wait_until};
 
-fn flush_events() {
-    while glib::MainContext::default().iteration(false) {}
-}
-
-fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        flush_events();
-        if predicate() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(predicate(), "timed out waiting for widget state");
-}
+// `wait_until` polls, then drains ALL ready main-loop sources. The drain is
+// required: `spawn_blocking_then` delivers completion via a low-priority
+// idle_add_once source, which only runs once nothing higher-priority is pending.
+wait_until(Duration::from_secs(5), || window.imp().sidebar.section_count() == 1);
 ```
+
+Why shared, not local: there were once five copy-pasted `wait_until`s, so fixing one missed the rest. The canonical version lives once in `common.rs`; everything imports it. Do **not** rewrite it as a single blocking `MainContext::iteration(true)` with a timeout source — the timeout (higher priority) starves the idle completion and every `spawn_blocking_then`-backed wait then times out (verified failing 5/5 in isolation). The flake to fix is the *budget*, not the poll mechanism.
+
+**Budget the wait to what it waits on.** Window realization and `spawn_blocking_then`/file-I/O completion are async and scheduling-dependent — give them a generous budget (≥5–10s). A 2s budget for async work flakes under load. The predicate returns the moment the work lands, so a larger ceiling never slows the fast path and only matters when a loaded machine delays the thread. Keep short budgets for synchronous UI-state flips.
+
+If a widget test fails then passes (or the harness prints `FLAKY:`), that is a blocker, not noise: read the real panic, classify the wait, fix the cause, and rerun to confirm. See the skill's Flake Discipline section.
 
 Use predicates tied to visible behavior:
 
@@ -75,6 +74,12 @@ Use predicates tied to visible behavior:
 - selected page changed
 - a label or title updated
 - a `Cell` flag in the widget `imp()` flipped
+
+For local-history browser tests, remember that the "Before edits" baseline is
+captured on the first modified transition, not when the file load completes. If
+the test relies on browser row ordering, modify the buffer first and then wait
+until the stored metadata/text proves the baseline and target snapshot are in the
+expected rows.
 
 ## Visibility and Realization Traps
 

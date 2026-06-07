@@ -37,7 +37,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
@@ -53,7 +53,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - uses: Swatinem/rust-cache@v2
         with:

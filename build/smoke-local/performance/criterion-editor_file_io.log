@@ -1,0 +1,124 @@
+    Finished `bench` profile [optimized] target(s) in 0.08s
+     Running benches/benchmarks.rs (target/release/deps/benchmarks-cbd9ce7550beac88)
+Gnuplot not found, using plotters backend
+Benchmarking editor_file_io/load_text_file/1MB
+Benchmarking editor_file_io/load_text_file/1MB: Warming up for 1.0000 s
+Benchmarking editor_file_io/load_text_file/1MB: Collecting 20 samples in estimated 1.3102 s (840 iterations)
+Benchmarking editor_file_io/load_text_file/1MB: Analyzing
+editor_file_io/load_text_file/1MB
+                        time:   [1.2581 ms 1.2745 ms 1.2920 ms]
+                        change: [+59.060% +61.748% +65.062%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high severe
+Benchmarking editor_file_io/write_snapshot_to_path/1MB
+Benchmarking editor_file_io/write_snapshot_to_path/1MB: Warming up for 1.0000 s
+Benchmarking editor_file_io/write_snapshot_to_path/1MB: Collecting 20 samples in estimated 1.1330 s (840 iterations)
+Benchmarking editor_file_io/write_snapshot_to_path/1MB: Analyzing
+editor_file_io/write_snapshot_to_path/1MB
+                        time:   [985.91 µs 996.84 µs 1.0053 ms]
+                        change: [+56.928% +59.063% +61.239%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking editor_file_io/load_text_file_windows1252/1MB
+Benchmarking editor_file_io/load_text_file_windows1252/1MB: Warming up for 1.0000 s
+Benchmarking editor_file_io/load_text_file_windows1252/1MB: Collecting 20 samples in estimated 1.6064 s (420 iterations)
+Benchmarking editor_file_io/load_text_file_windows1252/1MB: Analyzing
+editor_file_io/load_text_file_windows1252/1MB
+                        time:   [2.4709 ms 2.5961 ms 2.7473 ms]
+                        change: [+55.195% +60.495% +67.513%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking editor_file_io/write_document_windows1252_crlf/1MB
+Benchmarking editor_file_io/write_document_windows1252_crlf/1MB: Warming up for 1.0000 s
+Benchmarking editor_file_io/write_document_windows1252_crlf/1MB: Collecting 20 samples in estimated 1.2450 s (100 iterations)
+Benchmarking editor_file_io/write_document_windows1252_crlf/1MB: Analyzing
+editor_file_io/write_document_windows1252_crlf/1MB
+                        time:   [11.929 ms 12.021 ms 12.117 ms]
+                        change: [+45.550% +48.045% +50.148%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking editor_file_io/load_text_file/10MB
+Benchmarking editor_file_io/load_text_file/10MB: Warming up for 1.0000 s
+Benchmarking editor_file_io/load_text_file/10MB: Collecting 20 samples in estimated 1.0535 s (40 iterations)
+Benchmarking editor_file_io/load_text_file/10MB: Analyzing
+editor_file_io/load_text_file/10MB
+                        time:   [22.610 ms 22.782 ms 22.960 ms]
+                        change: [+51.624% +53.646% +55.620%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking editor_file_io/write_snapshot_to_path/10MB
+Benchmarking editor_file_io/write_snapshot_to_path/10MB: Warming up for 1.0000 s
+Benchmarking editor_file_io/write_snapshot_to_path/10MB: Collecting 20 samples in estimated 1.2271 s (60 iterations)
+Benchmarking editor_file_io/write_snapshot_to_path/10MB: Analyzing
+editor_file_io/write_snapshot_to_path/10MB
+                        time:   [13.957 ms 14.365 ms 14.863 ms]
+                        change: [+57.481% +62.613% +68.070%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking editor_file_io/load_text_file_windows1252/10MB
+Benchmarking editor_file_io/load_text_file_windows1252/10MB: Warming up for 1.0000 s
+Benchmarking editor_file_io/load_text_file_windows1252/10MB: Collecting 20 samples in estimated 1.5510 s (40 iterations)
+Benchmarking editor_file_io/load_text_file_windows1252/10MB: Analyzing
+editor_file_io/load_text_file_windows1252/10MB
+                        time:   [25.837 ms 26.165 ms 26.484 ms]
+                        change: [+51.472% +53.368% +55.340%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking editor_file_io/write_document_windows1252_crlf/10MB
+Benchmarking editor_file_io/write_document_windows1252_crlf/10MB: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 1.0s. You may wish to increase target time to 2.4s, or reduce sample count to 10.
+Benchmarking editor_file_io/write_document_windows1252_crlf/10MB: Collecting 20 samples in estimated 2.3867 s (20 iterations)
+Benchmarking editor_file_io/write_document_windows1252_crlf/10MB: Analyzing
+editor_file_io/write_document_windows1252_crlf/10MB
+                        time:   [115.13 ms 116.75 ms 118.64 ms]
+                        change: [+41.829% +43.964% +46.052%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking editor_file_io/load_text_file/50MB
+Benchmarking editor_file_io/load_text_file/50MB: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 1.0s. You may wish to increase target time to 2.4s, or reduce sample count to 10.
+Benchmarking editor_file_io/load_text_file/50MB: Collecting 20 samples in estimated 2.3870 s (20 iterations)
+Benchmarking editor_file_io/load_text_file/50MB: Analyzing
+editor_file_io/load_text_file/50MB
+                        time:   [102.09 ms 103.59 ms 105.39 ms]
+                        change: [+33.507% +36.119% +38.988%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking editor_file_io/write_snapshot_to_path/50MB
+Benchmarking editor_file_io/write_snapshot_to_path/50MB: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 1.0s. You may wish to increase target time to 2.2s, or reduce sample count to 10.
+Benchmarking editor_file_io/write_snapshot_to_path/50MB: Collecting 20 samples in estimated 2.1933 s (20 iterations)
+Benchmarking editor_file_io/write_snapshot_to_path/50MB: Analyzing
+editor_file_io/write_snapshot_to_path/50MB
+                        time:   [86.842 ms 88.198 ms 89.659 ms]
+                        change: [+38.068% +39.983% +42.541%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking editor_file_io/load_text_file_windows1252/50MB
+Benchmarking editor_file_io/load_text_file_windows1252/50MB: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 1.0s. You may wish to increase target time to 4.7s, or reduce sample count to 10.
+Benchmarking editor_file_io/load_text_file_windows1252/50MB: Collecting 20 samples in estimated 4.6974 s (20 iterations)
+Benchmarking editor_file_io/load_text_file_windows1252/50MB: Analyzing
+editor_file_io/load_text_file_windows1252/50MB
+                        time:   [161.20 ms 162.55 ms 163.98 ms]
+                        change: [+35.062% +37.115% +39.182%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking editor_file_io/write_document_windows1252_crlf/50MB
+Benchmarking editor_file_io/write_document_windows1252_crlf/50MB: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 1.0s. You may wish to increase target time to 13.2s, or reduce sample count to 10.
+Benchmarking editor_file_io/write_document_windows1252_crlf/50MB: Collecting 20 samples in estimated 13.186 s (20 iterations)
+Benchmarking editor_file_io/write_document_windows1252_crlf/50MB: Analyzing
+editor_file_io/write_document_windows1252_crlf/50MB
+                        time:   [625.41 ms 630.14 ms 636.56 ms]
+                        change: [+44.357% +45.565% +47.084%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+

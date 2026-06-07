@@ -1,0 +1,5 @@
+# Heading
+
+text ^[note] and [link](./local.md)
+
+{"tabs":[{"path":"/tmp/a.md","cursor_line":1,"cursor_col":2,"scroll_line":3,"pinned":false}],"active_tab_index":0}

@@ -9,9 +9,12 @@
 
 use crate::config::keys;
 use crate::services::notifications::{
-    NotificationOwner, NotificationSeverity, NotificationSurface,
+    NotificationOwner, NotificationSeverity, NotificationSurface, StatusMessage,
 };
-use crate::services::{async_task, content_search, json_store, saved_searches, search_history};
+use crate::services::{
+    async_task, content_search, filesystem::metadata as fs_metadata, json_store, saved_searches,
+    search_history,
+};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_panel::SearchProgressUpdate;
 use crate::ui::status_bar::MessageKind;
@@ -24,10 +27,25 @@ use std::time::Duration;
 
 use super::LushtextWindow;
 
+/// Delay that lets the in-editor Find revealer finish closing before workspace search opens.
+///
+/// The 260 ms value tracks the panel transition budget; too short can hand
+/// focus over mid-animation, while much longer makes Ctrl+Shift+F feel laggy.
 pub(super) const SEARCH_PANEL_TRANSITION_DELAY_MS: u64 = 260;
+
+/// Maximum editor-selection size copied into the workspace search entry.
+///
+/// Users sometimes hit Ctrl+Shift+F with a whole document selected. The search
+/// panel prefill path runs on the GTK main thread, so keep it query-sized and
+/// skip very large selections instead of allocating a huge temporary string.
+const SEARCH_PANEL_PREFILL_CHAR_LIMIT: i32 = 1024;
 
 fn format_search_progress_message(files_searched: usize) -> String {
     format!("Searching {files_searched} files\u{2026}")
+}
+
+fn selection_within_search_prefill_limit(start_offset: i32, end_offset: i32) -> bool {
+    start_offset.abs_diff(end_offset) <= SEARCH_PANEL_PREFILL_CHAR_LIMIT as u32
 }
 
 /// Set up the search panel action, callbacks, and workspace root forwarding.
@@ -39,6 +57,8 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     imp.search_panel.set_workspace_roots(initial_roots);
 
     // --- Result activation: open file at line ---
+    // GTK signal closures may outlive the current window instance; weak refs
+    // let callbacks no-op instead of keeping closed windows alive.
     let window_weak = window.downgrade();
     imp.search_panel.connect_open_file(move |path, line| {
         if let Some(window) = window_weak.upgrade() {
@@ -125,6 +145,8 @@ pub fn setup_search_panel(window: &LushtextWindow) {
         let tab_view = &imp.tab_view;
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
+            // Tab pages store generic GTK widgets, so the cast gives access to
+            // editor-specific save and path state only for editor tabs.
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
                 && let Some(path) = editor.file_path()
                 && (editor.is_modified() || editor.is_saving())
@@ -186,9 +208,12 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         };
                         window.publish_status_message(&msg, kind);
 
-                        // Store backup and show undo button.
-                        imp.search_panel.set_undo_backup(&backup);
-                        imp.search_panel.show_undo_button();
+                        if backup.is_empty() {
+                            imp.search_panel.clear_undo_backup();
+                        } else {
+                            imp.search_panel.set_persisted_undo_backup(&backup);
+                            imp.search_panel.show_undo_button();
+                        }
 
                         // Reload affected open tabs to show updated content.
                         reload_affected_tabs(&window, &affected_paths);
@@ -212,7 +237,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
         };
 
         async_task::spawn_blocking_then(
-            window.clone(),
+            window,
             move || content_search::undo_replacements(&backup),
             move |window, outcome| {
                 let restored_paths: HashSet<std::path::PathBuf> =
@@ -266,18 +291,30 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     let data_dir_saved = data_dir.clone();
     async_task::spawn_blocking_then(
         window.clone(),
-        move || search_history::load(&data_dir),
-        |window, entries| {
-            window.imp().search_panel.set_search_history(entries);
+        move || search_history::load_recovering(&data_dir),
+        |window, load| {
+            for diagnostic in &load.diagnostics {
+                tracing::warn!("{}", diagnostic.summary());
+            }
+            window.imp().search_panel.set_search_history(load.value);
         },
     );
 
     // --- Load saved searches from disk (parallel to history) ---
     async_task::spawn_blocking_then(
         window.clone(),
-        move || saved_searches::load(&data_dir_saved),
-        |window, entries| {
-            window.imp().search_panel.set_saved_searches(entries);
+        move || saved_searches::load_recovering(&data_dir_saved),
+        |window, load| {
+            for diagnostic in &load.diagnostics {
+                tracing::warn!("{}", diagnostic.summary());
+            }
+            if !load.diagnostics.is_empty() {
+                window.publish_status_message(
+                    "Saved searches needed recovery; unsupported metadata was preserved",
+                    MessageKind::Warning,
+                );
+            }
+            window.imp().search_panel.set_saved_searches(load.value);
         },
     );
 }
@@ -323,7 +360,9 @@ impl LushtextWindow {
         // Pre-fill: if active editor has selected text, use it.
         if let Some(editor) = self.active_editor() {
             let buffer = editor.buffer();
-            if let Some((start, end)) = buffer.selection_bounds() {
+            if let Some((start, end)) = buffer.selection_bounds()
+                && selection_within_search_prefill_limit(start.offset(), end.offset())
+            {
                 let selected = buffer.text(&start, &end, false);
                 if !selected.is_empty() {
                     imp.search_panel.set_query(&selected);
@@ -377,6 +416,8 @@ impl LushtextWindow {
     ) {
         let window_weak = self.downgrade();
         let callback = std::cell::RefCell::new(Some(callback));
+        // Schedule on GTK's main loop so focus changes happen after the panel
+        // animation frame, without blocking input while the delay elapses.
         glib::timeout_add_local_once(
             Duration::from_millis(SEARCH_PANEL_TRANSITION_DELAY_MS),
             move || {
@@ -390,6 +431,10 @@ impl LushtextWindow {
         );
     }
 
+    /// Start delayed status-bar progress tracking for a new workspace search.
+    ///
+    /// Clears stale progress, arms the 500 ms visibility delay, and starts the
+    /// heartbeat timer that keeps active progress notifications alive.
     pub(crate) fn prepare_search_progress_tracking(&self) {
         self.finish_search_progress_tracking();
         let imp = self.imp();
@@ -414,15 +459,41 @@ impl LushtextWindow {
         });
     }
 
+    /// Publish an informational search-progress update through the notification bus.
     pub(crate) fn update_search_progress_message(&self, message: &str) {
+        self.update_search_progress_status_message(message, NotificationSeverity::Info);
+    }
+
+    /// Route progress updates through the visible-status pulse gate.
+    ///
+    /// The expected `StatusMessage` lets rendering pulse only when this progress
+    /// update actually occupies the status bar instead of sitting below a transient.
+    fn update_search_progress_status_message(&self, message: &str, severity: NotificationSeverity) {
+        let status_message = StatusMessage {
+            text: message.to_string(),
+            severity,
+        };
         if self.imp().notification_bus.update_progress(
             NotificationOwner::Search,
             NotificationSurface::StatusBar,
-            message,
-            NotificationSeverity::Info,
+            status_message.text.clone(),
+            status_message.severity,
         ) {
-            self.render_notifications();
+            self.render_notifications_for_status_update(&status_message);
         }
+    }
+
+    /// Publish a search-progress status message through the production routing path.
+    ///
+    /// Widget tests use this to exercise visible and hidden progress updates
+    /// without starting a real workspace search.
+    #[cfg(feature = "test-utils")]
+    pub fn update_search_progress_message_for_test(
+        &self,
+        message: &str,
+        severity: NotificationSeverity,
+    ) {
+        self.update_search_progress_status_message(message, severity);
     }
 
     pub(crate) fn finish_search_progress_tracking(&self) {
@@ -513,17 +584,28 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
             && !editor.is_modified()
             && !editor.is_saving()
         {
-            // Update mtime to suppress file monitor "changed" detection for our own write.
-            if let Ok(metadata) = std::fs::metadata(&path) {
-                use std::time::SystemTime;
-                let mtime = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs());
-                editor.imp().monitor.last_known_mtime.set(mtime);
-            }
-            editor.load_file_async(&path);
+            let editor_weak = editor.downgrade();
+            let path_for_facts = path.clone();
+            async_task::spawn_blocking_then(
+                path,
+                move || {
+                    fs_metadata::file_facts(&path_for_facts)
+                        .ok()
+                        .and_then(|facts| facts.modified_at_secs)
+                },
+                move |path, modified_at_secs| {
+                    let Some(editor) = editor_weak.upgrade() else {
+                        return;
+                    };
+                    if editor.file_path().as_deref() != Some(path.as_path()) {
+                        return;
+                    }
+                    // Update mtime before reload to suppress the file monitor's
+                    // "changed" warning for writes made by Replace All/Undo.
+                    editor.imp().monitor.last_known_mtime.set(modified_at_secs);
+                    editor.load_file_async(&path);
+                },
+            );
         }
     }
 }
@@ -547,7 +629,10 @@ fn scroll_editor_to_line(editor: &LushtextEditorPage, line: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::format_search_progress_message;
+    use super::{
+        SEARCH_PANEL_PREFILL_CHAR_LIMIT, format_search_progress_message,
+        selection_within_search_prefill_limit,
+    };
 
     #[test]
     fn search_progress_message_does_not_use_palette_index_total() {
@@ -555,5 +640,18 @@ mod tests {
             format_search_progress_message(14_100),
             "Searching 14100 files\u{2026}"
         );
+    }
+
+    #[test]
+    fn search_panel_prefill_skips_large_selection_ranges() {
+        assert!(selection_within_search_prefill_limit(
+            0,
+            SEARCH_PANEL_PREFILL_CHAR_LIMIT
+        ));
+        assert!(!selection_within_search_prefill_limit(
+            0,
+            SEARCH_PANEL_PREFILL_CHAR_LIMIT + 1
+        ));
+        assert!(selection_within_search_prefill_limit(42, 1));
     }
 }

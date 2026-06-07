@@ -391,8 +391,8 @@ libadwaita = "0.9"
 # scoring of 100k+ file candidates in the command palette
 nucleo-matcher = "0.3"
 
-# SIMD-accelerated UTF-8 validation for large files (>10MB) — avoids the
-# redundant scalar validation that std::fs::read_to_string performs
+# SIMD-accelerated UTF-8 validation for large files (>10MB) — keeps editor
+# loading on the filesystem byte-read boundary instead of scalar string reads
 simdutf8 = "0.1"
 ```
 

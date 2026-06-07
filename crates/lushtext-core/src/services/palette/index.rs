@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::model::palette::{IndexedFile, ScoredResult, SearchResultItem};
 use crate::services::file_tree;
+use crate::services::filesystem::metadata as fs_metadata;
 
 use super::fuzzy::search_items;
 
@@ -45,7 +46,7 @@ impl FileIndex {
         let mut visited = HashSet::new();
         let mut root_arcs = Vec::new();
         for root in roots {
-            let Ok(canonical_root) = root.canonicalize() else {
+            let Ok(canonical_root) = fs_metadata::canonical_path(root) else {
                 continue;
             };
             let root_arc = Arc::new(root.clone());
@@ -195,7 +196,7 @@ fn collect_files_recursive(
         return;
     }
 
-    let Ok(canonical) = dir.canonicalize() else {
+    let Ok(canonical) = fs_metadata::canonical_path(dir) else {
         return;
     };
 

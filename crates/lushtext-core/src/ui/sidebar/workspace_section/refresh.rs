@@ -123,7 +123,6 @@ impl LushtextWorkspaceSection {
     fn snapshot_refresh_state(&self) {
         self.save_expanded_paths();
         *self.imp().pending_selection.borrow_mut() = self.selected_tree_path();
-        self.prune_invalid_drilldown_stack();
     }
 
     fn selected_tree_path(&self) -> Option<PathBuf> {
@@ -139,7 +138,6 @@ impl LushtextWorkspaceSection {
                     .ok()
             })
             .and_then(|item| item.path())
-            .filter(|path| path.exists())
     }
 
     fn reload_current_view(&self) {
@@ -248,24 +246,6 @@ impl LushtextWorkspaceSection {
                 || self.imp().original_roots.borrow().clone(),
                 |path| vec![WorkspaceEntry::Directory { path }],
             )
-    }
-
-    fn prune_invalid_drilldown_stack(&self) {
-        let mut stack = self.imp().drilldown_stack.borrow_mut();
-        while stack.last().is_some_and(|path| !path.exists()) {
-            stack.pop();
-        }
-
-        if let Some(current) = stack.last() {
-            let path_str = current.to_string_lossy();
-            self.imp().drilldown_header_box.set_visible(true);
-            self.imp().drilldown_path_label.set_label(&path_str);
-            self.imp()
-                .drilldown_path_label
-                .set_tooltip_text(Some(&path_str));
-        } else {
-            self.imp().drilldown_header_box.set_visible(false);
-        }
     }
 
     fn reconcile_root_store_in_place(&self) -> bool {

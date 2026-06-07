@@ -1,0 +1,20 @@
+{
+  "kind": "dev.cominotti.lushtext.bookmark-sidecar",
+  "version": 1,
+  "data": {
+    "identity": {
+      "display_path": "/tmp/project/src/main.rs",
+      "canonical_path": "/tmp/project/src/main.rs",
+      "sidecar_id": "deb09d05810ef629"
+    },
+    "bookmarks": [
+      {
+        "id": "bookmark-00000000000000000000000000000001-0000000000000001",
+        "line": 2,
+        "label": "Entry",
+        "created_at_secs": 1780720800,
+        "updated_at_secs": 1780720810
+      }
+    ]
+  }
+}

@@ -12,7 +12,10 @@ use std::path::{Path, PathBuf};
 use crate::model::document_note::DocumentNoteDocument;
 use crate::model::note::RichNoteBody;
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
-use crate::services::json_store;
+use crate::services::filesystem::{
+    DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
+};
+use crate::services::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
 
 use super::note_storage;
 
@@ -28,6 +31,15 @@ pub struct WorkspaceDocumentNote {
     pub note: RichNoteBody,
 }
 
+/// Workspace document-note rows plus diagnostics for skipped sidecars.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceDocumentNoteListing {
+    /// Document-note rows safe to display in note browsers.
+    pub notes: Vec<WorkspaceDocumentNote>,
+    /// Recovery diagnostics for malformed or unreadable document-note sidecars.
+    pub diagnostics: Vec<RecoveryDiagnostic>,
+}
+
 /// Resolve the document-note sidecar directory under the app data home.
 #[must_use]
 pub fn document_notes_dir(data_dir: &Path) -> PathBuf {
@@ -38,8 +50,9 @@ pub fn document_notes_dir(data_dir: &Path) -> PathBuf {
 ///
 /// # Errors
 ///
-/// Returns an error if the file identity cannot be resolved, the sidecar cannot
-/// be read, or the stored JSON cannot be parsed.
+/// Returns an error if the file identity cannot be resolved or the sidecar
+/// directory cannot be scanned. Malformed or unreadable sidecars are preserved
+/// through recovery diagnostics and treated as absent.
 pub fn load_for_path(data_dir: &Path, path: &Path) -> Result<Option<DocumentNoteDocument>> {
     let identity = note_storage::resolve_document_identity(path)?;
     load_for_identity(data_dir, &identity)
@@ -51,7 +64,13 @@ fn load_for_identity(
 ) -> Result<Option<DocumentNoteDocument>> {
     let path =
         document_notes_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
-    note_storage::load_json_file::<DocumentNoteDocument>(&path)
+    let load = note_storage::load_json_file_recovering::<DocumentNoteDocument>(
+        data_dir,
+        &path,
+        RecoveryMetadataClass::DocumentNoteSidecar,
+    );
+    note_storage::trace_recovery_diagnostics(&load.diagnostics);
+    Ok(load.value)
 }
 
 /// Save the current document note for a saved file.
@@ -88,9 +107,13 @@ pub fn save_document(data_dir: &Path, document: &DocumentNoteDocument) -> Result
         return delete_sidecar_file(data_dir, &document.identity);
     }
 
-    json_store::save(
-        &document_notes_dir(data_dir),
-        &note_storage::sidecar_filename(&document.identity.sidecar_id),
+    let path = document_notes_dir(data_dir).join(note_storage::sidecar_filename(
+        &document.identity.sidecar_id,
+    ));
+    note_storage::save_json_file_recovering(
+        data_dir,
+        &path,
+        RecoveryMetadataClass::DocumentNoteSidecar,
         document,
     )
 }
@@ -109,9 +132,8 @@ pub fn delete_for_path(data_dir: &Path, path: &Path) -> Result<()> {
 fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> Result<()> {
     let path =
         document_notes_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    match fs_mutate::remove_file_if_exists(&path) {
+        Ok(_) => Ok(()),
         Err(error) => Err(anyhow::anyhow!(
             "failed to delete document note sidecar {}: {}",
             path.display(),
@@ -130,23 +152,26 @@ fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> R
 /// sidecar cannot be read, rewritten, or cleaned up.
 pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Result<usize> {
     let dir = document_notes_dir(data_dir);
-    if !dir.exists() {
+    if !fs_metadata::path_status(&dir)?.is_present() {
         return Ok(0);
     }
 
     let mut migrated = 0;
-    for entry in
-        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
+        .with_context(|| format!("failed to read {}", dir.display()))?
     {
-        let entry = entry.with_context(|| format!("failed to iterate {}", dir.display()))?;
-        let sidecar_path = entry.path();
+        let sidecar_path = entry.path;
         if sidecar_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
 
-        let Some(mut document) =
-            note_storage::load_json_file::<DocumentNoteDocument>(&sidecar_path)?
-        else {
+        let load = note_storage::load_json_file_recovering::<DocumentNoteDocument>(
+            data_dir,
+            &sidecar_path,
+            RecoveryMetadataClass::DocumentNoteSidecar,
+        );
+        note_storage::trace_recovery_diagnostics(&load.diagnostics);
+        let Some(document) = load.value else {
             continue;
         };
         let Some((display_path, canonical_path)) =
@@ -155,18 +180,74 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
             continue;
         };
 
-        document.identity = DocumentSidecarIdentity::from_paths(display_path, canonical_path);
-        let new_sidecar_path = dir.join(note_storage::sidecar_filename(
-            &document.identity.sidecar_id,
-        ));
+        let new_identity = DocumentSidecarIdentity::from_paths(display_path, canonical_path);
+        let new_sidecar_path = dir.join(note_storage::sidecar_filename(&new_identity.sidecar_id));
+        let document =
+            merge_document_note_target(data_dir, &new_sidecar_path, document, new_identity)?;
         save_document(data_dir, &document)?;
-        if entry.path() != new_sidecar_path {
-            let _ = std::fs::remove_file(entry.path());
+        if sidecar_path != new_sidecar_path {
+            remove_obsolete_sidecar(&sidecar_path)?;
         }
         migrated += 1;
     }
 
     Ok(migrated)
+}
+
+fn merge_document_note_target(
+    data_dir: &Path,
+    target_path: &Path,
+    mut source: DocumentNoteDocument,
+    target_identity: DocumentSidecarIdentity,
+) -> Result<DocumentNoteDocument> {
+    let load = note_storage::load_json_file_recovering::<DocumentNoteDocument>(
+        data_dir,
+        target_path,
+        RecoveryMetadataClass::DocumentNoteSidecar,
+    );
+    note_storage::trace_recovery_diagnostics(&load.diagnostics);
+    let Some(target) = load.value else {
+        source.identity = target_identity;
+        return Ok(source);
+    };
+
+    merge_document_note_documents(source, target, target_identity)
+}
+
+/// Merge a moved note into an existing target note without guessing on ambiguous conflicts.
+fn merge_document_note_documents(
+    source: DocumentNoteDocument,
+    mut target: DocumentNoteDocument,
+    target_identity: DocumentSidecarIdentity,
+) -> Result<DocumentNoteDocument> {
+    let source_newer = source.note.updated_at_secs > target.note.updated_at_secs;
+    let target_newer = target.note.updated_at_secs > source.note.updated_at_secs;
+    if source_newer {
+        return Ok(DocumentNoteDocument {
+            identity: target_identity,
+            note: source.note,
+        });
+    }
+    if target_newer || source.note == target.note {
+        target.identity = target_identity;
+        return Ok(target);
+    }
+
+    Err(anyhow::anyhow!(
+        "ambiguous document note sidecar conflict for {}; both copies were preserved",
+        target_identity.display_path.display()
+    ))
+}
+
+fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
+    match fs_mutate::remove_file_if_exists(path) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(anyhow::anyhow!(
+            "failed to delete obsolete document note sidecar {}: {}",
+            path.display(),
+            error
+        )),
+    }
 }
 
 /// Collect document notes under the current workspace roots for note browsers.
@@ -179,19 +260,40 @@ pub fn list_workspace_document_notes(
     data_dir: &Path,
     workspace_roots: &[PathBuf],
 ) -> Result<Vec<WorkspaceDocumentNote>> {
+    Ok(list_workspace_document_notes_recovering(data_dir, workspace_roots)?.notes)
+}
+
+/// Collect document notes and preserve partial-recovery diagnostics.
+///
+/// # Errors
+///
+/// Returns an error only when the sidecar directory itself cannot be scanned.
+pub fn list_workspace_document_notes_recovering(
+    data_dir: &Path,
+    workspace_roots: &[PathBuf],
+) -> Result<WorkspaceDocumentNoteListing> {
     let canonical_roots = note_storage::canonicalize_roots(workspace_roots);
     let dir = document_notes_dir(data_dir);
-    if !dir.exists() {
-        return Ok(Vec::new());
+    if !fs_metadata::path_status(&dir)?.is_present() {
+        return Ok(WorkspaceDocumentNoteListing {
+            notes: Vec::new(),
+            diagnostics: Vec::new(),
+        });
     }
 
     let mut notes = Vec::new();
-    for entry in
-        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+    let mut diagnostics = Vec::new();
+    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
+        .with_context(|| format!("failed to read {}", dir.display()))?
     {
-        let entry = entry.with_context(|| format!("failed to iterate {}", dir.display()))?;
-        let Some(document) = note_storage::load_json_file::<DocumentNoteDocument>(&entry.path())?
-        else {
+        let load = note_storage::load_json_file_recovering::<DocumentNoteDocument>(
+            data_dir,
+            &entry.path,
+            RecoveryMetadataClass::DocumentNoteSidecar,
+        );
+        note_storage::trace_recovery_diagnostics(&load.diagnostics);
+        diagnostics.extend(load.diagnostics);
+        let Some(document) = load.value else {
             continue;
         };
         if !note_storage::matches_any_root(&document.identity, &canonical_roots) {
@@ -204,19 +306,20 @@ pub fn list_workspace_document_notes(
     }
 
     notes.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(notes)
+    Ok(WorkspaceDocumentNoteListing { notes, diagnostics })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     fn write_file(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("expected operation to succeed");
+            fixture::create_dir_all(parent);
         }
-        std::fs::write(path, contents).expect("expected operation to succeed");
+        fixture::write_text(path, contents);
     }
 
     #[test]
@@ -248,7 +351,7 @@ mod tests {
 
         let sidecar_path = document_notes_dir(dir.path())
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
-        assert!(!sidecar_path.exists());
+        assert!(!fs_metadata::exists(&sidecar_path));
     }
 
     #[test]
@@ -263,7 +366,7 @@ mod tests {
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
 
         delete_for_path(dir.path(), &file_path).expect("expected operation to succeed");
-        assert!(!sidecar_path.exists());
+        assert!(!fs_metadata::exists(&sidecar_path));
         delete_for_path(dir.path(), &file_path).expect("expected missing sidecar to be a no-op");
     }
 
@@ -277,8 +380,8 @@ mod tests {
             .expect("expected operation to succeed");
         let sidecar_path = document_notes_dir(dir.path())
             .join(note_storage::sidecar_filename(&identity.sidecar_id));
-        std::fs::remove_file(&sidecar_path).expect("expected operation to succeed");
-        std::fs::create_dir(&sidecar_path).expect("expected operation to succeed");
+        fixture::remove_file(&sidecar_path);
+        fixture::create_dir(&sidecar_path);
 
         let error =
             delete_for_path(dir.path(), &file_path).expect_err("directory sidecar should fail");
@@ -303,22 +406,128 @@ mod tests {
         let old_sidecar_path = document_notes_dir(dir.path())
             .join(note_storage::sidecar_filename(&old_identity.sidecar_id));
 
-        std::fs::rename(&old_file, &new_file).expect("expected operation to succeed");
+        fixture::rename(&old_file, &new_file);
         let migrated = move_path_tree(dir.path(), &old_file, &new_file)
             .expect("expected operation to succeed");
 
         assert_eq!(migrated, 1);
-        assert!(!old_sidecar_path.exists());
+        assert!(!fs_metadata::exists(&old_sidecar_path));
         let loaded = load_for_path(dir.path(), &new_file).expect("expected operation to succeed");
         let loaded = loaded.expect("expected moved note");
         assert_eq!(loaded.identity.display_path, new_file);
         assert_eq!(loaded.note.text, "Keep this note");
-        let json_sidecars = std::fs::read_dir(document_notes_dir(dir.path()))
-            .expect("expected operation to succeed")
-            .filter_map(std::result::Result::ok)
-            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
-            .count();
+        let json_sidecars = fs_tree::scan_directory(
+            &document_notes_dir(dir.path()),
+            DirectoryScanPolicy::visible_workspace(),
+        )
+        .expect("expected operation to succeed")
+        .into_iter()
+        .filter(|entry| entry.path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .count();
         assert_eq!(json_sidecars, 1);
+    }
+
+    #[test]
+    fn move_path_tree_keeps_newest_duplicate_document_note() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let old_file = dir.path().join("workspace/old.rs");
+        let new_file = dir.path().join("workspace/new.rs");
+        write_file(&old_file, "fn old() {}\n");
+        write_file(&new_file, "fn new() {}\n");
+        let old_identity =
+            note_storage::resolve_document_identity(&old_file).expect("old identity");
+        let new_identity =
+            note_storage::resolve_document_identity(&new_file).expect("new identity");
+        let old_sidecar_path = document_notes_dir(dir.path())
+            .join(note_storage::sidecar_filename(&old_identity.sidecar_id));
+        save_document(
+            dir.path(),
+            &DocumentNoteDocument {
+                identity: old_identity,
+                note: RichNoteBody {
+                    text: "newer source note".to_string(),
+                    created_at_secs: 1,
+                    updated_at_secs: 20,
+                },
+            },
+        )
+        .expect("save old duplicate note");
+        save_document(
+            dir.path(),
+            &DocumentNoteDocument {
+                identity: new_identity,
+                note: RichNoteBody {
+                    text: "older target note".to_string(),
+                    created_at_secs: 1,
+                    updated_at_secs: 10,
+                },
+            },
+        )
+        .expect("save target duplicate note");
+
+        let migrated =
+            move_path_tree(dir.path(), &old_file, &new_file).expect("newest note should merge");
+
+        assert_eq!(migrated, 1);
+        assert!(!fs_metadata::exists(&old_sidecar_path));
+        let loaded = load_for_path(dir.path(), &new_file)
+            .expect("load merged note")
+            .expect("merged note exists");
+        assert_eq!(loaded.note.text, "newer source note");
+        assert_eq!(loaded.note.updated_at_secs, 20);
+    }
+
+    #[test]
+    fn move_path_tree_preserves_ambiguous_document_note_conflict() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let old_file = dir.path().join("workspace/old.rs");
+        let new_file = dir.path().join("workspace/new.rs");
+        write_file(&old_file, "fn old() {}\n");
+        write_file(&new_file, "fn new() {}\n");
+        let old_identity =
+            note_storage::resolve_document_identity(&old_file).expect("old identity");
+        let new_identity =
+            note_storage::resolve_document_identity(&new_file).expect("new identity");
+        let old_sidecar_path = document_notes_dir(dir.path())
+            .join(note_storage::sidecar_filename(&old_identity.sidecar_id));
+        let new_sidecar_path = document_notes_dir(dir.path())
+            .join(note_storage::sidecar_filename(&new_identity.sidecar_id));
+        save_document(
+            dir.path(),
+            &DocumentNoteDocument {
+                identity: old_identity,
+                note: RichNoteBody {
+                    text: "source text".to_string(),
+                    created_at_secs: 1,
+                    updated_at_secs: 10,
+                },
+            },
+        )
+        .expect("save old duplicate note");
+        save_document(
+            dir.path(),
+            &DocumentNoteDocument {
+                identity: new_identity,
+                note: RichNoteBody {
+                    text: "target text".to_string(),
+                    created_at_secs: 1,
+                    updated_at_secs: 10,
+                },
+            },
+        )
+        .expect("save target duplicate note");
+
+        let error = move_path_tree(dir.path(), &old_file, &new_file)
+            .expect_err("ambiguous equal-timestamp notes should not be guessed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("ambiguous document note sidecar conflict"),
+            "unexpected error: {error}"
+        );
+        assert!(fs_metadata::exists(&old_sidecar_path));
+        assert!(fs_metadata::exists(&new_sidecar_path));
     }
 
     #[test]
@@ -332,12 +541,13 @@ mod tests {
         write_file(&beta, "beta");
         write_file(&outside, "gamma");
 
-        save_for_path(dir.path(), &beta, &RichNoteBody::new("Beta note"))
-            .expect("expected operation to succeed");
-        save_for_path(dir.path(), &outside, &RichNoteBody::new("Outside note"))
-            .expect("expected operation to succeed");
-        save_for_path(dir.path(), &alpha, &RichNoteBody::new("Alpha note"))
-            .expect("expected operation to succeed");
+        let beta_note = RichNoteBody::new("Beta note");
+        let outside_note = RichNoteBody::new("Outside note");
+        let alpha_note = RichNoteBody::new("Alpha note");
+
+        save_for_path(dir.path(), &beta, &beta_note).expect("expected operation to succeed");
+        save_for_path(dir.path(), &outside, &outside_note).expect("expected operation to succeed");
+        save_for_path(dir.path(), &alpha, &alpha_note).expect("expected operation to succeed");
 
         let notes = list_workspace_document_notes(dir.path(), &[workspace])
             .expect("expected operation to succeed");
@@ -347,13 +557,46 @@ mod tests {
             vec![
                 WorkspaceDocumentNote {
                     path: alpha,
-                    note: RichNoteBody::new("Alpha note"),
+                    note: alpha_note,
                 },
                 WorkspaceDocumentNote {
                     path: beta,
-                    note: RichNoteBody::new("Beta note"),
+                    note: beta_note,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn corrupt_document_note_sidecar_is_quarantined_without_hiding_valid_notes() {
+        let dir = TempDir::new().expect("tempdir");
+        let valid_path = dir.path().join("workspace/valid.rs");
+        let corrupt_path = dir.path().join("workspace/corrupt.rs");
+        write_file(&valid_path, "valid\n");
+        write_file(&corrupt_path, "corrupt\n");
+        save_for_path(dir.path(), &valid_path, &RichNoteBody::new("Keep valid"))
+            .expect("save valid note");
+        let corrupt_identity =
+            note_storage::resolve_document_identity(&corrupt_path).expect("corrupt identity");
+        let corrupt_sidecar = document_notes_dir(dir.path())
+            .join(note_storage::sidecar_filename(&corrupt_identity.sidecar_id));
+        fixture::write_text(&corrupt_sidecar, "not document note json");
+
+        let listing =
+            list_workspace_document_notes_recovering(dir.path(), &[dir.path().join("workspace")])
+                .expect("list document notes despite corrupt sidecar");
+
+        assert_eq!(listing.notes.len(), 1);
+        assert_eq!(listing.notes[0].path, valid_path);
+        assert_eq!(listing.notes[0].note.text, "Keep valid");
+        assert_eq!(listing.diagnostics.len(), 1);
+        assert_eq!(
+            listing.diagnostics[0].class,
+            RecoveryMetadataClass::DocumentNoteSidecar
+        );
+        assert!(
+            !fs_metadata::exists(&corrupt_sidecar),
+            "corrupt sidecar should be moved out of normal browse path"
         );
     }
 }

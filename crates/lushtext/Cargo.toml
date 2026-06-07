@@ -20,6 +20,9 @@ harness = false
 [lints]
 workspace = true
 
+[build-dependencies]
+lushtext-build-support = { workspace = true }
+
 [dependencies]
 lushtext-core      = { workspace = true }
 glib               = { workspace = true }
@@ -27,6 +30,7 @@ tracing-subscriber = { workspace = true }
 workspace-hack     = { version = "0.1", path = "../../workspace-hack" }
 
 [dev-dependencies]
+lushtext-core = { workspace = true, features = ["test-utils"] }
 tempfile    = { workspace = true }
 assert_cmd  = { workspace = true }
 predicates  = { workspace = true }

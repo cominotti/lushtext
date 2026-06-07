@@ -2,7 +2,7 @@
 
 //! Tests for the Command Palette widget and its components.
 
-use crate::common::ensure_gtk_init;
+use crate::common::{ensure_gtk_init, fixture, flush_events, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::prelude::ToValue;
 use gtk4::prelude::*;
@@ -19,12 +19,7 @@ use lushtext_core::ui::command_palette::item::PaletteItem;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
-
-/// Drain all pending events from the GTK main loop.
-fn flush_events() {
-    while glib::MainContext::default().iteration(false) {}
-}
+use std::time::Duration;
 
 /// Spin the main loop (blocking) until the predicate returns true.
 /// Panics after ~2 seconds to prevent infinite hangs.
@@ -39,21 +34,11 @@ fn spin_until(predicate: impl Fn() -> bool) {
     }
 }
 
-fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if predicate() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-        flush_events();
-    }
-    panic!("condition was not met within {timeout:?}");
-}
-
 fn present_window(window: &LushtextWindow) {
     window.present();
-    wait_until(Duration::from_secs(2), || {
+    // Realization is a precondition: give the headless compositor a generous
+    // budget to allocate the window before tests interact with it.
+    wait_until(Duration::from_secs(5), || {
         window.width() > 0 && window.height() > 0
     });
     flush_events();
@@ -64,10 +49,10 @@ fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, 
     let roots_dir = tempfile::tempdir().expect("scoped workspace roots tempdir");
     let left_root = roots_dir.path().join("left");
     let right_root = roots_dir.path().join("right");
-    std::fs::create_dir_all(&left_root).expect("create left workspace root");
-    std::fs::create_dir_all(&right_root).expect("create right workspace root");
-    std::fs::write(left_root.join("alpha.rs"), "fn alpha() {}\n").expect("write alpha");
-    std::fs::write(right_root.join("beta.rs"), "fn beta() {}\n").expect("write beta");
+    fixture::create_dir_all(&left_root);
+    fixture::create_dir_all(&right_root);
+    fixture::write_text(&left_root.join("alpha.rs"), "fn alpha() {}\n");
+    fixture::write_text(&right_root.join("beta.rs"), "fn beta() {}\n");
 
     let workspaces = WorkspacesFile {
         current_scope: initial_scope,
@@ -415,8 +400,8 @@ fn test_command_palette_set_file_index() {
     let palette = LushtextCommandPalette::new();
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("hello.rs"), "").expect("expected operation to succeed");
-    std::fs::write(dir.path().join("world.txt"), "").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("hello.rs"), "");
+    fixture::write_text(&dir.path().join("world.txt"), "");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     palette.set_file_index(index);
@@ -440,8 +425,8 @@ fn test_command_palette_search_filters_results() {
     let palette = LushtextCommandPalette::new();
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("main.rs"), "").expect("expected operation to succeed");
-    std::fs::write(dir.path().join("Cargo.toml"), "").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("main.rs"), "");
+    fixture::write_text(&dir.path().join("Cargo.toml"), "");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     palette.set_file_index(index);
@@ -483,8 +468,8 @@ fn test_command_palette_files_mode_groups_open_tabs_before_workspace_files() {
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let duplicate = dir.path().join("alpha.rs");
     let workspace_only = dir.path().join("workspace_alpha.rs");
-    std::fs::write(&duplicate, "").expect("expected operation to succeed");
-    std::fs::write(&workspace_only, "").expect("expected operation to succeed");
+    fixture::write_text(&duplicate, "");
+    fixture::write_text(&workspace_only, "");
 
     palette.set_workspace_group_label("Selected Workspace");
     palette.set_open_tabs(vec![PaletteFileEntry::new(
@@ -519,7 +504,7 @@ fn test_command_palette_files_mode_uses_all_workspaces_label() {
     let palette = LushtextCommandPalette::new();
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("alpha.rs"), "").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("alpha.rs"), "");
 
     palette.set_workspace_group_label("All Workspaces");
     palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
@@ -537,7 +522,7 @@ fn test_command_palette_all_mode_groups_sources_by_priority() {
     let palette = LushtextCommandPalette::new();
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("save_workspace.rs"), "").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("save_workspace.rs"), "");
 
     palette.set_workspace_group_label("Selected Workspace");
     palette.set_open_tabs(vec![PaletteFileEntry::new(
@@ -910,7 +895,7 @@ fn test_palette_open_tabs_can_appear_outside_selected_workspace() {
     ensure_gtk_init();
     let roots_dir = tempfile::tempdir().expect("outer roots tempdir");
     let outside_file = roots_dir.path().join("beta.rs");
-    std::fs::write(&outside_file, "fn beta() {}\n").expect("write outside file");
+    fixture::write_text(&outside_file, "fn beta() {}\n");
 
     let (_workspace_roots_dir, _left_root, _right_root) =
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-left")));

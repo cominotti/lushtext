@@ -1,0 +1,20 @@
+{
+  "kind": "dev.cominotti.lushtext.local-history-index",
+  "version": 1,
+  "data": {
+    "identity": {
+      "display_path": "/tmp/project/src/main.rs",
+      "canonical_path": "/tmp/project/src/main.rs",
+      "sidecar_id": "deb09d05810ef629"
+    },
+    "snapshots": [
+      {
+        "snapshot_id": "history-00000000000000000000000000000001-0000000000000001",
+        "captured_at_millis": 1780720800000,
+        "origin": "Save",
+        "byte_len": 12,
+        "content_hash": "77a42636bcda9076"
+      }
+    ]
+  }
+}

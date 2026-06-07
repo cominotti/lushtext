@@ -1,0 +1,17 @@
+{
+  "kind": "dev.cominotti.lushtext.workspace-state",
+  "version": 1,
+  "data": {
+    "current_scope": {
+      "kind": "workspace",
+      "workspace_id": "workspace-a"
+    },
+    "workspaces": [
+      {
+        "id": "workspace-a",
+        "name": "Project",
+        "root": "/tmp/project"
+      }
+    ]
+  }
+}

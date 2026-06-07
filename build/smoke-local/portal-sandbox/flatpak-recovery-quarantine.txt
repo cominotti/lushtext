@@ -1,0 +1,4 @@
+data_dir=/var/home/danilo/.lushtext-flatpak-smoke.XJmAfN/recovery-data
+quarantine=<missing>
+SKIP: Flatpak recovery smoke did not observe quarantine evidence.
+The installed Flatpak may be older than this checkout, may ignore the LUSHTEXT_DATA_DIR override, or may lack recovery support in this runtime.

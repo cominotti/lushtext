@@ -15,13 +15,13 @@ Code patterns for maximizing SIMD acceleration in LushText. The project targets 
 
 **Status: IMPLEMENTED** — All file loads use SIMD UTF-8 validation unconditionally.
 
-The code uses `std::fs::read` + `simdutf8::basic::from_utf8` + `String::from_utf8_unchecked` for all file sizes. Syntax highlighting is gated separately on file size via `FileSizeCheck`.
+The code uses `services::filesystem::read::bytes` + `simdutf8::basic::from_utf8` + `String::from_utf8_unchecked` for all file sizes. Syntax highlighting is gated separately on file size via `FileSizeCheck`.
 
 ### Current pattern (editor_page/mod.rs)
 
 ```rust
 // SIMD UTF-8 validation for ALL file sizes
-let bytes = std::fs::read(&file_path).map_err(read_err)?;
+let bytes = filesystem::read::bytes(&file_path).map_err(read_err)?;
 let content = match simdutf8::basic::from_utf8(&bytes) {
     // SAFETY: simdutf8 just confirmed these bytes are valid UTF-8
     Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
@@ -29,7 +29,7 @@ let content = match simdutf8::basic::from_utf8(&bytes) {
 };
 ```
 
-**Why this matters**: even for a 1MB file, simdutf8 validates in ~0.08ms vs ~0.7ms for the scalar path inside `read_to_string`. The `std::fs::read` call also avoids one internal reallocation that `read_to_string` does when growing its String buffer. Benchmarked in `bench_utf8_validation` at 1/5/10/50MB.
+**Why this matters**: even for a 1MB file, simdutf8 validates in ~0.08ms vs ~0.7ms for the scalar UTF-8 path. The filesystem byte-read boundary also avoids one internal reallocation that string-growth based reads can do. Benchmarked in `bench_utf8_validation` at 1/5/10/50MB.
 
 ---
 

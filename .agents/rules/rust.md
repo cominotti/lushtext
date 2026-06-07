@@ -53,12 +53,103 @@ Use `services::async_task::spawn_blocking_then(state, work, then)` for any I/O t
 
 Never pass GTK objects directly across threads — they are not `Send`/`Sync`. Use `glib::thread_guard::ThreadGuard` or `glib::SendWeakRef`.
 
-Durable atomic writes on Linux require both halves of the filesystem contract:
-write and flush the temp file, call `sync_all()` or `sync_data()` on that temp
-file before `rename()`, then sync the parent directory after the rename so ext4,
-XFS, and Btrfs cannot lose the renamed directory entry across power loss. Use
-`services::durable_write::sync_parent_dir()` for the directory half instead of
-leaving it to each call site.
+## GTK Main-Thread Snapshot Boundaries
+
+GTK text buffers must only be read on the GTK main thread, but whole-buffer
+copies can still freeze the UI when they happen in one callback. Reuse
+`ui::buffer_snapshot` for editor text snapshots that feed saves, draft
+autosave, encoding analysis, preview flows, or optional marker scans.
+
+- Small buffers may use `snapshot_buffer_text_direct()` before handing owned
+  text to a worker.
+- Unknown, grown-in-memory, or large buffers must use
+  `snapshot_buffer_text_async()` or an explicit paused/limited state.
+- Worker results that mutate UI state must carry a generation counter and a
+  weak editor/window identity check. Reject results when the editor was closed,
+  switched paths, edited again, or superseded by a newer request.
+- Optional UI hints such as Markdown preview rendering and minimap long-line
+  markers may skip or pause for large buffers; do not trade editor
+  responsiveness for secondary decoration.
+- Save As canonical bookkeeping must not call canonicalization on the GTK
+  thread after the chooser returns. Use the background save result immediately
+  for UI identity and schedule any follow-up canonical refresh through
+  `spawn_blocking_then`, applying it only while the editor is still mounted and
+  still owns the same path.
+
+## Filesystem Boundary
+
+Production code must use `services::filesystem` for file reads, metadata,
+canonical identity, traversal, mutation, sidecar helpers, and durable writes.
+Call sites should read in LushText terms, such as
+`filesystem::read::text`, `filesystem::metadata::exists`,
+`filesystem::metadata::path_status`, `filesystem::metadata::file_facts`,
+`filesystem::tree::scan_directory`, `filesystem::mutate::remove_file_if_exists`,
+and `filesystem::write::atomic_replace`. Use `exists` or `path_status` for
+presence/kind checks so callers do not pay for canonicalization, file length, or
+mtime conversion they do not use. Reserve `file_facts` for workflows that
+actually need canonical identity, byte size, or modification time.
+
+Approved raw filesystem exceptions are limited to:
+
+- `services::filesystem::sys` for the private descriptor and platform backend.
+- `services::filesystem::fixture` for test and benchmark setup/assertions.
+- Documented, read-only engine adapters with an audit allowlist. Today this is
+  limited to the content-search query path, whose walker/searcher stack may own
+  traversal, ignore/glob filtering, binary detection, and streaming reads. Its
+  command side must still route Replace All writes, undo journals, cleanup, and
+  persistence through `services::filesystem`.
+
+Do not import the private durable implementation from callers. The public
+durability surface is `services::filesystem::write`, including
+`atomic_replace`, `atomic_replace_stream`, `rename_durable`,
+`copy_file_durable`, `create_dir_durable`, `sync_parent_dir`, and
+`TargetWriteGuard`.
+
+Tests and benches should use `services::filesystem::fixture` helpers such as
+`write_text`, `write_bytes`, `create_dir_all`, `create_sparse_file`,
+`symlink`, `set_mode`, and `assert_text`. This keeps examples readable while
+preserving the boundary.
+
+Run `./scripts/check-filesystem-boundary.sh` after filesystem-sensitive changes
+or before completing work that touches file I/O, persistence, tests, benches,
+rules, or skills. A clean run means no disallowed raw filesystem examples remain
+outside the approved backend and fixture modules.
+
+Durable atomic writes on Linux require the full ordered filesystem contract:
+probe metadata, create the temp file with safe permissions, write and flush
+content, apply required metadata, call `sync_all()` on the temp file after those
+metadata mutations, `rename()`, then sync the parent directory so ext4, XFS, and
+Btrfs cannot lose the renamed directory entry across power loss. Use
+`services::filesystem::write::create_dir_durable()` for single-directory
+creation that must be durable, and `sync_parent_dir()` only when an existing
+durable workflow explicitly needs to seal a namespace mutation.
+
+Prefer the shared `services::filesystem::write::atomic_replace` (or
+`atomic_replace_stream` when you need streaming serialization) over hand-rolling
+temp-file-then-rename. The shared boundary guarantees these things every
+persistence caller must inherit and must not silently drop:
+
+- **Identity-metadata preservation.** Because the rename installs a brand-new
+  inode, an overwrite would otherwise reset the destination's permissions,
+  ownership, ACLs, and xattrs. The helper copies that metadata onto the temp file
+  before the final temp sync and rename (standard `0o777` bits are preserved
+  exactly; ownership, ACLs/xattrs, and the setuid/setgid/sticky bits are
+  best-effort — the kernel intentionally clears setuid/setgid on a content
+  rewrite). New files keep default permissions. Copy fallback uses source
+  metadata, not destination metadata. Do not reintroduce a raw `File::create` +
+  `rename` that loses this.
+- **Stable target coordination.** Editor save, Save As, Replace All, and undo
+  must acquire the resolved target guard before reading or writing file bytes.
+  Do not coordinate on the destination inode; atomic rename replaces that inode.
+  Symlink paths and canonical target paths must share one guard, and acquiring
+  the guard must not require opening the destination read-write.
+- **Honest failure classification.** `DurableWriteError::BeforeRename` means the
+  previous bytes are intact (report as an unwritten/failed save and keep the
+  document modified); `DurableWriteError::AfterRename` means the new bytes are on
+  disk but the directory `fsync` did not complete (surface a distinct
+  "durability unconfirmed" warning, never a generic lost-save). The editor maps
+  these to `SaveError::WriteTemp` and `SaveError::DurabilityUnconfirmed`. Never
+  swallow an `fsync` error into a silent success.
 
 Never set `autoexpand = true` on `GtkTreeListModel`.
 
@@ -76,8 +167,12 @@ do not show a clean tab whose visible text differs from disk.
 
 ## Lint Suppression
 
-- Prefer `#[expect(lint)]` over `#[allow(lint)]` when suppressing a lint for a known reason (e.g., using a deprecated API that has no replacement yet). `#[expect]` is self-policing: it causes a compile error if the lint no longer fires, so stale suppressions are caught automatically.
+- Prefer `#[expect(lint, reason = "...")]` over `#[allow(lint)]` when suppressing a lint for a known reason (e.g., using a deprecated API that has no replacement yet). `#[expect]` is self-policing: it causes a compile error if the lint no longer fires, so stale suppressions are caught automatically. The reason must name the local GTK, generated-code, test, benchmark, or ownership invariant.
 - Reserve `#[allow(lint)]` only for cases where the lint may or may not fire depending on configuration or feature flags.
+- The workspace Clippy table is curated lint-by-lint after cleanup. Broad groups such as `clippy::restriction`, `clippy::pedantic`, `clippy::nursery`, and `clippy::cargo` are advisory discovery inputs only; do not enable them wholesale as blocking policy.
+- Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, `manual_noop_waker`, `manual_midpoint`, `unchecked_time_subtraction`, `case_sensitive_file_extension_comparisons`, `significant_drop_tightening`, `needless_collect`, `redundant_clone`, `derive_partial_eq_without_eq`, and `wildcard_imports` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents.
+- `make lint-advisory` runs broad Clippy, selected design-smell Clippy, and selected rustc probes. Every current category is classified in `scripts/lint-advisory-policy.toml` as `blocking_candidate`, `must_stay_zero`, `accepted_advisory`, `generated_code_noise`, or `resolved_policy_exception`; refresh that policy only after fixing, promoting, or intentionally classifying new output.
+- No `clippy.toml` is currently checked in because this review found no globally safe disallowed method/type ban that applies across backend, fixture, generated, test, and build-support paths without broad suppressions. Add `clippy.toml` only when a future globally safe ban can include reason and replacement metadata. Path-sensitive rules such as filesystem-boundary ownership stay in `scripts/check-filesystem-boundary.sh`, where backend, fixture, build-support, and approved engine-adapter exceptions can be expressed by path.
 
 ## Modern Rust Idioms
 
@@ -99,7 +194,7 @@ if let Some(obj) = obj_weak.upgrade() {
 }
 ```
 
-With Rust 1.95.0, also use `if let` match guards when a match arm needs both the matched value and a short fallible guard:
+With Rust 1.96.0, also use `if let` match guards when a match arm needs both the matched value and a short fallible guard:
 
 ```rust
 match encoding {
@@ -112,16 +207,19 @@ match encoding {
 
 Prefer the new standard-library helpers when they make intent clearer:
 
+- Use `std::assert_matches` or `std::debug_assert_matches` in tests when a pattern assertion benefits from clearer failure output. Import the macro explicitly in each module; it is not in the prelude.
 - Use `slice.array_windows::<N>()` over `slice.windows(N)` when the window width is fixed and every element is indexed.
 - Use `Atomic*::try_update` / `Atomic*::update` instead of hand-written compare-exchange loops when the closure expresses the complete state transition clearly.
 - Use `Peekable::next_if_eq`, `next_if`, `next_if_map`, or `next_if_map_mut` instead of manual `peek()` + `next()` pairs.
 - Use `Vec::push_mut` / `insert_mut` only when the caller immediately needs a mutable reference to the inserted value; plain `push` remains clearer otherwise.
 - Use `cfg_select!` for expression-level or tightly grouped cfg choices. Keep item-level `#[cfg]` when separate Unix/non-Unix implementations are already clearer.
 
+Use the Rust 1.96 `core::range` value types only when they reduce real range-moving friction in named byte-span values. Range syntax still produces the legacy `std::ops` range types today, so do not mechanically rewrite every `std::ops::Range<usize>` import. Keep legacy ranges for proptest strategies, third-party APIs, and APIs meant to accept ordinary range syntax; prefer `impl RangeBounds<usize>` for new caller-facing range inputs.
+
 ## Error Handling
 
 - Services return `anyhow::Result`.
-- For file I/O: try the operation and handle errors (no TOCTOU `exists()` checks).
+- For file I/O: try the operation and handle errors; avoid preflight existence checks that race with the operation.
 - In GTK signal handlers: log errors with `tracing::error!`, don't panic.
 
 ## File Size Limit
@@ -143,4 +241,5 @@ When production code approaches 1000 lines:
 - Integration tests: `crates/lushtext/tests/integration.rs` with `#[path]` split pattern.
 - Widget tests: `crates/lushtext/tests/widget.rs` with `#[path]` split pattern; require display server.
 - Use `TestContext` for filesystem isolation (tempdir + simulated XDG dirs).
+- Use `services::filesystem::fixture` helpers for file setup and assertions in tests and benches.
 - Run `cargo hakari generate` after adding/removing dependencies.

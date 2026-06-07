@@ -3,7 +3,7 @@
 //! Tests for the LushtextWorkspaceSection widget.
 
 use crate::common::{
-    emit_key_pressed_on_focus, ensure_gtk_init, flush_events, present_window, wait_until,
+    emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_events, present_window, wait_until,
 };
 use gio::prelude::MenuModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -97,10 +97,10 @@ fn make_peek_fixture() -> PeekFixture {
     let binary = dir.path().join("binary.bin");
     let directory = dir.path().join("nested");
 
-    std::fs::write(&text_a, "fn alpha() {\n    println!(\"alpha\");\n}\n").expect("expected operation to succeed");
-    std::fs::write(&text_b, "fn beta() {\n    println!(\"beta\");\n}\n").expect("expected operation to succeed");
-    std::fs::write(&binary, [0xff, 0xfe, 0xfd]).expect("expected operation to succeed");
-    std::fs::create_dir_all(&directory).expect("expected operation to succeed");
+    fixture::write_text(&text_a, "fn alpha() {\n    println!(\"alpha\");\n}\n");
+    fixture::write_text(&text_b, "fn beta() {\n    println!(\"beta\");\n}\n");
+    fixture::write_bytes(&binary, [0xff, 0xfe, 0xfd]);
+    fixture::create_dir_all(&directory);
 
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("peek-ws"));
     section.load_roots(&[
@@ -363,7 +363,7 @@ fn test_single_directory_root_row_matches_builder_files_presentation() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("main.rs"), "fn main() {}\n");
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
@@ -380,8 +380,8 @@ fn test_drilldown_root_row_keeps_actual_folder_presentation() {
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).expect("expected operation to succeed");
-    std::fs::write(nested.join("lib.rs"), "pub fn demo() {}\n").expect("expected operation to succeed");
+    fixture::create_dir(&nested);
+    fixture::write_text(&nested.join("lib.rs"), "pub fn demo() {}\n");
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
@@ -399,10 +399,9 @@ fn test_file_tree_file_row_uses_regular_content_type_icon() {
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let image_path = dir.path().join("preview.png");
-    std::fs::write(&image_path, b"not a real image, extension is enough")
-        .expect("expected operation to succeed");
+    fixture::write_bytes(&image_path, b"not a real image, extension is enough");
     section.load_roots(&[WorkspaceEntry::File {
-        path: image_path.clone(),
+        path: image_path,
     }]);
 
     let (_window, icon, label) = realized_root_row_widgets(&section);
@@ -428,7 +427,7 @@ fn test_workspace_section_chrome_icons_remain_symbolic() {
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).expect("expected operation to succeed");
+    fixture::create_dir(&nested);
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
@@ -471,7 +470,7 @@ fn test_file_activation_still_emits_after_regular_icon_binding() {
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let file_path = dir.path().join("main.rs");
-    std::fs::write(&file_path, "fn main() {}\n").expect("expected operation to succeed");
+    fixture::write_text(&file_path, "fn main() {}\n");
     section.load_roots(&[WorkspaceEntry::File {
         path: file_path.clone(),
     }]);
@@ -627,7 +626,7 @@ fn test_remove_from_model_child_item() {
     ));
 
     let child_store_c = child_store.clone();
-    let tree_model = gtk4::TreeListModel::new(root_store.clone(), false, false, move |item| {
+    let tree_model = gtk4::TreeListModel::new(root_store, false, false, move |item| {
         let fi = item.downcast_ref::<FileTreeItem>()?;
         if fi.is_dir() && fi.path().as_deref() == Some(std::path::Path::new("/tmp/test/src")) {
             Some(child_store_c.clone().upcast::<gio::ListModel>())
@@ -910,9 +909,9 @@ fn test_manual_refresh_keeps_selection_and_expansion() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).expect("expected operation to succeed");
+    fixture::create_dir(&nested);
     let existing = nested.join("alpha.txt");
-    std::fs::write(&existing, "alpha").expect("expected operation to succeed");
+    fixture::write_text(&existing, "alpha");
 
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("refresh-ws"));
     section.load_roots(&[WorkspaceEntry::Directory {
@@ -929,13 +928,14 @@ fn test_manual_refresh_keeps_selection_and_expansion() {
     select_path(&section, &existing);
 
     let created = nested.join("beta.txt");
-    std::fs::write(&created, "beta").expect("expected operation to succeed");
+    fixture::write_text(&created, "beta");
     section.imp().refresh_button.emit_clicked();
 
     wait_until(Duration::from_secs(5), || {
-        tree_contains_path(&section, &created) && selected_path(&section) == Some(existing.clone())
+        tree_contains_path(&section, &created)
+            && selected_path(&section).as_deref() == Some(existing.as_path())
     });
-    assert_eq!(selected_path(&section), Some(existing.clone()));
+    assert_eq!(selected_path(&section).as_deref(), Some(existing.as_path()));
     assert!(
         row_for_path(&section, &nested)
             .expect("nested directory should still exist")
@@ -949,9 +949,9 @@ fn test_refresh_updates_tree_after_external_rename() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).expect("expected operation to succeed");
+    fixture::create_dir(&nested);
     let original = nested.join("before.txt");
-    std::fs::write(&original, "before").expect("expected operation to succeed");
+    fixture::write_text(&original, "before");
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("refresh-flow-ws"));
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
@@ -966,7 +966,7 @@ fn test_refresh_updates_tree_after_external_rename() {
     wait_until(Duration::from_secs(5), || tree_contains_path(&section, &original));
 
     let renamed = nested.join("renamed.txt");
-    std::fs::rename(&original, &renamed).expect("expected operation to succeed");
+    fixture::rename(&original, &renamed);
     section.imp().refresh_button.emit_clicked();
     wait_until(Duration::from_secs(5), || {
         !tree_contains_path(&section, &original) && tree_contains_path(&section, &renamed)
@@ -978,9 +978,9 @@ fn test_refresh_updates_tree_after_external_delete() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).expect("expected operation to succeed");
+    fixture::create_dir(&nested);
     let deleted = nested.join("delete-me.txt");
-    std::fs::write(&deleted, "delete").expect("expected operation to succeed");
+    fixture::write_text(&deleted, "delete");
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("refresh-delete-ws"));
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
@@ -994,7 +994,7 @@ fn test_refresh_updates_tree_after_external_delete() {
         .set_expanded(true);
     wait_until(Duration::from_secs(5), || tree_contains_path(&section, &deleted));
 
-    std::fs::remove_file(&deleted).expect("expected operation to succeed");
+    fixture::remove_file(&deleted);
     section.imp().refresh_button.emit_clicked();
     wait_until(Duration::from_secs(5), || !tree_contains_path(&section, &deleted));
 }
@@ -1006,7 +1006,7 @@ fn test_workspace_section_toggle_roots() {
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     // Must have at least one visible entry to not be detected as empty
-    std::fs::write(dir.path().join("file.txt"), "content").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("file.txt"), "content");
 
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
@@ -1038,7 +1038,7 @@ fn test_manual_refresh_keeps_collapsed_root_collapsed() {
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    std::fs::write(dir.path().join("file.txt"), "content").expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("file.txt"), "content");
 
     section.load_roots(&[WorkspaceEntry::Directory {
         path: dir.path().to_path_buf(),
@@ -1087,9 +1087,9 @@ fn test_manual_refresh_keeps_root_models_mounted() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
-    std::fs::create_dir(&nested).expect("expected operation to succeed");
+    fixture::create_dir(&nested);
     let existing = nested.join("alpha.txt");
-    std::fs::write(&existing, "alpha").expect("expected operation to succeed");
+    fixture::write_text(&existing, "alpha");
 
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("manual-model-stability"));
     section.load_roots(&[WorkspaceEntry::Directory {
@@ -1120,7 +1120,7 @@ fn test_manual_refresh_keeps_root_models_mounted() {
         .as_ptr();
 
     let created = nested.join("beta.txt");
-    std::fs::write(&created, "beta").expect("expected operation to succeed");
+    fixture::write_text(&created, "beta");
     section.imp().refresh_button.emit_clicked();
 
     wait_until(Duration::from_secs(5), || tree_contains_path(&section, &created));

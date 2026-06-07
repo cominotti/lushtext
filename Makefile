@@ -10,13 +10,28 @@
 #   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
 #   make test-int    - Integration tests only
-#   make test-widget - Widget tests with shared native/headless runner
+#   make test-prop   - Bounded property tests for pure deterministic logic
+#   make test-prop-deep - Opt-in deeper property run with more generated cases
+#   make fuzz-list   - List configured cargo-fuzz targets
+#   make fuzz-corpus-replay - Replay committed fuzz corpus seeds on stable Rust
+#   make fuzz-smoke  - Run bounded fuzz smoke against temporary corpus copies
+#   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
+#   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
+#   make visual-smoke - Real-session screenshot smoke under headless Mutter
+#   make crash-recovery-smoke - Real-process crash/restart recovery smoke with artifacts
+#   make portal-sandbox-smoke - Confined runtime smoke for available Flatpak/Snap paths
+#   make accessibility-smoke - AT-SPI-enabled accessibility smoke
+#   make performance-smoke - Lightweight Criterion performance smoke
+#   make end-user-smoke - Run all host-supported end-user smoke lanes
+#   Smoke and full benchmark report lanes are artifact-rich scheduled/manual/release checks, not default PR gates.
 #   make mutants-smoke - Small cargo-mutants smoke run
 #   make mutants-diff  - Mutation test current changes against origin/main
 #   make mutants-full  - Mutation test the configured deterministic scope
-#   make check       - clippy + fmt check
-#   make pre-commit  - repo pre-commit gate (fmt + clippy)
+#   make check       - fmt + all-feature clippy + fast policy audits
+#   make check-agent-docs - validate agent rules/skills guidance
+#   make lint-advisory - grouped advisory lint discovery for Rust policy reviews
+#   make pre-commit  - repo pre-commit gate (fmt + all-feature clippy + policy audits)
 #   make flatpak-deps - Install Flatpak runtime/SDK deps into the user installation
 #   make flatpak-install - Build and install Flatpak into the user installation
 #   make verify-flatpak-identity - Verify Flatpak desktop identity and MIME registration
@@ -30,8 +45,8 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-widget test-widget-headless mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check pre-commit dev-tools install-git-hooks clean help \
+.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+       check-fmt check-clippy check-filesystem-boundary check-policy lint-advisory check check-agent-docs pre-commit dev-tools install-git-hooks clean help \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
        cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
@@ -53,8 +68,33 @@ CARGO_TEST_NON_WIDGET = cargo test --workspace --lib --bins --test integration
 CARGO_TEST_UNIT       = cargo test --workspace --lib
 CARGO_TEST_INT        = cargo test --workspace --test integration
 endif
-CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh
+CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh --headless
 CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 1
+CARGO_TEST_PROP           = cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
+CARGO_TEST_FUZZ_CORPUS_REPLAY = cargo test -p lushtext-core --features fuzzing --test fuzz_corpus_replay
+PROPTEST_DEEP_CASES ?= 512
+
+CARGO_FUZZ ?= cargo +nightly fuzz
+FUZZ_TARGETS ?= editor_bytes markdown_preprocess operation_script
+FUZZ_OPERATION_TARGET ?= operation_script
+FUZZ_SMOKE_RUNS ?= 64
+FUZZ_SMOKE_SECONDS ?= 5
+FUZZ_SMOKE_MAX_LEN ?= 4096
+
+# Local cargo-mutants parallelism. cargo-mutants defaults to serial (one mutant
+# at a time), which leaves a multi-core box mostly idle on the slowest workload.
+# Locally we fan out: MUTANTS_LOCAL_JOBS defaults to about cores / 4, and each
+# job's nextest is capped to MUTANTS_LOCAL_TEST_THREADS so jobs x threads stays
+# near the logical CPU count instead of oversubscribing it. CI lanes call
+# scripts/run-mutants.sh directly and leave MUTANTS_JOBS unset, so the sharded
+# small runners keep the serial default.
+MUTANTS_LOCAL_JOBS ?= $(shell nproc 2>/dev/null | awk '{j = int($$1 / 4); if (j < 1) j = 1; print j}')
+MUTANTS_LOCAL_TEST_THREADS ?= 4
+# Build-phase cap: derived so jobs x build-jobs stays near the CPU count. Without
+# it, each of the MUTANTS_LOCAL_JOBS concurrent cargo builds fans out to every
+# core, spiking load average far above ncpu during the cold-build phase.
+MUTANTS_LOCAL_BUILD_JOBS ?= $(shell nproc 2>/dev/null | awk '{n = $$1; j = int(n / 4); if (j < 1) j = 1; b = int(n / j); if (b < 1) b = 1; print b}')
+MUTANTS_LOCAL_PARALLELISM = MUTANTS_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS) MUTANTS_BUILD_JOBS=$(MUTANTS_LOCAL_BUILD_JOBS)
 
 FLATPAK_REMOTE ?= flathub
 FLATPAK_REMOTE_URL ?= https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -108,7 +148,61 @@ test-int:
 	@echo "Running integration tests..."
 	$(CARGO_TEST_INT)
 
-# Widget tests (auto-detect display; fall back to mutter --headless when available)
+# Property tests for pure deterministic logic. The feature-gated target stays
+# outside default nextest and mutation runs so generated cases do not multiply
+# ordinary feedback time.
+test-prop:
+	@echo "Running bounded property tests..."
+	$(CARGO_TEST_PROP)
+
+# Deeper opt-in property pass for local investigation or scheduled checks.
+test-prop-deep:
+	@echo "Running deep property tests with $(PROPTEST_DEEP_CASES) generated cases per property..."
+	LUSHTEXT_PROPTEST_CASES=$(PROPTEST_DEEP_CASES) $(CARGO_TEST_PROP)
+
+# List configured cargo-fuzz targets without running them.
+fuzz-list:
+	@echo "Listing cargo-fuzz targets..."
+	$(CARGO_FUZZ) list
+
+# Replay committed corpus seeds through stable Rust tests. This intentionally
+# avoids cargo-fuzz, libFuzzer, sanitizer flags, nightly, and C++ toolchain setup.
+fuzz-corpus-replay:
+	@echo "Replaying committed fuzz corpus seeds on stable Rust..."
+	$(CARGO_TEST_FUZZ_CORPUS_REPLAY)
+
+# Bounded fuzz smoke for configured targets. Each run uses a temporary copy of
+# the seed corpus so libFuzzer can grow inputs without dirtying the checkout.
+fuzz-smoke:
+	@echo "Running fuzz smoke ($(FUZZ_SMOKE_RUNS) runs, max_len=$(FUZZ_SMOKE_MAX_LEN), max_total_time=$(FUZZ_SMOKE_SECONDS)s per target)..."
+	@set -eu; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	for target in $(FUZZ_TARGETS); do \
+		corpus="$$tmp/$$target"; \
+		mkdir -p "$$corpus"; \
+		if [ -d "fuzz/corpus/$$target" ]; then \
+			cp -R "fuzz/corpus/$$target/." "$$corpus/"; \
+		fi; \
+		echo "Running fuzz smoke target $$target..."; \
+		$(CARGO_FUZZ) run "$$target" "$$corpus" -- -runs=$(FUZZ_SMOKE_RUNS) -max_len=$(FUZZ_SMOKE_MAX_LEN) -max_total_time=$(FUZZ_SMOKE_SECONDS); \
+	done
+
+# Focused smoke for the structured operation target when byte-ingestion targets
+# are not part of the question being investigated.
+fuzz-operation-smoke:
+	@echo "Running structured operation fuzz smoke ($(FUZZ_SMOKE_RUNS) runs, max_len=$(FUZZ_SMOKE_MAX_LEN), max_total_time=$(FUZZ_SMOKE_SECONDS)s)..."
+	@set -eu; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	corpus="$$tmp/$(FUZZ_OPERATION_TARGET)"; \
+	mkdir -p "$$corpus"; \
+	if [ -d "fuzz/corpus/$(FUZZ_OPERATION_TARGET)" ]; then \
+		cp -R "fuzz/corpus/$(FUZZ_OPERATION_TARGET)/." "$$corpus/"; \
+	fi; \
+	$(CARGO_FUZZ) run "$(FUZZ_OPERATION_TARGET)" "$$corpus" -- -runs=$(FUZZ_SMOKE_RUNS) -max_len=$(FUZZ_SMOKE_MAX_LEN) -max_total_time=$(FUZZ_SMOKE_SECONDS)
+
+# Widget tests under the private headless runner.
 test-widget:
 	@echo "Running widget tests..."
 	$(CARGO_TEST_WIDGET)
@@ -118,27 +212,63 @@ test-widget-headless:
 	@echo "Running widget tests under mutter --headless..."
 	$(CARGO_TEST_WIDGET_HEADLESS)
 
+# Real-session screenshot smoke under isolated headless Mutter. This is an
+# artifact-producing lane for rendered-pixel and compositor behavior; it skips
+# cleanly when host desktop-capture dependencies are unavailable.
+visual-smoke: build-debug
+	@echo "Running visual smoke lane..."
+	./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual"
+
+# Real-process crash/restart smoke under isolated headless Mutter. This lane
+# creates draft/session recovery state through the app, SIGKILLs the process,
+# relaunches with the same app data, and preserves recovery artifacts.
+crash-recovery-smoke: build-debug
+	@echo "Running crash recovery smoke lane..."
+	./scripts/run-crash-recovery-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/crash-recovery"
+
+# Confined runtime smoke for available Flatpak/Snap paths. This records runtime
+# identity and skips clearly when neither confined runtime is installed.
+portal-sandbox-smoke:
+	@echo "Running portal/sandbox smoke lane..."
+	./scripts/run-portal-sandbox-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/portal-sandbox"
+
+# AT-SPI-enabled smoke lane. Unlike widget tests, this keeps the accessibility
+# bridge enabled so accessible-name and focus automation can be verified.
+accessibility-smoke: build-debug
+	@echo "Running accessibility smoke lane..."
+	./scripts/run-accessibility-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/accessibility"
+
+BENCH_REPORT_OUT_DIR ?= docs/benchmarks
+SMOKE_ARTIFACT_DIR ?= build/smoke
+
+# Lightweight performance smoke distinct from full Criterion reports.
+performance-smoke:
+	@echo "Running performance smoke lane..."
+	./scripts/run-performance-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/performance"
+
+# Run all host-supported end-user smoke lanes. Individual scripts own their
+# dependency checks, artifact paths, and skip messages.
+end-user-smoke: visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke
+
 # Small mutation pass for checking cargo-mutants tooling and timeout behavior.
 mutants-smoke:
-	@echo "Running cargo-mutants smoke scope..."
-	./scripts/run-mutants.sh smoke
+	@echo "Running cargo-mutants smoke scope (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh smoke
 
 # Mutation-test the current diff against origin/main.
 mutants-diff:
-	@echo "Running cargo-mutants against changed code..."
-	./scripts/run-mutants.sh diff
+	@echo "Running cargo-mutants against changed code (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh diff
 
 # Mutation-test the configured deterministic scope.
 mutants-full:
-	@echo "Running configured cargo-mutants scope..."
-	./scripts/run-mutants.sh full
+	@echo "Running configured cargo-mutants scope (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh full
 
 # List configured mutants without running tests.
 mutants-list:
 	@echo "Listing configured cargo-mutants scope..."
 	./scripts/run-mutants.sh list
-
-BENCH_REPORT_OUT_DIR ?= docs/benchmarks
 
 # Run benchmarks (quick, default Criterion sample size)
 bench:
@@ -173,13 +303,31 @@ check-fmt:
 # Clippy gate matching CI
 check-clippy:
 	@echo "Running clippy..."
-	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Fast path-aware policy audit for lint-adjacent architecture drift.
+check-filesystem-boundary:
+	@echo "Checking filesystem boundary policy..."
+	./scripts/check-filesystem-boundary.sh
+
+# Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
+check-policy: check-filesystem-boundary
+
+# Advisory lint discovery; fails if a finding category has no checked-in policy.
+lint-advisory:
+	@echo "Running advisory lint discovery..."
+	./scripts/lint-advisory.py
 
 # Repo pre-commit gate
-pre-commit: check-fmt check-clippy
+pre-commit: check-fmt check-clippy check-policy
 
-# Lint + format check
+# Lint + format + fast policy check
 check: pre-commit
+
+# Validate agent-facing rules and skills after guidance changes.
+check-agent-docs:
+	@echo "Checking agent documentation..."
+	./scripts/check-agent-docs.sh
 
 # Install repo-managed Git hooks
 install-git-hooks:
@@ -352,13 +500,31 @@ help:
 	@echo "  test         All tests (unit + integration + widget)"
 	@echo "  test-unit    Unit tests only (fast)"
 	@echo "  test-int     Integration tests only"
-	@echo "  test-widget  Widget tests (auto-detect display; falls back to headless)"
+	@echo "  test-prop    Bounded property tests for pure deterministic logic"
+	@echo "  test-prop-deep Deeper property run with PROPTEST_DEEP_CASES"
+	@echo "  test-widget  Widget tests under the private headless runner"
 	@echo "  test-widget-headless Widget tests with the CI headless setup"
+	@echo "  visual-smoke Real-session screenshot smoke under headless Mutter"
+	@echo "  portal-sandbox-smoke Confined runtime smoke for available Flatpak/Snap paths"
+	@echo "  accessibility-smoke AT-SPI-enabled accessibility smoke"
+	@echo "  performance-smoke Lightweight Criterion performance smoke"
+	@echo "  end-user-smoke Run all host-supported end-user smoke lanes"
+	@echo "  (Smoke lanes preserve artifacts and are scheduled/manual/release checks, not default PR gates)"
+	@echo ""
+	@echo "Fuzz targets (explicit lanes):"
+	@echo "  fuzz-corpus-replay Replay committed fuzz corpus seeds on stable Rust"
+	@echo "  fuzz-list    List configured cargo-fuzz targets"
+	@echo "  fuzz-smoke   Bounded cargo-fuzz smoke against temporary corpus copies"
+	@echo "  fuzz-operation-smoke Bounded structured operation fuzz smoke"
+	@echo ""
+	@echo "Mutation targets:"
 	@echo "  mutants-smoke Small cargo-mutants smoke run"
 	@echo "  mutants-diff Changed-code mutation against origin/main"
 	@echo "  mutants-full Configured deterministic mutation scope"
 	@echo "  mutants-list List configured mutants without running tests"
-	@echo "  pre-commit   Repo pre-commit gate (fmt + clippy)"
+	@echo "  pre-commit   Repo pre-commit gate (fmt + all-feature clippy + policy audits)"
+	@echo "  check-policy Fast policy audits, including the filesystem boundary"
+	@echo "  lint-advisory Grouped advisory Rust lint discovery"
 	@echo "  install-git-hooks Configure this repo to use .githooks/"
 	@echo ""
 	@echo "Benchmark targets:"

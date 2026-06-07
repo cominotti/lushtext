@@ -1,0 +1,15 @@
+{
+  "kind": "dev.cominotti.lushtext.saved-searches",
+  "version": 1,
+  "data": [
+    {
+      "name": "Rust functions",
+      "query": "fn ",
+      "case_sensitive": false,
+      "regex": false,
+      "whole_word": false,
+      "gitignore": true,
+      "glob": "*.rs"
+    }
+  ]
+}

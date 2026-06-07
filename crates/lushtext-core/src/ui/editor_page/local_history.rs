@@ -28,10 +28,7 @@ impl LushtextEditorPage {
 
         let notes_section = gio::Menu::new();
         notes_section.append(Some("Toggle Bookmark"), Some("win.toggle-bookmark"));
-        notes_section.append(
-            Some("Edit Bookmark Label…"),
-            Some("win.edit-bookmark-label"),
-        );
+        notes_section.append(Some("Edit Bookmark…"), Some("win.edit-bookmark-label"));
         notes_section.append(Some("Open Document Note…"), Some("win.open-document-note"));
         menu.append_section(None, &notes_section);
 

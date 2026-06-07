@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
+
+use lushtext_build_support::filesystem as build_fs;
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
@@ -17,9 +18,9 @@ fn main() {
     );
     println!("cargo:rerun-if-changed={}", widget_dir.display());
 
-    let mut files: Vec<PathBuf> = fs::read_dir(&widget_dir)
+    let mut files: Vec<PathBuf> = build_fs::read_dir_paths(&widget_dir)
         .expect("read widget test dir")
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .into_iter()
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
         .collect();
     files.sort();
@@ -44,10 +45,10 @@ fn main() {
             continue;
         }
         module_names.push(module_name.clone());
-        let source = fs::read_to_string(&path).expect("read widget test source");
+        let source = build_fs::read_to_string(&path).expect("read widget test source");
         let tests = extract_test_functions(&source);
         let transformed_path = out_dir.join(format!("widget_mod_{module_name}.rs"));
-        fs::write(&transformed_path, transform_test_source(&source))
+        build_fs::write(&transformed_path, transform_test_source(&source))
             .expect("write transformed widget test source");
         generated.push_str(&format!(
             "#[path = r#\"{}\"#]\nmod {module_name};\nmod __register_{module_name} {{\n    pub fn register(tests: &mut Vec<(&'static str, fn())>) {{\n",
@@ -70,7 +71,7 @@ fn main() {
     }
     generated.push_str("    tests\n}\n");
 
-    fs::write(registry_path, generated).expect("write widget registry");
+    build_fs::write(&registry_path, generated).expect("write widget registry");
 }
 
 fn file_stem(path: &Path) -> String {

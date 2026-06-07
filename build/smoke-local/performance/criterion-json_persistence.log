@@ -1,0 +1,58 @@
+    Finished `bench` profile [optimized] target(s) in 0.08s
+     Running benches/benchmarks.rs (target/release/deps/benchmarks-cbd9ce7550beac88)
+Gnuplot not found, using plotters backend
+Benchmarking json_persistence/save/small
+Benchmarking json_persistence/save/small: Warming up for 1.0000 s
+Benchmarking json_persistence/save/small: Collecting 10 samples in estimated 1.0007 s (54k iterations)
+Benchmarking json_persistence/save/small: Analyzing
+json_persistence/save/small
+                        time:   [9.7332 µs 10.139 µs 10.370 µs]
+                        change: [+25.947% +37.078% +48.510%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking json_persistence/save/large
+Benchmarking json_persistence/save/large: Warming up for 1.0000 s
+Benchmarking json_persistence/save/large: Collecting 10 samples in estimated 1.0000 s (48k iterations)
+Benchmarking json_persistence/save/large: Analyzing
+json_persistence/save/large
+                        time:   [11.501 µs 11.659 µs 11.762 µs]
+                        change: [+64.248% +67.703% +71.009%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking json_persistence/load/small
+Benchmarking json_persistence/load/small: Warming up for 1.0000 s
+Benchmarking json_persistence/load/small: Collecting 10 samples in estimated 1.0009 s (47k iterations)
+Benchmarking json_persistence/load/small: Analyzing
+json_persistence/load/small
+                        time:   [8.0895 µs 8.3271 µs 8.4571 µs]
+                        change: [+69.016% +82.150% +93.800%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking json_persistence/load/large
+Benchmarking json_persistence/load/large: Warming up for 1.0000 s
+Benchmarking json_persistence/load/large: Collecting 10 samples in estimated 1.0003 s (40k iterations)
+Benchmarking json_persistence/load/large: Analyzing
+json_persistence/load/large
+                        time:   [9.9949 µs 10.267 µs 10.505 µs]
+                        change: [+69.825% +78.846% +87.146%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking json_persistence/session_save/50_tabs
+Benchmarking json_persistence/session_save/50_tabs: Warming up for 1.0000 s
+Benchmarking json_persistence/session_save/50_tabs: Collecting 10 samples in estimated 1.0001 s (30k iterations)
+Benchmarking json_persistence/session_save/50_tabs: Analyzing
+json_persistence/session_save/50_tabs
+                        time:   [22.203 µs 22.603 µs 22.997 µs]
+                        change: [+63.786% +70.630% +78.737%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking json_persistence/session_load/50_tabs
+Benchmarking json_persistence/session_load/50_tabs: Warming up for 1.0000 s
+Benchmarking json_persistence/session_load/50_tabs: Collecting 10 samples in estimated 1.0006 s (22k iterations)
+Benchmarking json_persistence/session_load/50_tabs: Analyzing
+json_persistence/session_load/50_tabs
+                        time:   [19.163 µs 19.881 µs 20.207 µs]
+                        change: [+61.935% +68.381% +75.864%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+

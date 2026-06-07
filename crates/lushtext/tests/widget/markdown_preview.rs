@@ -2,7 +2,7 @@
 
 //! Tests for the LushtextMarkdownPreview widget.
 
-use crate::common::{ensure_gtk_init, present_window, test_application, wait_until};
+use crate::common::{ensure_gtk_init, fixture, fs_metadata, present_window, test_application, wait_until};
 use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
 use gtk4::prelude::*;
@@ -1086,10 +1086,9 @@ fn test_render_markdown_renders_local_image_block() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
     let _window = present_preview(&preview);
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repo root");
+    let repo_root =
+        fs_metadata::canonical_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .expect("repo root");
     let context = MarkdownPreviewRenderContext::new(
         Some(repo_root.join("samples/markdown-test.md")),
         Vec::new(),
@@ -1563,9 +1562,9 @@ fn source_view_buffer_text(source_view: &sourceview5::View) -> String {
 fn install_test_source_language(id: &str) -> TempDir {
     let tempdir = tempfile::tempdir().expect("language tempdir");
     let language_path = tempdir.path().join(format!("{id}.lang"));
-    std::fs::write(
+    fixture::write_text(
         &language_path,
-        format!(
+        &format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <language id="{id}" name="Lush Test" version="2.0" _section="Sources">
   <metadata>
@@ -1587,8 +1586,7 @@ fn install_test_source_language(id: &str) -> TempDir {
 </language>
 "#
         ),
-    )
-    .expect("write test GtkSourceView language spec");
+    );
 
     let manager = sourceview5::LanguageManager::default();
     let mut search_paths = vec![tempdir.path().to_string_lossy().to_string()];

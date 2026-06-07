@@ -1,0 +1,15 @@
+{
+  "kind": "dev.cominotti.lushtext.session",
+  "version": 1,
+  "data": {
+    "tabs": [
+      {
+        "path": "/tmp/project/src/lib.rs",
+        "cursor_line": 3,
+        "cursor_col": 1,
+        "scroll_line": 0
+      }
+    ],
+    "active_tab_index": 0
+  }
+}

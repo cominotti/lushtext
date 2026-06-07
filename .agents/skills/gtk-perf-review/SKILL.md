@@ -27,6 +27,7 @@ This means:
 - **Only flag things a real user would notice.** A 50ms UI freeze is worth fixing. Saving 4KB on a heap extraction is not.
 - **Prefer simple, idiomatic Rust over clever micro-optimizations.** `format!()` is fine. `.to_string()` is fine. `.clone()` is fine when the alternative adds complexity.
 - **Sophisticated patterns need clear abstractions.** If SIMD code is recommended, the wrapper must be self-documenting. If an async pattern is complex, the helper function must have a clear name and purpose.
+- **File I/O goes through `services::filesystem`.** Flag raw filesystem access outside the approved backend/fixture modules, prefer cheap status helpers for presence/kind probes, and judge whether the boundary call belongs on a background thread or needs scale guards.
 
 ### What We Do NOT Flag
 
@@ -131,7 +132,7 @@ This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent inte
 
 3. **Merge reports** — when all three subagents return, produce the unified report:
    - Combine all findings from all three reports verbatim — do not add new findings beyond what the subagents reported
-   - **Deduplicate**: if multiple subagents flag the same issue (e.g., responsiveness flags `fs::write` on main thread, scale flags missing file size check), keep all perspectives but group them under one heading
+   - **Deduplicate**: if multiple subagents flag the same issue (e.g., responsiveness flags a filesystem-boundary write on the main thread, scale flags a missing file size check), keep all perspectives but group them under one heading
    - **Drop excluded items**: remove any finding that falls under the "What We Do NOT Flag" list above
    - Sort by severity: FLAG → RECOMMEND → CONSIDER → GOOD
    - If findings from different subagents affect the same file and line, group them under a **Cross-Cutting Concerns** heading
@@ -148,7 +149,7 @@ This skill ALWAYS dispatches exactly 3 subagents in parallel. Each subagent inte
 - **Scale findings**: X flag, Y recommend, Z consider
 
 ### Cross-Cutting Concerns
-Issues that span multiple skills (e.g., a blocking I/O call that also lacks a file size check). List them here with all perspectives.
+Issues that span multiple skills (e.g., a blocking filesystem-boundary call that also lacks a file size check). List them here with all perspectives.
 
 ### Responsiveness
 #### [FLAG] Title — file:line

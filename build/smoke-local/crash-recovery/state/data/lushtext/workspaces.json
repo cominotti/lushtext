@@ -1,0 +1,12 @@
+{
+  "current_scope": {
+    "kind": "all"
+  },
+  "workspaces": [
+    {
+      "id": "crash-smoke-workspace",
+      "name": "Crash Smoke",
+      "root": "/var/home/danilo/Workspace/github/cominotti/lushtext/build/smoke-local/crash-recovery/fixtures/workspace"
+    }
+  ]
+}

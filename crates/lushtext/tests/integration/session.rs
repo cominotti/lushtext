@@ -5,6 +5,8 @@
 use crate::common::TestContext;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest, PreloadedDraftRestore};
 use lushtext_core::model::session::{SessionData, SessionTab};
+use lushtext_core::services::filesystem::fixture;
+use lushtext_core::services::recovery_metadata::{RecoveryMetadataClass, RecoveryProblem};
 use lushtext_core::services::session_service;
 use lushtext_core::services::{draft_service, editor_io};
 
@@ -60,8 +62,8 @@ fn test_session_save_restore_roundtrip() {
 
     let session = SessionData {
         tabs: vec![
-            tab_with_position(file1.clone(), 1, 0, 0),
-            tab_with_position(file2.clone(), 15, 8, 10),
+            tab_with_position(file1, 1, 0, 0),
+            tab_with_position(file2, 15, 8, 10),
         ],
         active_tab_index: Some(1),
     };
@@ -285,15 +287,14 @@ fn test_startup_restore_load_preserves_temporarily_unavailable_file_tabs() {
     };
     session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
 
-    let (_manifest, restored_session, preloaded) =
-        draft_service::load_restore_state(ctx.data_dir());
+    let restore = draft_service::load_restore_state(ctx.data_dir());
 
-    assert_eq!(restored_session.tabs.len(), 2);
-    assert_eq!(restored_session.tabs[0].path, Some(missing_path));
-    assert_eq!(restored_session.tabs[1].path, Some(real_file));
-    assert_eq!(restored_session.active_tab_index, Some(0));
+    assert_eq!(restore.session.tabs.len(), 2);
+    assert_eq!(restore.session.tabs[0].path, Some(missing_path));
+    assert_eq!(restore.session.tabs[1].path, Some(real_file));
+    assert_eq!(restore.session.active_tab_index, Some(0));
     assert_eq!(
-        preloaded.get(&real_draft_id),
+        restore.preloaded_drafts.get(&real_draft_id),
         Some(&PreloadedDraftRestore::Content("drafted local".to_string()))
     );
 }
@@ -330,18 +331,99 @@ fn test_startup_restore_load_marks_stale_file_backed_drafts_and_removes_them() {
     };
     session_service::save(ctx.data_dir(), &session).expect("expected operation to succeed");
 
-    let (manifest, restored_session, preloaded) = draft_service::load_restore_state(ctx.data_dir());
+    let restore = draft_service::load_restore_state(ctx.data_dir());
 
-    assert_eq!(restored_session.tabs.len(), 1);
-    assert_eq!(restored_session.tabs[0].path, Some(file_path));
+    assert_eq!(restore.session.tabs.len(), 1);
+    assert_eq!(restore.session.tabs[0].path, Some(file_path));
     assert_eq!(
-        preloaded.get(&draft_id),
+        restore.preloaded_drafts.get(&draft_id),
         Some(&PreloadedDraftRestore::SkipStaleFile)
     );
-    assert!(manifest.find_by_id(&draft_id).is_none());
+    assert!(restore.manifest.find_by_id(&draft_id).is_none());
     assert_eq!(
         draft_service::read_draft(ctx.data_dir(), &draft_id).expect("read stale draft"),
         None,
         "confirmed-stale draft files should be deleted during preload cleanup",
+    );
+}
+
+#[test]
+fn test_startup_restore_reports_corrupt_session_json_without_deleting_drafts() {
+    let ctx = TestContext::new();
+    let draft_id = "untitled-0000000000000099";
+    draft_service::write_draft(ctx.data_dir(), draft_id, "valid draft").expect("write draft");
+    draft_service::save_manifest(
+        ctx.data_dir(),
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: draft_id.to_string(),
+                original_path: None,
+                original_mtime_secs: None,
+                saved_at_secs: 1,
+            }],
+        },
+    )
+    .expect("save manifest");
+    fixture::write_text(&ctx.data_dir().join("session.json"), "not json");
+
+    let restore = draft_service::load_restore_state(ctx.data_dir());
+
+    assert!(restore.session.tabs.is_empty());
+    assert!(
+        restore.manifest.find_by_id(draft_id).is_some(),
+        "valid manifest state should survive corrupt session metadata"
+    );
+    assert_eq!(
+        draft_service::read_draft(ctx.data_dir(), draft_id).expect("read draft"),
+        Some("valid draft".to_string())
+    );
+    assert!(restore.diagnostics.iter().any(|diagnostic| {
+        diagnostic.class == RecoveryMetadataClass::Session
+            && matches!(diagnostic.problem, RecoveryProblem::Malformed { .. })
+    }));
+}
+
+#[test]
+fn test_startup_restore_repairs_corrupt_manifest_for_untitled_draft() {
+    let ctx = TestContext::new();
+    let draft_id = "untitled-0000000000000100";
+    draft_service::write_draft(ctx.data_dir(), draft_id, "restored text").expect("write draft");
+    fixture::write_text(
+        &draft_service::drafts_dir(ctx.data_dir()).join("manifest.json"),
+        "not json",
+    );
+    session_service::save(
+        ctx.data_dir(),
+        &SessionData {
+            tabs: vec![untitled(draft_id)],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("save session");
+
+    let restore = draft_service::load_restore_state(ctx.data_dir());
+
+    assert_eq!(restore.session.tabs.len(), 1);
+    assert_eq!(
+        restore.preloaded_drafts.get(draft_id),
+        Some(&PreloadedDraftRestore::Content("restored text".to_string()))
+    );
+    assert!(
+        restore.manifest.find_by_id(draft_id).is_some(),
+        "safe untitled draft should be rebuilt into the manifest"
+    );
+    assert!(restore.diagnostics.iter().any(|diagnostic| {
+        diagnostic.class == RecoveryMetadataClass::DraftManifest
+            && matches!(diagnostic.problem, RecoveryProblem::Malformed { .. })
+    }));
+    assert!(restore.diagnostics.iter().any(|diagnostic| {
+        diagnostic.class == RecoveryMetadataClass::DraftManifest
+            && matches!(diagnostic.problem, RecoveryProblem::Repaired { .. })
+    }));
+    assert!(
+        draft_service::load_manifest(ctx.data_dir())
+            .expect("load repaired manifest")
+            .find_by_id(draft_id)
+            .is_some()
     );
 }

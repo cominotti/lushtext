@@ -8,6 +8,7 @@
 use super::common::TestContext;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::services::draft_service;
+use lushtext_core::services::filesystem::fixture;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -108,7 +109,7 @@ fn manifest_upsert_updates_existing() {
         original_mtime_secs: Some(3000),
         saved_at_secs: 4000,
     };
-    manifest.upsert(entry2.clone());
+    manifest.upsert(entry2);
 
     draft_service::save_manifest(ctx.data_dir(), &manifest).expect("expected operation to succeed");
     let loaded =
@@ -134,8 +135,7 @@ fn cleanup_removes_manifest_entries_without_draft_files() {
     };
 
     // Create the drafts directory but NOT the draft file
-    std::fs::create_dir_all(draft_service::drafts_dir(ctx.data_dir()))
-        .expect("expected operation to succeed");
+    fixture::create_dir_all(&draft_service::drafts_dir(ctx.data_dir()));
 
     let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest)
         .expect("expected operation to succeed");
@@ -314,20 +314,18 @@ fn cleanup_merge_back_preserves_concurrent_additions() {
     let mut snapshot = DraftManifest {
         drafts: vec![valid_entry.clone(), orphan_entry.clone()],
     };
-    let ids_before: Vec<String> = snapshot.drafts.iter().map(|e| e.draft_id.clone()).collect();
-
     // Run cleanup on the snapshot (simulating background thread).
     draft_service::cleanup_orphans(ctx.data_dir(), &mut snapshot)
         .expect("expected operation to succeed");
 
-    // Compute removed IDs.
     let ids_after: HashSet<&str> = snapshot
         .drafts
         .iter()
         .map(|e| e.draft_id.as_str())
         .collect();
-    let removed: Vec<String> = ids_before
+    let removed: Vec<String> = [&valid_entry, &orphan_entry]
         .into_iter()
+        .map(|entry| entry.draft_id.clone())
         .filter(|id| !ids_after.contains(id.as_str()))
         .collect();
 
@@ -342,7 +340,7 @@ fn cleanup_merge_back_preserves_concurrent_additions() {
         saved_at_secs: 2000,
     };
     let mut live_manifest = DraftManifest {
-        drafts: vec![valid_entry, orphan_entry, concurrent_entry.clone()],
+        drafts: vec![valid_entry, orphan_entry, concurrent_entry],
     };
 
     // Apply removals to the live manifest (simulating the main-thread callback).
@@ -372,25 +370,13 @@ fn cleanup_merge_back_empty_removal_is_noop() {
         .expect("expected operation to succeed");
 
     let mut snapshot = DraftManifest {
-        drafts: vec![entry.clone()],
+        drafts: vec![entry],
     };
-    let ids_before: Vec<String> = snapshot.drafts.iter().map(|e| e.draft_id.clone()).collect();
-
     draft_service::cleanup_orphans(ctx.data_dir(), &mut snapshot)
         .expect("expected operation to succeed");
 
-    let ids_after: HashSet<&str> = snapshot
-        .drafts
-        .iter()
-        .map(|e| e.draft_id.as_str())
-        .collect();
-    let removed: Vec<String> = ids_before
-        .into_iter()
-        .filter(|id| !ids_after.contains(id.as_str()))
-        .collect();
-
-    assert!(removed.is_empty());
     assert_eq!(snapshot.drafts.len(), 1);
+    assert!(snapshot.find_by_id("good").is_some());
 }
 
 // --- Batch draft preload (used by load_session_and_drafts) ---
@@ -450,7 +436,7 @@ fn batch_preload_skips_missing_draft_files() {
 
     let manifest = DraftManifest {
         drafts: vec![DraftEntry {
-            draft_id: id.clone(),
+            draft_id: id,
             original_path: Some(path),
             original_mtime_secs: None,
             saved_at_secs: 1000,

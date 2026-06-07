@@ -16,19 +16,41 @@ yanked = "deny"
 ignore = []
 
 [bans]
-multiple-versions = "warn"
+multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "simplest-path"
 skip-tree = [
+    { crate = "bitflags", reason = "Foundational GTK, notify, rustix, and proptest transitive crate that currently spans 1.x and 2.x through upstream dependency graphs" },
     { crate = "windows-sys", reason = "Target-specific foundational crate that can legitimately appear multiple times across transitive dependencies" },
 ]
 
 [bans.workspace-dependencies]
-duplicates = "allow"
+# Internal path crates and the generated cargo-hakari crate intentionally flow
+# through workspace dependencies, so path dependencies stay outside this check.
+# Duplicate and unused workspace dependency entries warn instead of disappearing
+# silently; workspace-hack intentionally repeats normal/build dependencies, and
+# cargo-hakari refresh reviews decide whether each warning is real drift.
+duplicates = "warn"
 include-path-dependencies = false
-unused = "allow"
+unused = "warn"
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "GPL-3.0-or-later",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+]
+exceptions = []

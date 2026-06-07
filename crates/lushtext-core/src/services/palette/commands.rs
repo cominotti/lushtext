@@ -72,7 +72,7 @@ pub fn all_commands() -> &'static [CommandDef] {
         },
         CommandDef {
             id: "win.edit-bookmark-label",
-            label: "Edit Bookmark Label",
+            label: "Edit Bookmark",
             category: CommandCategory::Edit,
             shortcut: Some("Ctrl+Shift+F2"),
         },
@@ -268,6 +268,20 @@ fn merge_sorted<'a>(
         }
     }
     result
+}
+
+/// Merge two already-sorted result streams through the production palette policy.
+///
+/// This feature-only hook gives property tests direct access to the stable tie
+/// behavior without exposing the helper in ordinary builds.
+#[cfg(feature = "property-tests")]
+#[must_use]
+pub fn merge_sorted_for_property_test<'a>(
+    a: Vec<ScoredResult<'a>>,
+    b: Vec<ScoredResult<'a>>,
+    max: usize,
+) -> Vec<ScoredResult<'a>> {
+    merge_sorted(a, b, max)
 }
 
 #[cfg(test)]

@@ -1,0 +1,7 @@
+org.freedesktop.impl.portal.PermissionStore
+org.freedesktop.impl.portal.desktop.gnome
+org.freedesktop.impl.portal.desktop.gtk
+org.freedesktop.portal.Desktop
+org.freedesktop.portal.Documents
+org.freedesktop.portal.Flatpak
+org.freedesktop.portal.IBus

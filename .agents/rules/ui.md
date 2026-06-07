@@ -51,7 +51,8 @@ LushtextWindow (AdwApplicationWindow)
 │   └── GtkRevealer [focus_mode_revealer] → focus-mode affordance
 └── LushtextStatusBar (always visible, full width)
     ├── GtkToggleButton [sidebar_toggle_button] — toggle sidebar (action: win.toggle-sidebar)
-    ├── GtkLabel [message_label] — feedback messages (left, hexpand)
+    ├── GtkBox [message_area_box] — full-width feedback message lane (left, hexpand; small non-flashing start gap; pulse background)
+    │   └── GtkLabel [message_label] — feedback message text (caption, ellipsized)
     └── GtkBox [metadata_box] — EditorConfig + line ending + encoding (right, hidden when no tabs)
 ```
 
@@ -123,6 +124,7 @@ LushtextWindow (AdwApplicationWindow)
 - The flexible center shell must yield before this bar at tiny heights; keep the editor/sidebar surface inside `LushtextShrinkableBin` so the root window can allocate the status bar inside the visible height.
 - `metadata_box` (EditorConfig + line ending + encoding) is hidden via `set_visible(false)` when no tabs are open; the message area and workspace toggle remain available.
 - Messages use Adwaita semantic color tokens: `@accent_color` (Info), `@warning_color` (Warning), `@error_color` (Error). These adapt to light/dark mode automatically — no Rust-side dark mode handling needed.
+- Repeated visible notification updates briefly pulse the full `message_area_box`, not just the label text. The message area keeps a small non-flashing start margin after the workspace toggle, and pulse selectors must stay scoped to `.status-message-area` so the workspace toggle and metadata controls do not flash.
 - Background uses `@headerbar_bg_color` to visually distinguish from the editor area.
 - Use the `caption` Adwaita CSS class for status bar text (small font, standard GNOME HIG for secondary UI).
 
@@ -213,3 +215,19 @@ When a GtkGrid layout has toggle-visible rows sharing columns (e.g., Find/Replac
 
 Supported via GtkSourceView built-in language specs: JSON, TOML, YAML, Markdown.
 JSONC is deferred (requires custom `.lang` file — see `docs/next/jsonc-support.md`).
+
+## Large-Buffer Preview And Marker Guardrails
+
+Markdown preview, minimap long-line markers, encoding-warning previews, and
+draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
+
+- Use the shared `ui::buffer_snapshot` helper for any full-buffer text capture.
+- Large Markdown buffers should show a clear paused/limited preview state unless
+  rendering has been split into bounded main-loop snapshots plus worker-side
+  preprocessing.
+- Minimap long-line markers are optional; skip the full-buffer marker scan when
+  the shared snapshot policy says the buffer is too large for a synchronous
+  copy. Ordinary small-document marker behavior must remain covered by tests.
+- Replace-preview rows and other large derived result sets should be generated
+  from owned data on a worker, with a pending state and stale-result rejection
+  keyed by generation counters.

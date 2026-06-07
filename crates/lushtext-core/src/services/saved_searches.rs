@@ -3,10 +3,15 @@
 //! Saved search persistence: load, save, add, and remove named searches.
 //!
 //! Saved searches are permanent (no cap) and user-managed — they persist
-//! until explicitly deleted. Persisted to `saved-searches.json` via `json_store`.
+//! until explicitly deleted. They use recovery-aware v1 envelopes so damaged
+//! or unsupported files are preserved before replacement.
 
 use crate::model::content_search::SavedSearch;
-use crate::services::json_store;
+use crate::services::json_format::KIND_SAVED_SEARCHES;
+use crate::services::recovery_metadata::{
+    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
+    save_enveloped_json_path,
+};
 use std::path::Path;
 
 /// Filename for the saved searches JSON file.
@@ -14,13 +19,21 @@ const SAVED_SEARCHES_FILE: &str = "saved-searches.json";
 
 /// Load saved searches from disk. Returns an empty vec on missing or corrupt file.
 pub fn load(data_dir: &Path) -> Vec<SavedSearch> {
-    match json_store::load::<Vec<SavedSearch>>(data_dir, SAVED_SEARCHES_FILE) {
-        Ok(entries) => entries,
-        Err(e) => {
-            tracing::warn!("Failed to load saved searches, using empty: {e}");
-            Vec::new()
-        }
+    let load = load_recovering(data_dir);
+    for diagnostic in &load.diagnostics {
+        tracing::warn!("{}", diagnostic.summary());
     }
+    load.value
+}
+
+/// Load saved searches with preservation diagnostics for user-managed state.
+#[must_use]
+pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<Vec<SavedSearch>> {
+    let path = data_dir.join(SAVED_SEARCHES_FILE);
+    load_enveloped_json_or_default(
+        &RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::SavedSearches),
+        KIND_SAVED_SEARCHES,
+    )
 }
 
 /// Save saved searches to disk via atomic write.
@@ -29,7 +42,14 @@ pub fn load(data_dir: &Path) -> Vec<SavedSearch> {
 ///
 /// Returns an error if the saved-search file cannot be serialized or written.
 pub fn save(data_dir: &Path, entries: &[SavedSearch]) -> anyhow::Result<()> {
-    json_store::save(data_dir, SAVED_SEARCHES_FILE, &entries)
+    let path = data_dir.join(SAVED_SEARCHES_FILE);
+    let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::SavedSearches);
+    let entries = entries.to_vec();
+    let diagnostics = save_enveloped_json_path(&config, KIND_SAVED_SEARCHES, &entries)?;
+    for diagnostic in diagnostics {
+        tracing::warn!("{}", diagnostic.summary());
+    }
+    Ok(())
 }
 
 /// Add a new saved search, prepending it to the list.
@@ -49,6 +69,8 @@ pub fn remove(entries: &mut Vec<SavedSearch>, index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
+    use crate::services::recovery_metadata::RecoveryProblem;
     use tempfile::TempDir;
 
     fn make_saved(name: &str, query: &str) -> SavedSearch {
@@ -125,7 +147,28 @@ mod tests {
             make_saved("TODOs", "TODO"),
         ];
         save(dir.path(), &entries).expect("expected operation to succeed");
-        let loaded = load(dir.path());
+        let loaded = load_recovering(dir.path());
+        assert!(loaded.diagnostics.is_empty());
+        let loaded = loaded.value;
         assert_eq!(loaded, entries);
+    }
+
+    #[test]
+    fn load_recovering_preserves_unsupported_old_saved_searches() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join(SAVED_SEARCHES_FILE), r#"[{"name":"old"}]"#);
+
+        let loaded = load_recovering(dir.path());
+
+        assert!(loaded.value.is_empty());
+        assert!(matches!(
+            loaded.diagnostics[0].problem,
+            RecoveryProblem::UnsupportedFormat { .. }
+        ));
+        let quarantine_path = loaded.diagnostics[0]
+            .preservation
+            .quarantine_path()
+            .expect("saved searches quarantine");
+        assert!(fixture::read_text(quarantine_path).contains("old"));
     }
 }

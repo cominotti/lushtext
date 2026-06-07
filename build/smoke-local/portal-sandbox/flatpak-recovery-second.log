@@ -1,0 +1,70 @@
+libmutter-Message: 11:21:43.161: Running Mutter (using mutter 50.1) as a Wayland display server
+libmutter-Message: 11:21:43.213: Added device '/dev/dri/renderD128' (i915) using no mode setting.
+libmutter-Message: 11:21:43.230: Added device '/dev/dri/renderD129' (xe) using no mode setting.
+libmutter-Message: 11:21:43.245: Added device '/dev/dri/renderD130' (amdgpu) using no mode setting.
+libmutter-Message: 11:21:43.247: Created gbm renderer for '/dev/dri/renderD128'
+libmutter-Message: 11:21:43.256: Created gbm renderer for '/dev/dri/renderD129'
+libmutter-Message: 11:21:43.258: Created gbm renderer for '/dev/dri/renderD130'
+libmutter-Message: 11:21:43.258: Boot VGA GPU /dev/dri/renderD130 selected as primary
+** Message: 11:21:43.260: Obtained a high priority EGL context
+libmutter-Message: 11:21:43.277: Added virtual monitor Meta-0
+libmutter-Message: 11:21:43.278: Using Wayland display name 'wayland-0'
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activating service name='org.freedesktop.Flatpak' requested by ':1.1' (uid=1000 pid=3570780 comm="flatpak run --no-a11y-bus --env=LUSHTEXT_DATA_DIR=" label="unconfined_u:unconfined_r:spc_t:s0")
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Successfully activated service 'org.freedesktop.Flatpak'
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=3570780 comm="flatpak run --no-a11y-bus --env=LUSHTEXT_DATA_DIR=" label="unconfined_u:unconfined_r:spc_t:s0")
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.3' (uid=1000 pid=3570832 comm="/usr/libexec/xdg-document-portal" label="unconfined_u:unconfined_r:spc_t:s0")
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.5' (uid=1000 pid=3570877 comm="/usr/bin/xdg-dbus-proxy --args=77" label="unconfined_u:unconfined_r:spc_t:s0")
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.515: Choosing gtk.portal for org.freedesktop.impl.portal.Access via the deprecated UseIn key
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.515: The preferred method to match portal implementations to desktop environments is to use the portals.conf(5) configuration file
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.6' (uid=1000 pid=3570999 comm="/usr/libexec/xdg-desktop-portal" label="unconfined_u:unconfined_r:spc_t:s0")
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activating service name='org.a11y.Bus' requested by ':1.8' (uid=1000 pid=3571011 comm="/usr/libexec/xdg-desktop-portal-gtk" label="unconfined_u:unconfined_r:spc_t:s0")
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Successfully activated service 'org.a11y.Bus'
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activating service name='org.freedesktop.systemd1' requested by ':1.10' (uid=1000 pid=3571052 comm="/usr/bin/dbus-broker-launch --config-file=/usr/sha" label="unconfined_u:unconfined_r:spc_t:s0")
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activating service name='org.freedesktop.systemd1' requested by ':1.10' (uid=1000 pid=3571052 comm="/usr/bin/dbus-broker-launch --config-file=/usr/sha" label="unconfined_u:unconfined_r:spc_t:s0")
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.desktop.gtk'
+
+** (xdg-desktop-portal-gtk:3571011): WARNING **: 11:21:43.566: AT-SPI: Could not obtain desktop path or name
+
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activating service name='org.freedesktop.systemd1' requested by ':1.10' (uid=1000 pid=3571052 comm="/usr/bin/dbus-broker-launch --config-file=/usr/sha" label="unconfined_u:unconfined_r:spc_t:s0")
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+
+** (xdg-desktop-portal-gtk:3571011): WARNING **: 11:21:43.567: atk-bridge: GetRegisteredEvents returned message with unknown signature
+
+** (xdg-desktop-portal-gtk:3571011): WARNING **: 11:21:43.567: atk-bridge: get_device_events_reply: unknown signature
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.574: Choosing gtk.portal for org.freedesktop.impl.portal.Settings via the deprecated UseIn key
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.575: Choosing gtk.portal for org.freedesktop.impl.portal.FileChooser via the deprecated UseIn key
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.576: Choosing gtk.portal for org.freedesktop.impl.portal.AppChooser via the deprecated UseIn key
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.576: Choosing gtk.portal for org.freedesktop.impl.portal.Print via the deprecated UseIn key
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.576: Choosing gtk.portal for org.freedesktop.impl.portal.Notification via the deprecated UseIn key
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.577: Choosing gtk.portal for org.freedesktop.impl.portal.Inhibit via the deprecated UseIn key
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.579: Failed to connect to PipeWire: Couldn't connect to PipeWire
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.579: Choosing gtk.portal for org.freedesktop.impl.portal.Account via the deprecated UseIn key
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.580: Choosing gtk.portal for org.freedesktop.impl.portal.Email via the deprecated UseIn key
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:43.580: Choosing gtk.portal for org.freedesktop.impl.portal.DynamicLauncher via the deprecated UseIn key
+dbus-daemon[3570590]: [session uid=1000 pid=3570590 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+
+(lushtext:2): Gtk-WARNING **: 11:21:43.673: Unable to acquire the address of the accessibility bus: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: org.freedesktop.DBus.Error.ServiceUnknown. If you are attempting to run GTK without a11y support, GTK_A11Y should be set to 'none'.
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+Mutter terminated with a failure: The command exited with a nonzero status: 31744
+
+Gdk-Message: 11:21:55.290: Error reading events from display: Broken pipe
+
+(/usr/libexec/xdg-desktop-portal:3570999): xdg-desktop-portal-WARNING **: 11:21:55.301: Failed to close session implementation: GDBus.Error:org.freedesktop.DBus.Error.NoReply: Message recipient disconnected from message bus without replying
+libmutter-Message: 11:21:55.334: Removed virtual monitor Meta-0

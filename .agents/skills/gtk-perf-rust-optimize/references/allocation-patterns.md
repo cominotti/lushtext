@@ -15,12 +15,12 @@ Documentation of established allocation patterns in LushText. This file exists a
 
 **Status: IMPLEMENTED** — All file loads use SIMD UTF-8 validation.
 
-The code uses `std::fs::read` + `simdutf8::basic::from_utf8` + `String::from_utf8_unchecked` for all file sizes. This is the established pattern — new file-loading code should follow it.
+The code uses `services::filesystem::read::bytes` + `simdutf8::basic::from_utf8` + `String::from_utf8_unchecked` for all file sizes. This is the established pattern — new file-loading code should follow it.
 
 ### Pattern (editor_page/mod.rs)
 
 ```rust
-let bytes = std::fs::read(&file_path).map_err(read_err)?;
+let bytes = filesystem::read::bytes(&file_path).map_err(read_err)?;
 let content = match simdutf8::basic::from_utf8(&bytes) {
     Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
     Err(_) => return Err(LoadError::InvalidUtf8(file_path)),

@@ -3,7 +3,8 @@
 LushText uses `cargo-mutants` to measure whether deterministic tests actually
 fail when production behavior changes. It is a companion gate: it does not
 replace `cargo nextest`, GTK widget tests, benchmarks, formatting, Clippy, or
-dependency-policy checks.
+dependency-policy checks. Property testing is another companion gate for
+generated input invariants; it does not replace mutation testing either.
 
 ## Scope
 
@@ -23,8 +24,8 @@ owns Mutter, D-Bus, renderer settings, retries, and warning filtering.
 Install the tools once:
 
 ```sh
-cargo install --locked cargo-mutants
-cargo install cargo-nextest --locked
+cargo install --locked cargo-mutants --version 27.0.0
+curl -LsSf "https://get.nexte.st/0.9.137/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 ```
 
 The wrapper checks for both binaries before running.
@@ -48,6 +49,7 @@ MUTANTS_TIMEOUT=600 make mutants-full
 MUTANTS_SMOKE_FILE=crates/lushtext-core/src/services/file_limits.rs make mutants-smoke
 MUTANTS_BASE=origin/main make mutants-diff
 MUTANTS_SHARD=0/4 make mutants-full
+MUTANTS_JOBS=8 MUTANTS_TEST_THREADS=3 MUTANTS_BUILD_JOBS=3 make mutants-full   # override local parallelism
 ```
 
 `mutants-smoke` is the fast sanity check for tool installation, config parsing,
@@ -55,6 +57,35 @@ and timeout behavior. `mutants-diff` creates a diff against `origin/main` when
 no diff file is supplied and filters mutants to changed hunks. `mutants-full`
 runs the configured deterministic scope and can be sharded with `MUTANTS_SHARD`.
 `mutants-list` prints the configured candidates without running tests.
+
+## Local Parallelism
+
+cargo-mutants is serial by default — one mutant builds and tests at a time —
+which leaves a multi-core host mostly idle on the slowest gate. The local
+Makefile targets (`mutants-smoke`, `mutants-diff`, `mutants-full`) auto-tune
+this: `MUTANTS_JOBS` defaults to about `nproc / 4`, and the two per-job caps
+default so that `jobs x per-job-parallelism` stays near the logical CPU count:
+
+- `MUTANTS_TEST_THREADS` (default `4`) bounds the test phase — each mutant job
+  launches its own nextest, which otherwise grabs every core.
+- `MUTANTS_BUILD_JOBS` (derived, ~`nproc / jobs`) bounds the build phase via
+  `CARGO_BUILD_JOBS` — without it, the concurrent cold builds each fan out to
+  every core and spike load average far above `nproc` even though IO and memory
+  stay quiet (the build phase is the one that pushed load to ~100 in testing).
+
+Together these keep both phases near `nproc` instead of thrashing. Override any
+knob inline (see above) or via `MUTANTS_LOCAL_JOBS` /
+`MUTANTS_LOCAL_TEST_THREADS` / `MUTANTS_LOCAL_BUILD_JOBS` in the Makefile
+invocation.
+
+CI deliberately does not use this. The mutation workflow calls
+`scripts/run-mutants.sh` directly and leaves `MUTANTS_JOBS` unset, so the small
+sharded runners keep cargo-mutants' serial default; cross-machine fan-out there
+comes from `MUTANTS_SHARD`, not local jobs.
+
+The wrapper intentionally does not pass `--features property-tests`. The
+dedicated property target runs through `make test-prop` so generated cases do
+not multiply by every mutant.
 
 ## In-Place Safety
 
@@ -85,6 +116,10 @@ The mutation workflow has two lanes:
 Every mutation job uploads `mutants.out` when it exists. Those directories are
 ignored locally because they contain generated diffs, logs, and JSON outcome
 data.
+
+The mutation workflow also intentionally omits `lushtext-core/property-tests`.
+The separate CI property-test job proves generated-input invariants without
+folding that cost into cargo-mutants.
 
 ## Initial Calibration
 
@@ -180,6 +215,7 @@ documented exclusion last.
 ## Relation to Other Gates
 
 - `cargo nextest run --workspace` remains the baseline for non-widget Rust tests.
+- `make test-prop` runs bounded property tests for pure deterministic invariants.
 - `scripts/run-widget-tests.sh --headless --retries 1` remains the GTK behavior
   gate for display-server-sensitive code.
 - `cargo bench -p lushtext-core --no-run` still compile-checks performance
@@ -188,3 +224,9 @@ documented exclusion last.
 
 Mutation testing answers a narrower question: if deterministic production logic
 is changed in small ways, do the tests catch it?
+
+Property testing answers a different question: do pure invariants hold across
+many generated inputs? Keep the default lanes separate. If a future change
+intentionally wants mutation testing to exercise a tiny property, add a new
+documented mutation mode or narrow opt-in that passes `--features property-tests`
+explicitly instead of changing the default wrapper.

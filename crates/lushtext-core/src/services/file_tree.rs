@@ -7,10 +7,11 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use unicase::UniCase;
+
+use crate::services::filesystem::{DirectoryScanPolicy, FileKind, tree as fs_tree};
 
 /// A single sidebar-visible filesystem entry returned by a directory scan.
 ///
@@ -75,17 +76,22 @@ pub fn scan_directory(dir_path: &Path) -> Vec<DirectoryEntry> {
 /// Peek into a directory to see if it contains any visible (non-hidden) entries.
 #[must_use]
 pub fn is_dir_empty(path: &Path) -> bool {
-    if let Ok(mut rd) = std::fs::read_dir(path) {
-        !rd.any(|e| {
-            if let Ok(e) = e {
-                e.file_name().as_encoded_bytes().first() != Some(&b'.')
-            } else {
-                false
-            }
-        })
-    } else {
-        false // Assume not empty on error to allow user to try expanding it
+    let mut has_visible_entry = false;
+    let scan = fs_tree::visit_directory(
+        path,
+        DirectoryScanPolicy {
+            max_entries: 1,
+            include_hidden: false,
+        },
+        |_| {
+            has_visible_entry = true;
+            false
+        },
+    );
+    if scan.is_err() {
+        return false; // Assume not empty on error to allow user to try expanding it
     }
+    !has_visible_entry
 }
 
 /// Scan a directory while bounding memory and allowing cooperative cancellation.
@@ -98,70 +104,57 @@ pub fn scan_directory_bounded(
     lookahead_cap: usize,
     cancel: Option<&AtomicBool>,
 ) -> DirectoryScan {
-    let read_dir = match std::fs::read_dir(dir_path) {
-        Ok(rd) => rd,
-        Err(e) => {
-            tracing::warn!("Cannot read {}: {}", dir_path.display(), e);
-            return DirectoryScan::default();
-        }
-    };
-
     let mut heap = BinaryHeap::with_capacity(max_entries.saturating_add(1).min(256));
     let mut truncated = false;
     let mut dirs_checked = 0;
+    let mut cancelled = false;
 
-    for entry in read_dir.flatten() {
-        if cancel.is_some_and(|flag| flag.load(AtomicOrdering::Acquire)) {
-            return DirectoryScan {
-                entries: drain_sorted_entries(heap),
-                truncated,
-                cancelled: true,
+    let scan = fs_tree::visit_directory(
+        dir_path,
+        DirectoryScanPolicy::visible_workspace(),
+        |entry| {
+            if cancel.is_some_and(|flag| flag.load(AtomicOrdering::Acquire)) {
+                cancelled = true;
+                return false;
+            }
+
+            let is_dir = match entry.kind {
+                FileKind::Directory => true,
+                FileKind::File => false,
+                FileKind::Other => return true,
             };
-        }
-        if entry.file_name().as_encoded_bytes().first() == Some(&b'.') {
-            continue;
-        }
-        let Some((path, is_dir)) = classify_entry(&entry) else {
-            continue;
-        };
 
-        let mut is_empty = None;
-        if is_dir && dirs_checked < lookahead_cap {
-            dirs_checked += 1;
-            is_empty = Some(is_dir_empty(&path));
-        }
+            let mut is_empty = None;
+            if is_dir && dirs_checked < lookahead_cap {
+                dirs_checked += 1;
+                is_empty = Some(is_dir_empty(&entry.path));
+            }
 
-        heap.push(SortedEntry {
-            path,
-            is_dir,
-            is_empty,
-        });
-        if heap.len() > max_entries {
-            heap.pop();
-            truncated = true;
+            heap.push(SortedEntry {
+                path: entry.path,
+                is_dir,
+                is_empty,
+            });
+            if heap.len() > max_entries {
+                heap.pop();
+                truncated = true;
+            }
+            true
+        },
+    );
+
+    match scan {
+        Ok(()) => {}
+        Err(e) => {
+            tracing::warn!("Cannot read {}: {}", dir_path.display(), e);
+            return DirectoryScan::default();
         }
     }
 
     DirectoryScan {
         entries: drain_sorted_entries(heap),
         truncated,
-        cancelled: false,
-    }
-}
-
-/// Classify a DirEntry as file or directory, resolving symlinks.
-/// Returns `None` for broken symlinks.
-fn classify_entry(entry: &DirEntry) -> Option<(PathBuf, bool)> {
-    let path = entry.path();
-
-    match entry.file_type() {
-        Ok(file_type) if !file_type.is_symlink() => Some((path, file_type.is_dir())),
-        Ok(_) | Err(_) => {
-            // Follow symlinks so valid symlinked directories/files are included,
-            // while broken targets are skipped.
-            let meta = std::fs::metadata(&path).ok()?;
-            Some((path, meta.is_dir()))
-        }
+        cancelled,
     }
 }
 
@@ -198,6 +191,7 @@ fn compare_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     /// Helper: extract file names from scan results.
@@ -225,9 +219,9 @@ mod tests {
     #[test]
     fn test_hidden_files_skipped() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(dir.path().join(".hidden"), "").expect("expected operation to succeed");
-        std::fs::write(dir.path().join(".gitignore"), "").expect("expected operation to succeed");
-        std::fs::write(dir.path().join("visible.txt"), "").expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join(".hidden"), "");
+        fixture::write_text(&dir.path().join(".gitignore"), "");
+        fixture::write_text(&dir.path().join("visible.txt"), "");
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 1);
@@ -237,8 +231,8 @@ mod tests {
     #[test]
     fn test_hidden_directories_skipped() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join(".git")).expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join("src")).expect("expected operation to succeed");
+        fixture::create_dir(&dir.path().join(".git"));
+        fixture::create_dir(&dir.path().join("src"));
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 1);
@@ -248,8 +242,7 @@ mod tests {
     #[test]
     fn test_files_marked_not_dir() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(dir.path().join("file.txt"), "hello")
-            .expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("file.txt"), "hello");
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 1);
@@ -259,7 +252,7 @@ mod tests {
     #[test]
     fn test_directories_marked_as_dir() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join("subdir")).expect("expected operation to succeed");
+        fixture::create_dir(&dir.path().join("subdir"));
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 1);
@@ -270,8 +263,8 @@ mod tests {
     fn test_directories_sorted_before_files() {
         let dir = TempDir::new().expect("expected operation to succeed");
         // File sorts alphabetically before directory, but dirs should come first
-        std::fs::write(dir.path().join("aaa.txt"), "").expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join("zzz_dir")).expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("aaa.txt"), "");
+        fixture::create_dir(&dir.path().join("zzz_dir"));
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 2);
@@ -282,9 +275,9 @@ mod tests {
     #[test]
     fn test_alphabetical_case_insensitive_sort() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(dir.path().join("Banana.txt"), "").expect("expected operation to succeed");
-        std::fs::write(dir.path().join("apple.txt"), "").expect("expected operation to succeed");
-        std::fs::write(dir.path().join("Cherry.txt"), "").expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("Banana.txt"), "");
+        fixture::write_text(&dir.path().join("apple.txt"), "");
+        fixture::write_text(&dir.path().join("Cherry.txt"), "");
 
         let entries = scan_directory(dir.path());
         assert_eq!(
@@ -302,10 +295,10 @@ mod tests {
     #[test]
     fn test_mixed_entries_sorted_correctly() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(dir.path().join("readme.md"), "").expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join("src")).expect("expected operation to succeed");
-        std::fs::write(dir.path().join("Cargo.toml"), "").expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join("docs")).expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("readme.md"), "");
+        fixture::create_dir(&dir.path().join("src"));
+        fixture::write_text(&dir.path().join("Cargo.toml"), "");
+        fixture::create_dir(&dir.path().join("docs"));
 
         let entries = scan_directory(dir.path());
         assert_eq!(
@@ -317,9 +310,9 @@ mod tests {
     #[test]
     fn test_all_hidden_entries_produces_empty() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(dir.path().join(".gitignore"), "").expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join(".git")).expect("expected operation to succeed");
-        std::fs::write(dir.path().join(".env"), "").expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join(".gitignore"), "");
+        fixture::create_dir(&dir.path().join(".git"));
+        fixture::write_text(&dir.path().join(".env"), "");
 
         let entries = scan_directory(dir.path());
         assert!(entries.is_empty());
@@ -330,9 +323,9 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
 
         assert!(is_dir_empty(dir.path()));
-        std::fs::write(dir.path().join(".hidden"), "").expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join(".hidden"), "");
         assert!(is_dir_empty(dir.path()), "hidden files should not count");
-        std::fs::write(dir.path().join("visible.txt"), "").expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("visible.txt"), "");
         assert!(!is_dir_empty(dir.path()), "visible files should count");
         assert!(!is_dir_empty(&dir.path().join("missing")));
     }
@@ -340,7 +333,7 @@ mod tests {
     #[test]
     fn test_paths_are_absolute() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(dir.path().join("file.txt"), "").expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("file.txt"), "");
 
         let entries = scan_directory(dir.path());
         assert!(entries[0].path.is_absolute());
@@ -350,9 +343,8 @@ mod tests {
     #[test]
     fn test_broken_symlinks_skipped() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(dir.path().join("real.txt"), "").expect("expected operation to succeed");
-        std::os::unix::fs::symlink("/nonexistent/target", dir.path().join("broken"))
-            .expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("real.txt"), "");
+        fixture::symlink(Path::new("/nonexistent/target"), &dir.path().join("broken"));
 
         let entries = scan_directory(dir.path());
         let result_names = names(&entries);
@@ -364,9 +356,8 @@ mod tests {
     fn test_valid_symlinks_included() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let real = dir.path().join("real.txt");
-        std::fs::write(&real, "content").expect("expected operation to succeed");
-        std::os::unix::fs::symlink(&real, dir.path().join("link.txt"))
-            .expect("expected operation to succeed");
+        fixture::write_text(&real, "content");
+        fixture::symlink(&real, &dir.path().join("link.txt"));
 
         let entries = scan_directory(dir.path());
         assert_eq!(entries.len(), 2);
@@ -381,9 +372,9 @@ mod tests {
         for name in ["zeta.txt", "alpha.txt", "docs", "src", "notes.md"] {
             let path = dir.path().join(name);
             if name.contains('.') {
-                std::fs::write(path, "").expect("expected operation to succeed");
+                fixture::write_text(&path, "");
             } else {
-                std::fs::create_dir(path).expect("expected operation to succeed");
+                fixture::create_dir(&path);
             }
         }
 
@@ -396,9 +387,9 @@ mod tests {
     #[test]
     fn test_bounded_scan_checks_only_directory_lookahead_cap() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join("alpha")).expect("expected operation to succeed");
-        std::fs::create_dir(dir.path().join("beta")).expect("expected operation to succeed");
-        std::fs::write(dir.path().join("file.txt"), "").expect("expected operation to succeed");
+        fixture::create_dir(&dir.path().join("alpha"));
+        fixture::create_dir(&dir.path().join("beta"));
+        fixture::write_text(&dir.path().join("file.txt"), "");
 
         let scan = scan_directory_bounded(dir.path(), 10, 1, None);
         let checked_dirs = scan
@@ -420,7 +411,7 @@ mod tests {
     #[test]
     fn test_bounded_scan_honors_cancel_token() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        std::fs::write(dir.path().join("visible.txt"), "").expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("visible.txt"), "");
         let cancel = AtomicBool::new(true);
 
         let scan = scan_directory_bounded(dir.path(), 10, 1000, Some(&cancel));

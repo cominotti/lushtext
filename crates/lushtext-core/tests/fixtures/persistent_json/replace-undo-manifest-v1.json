@@ -1,0 +1,12 @@
+{
+  "kind": "dev.cominotti.lushtext.replace-all-undo-manifest",
+  "version": 1,
+  "data": {
+    "entries": [
+      {
+        "path": "/tmp/project/src/main.rs",
+        "entry_file": "deb09d05810ef629.json"
+      }
+    ]
+  }
+}

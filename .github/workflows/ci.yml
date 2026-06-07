@@ -11,12 +11,18 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_DENY_VERSION: "0.19.8"
+  CARGO_NEXTEST_VERSION: "0.9.137"
+
+# Pull-request CI stays deterministic and bounded: no installed package,
+# portal, AT-SPI, screenshot, or full benchmark timing requirements here.
+# Those artifact-heavy checks live in end-user-smoke.yml and release-benchmark.yml.
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     # gtk4-rs 0.11 targets GNOME 50 here (GTK 4.22, Libadwaita 1.9).
     # Ubuntu LTS only ships GTK 4.14, so CI uses Fedora's current GNOME stack.
     # Bump this when gtk4-rs minimum GTK version increases.
@@ -28,7 +34,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
@@ -37,7 +43,7 @@ jobs:
             git
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy, rustfmt
 
@@ -49,7 +55,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Filesystem boundary policy
+        run: make check-filesystem-boundary
 
       - name: Rustdoc lint gate
         run: |
@@ -59,7 +68,7 @@ jobs:
   non-widget-tests:
     name: Non-widget Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     container:
       image: registry.fedoraproject.org/fedora:44
 
@@ -68,7 +77,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
@@ -78,22 +87,22 @@ jobs:
             curl
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: fedora-44
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+        run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Run non-widget tests
         run: cargo nextest run --workspace
 
-  widget-tests:
-    name: Widget Tests
+  property-tests:
+    name: Property Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     container:
       image: registry.fedoraproject.org/fedora:44
 
@@ -102,7 +111,75 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git \
+            curl
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-property
+
+      - name: Install cargo-nextest
+        run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+      - name: Run property tests
+        run: make test-prop
+
+  fuzz-corpus-replay:
+    name: Fuzz Corpus Replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-fuzz-replay
+
+      - name: Replay committed fuzz corpus seeds
+        # The replay test is guarded by `lushtext-core/fuzzing`, so default
+        # workspace nextest runs intentionally skip it. This explicit stable
+        # lane keeps the committed corpus covered without installing nightly,
+        # cargo-fuzz, sanitizer tooling, or a C++ compiler.
+        run: make fuzz-corpus-replay
+
+  widget-tests:
+    name: Widget Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
@@ -113,7 +190,7 @@ jobs:
             dbus-daemon
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -129,7 +206,7 @@ jobs:
   bench-compile:
     name: Bench Compile
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     container:
       image: registry.fedoraproject.org/fedora:44
 
@@ -138,7 +215,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
@@ -147,7 +224,7 @@ jobs:
             git
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -165,12 +242,12 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-deny
-        run: cargo install --locked cargo-deny
+        run: cargo install --locked cargo-deny --version "${CARGO_DENY_VERSION}"
 
       - name: Check dependency policy
-        run: cargo deny check advisories bans sources
+        run: cargo deny check advisories bans sources licenses

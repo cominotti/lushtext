@@ -4,9 +4,25 @@
 
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::prelude::*;
 use lushtext_core::config::{self, keys};
 use libadwaita::prelude::*;
 use lushtext_core::ui::preferences::LushtextPreferences;
+
+fn has_accessible_role(root: &impl IsA<gtk4::Widget>, role: gtk4::AccessibleRole) -> bool {
+    let mut stack = vec![root.as_ref().clone()];
+    while let Some(widget) = stack.pop() {
+        if widget.accessible_role() == role {
+            return true;
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            stack.push(current.clone());
+            child = current.next_sibling();
+        }
+    }
+    false
+}
 
 #[test]
 fn test_new() {
@@ -18,6 +34,42 @@ fn test_new() {
 fn test_default_equals_new() {
     ensure_gtk_init();
     let _prefs: LushtextPreferences = LushtextPreferences::default();
+}
+
+#[test]
+fn test_preferences_controls_expose_accessibility_roles() {
+    ensure_gtk_init();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    assert_eq!(
+        imp.style_scheme_row.accessible_role(),
+        gtk4::AccessibleRole::ComboBox
+    );
+    assert_eq!(
+        imp.workspace_sidebar_width_row.accessible_role(),
+        gtk4::AccessibleRole::ComboBox
+    );
+    assert_eq!(
+        imp.word_wrap_row.accessible_role(),
+        gtk4::AccessibleRole::Switch
+    );
+    assert_eq!(
+        imp.tab_width_row.accessible_role(),
+        gtk4::AccessibleRole::Group
+    );
+    assert!(
+        has_accessible_role(&*imp.tab_width_row, gtk4::AccessibleRole::SpinButton),
+        "numeric tab width row should expose an internal spin button"
+    );
+    assert!(
+        has_accessible_role(&*imp.font_button, gtk4::AccessibleRole::Button),
+        "font chooser should expose a button role"
+    );
+    assert!(
+        has_accessible_role(&*imp.transparency_button, gtk4::AccessibleRole::Button),
+        "transparency menu should expose a button role"
+    );
 }
 
 // --- GSettings binding tests ---

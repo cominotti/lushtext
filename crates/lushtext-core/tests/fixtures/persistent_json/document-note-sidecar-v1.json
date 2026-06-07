@@ -1,0 +1,16 @@
+{
+  "kind": "dev.cominotti.lushtext.document-note-sidecar",
+  "version": 1,
+  "data": {
+    "identity": {
+      "display_path": "/tmp/project/src/main.rs",
+      "canonical_path": "/tmp/project/src/main.rs",
+      "sidecar_id": "deb09d05810ef629"
+    },
+    "note": {
+      "text": "Remember this file",
+      "created_at_secs": 1780720800,
+      "updated_at_secs": 1780720810
+    }
+  }
+}

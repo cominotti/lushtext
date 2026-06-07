@@ -1,0 +1,20 @@
+    Finished `bench` profile [optimized] target(s) in 0.10s
+     Running benches/benchmarks.rs (target/release/deps/benchmarks-cbd9ce7550beac88)
+Gnuplot not found, using plotters backend
+Benchmarking content_search_smoke/literal_200_files
+Benchmarking content_search_smoke/literal_200_files: Warming up for 1.0000 s
+Benchmarking content_search_smoke/literal_200_files: Collecting 10 samples in estimated 1.0329 s (275 iterations)
+Benchmarking content_search_smoke/literal_200_files: Analyzing
+content_search_smoke/literal_200_files
+                        time:   [3.3979 ms 3.7911 ms 4.2252 ms]
+                        change: [+32.024% +50.616% +67.800%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking content_search_smoke/medium_file_10k_lines
+Benchmarking content_search_smoke/medium_file_10k_lines: Warming up for 1.0000 s
+Benchmarking content_search_smoke/medium_file_10k_lines: Collecting 10 samples in estimated 1.0474 s (330 iterations)
+Benchmarking content_search_smoke/medium_file_10k_lines: Analyzing
+content_search_smoke/medium_file_10k_lines
+                        time:   [2.7696 ms 2.9371 ms 3.1187 ms]
+                        change: [+29.519% +45.018% +61.441%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+

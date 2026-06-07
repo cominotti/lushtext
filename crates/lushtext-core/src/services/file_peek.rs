@@ -7,9 +7,9 @@
 //! fallback classification. It stays GTK-free so the sidebar adapter can render
 //! the result without accidentally creating editor, draft, or monitor state.
 
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
+
+use crate::services::filesystem::{metadata, read};
 
 use super::file_limits::FileSizeCheck;
 
@@ -125,7 +125,7 @@ pub fn load_snapshot(path: &Path, display_path: impl Into<String>) -> PeekSnapsh
     let display_path = display_path.into();
     let display_name = display_name_for_path(path);
 
-    let Ok(meta) = std::fs::metadata(path) else {
+    let Ok(facts) = metadata::file_facts(path) else {
         return unresolved_snapshot(
             path,
             display_name,
@@ -137,12 +137,8 @@ pub fn load_snapshot(path: &Path, display_path: impl Into<String>) -> PeekSnapsh
         );
     };
 
-    let byte_size = meta.len();
-    let modified_at_secs = meta
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs());
+    let byte_size = facts.byte_size;
+    let modified_at_secs = facts.modified_at_secs;
     let size_check = FileSizeCheck::classify(byte_size);
 
     if !size_check.open_allowed() {
@@ -213,10 +209,7 @@ pub fn load_snapshot(path: &Path, display_path: impl Into<String>) -> PeekSnapsh
 /// Read at most `byte_limit + 1` bytes so the caller can tell whether the
 /// preview was clipped by the byte budget.
 fn read_bounded_bytes(path: &Path, byte_limit: usize) -> std::io::Result<BoundedBytes> {
-    let file = File::open(path)?;
-    let mut bytes = Vec::with_capacity(byte_limit.saturating_add(1));
-    let mut take = file.take((byte_limit as u64).saturating_add(1));
-    take.read_to_end(&mut bytes)?;
+    let mut bytes = read::prefix_bytes(path, byte_limit.saturating_add(1))?;
     let truncated_by_bytes = bytes.len() > byte_limit;
     if truncated_by_bytes {
         bytes.truncate(byte_limit);
@@ -300,7 +293,7 @@ fn display_name_for_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use crate::services::filesystem::fixture;
 
     #[test]
     fn request_token_advances_and_matches() {
@@ -322,7 +315,7 @@ mod tests {
     #[test]
     fn load_snapshot_returns_text_preview_for_utf8_file() {
         let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), "alpha\nbeta\n").expect("expected operation to succeed");
+        fixture::write_text(file.path(), "alpha\nbeta\n");
 
         let display_path = file.path().display().to_string();
         let snapshot = load_snapshot(file.path(), display_path.clone());
@@ -350,7 +343,7 @@ mod tests {
         while content.len() <= PEEK_SAMPLE_BYTE_LIMIT.saturating_add(20) {
             content.push_str("abcdefghijklmnopqrstuvwxyz\n");
         }
-        std::fs::write(file.path(), content).expect("expected operation to succeed");
+        fixture::write_text(file.path(), &content);
 
         let snapshot = load_snapshot(file.path(), "long.txt");
 
@@ -367,14 +360,14 @@ mod tests {
     #[test]
     fn bounded_read_marks_only_content_beyond_the_limit_as_truncated() {
         let exact = tempfile::NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(exact.path(), b"abcd").expect("expected operation to succeed");
+        fixture::write_bytes(exact.path(), b"abcd");
         let exact_sample = read_bounded_bytes(exact.path(), 4).expect("read exact sample");
 
         assert_eq!(exact_sample.bytes, b"abcd");
         assert!(!exact_sample.truncated_by_bytes);
 
         let over = tempfile::NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(over.path(), b"abcde").expect("expected operation to succeed");
+        fixture::write_bytes(over.path(), b"abcde");
         let over_sample = read_bounded_bytes(over.path(), 4).expect("read over-limit sample");
 
         assert_eq!(over_sample.bytes, b"abcd");
@@ -388,7 +381,7 @@ mod tests {
         for line in 0..(PEEK_SAMPLE_LINE_LIMIT + 5) {
             content.push_str(&format!("line-{line}\n"));
         }
-        std::fs::write(file.path(), content).expect("expected operation to succeed");
+        fixture::write_text(file.path(), &content);
 
         let snapshot = load_snapshot(file.path(), "lines.txt");
 
@@ -442,7 +435,7 @@ mod tests {
     #[test]
     fn load_snapshot_rejects_invalid_utf8_as_unsupported() {
         let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), [0xff, 0xfe, 0xfd]).expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), [0xff, 0xfe, 0xfd]);
 
         let snapshot = load_snapshot(file.path(), "binary.bin");
 
@@ -457,7 +450,7 @@ mod tests {
     #[test]
     fn load_snapshot_rejects_nul_bytes_as_unsupported() {
         let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
-        std::fs::write(file.path(), b"abc\0def").expect("expected operation to succeed");
+        fixture::write_bytes(file.path(), b"abc\0def");
 
         let snapshot = load_snapshot(file.path(), "nul.bin");
 
@@ -482,17 +475,7 @@ mod tests {
     #[test]
     fn load_snapshot_reports_too_large_without_reading_contents() {
         let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
-        let mut writer = std::fs::OpenOptions::new()
-            .write(true)
-            .open(file.path())
-            .expect("expected operation to succeed");
-        writer
-            .write_all(b"x")
-            .expect("expected operation to succeed");
-        writer.flush().expect("expected operation to succeed");
-        writer
-            .set_len(super::super::file_limits::REFUSE_TO_OPEN + 1)
-            .expect("expected operation to succeed");
+        fixture::create_sparse_file(file.path(), super::super::file_limits::REFUSE_TO_OPEN + 1);
 
         let snapshot = load_snapshot(file.path(), "huge.txt");
 

@@ -27,3 +27,9 @@ mod editorconfig;
 
 #[path = "integration/notes.rs"]
 mod notes;
+
+#[path = "integration/local_history.rs"]
+mod local_history;
+
+#[path = "integration/search_replace.rs"]
+mod search_replace;

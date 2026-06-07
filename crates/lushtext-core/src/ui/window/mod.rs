@@ -13,6 +13,8 @@ mod drafts;
 mod encoding;
 mod focus_indexing;
 mod focus_mode;
+// gtk-rs keeps the private GObject subclass implementation in `imp.rs`; this
+// public module exposes the safe wrapper and workflow methods callers use.
 mod imp;
 mod local_history;
 mod notes;
@@ -30,6 +32,17 @@ use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
+
+#[cfg(feature = "test-utils")]
+pub use documents::set_canonical_refresh_delay_for_test;
+#[cfg(feature = "test-utils")]
+pub use drafts::set_first_dirty_autosave_delay_for_test;
+#[cfg(feature = "test-utils")]
+pub use encoding::set_lossy_encoding_analysis_delay_for_test;
+#[cfg(feature = "test-utils")]
+pub use notes::set_bookmark_excerpt_preview_delay_for_test;
+#[cfg(feature = "test-utils")]
+pub use print::{PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test};
 
 /// Maximum total estimated buffer memory across all tabs before evicting
 /// unmodified background tabs. ~256MB is comfortable on 8GB machines.

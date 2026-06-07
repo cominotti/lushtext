@@ -26,10 +26,8 @@ impl super::LushtextWindow {
 
         let window = self.clone();
         dialog.open(Some(self), gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result
-                && let Some(path) = file.path()
-            {
-                window.open_document(&path);
+            if let Ok(file) = result {
+                window.handle_open_file_selection(&file);
             }
         });
     }
@@ -51,26 +49,92 @@ impl super::LushtextWindow {
 
         let window = self.clone();
         dialog.save(Some(self), gio::Cancellable::NONE, move |result| {
-            if let Ok(file) = result
-                && let Some(path) = file.path()
-            {
-                let old_path = editor.file_path();
-                let old_draft_id = editor.draft_id();
-                let editor = editor.clone();
-                let editor_for_result = editor.clone();
-                let window_clone = window.clone();
-                editor.save_file_async_to_path(path.clone(), move |save_result| {
-                    window_clone.complete_save_as(
-                        &editor_for_result,
-                        old_path.as_deref(),
-                        old_draft_id.as_deref(),
-                        &path,
-                        save_result,
-                    );
-                });
+            if let Ok(file) = result {
+                window.handle_save_as_selection(&editor, &file);
             }
         });
     }
+
+    /// Complete the Open File chooser after GTK or a portal has produced a file.
+    ///
+    /// Cancellation intentionally does not call this helper, so no document
+    /// state changes until a concrete selection is available.
+    fn handle_open_file_selection(&self, file: &gio::File) {
+        if let Some(path) = file.path() {
+            self.open_document(&path);
+        } else {
+            self.report_unsupported_open_file(file);
+        }
+    }
+
+    /// Complete the Save As chooser after the user selects a destination.
+    /// The editor adopts the new identity only inside `complete_save_as`, after
+    /// the background durable write reports success.
+    fn handle_save_as_selection(&self, editor: &LushtextEditorPage, file: &gio::File) {
+        let Some(path) = file.path() else {
+            let uri = file.uri();
+            self.publish_status_message(
+                &format!("Could not save to {uri}: only local files are supported"),
+                MessageKind::Error,
+            );
+            self.refresh_status_bar();
+            return;
+        };
+        let old_path = editor.file_path();
+        let old_canonical_path = editor.canonical_file_path();
+        let old_draft_id = editor.draft_id();
+        let editor = editor.clone();
+        let editor_for_result = editor.clone();
+        let window = self.clone();
+        editor.save_file_async_to_path(path.clone(), move |save_result| {
+            window.complete_save_as(
+                &editor_for_result,
+                old_path.as_deref(),
+                old_canonical_path.as_deref(),
+                old_draft_id.as_deref(),
+                &path,
+                save_result,
+            );
+        });
+    }
+
+    /// Test helper for the file chooser's successful Open File result.
+    #[cfg(feature = "test-utils")]
+    pub fn select_open_file_for_test(&self, path: &Path) {
+        self.handle_open_file_selection(&gio::File::for_path(path));
+    }
+
+    /// Test helper for the file chooser selecting an unsupported non-local file.
+    #[cfg(feature = "test-utils")]
+    pub fn select_open_file_uri_for_test(&self, uri: &str) {
+        self.handle_open_file_selection(&gio::File::for_uri(uri));
+    }
+
+    /// Test helper for Open File cancellation. Kept explicit so chooser tests
+    /// can prove that the cancel path is intentionally state-neutral.
+    #[cfg(feature = "test-utils")]
+    pub fn cancel_open_file_for_test(&self) {}
+
+    /// Test helper for the file chooser's successful Save As result.
+    #[cfg(feature = "test-utils")]
+    pub fn select_save_as_destination_for_test(&self, path: &Path) {
+        if let Some(editor) = self.active_editor() {
+            self.handle_save_as_selection(&editor, &gio::File::for_path(path));
+        }
+    }
+
+    /// Test helper for the Save As chooser selecting an unsupported non-local file.
+    #[cfg(feature = "test-utils")]
+    pub fn select_save_as_uri_for_test(&self, uri: &str) {
+        if let Some(editor) = self.active_editor() {
+            self.handle_save_as_selection(&editor, &gio::File::for_uri(uri));
+        }
+    }
+
+    /// Test helper for Save As cancellation. Cancellation preserves the active
+    /// editor's existing path, modified flag, and draft identity.
+    #[cfg(feature = "test-utils")]
+    pub fn cancel_save_as_destination_for_test(&self) {}
 
     /// Complete the Save As state transition after the background write
     /// resolves. State only switches to the new path on success.
@@ -79,6 +143,7 @@ impl super::LushtextWindow {
         &self,
         editor: &LushtextEditorPage,
         old_path: Option<&Path>,
+        old_canonical_path: Option<&Path>,
         old_draft_id: Option<&str>,
         path: &Path,
         save_result: Result<(), crate::ui::editor_page::SaveError>,
@@ -86,14 +151,23 @@ impl super::LushtextWindow {
         let path_display = path.display().to_string();
         match save_result {
             Ok(()) => {
+                let canonical_path = editor.canonical_file_path();
                 {
                     let mut open_paths = self.imp().open_paths.borrow_mut();
                     if let Some(old) = old_path {
                         open_paths.remove(old);
+                        open_paths.remove(&super::documents::open_path_key(old));
                     }
-                    open_paths.insert(path.to_path_buf());
+                    if let Some(old_canonical) = old_canonical_path {
+                        open_paths.remove(old_canonical);
+                    }
+                    open_paths.insert(super::documents::open_path_key(path));
+                    if let Some(canonical_path) = canonical_path.clone() {
+                        open_paths.insert(canonical_path);
+                    }
                 }
-                editor.set_file_path(path);
+                editor.set_file_path_with_canonical(path, canonical_path);
+                self.refresh_canonical_path_after_rename(editor, path);
                 self.assign_draft_id(editor);
                 self.resolve_editorconfig_for_editor(editor, path);
                 self.reset_notes_after_save_as(editor, path);
@@ -126,22 +200,44 @@ impl super::LushtextWindow {
                 let editor_for_dialog = editor.clone();
                 let retry_path = path.to_path_buf();
                 let retry_old_path = old_path.map(std::path::Path::to_path_buf);
+                let retry_old_canonical_path = old_canonical_path.map(std::path::Path::to_path_buf);
                 let retry_old_draft_id = old_draft_id.map(ToOwned::to_owned);
                 self.confirm_lossy_save(&editor_for_dialog, &preview, move || {
                     let editor_for_result = editor.clone();
                     let window_for_retry = window.clone();
                     let retry_old_path = retry_old_path.clone();
+                    let retry_old_canonical_path = retry_old_canonical_path.clone();
                     let retry_old_draft_id = retry_old_draft_id.clone();
                     editor.save_file_async_to_path(retry_path.clone(), move |retry_result| {
                         window_for_retry.complete_save_as(
                             &editor_for_result,
                             retry_old_path.as_deref(),
+                            retry_old_canonical_path.as_deref(),
                             retry_old_draft_id.as_deref(),
                             &retry_path,
                             retry_result,
                         );
                     });
                 });
+            }
+            Err(crate::ui::editor_page::SaveError::DurabilityUnconfirmed {
+                path: written,
+                source,
+            }) => {
+                // Bytes reached the destination but the directory fsync failed.
+                // Stay conservative for Save As: do not adopt the new identity
+                // while durability is unconfirmed, so the user re-saves to commit.
+                tracing::warn!(
+                    "Wrote {}, but durability sync failed: {source}",
+                    written.display()
+                );
+                self.publish_status_message(
+                    &format!(
+                        "Wrote {path_display}, but durability is unconfirmed — save again to confirm"
+                    ),
+                    MessageKind::Warning,
+                );
+                self.refresh_status_bar();
             }
             Err(e) => {
                 tracing::error!("Save As failed: {}", e);
@@ -264,6 +360,11 @@ impl super::LushtextWindow {
         // so the close flow can block and ask the user to Save As explicitly
         // instead of silently treating them as already saved.
         let group = libadwaita::PreferencesGroup::new();
+        group.set_accessible_role(gtk4::AccessibleRole::Group);
+        group.update_property(&[
+            gtk4::accessible::Property::Label("Documents with unsaved changes"),
+            gtk4::accessible::Property::Description("Choose which modified documents to save"),
+        ]);
         let checks: Rc<RefCell<Vec<(gtk4::CheckButton, LushtextEditorPage)>>> =
             Rc::new(RefCell::new(Vec::new()));
 
@@ -274,13 +375,14 @@ impl super::LushtextWindow {
                 .as_deref()
                 .and_then(|p| p.parent().map(|d| d.display().to_string()))
                 .unwrap_or_default();
+            let row_title = if path.is_none() {
+                format!("{title} (new)")
+            } else {
+                title
+            };
 
             let row = libadwaita::ActionRow::builder()
-                .title(if path.is_none() {
-                    format!("{title} (new)")
-                } else {
-                    title
-                })
+                .title(&row_title)
                 .subtitle(&subtitle)
                 .build();
 
@@ -288,6 +390,13 @@ impl super::LushtextWindow {
                 .active(true)
                 .valign(gtk4::Align::Center)
                 .build();
+            let check_label = format!("Save {row_title}");
+            check.update_property(&[
+                gtk4::accessible::Property::Label(&check_label),
+                gtk4::accessible::Property::Description(
+                    "Include this document when saving before close",
+                ),
+            ]);
             row.add_prefix(&check);
             let check_weak = check.downgrade();
             row.set_activatable(true);
@@ -388,12 +497,24 @@ impl super::LushtextWindow {
             let discarded_editors = discarded_editors.clone();
             editor.save_file_async(move |result| {
                 if let Err(e) = result {
+                    // Abort the close on any failure. A durability-unconfirmed
+                    // result wrote the bytes but could not prove them crash-safe,
+                    // so warn rather than claim the save was lost — and still keep
+                    // the tab open so the user can re-save to confirm.
                     any_failed.set(true);
-                    tracing::error!("Save failed during close: {e}");
-                    window.publish_status_message(
-                        &format!("Save failed during close: {e}"),
-                        MessageKind::Error,
-                    );
+                    if let crate::ui::editor_page::SaveError::DurabilityUnconfirmed { .. } = e {
+                        tracing::warn!("Save during close not yet durable: {e}");
+                        window.publish_status_message(
+                            "Saved during close, but durability is unconfirmed — save again",
+                            MessageKind::Warning,
+                        );
+                    } else {
+                        tracing::error!("Save failed during close: {e}");
+                        window.publish_status_message(
+                            &format!("Save failed during close: {e}"),
+                            MessageKind::Error,
+                        );
+                    }
                 } else {
                     saved_editors.borrow_mut().push(editor_for_callback.clone());
                 }

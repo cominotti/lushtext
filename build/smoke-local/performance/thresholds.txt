@@ -1,0 +1,12 @@
+This smoke lane is a coarse regression tripwire, not the release benchmark gate.
+
+Coarse smoke thresholds:
+- first-window readiness: target under 5s on a developer workstation; investigate over 10s
+- representative small/medium file open: target under 500ms; investigate over 2s
+- command-palette searches: target interactive-scale, not multi-second
+- workspace/content search: must complete every generated fixture without stalling
+- Replace preview generation: 10k generated matches should stay sub-second on a developer workstation; investigate multi-second results before shipping preview-flow changes
+- persistence, editor file I/O, Replace All, and undo restore: must complete every smoke sample successfully
+- recovery_performance: malformed metadata, pending migration, duplicate sidecar, local-history lineage, and first-dirty autosave fixtures must complete every smoke sample successfully; investigate multi-second recovery timings before shipping startup or close-flow reliability changes
+
+Use make bench-report or make bench-report-full for enforceable release analysis.

@@ -8,8 +8,6 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
-use crate::model::content_search::SearchMatch;
-
 use super::item::SearchResultItem;
 use super::{LushtextSearchPanel, SearchMatchLocation};
 
@@ -124,31 +122,13 @@ impl LushtextSearchPanel {
         imp.results_feedback_revealer.set_reveal_child(false);
     }
 
-    /// Collect all `SearchMatch` data from the current results for preview generation.
-    /// Uses the unclamped original line content and match range so Replace All
-    /// works from the service-layer data rather than the shortened display text.
-    pub(super) fn collect_search_matches(&self) -> Vec<SearchMatch> {
-        let imp = self.imp();
-        let groups = imp.runtime.file_groups.borrow();
-        let mut matches = Vec::new();
-
-        for (path, group) in groups.iter() {
-            for i in 0..group.child_store.n_items() {
-                if let Some(item) = group.child_store.item(i).and_downcast::<SearchResultItem>()
-                    && item.is_match_item()
-                {
-                    matches.push(SearchMatch {
-                        path: path.clone(),
-                        line_number: u64::from(item.line_number()),
-                        line_content: item.original_line_content(),
-                        match_range: (item.original_match_start() as usize)
-                            ..(item.original_match_end() as usize),
-                    });
-                }
-            }
-        }
-
-        matches
+    /// Snapshot service-layer match data for preview generation.
+    ///
+    /// The search worker streams each match into this plain Rust cache as it
+    /// arrives, so entering Replace preview does not have to walk GTK tree
+    /// models or reconstruct original ranges from row objects.
+    pub(super) fn collect_search_matches(&self) -> Vec<crate::model::content_search::SearchMatch> {
+        self.imp().runtime.search_matches.borrow().clone()
     }
 
     /// Trigger a visual refresh of the results list by invalidating the factory.

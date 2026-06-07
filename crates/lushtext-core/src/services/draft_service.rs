@@ -11,17 +11,81 @@ use crate::model::draft::{
     DraftEntry, DraftManifest, FileDraftRestoreResolution, PreloadedDraftRestore,
 };
 use crate::model::session::SessionData;
-use crate::services::{durable_write, editor_io, json_store, session_service};
+use crate::model::sidecar_identity::stable_path_hash;
+use crate::services::json_format::KIND_DRAFT_MANIFEST;
+use crate::services::recovery_metadata::{
+    RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryLoadOutcome,
+    RecoveryMetadataClass, RecoveryRepair, RecoveryRepairContext, load_enveloped_json_or_default,
+    load_enveloped_json_with_repair, save_enveloped_json_path,
+};
+use crate::services::{
+    editor_io,
+    filesystem::{
+        DirectoryScanPolicy, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
+        read as fs_read, tree as fs_tree, write as fs_write,
+    },
+    session_service,
+};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
-use std::io::Write;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 const DRAFTS_DIR: &str = "drafts";
 const MANIFEST_FILE: &str = "manifest.json";
+/// Maximum eager draft body bytes loaded during startup restore.
+///
+/// Draft files remain on disk when this cap is reached; the limit only protects
+/// startup memory before normal editor buffer accounting is active.
+pub const MAX_DRAFT_PRELOAD_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum draft files inspected while rebuilding a missing or corrupt manifest.
+///
+/// Repair runs during startup restore, so it must be bounded. The cap is large
+/// enough for ordinary crash recovery while preventing one damaged data
+/// directory from monopolizing the background restore task.
+pub const MAX_MANIFEST_REPAIR_DRAFT_SCAN: usize = 2048;
+/// Maximum draft files inspected while cleaning orphan draft bodies after restore.
+///
+/// Cleanup is deferred and repeatable, so a bounded pass is better than letting a
+/// damaged drafts directory allocate every entry in one worker task.
+pub const MAX_ORPHAN_CLEANUP_DRAFT_SCAN: usize = 2048;
+
+/// Draft, session, and diagnostics loaded for startup restore.
+#[derive(Debug)]
+pub struct RestoreState {
+    /// Manifest snapshot used by the window after startup.
+    pub manifest: DraftManifest,
+    /// Session snapshot used to recreate tabs.
+    pub session: SessionData,
+    /// Draft bodies or skip markers preloaded for restored tabs.
+    pub preloaded_drafts: HashMap<String, PreloadedDraftRestore>,
+    /// Recovery diagnostics that should be logged or surfaced after restore.
+    pub diagnostics: Vec<RecoveryDiagnostic>,
+    /// Whether it is safe to run orphan cleanup after this startup.
+    pub orphan_cleanup_allowed: bool,
+}
+
+/// Typed failures from reading one draft body.
+#[derive(Debug, thiserror::Error)]
+pub enum DraftReadError {
+    /// The draft exists but is above the startup/preload restore budget.
+    #[error("draft {path} is too large to restore automatically ({size} bytes, limit {max} bytes)")]
+    Oversized { path: PathBuf, size: u64, max: u64 },
+    /// The draft exists but cannot be read or decoded as UTF-8.
+    #[error("failed to read draft {path}: {detail}")]
+    Read { path: PathBuf, detail: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DraftPreloadDecision {
+    Read,
+    SkipOversized,
+    SkipBudget,
+}
 
 fn manifest_write_lock() -> &'static Mutex<()> {
+    // Process-local mutex serializes manifest read-modify-write sequences;
+    // `OnceLock` creates it lazily without global constructor order.
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -32,15 +96,18 @@ pub fn drafts_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(DRAFTS_DIR)
 }
 
-/// Generate a stable draft ID from an absolute file path using the
-/// standard library's `DefaultHasher` (SipHash). Produces a 16-char
-/// hex string that is deterministic for the same path.
+fn manifest_path(data_dir: &Path) -> PathBuf {
+    drafts_dir(data_dir).join(MANIFEST_FILE)
+}
+
+/// Generate a stable draft ID from an absolute file path.
+///
+/// Draft IDs are persisted and may be derived again during session restore, so
+/// v1 uses the same explicit FNV-1a helper as sidecar identities instead of
+/// Rust's implementation-defined `DefaultHasher`.
 #[must_use]
 pub fn draft_id_for_path(path: &Path) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::hash::DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    stable_path_hash(path)
 }
 
 /// Generate a unique draft ID for an untitled tab using a monotonic
@@ -59,8 +126,17 @@ pub fn draft_id_for_untitled(counter: u64) -> String {
 ///
 /// Returns an error if the manifest file exists but cannot be read or parsed.
 pub fn load_manifest(data_dir: &Path) -> Result<DraftManifest> {
-    let dir = drafts_dir(data_dir);
-    json_store::load(&dir, MANIFEST_FILE)
+    Ok(load_manifest_recovering(data_dir).value)
+}
+
+/// Load the draft manifest through the public v1 envelope contract.
+#[must_use]
+pub fn load_manifest_recovering(data_dir: &Path) -> RecoveryLoad<DraftManifest> {
+    let path = manifest_path(data_dir);
+    load_enveloped_json_or_default(
+        &RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest),
+        KIND_DRAFT_MANIFEST,
+    )
 }
 
 /// Save the draft manifest atomically (temp file + rename).
@@ -83,8 +159,13 @@ pub fn save_manifest(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
 }
 
 fn save_manifest_locked(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
-    let dir = drafts_dir(data_dir);
-    json_store::save(&dir, MANIFEST_FILE, manifest)
+    let path = manifest_path(data_dir);
+    let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest);
+    let diagnostics = save_enveloped_json_path(&config, KIND_DRAFT_MANIFEST, manifest)?;
+    for diagnostic in diagnostics {
+        tracing::warn!("{}", diagnostic.summary());
+    }
+    Ok(())
 }
 
 /// Load, mutate, and save the draft manifest under a single lock.
@@ -117,18 +198,21 @@ where
 /// This intentionally preserves file-backed session tabs even when their paths
 /// are temporarily unavailable, so startup does not turn a transient mount
 /// outage into permanent session loss on the next save.
-pub fn load_restore_state(
-    data_dir: &Path,
-) -> (
-    DraftManifest,
-    SessionData,
-    HashMap<String, PreloadedDraftRestore>,
-) {
-    let mut manifest = load_manifest(data_dir).unwrap_or_default();
-    let session = session_service::load(data_dir).unwrap_or_default();
+pub fn load_restore_state(data_dir: &Path) -> RestoreState {
+    let session_load = session_service::load_recovering(data_dir);
+    let session = session_load.value;
+    let mut diagnostics = session_load.diagnostics;
+
+    let manifest_load = load_manifest_for_restore(data_dir, &session);
+    let mut manifest = manifest_load.value;
+    let orphan_cleanup_allowed = manifest_load.outcome == RecoveryLoadOutcome::Loaded
+        || (manifest_load.outcome == RecoveryLoadOutcome::MissingDefault
+            && manifest_load.diagnostics.is_empty());
+    diagnostics.extend(manifest_load.diagnostics);
 
     let mut preloaded = HashMap::new();
     let mut stale_draft_ids = Vec::new();
+    let mut preloaded_bytes = 0u64;
     for tab in &session.tabs {
         let draft_id = match &tab.path {
             Some(path) => draft_id_for_path(path),
@@ -141,6 +225,18 @@ pub fn load_restore_state(
             continue;
         };
         if entry.original_path.is_some() {
+            match draft_preload_decision(data_dir, &draft_id, &mut preloaded_bytes) {
+                DraftPreloadDecision::Read => {}
+                DraftPreloadDecision::SkipOversized => {
+                    tracing::warn!("Skipped automatic restore for oversized draft {draft_id}");
+                    preloaded.insert(draft_id, PreloadedDraftRestore::SkipOversized);
+                    continue;
+                }
+                DraftPreloadDecision::SkipBudget => {
+                    tracing::warn!("Skipped eager preload for large draft {draft_id}");
+                    continue;
+                }
+            }
             match resolve_file_draft_restore(data_dir, &entry) {
                 Ok(FileDraftRestoreResolution::Restore { content }) => {
                     preloaded.insert(draft_id, PreloadedDraftRestore::Content(content));
@@ -150,6 +246,9 @@ pub fn load_restore_state(
                     if !stale_draft_ids.contains(&draft_id) {
                         stale_draft_ids.push(draft_id);
                     }
+                }
+                Ok(FileDraftRestoreResolution::SkipOversized) => {
+                    preloaded.insert(draft_id, PreloadedDraftRestore::SkipOversized);
                 }
                 Ok(
                     FileDraftRestoreResolution::SkipUnavailable
@@ -162,6 +261,18 @@ pub fn load_restore_state(
             continue;
         }
 
+        match draft_preload_decision(data_dir, &draft_id, &mut preloaded_bytes) {
+            DraftPreloadDecision::Read => {}
+            DraftPreloadDecision::SkipOversized => {
+                tracing::warn!("Skipped automatic restore for oversized draft {draft_id}");
+                preloaded.insert(draft_id, PreloadedDraftRestore::SkipOversized);
+                continue;
+            }
+            DraftPreloadDecision::SkipBudget => {
+                tracing::warn!("Skipped eager preload for large draft {draft_id}");
+                continue;
+            }
+        }
         match read_draft(data_dir, &draft_id) {
             Ok(Some(content)) => {
                 preloaded.insert(draft_id, PreloadedDraftRestore::Content(content));
@@ -174,7 +285,240 @@ pub fn load_restore_state(
     }
 
     cleanup_stale_restore_entries(data_dir, &mut manifest, &stale_draft_ids);
-    (manifest, session, preloaded)
+    RestoreState {
+        manifest,
+        session,
+        preloaded_drafts: preloaded,
+        diagnostics,
+        orphan_cleanup_allowed,
+    }
+}
+
+/// Load the manifest through recovery repair rules used only by startup restore.
+fn load_manifest_for_restore(
+    data_dir: &Path,
+    session: &SessionData,
+) -> RecoveryLoad<DraftManifest> {
+    let path = manifest_path(data_dir);
+    let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest);
+    let mut load = load_enveloped_json_with_repair(&config, KIND_DRAFT_MANIFEST, |context| {
+        repair_manifest_from_draft_files(data_dir, session, &context)
+    });
+
+    if load.outcome == RecoveryLoadOutcome::MissingDefault {
+        let missing_problem = crate::services::recovery_metadata::RecoveryProblem::RepairSkipped {
+            detail: "manifest is missing".to_string(),
+        };
+        let missing_preservation =
+            crate::services::recovery_metadata::RecoveryPreservation::NotNeeded;
+        let missing_context = RecoveryRepairContext {
+            class: RecoveryMetadataClass::DraftManifest,
+            path: &path,
+            bytes: None,
+            problem: &missing_problem,
+            preservation: &missing_preservation,
+        };
+        let repair = repair_manifest_from_draft_files(data_dir, session, &missing_context);
+        apply_manifest_repair_to_missing_load(&mut load, repair);
+    }
+
+    if load.outcome == RecoveryLoadOutcome::Partial
+        && load.replacement_allowed()
+        && let Err(error) = save_manifest(data_dir, &load.value)
+    {
+        load.diagnostics.push(RecoveryDiagnostic::repair_skipped(
+            RecoveryMetadataClass::DraftManifest,
+            &path,
+            format!("failed to write repaired manifest: {error}"),
+        ));
+    }
+
+    load
+}
+
+/// Rebuild only draft manifest entries that can be proven safe from surviving draft files.
+///
+/// Untitled draft IDs are recoverable from session state or their `untitled-`
+/// prefix. File-backed hash IDs are preserved but not trusted because the
+/// original path was lost with the manifest.
+fn repair_manifest_from_draft_files(
+    data_dir: &Path,
+    session: &SessionData,
+    context: &RecoveryRepairContext<'_>,
+) -> RecoveryRepair<DraftManifest> {
+    let draft_ids = match recoverable_draft_file_ids(data_dir) {
+        Ok(ids) => ids,
+        Err(error) => {
+            return RecoveryRepair::Skipped {
+                diagnostics: vec![RecoveryDiagnostic::repair_skipped(
+                    context.class,
+                    context.path,
+                    format!("could not scan draft files for repair: {error}"),
+                )],
+            };
+        }
+    };
+
+    if draft_ids.is_empty() {
+        return RecoveryRepair::Unavailable;
+    }
+
+    let session_untitled_ids = session_untitled_draft_ids(session);
+    let mut manifest = DraftManifest::default();
+    let mut skipped = 0usize;
+    for draft_id in draft_ids {
+        if session_untitled_ids.contains(&draft_id) || draft_id.starts_with("untitled-") {
+            manifest.upsert(DraftEntry {
+                draft_id,
+                original_path: None,
+                original_mtime_secs: None,
+                saved_at_secs: editor_io::now_epoch_secs(),
+            });
+        } else {
+            skipped += 1;
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+    if !manifest.drafts.is_empty() {
+        diagnostics.push(RecoveryDiagnostic::repaired(
+            context.class,
+            context.path,
+            format!(
+                "rebuilt {} untitled draft manifest entries from surviving draft files",
+                manifest.drafts.len()
+            ),
+        ));
+    }
+    if skipped > 0 {
+        diagnostics.push(RecoveryDiagnostic::repair_skipped(
+            context.class,
+            context.path,
+            format!(
+                "preserved {skipped} draft files whose original paths could not be proven safely"
+            ),
+        ));
+    }
+
+    if manifest.drafts.is_empty() {
+        RecoveryRepair::Skipped { diagnostics }
+    } else {
+        RecoveryRepair::Repaired {
+            value: manifest,
+            diagnostics,
+        }
+    }
+}
+
+/// Return draft IDs from a bounded scan that could participate in manifest repair.
+fn recoverable_draft_file_ids(data_dir: &Path) -> Result<Vec<String>> {
+    let dir = drafts_dir(data_dir);
+    match fs_metadata::path_status(&dir) {
+        Ok(crate::services::filesystem::PathStatus::Missing) => return Ok(Vec::new()),
+        Ok(crate::services::filesystem::PathStatus::Directory) => {}
+        Ok(status) => {
+            return Err(anyhow::anyhow!(
+                "drafts path is not a directory during repair: {status:?}"
+            ));
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "failed to inspect drafts directory {}: {error}",
+                dir.display()
+            ));
+        }
+    }
+
+    let entries = fs_tree::scan_directory(
+        &dir,
+        DirectoryScanPolicy {
+            max_entries: MAX_MANIFEST_REPAIR_DRAFT_SCAN,
+            include_hidden: false,
+        },
+    )?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| draft_id_from_draft_file_name(&entry.file_name))
+        .collect())
+}
+
+fn session_untitled_draft_ids(session: &SessionData) -> HashSet<String> {
+    session
+        .tabs
+        .iter()
+        .filter(|tab| tab.path.is_none())
+        .filter_map(|tab| tab.draft_id.clone())
+        .collect()
+}
+
+fn draft_id_from_draft_file_name(name: &str) -> Option<String> {
+    if name.starts_with('.') {
+        return None;
+    }
+    let name_path = Path::new(name);
+    if !name_path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("draft"))
+    {
+        return None;
+    }
+    name_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Apply synthetic repair diagnostics for the missing-manifest path.
+///
+/// Missing files do not pass through the malformed-file recovery hook, so startup
+/// creates an equivalent context before trusting any rebuilt manifest entries.
+fn apply_manifest_repair_to_missing_load(
+    load: &mut RecoveryLoad<DraftManifest>,
+    repair: RecoveryRepair<DraftManifest>,
+) {
+    match repair {
+        RecoveryRepair::Unavailable => {}
+        RecoveryRepair::Skipped { mut diagnostics } => {
+            load.diagnostics.append(&mut diagnostics);
+        }
+        RecoveryRepair::Repaired {
+            value,
+            mut diagnostics,
+        } => {
+            load.value = value;
+            load.outcome = RecoveryLoadOutcome::Partial;
+            load.diagnostics.append(&mut diagnostics);
+        }
+    }
+}
+
+fn draft_preload_decision(
+    data_dir: &Path,
+    draft_id: &str,
+    preloaded_bytes: &mut u64,
+) -> DraftPreloadDecision {
+    let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
+    let Ok(facts) = fs_metadata::file_facts(&path) else {
+        return DraftPreloadDecision::Read;
+    };
+    let size = facts.byte_size;
+    if size > MAX_DRAFT_PRELOAD_BYTES {
+        return DraftPreloadDecision::SkipOversized;
+    }
+    if preloaded_bytes.saturating_add(size) > MAX_DRAFT_PRELOAD_BYTES {
+        return DraftPreloadDecision::SkipBudget;
+    }
+    *preloaded_bytes = preloaded_bytes.saturating_add(size);
+    DraftPreloadDecision::Read
+}
+
+fn oversized_draft_size(data_dir: &Path, draft_id: &str) -> Option<u64> {
+    let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
+    fs_metadata::file_facts(&path)
+        .ok()
+        .map(|facts| facts.byte_size)
+        .filter(|size| *size > MAX_DRAFT_PRELOAD_BYTES)
 }
 
 /// Resolve whether a file-backed draft is still safe to restore.
@@ -201,6 +545,10 @@ pub fn resolve_file_draft_restore(
         if current_mtime != saved_mtime {
             return Ok(FileDraftRestoreResolution::SkipStale);
         }
+    }
+
+    if oversized_draft_size(data_dir, &entry.draft_id).is_some() {
+        return Ok(FileDraftRestoreResolution::SkipOversized);
     }
 
     match read_draft(data_dir, &entry.draft_id)? {
@@ -254,30 +602,15 @@ fn cleanup_stale_restore_entries(
 /// cannot be written, flushed, synced, or renamed into place.
 pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()> {
     let dir = drafts_dir(data_dir);
-    durable_write::create_dir_all_durable(&dir)
+    fs_write::create_dir_all_durable(&dir)
         .with_context(|| format!("failed to create drafts dir: {}", dir.display()))?;
 
     let path = dir.join(format!("{draft_id}.draft"));
-    let tmp_path = durable_write::unique_temp_path(&path, "draft");
-
-    let mut file = std::fs::File::create(&tmp_path)
-        .with_context(|| format!("failed to create temp draft: {}", tmp_path.display()))?;
-    file.write_all(content.as_bytes())
-        .with_context(|| format!("failed to write temp draft: {}", tmp_path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush temp draft: {}", tmp_path.display()))?;
-    file.sync_all()
-        .with_context(|| format!("failed to sync temp draft: {}", tmp_path.display()))?;
-
-    std::fs::rename(&tmp_path, &path).with_context(|| {
-        format!(
-            "failed to rename {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-    durable_write::sync_parent_dir(&path)
-        .with_context(|| format!("failed to sync drafts dir for {}", path.display()))
+    // The shared helper owns the temp-file-then-rename ordering, the full fsync
+    // contract, and identity-metadata preservation when overwriting an existing
+    // draft file.
+    fs_write::atomic_replace(&path, WriteLabel::DRAFT, content.as_bytes())
+        .with_context(|| format!("failed to write draft: {}", path.display()))
 }
 
 /// Read a draft file's content. Returns `None` if the draft file
@@ -290,14 +623,30 @@ pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()>
 /// Returns an error if an existing draft file cannot be read as UTF-8 text.
 pub fn read_draft(data_dir: &Path, draft_id: &str) -> Result<Option<String>> {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
-    match std::fs::read_to_string(&path) {
-        Ok(content) => Ok(Some(content)),
+    if let Some(size) = oversized_draft_size(data_dir, draft_id) {
+        return Err(DraftReadError::Oversized {
+            path,
+            size,
+            max: MAX_DRAFT_PRELOAD_BYTES,
+        }
+        .into());
+    }
+    match fs_read::bytes(&path) {
+        Ok(bytes) => {
+            let content = simdutf8::basic::from_utf8(&bytes)
+                .map_err(|error| DraftReadError::Read {
+                    path: path.clone(),
+                    detail: error.to_string(),
+                })?
+                .to_string();
+            Ok(Some(content))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(anyhow::anyhow!(
-            "failed to read draft {}: {}",
-            path.display(),
-            e
-        )),
+        Err(e) => Err(DraftReadError::Read {
+            path,
+            detail: e.to_string(),
+        }
+        .into()),
     }
 }
 
@@ -310,9 +659,8 @@ pub fn read_draft(data_dir: &Path, draft_id: &str) -> Result<Option<String>> {
 /// Returns an error if an existing draft file cannot be deleted.
 pub fn delete_draft_file(data_dir: &Path, draft_id: &str) -> Result<()> {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    match fs_mutate::remove_file_if_exists(&path) {
+        Ok(_) => Ok(()),
         Err(e) => Err(anyhow::anyhow!(
             "failed to delete draft {}: {}",
             path.display(),
@@ -339,21 +687,31 @@ pub fn cleanup_orphans(data_dir: &Path, manifest: &mut DraftManifest) -> Result<
     let before = manifest.drafts.len();
     manifest.drafts.retain(|entry| {
         let path = dir.join(format!("{}.draft", entry.draft_id));
-        path.exists()
+        fs_metadata::exists(&path)
     });
     cleaned += before - manifest.drafts.len();
 
-    // Remove draft files with no manifest entry.
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy();
-            if !name.ends_with(".draft") || name.starts_with('.') {
+    let manifest_ids = manifest
+        .drafts
+        .iter()
+        .map(|entry| entry.draft_id.as_str())
+        .collect::<HashSet<_>>();
+
+    // Remove draft files with no manifest entry, bounded so damaged draft
+    // directories cannot make deferred startup cleanup scan every orphan.
+    if let Ok(entries) = fs_tree::scan_directory(
+        &dir,
+        DirectoryScanPolicy {
+            max_entries: MAX_ORPHAN_CLEANUP_DRAFT_SCAN,
+            include_hidden: false,
+        },
+    ) {
+        for entry in entries {
+            let Some(draft_id) = draft_id_from_draft_file_name(&entry.file_name) else {
                 continue;
-            }
-            let draft_id = name.trim_end_matches(".draft");
-            if manifest.find_by_id(draft_id).is_none() {
-                let _ = std::fs::remove_file(entry.path());
+            };
+            if !manifest_ids.contains(draft_id.as_str()) {
+                let _ = fs_mutate::remove_file_if_exists(&entry.path);
                 cleaned += 1;
             }
         }
@@ -367,6 +725,7 @@ mod tests {
     use super::*;
     use crate::model::draft::{DraftEntry, FileDraftRestoreResolution};
     use crate::model::session::{SessionData, SessionTab};
+    use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
     fn file_entry(id: &str, path: &Path, original_mtime_secs: Option<u64>) -> DraftEntry {
@@ -389,6 +748,10 @@ mod tests {
         }
     }
 
+    fn draft_path(data_dir: &Path, draft_id: &str) -> PathBuf {
+        drafts_dir(data_dir).join(format!("{draft_id}.draft"))
+    }
+
     #[test]
     fn draft_id_for_path_is_deterministic() {
         let path = Path::new("/home/user/project/src/main.rs");
@@ -396,6 +759,7 @@ mod tests {
         let id2 = draft_id_for_path(path);
         assert_eq!(id1, id2);
         assert_eq!(id1.len(), 16);
+        assert_eq!(id1, stable_path_hash(path));
     }
 
     #[test]
@@ -448,7 +812,7 @@ mod tests {
     fn read_draft_reports_non_file_errors() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = drafts_dir(dir.path()).join("blocked.draft");
-        std::fs::create_dir_all(&path).expect("expected operation to succeed");
+        fixture::create_dir_all(&path);
 
         let error = read_draft(dir.path(), "blocked").expect_err("directory draft should fail");
         assert!(
@@ -461,7 +825,7 @@ mod tests {
     fn delete_draft_file_reports_non_file_errors() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = drafts_dir(dir.path()).join("blocked.draft");
-        std::fs::create_dir_all(&path).expect("expected operation to succeed");
+        fixture::create_dir_all(&path);
 
         let error =
             delete_draft_file(dir.path(), "blocked").expect_err("directory draft should fail");
@@ -483,6 +847,8 @@ mod tests {
             }],
         };
         save_manifest(dir.path(), &manifest).expect("expected operation to succeed");
+        let text = fixture::read_text(&manifest_path(dir.path()));
+        assert!(text.contains(r#""kind": "dev.cominotti.lushtext.draft-manifest""#));
         let loaded = load_manifest(dir.path()).expect("expected operation to succeed");
         assert_eq!(loaded, manifest);
     }
@@ -492,6 +858,22 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let manifest = load_manifest(dir.path()).expect("expected operation to succeed");
         assert_eq!(manifest, DraftManifest::default());
+    }
+
+    #[test]
+    fn load_manifest_recovering_preserves_pre_public_manifest() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        fixture::write_text(&manifest_path(dir.path()), r#"{"drafts":[]}"#);
+
+        let load = load_manifest_recovering(dir.path());
+
+        assert!(load.value.drafts.is_empty());
+        assert!(matches!(
+            load.diagnostics[0].problem,
+            crate::services::recovery_metadata::RecoveryProblem::UnsupportedFormat { .. }
+        ));
+        assert!(load.replacement_allowed());
     }
 
     #[test]
@@ -546,7 +928,7 @@ mod tests {
     fn resolve_file_draft_restore_returns_content_when_mtime_matches() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        fixture::write_text(&path, "disk content");
         write_draft(dir.path(), "draft", "restored content")
             .expect("expected operation to succeed");
         let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
@@ -569,7 +951,7 @@ mod tests {
     fn resolve_file_draft_restore_skips_changed_file_mtime() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        fixture::write_text(&path, "disk content");
         write_draft(dir.path(), "draft", "stale content").expect("expected operation to succeed");
         let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
         let stale_mtime = current_mtime
@@ -587,7 +969,7 @@ mod tests {
     fn resolve_file_draft_restore_allows_legacy_entries_without_stored_mtime() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        fixture::write_text(&path, "disk content");
         write_draft(dir.path(), "draft", "legacy content").expect("expected operation to succeed");
 
         let resolution = resolve_file_draft_restore(dir.path(), &file_entry("draft", &path, None))
@@ -618,7 +1000,7 @@ mod tests {
     fn resolve_file_draft_restore_handles_missing_draft_file() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        fixture::write_text(&path, "disk content");
         let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
 
         let resolution = resolve_file_draft_restore(
@@ -631,10 +1013,32 @@ mod tests {
     }
 
     #[test]
+    fn resolve_file_draft_restore_skips_oversized_draft() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("file.txt");
+        fixture::write_text(&path, "disk content");
+        let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
+        let draft_id = "draft";
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        fixture::create_sparse_file(
+            &draft_path(dir.path(), draft_id),
+            MAX_DRAFT_PRELOAD_BYTES + 1,
+        );
+
+        let resolution = resolve_file_draft_restore(
+            dir.path(),
+            &file_entry(draft_id, &path, Some(current_mtime)),
+        )
+        .expect("expected operation to succeed");
+
+        assert_eq!(resolution, FileDraftRestoreResolution::SkipOversized);
+    }
+
+    #[test]
     fn load_restore_state_removes_stale_file_draft_from_manifest_and_disk() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "disk content").expect("expected operation to succeed");
+        fixture::write_text(&path, "disk content");
         let current_mtime = crate::services::editor_io::mtime_secs(&path).expect("expected mtime");
         let stale_mtime = current_mtime
             .checked_add(1)
@@ -658,13 +1062,13 @@ mod tests {
         )
         .expect("expected operation to succeed");
 
-        let (manifest, _session, preloaded) = load_restore_state(dir.path());
+        let restore = load_restore_state(dir.path());
 
         assert_eq!(
-            preloaded.get(&draft_id),
+            restore.preloaded_drafts.get(&draft_id),
             Some(&PreloadedDraftRestore::SkipStaleFile)
         );
-        assert!(manifest.find_by_id(&draft_id).is_none());
+        assert!(restore.manifest.find_by_id(&draft_id).is_none());
         assert!(
             load_manifest(dir.path())
                 .expect("expected operation to succeed")
@@ -674,6 +1078,177 @@ mod tests {
         assert_eq!(
             read_draft(dir.path(), &draft_id).expect("expected operation to succeed"),
             None
+        );
+    }
+
+    #[test]
+    fn load_restore_state_skips_oversized_untitled_draft_without_deleting_it() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "untitled-large";
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        let draft_path = draft_path(dir.path(), draft_id);
+        fixture::create_sparse_file(&draft_path, MAX_DRAFT_PRELOAD_BYTES + 1);
+
+        save_manifest(
+            dir.path(),
+            &DraftManifest {
+                drafts: vec![DraftEntry {
+                    draft_id: draft_id.to_string(),
+                    original_path: None,
+                    original_mtime_secs: None,
+                    saved_at_secs: 1,
+                }],
+            },
+        )
+        .expect("save manifest");
+        session_service::save(
+            dir.path(),
+            &SessionData {
+                tabs: vec![SessionTab {
+                    path: None,
+                    draft_id: Some(draft_id.to_string()),
+                    cursor_line: 2,
+                    cursor_col: 3,
+                    scroll_line: 4,
+                    pinned: false,
+                }],
+                active_tab_index: Some(0),
+            },
+        )
+        .expect("save session");
+
+        let restore = load_restore_state(dir.path());
+
+        assert_eq!(
+            restore.preloaded_drafts.get(draft_id),
+            Some(&PreloadedDraftRestore::SkipOversized)
+        );
+        assert_eq!(restore.session.tabs.len(), 1, "session tab still restores");
+        assert_eq!(restore.session.tabs[0].draft_id.as_deref(), Some(draft_id));
+        assert!(
+            restore.manifest.find_by_id(draft_id).is_some(),
+            "manifest entry should remain available for later recovery"
+        );
+        assert!(
+            fs_metadata::exists(&draft_path),
+            "oversized draft file must not be deleted"
+        );
+    }
+
+    #[test]
+    fn load_restore_state_repairs_corrupt_manifest_for_untitled_draft() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "untitled-0000000000000042";
+        write_draft(dir.path(), draft_id, "restored untitled")
+            .expect("expected operation to succeed");
+        fixture::write_text(&manifest_path(dir.path()), "not json");
+        session_service::save(
+            dir.path(),
+            &SessionData {
+                tabs: vec![SessionTab {
+                    path: None,
+                    draft_id: Some(draft_id.to_string()),
+                    cursor_line: 0,
+                    cursor_col: 0,
+                    scroll_line: 0,
+                    pinned: false,
+                }],
+                active_tab_index: Some(0),
+            },
+        )
+        .expect("save session");
+
+        let restore = load_restore_state(dir.path());
+
+        assert_eq!(
+            restore.preloaded_drafts.get(draft_id),
+            Some(&PreloadedDraftRestore::Content(
+                "restored untitled".to_string()
+            ))
+        );
+        assert!(
+            restore.manifest.find_by_id(draft_id).is_some(),
+            "repaired manifest should include the safe untitled draft"
+        );
+        assert!(
+            !restore.orphan_cleanup_allowed,
+            "startup cleanup stays disabled after manifest corruption"
+        );
+        assert!(restore.diagnostics.iter().any(|diagnostic| {
+            diagnostic.class == RecoveryMetadataClass::DraftManifest
+                && matches!(
+                    diagnostic.problem,
+                    crate::services::recovery_metadata::RecoveryProblem::Malformed { .. }
+                )
+        }));
+        assert!(restore.diagnostics.iter().any(|diagnostic| {
+            diagnostic.class == RecoveryMetadataClass::DraftManifest
+                && matches!(
+                    diagnostic.problem,
+                    crate::services::recovery_metadata::RecoveryProblem::Repaired { .. }
+                )
+        }));
+        assert!(
+            load_manifest(dir.path())
+                .expect("repaired manifest should be durable")
+                .find_by_id(draft_id)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn load_restore_state_preserves_ambiguous_draft_after_corrupt_manifest() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "abcdef0123456789";
+        write_draft(dir.path(), draft_id, "ambiguous file-backed draft")
+            .expect("expected operation to succeed");
+        fixture::write_text(&manifest_path(dir.path()), "not json");
+        session_service::save(
+            dir.path(),
+            &SessionData {
+                tabs: Vec::new(),
+                active_tab_index: None,
+            },
+        )
+        .expect("save session");
+
+        let restore = load_restore_state(dir.path());
+
+        assert!(restore.manifest.drafts.is_empty());
+        assert!(
+            !restore.orphan_cleanup_allowed,
+            "orphan cleanup must not delete ambiguous surviving drafts"
+        );
+        assert_eq!(
+            read_draft(dir.path(), draft_id).expect("draft should still be readable"),
+            Some("ambiguous file-backed draft".to_string())
+        );
+        assert!(restore.diagnostics.iter().any(|diagnostic| {
+            diagnostic.class == RecoveryMetadataClass::DraftManifest
+                && matches!(
+                    diagnostic.problem,
+                    crate::services::recovery_metadata::RecoveryProblem::RepairSkipped { .. }
+                )
+        }));
+    }
+
+    #[test]
+    fn read_draft_rejects_oversized_draft_without_deleting_it() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "oversized-read";
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        let draft_path = draft_path(dir.path(), draft_id);
+        fixture::create_sparse_file(&draft_path, MAX_DRAFT_PRELOAD_BYTES + 1);
+
+        let error = read_draft(dir.path(), draft_id).expect_err("oversized draft should not load");
+
+        assert!(
+            error.to_string().contains("too large to restore"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            fs_metadata::exists(&draft_path),
+            "oversized draft file must remain available for manual recovery"
         );
     }
 
@@ -699,8 +1274,7 @@ mod tests {
                 keep.clone(),
             ],
         };
-        std::fs::create_dir_all(drafts_dir(dir.path()).join(MANIFEST_FILE))
-            .expect("expected operation to succeed");
+        fixture::create_dir_all(&drafts_dir(dir.path()).join(MANIFEST_FILE));
 
         cleanup_stale_restore_entries(dir.path(), &mut manifest, &[String::from("stale")]);
 
@@ -727,7 +1301,7 @@ mod tests {
             }],
         };
         // Don't create the draft file — the manifest entry is orphaned
-        std::fs::create_dir_all(drafts_dir(dir.path())).expect("expected operation to succeed");
+        fixture::create_dir_all(&drafts_dir(dir.path()));
         let cleaned =
             cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
         assert_eq!(cleaned, 1);
@@ -771,16 +1345,15 @@ mod tests {
     fn cleanup_orphans_ignores_hidden_draft_files() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let hidden_path = drafts_dir(dir.path()).join(".hidden.draft");
-        std::fs::create_dir_all(hidden_path.parent().expect("expected drafts dir"))
-            .expect("expected operation to succeed");
-        std::fs::write(&hidden_path, "editor swap").expect("expected operation to succeed");
+        fixture::create_dir_all(hidden_path.parent().expect("expected drafts dir"));
+        fixture::write_text(&hidden_path, "editor swap");
         let mut manifest = DraftManifest::default();
 
         let cleaned =
             cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
 
         assert_eq!(cleaned, 0);
-        assert!(hidden_path.exists());
+        assert!(fs_metadata::exists(&hidden_path));
     }
 
     #[test]

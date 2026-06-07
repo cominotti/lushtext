@@ -1,0 +1,4 @@
+# cargo-fuzz runtime output. Intentional seed corpus files under corpus/ stay tracked.
+artifacts/
+coverage/
+target/

@@ -15,6 +15,7 @@ use gtk4::{self, cairo};
 use sourceview5::prelude::*;
 
 use crate::config::keys;
+use crate::ui::buffer_snapshot;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
 
@@ -147,6 +148,13 @@ impl LushtextEditorPage {
             .count()
     }
 
+    /// Test seam for the expensive long-line marker scan.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn long_line_warning_count_for_test(&self) -> usize {
+        collect_long_line_warnings(self).len()
+    }
+
     /// Return currently drawable marker bounds for one semantic category.
     ///
     /// The bounds are projected through the real `GtkSourceMap` layout, so
@@ -218,6 +226,8 @@ impl LushtextEditorPage {
         let buffer = self.buffer();
         {
             let editor_weak = self.downgrade();
+            // GtkSourceBuffer emits GObject signals for edits; store handler ids
+            // so minimap observers can be disconnected when tab wiring is torn down.
             let handler_id = buffer.connect_insert_text(move |_, iter, text| {
                 let Some(editor) = editor_weak.upgrade() else {
                     return;
@@ -446,11 +456,26 @@ impl LushtextEditorPage {
 }
 
 fn current_availability(editor: &LushtextEditorPage) -> MinimapAvailability {
+    let focus_suppressed = editor.focus_mode_suppresses_minimap();
+    let preference_enabled = editor.imp().settings.boolean(keys::SHOW_MINIMAP);
+    let evicted = editor.is_evicted();
+    let syntax_enabled = editor.size_check().syntax_enabled();
+    let cheap_policy = MinimapAvailabilityPolicy {
+        focus_suppressed,
+        preference_enabled,
+        evicted,
+        syntax_enabled,
+        wrapped_layout_too_large: false,
+    };
+    if minimap_availability_for_policy(cheap_policy) != MinimapAvailability::Visible {
+        return minimap_availability_for_policy(cheap_policy);
+    }
+
     minimap_availability_for_policy(MinimapAvailabilityPolicy {
-        focus_suppressed: editor.focus_mode_suppresses_minimap(),
-        preference_enabled: editor.imp().settings.boolean(keys::SHOW_MINIMAP),
-        evicted: editor.is_evicted(),
-        syntax_enabled: editor.size_check().syntax_enabled(),
+        focus_suppressed,
+        preference_enabled,
+        evicted,
+        syntax_enabled,
         wrapped_layout_too_large: wrapped_minimap_layout_exceeds_budget(editor),
     })
 }
@@ -489,6 +514,17 @@ fn wrapped_minimap_layout_exceeds_budget(editor: &LushtextEditorPage) -> bool {
     let buffer = editor.buffer();
     let buffer_chars = u64::try_from(buffer.char_count()).unwrap_or(u64::MAX);
     let estimated_size = editor.file_size().unwrap_or(0).max(buffer_chars);
+    if estimated_size > MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET
+        && buffer_snapshot::buffer_requires_chunked_snapshot(&buffer)
+    {
+        editor
+            .imp()
+            .minimap
+            .wrapped_layout_too_large
+            .set(Some(true));
+        return true;
+    }
+
     let exceeds = wrapped_layout_budget_exceeded(
         estimated_size,
         buffer_has_line_exceeding_char_budget(&buffer, MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET),
@@ -509,10 +545,29 @@ fn buffer_has_line_exceeding_char_budget(
     buffer: &sourceview5::Buffer,
     line_char_budget: usize,
 ) -> bool {
-    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-    text_exceeds_line_char_budget(&text, line_char_budget)
+    let mut current_line_chars = 0usize;
+    let mut iter = buffer.start_iter();
+    let end = buffer.end_iter();
+
+    while iter != end {
+        if iter.char() == '\n' {
+            current_line_chars = 0;
+        } else {
+            current_line_chars = current_line_chars.saturating_add(1);
+            if current_line_chars > line_char_budget {
+                return true;
+            }
+        }
+
+        if !iter.forward_char() {
+            break;
+        }
+    }
+
+    false
 }
 
+#[cfg(test)]
 fn text_exceeds_line_char_budget(text: &str, line_char_budget: usize) -> bool {
     let mut current_line_chars = 0usize;
 
@@ -617,11 +672,12 @@ fn collect_modified_lines(editor: &LushtextEditorPage) -> Vec<u32> {
 }
 
 fn collect_long_line_warnings(editor: &LushtextEditorPage) -> Vec<u32> {
-    let text = editor.buffer().text(
-        &editor.buffer().start_iter(),
-        &editor.buffer().end_iter(),
-        true,
-    );
+    let buffer = editor.buffer();
+    if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
+        return Vec::new();
+    }
+
+    let text = buffer_snapshot::snapshot_buffer_text_direct(&buffer);
     long_line_warning_lines(&text)
 }
 
@@ -851,7 +907,8 @@ fn fit_marker_bounds(
 
     let target_height = space.min_height.max(0.0).min(upper - lower);
     if bottom - top < target_height {
-        let center = ((top + bottom) / 2.0).clamp(lower, upper);
+        // midpoint avoids `(top + bottom) / 2.0` overflow before the later clamp.
+        let center = f64::midpoint(top, bottom).clamp(lower, upper);
         top = center - (target_height / 2.0);
         bottom = center + (target_height / 2.0);
 

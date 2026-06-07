@@ -7,6 +7,8 @@
 
 pub mod app;
 pub mod config;
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;
 pub mod model;
 pub mod services;
 pub mod ui;
@@ -14,6 +16,7 @@ pub mod ui;
 use gio::prelude::*;
 use glib::ExitCode;
 use gtk4::gio;
+use services::filesystem::metadata as fs_metadata;
 
 /// Resolved editor-surface colors used by tab-content transparency styling.
 #[derive(Clone, Debug)]
@@ -88,7 +91,7 @@ pub fn init_schema_dir() {
     // Dev builds: point to source tree's compiled schemas
     if std::env::var_os("GSETTINGS_SCHEMA_DIR").is_none() {
         let dev_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        if dev_dir.join("gschemas.compiled").exists() {
+        if fs_metadata::exists(&dev_dir.join("gschemas.compiled")) {
             // SAFETY: set_var is unsafe because concurrent env access is UB.
             // This runs during run(), before app.run() starts the GTK main
             // loop and before any background threads are spawned.
@@ -246,8 +249,12 @@ pub(crate) fn active_sourceview_scheme(
         scheme_manager
             .scheme(&dark_id)
             .or_else(|| scheme_manager.scheme(&base_id))
+            .or_else(|| scheme_manager.scheme("Adwaita-dark"))
+            .or_else(|| scheme_manager.scheme("Adwaita"))
     } else {
-        scheme_manager.scheme(&base_id)
+        scheme_manager
+            .scheme(&base_id)
+            .or_else(|| scheme_manager.scheme("Adwaita"))
     }
 }
 

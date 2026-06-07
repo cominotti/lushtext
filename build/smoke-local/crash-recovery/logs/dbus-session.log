@@ -1,0 +1,5 @@
+dbus-daemon[2727072]: [session uid=1000 pid=2727072 pidfd=5] Activating service name='org.a11y.Bus' requested by ':1.1' (uid=1000 pid=2736479 comm="gdbus call --session --dest org.a11y.Bus --object-" label="unconfined_u:unconfined_r:spc_t:s0")
+dbus-daemon[2727072]: [session uid=1000 pid=2727072 pidfd=5] Successfully activated service 'org.a11y.Bus'
+dbus-daemon[2727072]: [session uid=1000 pid=2727072 pidfd=5] Activating service name='org.freedesktop.systemd1' requested by ':1.3' (uid=1000 pid=2736489 comm="/usr/bin/dbus-broker-launch --config-file=/usr/sha" label="unconfined_u:unconfined_r:spc_t:s0")
+dbus-daemon[2727072]: [session uid=1000 pid=2727072 pidfd=5] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+SKIP: AT-SPI setup unavailable: AT-SPI registry did not register on the private accessibility bus.

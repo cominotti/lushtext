@@ -136,6 +136,17 @@ impl ObjectImpl for LushtextSidebar {
     fn constructed(&self) {
         self.parent_constructed();
 
+        self.workspace_filter_dropdown.update_property(&[
+            gtk4::accessible::Property::Label("Workspace scope"),
+            gtk4::accessible::Property::Description(
+                "Choose whether the sidebar shows all workspaces or one workspace",
+            ),
+        ]);
+        self.new_workspace_button.update_property(&[
+            gtk4::accessible::Property::Label("Add workspace folder"),
+            gtk4::accessible::Property::Description("Add a folder to the workspace sidebar"),
+        ]);
+
         // Wire the fixed workspace selector row at the top of the sidebar.
         let sidebar_weak = self.obj().downgrade();
         self.workspace_filter_dropdown

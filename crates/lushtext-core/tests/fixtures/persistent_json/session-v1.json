@@ -1,0 +1,24 @@
+{
+  "kind": "dev.cominotti.lushtext.session",
+  "version": 1,
+  "data": {
+    "tabs": [
+      {
+        "path": "/tmp/project/src/main.rs",
+        "cursor_line": 12,
+        "cursor_col": 2,
+        "scroll_line": 9,
+        "pinned": true
+      },
+      {
+        "path": null,
+        "draft_id": "untitled-0000000000000001",
+        "cursor_line": 1,
+        "cursor_col": 0,
+        "scroll_line": 0,
+        "pinned": false
+      }
+    ],
+    "active_tab_index": 0
+  }
+}

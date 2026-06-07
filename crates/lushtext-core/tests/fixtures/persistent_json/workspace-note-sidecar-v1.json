@@ -1,0 +1,16 @@
+{
+  "kind": "dev.cominotti.lushtext.workspace-note-sidecar",
+  "version": 1,
+  "data": {
+    "identity": {
+      "display_root": "/tmp/project",
+      "canonical_root": "/tmp/project",
+      "sidecar_id": "ebab4cfadaecf751"
+    },
+    "note": {
+      "text": "Workspace note",
+      "created_at_secs": 1780720800,
+      "updated_at_secs": 1780720810
+    }
+  }
+}

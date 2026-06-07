@@ -166,7 +166,7 @@ impl LushtextWindow {
     pub(super) fn restore_focus_after_breakpoint_collapse(&self) {
         let window_weak = self.downgrade();
         let attempts = std::rc::Rc::new(std::cell::Cell::new(0u8));
-        let attempts_clone = attempts.clone();
+        let attempts_clone = attempts;
 
         glib::timeout_add_local(EDITOR_FOCUS_RETRY_INTERVAL, move || {
             let Some(window) = window_weak.upgrade() else {
@@ -299,6 +299,9 @@ impl LushtextWindow {
                 },
                 move |(), index| {
                     if let Some(window) = window_weak.upgrade() {
+                        if window.imp().index_rebuild_generation.get() != generation {
+                            return;
+                        }
                         window.imp().command_palette.set_file_index(index);
                     }
                 },
