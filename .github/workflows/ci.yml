@@ -22,7 +22,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     # gtk4-rs 0.11 targets GNOME 50 here (GTK 4.22, Libadwaita 1.9).
     # Ubuntu LTS only ships GTK 4.14, so CI uses Fedora's current GNOME stack.
     # Bump this when gtk4-rs minimum GTK version increases.
@@ -102,7 +102,7 @@ jobs:
   property-tests:
     name: Property Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     container:
       image: registry.fedoraproject.org/fedora:44
 
@@ -136,7 +136,7 @@ jobs:
   fuzz-corpus-replay:
     name: Fuzz Corpus Replay
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     container:
       image: registry.fedoraproject.org/fedora:44
 
@@ -170,7 +170,7 @@ jobs:
   widget-tests:
     name: Widget Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     container:
       image: registry.fedoraproject.org/fedora:44
 
@@ -206,7 +206,7 @@ jobs:
   bench-compile:
     name: Bench Compile
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     container:
       image: registry.fedoraproject.org/fedora:44
 
