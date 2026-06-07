@@ -1,0 +1,25 @@
+{
+  "kind": "dev.cominotti.lushtext.migration-ledger",
+  "version": 1,
+  "data": {
+    "next_generation": 2,
+    "entries": [
+      {
+        "generation": 1,
+        "old_path": "/tmp/project/old.rs",
+        "new_path": "/tmp/project/new.rs",
+        "created_at_secs": 1780720800,
+        "updated_at_secs": 1780720810,
+        "kinds": [
+          {
+            "kind": "Bookmarks",
+            "completed": false,
+            "attempts": 0,
+            "last_attempt_secs": null,
+            "last_error": null
+          }
+        ]
+      }
+    ]
+  }
+}

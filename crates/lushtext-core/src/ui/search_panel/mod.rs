@@ -19,6 +19,7 @@ mod runtime;
 pub use replace::{set_replace_preview_delay_for_test, set_undo_backup_disk_delay_for_test};
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 
 use crate::model::content_search::{Replacement, SearchQuerySpec};
 use crate::services::content_search::ReplaceUndoBackup;
@@ -98,9 +99,13 @@ impl LushtextSearchPanel {
 
     /// Called when the panel is being hidden.
     pub fn close(&self) {
-        // The polling timer is self-managing. Replace All journal files are
-        // intentionally bounded to the active panel lifetime so a later session
-        // cannot inherit stale rollback state.
+        if let Some(cancel) = self.imp().runtime.cancel_token.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.imp().runtime.searching.set(false);
+
+        // Replace All journal files are intentionally bounded to the active
+        // panel lifetime so a later session cannot inherit stale rollback state.
         self.clear_undo_backup();
     }
 

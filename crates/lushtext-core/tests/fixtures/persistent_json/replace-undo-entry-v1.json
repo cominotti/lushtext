@@ -1,0 +1,9 @@
+{
+  "kind": "dev.cominotti.lushtext.replace-all-undo-entry",
+  "version": 1,
+  "data": {
+    "path": "/tmp/project/src/main.rs",
+    "original_content": "before",
+    "replaced_content": "after"
+  }
+}

@@ -107,7 +107,7 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| window.toggle_bookmark())
                 .build(),
             gio::ActionEntry::builder("edit-bookmark-label")
-                .activate(|window: &Self, _, _| window.edit_bookmark_label())
+                .activate(|window: &Self, _, _| window.edit_bookmark())
                 .build(),
             gio::ActionEntry::builder("next-bookmark")
                 .activate(|window: &Self, _, _| {

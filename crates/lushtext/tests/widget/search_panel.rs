@@ -23,6 +23,8 @@ use lushtext_core::ui::search_panel::{
 use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
 use std::assert_matches;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 fn replace_undo_entry(original: &[u8], replaced: &[u8]) -> ReplaceUndoEntry {
@@ -918,6 +920,21 @@ fn test_search_panel_close_clears_undo_backup() {
     });
 
     let _ = search_backup::delete(&data_dir);
+}
+
+#[test]
+fn test_search_panel_close_cancels_active_search() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let cancel = Arc::new(AtomicBool::new(false));
+    panel.imp().runtime.cancel_token.replace(Some(cancel.clone()));
+    panel.imp().runtime.searching.set(true);
+
+    panel.close();
+
+    assert!(cancel.load(Ordering::Relaxed));
+    assert!(panel.imp().runtime.cancel_token.borrow().is_none());
+    assert!(!panel.imp().runtime.searching.get());
 }
 
 #[test]

@@ -40,7 +40,8 @@ use lushtext_core::services::notifications::{
 };
 use lushtext_core::services::{
     bookmark_service, document_note_service, draft_service, editor_io, json_store,
-    local_history_service, session_service, workspace_manager, workspace_note_service,
+    local_history_service, saved_searches, session_service, workspace_manager,
+    workspace_note_service,
 };
 use lushtext_core::ui::editor_page::{
     LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
@@ -48,7 +49,8 @@ use lushtext_core::ui::editor_page::{
 use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::window::{
-    LushtextWindow, PrintDocumentSnapshot, PrintOutcome, set_canonical_refresh_delay_for_test,
+    LushtextWindow, PrintDocumentSnapshot, PrintOutcome,
+    set_bookmark_excerpt_preview_delay_for_test, set_canonical_refresh_delay_for_test,
     set_first_dirty_autosave_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
     with_print_runner_for_test,
 };
@@ -75,6 +77,14 @@ struct LossyEncodingAnalysisDelayReset;
 impl Drop for LossyEncodingAnalysisDelayReset {
     fn drop(&mut self) {
         set_lossy_encoding_analysis_delay_for_test(0);
+    }
+}
+
+struct BookmarkExcerptPreviewDelayReset;
+
+impl Drop for BookmarkExcerptPreviewDelayReset {
+    fn drop(&mut self) {
+        set_bookmark_excerpt_preview_delay_for_test(0);
     }
 }
 
@@ -235,6 +245,12 @@ fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, 
     };
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save scoped workspaces");
     (roots_dir, left_root, right_root)
+}
+
+fn seed_no_workspaces() {
+    ensure_gtk_init();
+    workspace_manager::save(&json_store::data_dir(), &WorkspacesFile::default())
+        .expect("save empty workspace file");
 }
 
 fn wait_for_workspace_roots(window: &LushtextWindow, expected: usize) {
@@ -807,6 +823,44 @@ fn find_button_by_tooltip(root: &gtk4::Widget, tooltip: &str) -> Option<gtk4::Bu
     None
 }
 
+fn visible_buttons_by_tooltip(root: &gtk4::Widget, tooltip: &str) -> Vec<gtk4::Button> {
+    let mut buttons = Vec::new();
+    collect_visible_buttons_by_tooltip(root, tooltip, &mut buttons);
+    buttons
+}
+
+/// Collect visible icon buttons by tooltip so adaptive chrome tests can count actual affordances.
+fn collect_visible_buttons_by_tooltip(
+    root: &gtk4::Widget,
+    tooltip: &str,
+    buttons: &mut Vec<gtk4::Button>,
+) {
+    if let Ok(button) = root.clone().downcast::<gtk4::Button>()
+        && button.tooltip_text().as_deref() == Some(tooltip)
+        && button.is_visible()
+    {
+        buttons.push(button);
+        return;
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        collect_visible_buttons_by_tooltip(&widget, tooltip, buttons);
+        child = widget.next_sibling();
+    }
+}
+
+/// Return the one visible Close/X control that a dialog surface is allowed to expose.
+fn single_visible_close_button(root: &gtk4::Widget) -> gtk4::Button {
+    let buttons = visible_buttons_by_tooltip(root, "Close");
+    assert_eq!(
+        buttons.len(),
+        1,
+        "notes browser should expose exactly one visible Close/X control"
+    );
+    buttons.into_iter().next().expect("visible close button")
+}
+
 fn find_label_by_text(root: &gtk4::Widget, text: &str) -> Option<gtk4::Label> {
     if let Ok(label) = root.clone().downcast::<gtk4::Label>()
         && label.label() == text
@@ -817,6 +871,24 @@ fn find_label_by_text(root: &gtk4::Widget, text: &str) -> Option<gtk4::Label> {
     let mut child = root.first_child();
     while let Some(widget) = child {
         if let Some(found) = find_label_by_text(&widget, text) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
+}
+
+fn find_entry_row_by_title(root: &gtk4::Widget, title: &str) -> Option<libadwaita::EntryRow> {
+    if let Ok(row) = root.clone().downcast::<libadwaita::EntryRow>()
+        && row.title() == title
+    {
+        return Some(row);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_entry_row_by_title(&widget, title) {
             return Some(found);
         }
         child = widget.next_sibling();
@@ -855,6 +927,13 @@ fn find_adw_sidebar(root: &gtk4::Widget) -> Option<libadwaita::Sidebar> {
     }
 
     None
+}
+
+fn adw_sidebar_section_titles(sidebar: &libadwaita::Sidebar) -> Vec<String> {
+    (0..sidebar.sections().n_items())
+        .filter_map(|index| sidebar.section(index))
+        .filter_map(|section| section.title().map(|title| title.to_string()))
+        .collect()
 }
 
 fn has_tree_list_model_list_view(root: &gtk4::Widget) -> bool {
@@ -929,6 +1008,25 @@ fn find_note_editor_stack(root: &gtk4::Widget) -> Option<gtk4::Stack> {
     None
 }
 
+fn find_notes_preview_stack(root: &gtk4::Widget) -> Option<gtk4::Stack> {
+    if let Ok(stack) = root.clone().downcast::<gtk4::Stack>()
+        && stack.child_by_name("markdown").is_some()
+        && stack.child_by_name("raw").is_some()
+    {
+        return Some(stack);
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_notes_preview_stack(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
+}
+
 fn collect_text_views(root: &gtk4::Widget, text_views: &mut Vec<gtk4::TextView>) {
     if let Ok(text_view) = root.clone().downcast::<gtk4::TextView>() {
         text_views.push(text_view);
@@ -940,6 +1038,33 @@ fn collect_text_views(root: &gtk4::Widget, text_views: &mut Vec<gtk4::TextView>)
         collect_text_views(&widget, text_views);
         child = widget.next_sibling();
     }
+}
+
+fn notes_preview_visible_child_name(root: &gtk4::Widget) -> Option<String> {
+    find_notes_preview_stack(root)
+        .and_then(|stack| stack.visible_child_name().map(|name| name.to_string()))
+}
+
+fn notes_preview_text(root: &gtk4::Widget) -> Option<String> {
+    let stack = find_notes_preview_stack(root)?;
+    let child = stack.visible_child()?;
+    let mut text_views = Vec::new();
+    collect_text_views(&child, &mut text_views);
+    text_views
+        .into_iter()
+        .find(|text_view| !text_view.is_editable())
+        .map(|text_view| {
+            let buffer = text_view.buffer();
+            buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), true)
+                .to_string()
+        })
+}
+
+fn wait_for_notes_preview_text(root: &gtk4::Widget, expected: &str) {
+    wait_until(Duration::from_secs(5), || {
+        notes_preview_text(root).is_some_and(|text| text.contains(expected))
+    });
 }
 
 fn local_history_preview_text(root: &gtk4::Widget) -> Option<String> {
@@ -1778,6 +1903,90 @@ fn test_open_document_restores_bookmarks() {
     );
 }
 
+#[test]
+fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
+    ensure_gtk_init();
+    let tempdir = tempfile::tempdir().expect("bookmark edit tempdir");
+    let file_path = tempdir.path().join("edit-bookmark.rs");
+    fixture::write_text(&file_path, "one\ntwo\nthree\nfour");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&file_path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    let editor = active_editor(&window);
+    let buffer = editor.buffer();
+    let line_one = buffer.iter_at_line(0).expect("line one");
+    buffer.place_cursor(&line_one);
+    let _ = editor.toggle_bookmark_at_cursor();
+    let first_id = editor.bookmark_at_line(0).expect("first bookmark").id;
+
+    let line_three = buffer.iter_at_line(2).expect("line three");
+    buffer.place_cursor(&line_three);
+    let _ = editor.toggle_bookmark_at_cursor();
+    let second_id = editor.bookmark_at_line(2).expect("second bookmark").id;
+
+    let args: [&dyn ToValue; 4] = [
+        &line_one,
+        &1u32,
+        &gtk4::gdk::ModifierType::empty(),
+        &1i32,
+    ];
+    editor
+        .source_view()
+        .emit_by_name::<()>("line-mark-activated", &args);
+    flush_events();
+
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window)
+            .map(|dialog| dialog.title())
+            .is_some_and(|title| title == "Edit Bookmark")
+    });
+    let dialog = visible_sheet_dialog(&window).expect("bookmark edit dialog");
+    let child = dialog.child().expect("bookmark edit dialog child");
+    let label_row = find_entry_row_by_title(&child, "Label").expect("label row");
+    let line_row = find_entry_row_by_title(&child, "Line").expect("line row");
+    let save_button = find_button_by_label(&child, "Save").expect("save button");
+    assert_eq!(line_row.text(), "1");
+
+    line_row.set_text("99");
+    save_button.emit_clicked();
+    flush_events();
+    assert!(visible_sheet_dialog(&window).is_some());
+    assert!(
+        find_label_by_text(&child, "Line 99 is outside this document. Use 1 through 4.").is_some()
+    );
+
+    line_row.set_text("3");
+    save_button.emit_clicked();
+    flush_events();
+    assert!(visible_sheet_dialog(&window).is_some());
+    assert!(find_label_by_text(&child, "Line 3 already has another bookmark.").is_some());
+
+    label_row.set_text("Moved bookmark");
+    line_row.set_text("4");
+    save_button.emit_clicked();
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_none()
+    });
+
+    wait_until(Duration::from_secs(10), || {
+        bookmark_service::load_for_path(&json_store::data_dir(), &file_path).is_ok_and(|document| {
+            document.bookmarks.iter().any(|bookmark| {
+                bookmark.id == first_id
+                    && bookmark.line == 3
+                    && bookmark.label.as_deref() == Some("Moved bookmark")
+            }) && document
+                .bookmarks
+                .iter()
+                .any(|bookmark| bookmark.id == second_id && bookmark.line == 2)
+        })
+    });
+}
+
 fn select_sidebar_path(section: &lushtext_core::ui::sidebar::WorkspaceSection, path: &Path) {
     fn try_select_path(
         section: &lushtext_core::ui::sidebar::WorkspaceSection,
@@ -2307,6 +2516,10 @@ fn test_notes_browser_controls_expose_accessibility_roles() {
         find_button_by_label(&child, "Open")
             .expect("notes browser open button")
             .accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        single_visible_close_button(&child).accessible_role(),
         gtk4::AccessibleRole::Button
     );
     assert_eq!(
@@ -5135,7 +5348,7 @@ fn test_active_editor_extra_menu_includes_contextual_notes_and_local_history() {
     let labels = menu_model_labels(&menu);
     for label in [
         "Toggle Bookmark",
-        "Edit Bookmark Label…",
+        "Edit Bookmark…",
         "Open Document Note…",
         "Local History…",
     ] {
@@ -7045,7 +7258,7 @@ fn test_notes_menu_exists_and_primary_menu_excludes_note_actions() {
         "Open Document Note…",
         "Open Workspace Note…",
         "Browse Notes…",
-        "Edit Bookmark Label…",
+        "Edit Bookmark…",
         "Browse Bookmarks…",
     ] {
         assert!(
@@ -7589,6 +7802,482 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
 }
 
 #[test]
+fn test_notes_browser_renders_markdown_bookmark_excerpt() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("bookmark-preview.md");
+    fixture::write_text(
+        &path,
+        "opening context\n\n# Target bookmark heading\n\nfollowing context\n",
+    );
+
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            2,
+            Some("markdown preview".to_string()),
+        )],
+    )
+    .expect("save markdown bookmark");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
+    wait_for_notes_preview_text(&child, "Target bookmark heading");
+
+    let preview_text = notes_preview_text(&child).expect("notes preview text");
+    assert_eq!(
+        notes_preview_visible_child_name(&child).as_deref(),
+        Some("markdown"),
+        "Markdown bookmarks should use the Markdown preview child"
+    );
+    assert!(preview_text.contains("opening context"));
+    assert!(preview_text.contains("following context"));
+    assert!(
+        find_label_by_text(&child, "Bookmark · markdown preview").is_some(),
+        "bookmark metadata should remain visible above the rendered excerpt"
+    );
+}
+
+#[test]
+fn test_notes_browser_renders_raw_bookmark_excerpt_with_target_marker() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("bookmark-preview.rs");
+    fixture::write_text(
+        &path,
+        "raw first\nraw before\nraw target\nraw after\nraw final\n",
+    );
+
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            2,
+            Some("raw preview".to_string()),
+        )],
+    )
+    .expect("save raw bookmark");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    wait_for_notes_preview_text(&child, "raw target");
+
+    let preview_text = notes_preview_text(&child).expect("raw preview text");
+    assert_eq!(
+        notes_preview_visible_child_name(&child).as_deref(),
+        Some("raw"),
+        "non-Markdown bookmarks should use the raw preview child"
+    );
+    assert!(preview_text.contains("raw before"));
+    assert!(preview_text.contains(">  3 | raw target"));
+    assert!(preview_text.contains("raw after"));
+}
+
+#[test]
+fn test_notes_browser_bookmark_preview_uses_live_open_editor_buffer() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("live-bookmark-preview.rs");
+    fixture::write_text(&path, "disk before\ndisk target\ndisk after\n");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_path() == Some(path.clone())
+            && active_editor(&window).file_size().is_some()
+    });
+
+    let editor = active_editor(&window);
+    editor
+        .buffer()
+        .set_text("live before\nlive target unsaved\nlive after\n");
+    editor.load_bookmarks(&[lushtext_core::model::bookmark::BookmarkRecord::new(
+        1,
+        Some("live preview".to_string()),
+    )]);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    wait_for_notes_preview_text(&child, "live target unsaved");
+
+    let preview_text = notes_preview_text(&child).expect("live preview text");
+    assert!(preview_text.contains("live before"));
+    assert!(preview_text.contains("live target unsaved"));
+    assert!(
+        !preview_text.contains("disk target"),
+        "open-editor bookmark previews should not fall back to stale disk bytes"
+    );
+}
+
+#[test]
+fn test_notes_browser_ignores_stale_bookmark_excerpt_completion() {
+    ensure_gtk_init();
+    let _delay_reset = BookmarkExcerptPreviewDelayReset;
+    set_bookmark_excerpt_preview_delay_for_test(250);
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let slow_path = left_root.join("slow-bookmark-preview.rs");
+    let fast_path = left_root.join("fast-bookmark-preview.rs");
+    fixture::write_text(&slow_path, "slow before\nslow target\nslow after\n");
+    fixture::write_text(&fast_path, "fast before\nfast target\nfast after\n");
+
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &slow_path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            1,
+            Some("aaa slow preview".to_string()),
+        )],
+    )
+    .expect("save slow bookmark");
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &fast_path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            1,
+            Some("zzz fast preview".to_string()),
+        )],
+    )
+    .expect("save fast bookmark");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 4);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
+    wait_for_notes_preview_text(&child, "Loading bookmark preview...");
+
+    sidebar.set_selected(1);
+    flush_events();
+    wait_for_notes_preview_text(&child, "fast target");
+
+    let preview_text = notes_preview_text(&child).expect("fast preview text");
+    assert!(preview_text.contains("fast target"));
+    assert!(
+        !preview_text.contains("slow target"),
+        "the older closed-file preview completion should not replace the selected row"
+    );
+}
+
+#[test]
+fn test_notes_browser_search_ignores_bookmark_excerpt_text() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("metadata-only-bookmark.rs");
+    fixture::write_text(
+        &path,
+        "before\nneedle-only-in-source-excerpt\nafter\n",
+    );
+
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            1,
+            Some("metadata label".to_string()),
+        )],
+    )
+    .expect("save metadata bookmark");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
+    wait_for_notes_preview_text(&child, "needle-only-in-source-excerpt");
+
+    let search_entry = find_search_entry(&child).expect("notes search entry");
+    search_entry.set_text("needle-only-in-source-excerpt");
+    flush_events();
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 0);
+}
+
+#[test]
+fn test_browse_notes_includes_fresh_live_bookmark_before_sidecar_save() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("fresh-live-bookmark.rs");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_path() == Some(path.clone())
+            && active_editor(&window).file_size().is_some()
+    });
+
+    let editor = active_editor(&window);
+    let line_two = editor.buffer().iter_at_line(1).expect("line two");
+    editor.buffer().place_cursor(&line_two);
+    let _ = editor.toggle_bookmark_at_cursor();
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || {
+        sidebar
+            .item(0)
+            .and_then(|item| item.title())
+            .is_some_and(|title| title == "Bookmark · Line 2")
+    });
+}
+
+#[test]
+fn test_browse_notes_prefers_open_editor_bookmarks_over_stale_sidecar() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("stale-sidecar-bookmark.rs");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
+
+    let data_dir = json_store::data_dir();
+    bookmark_service::save_for_path(
+        &data_dir,
+        &path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            0,
+            Some("stale persisted".to_string()),
+        )],
+    )
+    .expect("save stale bookmark");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).bookmark_records().len() == 1
+    });
+
+    let live_bookmark = lushtext_core::model::bookmark::BookmarkRecord::new(
+        2,
+        Some("live current".to_string()),
+    );
+    active_editor(&window).load_bookmarks(&[live_bookmark]);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || {
+        sidebar.items().n_items() == 1
+            && sidebar
+                .item(0)
+                .and_then(|item| item.title())
+                .is_some_and(|title| title == "Bookmark · live current")
+    });
+    assert!(
+        (0..sidebar.items().n_items()).all(|index| {
+            sidebar
+                .item(index)
+                .and_then(|item| item.title())
+                .is_none_or(|title| !title.contains("stale persisted"))
+        }),
+        "stale sidecar bookmarks for an open editor should not be shown"
+    );
+}
+
+#[test]
+fn test_browse_notes_shows_open_tab_bookmark_without_workspace() {
+    seed_no_workspaces();
+    let tempdir = tempfile::tempdir().expect("open tab bookmark tempdir");
+    let path = tempdir.path().join("outside-bookmark.rs");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_path() == Some(path.clone())
+            && active_editor(&window).file_size().is_some()
+    });
+
+    let editor = active_editor(&window);
+    let line_two = editor.buffer().iter_at_line(1).expect("line two");
+    editor.buffer().place_cursor(&line_two);
+    let _ = editor.toggle_bookmark_at_cursor();
+
+    assert!(
+        action_enabled(&window, "notes-show-notes"),
+        "saved open tabs should make Browse Notes available without a workspace"
+    );
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let search_entry = find_search_entry(&child).expect("notes browser search entry");
+    assert_eq!(search_entry.placeholder_text().as_deref(), Some("Search Notes..."));
+
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
+    assert_eq!(adw_sidebar_section_titles(&sidebar), ["Open Tabs"]);
+    let item = sidebar.item(0).expect("open tab bookmark item");
+    assert_eq!(item.title().as_deref(), Some("Bookmark · Line 2"));
+    assert!(
+        item.subtitle()
+            .is_some_and(|subtitle| subtitle.contains("Open tab · Outside workspace")),
+        "open-tab bookmark rows should identify their source"
+    );
+}
+
+#[test]
+fn test_browse_notes_shows_open_tab_document_note_without_workspace() {
+    seed_no_workspaces();
+    let tempdir = tempfile::tempdir().expect("open tab document note tempdir");
+    let path = tempdir.path().join("outside-note.md");
+    fixture::write_text(&path, "# Outside\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("# Outside note\n\nopen tab body"),
+    )
+    .expect("save open-tab document note");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_path() == Some(path.clone())
+            && active_editor(&window).file_size().is_some()
+    });
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
+    assert_eq!(adw_sidebar_section_titles(&sidebar), ["Open Tabs"]);
+    assert_eq!(
+        sidebar.item(0).and_then(|item| item.title()).as_deref(),
+        Some("Document Note · outside-note.md")
+    );
+
+    let search_entry = find_search_entry(&child).expect("notes search entry");
+    search_entry.set_text("outside workspace");
+    flush_events();
+    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 1);
+    search_entry.set_text("open tab body");
+    flush_events();
+    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 1);
+
+    find_button_by_label(&child, "Open")
+        .expect("notes browser open button")
+        .emit_clicked();
+    flush_events();
+    wait_until(Duration::from_secs(5), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Document Note")
+    });
+}
+
+#[test]
+fn test_browse_notes_keeps_scope_rows_strict_and_lists_other_open_workspace_tab() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, right_root) =
+        seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-left")));
+    let left_path = left_root.join("left-scoped-bookmark.rs");
+    let right_path = right_root.join("right-open-bookmark.rs");
+    fixture::write_text(&left_path, "left\n");
+    fixture::write_text(&right_path, "right\n");
+
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &left_path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            0,
+            Some("left scoped".to_string()),
+        )],
+    )
+    .expect("save scoped bookmark");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 1, 2);
+    window.open_document(&right_path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_path() == Some(right_path.clone())
+            && active_editor(&window).file_size().is_some()
+    });
+    active_editor(&window).load_bookmarks(&[lushtext_core::model::bookmark::BookmarkRecord::new(
+        0,
+        Some("right open".to_string()),
+    )]);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
+    assert_eq!(adw_sidebar_section_titles(&sidebar), ["Bookmarks", "Open Tabs"]);
+    assert_eq!(
+        sidebar.item(0).and_then(|item| item.title()).as_deref(),
+        Some("Bookmark · left scoped")
+    );
+    let open_item = sidebar.item(1).expect("right open bookmark row");
+    assert_eq!(open_item.title().as_deref(), Some("Bookmark · right open"));
+    assert!(
+        open_item
+            .subtitle()
+            .is_some_and(|subtitle| subtitle.contains("Open tab · right")),
+        "open tabs from another restored workspace should name that workspace"
+    );
+}
+
+#[test]
 fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
     ensure_gtk_init();
     let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
@@ -7635,6 +8324,191 @@ fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
                         .contains("Some bookmark data could not be loaded")
                 })
     });
+}
+
+#[test]
+fn test_notes_browser_close_button_dismisses_populated_browser() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("close-notes-browser.md");
+    fixture::write_text(&path, "# Close\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("close me"),
+    )
+    .expect("save document note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let split_view = find_navigation_split_view(&child).expect("notes browser split view");
+    split_view.set_collapsed(false);
+    split_view.set_show_content(true);
+    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        !split_view.is_collapsed() && visible_buttons_by_tooltip(&child, "Close").len() == 1
+    });
+
+    single_visible_close_button(&child).emit_clicked();
+    flush_events();
+
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
+}
+
+#[test]
+fn test_notes_browser_close_button_dismisses_collapsed_sidebar_page() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("close-sidebar-notes-browser.md");
+    fixture::write_text(&path, "# Close sidebar\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("close sidebar"),
+    )
+    .expect("save document note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let split_view = find_navigation_split_view(&child).expect("notes browser split view");
+    split_view.set_collapsed(true);
+    split_view.set_show_content(false);
+    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        split_view.is_collapsed()
+            && !split_view.shows_content()
+            && visible_buttons_by_tooltip(&child, "Close").len() == 1
+    });
+
+    single_visible_close_button(&child).emit_clicked();
+    flush_events();
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
+}
+
+#[test]
+fn test_notes_browser_back_navigates_and_close_dismisses_collapsed_preview() {
+    ensure_gtk_init();
+    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_root.join("close-preview-notes-browser.md");
+    fixture::write_text(&path, "# Close preview\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("close preview"),
+    )
+    .expect("save document note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let split_view = find_navigation_split_view(&child).expect("notes browser split view");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.item(0).is_some());
+    split_view.set_collapsed(true);
+    sidebar.emit_by_name::<()>("activated", &[&0u32]);
+    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        split_view.is_collapsed()
+            && split_view.shows_content()
+            && visible_buttons_by_tooltip(&child, "Close").len() == 1
+    });
+
+    let back_button = find_button_by_tooltip(&child, "Back to Notes").expect("preview back button");
+    assert!(
+        back_button.is_visible(),
+        "collapsed preview should expose Back as navigation"
+    );
+    back_button.emit_clicked();
+    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some() && !split_view.shows_content()
+    });
+
+    split_view.set_show_content(true);
+    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        split_view.shows_content() && visible_buttons_by_tooltip(&child, "Close").len() == 1
+    });
+    single_visible_close_button(&child).emit_clicked();
+    flush_events();
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
+}
+
+#[test]
+fn test_empty_notes_browser_close_button_and_escape_dismiss() {
+    ensure_gtk_init();
+    let (_roots_dir, _left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 2);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("empty notes browser dialog");
+    let child = dialog.child().expect("empty notes browser child");
+    assert!(
+        find_label_by_text(&child, "No notes yet").is_some(),
+        "empty Browse Notes should present an explicit empty state"
+    );
+    single_visible_close_button(&child).emit_clicked();
+    flush_events();
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+            && gtk4::prelude::GtkWindowExt::focus(&window).is_some()
+    });
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::Escape);
+    flush_events();
+    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
+}
+
+#[test]
+fn test_empty_notes_browser_opens_without_workspace_or_open_tab_rows() {
+    seed_no_workspaces();
+
+    let window = test_window();
+    present_window(&window);
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("empty notes browser dialog");
+    let child = dialog.child().expect("empty notes browser child");
+    assert!(
+        find_label_by_text(&child, "No notes yet").is_some(),
+        "Browse Notes should present an explicit empty state even without workspaces"
+    );
+    assert!(
+        find_adw_sidebar(&child).is_none(),
+        "no-workspace empty state should not materialize fake browser rows"
+    );
 }
 
 #[test]
@@ -8199,6 +9073,60 @@ fn test_startup_restore_surfaces_grouped_recovery_diagnostics() {
         "malformed session should be moved away before replacement is allowed"
     );
     session_service::save(&data_dir, &SessionData::default()).expect("restore clean session");
+}
+
+#[test]
+fn test_workspace_recovery_surfaces_visible_warning() {
+    ensure_gtk_init();
+    let data_dir = json_store::data_dir();
+    let workspace_path = data_dir.join("workspaces.json");
+    remove_session_path_for_test(&workspace_path);
+    fixture::write_text(
+        &workspace_path,
+        r#"{"active_workspace":"legacy","workspaces":[{"id":"legacy","entries":[]}]}"#,
+    );
+
+    let window = test_window();
+    present_window(&window);
+
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Workspace state needed recovery"))
+    });
+    assert!(
+        !fs_metadata::exists(&workspace_path),
+        "unsupported workspace state should be moved away before replacement is allowed"
+    );
+    workspace_manager::save(&data_dir, &WorkspacesFile::default())
+        .expect("restore clean workspace state");
+}
+
+#[test]
+fn test_saved_search_recovery_surfaces_visible_warning() {
+    ensure_gtk_init();
+    let data_dir = json_store::data_dir();
+    let saved_searches_path = data_dir.join("saved-searches.json");
+    remove_session_path_for_test(&saved_searches_path);
+    fixture::write_text(&saved_searches_path, r#"[{"name":"legacy","query":"TODO"}]"#);
+
+    let window = test_window();
+    present_window(&window);
+
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Saved searches needed recovery"))
+    });
+    assert!(
+        !fs_metadata::exists(&saved_searches_path),
+        "unsupported saved searches should be moved away before replacement is allowed"
+    );
+    saved_searches::save(&data_dir, &[]).expect("restore clean saved searches");
 }
 
 #[test]

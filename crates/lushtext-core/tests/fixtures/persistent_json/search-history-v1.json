@@ -1,0 +1,14 @@
+{
+  "kind": "dev.cominotti.lushtext.search-history",
+  "version": 1,
+  "data": [
+    {
+      "query": "TODO",
+      "case_sensitive": false,
+      "regex": false,
+      "whole_word": true,
+      "gitignore": true,
+      "glob": null
+    }
+  ]
+}

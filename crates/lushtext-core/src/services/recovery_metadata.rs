@@ -19,6 +19,7 @@ use serde::de::DeserializeOwned;
 use crate::services::filesystem::{
     PathStatus, WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write,
 };
+use crate::services::json_format::{self, JsonEnvelopeRef, JsonFormatError};
 
 /// Default cap for app-owned metadata files loaded during recovery.
 ///
@@ -38,6 +39,12 @@ const MAX_QUARANTINE_NAME_ATTEMPTS: u32 = 64;
 /// App-owned metadata category used in diagnostics and quarantine filenames.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryMetadataClass {
+    /// Persisted workspace roots and current workspace scope.
+    WorkspaceState,
+    /// User-managed saved searches.
+    SavedSearches,
+    /// Low-stakes recent search history.
+    SearchHistory,
     /// Global tab/session restore state.
     Session,
     /// Draft manifest that maps draft IDs to persisted draft bodies.
@@ -61,6 +68,9 @@ impl RecoveryMetadataClass {
     #[must_use]
     pub const fn slug(self) -> &'static str {
         match self {
+            Self::WorkspaceState => "workspace-state",
+            Self::SavedSearches => "saved-searches",
+            Self::SearchHistory => "search-history",
             Self::Session => "session",
             Self::DraftManifest => "draft-manifest",
             Self::BookmarkSidecar => "bookmark-sidecar",
@@ -76,6 +86,9 @@ impl RecoveryMetadataClass {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::WorkspaceState => "workspace state",
+            Self::SavedSearches => "saved searches",
+            Self::SearchHistory => "recent search history",
             Self::Session => "session",
             Self::DraftManifest => "draft manifest",
             Self::BookmarkSidecar => "bookmark sidecar",
@@ -95,6 +108,18 @@ pub enum RecoveryProblem {
     Malformed {
         /// Parser detail kept for logs and smoke artifacts.
         detail: String,
+    },
+    /// The JSON parsed but was not the supported envelope or payload shape.
+    UnsupportedFormat {
+        /// Format detail kept for logs and smoke artifacts.
+        detail: String,
+    },
+    /// The JSON envelope used the right kind but an unsupported version.
+    UnsupportedVersion {
+        /// Version found in the file.
+        version: u32,
+        /// Supported version list used in diagnostics.
+        supported_versions: String,
     },
     /// The file could not be inspected or read.
     Unreadable {
@@ -131,6 +156,8 @@ impl RecoveryProblem {
     pub const fn category(&self) -> &'static str {
         match self {
             Self::Malformed { .. } => "malformed",
+            Self::UnsupportedFormat { .. } => "unsupported-format",
+            Self::UnsupportedVersion { .. } => "unsupported-version",
             Self::Unreadable { .. } => "unreadable",
             Self::UnsupportedFileKind { .. } => "unsupported-kind",
             Self::Oversized { .. } => "oversized",
@@ -305,6 +332,16 @@ impl<T> RecoveryLoad<T> {
         self.value
     }
 
+    /// Keep recovery metadata while replacing the loaded value.
+    #[must_use]
+    pub fn map_value<U>(self, value: U) -> RecoveryLoad<U> {
+        RecoveryLoad {
+            value,
+            outcome: self.outcome,
+            diagnostics: self.diagnostics,
+        }
+    }
+
     /// Return whether all diagnostics allow replacement writes.
     #[must_use]
     pub fn replacement_allowed(&self) -> bool {
@@ -449,6 +486,71 @@ where
     }
 }
 
+/// Load an enveloped JSON metadata file, defaulting with diagnostics on failure.
+#[must_use]
+pub fn load_enveloped_json_or_default<T>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+) -> RecoveryLoad<T>
+where
+    T: DeserializeOwned + Default,
+{
+    load_enveloped_json_with_repair(config, expected_kind, |_| RecoveryRepair::Unavailable)
+}
+
+/// Load an optional enveloped JSON metadata file.
+///
+/// Missing files return `None` without diagnostics. Present files must still be
+/// supported v1 envelopes; pre-public bare JSON is preserved and returned as
+/// absent instead of being parsed as a compatibility shape.
+#[must_use]
+pub fn load_enveloped_json_optional<T>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+) -> RecoveryLoad<Option<T>>
+where
+    T: DeserializeOwned,
+{
+    load_enveloped_json_with_repair(config, expected_kind, |_| RecoveryRepair::Unavailable)
+}
+
+/// Load an enveloped JSON metadata file and allow deterministic repair.
+#[must_use]
+pub fn load_enveloped_json_with_repair<T, F>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+    repair: F,
+) -> RecoveryLoad<T>
+where
+    T: DeserializeOwned + Default,
+    F: FnOnce(RecoveryRepairContext<'_>) -> RecoveryRepair<T>,
+{
+    match fs_metadata::path_status(config.path) {
+        Ok(PathStatus::Missing) => RecoveryLoad {
+            value: T::default(),
+            outcome: RecoveryLoadOutcome::MissingDefault,
+            diagnostics: Vec::new(),
+        },
+        Ok(PathStatus::Directory | PathStatus::Other) => default_after_problem(
+            config,
+            &RecoveryProblem::UnsupportedFileKind {
+                status: fs_metadata::path_status(config.path).unwrap_or(PathStatus::Other),
+            },
+            None,
+            repair,
+        ),
+        Ok(PathStatus::File) => load_existing_enveloped_json_file(config, expected_kind, repair),
+        Err(error) => default_after_problem(
+            config,
+            &RecoveryProblem::Unreadable {
+                detail: error.to_string(),
+            },
+            None,
+            repair,
+        ),
+    }
+}
+
 /// Write recovery metadata through the same durable JSON path as other state.
 ///
 /// Callers should only use this after checking `replacement_allowed()` on the
@@ -469,6 +571,81 @@ pub fn save_json_path<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     })
     .map_err(fs_write::DurableWriteError::into_io_error)
     .with_context(|| format!("failed to write {}", path.display()))
+}
+
+/// Write a v1 envelope after preserving unsupported current metadata if needed.
+///
+/// This helper is intentionally stricter than a plain atomic replace: callers
+/// get an error when an existing unsupported file cannot be quarantined or
+/// copied first, so default v1 state never overwrites the only evidence of old
+/// or damaged metadata.
+///
+/// # Errors
+///
+/// Returns an error when the current file is unsafe to replace, the parent
+/// directory cannot be created, serialization fails, or the durable write fails.
+pub fn save_enveloped_json_path<T>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+    value: &T,
+) -> Result<Vec<RecoveryDiagnostic>>
+where
+    T: Serialize + DeserializeOwned,
+{
+    let preparation = prepare_enveloped_json_replacement::<T>(config, expected_kind);
+    if !preparation.replacement_allowed() {
+        let detail = preparation
+            .diagnostics
+            .iter()
+            .map(RecoveryDiagnostic::summary)
+            .collect::<Vec<_>>()
+            .join("; ");
+        anyhow::bail!(
+            "{} is not safe to replace with v1 JSON: {detail}",
+            config.path.display()
+        );
+    }
+
+    let envelope = JsonEnvelopeRef::new(expected_kind, value);
+    save_json_path(config.path, &envelope)?;
+    Ok(preparation.diagnostics)
+}
+
+/// Check whether an existing path can be safely replaced by a v1 envelope.
+#[must_use]
+pub fn prepare_enveloped_json_replacement<T>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+) -> RecoveryLoad<()>
+where
+    T: DeserializeOwned,
+{
+    match fs_metadata::path_status(config.path) {
+        Ok(PathStatus::Missing) => RecoveryLoad {
+            value: (),
+            outcome: RecoveryLoadOutcome::MissingDefault,
+            diagnostics: Vec::new(),
+        },
+        Ok(PathStatus::Directory | PathStatus::Other) => default_after_problem(
+            config,
+            &RecoveryProblem::UnsupportedFileKind {
+                status: fs_metadata::path_status(config.path).unwrap_or(PathStatus::Other),
+            },
+            None,
+            |_| RecoveryRepair::Unavailable,
+        ),
+        Ok(PathStatus::File) => {
+            load_existing_enveloped_json_file_for_replacement::<T>(config, expected_kind)
+        }
+        Err(error) => default_after_problem(
+            config,
+            &RecoveryProblem::Unreadable {
+                detail: error.to_string(),
+            },
+            None,
+            |_| RecoveryRepair::Unavailable,
+        ),
+    }
 }
 
 /// Load one existing JSON metadata file through the bounded recovery state machine.
@@ -537,6 +714,164 @@ where
             Some(&bytes),
             repair,
         ),
+    }
+}
+
+/// Load one existing v1 envelope through the bounded recovery state machine.
+fn load_existing_enveloped_json_file<T, F>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+    repair: F,
+) -> RecoveryLoad<T>
+where
+    T: DeserializeOwned + Default,
+    F: FnOnce(RecoveryRepairContext<'_>) -> RecoveryRepair<T>,
+{
+    match fs_metadata::file_facts(config.path) {
+        Ok(facts) if facts.byte_size > config.max_bytes => {
+            return default_after_problem(
+                config,
+                &RecoveryProblem::Oversized {
+                    size_bytes: facts.byte_size,
+                    max_bytes: config.max_bytes,
+                },
+                None,
+                repair,
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return default_after_problem(
+                config,
+                &RecoveryProblem::Unreadable {
+                    detail: error.to_string(),
+                },
+                None,
+                repair,
+            );
+        }
+    }
+
+    let bytes = match fs_read::bytes(config.path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return RecoveryLoad {
+                value: T::default(),
+                outcome: RecoveryLoadOutcome::MissingDefault,
+                diagnostics: Vec::new(),
+            };
+        }
+        Err(error) => {
+            return default_after_problem(
+                config,
+                &RecoveryProblem::Unreadable {
+                    detail: error.to_string(),
+                },
+                None,
+                repair,
+            );
+        }
+    };
+
+    match json_format::parse_v1_payload(&bytes, expected_kind) {
+        Ok(value) => RecoveryLoad {
+            value,
+            outcome: RecoveryLoadOutcome::Loaded,
+            diagnostics: Vec::new(),
+        },
+        Err(error) => {
+            let problem = recovery_problem_from_json_format(error);
+            default_after_problem(config, &problem, Some(&bytes), repair)
+        }
+    }
+}
+
+/// Validate an existing v1 envelope before allowing a save to replace it.
+///
+/// This uses the caller's concrete payload type instead of `serde_json::Value`
+/// so correct-kind envelopes with damaged `data` still get preserved before a
+/// v1 replacement is written.
+fn load_existing_enveloped_json_file_for_replacement<T>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+) -> RecoveryLoad<()>
+where
+    T: DeserializeOwned,
+{
+    match fs_metadata::file_facts(config.path) {
+        Ok(facts) if facts.byte_size > config.max_bytes => {
+            return default_after_problem(
+                config,
+                &RecoveryProblem::Oversized {
+                    size_bytes: facts.byte_size,
+                    max_bytes: config.max_bytes,
+                },
+                None,
+                |_| RecoveryRepair::Unavailable,
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return default_after_problem(
+                config,
+                &RecoveryProblem::Unreadable {
+                    detail: error.to_string(),
+                },
+                None,
+                |_| RecoveryRepair::Unavailable,
+            );
+        }
+    }
+
+    let bytes = match fs_read::bytes(config.path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return RecoveryLoad {
+                value: (),
+                outcome: RecoveryLoadOutcome::MissingDefault,
+                diagnostics: Vec::new(),
+            };
+        }
+        Err(error) => {
+            return default_after_problem(
+                config,
+                &RecoveryProblem::Unreadable {
+                    detail: error.to_string(),
+                },
+                None,
+                |_| RecoveryRepair::Unavailable,
+            );
+        }
+    };
+
+    match json_format::parse_v1_payload::<T>(&bytes, expected_kind) {
+        Ok(_) => RecoveryLoad {
+            value: (),
+            outcome: RecoveryLoadOutcome::Loaded,
+            diagnostics: Vec::new(),
+        },
+        Err(error) => {
+            let problem = recovery_problem_from_json_format(error);
+            default_after_problem(config, &problem, Some(&bytes), |_| {
+                RecoveryRepair::Unavailable
+            })
+        }
+    }
+}
+
+fn recovery_problem_from_json_format(error: JsonFormatError) -> RecoveryProblem {
+    match error {
+        JsonFormatError::Malformed { detail } => RecoveryProblem::Malformed { detail },
+        JsonFormatError::UnsupportedFormat { detail } => {
+            RecoveryProblem::UnsupportedFormat { detail }
+        }
+        JsonFormatError::UnsupportedVersion {
+            version,
+            supported_versions,
+        } => RecoveryProblem::UnsupportedVersion {
+            version,
+            supported_versions,
+        },
     }
 }
 
@@ -750,6 +1085,7 @@ fn sanitize_component(component: &str) -> String {
 mod tests {
     use super::*;
     use crate::services::filesystem::fixture;
+    use crate::services::json_format::KIND_SESSION;
     use serde::{Deserialize, Serialize};
     use tempfile::TempDir;
 
@@ -947,6 +1283,37 @@ mod tests {
         let text = fixture::read_text(&path);
         assert!(text.contains('\n'));
         let loaded: TestMetadata = serde_json::from_str(&text).expect("parse saved JSON");
+        assert_eq!(loaded, value);
+    }
+
+    #[test]
+    fn save_enveloped_json_path_preserves_matching_kind_with_bad_payload() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("session.json");
+        fixture::write_text(
+            &path,
+            r#"{"kind":"dev.cominotti.lushtext.session","version":1,"data":"bad"}"#,
+        );
+        let value = TestMetadata {
+            name: "replacement".to_string(),
+            count: 4,
+        };
+
+        let diagnostics =
+            save_enveloped_json_path(&config(dir.path(), &path), KIND_SESSION, &value)
+                .expect("save replacement after preserving bad payload");
+
+        assert!(matches!(
+            diagnostics[0].problem,
+            RecoveryProblem::UnsupportedFormat { .. }
+        ));
+        let quarantine_path = diagnostics[0]
+            .preservation
+            .quarantine_path()
+            .expect("bad v1 payload quarantine path");
+        assert!(fixture::read_text(quarantine_path).contains(r#""data":"bad""#));
+        let loaded: TestMetadata =
+            load_enveloped_json_or_default(&config(dir.path(), &path), KIND_SESSION).value;
         assert_eq!(loaded, value);
     }
 }

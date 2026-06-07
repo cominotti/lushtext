@@ -14,6 +14,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
+use crate::services::notifications::NotificationSeverity;
 use crate::services::{async_task, json_store, workspace_manager};
 
 use super::{LushtextSidebar, WorkspaceSection};
@@ -24,8 +25,20 @@ impl LushtextSidebar {
         let data_dir = json_store::data_dir();
         async_task::spawn_blocking_then(
             self.clone(),
-            move || workspace_manager::load(&data_dir).unwrap_or_default(),
-            |sidebar, workspaces_file| {
+            move || workspace_manager::load_recovering(&data_dir),
+            |sidebar, load| {
+                for diagnostic in &load.diagnostics {
+                    tracing::warn!("{}", diagnostic.summary());
+                }
+                if !load.diagnostics.is_empty()
+                    && let Some(ref callback) = *sidebar.imp().message_callback.borrow()
+                {
+                    callback(
+                        "Workspace state needed recovery; unsupported metadata was preserved",
+                        NotificationSeverity::Warning,
+                    );
+                }
+                let workspaces_file = load.value;
                 sidebar.build_sections_from_file(workspaces_file);
                 sidebar.notify_workspace_structure_changed();
                 sidebar.notify_workspace_scope_changed();

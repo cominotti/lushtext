@@ -38,6 +38,7 @@ type LoadCompletedCallback = Box<dyn FnOnce()>;
 type LoadFailedCallback = Box<dyn FnOnce(String)>;
 type FileLoadedCallback = Box<dyn Fn()>;
 type NotesChangedCallback = Box<dyn Fn()>;
+type BookmarkActivatedCallback = Box<dyn Fn(BookmarkRecord)>;
 
 /// Derived style-scheme IDs currently being generated on background threads.
 ///
@@ -237,6 +238,12 @@ pub struct BookmarkState {
     pub entries: RefCell<Vec<LiveBookmark>>,
     /// Callback invoked when bookmark state changes and should be persisted.
     pub changed_callback: RefCell<Option<NotesChangedCallback>>,
+    /// Window callback installed after editor construction to route gutter activation
+    /// into bookmark editing UI.
+    ///
+    /// Stored in a `RefCell` because GObject-style methods receive `&self`, so
+    /// callback wiring mutates implementation state through interior mutability.
+    pub activated_callback: RefCell<Option<BookmarkActivatedCallback>>,
     /// Debounced sidecar persistence state for bookmark saves.
     pub persistence: NotesPersistenceState,
 }

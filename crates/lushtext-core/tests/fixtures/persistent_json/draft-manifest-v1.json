@@ -1,0 +1,14 @@
+{
+  "kind": "dev.cominotti.lushtext.draft-manifest",
+  "version": 1,
+  "data": {
+    "drafts": [
+      {
+        "draft_id": "deb09d05810ef629",
+        "original_path": "/tmp/project/src/main.rs",
+        "original_mtime_secs": 1780720800,
+        "saved_at_secs": 1780720810
+      }
+    ]
+  }
+}

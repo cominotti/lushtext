@@ -14,8 +14,8 @@ use crate::model::sidecar_identity::DocumentSidecarIdentity;
 use crate::services::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
 };
+use crate::services::note_storage;
 use crate::services::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
-use crate::services::{json_store, note_storage};
 
 /// Directory name that stores per-file bookmark sidecars.
 const BOOKMARKS_DIR: &str = "bookmarks";
@@ -134,9 +134,13 @@ pub fn save_document(data_dir: &Path, mut document: BookmarkDocument) -> Result<
         return delete_sidecar_file(data_dir, &document.identity);
     }
 
-    json_store::save(
-        &bookmarks_dir(data_dir),
-        &note_storage::sidecar_filename(&document.identity.sidecar_id),
+    let path = bookmarks_dir(data_dir).join(note_storage::sidecar_filename(
+        &document.identity.sidecar_id,
+    ));
+    note_storage::save_json_file_recovering(
+        data_dir,
+        &path,
+        RecoveryMetadataClass::BookmarkSidecar,
         &document,
     )
 }

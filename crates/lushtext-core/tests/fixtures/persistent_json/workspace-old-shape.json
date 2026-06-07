@@ -1,0 +1,15 @@
+{
+  "active_workspace": "legacy",
+  "workspaces": [
+    {
+      "id": "legacy",
+      "name": "Legacy",
+      "entries": [
+        {
+          "kind": "directory",
+          "path": "/tmp/legacy"
+        }
+      ]
+    }
+  ]
+}

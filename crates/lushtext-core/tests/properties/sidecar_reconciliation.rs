@@ -22,7 +22,8 @@ use lushtext_core::model::workspace_note::WorkspaceNoteDocument;
 use lushtext_core::services::{
     bookmark_service, document_note_service,
     filesystem::{fixture, metadata as fs_metadata},
-    json_store, local_history_service, workspace_note_service,
+    json_format::{JsonEnvelopeRef, KIND_LOCAL_HISTORY_INDEX},
+    local_history_service, workspace_note_service,
 };
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -342,14 +343,13 @@ fn seed_local_history_lineage(
         content_hash: stable_bytes_hash(text.as_bytes()),
     };
     fixture::write_text(&lineage_dir.join(format!("{}.txt", meta.snapshot_id)), text);
-    json_store::save(
-        lineage_dir,
-        "index.json",
-        &LocalHistoryDocument {
-            identity,
-            snapshots: vec![meta],
-        },
-    )?;
+    let document = LocalHistoryDocument {
+        identity,
+        snapshots: vec![meta],
+    };
+    let envelope = JsonEnvelopeRef::new(KIND_LOCAL_HISTORY_INDEX, &document);
+    let json = serde_json::to_string_pretty(&envelope)?;
+    fixture::write_text(&lineage_dir.join("index.json"), &json);
     Ok(())
 }
 

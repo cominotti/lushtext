@@ -217,7 +217,7 @@ fn local_history_cleanup_failure_remains_diagnostic_and_retryable() {
     )
     .expect("record pending local-history migration");
 
-    local_history_service::fail_next_obsolete_lineage_cleanup_for_test();
+    local_history_service::fail_next_obsolete_lineage_cleanup_for_path_for_test(&old_history_dir);
     let failed_report = migration_ledger::reconcile_pending(ctx.data_dir())
         .expect("cleanup failure should stay diagnostic");
 

@@ -11,8 +11,6 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-#[cfg(any(test, feature = "test-utils"))]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -31,7 +29,7 @@ use crate::services::{
         DirectoryScanPolicy, FileKind, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
         read as fs_read, tree as fs_tree, write as fs_write,
     },
-    json_store, note_storage,
+    note_storage,
 };
 
 /// Directory name that stores one local-history lineage per saved document.
@@ -77,7 +75,11 @@ const MAX_INDEX_REPAIR_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 /// integration tests use this seam to exercise the retryable cleanup path
 /// without depending on host user privileges.
 #[cfg(any(test, feature = "test-utils"))]
-static FAIL_NEXT_OBSOLETE_LINEAGE_CLEANUP: AtomicBool = AtomicBool::new(false);
+#[derive(Debug)]
+enum ObsoleteLineageCleanupFailure {
+    Any,
+    Path(PathBuf),
+}
 
 /// Size-policy view used by the editor and window layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,9 +251,33 @@ pub fn availability_for_size_check(size_check: FileSizeCheck) -> LocalHistoryAva
 }
 
 /// Fail the next obsolete local-history lineage cleanup in test builds.
+///
+/// Prefer [`fail_next_obsolete_lineage_cleanup_for_path_for_test`] when tests
+/// can name the expected lineage, so unrelated parallel cleanup work cannot
+/// consume the injected failure.
+///
+/// # Panics
+///
+/// Panics if the test-only failure hook mutex was poisoned by an earlier panic.
 #[cfg(any(test, feature = "test-utils"))]
 pub fn fail_next_obsolete_lineage_cleanup_for_test() {
-    FAIL_NEXT_OBSOLETE_LINEAGE_CLEANUP.store(true, Ordering::Release);
+    *obsolete_lineage_cleanup_failure()
+        .lock()
+        .expect("obsolete-lineage cleanup failure hook poisoned") =
+        Some(ObsoleteLineageCleanupFailure::Any);
+}
+
+/// Fail obsolete local-history lineage cleanup only for a specific path.
+///
+/// # Panics
+///
+/// Panics if the test-only failure hook mutex was poisoned by an earlier panic.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn fail_next_obsolete_lineage_cleanup_for_path_for_test(path: &Path) {
+    *obsolete_lineage_cleanup_failure()
+        .lock()
+        .expect("obsolete-lineage cleanup failure hook poisoned") =
+        Some(ObsoleteLineageCleanupFailure::Path(path.to_path_buf()));
 }
 
 /// Capture one snapshot for a saved document path using the default retention policy.
@@ -805,7 +831,16 @@ fn normalize_snapshot_text(text: &str) -> String {
 }
 
 fn save_document_index(document_dir: &Path, document: &LocalHistoryDocument) -> Result<()> {
-    json_store::save(document_dir, INDEX_FILENAME, document)
+    let data_dir = document_dir
+        .parent()
+        .and_then(Path::parent)
+        .context("local-history index path is not under app data directory")?;
+    note_storage::save_json_file_recovering(
+        data_dir,
+        &document_dir.join(INDEX_FILENAME),
+        RecoveryMetadataClass::LocalHistoryIndex,
+        document,
+    )
 }
 
 fn trim_document_to_retention(
@@ -1015,13 +1050,34 @@ fn remove_obsolete_lineage(path: &Path) -> Result<()> {
 /// Inject the cleanup failure used by cross-environment retry tests.
 #[cfg(any(test, feature = "test-utils"))]
 fn maybe_fail_obsolete_lineage_cleanup_for_test(path: &Path) -> Result<()> {
-    if FAIL_NEXT_OBSOLETE_LINEAGE_CLEANUP.swap(false, Ordering::AcqRel) {
+    let should_fail = {
+        let mut failure = obsolete_lineage_cleanup_failure()
+            .lock()
+            .expect("obsolete-lineage cleanup failure hook poisoned");
+        let should_fail = match failure.as_ref() {
+            Some(ObsoleteLineageCleanupFailure::Any) => true,
+            Some(ObsoleteLineageCleanupFailure::Path(target)) => target == path,
+            None => false,
+        };
+        if should_fail {
+            *failure = None;
+        }
+        should_fail
+    };
+
+    if should_fail {
         return Err(anyhow::anyhow!(
             "failed to remove obsolete local-history lineage {}: injected cleanup failure",
             path.display()
         ));
     }
     Ok(())
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+fn obsolete_lineage_cleanup_failure() -> &'static Mutex<Option<ObsoleteLineageCleanupFailure>> {
+    static FAILURE: OnceLock<Mutex<Option<ObsoleteLineageCleanupFailure>>> = OnceLock::new();
+    FAILURE.get_or_init(|| Mutex::new(None))
 }
 
 #[cfg(not(any(test, feature = "test-utils")))]
@@ -1914,7 +1970,7 @@ mod tests {
         .expect("capture target");
         let old_doc_dir = history_dir_for_path(dir.path(), &old_path);
 
-        fail_next_obsolete_lineage_cleanup_for_test();
+        fail_next_obsolete_lineage_cleanup_for_path_for_test(&old_doc_dir);
         let result = move_path_tree(dir.path(), &old_path, &new_path);
         let error = result.expect_err("source cleanup should fail");
 

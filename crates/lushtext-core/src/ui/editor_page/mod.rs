@@ -29,7 +29,9 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
 pub use crate::services::editor_io::SaveError;
-pub use bookmarks::{BookmarkNavigationDirection, BookmarkToggleState};
+pub use bookmarks::{
+    BookmarkEditError, BookmarkEditOutcome, BookmarkNavigationDirection, BookmarkToggleState,
+};
 pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
 pub use imp::{EditorLoadState, PendingWarningAction};
 pub use minimap::{MinimapAvailability, MinimapMarkerBounds, MinimapMarkerKind};
@@ -429,6 +431,11 @@ impl LushtextEditorPage {
         *self.imp().bookmarks.changed_callback.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Register a callback fired when the user activates a bookmark gutter mark.
+    pub fn connect_bookmark_activated<F: Fn(BookmarkRecord) + 'static>(&self, f: F) {
+        bookmarks::connect_bookmark_activated(self, f);
+    }
+
     /// Snapshot the current live bookmark projection into pure model records.
     #[must_use]
     pub fn bookmark_records(&self) -> Vec<BookmarkRecord> {
@@ -457,10 +464,38 @@ impl LushtextEditorPage {
         bookmarks::set_bookmark_label_at_cursor(self, label)
     }
 
+    /// Update an existing bookmark by stable ID using a user-facing 1-based line.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error if the bookmark ID no longer exists, the
+    /// target line is outside the buffer, or another bookmark already owns the
+    /// target line.
+    pub fn update_bookmark(
+        &self,
+        id: &crate::model::bookmark::BookmarkId,
+        label: Option<String>,
+        target_line: u32,
+    ) -> Result<BookmarkEditOutcome, BookmarkEditError> {
+        bookmarks::update_bookmark(self, id, label, target_line)
+    }
+
     /// Return the bookmark on the active cursor line, if one exists.
     #[must_use]
     pub fn current_bookmark(&self) -> Option<BookmarkRecord> {
         bookmarks::current_bookmark(self)
+    }
+
+    /// Return the bookmark whose live mark currently occupies a zero-based buffer line.
+    #[must_use]
+    pub fn bookmark_at_line(&self, line: u32) -> Option<BookmarkRecord> {
+        bookmarks::bookmark_at_line(self, line)
+    }
+
+    /// Activate a bookmark by zero-based live buffer line and notify listeners.
+    #[must_use]
+    pub fn activate_bookmark_at_line(&self, line: u32) -> Option<BookmarkRecord> {
+        bookmarks::activate_bookmark_at_line(self, line)
     }
 
     /// Jump to the next or previous bookmark in the active file, wrapping around.

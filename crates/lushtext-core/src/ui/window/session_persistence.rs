@@ -266,6 +266,8 @@ fn startup_recovery_status_message(diagnostics: &[RecoveryDiagnostic]) -> String
             matches!(
                 diagnostic.problem,
                 RecoveryProblem::Malformed { .. }
+                    | RecoveryProblem::UnsupportedFormat { .. }
+                    | RecoveryProblem::UnsupportedVersion { .. }
                     | RecoveryProblem::Unreadable { .. }
                     | RecoveryProblem::UnsupportedFileKind { .. }
                     | RecoveryProblem::Oversized { .. }

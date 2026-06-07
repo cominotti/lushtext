@@ -8,6 +8,7 @@
 //! here avoids subtle drift between the different persistence services.
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 
@@ -15,8 +16,13 @@ use crate::model::sidecar_identity::DocumentSidecarIdentity;
 use crate::services::filesystem::metadata as fs_metadata;
 #[cfg(test)]
 use crate::services::filesystem::read as fs_read;
+use crate::services::json_format::{
+    KIND_BOOKMARK_SIDECAR, KIND_DOCUMENT_NOTE_SIDECAR, KIND_LOCAL_HISTORY_INDEX,
+    KIND_WORKSPACE_NOTE_SIDECAR,
+};
 use crate::services::recovery_metadata::{
-    RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_json_optional,
+    RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass,
+    load_enveloped_json_optional, save_enveloped_json_path,
 };
 
 /// Resolve the stable identity for one saved document path.
@@ -130,13 +136,50 @@ pub fn load_json_file_recovering<T: DeserializeOwned>(
     path: &Path,
     class: RecoveryMetadataClass,
 ) -> RecoveryLoad<Option<T>> {
-    load_json_optional(&RecoveryLoadConfig::new(data_dir, path, class))
+    load_enveloped_json_optional(
+        &RecoveryLoadConfig::new(data_dir, path, class),
+        sidecar_document_kind(class),
+    )
+}
+
+/// Save one sidecar payload as a v1 envelope after preservation checks.
+///
+/// # Errors
+///
+/// Returns an error if the current sidecar is unsafe to replace or the durable
+/// v1 write fails.
+pub fn save_json_file_recovering<T>(
+    data_dir: &Path,
+    path: &Path,
+    class: RecoveryMetadataClass,
+    value: &T,
+) -> Result<()>
+where
+    T: Serialize + DeserializeOwned,
+{
+    let config = RecoveryLoadConfig::new(data_dir, path, class);
+    let diagnostics = save_enveloped_json_path(&config, sidecar_document_kind(class), value)?;
+    trace_recovery_diagnostics(&diagnostics);
+    Ok(())
 }
 
 /// Send recovery diagnostics to tracing without changing a service's public API.
 pub fn trace_recovery_diagnostics(diagnostics: &[RecoveryDiagnostic]) {
     for diagnostic in diagnostics {
         tracing::warn!("{}", diagnostic.summary());
+    }
+}
+
+fn sidecar_document_kind(class: RecoveryMetadataClass) -> &'static str {
+    match class {
+        RecoveryMetadataClass::BookmarkSidecar => KIND_BOOKMARK_SIDECAR,
+        RecoveryMetadataClass::DocumentNoteSidecar => KIND_DOCUMENT_NOTE_SIDECAR,
+        RecoveryMetadataClass::WorkspaceNoteSidecar => KIND_WORKSPACE_NOTE_SIDECAR,
+        RecoveryMetadataClass::LocalHistoryIndex => KIND_LOCAL_HISTORY_INDEX,
+        other => panic!(
+            "recovery class {} does not map to a note-storage sidecar kind",
+            other.slug()
+        ),
     }
 }
 

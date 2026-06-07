@@ -6,9 +6,10 @@
 //! not workspace-scoped in the UI — all tabs share one `AdwTabView`.
 
 use crate::model::session::SessionData;
-use crate::services::json_store;
+use crate::services::json_format::KIND_SESSION;
 use crate::services::recovery_metadata::{
-    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_json_or_default,
+    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
+    save_enveloped_json_path,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -29,7 +30,7 @@ fn ordered_session_saves() -> &'static Mutex<HashMap<std::path::PathBuf, u64>> {
 ///
 /// Returns an error if the session file exists but cannot be read or parsed.
 pub fn load(data_dir: &Path) -> Result<SessionData> {
-    json_store::load(data_dir, SESSION_FILENAME)
+    Ok(load_recovering(data_dir).value)
 }
 
 /// Load the global session through recovery-aware metadata handling.
@@ -40,11 +41,10 @@ pub fn load(data_dir: &Path) -> Result<SessionData> {
 #[must_use]
 pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<SessionData> {
     let path = data_dir.join(SESSION_FILENAME);
-    load_json_or_default(&RecoveryLoadConfig::new(
-        data_dir,
-        &path,
-        RecoveryMetadataClass::Session,
-    ))
+    load_enveloped_json_or_default(
+        &RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::Session),
+        KIND_SESSION,
+    )
 }
 
 /// Save the global session to disk.
@@ -53,7 +53,13 @@ pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<SessionData> {
 ///
 /// Returns an error if the session file cannot be serialized or written.
 pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
-    json_store::save(data_dir, SESSION_FILENAME, session)
+    let path = data_dir.join(SESSION_FILENAME);
+    let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::Session);
+    let diagnostics = save_enveloped_json_path(&config, KIND_SESSION, session)?;
+    for diagnostic in diagnostics {
+        tracing::warn!("{}", diagnostic.summary());
+    }
+    Ok(())
 }
 
 /// Save the global session unless a newer snapshot has already been persisted.
@@ -258,5 +264,23 @@ mod tests {
 
         let loaded = load(dir.path()).expect("expected operation to succeed");
         assert_eq!(loaded.tabs[0].path, Some("/tmp/replacement.rs".into()));
+    }
+
+    #[test]
+    fn recovering_load_preserves_pre_public_bare_session() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        crate::services::filesystem::fixture::write_text(
+            &dir.path().join(SESSION_FILENAME),
+            r#"{"tabs":[],"active_tab_index":null}"#,
+        );
+
+        let load = load_recovering(dir.path());
+
+        assert!(load.value.tabs.is_empty());
+        assert!(matches!(
+            load.diagnostics[0].problem,
+            crate::services::recovery_metadata::RecoveryProblem::UnsupportedFormat { .. }
+        ));
+        assert!(load.replacement_allowed());
     }
 }

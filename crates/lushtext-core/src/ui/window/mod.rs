@@ -40,6 +40,8 @@ pub use drafts::set_first_dirty_autosave_delay_for_test;
 #[cfg(feature = "test-utils")]
 pub use encoding::set_lossy_encoding_analysis_delay_for_test;
 #[cfg(feature = "test-utils")]
+pub use notes::set_bookmark_excerpt_preview_delay_for_test;
+#[cfg(feature = "test-utils")]
 pub use print::{PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test};
 
 /// Maximum total estimated buffer memory across all tabs before evicting

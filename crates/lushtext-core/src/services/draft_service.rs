@@ -11,9 +11,12 @@ use crate::model::draft::{
     DraftEntry, DraftManifest, FileDraftRestoreResolution, PreloadedDraftRestore,
 };
 use crate::model::session::SessionData;
+use crate::model::sidecar_identity::stable_path_hash;
+use crate::services::json_format::KIND_DRAFT_MANIFEST;
 use crate::services::recovery_metadata::{
     RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryLoadOutcome,
-    RecoveryMetadataClass, RecoveryRepair, RecoveryRepairContext, load_json_with_repair,
+    RecoveryMetadataClass, RecoveryRepair, RecoveryRepairContext, load_enveloped_json_or_default,
+    load_enveloped_json_with_repair, save_enveloped_json_path,
 };
 use crate::services::{
     editor_io,
@@ -21,7 +24,7 @@ use crate::services::{
         DirectoryScanPolicy, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
         read as fs_read, tree as fs_tree, write as fs_write,
     },
-    json_store, session_service,
+    session_service,
 };
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -97,15 +100,14 @@ fn manifest_path(data_dir: &Path) -> PathBuf {
     drafts_dir(data_dir).join(MANIFEST_FILE)
 }
 
-/// Generate a stable draft ID from an absolute file path using the
-/// standard library's `DefaultHasher` (SipHash). Produces a 16-char
-/// hex string that is deterministic for the same path.
+/// Generate a stable draft ID from an absolute file path.
+///
+/// Draft IDs are persisted and may be derived again during session restore, so
+/// v1 uses the same explicit FNV-1a helper as sidecar identities instead of
+/// Rust's implementation-defined `DefaultHasher`.
 #[must_use]
 pub fn draft_id_for_path(path: &Path) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::hash::DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    stable_path_hash(path)
 }
 
 /// Generate a unique draft ID for an untitled tab using a monotonic
@@ -124,8 +126,17 @@ pub fn draft_id_for_untitled(counter: u64) -> String {
 ///
 /// Returns an error if the manifest file exists but cannot be read or parsed.
 pub fn load_manifest(data_dir: &Path) -> Result<DraftManifest> {
-    let dir = drafts_dir(data_dir);
-    json_store::load(&dir, MANIFEST_FILE)
+    Ok(load_manifest_recovering(data_dir).value)
+}
+
+/// Load the draft manifest through the public v1 envelope contract.
+#[must_use]
+pub fn load_manifest_recovering(data_dir: &Path) -> RecoveryLoad<DraftManifest> {
+    let path = manifest_path(data_dir);
+    load_enveloped_json_or_default(
+        &RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest),
+        KIND_DRAFT_MANIFEST,
+    )
 }
 
 /// Save the draft manifest atomically (temp file + rename).
@@ -148,8 +159,13 @@ pub fn save_manifest(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
 }
 
 fn save_manifest_locked(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
-    let dir = drafts_dir(data_dir);
-    json_store::save(&dir, MANIFEST_FILE, manifest)
+    let path = manifest_path(data_dir);
+    let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest);
+    let diagnostics = save_enveloped_json_path(&config, KIND_DRAFT_MANIFEST, manifest)?;
+    for diagnostic in diagnostics {
+        tracing::warn!("{}", diagnostic.summary());
+    }
+    Ok(())
 }
 
 /// Load, mutate, and save the draft manifest under a single lock.
@@ -285,7 +301,7 @@ fn load_manifest_for_restore(
 ) -> RecoveryLoad<DraftManifest> {
     let path = manifest_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest);
-    let mut load = load_json_with_repair(&config, |context| {
+    let mut load = load_enveloped_json_with_repair(&config, KIND_DRAFT_MANIFEST, |context| {
         repair_manifest_from_draft_files(data_dir, session, &context)
     });
 
@@ -743,6 +759,7 @@ mod tests {
         let id2 = draft_id_for_path(path);
         assert_eq!(id1, id2);
         assert_eq!(id1.len(), 16);
+        assert_eq!(id1, stable_path_hash(path));
     }
 
     #[test]
@@ -830,6 +847,8 @@ mod tests {
             }],
         };
         save_manifest(dir.path(), &manifest).expect("expected operation to succeed");
+        let text = fixture::read_text(&manifest_path(dir.path()));
+        assert!(text.contains(r#""kind": "dev.cominotti.lushtext.draft-manifest""#));
         let loaded = load_manifest(dir.path()).expect("expected operation to succeed");
         assert_eq!(loaded, manifest);
     }
@@ -839,6 +858,22 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let manifest = load_manifest(dir.path()).expect("expected operation to succeed");
         assert_eq!(manifest, DraftManifest::default());
+    }
+
+    #[test]
+    fn load_manifest_recovering_preserves_pre_public_manifest() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        fixture::write_text(&manifest_path(dir.path()), r#"{"drafts":[]}"#);
+
+        let load = load_manifest_recovering(dir.path());
+
+        assert!(load.value.drafts.is_empty());
+        assert!(matches!(
+            load.diagnostics[0].problem,
+            crate::services::recovery_metadata::RecoveryProblem::UnsupportedFormat { .. }
+        ));
+        assert!(load.replacement_allowed());
     }
 
     #[test]

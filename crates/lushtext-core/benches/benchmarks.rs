@@ -37,8 +37,11 @@ use lushtext_core::services::editor_io;
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::file_tree::{self, DirectoryEntry};
 use lushtext_core::services::filesystem::{fixture, read as fs_read};
-use lushtext_core::services::json_store;
+use lushtext_core::services::json_format::KIND_LOCAL_HISTORY_INDEX;
 use lushtext_core::services::palette::{self, FileIndex};
+use lushtext_core::services::recovery_metadata::{
+    RecoveryLoadConfig, RecoveryMetadataClass, save_enveloped_json_path,
+};
 use lushtext_core::services::workspace_manager;
 use lushtext_core::services::{
     bookmark_service, draft_service,
@@ -439,13 +442,19 @@ fn make_mismatched_local_history_lineages_fixture(lineage_count: usize) -> TempD
             &lineage_dir.join(format!("{}.txt", meta.snapshot_id)),
             &text,
         );
-        json_store::save(
-            &lineage_dir,
-            "index.json",
-            &LocalHistoryDocument {
-                identity,
-                snapshots: vec![meta],
-            },
+        let index_path = lineage_dir.join("index.json");
+        let document = LocalHistoryDocument {
+            identity,
+            snapshots: vec![meta],
+        };
+        save_enveloped_json_path(
+            &RecoveryLoadConfig::new(
+                dir.path(),
+                &index_path,
+                RecoveryMetadataClass::LocalHistoryIndex,
+            ),
+            KIND_LOCAL_HISTORY_INDEX,
+            &document,
         )
         .expect("expected operation to succeed");
     }
@@ -615,7 +624,7 @@ fn bench_json_persistence(c: &mut Criterion) {
                 dir
             },
             |dir| {
-                let _: WorkspacesFile = json_store::load(black_box(dir.path()), "workspaces.json")
+                let _: WorkspacesFile = workspace_manager::load(black_box(dir.path()))
                     .expect("expected operation to succeed");
             },
             BatchSize::SmallInput,
@@ -630,7 +639,7 @@ fn bench_json_persistence(c: &mut Criterion) {
                 dir
             },
             |dir| {
-                let _: WorkspacesFile = json_store::load(black_box(dir.path()), "workspaces.json")
+                let _: WorkspacesFile = workspace_manager::load(black_box(dir.path()))
                     .expect("expected operation to succeed");
             },
             BatchSize::SmallInput,
@@ -643,7 +652,7 @@ fn bench_json_persistence(c: &mut Criterion) {
         b.iter_batched(
             || TempDir::new().expect("expected operation to succeed"),
             |dir| {
-                json_store::save(dir.path(), "session-bench.json", black_box(&session))
+                session_service::save(dir.path(), black_box(&session))
                     .expect("expected operation to succeed");
                 dir // keep TempDir alive past timing
             },
@@ -655,12 +664,11 @@ fn bench_json_persistence(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let dir = TempDir::new().expect("expected operation to succeed");
-                json_store::save(dir.path(), "session-bench.json", &session)
-                    .expect("expected operation to succeed");
+                session_service::save(dir.path(), &session).expect("expected operation to succeed");
                 dir
             },
             |dir| {
-                let _: SessionData = json_store::load(black_box(dir.path()), "session-bench.json")
+                let _: SessionData = session_service::load(black_box(dir.path()))
                     .expect("expected operation to succeed");
             },
             BatchSize::SmallInput,

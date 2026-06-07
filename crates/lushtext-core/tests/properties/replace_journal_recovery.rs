@@ -58,6 +58,28 @@ proptest! {
                 .is_empty()
         );
     }
+
+    #[test]
+    fn orphan_journal_entries_do_not_block_valid_manifest(
+        entries in generated_entries(),
+    ) {
+        let dir = TempDir::new()
+            .map_err(|error| TestCaseError::fail(format!("tempdir creation failed: {error}")))?;
+
+        write_invalid_state(dir.path(), InvalidJournalState::OrphanEntry, &entries)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+
+        let recovery = search_backup::load_recovering(dir.path());
+
+        prop_assert!(recovery.active);
+        prop_assert!(!recovery.backup.is_empty());
+        prop_assert!(!recovery.diagnostics.is_empty());
+        prop_assert!(
+            !search_backup::load(dir.path())
+                .map_err(|error| TestCaseError::fail(error.to_string()))?
+                .is_empty()
+        );
+    }
 }
 
 fn invalid_journal_state() -> impl Strategy<Value = InvalidJournalState> {
@@ -65,7 +87,6 @@ fn invalid_journal_state() -> impl Strategy<Value = InvalidJournalState> {
         Just(InvalidJournalState::MissingManifest),
         Just(InvalidJournalState::MissingEntry),
         Just(InvalidJournalState::CorruptEntry),
-        Just(InvalidJournalState::OrphanEntry),
         Just(InvalidJournalState::CleanupMarker),
         Just(InvalidJournalState::CorruptLegacyBackup),
         Just(InvalidJournalState::UnsupportedJournalPath),

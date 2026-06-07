@@ -1,0 +1,7 @@
+{
+  "kind": "dev.cominotti.lushtext.replace-all-undo-cleanup-marker",
+  "version": 1,
+  "data": {
+    "reason": "fixture cleanup"
+  }
+}

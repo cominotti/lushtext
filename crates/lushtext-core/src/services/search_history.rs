@@ -3,10 +3,15 @@
 //! Search history persistence: load, save, and manage recent search entries.
 //!
 //! History is capped at 20 entries (FIFO), deduplicated on identical query +
-//! toggle state, and persisted to `search-history.json` via `json_store`.
+//! toggle state, and persisted to a v1 envelope. This remains low-stakes state:
+//! damaged history degrades to an empty list with diagnostics.
 
 use crate::model::content_search::SearchHistoryEntry;
-use crate::services::json_store;
+use crate::services::json_format::KIND_SEARCH_HISTORY;
+use crate::services::recovery_metadata::{
+    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
+    save_enveloped_json_path,
+};
 use std::path::Path;
 
 /// Maximum number of history entries to retain.
@@ -17,13 +22,21 @@ const HISTORY_FILE: &str = "search-history.json";
 
 /// Load search history from disk. Returns an empty vec on missing or corrupt file.
 pub fn load(data_dir: &Path) -> Vec<SearchHistoryEntry> {
-    match json_store::load::<Vec<SearchHistoryEntry>>(data_dir, HISTORY_FILE) {
-        Ok(entries) => entries,
-        Err(e) => {
-            tracing::warn!("Failed to load search history, using empty: {e}");
-            Vec::new()
-        }
+    let load = load_recovering(data_dir);
+    for diagnostic in &load.diagnostics {
+        tracing::warn!("{}", diagnostic.summary());
     }
+    load.value
+}
+
+/// Load recent search history with low-stakes recovery diagnostics.
+#[must_use]
+pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<Vec<SearchHistoryEntry>> {
+    let path = data_dir.join(HISTORY_FILE);
+    load_enveloped_json_or_default(
+        &RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::SearchHistory),
+        KIND_SEARCH_HISTORY,
+    )
 }
 
 /// Save search history to disk via atomic write.
@@ -32,7 +45,14 @@ pub fn load(data_dir: &Path) -> Vec<SearchHistoryEntry> {
 ///
 /// Returns an error if the history file cannot be serialized or written.
 pub fn save(data_dir: &Path, entries: &[SearchHistoryEntry]) -> anyhow::Result<()> {
-    json_store::save(data_dir, HISTORY_FILE, &entries)
+    let path = data_dir.join(HISTORY_FILE);
+    let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::SearchHistory);
+    let entries = entries.to_vec();
+    let diagnostics = save_enveloped_json_path(&config, KIND_SEARCH_HISTORY, &entries)?;
+    for diagnostic in diagnostics {
+        tracing::warn!("{}", diagnostic.summary());
+    }
+    Ok(())
 }
 
 /// Add a new entry to the history, deduplicating and capping at 20.
@@ -51,6 +71,8 @@ pub fn add_entry(entries: &mut Vec<SearchHistoryEntry>, entry: SearchHistoryEntr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::filesystem::fixture;
+    use crate::services::recovery_metadata::RecoveryProblem;
     use tempfile::TempDir;
 
     fn make_entry(query: &str) -> SearchHistoryEntry {
@@ -131,7 +153,24 @@ mod tests {
             make_entry("world"),
         ];
         save(dir.path(), &entries).expect("expected operation to succeed");
-        let loaded = load(dir.path());
+        let loaded = load_recovering(dir.path());
+        assert!(loaded.diagnostics.is_empty());
+        let loaded = loaded.value;
         assert_eq!(loaded, entries);
+    }
+
+    #[test]
+    fn load_recovering_reports_unsupported_old_history() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join(HISTORY_FILE), r#"[{"query":"old"}]"#);
+
+        let loaded = load_recovering(dir.path());
+
+        assert!(loaded.value.is_empty());
+        assert!(matches!(
+            loaded.diagnostics[0].problem,
+            RecoveryProblem::UnsupportedFormat { .. }
+        ));
+        assert!(loaded.replacement_allowed());
     }
 }

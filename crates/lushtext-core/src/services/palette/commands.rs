@@ -72,7 +72,7 @@ pub fn all_commands() -> &'static [CommandDef] {
         },
         CommandDef {
             id: "win.edit-bookmark-label",
-            label: "Edit Bookmark Label",
+            label: "Edit Bookmark",
             category: CommandCategory::Edit,
             shortcut: Some("Ctrl+Shift+F2"),
         },

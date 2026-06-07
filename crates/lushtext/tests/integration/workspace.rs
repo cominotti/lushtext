@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Integration tests for workspace persistence and normalization.
+//! Integration tests for workspace persistence and clean-break recovery.
 
 use crate::common::TestContext;
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
 use lushtext_core::services::filesystem::fixture;
+use lushtext_core::services::recovery_metadata::RecoveryProblem;
 use lushtext_core::services::workspace_manager;
-use std::path::Path;
 
 #[test]
 fn test_missing_workspace_file_restores_empty_shell_state() {
@@ -87,7 +87,7 @@ fn test_remove_and_add_different_root_persists_new_workspace_entry() {
 }
 
 #[test]
-fn test_legacy_multi_root_workspace_normalizes_to_sibling_workspaces() {
+fn test_pre_public_multi_root_workspace_is_preserved_and_reset() {
     let ctx = TestContext::new();
     fixture::write_text(
         &ctx.data_dir().join("workspaces.json"),
@@ -105,15 +105,19 @@ fn test_legacy_multi_root_workspace_normalizes_to_sibling_workspaces() {
         .to_string(),
     );
 
-    let restored = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
+    let restored = workspace_manager::load_recovering(ctx.data_dir());
 
-    assert_eq!(restored.workspaces.len(), 2);
-    assert_eq!(restored.workspaces[0].id, WorkspaceId::new("legacy"));
-    assert_eq!(restored.workspaces[0].root, Path::new("/tmp/workspace-a"));
-    assert_eq!(
-        restored.current_scope(),
-        WorkspaceScope::workspace(WorkspaceId::new("legacy"))
-    );
+    assert!(restored.value.workspaces.is_empty());
+    assert_eq!(restored.value.current_scope(), WorkspaceScope::All);
+    assert!(matches!(
+        restored.diagnostics[0].problem,
+        RecoveryProblem::UnsupportedFormat { .. }
+    ));
+    let quarantine_path = restored.diagnostics[0]
+        .preservation
+        .quarantine_path()
+        .expect("workspace evidence should be quarantined");
+    assert!(fixture::read_text(quarantine_path).contains("workspace-a"));
 }
 
 #[test]

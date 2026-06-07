@@ -12,12 +12,12 @@ use lushtext_core::services::editor_io::LoadResult;
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::editor_page::{
-    BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage, MinimapAvailability,
-    MinimapMarkerKind,
+    BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
+    MinimapAvailability, MinimapMarkerKind,
 };
 use sourceview5::prelude::*;
 use std::assert_matches;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -1330,6 +1330,127 @@ fn test_bookmark_toggle_and_navigation() {
         .expect("expected operation to succeed");
     assert_eq!(wrapped.line, 4);
     assert_eq!(page.cursor_position().0, 4);
+}
+
+#[test]
+fn test_bookmark_edit_moves_existing_id_across_lines() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+    buffer.set_text("one\ntwo\nthree\nfour\nfive");
+
+    let line_three = buffer.iter_at_line(2).expect("line three");
+    buffer.place_cursor(&line_three);
+    assert_eq!(
+        page.toggle_bookmark_at_cursor(),
+        BookmarkToggleState::Added(2)
+    );
+
+    let bookmark_id = page.bookmark_records()[0].id.clone();
+    let outcome = page
+        .update_bookmark(&bookmark_id, Some("  Last line  ".to_string()), 5)
+        .expect("move to last line");
+    assert_eq!(outcome.line, 4);
+    let updated = page.bookmark_at_line(4).expect("moved bookmark");
+    assert_eq!(updated.id, bookmark_id);
+    assert_eq!(updated.label.as_deref(), Some("Last line"));
+    assert_eq!(
+        page.bookmark_at_line(4).map(|bookmark| bookmark.id),
+        Some(bookmark_id.clone())
+    );
+
+    let outcome = page
+        .update_bookmark(&bookmark_id, Some("First line".to_string()), 1)
+        .expect("move to first line");
+    assert_eq!(outcome.line, 0);
+    assert_eq!(
+        page.bookmark_at_line(0).map(|bookmark| bookmark.id),
+        Some(bookmark_id.clone())
+    );
+
+    let outcome = page
+        .update_bookmark(&bookmark_id, Some("Middle line".to_string()), 3)
+        .expect("move back to middle line");
+    assert_eq!(outcome.line, 2);
+    assert_eq!(
+        page.bookmark_records()
+            .into_iter()
+            .map(|bookmark| (bookmark.id, bookmark.line, bookmark.label))
+            .collect::<Vec<_>>(),
+        vec![(bookmark_id, 2, Some("Middle line".to_string()))]
+    );
+}
+
+#[test]
+fn test_bookmark_edit_rejects_invalid_lines_without_mutating() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+    buffer.set_text("one\ntwo\nthree\nfour");
+
+    let line_one = buffer.iter_at_line(0).expect("line one");
+    buffer.place_cursor(&line_one);
+    let _ = page.toggle_bookmark_at_cursor();
+    let first_id = page.bookmark_records()[0].id.clone();
+
+    let line_three = buffer.iter_at_line(2).expect("line three");
+    buffer.place_cursor(&line_three);
+    let _ = page.toggle_bookmark_at_cursor();
+    let before = page.bookmark_records();
+
+    assert_eq!(
+        page.update_bookmark(&first_id, Some("changed".to_string()), 3),
+        Err(BookmarkEditError::LineOccupied { line: 3 })
+    );
+    assert_eq!(page.bookmark_records(), before);
+
+    assert_matches!(
+        page.update_bookmark(&first_id, Some("changed".to_string()), 0),
+        Err(BookmarkEditError::LineOutOfRange {
+            requested_line: 0,
+            max_line: 4
+        })
+    );
+    assert_eq!(page.bookmark_records(), before);
+
+    assert_matches!(
+        page.update_bookmark(&first_id, Some("changed".to_string()), 99),
+        Err(BookmarkEditError::LineOutOfRange {
+            requested_line: 99,
+            max_line: 4
+        })
+    );
+    assert_eq!(page.bookmark_records(), before);
+}
+
+#[test]
+fn test_bookmark_activation_callback_only_fires_for_bookmark_lines() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let buffer = page.buffer();
+    buffer.set_text("one\ntwo\nthree");
+
+    let line_two = buffer.iter_at_line(1).expect("line two");
+    buffer.place_cursor(&line_two);
+    let _ = page.toggle_bookmark_at_cursor();
+    let bookmark_id = page.bookmark_records()[0].id.clone();
+
+    let activated = Rc::new(RefCell::new(Vec::new()));
+    let activated_for_callback = activated.clone();
+    page.connect_bookmark_activated(move |bookmark| {
+        activated_for_callback.borrow_mut().push(bookmark);
+    });
+
+    let activated_bookmark = page
+        .activate_bookmark_at_line(1)
+        .expect("bookmark activation");
+    assert_eq!(activated_bookmark.id, bookmark_id);
+    assert!(page.activate_bookmark_at_line(0).is_none());
+
+    let activated = activated.borrow();
+    assert_eq!(activated.len(), 1);
+    assert_eq!(activated[0].id, bookmark_id);
+    assert_eq!(activated[0].line, 1);
 }
 
 // --- Search bar integration ---

@@ -494,14 +494,14 @@ LushText includes non-destructive notes for saved files and explicit workspace r
 - **Bookmarks** live in the GtkSourceView gutter, can carry an optional label, and support next/previous navigation with `F2` / `Shift+F2`.
 - **Document notes** store one markdown-capable note for a saved file as a whole.
 - **Workspace notes** store one markdown-capable note for each workspace root.
-- **Browse** flows operate on the currently selected workspace scope, so the bookmark browser and unified notes browser stay aligned with the sidebar filter.
+- **Browse bookmarks** operates on the currently selected workspace scope, while **Browse notes** keeps workspace results scoped and adds an `Open Tabs` section for saved open files outside that scope.
 
 ### Shortcuts
 
 | Workflow | Shortcut |
 |----------|----------|
 | Toggle bookmark | `Ctrl+F2` |
-| Edit bookmark label | `Ctrl+Shift+F2` |
+| Edit bookmark | `Ctrl+Shift+F2` |
 | Next / previous bookmark | `F2` / `Shift+F2` |
 | Browse bookmarks | `Ctrl+Alt+B` |
 | Browse notes | `Ctrl+Alt+A` |
@@ -514,14 +514,14 @@ Use this checklist to exercise the full shipped bookmark and rich-note flow:
 2. Add a workspace folder and open a saved text file from the sidebar.
 3. Press `Ctrl+F2` on the current line.
    Expected: a bookmark appears in the gutter and the file content does not change.
-4. Press `Ctrl+Shift+F2` on that bookmarked line and add a label.
-   Expected: the label saves and later appears in bookmark browse surfaces.
+4. Press `Ctrl+Shift+F2` on that bookmarked line, add a label, and change the line.
+   Expected: the label saves, the gutter mark moves to the new line, and later bookmark browse surfaces show the updated label.
 5. Add a second bookmark on another line, then use `F2` and `Shift+F2`.
    Expected: the cursor jumps forward and backward through bookmarks in the active file.
 6. Press `Ctrl+Alt+B`.
    Expected: the bookmark browser opens for the current workspace scope, supports search, and clicking a row opens or focuses the bookmarked file and jumps to its line.
 7. Press `Ctrl+Alt+A`.
-   Expected: the unified notes browser opens for the current workspace scope, previews bookmarks, document notes, and workspace notes, and clicking Open on a row routes to the right surface.
+   Expected: the unified notes browser opens for the current workspace scope, previews bookmarks, document notes, and workspace notes, shows saved out-of-scope open-tab notes in `Open Tabs`, and clicking Open on a row routes to the right surface.
 8. Open **Document Note…** for the active saved file.
     Expected: the file-level note opens, supports Edit/Render switching, and Save persists it without changing the file bytes.
 9. Select one concrete workspace and open **Workspace Note…**.
@@ -668,6 +668,7 @@ lushtext-core/src/
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
     bookmark_service.rs  Bookmark sidecar load/save/move/list helpers
+    bookmark_excerpt.rs  Bounded source excerpts for bookmark previews
     document_note_service.rs  Saved-file document-note load/save/move/list helpers
     local_history_service.rs  Local-history capture/list/load/prune/move helpers
     note_storage.rs  Shared sidecar identity/load/filter helpers for note workflows

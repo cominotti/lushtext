@@ -36,7 +36,36 @@ pub enum BookmarkNavigationDirection {
     Previous,
 }
 
-/// Install bookmark gutter attributes and tooltip behavior on the source view.
+/// Validation failure while editing an existing bookmark.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BookmarkEditError {
+    /// The bookmark ID from the dialog no longer exists in the live projection.
+    NotFound,
+    /// The requested user-facing line is outside the active buffer.
+    LineOutOfRange {
+        /// 1-based line entered by the user.
+        requested_line: u32,
+        /// Highest 1-based line currently accepted for this buffer.
+        max_line: u32,
+    },
+    /// Another bookmark already owns the requested user-facing line.
+    LineOccupied {
+        /// 1-based line that is already occupied.
+        line: u32,
+    },
+}
+
+/// Narrow result of a successful bookmark edit command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BookmarkEditOutcome {
+    /// Zero-based buffer line where the bookmark now lives.
+    pub line: u32,
+}
+
+/// Install bookmark gutter attributes, tooltip behavior, and click activation.
+///
+/// The line-mark signal runs on the GTK main thread and resolves activation
+/// through the live bookmark projection before the window layer shows editing UI.
 pub(super) fn setup_bookmark_projection(editor: &LushtextEditorPage) {
     let attributes = sourceview5::MarkAttributes::new();
     attributes.set_icon_name("bookmark-new-symbolic");
@@ -59,6 +88,24 @@ pub(super) fn setup_bookmark_projection(editor: &LushtextEditorPage) {
         &attributes,
         BOOKMARK_MARK_PRIORITY,
     );
+
+    // GtkSourceView owns gutter hit-testing for source marks. The editor checks
+    // the clicked line against its own bookmark marks, then notifies the window
+    // because modal presentation belongs to the window layer.
+    let editor_weak = editor.downgrade();
+    editor
+        .source_view()
+        .connect_line_mark_activated(move |_, iter, button, _, n_presses| {
+            if button != 1 || n_presses != 1 {
+                return;
+            }
+            let Some(editor) = editor_weak.upgrade() else {
+                return;
+            };
+            if let Ok(line) = u32::try_from(iter.line()) {
+                let _ = activate_bookmark_at_line(&editor, line);
+            }
+        });
 }
 
 /// Return a pure-model snapshot of the current live bookmark marks.
@@ -170,23 +217,96 @@ pub(super) fn set_bookmark_label_at_cursor(
     label: Option<String>,
 ) -> Option<BookmarkRecord> {
     let line = editor.cursor_position().0;
-    let index = bookmark_index_at_line(editor, line)?;
-    let mut entries = editor.imp().bookmarks.entries.borrow_mut();
-    entries[index].record.set_label(label);
-    let bookmark = entries[index].record.clone();
-    drop(entries);
-    emit_bookmarks_changed(editor);
-    Some(bookmark)
+    let bookmark = bookmark_at_line(editor, line)?;
+    let bookmark_id = bookmark.id;
+    update_bookmark(editor, &bookmark_id, label, line.saturating_add(1)).ok()?;
+    editor_bookmark(editor, &bookmark_id)
 }
 
 /// Return the bookmark on the active cursor line, if one exists.
 #[must_use]
 pub(super) fn current_bookmark(editor: &LushtextEditorPage) -> Option<BookmarkRecord> {
     let line = editor.cursor_position().0;
-    bookmark_index_at_line(editor, line).map(|index| {
-        editor.imp().bookmarks.entries.borrow()[index]
-            .record
-            .clone()
+    bookmark_at_line(editor, line)
+}
+
+/// Return the bookmark whose live mark currently occupies a zero-based buffer line.
+#[must_use]
+pub(super) fn bookmark_at_line(editor: &LushtextEditorPage, line: u32) -> Option<BookmarkRecord> {
+    bookmark_index_at_line(editor, line).and_then(|index| bookmark_record_at_index(editor, index))
+}
+
+/// Notify the window layer that the user activated a zero-based buffer line.
+#[must_use]
+pub(super) fn activate_bookmark_at_line(
+    editor: &LushtextEditorPage,
+    line: u32,
+) -> Option<BookmarkRecord> {
+    let bookmark = bookmark_at_line(editor, line)?;
+    if let Some(callback) = editor.imp().bookmarks.activated_callback.borrow().as_ref() {
+        callback(bookmark.clone());
+    }
+    Some(bookmark)
+}
+
+/// Move or relabel an existing bookmark while preserving its stable ID.
+///
+/// `target_line` is the 1-based line number used by dialogs. This runs on the
+/// GTK main thread, moves the live `GtkSourceMark`, rejects invalid or occupied
+/// target lines before mutating state, and emits the bookmark-changed callback
+/// so minimap refresh and sidecar persistence use the existing path.
+pub(super) fn update_bookmark(
+    editor: &LushtextEditorPage,
+    id: &BookmarkId,
+    label: Option<String>,
+    target_line: u32,
+) -> Result<BookmarkEditOutcome, BookmarkEditError> {
+    let max_line = buffer_line_count(editor);
+    if target_line == 0 || target_line > max_line {
+        return Err(BookmarkEditError::LineOutOfRange {
+            requested_line: target_line,
+            max_line,
+        });
+    }
+
+    let target_zero_based = target_line - 1;
+    if !bookmark_exists(editor, id) {
+        return Err(BookmarkEditError::NotFound);
+    }
+    if bookmark_line_occupied_by_other(editor, target_zero_based, id) {
+        return Err(BookmarkEditError::LineOccupied { line: target_line });
+    }
+
+    let mark = editor
+        .imp()
+        .bookmarks
+        .entries
+        .borrow()
+        .iter()
+        .find(|entry| entry.record.id == *id)
+        .map(|entry| entry.mark.clone())
+        .ok_or(BookmarkEditError::NotFound)?;
+
+    let iter = iter_at_line_or_last(&editor.buffer(), target_zero_based);
+    editor.buffer().move_mark(&mark, &iter);
+
+    let mut entries = editor.imp().bookmarks.entries.borrow_mut();
+    let entry = entries
+        .iter_mut()
+        .find(|entry| entry.record.id == *id)
+        .ok_or(BookmarkEditError::NotFound)?;
+    entry.record.set_label(label);
+    let _ = entry.record.move_to_line(target_zero_based);
+    entries.sort_by(|left, right| {
+        left.record
+            .line
+            .cmp(&right.record.line)
+            .then_with(|| left.record.id.0.cmp(&right.record.id.0))
+    });
+    drop(entries);
+    emit_bookmarks_changed(editor);
+    Ok(BookmarkEditOutcome {
+        line: target_zero_based,
     })
 }
 
@@ -228,6 +348,14 @@ pub(super) fn emit_bookmarks_changed(editor: &LushtextEditorPage) {
     editor.schedule_minimap_refresh();
 }
 
+/// Register a callback for bookmark gutter activation.
+pub(super) fn connect_bookmark_activated<F: Fn(BookmarkRecord) + 'static>(
+    editor: &LushtextEditorPage,
+    f: F,
+) {
+    *editor.imp().bookmarks.activated_callback.borrow_mut() = Some(Box::new(f));
+}
+
 /// Reconcile persisted bookmark lines after the user edits the buffer.
 #[must_use]
 pub(super) fn reconcile_bookmarks_after_edit(editor: &LushtextEditorPage) -> bool {
@@ -262,8 +390,18 @@ fn editor_bookmark(editor: &LushtextEditorPage, id: &BookmarkId) -> Option<Bookm
         .entries
         .borrow()
         .iter()
-        .find(|entry| entry.record.id == *id)
-        .map(|entry| entry.record.clone())
+        .position(|entry| entry.record.id == *id)
+        .and_then(|index| bookmark_record_at_index(editor, index))
+}
+
+/// Return a bookmark record at `index`, refreshed from its live mark line.
+#[must_use]
+fn bookmark_record_at_index(editor: &LushtextEditorPage, index: usize) -> Option<BookmarkRecord> {
+    let entries = editor.imp().bookmarks.entries.borrow();
+    let entry = entries.get(index)?;
+    let mut record = entry.record.clone();
+    record.line = current_mark_line(editor, &entry.mark)?;
+    Some(record)
 }
 
 /// Return the current live bookmark line for a source mark.
@@ -283,6 +421,41 @@ fn bookmark_index_at_line(editor: &LushtextEditorPage, line: u32) -> Option<usiz
         .borrow()
         .iter()
         .position(|entry| current_mark_line(editor, &entry.mark) == Some(line))
+}
+
+#[must_use]
+fn bookmark_exists(editor: &LushtextEditorPage, id: &BookmarkId) -> bool {
+    editor
+        .imp()
+        .bookmarks
+        .entries
+        .borrow()
+        .iter()
+        .any(|entry| entry.record.id == *id)
+}
+
+/// Return whether a different bookmark already occupies the target line.
+#[must_use]
+fn bookmark_line_occupied_by_other(
+    editor: &LushtextEditorPage,
+    line: u32,
+    id: &BookmarkId,
+) -> bool {
+    editor
+        .imp()
+        .bookmarks
+        .entries
+        .borrow()
+        .iter()
+        .any(|entry| entry.record.id != *id && current_mark_line(editor, &entry.mark) == Some(line))
+}
+
+/// Return the current buffer line count in the 1-based domain used by dialogs.
+#[must_use]
+fn buffer_line_count(editor: &LushtextEditorPage) -> u32 {
+    u32::try_from(editor.buffer().line_count())
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// Convert the source-mark name back into a bookmark ID.

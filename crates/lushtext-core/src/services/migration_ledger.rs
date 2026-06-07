@@ -14,9 +14,10 @@ use crate::model::migration_ledger::{
     MigrationEntry, MigrationKind, MigrationKindState, MigrationLedgerDocument,
 };
 use crate::model::sidecar_identity::now_epoch_secs;
+use crate::services::json_format::KIND_MIGRATION_LEDGER;
 use crate::services::recovery_metadata::{
     RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass,
-    load_json_or_default, save_json_path,
+    load_enveloped_json_or_default, save_enveloped_json_path,
 };
 use crate::services::{
     bookmark_service, document_note_service, local_history_service, workspace_note_service,
@@ -81,11 +82,10 @@ pub fn ledger_path(data_dir: &Path) -> std::path::PathBuf {
 #[must_use]
 pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<MigrationLedgerDocument> {
     let path = ledger_path(data_dir);
-    load_json_or_default(&RecoveryLoadConfig::new(
-        data_dir,
-        &path,
-        RecoveryMetadataClass::MigrationLedger,
-    ))
+    load_enveloped_json_or_default(
+        &RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::MigrationLedger),
+        KIND_MIGRATION_LEDGER,
+    )
 }
 
 /// Record or extend a pending rename migration entry.
@@ -274,8 +274,14 @@ fn load_for_update(data_dir: &Path) -> Result<MigrationLedgerDocument> {
 }
 
 fn save(data_dir: &Path, ledger: &MigrationLedgerDocument) -> Result<()> {
-    save_json_path(&ledger_path(data_dir), ledger)
-        .with_context(|| format!("failed to save {}", ledger_path(data_dir).display()))
+    let path = ledger_path(data_dir);
+    let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::MigrationLedger);
+    let diagnostics = save_enveloped_json_path(&config, KIND_MIGRATION_LEDGER, ledger)
+        .with_context(|| format!("failed to save {}", path.display()))?;
+    for diagnostic in diagnostics {
+        tracing::warn!("{}", diagnostic.summary());
+    }
+    Ok(())
 }
 
 fn update_kind_state(

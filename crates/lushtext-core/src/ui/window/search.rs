@@ -33,8 +33,19 @@ use super::LushtextWindow;
 /// focus over mid-animation, while much longer makes Ctrl+Shift+F feel laggy.
 pub(super) const SEARCH_PANEL_TRANSITION_DELAY_MS: u64 = 260;
 
+/// Maximum editor-selection size copied into the workspace search entry.
+///
+/// Users sometimes hit Ctrl+Shift+F with a whole document selected. The search
+/// panel prefill path runs on the GTK main thread, so keep it query-sized and
+/// skip very large selections instead of allocating a huge temporary string.
+const SEARCH_PANEL_PREFILL_CHAR_LIMIT: i32 = 1024;
+
 fn format_search_progress_message(files_searched: usize) -> String {
     format!("Searching {files_searched} files\u{2026}")
+}
+
+fn selection_within_search_prefill_limit(start_offset: i32, end_offset: i32) -> bool {
+    start_offset.abs_diff(end_offset) <= SEARCH_PANEL_PREFILL_CHAR_LIMIT as u32
 }
 
 /// Set up the search panel action, callbacks, and workspace root forwarding.
@@ -280,18 +291,30 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     let data_dir_saved = data_dir.clone();
     async_task::spawn_blocking_then(
         window.clone(),
-        move || search_history::load(&data_dir),
-        |window, entries| {
-            window.imp().search_panel.set_search_history(entries);
+        move || search_history::load_recovering(&data_dir),
+        |window, load| {
+            for diagnostic in &load.diagnostics {
+                tracing::warn!("{}", diagnostic.summary());
+            }
+            window.imp().search_panel.set_search_history(load.value);
         },
     );
 
     // --- Load saved searches from disk (parallel to history) ---
     async_task::spawn_blocking_then(
         window.clone(),
-        move || saved_searches::load(&data_dir_saved),
-        |window, entries| {
-            window.imp().search_panel.set_saved_searches(entries);
+        move || saved_searches::load_recovering(&data_dir_saved),
+        |window, load| {
+            for diagnostic in &load.diagnostics {
+                tracing::warn!("{}", diagnostic.summary());
+            }
+            if !load.diagnostics.is_empty() {
+                window.publish_status_message(
+                    "Saved searches needed recovery; unsupported metadata was preserved",
+                    MessageKind::Warning,
+                );
+            }
+            window.imp().search_panel.set_saved_searches(load.value);
         },
     );
 }
@@ -337,7 +360,9 @@ impl LushtextWindow {
         // Pre-fill: if active editor has selected text, use it.
         if let Some(editor) = self.active_editor() {
             let buffer = editor.buffer();
-            if let Some((start, end)) = buffer.selection_bounds() {
+            if let Some((start, end)) = buffer.selection_bounds()
+                && selection_within_search_prefill_limit(start.offset(), end.offset())
+            {
                 let selected = buffer.text(&start, &end, false);
                 if !selected.is_empty() {
                     imp.search_panel.set_query(&selected);
@@ -604,7 +629,10 @@ fn scroll_editor_to_line(editor: &LushtextEditorPage, line: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::format_search_progress_message;
+    use super::{
+        SEARCH_PANEL_PREFILL_CHAR_LIMIT, format_search_progress_message,
+        selection_within_search_prefill_limit,
+    };
 
     #[test]
     fn search_progress_message_does_not_use_palette_index_total() {
@@ -612,5 +640,18 @@ mod tests {
             format_search_progress_message(14_100),
             "Searching 14100 files\u{2026}"
         );
+    }
+
+    #[test]
+    fn search_panel_prefill_skips_large_selection_ranges() {
+        assert!(selection_within_search_prefill_limit(
+            0,
+            SEARCH_PANEL_PREFILL_CHAR_LIMIT
+        ));
+        assert!(!selection_within_search_prefill_limit(
+            0,
+            SEARCH_PANEL_PREFILL_CHAR_LIMIT + 1
+        ));
+        assert!(selection_within_search_prefill_limit(42, 1));
     }
 }

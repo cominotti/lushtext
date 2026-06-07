@@ -15,7 +15,6 @@ use crate::model::workspace_note::{WorkspaceNoteDocument, WorkspaceRootIdentity}
 use crate::services::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
 };
-use crate::services::json_store;
 use crate::services::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
 
 use super::note_storage;
@@ -125,9 +124,13 @@ pub fn save_document(data_dir: &Path, document: &WorkspaceNoteDocument) -> Resul
         return delete_sidecar_file(data_dir, &document.identity);
     }
 
-    json_store::save(
-        &workspace_notes_dir(data_dir),
-        &note_storage::sidecar_filename(&document.identity.sidecar_id),
+    let path = workspace_notes_dir(data_dir).join(note_storage::sidecar_filename(
+        &document.identity.sidecar_id,
+    ));
+    note_storage::save_json_file_recovering(
+        data_dir,
+        &path,
+        RecoveryMetadataClass::WorkspaceNoteSidecar,
         document,
     )
 }
