@@ -164,11 +164,34 @@ make snap          # build (LXD backend)
 make snap-smoke    # confined smoke test (skips cleanly until then)
 ```
 
+Use the readiness helper to check the current external gates without mutating
+Snap Store state. When `gh` is authenticated, it also checks the
+`SNAP_PLATFORM_AVAILABLE` repository variable and `SNAPCRAFT_STORE_CREDENTIALS`
+secret. The target exits nonzero while any gate is still pending, so a `make`
+error here means the Snap is not release-ready yet:
+
+```sh
+make snap-store-readiness
+```
+
 It will be released **Unlisted on the `edge` channel** — omitted from store
 search and installable only with an explicit command:
 
 ```sh
 snap install lushtext --edge
+```
+
+Store registration and CI publishing still require authenticated operator
+steps:
+
+```sh
+snapcraft login
+snapcraft register lushtext
+# Set Visibility to Unlisted in the Snap Store dashboard settings.
+snapcraft export-login snapcraft-credentials.txt
+gh secret set SNAPCRAFT_STORE_CREDENTIALS < snapcraft-credentials.txt
+# After the GNOME 50 platform snap is visible and snap/snapcraft.yaml is updated:
+gh variable set SNAP_PLATFORM_AVAILABLE --body true
 ```
 
 ### Development run

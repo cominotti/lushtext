@@ -36,10 +36,10 @@ apps:
     common-id: dev.cominotti.lushtext
     desktop: usr/share/applications/dev.cominotti.lushtext.desktop
     plugs:
-      # Read/write non-hidden files under the user's home directory. This is the
-      # primary workspace-root access path and is auto-connected.
+      # Read/write non-hidden workspace folders and files under the user's home
+      # directory. This primary folder-membership access path is auto-connected.
       - home
-      # Workspace roots / files on mounted media (/media, /mnt). Manual-connect.
+      # Workspace folders / files on mounted media (/media, /mnt). Manual-connect.
       - removable-media
     # NOTE on confinement boundary (design + snap-sandbox-identity spec):
     # strict confinement is NARROWER than the Flatpak's --filesystem=host.

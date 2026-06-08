@@ -40,6 +40,7 @@
 #   make verify-flathub-domain - Verify cominotti.dev is ready for Flathub app verification
 #   make release     - Prepare, validate, commit, tag, and push an explicit release version
 #   make release-bump - Compute the next release version, then release it
+#   make snap-store-readiness - Check Snap Store/platform gates without mutating them
 #   make dev-tools   - Prepare local dev tooling (Flatpak deps + GTK debug helpers)
 #   make install-git-hooks - configure this repo to use .githooks/
 #   make clean       - Clean build artifacts
@@ -51,7 +52,7 @@
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
        cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
        test-release-helper test-flathub-manifest release release-bump \
-       snap snap-smoke verify-snap-identity \
+       snap snap-smoke verify-snap-identity snap-store-readiness \
        bench bench-report bench-report-full bench-baseline bench-compare
 
 .DEFAULT_GOAL := help
@@ -484,6 +485,12 @@ verify-snap-identity:
 	@echo "Verifying Snap identity and permissions..."
 	./scripts/verify-snap-identity.sh $(ARGS)
 
+# Check external Snap Store and platform readiness without registering,
+# publishing, or mutating store state.
+snap-store-readiness:
+	@echo "Checking Snap Store and platform readiness..."
+	./scripts/check-snap-store-readiness.sh
+
 # Show available targets
 help:
 	@echo "LushText Build System"
@@ -558,6 +565,7 @@ help:
 	@echo "  snap            Build the Snap (LXD); gated on the GNOME 50 platform snap"
 	@echo "  snap-smoke      Confined smoke test of the built Snap (skips if unavailable)"
 	@echo "  verify-snap-identity Verify Snap confinement, plugs, and common-id"
+	@echo "  snap-store-readiness Check Snap Store/platform gates without mutating them"
 	@echo ""
 	@echo "Other targets:"
 	@echo "  check-fmt    rustfmt --check"

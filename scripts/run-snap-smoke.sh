@@ -18,7 +18,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SNAP_NAME="lushtext"
+MANIFEST="$REPO_ROOT/snap/snapcraft.yaml"
 
 skip() {
   echo "SKIP: $*"
@@ -29,6 +29,10 @@ fail() {
   echo "FAIL: $*" >&2
   exit 1
 }
+
+[ -f "$MANIFEST" ] || fail "missing $MANIFEST"
+SNAP_NAME="$(awk -F':' '$1 == "name" { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' "$MANIFEST" | tr -d '"')"
+[ -n "$SNAP_NAME" ] || fail "could not read snap name from $MANIFEST"
 
 # --- Gate 1: tooling -------------------------------------------------------
 command -v snapcraft >/dev/null 2>&1 || skip "snapcraft is not installed."
