@@ -146,6 +146,12 @@ What would you like to do?
 - Always read context files before starting (from the apply instructions output)
 - If task is ambiguous, pause and ask before implementing
 - If implementation reveals issues, pause and suggest artifact updates
+- For UI-facing tasks, verify the relevant state extremes before marking the
+  task complete: no items/no required context, representative populated data,
+  many or awkward items, and constrained geometry. Add or update widget
+  assertions and, when the risk is rendered legibility or geometry, capture a
+  headless screenshot proof. Do not treat a command/action path as complete if
+  the resulting empty or dense surface is not visibly usable.
 - Keep code changes minimal and scoped to each task
 - Update task checkbox immediately after completing each task
 - Pause on errors, blockers, or unclear requirements - don't guess

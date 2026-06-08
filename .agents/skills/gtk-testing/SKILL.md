@@ -73,15 +73,21 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 ## Default Workflow
 
 1. Pick the lowest level that can prove the behavior.
-2. Reuse the existing helpers:
+2. For any UI surface with variable content, write the state matrix before
+   choosing assertions: no items/no required context, one or a few
+   representative items, many or awkward items, and the narrow/short geometry
+   where the surface still promises to work. Do not sign off on a collection,
+   picker, browser, command palette, search panel, sidebar, tab header, dialog,
+   or empty state after testing only the happy populated path.
+3. Reuse the existing helpers:
    - `crates/lushtext/tests/integration/common.rs` for `TestContext`
    - `crates/lushtext/tests/widget/common.rs` for `ensure_gtk_init()`, `test_application()`, and `test_window()`
-3. For widget tests, use the shared `flush_events()` / `wait_until(...)` from `common.rs` over fixed sleeps. Never copy a private `wait_until`/`flush_*` into a test module — a fix to the shared version would then silently miss your copy.
-4. If the code under test uses async GTK callbacks or `spawn_blocking_then`, wait on a visible predicate with a **generous** budget (≥5–10s). These waits depend on background-thread scheduling and I/O, not just main-loop ticks, so a tight 2s budget flakes under load. A larger ceiling never costs time on the fast path — the predicate returns the instant the work lands — and only matters when a loaded machine delays the thread. Reserve short budgets for synchronous UI-state flips.
-5. If the behavior depends on real frame-clock progression, do **not** just sleep for the nominal animation duration. Assert on stable invariants or use the repo's narrow test-only knobs when they already exist.
-6. Run the smallest relevant command before broadening to the full suite.
-7. When refactoring a large widget or window into sibling modules without changing behavior, still run the widget target for that surface and its adjacent orchestration surface. Visibility and wiring regressions often show up only from the external `crates/lushtext` test crate, not from `lushtext-core` alone.
-8. For rendered pixels, portals, installed package confinement, AT-SPI, or
+4. For widget tests, use the shared `flush_events()` / `wait_until(...)` from `common.rs` over fixed sleeps. Never copy a private `wait_until`/`flush_*` into a test module — a fix to the shared version would then silently miss your copy.
+5. If the code under test uses async GTK callbacks or `spawn_blocking_then`, wait on a visible predicate with a **generous** budget (≥5–10s). These waits depend on background-thread scheduling and I/O, not just main-loop ticks, so a tight 2s budget flakes under load. A larger ceiling never costs time on the fast path — the predicate returns the instant the work lands — and only matters when a loaded machine delays the thread. Reserve short budgets for synchronous UI-state flips.
+6. If the behavior depends on real frame-clock progression, do **not** just sleep for the nominal animation duration. Assert on stable invariants or use the repo's narrow test-only knobs when they already exist.
+7. Run the smallest relevant command before broadening to the full suite.
+8. When refactoring a large widget or window into sibling modules without changing behavior, still run the widget target for that surface and its adjacent orchestration surface. Visibility and wiring regressions often show up only from the external `crates/lushtext` test crate, not from `lushtext-core` alone.
+9. For rendered pixels, portals, installed package confinement, AT-SPI, or
    coarse user-visible latency, use the matching smoke lane and keep its
    artifacts.
 
@@ -118,6 +124,12 @@ This applies to load-amplified flakes too: heavy local load exposing a 2s async 
 
 ## Assertion Rules That Save Time
 
+- For collection, picker, browser, command-palette, search-result, and
+  status-page surfaces, assert the state extremes directly when possible:
+  empty/no-context copy and reachable controls, representative populated rows,
+  dense scrolling behavior, and constrained geometry. A model count assertion
+  is not enough if the regression risk is visibility, legibility, clipping,
+  unintended scrollbars, or controls pushed outside the allocation.
 - For parented widgets inside an unpresented window, prefer `widget.property::<bool>("visible")` when you need the widget's own visibility flag. `is_visible()` answers a different question and walks the parent chain.
 - For `GtkListView` keyboard shortcuts, do not assume the focused widget is the list itself. In real sessions focus usually sits on a realized row descendant, so synthetic key delivery should target the focused widget and, if needed, walk up its parent chain until it reaches the ancestor that owns the `EventControllerKey`. Emitting the key directly on the list view can produce false-green tests for shortcuts that do nothing in the live app.
 - For adaptive surfaces that animate, especially `AdwBottomSheet` used by the document-properties pane, do not close the animated surface as a cleanup step in headless widget tests unless the test is specifically proving the close animation. Assert the open/compact state, then explicitly destroy the presented test window and flush once. Closing the sheet right before process teardown can make Mutter report `gdk-frame-clock: layout continuously requested` and `Trying to snapshot LushtextWindow ... without a current allocation`, even when the production UI state is correct.

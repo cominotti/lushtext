@@ -68,6 +68,47 @@ LushtextWindow (AdwApplicationWindow)
 - `AdwMultiLayoutView` + `AdwLayoutSlot` for adaptive secondary surfaces that need the same child in multiple presentations
 - `AdwBottomSheet` for compact utility surfaces such as document properties on narrow windows
 
+## State Extremes And Visibility Matrix (CRITICAL)
+
+Every new or changed UI surface that presents a collection, picker, browser,
+search result list, sidebar section, tab-dependent header control, status page,
+or dialog must be checked against its real state extremes before the change is
+called done.
+
+At minimum, reason through and verify:
+
+- **No items / no context**: no tabs, no workspaces, no notes, no history
+  snapshots, no search results, or the relevant empty backing store. Independent
+  commands must still be reachable, empty states must be readable, and the UI
+  must not create fake rows or require unrelated context just to expose an
+  available action.
+- **Representative items**: one or a few normal records with realistic labels,
+  paths, metadata, action buttons, and selection state.
+- **Many or awkward items**: enough rows to require scrolling, plus long names,
+  deep paths, mixed item types, or capped result sets when that surface can
+  encounter them.
+- **Constrained geometry**: the narrow or short layout where the surface is
+  still expected to be usable, including adaptive breakpoints and compact
+  dialogs when relevant.
+
+Acceptance for these states:
+
+- Empty `AdwStatusPage`-style surfaces must fit their icon, title,
+  description, margins, and close affordance without absurdly narrow columns,
+  overlapping text, or gratuitous vertical scrollbars. A scrollbar in an empty
+  status-only dialog is a failed geometry contract unless the available viewport
+  is genuinely smaller than the documented minimum.
+- Dense states must scroll only the item/results region. Header controls,
+  close buttons, search/filter controls, primary actions, and selection context
+  must remain visible and usable.
+- Long labels should wrap or ellipsize according to the surface's purpose; they
+  must not expand fixed shells, create horizontal scrollbars, or push critical
+  controls out of view.
+- If the bug or feature is visual, geometry-related, adaptive, or user-reported
+  from a screenshot, include either widget-level allocation/overflow assertions
+  or an agent-owned headless screenshot proof. A green action test is not enough
+  when the question is "can a human actually see and read it?"
+
 ## Adaptive Dialog Navigation
 
 - When an `AdwSidebar` selection drives the content page of an `AdwNavigationSplitView`, user-selected rows should call `set_show_content(true)` regardless of the split view's current `is_collapsed()` value. `show-content` only affects the visible page while collapsed, but setting it before the adaptive layout settles preserves the user's navigation intent during resize transitions and widget-test collapse simulations. Back buttons can still call `set_show_content(false)` to return to the list page.

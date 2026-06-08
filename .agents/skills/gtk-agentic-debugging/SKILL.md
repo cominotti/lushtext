@@ -82,10 +82,15 @@ After the reproduction, inspect the generated `summary.md`, then open the raw `a
 4. Before any D-Bus action, input injection, screenshot, or request for the human to type into the window, run `scripts/check-lushtext-live.sh` with `--session`, `--require-launched-instance`, and every `--require-tool` needed for the next action.
 5. Inspect `process-before.txt`, `process-after.txt` when present, and `status.txt`. If they mention `run-gtk-debug-session.sh` or `pgrep`, the capture is contaminated and you should tighten the pattern before drawing conclusions.
 6. Let the human reproduce the bug while you poll the session and read warnings as they appear.
-7. If visual confirmation matters, run `scripts/capture-screenshot.py --portal-only --non-interactive` only after the liveness/tool check succeeds, and note whether the desktop allowed or denied the request.
-8. Run `scripts/summarize-runtime-logs.py` or read the auto-generated `summary.md`.
-9. Use [references/log-patterns.md](references/log-patterns.md) to map the signature to likely GTK, GLib, Adwaita, or D-Bus causes.
-10. If step 9 points to a toolkit invariant rather than an app-specific state bug, hand the interpretation to `gtk4-libadwaita-internals` before proposing a fix.
+7. If visual confirmation matters, capture the relevant state extreme, not just
+   any reachable screen. Prefer no items/no required context for empty-state
+   regressions, and many or awkward items for overflow, clipped controls,
+   virtualization, or scrolling regressions. When practical, capture the
+   opposing state too so the fix is not tuned only to one end of the matrix.
+8. Run `scripts/capture-screenshot.py --portal-only --non-interactive` only after the liveness/tool check succeeds, and note whether the desktop allowed or denied the request.
+9. Run `scripts/summarize-runtime-logs.py` or read the auto-generated `summary.md`.
+10. Use [references/log-patterns.md](references/log-patterns.md) to map the signature to likely GTK, GLib, Adwaita, or D-Bus causes.
+11. If step 10 points to a toolkit invariant rather than an app-specific state bug, hand the interpretation to `gtk4-libadwaita-internals` before proposing a fix.
 
 ## Preferred Investigation Loop
 
@@ -110,6 +115,13 @@ This is the preferred workflow over broad speculative code changes. For geometry
 
 - Prefer `tty: true` for the live runner. PTY-backed sessions are the most reliable way to preserve stdout and stderr ordering.
 - For automated visual inspection, prefer the headless Mutter helper before live-desktop portal screenshots and before Xvfb. Mutter matches the CI compositor path and avoids stealing the human's focus.
+- For visual UI work, inspect the state matrix through actual screenshots when
+  widget assertions cannot prove legibility: empty/no-context, representative
+  populated, dense/many-item, and constrained-size states. Open the PNG and
+  verify the human-visible result: text readable, controls reachable, intended
+  region scrolls, empty status pages do not show gratuitous scrollbars, and
+  dense lists do not push chrome off-screen. A screenshot file existing is not
+  evidence by itself.
 - Tell the human before starting a fresh capture if an existing app instance may need to be closed. `make run` is now a fresh-run path that asks the existing LushText instance to quit and refuses to activate stale code; use an existing-instance watch instead when the human has unsaved work.
 - Before interacting with LushText or capturing a visual snapshot, run `scripts/check-lushtext-live.sh`. For fresh debug sessions, include `--session` and `--require-launched-instance` so you do not accidentally drive a pre-existing LushText window.
 - If a required interaction or screenshot tool is missing, stop the live-debug flow and ask the human to install it, run `make dev-tools`, or give alternate instructions. Do not silently fall back to a weaker interaction path after discovering a missing tool.

@@ -40,6 +40,12 @@ Use this skill when the real question is "what contract is GTK, Libadwaita, or G
 - Distinguish the widget named in a warning from the widget that caused the invariant to fail. Containers often surface child problems.
 - Trace both directions through the widget tree. Parents distribute constraints downward; children push minimums upward.
 - Account for CSS margin, border, padding, and wrapper style classes. They participate in measurement even when visible content seems unchanged.
+- For collection, browser, picker, and status-page surfaces, reason through the
+  measurement contract at both ends of the data shape: zero children or empty
+  model, representative content, many rows, long labels, and constrained
+  allocation. GTK can produce a valid tree that is still human-unusable if the
+  empty state follows a narrow natural child size or the dense state lets the
+  row area expand instead of scrolling.
 - Treat animated containers as layout participants, not visual sugar. `GtkRevealer`, `GtkPaned`, `AdwNavigationSplitView`, and `AdwToolbarView` all feed real numbers into GTK's request and allocation pipeline.
 - Translate every conclusion back into Rust terms before finishing. The invariant comes from GTK; the Rust binding changes syntax and ownership ergonomics, not toolkit semantics.
 

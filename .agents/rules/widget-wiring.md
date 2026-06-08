@@ -121,6 +121,25 @@ Code that "looks wired correctly" can silently fail if GTK4's internal gesture s
 
 Every wired signal must have a widget test that asserts the expected state change (button click hides widget, entry propagates value, toggle flips state). Tests must also cover the action enabled/disabled lifecycle (disabled when no tabs, enabled after tab creation, disabled again after closing all tabs).
 
+**State-extreme coverage is mandatory for collection and browser surfaces:** If a
+widget presents rows, tabs, notes, bookmarks, snapshots, command results, search
+results, workspaces, files, or any other variable-sized set, do not test only
+the normal populated path. Cover the relevant state matrix:
+
+- no items or no required context, especially when the action should still be
+  reachable without an open tab or workspace;
+- one or a few representative items;
+- many items, long labels, deep paths, or capped results when the surface can
+  encounter them.
+
+For these tests, assert the user-visible contract, not only model state: the
+right empty copy is shown, required header/menu/close controls are visible,
+item regions scroll instead of expanding the shell, critical controls are not
+pushed off-screen, and no unintended horizontal or vertical scrollbar appears
+in an empty status-only surface. When an allocation, overflow, or rendered
+legibility bug prompted the change, add an assertion for that failure mode
+directly or pair the widget test with a headless screenshot proof.
+
 **Test the preconditions, not just the wiring:** When a feature depends on a GTK widget property (like `single-click-activate=true`), write a test that asserts the property value directly. This catches template regressions even when end-to-end click simulation isn't possible in headless tests.
 
 **`is_visible()` in widget tests:** `WidgetExt::is_visible()` checks the entire parent chain — it returns `false` for any widget inside an unrealized/unpresented window (which is the case in all widget tests). To check a widget's own visibility property, use `widget.property::<bool>("visible")` instead.

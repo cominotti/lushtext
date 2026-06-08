@@ -72,6 +72,11 @@ Depending on what the user brings, you might:
 - Identify what could go wrong
 - Find gaps in understanding
 - Suggest spikes or investigations
+- For UI surfaces, explicitly ask what happens at the state extremes: no
+  items/no required context, one or a few representative items, many or awkward
+  items, and constrained geometry. Explore whether commands remain reachable,
+  empty states stay readable, dense lists scroll in the right region, and
+  controls remain visible before proposing an implementation path.
 
 ---
 

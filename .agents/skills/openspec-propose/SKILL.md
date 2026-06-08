@@ -98,6 +98,12 @@ After completing all artifacts, summarize:
 - Follow the `instruction` field from `openspec instructions` for each artifact type
 - The schema defines what each artifact should contain - follow it
 - Read dependency artifacts for context before creating new ones
+- For UI-facing changes, include acceptance coverage for the state extremes the
+  surface can enter: no items/no required context, representative populated
+  data, many or awkward items, and constrained geometry. Name the visible
+  contract in the spec or design when it matters: reachable commands, readable
+  empty states, item-region-only scrolling, preserved header/close/actions,
+  no unintended scrollbars, and no fake rows or unrelated-context dependency.
 - Use `template` as the structure for your output file - fill in its sections
 - **IMPORTANT**: `context` and `rules` are constraints for YOU, not content for the file
   - Do NOT copy `<context>`, `<rules>`, `<project_context>` blocks into the artifact
