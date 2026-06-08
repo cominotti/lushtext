@@ -367,11 +367,6 @@ fn open_temp_document(initial_text: &str) -> (LushtextWindow, tempfile::TempDir,
     (window, dir, path)
 }
 
-fn write_ascii_fixture(path: &Path, size: u64) {
-    const CHUNK: &[u8] = b"fn main() { println!(\"large file fixture\"); }\n";
-    fixture::write_repeated_bytes(path, CHUNK, size);
-}
-
 /// Force an external write onto a later mtime second before waiting for GTK.
 ///
 /// The production monitor compares second-resolution mtimes, so this helper
@@ -3325,16 +3320,21 @@ fn test_large_file_load_disables_syntax_through_ui_state() {
     let dir = tempfile::tempdir().expect("large-file tempdir");
     let path = dir.path().join("large.rs");
     let size = DISABLE_SYNTAX_HIGHLIGHTING + 1;
-    write_ascii_fixture(&path, size);
+    fixture::write_text(&path, "small fixture promoted to large-file policy\n");
 
     let window = test_window();
     present_window(&window);
     window.open_document(&path);
 
     wait_until(Duration::from_secs(10), || {
-        active_editor(&window).size_check() == FileSizeCheck::DisableSyntax
+        active_editor(&window).file_path() == Some(path.clone())
+            && active_editor(&window).file_size().is_some()
     });
     let editor = active_editor(&window);
+    // The policy assertions below do not need a real 10MB text-buffer load.
+    // Keeping the fixture small avoids turning this UI-state test into a CI
+    // timing test for file I/O, UTF-8 decoding, and GtkTextBuffer insertion.
+    editor.apply_loaded_content_for_test("large-file policy content\n", size);
     assert_eq!(editor.file_size(), Some(size));
     assert_eq!(editor.size_check(), FileSizeCheck::DisableSyntax);
     assert!(!editor.buffer().is_highlight_syntax());
