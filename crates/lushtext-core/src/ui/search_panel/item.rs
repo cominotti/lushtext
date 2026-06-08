@@ -31,7 +31,7 @@ mod imp {
         pub kind: Cell<u8>,
         /// Absolute file path (set on both file and match items).
         pub file_path: RefCell<String>,
-        /// Path relative to workspace root, shown in the UI (file items only).
+        /// Path relative to a workspace folder, shown in the UI (file items only).
         pub display_path: RefCell<String>,
         /// 1-based line number (match items only; 0 for file items).
         pub line_number: Cell<u32>,

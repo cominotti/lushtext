@@ -1122,6 +1122,39 @@ fn test_render_markdown_renders_local_image_block() {
 }
 
 #[test]
+fn test_render_markdown_uses_first_loadable_workspace_image_candidate() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+    let tempdir = tempfile::tempdir().expect("workspace image tempdir");
+    let first_folder = tempdir.path().join("first");
+    let second_folder = tempdir.path().join("second");
+    fixture::create_dir_all(&first_folder.join("images"));
+    fixture::create_dir_all(&second_folder.join("images"));
+    fixture::write_bytes(&first_folder.join("images/logo.svg"), b"not an image");
+    fixture::write_text(
+        &second_folder.join("images/logo.svg"),
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#2e7d32"/></svg>"##,
+    );
+    let context = MarkdownPreviewRenderContext::new(None, vec![first_folder, second_folder]);
+
+    preview.render_markdown_with_context("![Workspace logo](images/logo.svg)", &context);
+    wait_until(Duration::from_secs(2), || {
+        !widgets_with_css_class::<gtk4::Picture>(&preview, "markdown-preview-image").is_empty()
+    });
+
+    assert!(
+        !widgets_with_css_class::<gtk4::Picture>(&preview, "markdown-preview-image").is_empty(),
+        "Expected the first loadable workspace-relative image candidate to render as a picture"
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback")
+            .is_empty(),
+        "Expected an unloadable earlier workspace candidate not to force a fallback"
+    );
+}
+
+#[test]
 fn test_render_markdown_shows_image_fallback_states() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();

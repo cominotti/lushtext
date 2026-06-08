@@ -7,7 +7,7 @@ globs: "**/*.rs"
 
 ## Crate Structure
 
-- All dependencies declared in workspace root `[workspace.dependencies]`, consumed with `{ workspace = true }`.
+- All dependencies declared in the repository-root `[workspace.dependencies]`, consumed with `{ workspace = true }`.
 - Every crate depends on `workspace-hack` for cargo-hakari.
 - License header `// SPDX-License-Identifier: GPL-3.0-or-later` on every `.rs` file.
 

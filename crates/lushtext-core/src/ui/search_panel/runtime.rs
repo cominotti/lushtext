@@ -46,9 +46,9 @@ impl LushtextSearchPanel {
             return;
         }
 
-        let roots = imp.runtime.workspace_roots.borrow().clone();
-        if roots.is_empty() {
-            imp.count_label.set_text("No workspace roots");
+        let folders = imp.runtime.workspace_folders.borrow().clone();
+        if folders.is_empty() {
+            imp.count_label.set_text("No workspace folders");
             self.reveal_results_feedback();
             return;
         }
@@ -69,10 +69,10 @@ impl LushtextSearchPanel {
         let worker_progress_counter = Arc::clone(&progress_counter);
         let worker_finished_for_search = Arc::clone(&worker_finished);
         std::thread::spawn(move || {
-            let root_refs: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+            let folder_refs: Vec<&Path> = folders.iter().map(PathBuf::as_path).collect();
             content_search::search(
                 &worker_spec.query,
-                &root_refs,
+                &folder_refs,
                 &worker_spec.options,
                 tx,
                 cancel,
@@ -95,7 +95,7 @@ impl LushtextSearchPanel {
             let imp = panel.imp();
             let mut done = false;
             let mut items_this_tick = 0;
-            let workspace_roots = imp.runtime.workspace_roots.borrow().clone();
+            let workspace_folders = imp.runtime.workspace_folders.borrow().clone();
 
             const MAX_EVENTS_PER_TICK: usize = 250;
 
@@ -106,7 +106,7 @@ impl LushtextSearchPanel {
                 match rx.try_recv() {
                     Ok(SearchEvent::Match(search_match)) => {
                         items_this_tick += 1;
-                        append_match_result(&panel, search_match, &workspace_roots);
+                        append_match_result(&panel, search_match, &workspace_folders);
                     }
                     Ok(SearchEvent::Done) | Err(crossbeam_channel::TryRecvError::Disconnected) => {
                         done = true;
@@ -236,11 +236,11 @@ impl LushtextSearchPanel {
 fn append_match_result(
     panel: &LushtextSearchPanel,
     search_match: crate::model::content_search::SearchMatch,
-    workspace_roots: &[PathBuf],
+    workspace_folders: &[PathBuf],
 ) {
     let imp = panel.imp();
     let path = search_match.path.clone();
-    let display = make_display_path(&path, workspace_roots);
+    let display = make_display_path(&path, workspace_folders);
     imp.runtime
         .search_matches
         .borrow_mut()

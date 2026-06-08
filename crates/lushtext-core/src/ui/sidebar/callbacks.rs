@@ -85,6 +85,47 @@ impl LushtextSidebar {
         });
 
         let sidebar_weak = self.downgrade();
+        section.connect_add_folder_requested(move |workspace_id| {
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                sidebar.show_add_folder_dialog(workspace_id);
+            }
+        });
+
+        let sidebar_weak = self.downgrade();
+        section.connect_remove_folder_requested(move |workspace_id, folder_id, path| {
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                sidebar.handle_remove_folder_from_workspace(workspace_id, folder_id, path);
+            }
+        });
+
+        let sidebar_weak = self.downgrade();
+        section.connect_folder_note_for_folder_requested(move |workspace_id, path| {
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                sidebar.emit_folder_note_for_folder_requested(workspace_id, path);
+            }
+        });
+
+        let sidebar_weak = self.downgrade();
+        section.connect_reorder_folder_requested(move |workspace_id, folder_id, direction| {
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                sidebar.handle_reorder_folder_in_workspace(workspace_id, folder_id, direction);
+            }
+        });
+
+        let sidebar_weak = self.downgrade();
+        section.connect_reorder_folder_to_index_requested(
+            move |workspace_id, folder_id, new_index| {
+                if let Some(sidebar) = sidebar_weak.upgrade() {
+                    sidebar.handle_reorder_folder_to_index_in_workspace(
+                        workspace_id,
+                        folder_id,
+                        new_index,
+                    );
+                }
+            },
+        );
+
+        let sidebar_weak = self.downgrade();
         section.connect_unlist_workspace_requested(move |workspace_id| {
             if let Some(sidebar) = sidebar_weak.upgrade() {
                 sidebar.show_unlist_workspace_dialog(workspace_id);
@@ -99,9 +140,9 @@ impl LushtextSidebar {
         });
 
         let sidebar_weak = self.downgrade();
-        section.connect_workspace_note_requested(move |workspace_id| {
+        section.connect_folder_note_requested(move |workspace_id| {
             if let Some(sidebar) = sidebar_weak.upgrade() {
-                sidebar.emit_workspace_note_requested(workspace_id);
+                sidebar.emit_folder_note_requested(workspace_id);
             }
         });
     }
@@ -148,9 +189,19 @@ impl LushtextSidebar {
         }
     }
 
-    fn emit_workspace_note_requested(&self, workspace_id: &crate::model::workspace::WorkspaceId) {
-        if let Some(ref callback) = *self.imp().workspace_note_callback.borrow() {
+    fn emit_folder_note_requested(&self, workspace_id: &crate::model::workspace::WorkspaceId) {
+        if let Some(ref callback) = *self.imp().folder_note_callback.borrow() {
             callback(workspace_id.clone());
+        }
+    }
+
+    fn emit_folder_note_for_folder_requested(
+        &self,
+        workspace_id: &crate::model::workspace::WorkspaceId,
+        path: &Path,
+    ) {
+        if let Some(ref callback) = *self.imp().folder_note_for_folder_callback.borrow() {
+            callback(workspace_id.clone(), path.to_path_buf());
         }
     }
 }

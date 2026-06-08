@@ -11,7 +11,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use std::cell::{Cell, RefCell};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::workspace_section::LushtextWorkspaceSection;
 
@@ -19,6 +19,7 @@ type FileCallback = Box<dyn Fn(&Path)>;
 type MessageCallback = Box<dyn Fn(&str, NotificationSeverity)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
 type WorkspaceCallback = Box<dyn Fn(WorkspaceId)>;
+type FolderNotePathCallback = Box<dyn Fn(WorkspaceId, PathBuf)>;
 type WorkspaceScopeCallback = Box<dyn Fn(WorkspaceScope)>;
 
 // CompositeTemplate loads the UI layout from a compiled XML file.
@@ -67,7 +68,9 @@ pub struct LushtextSidebar {
     /// Callback forwarding workspace-section status messages to the window.
     pub message_callback: RefCell<Option<MessageCallback>>,
     /// Callback for workspace-header note requests, forwarded to the window.
-    pub workspace_note_callback: RefCell<Option<WorkspaceCallback>>,
+    pub folder_note_callback: RefCell<Option<WorkspaceCallback>>,
+    /// Callback for exact top-level folder-row note requests.
+    pub folder_note_for_folder_callback: RefCell<Option<FolderNotePathCallback>>,
     /// Callback notifying the window that workspace structure changed.
     pub workspace_structure_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
     /// Callback notifying the window that the shared workspace scope changed.
@@ -105,7 +108,8 @@ impl Default for LushtextSidebar {
             delete_callback: RefCell::default(),
             create_callback: RefCell::default(),
             message_callback: RefCell::default(),
-            workspace_note_callback: RefCell::default(),
+            folder_note_callback: RefCell::default(),
+            folder_note_for_folder_callback: RefCell::default(),
             workspace_structure_changed_callback: RefCell::default(),
             workspace_scope_changed_callback: RefCell::default(),
             persist_generation: Cell::default(),
@@ -143,8 +147,8 @@ impl ObjectImpl for LushtextSidebar {
             ),
         ]);
         self.new_workspace_button.update_property(&[
-            gtk4::accessible::Property::Label("Add workspace folder"),
-            gtk4::accessible::Property::Description("Add a folder to the workspace sidebar"),
+            gtk4::accessible::Property::Label("New Workspace"),
+            gtk4::accessible::Property::Description("Create a named workspace"),
         ]);
 
         // Wire the fixed workspace selector row at the top of the sidebar.

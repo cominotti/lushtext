@@ -1,0 +1,16 @@
+{
+  "kind": "dev.cominotti.lushtext.folder-note-sidecar",
+  "version": 1,
+  "data": {
+    "identity": {
+      "display_folder": "/tmp/project",
+      "canonical_folder": "/tmp/project",
+      "sidecar_id": "ebab4cfadaecf751"
+    },
+    "note": {
+      "text": "Folder note",
+      "created_at_secs": 1780720800,
+      "updated_at_secs": 1780720810
+    }
+  }
+}

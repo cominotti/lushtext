@@ -718,9 +718,17 @@ impl ObjectImpl for LushtextWindow {
 
         let window_weak = obj.downgrade();
         self.sidebar
-            .connect_workspace_note_requested(move |workspace_id| {
+            .connect_folder_note_requested(move |workspace_id| {
                 if let Some(window) = window_weak.upgrade() {
-                    window.open_workspace_note_for_id(&workspace_id);
+                    window.open_folder_note_for_id(&workspace_id);
+                }
+            });
+
+        let window_weak = obj.downgrade();
+        self.sidebar
+            .connect_folder_note_for_folder_requested(move |workspace_id, folder| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.open_folder_note_for_workspace_folder(&workspace_id, &folder);
                 }
             });
 
@@ -1359,10 +1367,10 @@ fn properties_surface_is_compact(window: &super::LushtextWindow) -> bool {
     properties_presentation(window) == PropertiesPresentation::Sheet
 }
 
-fn focus_is_within(window: &super::LushtextWindow, root: &gtk4::Widget) -> bool {
+fn focus_is_within(window: &super::LushtextWindow, folder: &gtk4::Widget) -> bool {
     let mut focus = gtk4::prelude::GtkWindowExt::focus(window);
     while let Some(widget) = focus {
-        if widget.as_ptr() == root.as_ptr() {
+        if widget.as_ptr() == folder.as_ptr() {
             return true;
         }
         focus = widget.parent();

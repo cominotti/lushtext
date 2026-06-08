@@ -12,7 +12,11 @@ mod index;
 
 #[cfg(feature = "property-tests")]
 pub use commands::merge_sorted_for_property_test;
-pub use commands::{all_commands, search_all, search_commands, search_open_files};
+pub use commands::{
+    NoteCommandSection, all_commands, is_note_command, note_command_section, search_all,
+    search_commands, search_non_note_commands, search_note_commands,
+    search_note_commands_for_section, search_open_files,
+};
 pub use fuzzy::fuzzy_score;
 pub use index::FileIndex;
 

@@ -21,13 +21,13 @@
     </p>
     <p>Features:</p>
     <ul>
-      <li>Persistent workspace sidebar with multiple named roots</li>
+      <li>Persistent workspace sidebar with ordered workspace folders</li>
       <li>Adaptive document properties pane for metadata, file health, and formatting details</li>
       <li>Focus Mode for distraction-free writing</li>
       <li>Native Markdown preview with tables, task lists, callouts, footnotes, and local images</li>
       <li>Syntax highlighting via GtkSourceView</li>
       <li>EditorConfig-aware indentation settings</li>
-      <li>Bookmarks, document notes, and workspace notes</li>
+      <li>Bookmarks, document notes, and folder notes</li>
       <li>Local history snapshots for saved files</li>
       <li>Workspace search and safe multi-file Replace All with undo</li>
       <li>Session restore, autosaved drafts, and external file change monitoring</li>
@@ -105,11 +105,11 @@
         <p>William Shakespeare, "Sonnet 18"</p>
         <p>## What's Changed</p>
         <p>LushText's first public release is here: a fast, native GNOME text editor built with GTK4, Libadwaita, GtkSourceView, and a workspace-first shape. You can open files directly, keep multiple tabs restored across launches, pin useful tabs, save and print documents, and tune the editor with dark-mode-aware syntax schemes, custom fonts, line numbers, wrapping, zoom, and GSettings-backed preferences.</p>
-        <p>Workspace support is the heart of this release. You can add named workspace roots, switch between a single workspace and `All workspaces`, browse files in the persistent sidebar, inspect files with quick peek, drill into deep folders with Focus Folder, and let visible folders refresh as the filesystem changes.</p>
+        <p>Workspace support is the heart of this release. You can add named workspace folders, switch between a single workspace and `All workspaces`, browse files in the persistent sidebar, inspect files with quick peek, drill into deep folders with Focus Folder, and let visible folders refresh as the filesystem changes.</p>
         <p>Editing is paired with recovery and safety work. LushText autosaves drafts, restores sessions, detects external file changes, uses durable atomic saves, offers explicit save/discard close flows, preserves line-ending and encoding state, and degrades intentionally on very large files instead of freezing or risking data loss.</p>
         <p>Search and navigation cover both the current tab and the current workspace scope. The command palette searches files and commands, per-tab find/replace handles local edits, and workspace search supports streaming results, regex or literal modes, whole-word matching, glob filters, search history, saved searches, match navigation, and a previewable multi-file Replace All flow with undo.</p>
         <p>Markdown files get a native preview alongside the source editor or as a focused full-width view. The renderer covers headings, emphasis, code, links, ordered and unordered lists, task lists, nested blockquotes, GitHub alert callouts, footnotes, definition lists, tables, and local images with clear fallback states.</p>
-        <p>LushText also ships line bookmarks, document notes, workspace notes, a unified notes browser, local history snapshots with preview and restore undo, a minimap with useful document markers, adaptive document properties, and Focus Mode for a quieter writing surface.</p>
+        <p>LushText also ships line bookmarks, document notes, folder notes, a unified notes browser, local history snapshots with preview and restore undo, a minimap with useful document markers, adaptive document properties, and Focus Mode for a quieter writing surface.</p>
         <p>## Manual Actions Needed</p>
         <p>No manual action is needed for this first release.</p>
         <p>Maintainers publishing through Flathub should still review the generated Flathub pull request before merging. The workflow intentionally does not enable Flathub automerge.</p>

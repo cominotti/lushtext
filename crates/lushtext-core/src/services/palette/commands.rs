@@ -2,8 +2,9 @@
 
 //! Built-in command registry and unified command-palette search entry points.
 //!
-//! This slice owns static command definitions and the merge logic that combines
-//! command results with file-index matches.
+//! This slice owns static command definitions, Notes workflow classification,
+//! command subset searches, and the merge logic that combines command results
+//! with file-index matches.
 
 use crate::model::palette::{
     CommandCategory, CommandDef, PaletteFileEntry, ScoredResult, SearchMode, SearchResultItem,
@@ -15,6 +16,8 @@ use super::index::FileIndex;
 /// All built-in commands available in the palette.
 #[must_use]
 pub fn all_commands() -> &'static [CommandDef] {
+    // Static registry used by every palette search; keeping it static avoids
+    // rebuilding command metadata on each query.
     static COMMANDS: &[CommandDef] = &[
         CommandDef {
             id: "win.new-tab",
@@ -67,37 +70,37 @@ pub fn all_commands() -> &'static [CommandDef] {
         CommandDef {
             id: "win.toggle-bookmark",
             label: "Toggle Bookmark",
-            category: CommandCategory::Edit,
+            category: CommandCategory::Notes,
             shortcut: Some("Ctrl+F2"),
         },
         CommandDef {
             id: "win.edit-bookmark-label",
             label: "Edit Bookmark",
-            category: CommandCategory::Edit,
+            category: CommandCategory::Notes,
             shortcut: Some("Ctrl+Shift+F2"),
         },
         CommandDef {
             id: "win.next-bookmark",
             label: "Next Bookmark",
-            category: CommandCategory::Edit,
+            category: CommandCategory::Notes,
             shortcut: Some("F2"),
         },
         CommandDef {
             id: "win.prev-bookmark",
             label: "Previous Bookmark",
-            category: CommandCategory::Edit,
+            category: CommandCategory::Notes,
             shortcut: Some("Shift+F2"),
         },
         CommandDef {
             id: "win.open-document-note",
             label: "Open Document Note",
-            category: CommandCategory::View,
+            category: CommandCategory::Notes,
             shortcut: None,
         },
         CommandDef {
-            id: "win.open-workspace-note",
-            label: "Open Workspace Note",
-            category: CommandCategory::View,
+            id: "win.open-folder-note",
+            label: "Open Folder Note",
+            category: CommandCategory::Notes,
             shortcut: None,
         },
         CommandDef {
@@ -109,13 +112,13 @@ pub fn all_commands() -> &'static [CommandDef] {
         CommandDef {
             id: "win.show-bookmarks",
             label: "Browse Bookmarks",
-            category: CommandCategory::View,
+            category: CommandCategory::Notes,
             shortcut: Some("Ctrl+Alt+B"),
         },
         CommandDef {
             id: "win.show-notes",
             label: "Browse Notes",
-            category: CommandCategory::View,
+            category: CommandCategory::Notes,
             shortcut: Some("Ctrl+Alt+A"),
         },
         CommandDef {
@@ -188,10 +191,109 @@ pub fn all_commands() -> &'static [CommandDef] {
     COMMANDS
 }
 
+/// Workflow sections for note and bookmark launcher commands.
+///
+/// This policy lives beside the static command registry so every palette
+/// surface shares one source of truth for which actions are Notes actions and
+/// how they are grouped. The GTK adapter renders these sections instead of
+/// duplicating command-id policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteCommandSection {
+    Browse,
+    CurrentDocument,
+    BookmarkNavigation,
+    Workspace,
+}
+
+impl NoteCommandSection {
+    /// Notes-mode section order.
+    pub const ALL: [Self; 4] = [
+        Self::Browse,
+        Self::CurrentDocument,
+        Self::BookmarkNavigation,
+        Self::Workspace,
+    ];
+
+    /// Display label for the section header shown in Notes mode.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Browse => "Browse",
+            Self::CurrentDocument => "Current Document",
+            Self::BookmarkNavigation => "Bookmark Navigation",
+            Self::Workspace => "Workspace",
+        }
+    }
+}
+
+/// Return the Notes-mode intent section for a command.
+#[must_use]
+pub fn note_command_section(command: &CommandDef) -> Option<NoteCommandSection> {
+    // Classify by stable action id instead of label text so copy changes cannot
+    // silently move commands between Notes sections.
+    match command.id {
+        "win.show-notes" | "win.show-bookmarks" => Some(NoteCommandSection::Browse),
+        "win.toggle-bookmark" | "win.edit-bookmark-label" | "win.open-document-note" => {
+            Some(NoteCommandSection::CurrentDocument)
+        }
+        "win.next-bookmark" | "win.prev-bookmark" => Some(NoteCommandSection::BookmarkNavigation),
+        "win.open-folder-note" => Some(NoteCommandSection::Workspace),
+        _ => None,
+    }
+}
+
+/// Return whether the command belongs to the Notes command-palette surface.
+#[must_use]
+pub fn is_note_command(command: &CommandDef) -> bool {
+    note_command_section(command).is_some()
+}
+
 /// Search the command registry with a fuzzy query.
 pub fn search_commands(query: &str, max: usize) -> Vec<ScoredResult<'static>> {
     search_items(
         all_commands().iter(),
+        |command| command.label,
+        SearchResultItem::Command,
+        query,
+        max,
+    )
+}
+
+/// Search only note and bookmark workflow commands.
+pub fn search_note_commands(query: &str, max: usize) -> Vec<ScoredResult<'static>> {
+    search_command_subset(query, max, is_note_command)
+}
+
+/// Search note and bookmark workflow commands for one Notes-mode intent section.
+#[must_use]
+pub fn search_note_commands_for_section(
+    section: NoteCommandSection,
+    query: &str,
+    max: usize,
+) -> Vec<ScoredResult<'static>> {
+    search_command_subset(query, max, move |command| {
+        note_command_section(command) == Some(section)
+    })
+}
+
+/// Search commands outside the Notes workflow surface.
+#[must_use]
+pub fn search_non_note_commands(query: &str, max: usize) -> Vec<ScoredResult<'static>> {
+    search_command_subset(query, max, |command| !is_note_command(command))
+}
+
+/// Run one command-search path for filtered command surfaces.
+///
+/// Keeping filtering here means Notes, non-Notes, and full command searches all
+/// use the same fuzzy scoring and max-result behavior.
+fn search_command_subset<F>(query: &str, max: usize, predicate: F) -> Vec<ScoredResult<'static>>
+where
+    F: Fn(&CommandDef) -> bool,
+{
+    search_items(
+        all_commands()
+            .iter()
+            .filter(move |command| predicate(command)),
         |command| command.label,
         SearchResultItem::Command,
         query,
@@ -214,7 +316,10 @@ pub fn search_open_files<'a>(
     )
 }
 
-/// Search both files and commands according to the given mode.
+/// Search the palette's launcher sources according to the active mode.
+///
+/// `Notes` filters to note/bookmark commands only; it does not scan note bodies
+/// or sidecars, keeping this service fast, GTK-free, and bounded.
 #[must_use]
 pub fn search_all<'a>(
     index: &'a FileIndex,
@@ -224,6 +329,7 @@ pub fn search_all<'a>(
 ) -> Vec<ScoredResult<'a>> {
     match mode {
         SearchMode::Files => index.search(query, max),
+        SearchMode::Notes => search_note_commands(query, max),
         SearchMode::Commands => search_commands(query, max),
         SearchMode::All => {
             let files = index.search(query, max);
@@ -233,6 +339,10 @@ pub fn search_all<'a>(
     }
 }
 
+/// Merge sorted result streams by fuzzy score, preferring files on ties.
+///
+/// `All` mode uses this to preserve stable source priority without losing the
+/// score ordering produced by each source-specific search.
 fn merge_sorted<'a>(
     a: Vec<ScoredResult<'a>>,
     b: Vec<ScoredResult<'a>>,

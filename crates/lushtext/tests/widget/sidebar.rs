@@ -108,7 +108,7 @@ fn test_sidebar_workspace_list_revealer_uses_crossfade() {
 #[test]
 fn test_workspace_filter_can_show_only_one_workspace() {
     ensure_gtk_init();
-    let _roots_dir = seed_restored_workspaces();
+    let _folders_dir = seed_restored_workspaces();
 
     let window = test_window();
     present_window(&window);
@@ -199,6 +199,63 @@ fn test_sidebar_outer_scroller_disables_horizontal_scrollbar() {
 }
 
 #[test]
+fn test_dense_workspace_sections_scroll_below_fixed_selector() {
+    ensure_gtk_init();
+    const WORKSPACE_COUNT: usize = 18;
+    let _folders_dir = seed_dense_workspace_sections(WORKSPACE_COUNT);
+
+    let window = test_window();
+    window.set_default_size(360, 320);
+    present_window(&window);
+
+    wait_until(Duration::from_secs(3), || {
+        let sidebar = window.imp().sidebar.imp();
+        let adjustment = sidebar.outer_scrolled_window.vadjustment();
+        sidebar.sections.borrow().len() == WORKSPACE_COUNT
+            && sidebar.new_workspace_box.height() > 0
+            && sidebar.outer_scrolled_window.height() > 0
+            && adjustment.upper() > adjustment.page_size() + 1.0
+    });
+
+    let sidebar = window.imp().sidebar.upcast_ref::<gtk4::Widget>();
+    let sidebar_imp = window.imp().sidebar.imp();
+    let selector_bounds = sidebar_imp
+        .new_workspace_box
+        .compute_bounds(sidebar)
+        .expect("fixed selector should have sidebar-relative bounds");
+    let scroller_bounds = sidebar_imp
+        .outer_scrolled_window
+        .compute_bounds(sidebar)
+        .expect("workspace list scroller should have sidebar-relative bounds");
+    assert!(
+        scroller_bounds.y() >= selector_bounds.y() + selector_bounds.height() - 1.0,
+        "workspace sections should scroll below the fixed selector (selector y={} h={}, scroller y={})",
+        selector_bounds.y(),
+        selector_bounds.height(),
+        scroller_bounds.y()
+    );
+    assert_eq!(
+        sidebar_imp.outer_scrolled_window.hscrollbar_policy(),
+        gtk4::PolicyType::Never
+    );
+
+    let adjustment = sidebar_imp.outer_scrolled_window.vadjustment();
+    adjustment.set_value(adjustment.upper() - adjustment.page_size());
+    flush_events();
+
+    let selector_after_scroll = sidebar_imp
+        .new_workspace_box
+        .compute_bounds(sidebar)
+        .expect("fixed selector should remain allocated after list scroll");
+    assert!(sidebar_imp.new_workspace_box.is_visible());
+    assert_eq!(
+        selector_bounds.y(),
+        selector_after_scroll.y(),
+        "scrolling the workspace sections should not move the fixed selector row"
+    );
+}
+
+#[test]
 fn test_sidebar_new_workspace_affordance_matches_document_restored_warning_height() {
     ensure_gtk_init();
     let window = test_window();
@@ -236,21 +293,41 @@ fn test_sidebar_has_no_persistent_width_footer_controls() {
 
 fn seed_restored_workspaces() -> tempfile::TempDir {
     ensure_gtk_init();
-    let roots_dir = tempfile::tempdir().expect("workspace roots tempdir");
+    let folders_dir = tempfile::tempdir().expect("workspace folders tempdir");
     let mut workspaces = WorkspacesFile::default();
 
     for (idx, name) in ["one", "two", "three"].into_iter().enumerate() {
-        let path = roots_dir.path().join(name);
+        let path = folders_dir.path().join(name);
         fixture::create_dir_all(&path);
-        workspaces.workspaces.push(WorkspaceConfig {
-            id: WorkspaceId::new(format!("ws-{idx}")),
-            name: name.to_string(),
-            root: path,
-        });
+        workspaces.workspaces.push(WorkspaceConfig::with_one_folder(
+            WorkspaceId::new(format!("ws-{idx}")),
+            name,
+            path,
+        ));
     }
 
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save workspaces.json");
-    roots_dir
+    folders_dir
+}
+
+fn seed_dense_workspace_sections(count: usize) -> tempfile::TempDir {
+    ensure_gtk_init();
+    let folders_dir = tempfile::tempdir().expect("dense workspace folders tempdir");
+    let mut workspaces = WorkspacesFile::default();
+
+    for idx in 0..count {
+        let name = format!("dense-{idx:02}");
+        let path = folders_dir.path().join(&name);
+        fixture::create_dir_all(&path);
+        workspaces.workspaces.push(WorkspaceConfig::with_one_folder(
+            WorkspaceId::new(format!("ws-dense-{idx:02}")),
+            name,
+            path,
+        ));
+    }
+
+    workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save workspaces.json");
+    folders_dir
 }
 
 // --- Window integration: tab path updates (moved from old sidebar.rs) ---

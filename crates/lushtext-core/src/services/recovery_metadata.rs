@@ -39,7 +39,7 @@ const MAX_QUARANTINE_NAME_ATTEMPTS: u32 = 64;
 /// App-owned metadata category used in diagnostics and quarantine filenames.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryMetadataClass {
-    /// Persisted workspace roots and current workspace scope.
+    /// Persisted workspace folders and current workspace scope.
     WorkspaceState,
     /// User-managed saved searches.
     SavedSearches,
@@ -53,8 +53,8 @@ pub enum RecoveryMetadataClass {
     BookmarkSidecar,
     /// Saved-file rich note sidecar.
     DocumentNoteSidecar,
-    /// Workspace-root rich note sidecar.
-    WorkspaceNoteSidecar,
+    /// Workspace-folder rich note sidecar.
+    FolderNoteSidecar,
     /// Local-history lineage index.
     LocalHistoryIndex,
     /// Replace All undo journal or legacy undo backup metadata.
@@ -75,7 +75,7 @@ impl RecoveryMetadataClass {
             Self::DraftManifest => "draft-manifest",
             Self::BookmarkSidecar => "bookmark-sidecar",
             Self::DocumentNoteSidecar => "document-note-sidecar",
-            Self::WorkspaceNoteSidecar => "workspace-note-sidecar",
+            Self::FolderNoteSidecar => "folder-note-sidecar",
             Self::LocalHistoryIndex => "local-history-index",
             Self::ReplaceAllUndoJournal => "replace-all-undo-journal",
             Self::MigrationLedger => "migration-ledger",
@@ -93,7 +93,7 @@ impl RecoveryMetadataClass {
             Self::DraftManifest => "draft manifest",
             Self::BookmarkSidecar => "bookmark sidecar",
             Self::DocumentNoteSidecar => "document note",
-            Self::WorkspaceNoteSidecar => "workspace note",
+            Self::FolderNoteSidecar => "folder note",
             Self::LocalHistoryIndex => "local history",
             Self::ReplaceAllUndoJournal => "replace undo journal",
             Self::MigrationLedger => "migration ledger",
@@ -511,7 +511,25 @@ pub fn load_enveloped_json_optional<T>(
 where
     T: DeserializeOwned,
 {
-    load_enveloped_json_with_repair(config, expected_kind, |_| RecoveryRepair::Unavailable)
+    load_enveloped_json_optional_accepting(config, expected_kind, &[])
+}
+
+/// Load an optional enveloped JSON metadata file with explicit legacy kinds.
+///
+/// This keeps compatibility decisions at the call site while preserving the
+/// same recovery handling used by strict-kind loads.
+#[must_use]
+pub fn load_enveloped_json_optional_accepting<T>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+    accepted_legacy_kinds: &[&'static str],
+) -> RecoveryLoad<Option<T>>
+where
+    T: DeserializeOwned,
+{
+    load_enveloped_json_with_repair_accepting(config, expected_kind, accepted_legacy_kinds, |_| {
+        RecoveryRepair::Unavailable
+    })
 }
 
 /// Load an enveloped JSON metadata file and allow deterministic repair.
@@ -519,6 +537,21 @@ where
 pub fn load_enveloped_json_with_repair<T, F>(
     config: &RecoveryLoadConfig<'_>,
     expected_kind: &'static str,
+    repair: F,
+) -> RecoveryLoad<T>
+where
+    T: DeserializeOwned + Default,
+    F: FnOnce(RecoveryRepairContext<'_>) -> RecoveryRepair<T>,
+{
+    load_enveloped_json_with_repair_accepting(config, expected_kind, &[], repair)
+}
+
+/// Load an enveloped JSON metadata file while accepting explicit legacy kinds.
+#[must_use]
+pub fn load_enveloped_json_with_repair_accepting<T, F>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+    accepted_legacy_kinds: &[&'static str],
     repair: F,
 ) -> RecoveryLoad<T>
 where
@@ -539,7 +572,9 @@ where
             None,
             repair,
         ),
-        Ok(PathStatus::File) => load_existing_enveloped_json_file(config, expected_kind, repair),
+        Ok(PathStatus::File) => {
+            load_existing_enveloped_json_file(config, expected_kind, accepted_legacy_kinds, repair)
+        }
         Err(error) => default_after_problem(
             config,
             &RecoveryProblem::Unreadable {
@@ -592,7 +627,32 @@ pub fn save_enveloped_json_path<T>(
 where
     T: Serialize + DeserializeOwned,
 {
-    let preparation = prepare_enveloped_json_replacement::<T>(config, expected_kind);
+    save_enveloped_json_path_accepting(config, expected_kind, &[], value)
+}
+
+/// Write a v1 envelope while accepting explicit legacy kinds for replacement.
+///
+/// The new file is always written with `expected_kind`; legacy kinds only make
+/// an existing compatible envelope safe to replace.
+///
+/// # Errors
+///
+/// Returns an error when the current file is unsafe to replace, the parent
+/// directory cannot be created, serialization fails, or the durable write fails.
+pub fn save_enveloped_json_path_accepting<T>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+    accepted_legacy_kinds: &[&'static str],
+    value: &T,
+) -> Result<Vec<RecoveryDiagnostic>>
+where
+    T: Serialize + DeserializeOwned,
+{
+    let preparation = prepare_enveloped_json_replacement_accepting::<T>(
+        config,
+        expected_kind,
+        accepted_legacy_kinds,
+    );
     if !preparation.replacement_allowed() {
         let detail = preparation
             .diagnostics
@@ -620,6 +680,19 @@ pub fn prepare_enveloped_json_replacement<T>(
 where
     T: DeserializeOwned,
 {
+    prepare_enveloped_json_replacement_accepting::<T>(config, expected_kind, &[])
+}
+
+/// Check whether an existing path can be safely replaced by a v1 envelope.
+#[must_use]
+pub fn prepare_enveloped_json_replacement_accepting<T>(
+    config: &RecoveryLoadConfig<'_>,
+    expected_kind: &'static str,
+    accepted_legacy_kinds: &[&'static str],
+) -> RecoveryLoad<()>
+where
+    T: DeserializeOwned,
+{
     match fs_metadata::path_status(config.path) {
         Ok(PathStatus::Missing) => RecoveryLoad {
             value: (),
@@ -634,9 +707,11 @@ where
             None,
             |_| RecoveryRepair::Unavailable,
         ),
-        Ok(PathStatus::File) => {
-            load_existing_enveloped_json_file_for_replacement::<T>(config, expected_kind)
-        }
+        Ok(PathStatus::File) => load_existing_enveloped_json_file_for_replacement::<T>(
+            config,
+            expected_kind,
+            accepted_legacy_kinds,
+        ),
         Err(error) => default_after_problem(
             config,
             &RecoveryProblem::Unreadable {
@@ -721,6 +796,7 @@ where
 fn load_existing_enveloped_json_file<T, F>(
     config: &RecoveryLoadConfig<'_>,
     expected_kind: &'static str,
+    accepted_legacy_kinds: &[&'static str],
     repair: F,
 ) -> RecoveryLoad<T>
 where
@@ -773,7 +849,7 @@ where
         }
     };
 
-    match json_format::parse_v1_payload(&bytes, expected_kind) {
+    match json_format::parse_v1_payload_accepting(&bytes, expected_kind, accepted_legacy_kinds) {
         Ok(value) => RecoveryLoad {
             value,
             outcome: RecoveryLoadOutcome::Loaded,
@@ -794,6 +870,7 @@ where
 fn load_existing_enveloped_json_file_for_replacement<T>(
     config: &RecoveryLoadConfig<'_>,
     expected_kind: &'static str,
+    accepted_legacy_kinds: &[&'static str],
 ) -> RecoveryLoad<()>
 where
     T: DeserializeOwned,
@@ -844,7 +921,8 @@ where
         }
     };
 
-    match json_format::parse_v1_payload::<T>(&bytes, expected_kind) {
+    match json_format::parse_v1_payload_accepting::<T>(&bytes, expected_kind, accepted_legacy_kinds)
+    {
         Ok(_) => RecoveryLoad {
             value: (),
             outcome: RecoveryLoadOutcome::Loaded,

@@ -392,8 +392,8 @@
     </section>
     <section>
       <item>
-        <attribute name="label" translatable="yes">Open Workspace Note…</attribute>
-        <attribute name="action">win.notes-open-workspace-note</attribute>
+        <attribute name="label" translatable="yes">Open Folder Note…</attribute>
+        <attribute name="action">win.notes-open-folder-note</attribute>
       </item>
     </section>
   </menu>

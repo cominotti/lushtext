@@ -55,7 +55,7 @@ impl LushtextCommandPalette {
         Object::builder().build()
     }
 
-    /// Replace the file index. Called when workspace roots change.
+    /// Replace the file index. Called when workspace folders change.
     pub fn set_file_index(&self, index: FileIndex) {
         *self.imp().file_index.borrow_mut() = Arc::new(index);
         // Re-run search if the palette is currently showing results
@@ -138,16 +138,11 @@ impl LushtextCommandPalette {
 
     /// Add a newly created file to the search index.
     pub fn update_index_file_created(&self, path: &Path) {
-        let root = self
-            .imp()
-            .file_index
-            .borrow()
-            .workspace_root_for(path)
-            .map(|r| Arc::clone(&r));
-        if let Some(workspace_root) = root {
+        let folder = self.imp().file_index.borrow().workspace_folder_for(path);
+        if let Some(workspace_folder) = folder {
             self.enqueue_index_update(FileIndexUpdate::Create(IndexedFile::new(
                 path.to_path_buf(),
-                workspace_root,
+                workspace_folder,
             )));
         }
     }

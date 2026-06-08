@@ -3,7 +3,7 @@ name: gtk-perf-scale
 description: "Review and guide Rust code for performance at scale in GTK4/Libadwaita applications — large files, huge directory trees, massive file indexes, SIMD-accelerated fuzzy search, and RAM efficiency at architectural level. Uses parallel subagents for deterministic, focused reviews. Auto-invoked when working on file loading/saving (editor_page), command palette search (palette.rs, command_palette/), file indexing (FileIndex, collect_files_recursive, nucleo), file tree scanning (file_tree.rs, workspace_section), async_task.rs, or any code that processes user files or directory listings. Also trigger when the user mentions performance, scalability, large files, slow search, memory usage, RAM, benchmarks, file count limits, or 'takes too long to open'. Use this skill proactively whenever new features touch file I/O, search, indexing, or tree traversal — even if the user doesn't mention performance."
 ---
 
-Guide and review Rust code for handling large data volumes in LushText without degrading the user experience or exhausting RAM. While `gtk-responsiveness` ensures the GTK main thread stays free (the 16ms frame budget), this skill ensures the *data path* scales — what happens when a user opens a 100MB log file, has 200k files across workspace roots, or types a fuzzy query into a command palette backed by a massive index.
+Guide and review Rust code for handling large data volumes in LushText without degrading the user experience or exhausting RAM. While `gtk-responsiveness` ensures the GTK main thread stays free (the 16ms frame budget), this skill ensures the *data path* scales — what happens when a user opens a 100MB log file, has 200k files across workspace folders, or types a fuzzy query into a command palette backed by a massive index.
 
 ## Philosophy: Readability First
 
@@ -264,7 +264,7 @@ Anti-patterns to flag:
 - [FLAG] Missing file size limits on a new file-loading path
 - [RECOMMEND] Unbounded concurrent spawn_blocking_then without awareness of the thread spawn guard
 - [RECOMMEND] New tab-opening code that doesn't trigger eviction check
-- [GOOD] Correct use of Arc<PathBuf> sharing for workspace roots (established pattern)
+- [GOOD] Correct use of Arc<PathBuf> sharing for workspace folders (established pattern)
 - [GOOD] Buffer eviction on tab switch when memory budget exceeded
 
 Output format — return findings as:

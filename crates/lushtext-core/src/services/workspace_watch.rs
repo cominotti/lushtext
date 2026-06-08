@@ -23,7 +23,7 @@ const WATCH_DEBOUNCE_MS: u64 = 150;
 /// Concrete debouncer type used by the recursive workspace watcher.
 type WorkspaceDebouncer = Debouncer<notify::RecommendedWatcher, RecommendedCache>;
 
-/// One root path to watch for sidebar refresh.
+/// One materialized path to watch for sidebar refresh.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct WorkspaceWatchTarget {
     /// Absolute filesystem path that should produce refresh events.
@@ -36,7 +36,7 @@ impl WorkspaceWatchTarget {
     /// Create a non-recursive watch target for one materialized directory.
     ///
     /// The sidebar watches the directories it has actually loaded rather than
-    /// recursively descending through every child of a broad configured root.
+    /// recursively descending through every child of a broad configured folder.
     #[must_use]
     pub fn directory(path: PathBuf) -> Self {
         Self {
@@ -45,7 +45,7 @@ impl WorkspaceWatchTarget {
         }
     }
 
-    /// Create a non-recursive watch target for a single file root.
+    /// Create a non-recursive watch target for a single file entry.
     #[must_use]
     pub fn file(path: PathBuf) -> Self {
         Self {
@@ -93,9 +93,9 @@ pub enum WorkspaceWatchError {
         #[source]
         source: notify::Error,
     },
-    /// One specific root could not be watched.
+    /// One specific target could not be watched.
     #[error("failed to watch {path}: {source}")]
-    WatchRoot {
+    WatchTarget {
         path: PathBuf,
         #[source]
         source: notify::Error,
@@ -112,16 +112,16 @@ pub struct WorkspaceWatcher {
     _debouncer: WorkspaceDebouncer,
     /// Debounced backend events delivered from the watcher thread.
     receiver: Receiver<DebounceEventResult>,
-    /// Number of roots handed to the backend watcher at startup.
-    root_count: usize,
+    /// Number of targets handed to the backend watcher at startup.
+    target_count: usize,
 }
 
 impl WorkspaceWatcher {
-    /// Start watching the given roots with backend debouncing already enabled.
+    /// Start watching the given targets with backend debouncing already enabled.
     ///
     /// # Errors
     ///
-    /// Returns an error if the debouncer backend cannot be created or any root
+    /// Returns an error if the debouncer backend cannot be created or any target
     /// cannot be registered with the watcher.
     pub fn start(targets: &[WorkspaceWatchTarget]) -> Result<Self, WorkspaceWatchError> {
         let (sender, receiver) = mpsc::channel();
@@ -131,7 +131,7 @@ impl WorkspaceWatcher {
         for target in targets {
             debouncer
                 .watch(&target.path, target.recursive_mode())
-                .map_err(|source| WorkspaceWatchError::WatchRoot {
+                .map_err(|source| WorkspaceWatchError::WatchTarget {
                     path: target.path.clone(),
                     source,
                 })?;
@@ -140,7 +140,7 @@ impl WorkspaceWatcher {
         Ok(Self {
             _debouncer: debouncer,
             receiver,
-            root_count: targets.len(),
+            target_count: targets.len(),
         })
     }
 
@@ -166,11 +166,11 @@ impl WorkspaceWatcher {
         }
     }
 
-    /// Count of actively watched roots, kept mainly so tests can sanity-check
+    /// Count of actively watched targets, kept mainly so tests can sanity-check
     /// that a watcher was created even before the first filesystem event.
     #[must_use]
-    pub fn watched_root_count(&self) -> usize {
-        self.root_count
+    pub fn watched_target_count(&self) -> usize {
+        self.target_count
     }
 }
 
@@ -246,7 +246,7 @@ mod tests {
     fn watcher_backend_resource_exhausted(error: &WorkspaceWatchError) -> bool {
         match error {
             WorkspaceWatchError::Create { source }
-            | WorkspaceWatchError::WatchRoot { source, .. } => notify_resource_exhausted(source),
+            | WorkspaceWatchError::WatchTarget { source, .. } => notify_resource_exhausted(source),
         }
     }
 
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn watching_directory_root_reports_created_file() {
+    fn watching_directory_target_reports_created_file() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let Some(watcher) =
             start_watcher_or_skip_on_resource_limit(&[WorkspaceWatchTarget::directory(
@@ -282,7 +282,7 @@ mod tests {
             return;
         };
 
-        assert_eq!(watcher.watched_root_count(), 1);
+        assert_eq!(watcher.watched_target_count(), 1);
 
         let created = dir.path().join("alpha.txt");
         fixture::write_text(&created, "alpha");
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn watched_root_count_reports_all_registered_roots() {
+    fn watched_target_count_reports_all_registered_targets() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let one = dir.path().join("one");
         let two = dir.path().join("two");
@@ -312,13 +312,13 @@ mod tests {
             return;
         };
 
-        assert_eq!(watcher.watched_root_count(), 2);
+        assert_eq!(watcher.watched_target_count(), 2);
     }
 
     #[test]
-    fn watching_file_root_reports_file_rename() {
+    fn watching_file_target_reports_file_rename() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        let file_path = dir.path().join("root.txt");
+        let file_path = dir.path().join("watched.txt");
         fixture::write_text(&file_path, "before");
 
         let Some(watcher) = start_watcher_or_skip_on_resource_limit(&[WorkspaceWatchTarget::file(
@@ -327,7 +327,7 @@ mod tests {
             return;
         };
 
-        assert_eq!(watcher.watched_root_count(), 1);
+        assert_eq!(watcher.watched_target_count(), 1);
 
         let renamed_path = dir.path().join("renamed.txt");
         fixture::rename(&file_path, &renamed_path);
@@ -348,13 +348,13 @@ mod tests {
     }
 
     #[test]
-    fn starting_with_missing_root_returns_error() {
+    fn starting_with_missing_target_returns_error() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let missing = dir.path().join("missing");
 
         let error =
             match WorkspaceWatcher::start(&[WorkspaceWatchTarget::directory(missing.clone())]) {
-                Ok(_) => panic!("missing roots should fail watcher startup"),
+                Ok(_) => panic!("missing targets should fail watcher startup"),
                 Err(error) if watcher_backend_resource_exhausted(&error) => {
                     eprintln!("skipping workspace watcher integration test: {error}");
                     return;
@@ -363,11 +363,11 @@ mod tests {
             };
 
         match error {
-            WorkspaceWatchError::WatchRoot { path, .. } => {
+            WorkspaceWatchError::WatchTarget { path, .. } => {
                 assert_eq!(path, missing);
             }
             other @ WorkspaceWatchError::Create { .. } => {
-                panic!("expected WatchRoot error, got {other:?}");
+                panic!("expected WatchTarget error, got {other:?}");
             }
         }
     }

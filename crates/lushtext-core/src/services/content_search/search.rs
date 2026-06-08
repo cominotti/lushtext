@@ -11,9 +11,10 @@
 //! inside the ripgrep stack, while mutation, undo backup, and persistence remain
 //! routed through `services::filesystem`.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::Sender;
 use grep_matcher::Matcher;
@@ -24,6 +25,7 @@ use ignore::overrides::OverrideBuilder;
 use ignore::{WalkBuilder, WalkState};
 
 use crate::model::content_search::{ContentSearchOptions, SearchEvent, SearchMatch};
+use crate::services::filesystem::metadata as fs_metadata;
 
 /// Maximum number of matches before the search stops. Approximate under
 /// parallel walkers — concurrent threads may overshoot by up to the thread
@@ -31,7 +33,7 @@ use crate::model::content_search::{ContentSearchOptions, SearchEvent, SearchMatc
 /// this value.
 pub(super) const RESULT_CAP: usize = 10_000;
 
-/// Searches file contents across workspace roots with streaming results.
+/// Searches file contents across the supplied workspace folders with streaming results.
 ///
 /// Blocks until search completes or is cancelled. Call from a dedicated thread.
 /// Results are sent through `tx` as `SearchEvent` variants.
@@ -44,7 +46,7 @@ pub(super) const RESULT_CAP: usize = 10_000;
 )]
 pub fn search(
     query: &str,
-    roots: &[&Path],
+    workspace_folders: &[&Path],
     options: &ContentSearchOptions,
     tx: Sender<SearchEvent>,
     cancel: Arc<AtomicBool>,
@@ -60,7 +62,7 @@ pub fn search(
         return;
     }
 
-    if roots.is_empty() {
+    if workspace_folders.is_empty() {
         if let Some(flag) = &completion_flag {
             flag.store(true, Ordering::Relaxed);
         }
@@ -93,15 +95,18 @@ pub fn search(
         }
     };
 
-    // Build the directory walker once so worker threads share traversal config.
-    let walker = {
-        let mut builder = WalkBuilder::new(roots[0]);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    // Shared counters across walker threads and ordered workspace folders.
+    let match_count = Arc::new(AtomicUsize::new(0));
+    let files_visited = Arc::new(AtomicUsize::new(0));
+    let visited_files = Arc::new(Mutex::new(HashSet::new()));
 
-        for root in &roots[1..] {
-            builder.add(root);
+    for folder in workspace_folders {
+        if cancel.load(Ordering::Relaxed) {
+            break;
         }
 
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+        let mut builder = WalkBuilder::new(folder);
         builder.threads(threads);
         builder.hidden(true); // skip hidden files (LushText convention)
 
@@ -114,7 +119,7 @@ pub fn search(
 
         if let Some(ref glob) = options.glob {
             // OverrideBuilder uses "include" semantics: only matching files are visited.
-            match OverrideBuilder::new(roots[0])
+            match OverrideBuilder::new(folder)
                 .add(glob)
                 .and_then(|b| b.build())
             {
@@ -132,100 +137,100 @@ pub fn search(
             }
         }
 
-        builder.build_parallel()
-    };
+        let walker = builder.build_parallel();
 
-    // Shared counters across walker threads.
-    let match_count = Arc::new(AtomicUsize::new(0));
-    let files_visited = Arc::new(AtomicUsize::new(0));
+        walker.run(|| {
+            let tx = tx.clone();
+            let cancel = cancel.clone();
+            let matcher = matcher.clone();
+            let match_count = match_count.clone();
+            let files_visited = files_visited.clone();
+            let progress_counter = progress_counter.clone();
+            let visited_files = visited_files.clone();
 
-    walker.run(|| {
-        let tx = tx.clone();
-        let cancel = cancel.clone();
-        let matcher = matcher.clone();
-        let match_count = match_count.clone();
-        let files_visited = files_visited.clone();
-        let progress_counter = progress_counter.clone();
+            // Per-thread searcher — reused across all files on this thread.
+            let mut searcher = SearcherBuilder::new()
+                .binary_detection(BinaryDetection::quit(0))
+                .build();
 
-        // Per-thread searcher — reused across all files on this thread.
-        let mut searcher = SearcherBuilder::new()
-            .binary_detection(BinaryDetection::quit(0))
-            .build();
+            Box::new(move |entry| {
+                if cancel.load(Ordering::Relaxed) {
+                    return WalkState::Quit;
+                }
 
-        Box::new(move |entry| {
-            if cancel.load(Ordering::Relaxed) {
-                return WalkState::Quit;
-            }
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
+                };
 
-            let Ok(entry) = entry else {
-                return WalkState::Continue;
-            };
+                // Skip directories and non-files.
+                if entry.file_type().is_none_or(|ft| !ft.is_file()) {
+                    return WalkState::Continue;
+                }
 
-            // Skip directories and non-files.
-            if entry.file_type().is_none_or(|ft| !ft.is_file()) {
-                return WalkState::Continue;
-            }
+                let path = entry.into_path();
+                if !claim_file_identity(&path, &visited_files) {
+                    return WalkState::Continue;
+                }
 
-            let path = entry.into_path();
+                // Report progress every 100 files (best-effort via try_send).
+                let count = files_visited.fetch_add(1, Ordering::Relaxed) + 1;
+                if let Some(counter) = &progress_counter {
+                    counter.store(count, Ordering::Relaxed);
+                }
+                if count.is_multiple_of(100) {
+                    let _ = tx.try_send(SearchEvent::Progress(count));
+                }
 
-            // Report progress every 100 files (best-effort via try_send).
-            let count = files_visited.fetch_add(1, Ordering::Relaxed) + 1;
-            if let Some(counter) = &progress_counter {
-                counter.store(count, Ordering::Relaxed);
-            }
-            if count.is_multiple_of(100) {
-                let _ = tx.try_send(SearchEvent::Progress(count));
-            }
+                let search_result = searcher.search_path(
+                    &matcher,
+                    &path,
+                    UTF8(|line_number, line_content| {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Ok(false);
+                        }
 
-            let search_result = searcher.search_path(
-                &matcher,
-                &path,
-                UTF8(|line_number, line_content| {
-                    if cancel.load(Ordering::Relaxed) {
-                        return Ok(false);
-                    }
+                        // Strip trailing newline before computing match range so byte
+                        // offsets are consistent with the stored `line_content`.
+                        let content = line_content.trim_end_matches('\n').trim_end_matches('\r');
+                        let match_range = find_match_range(&matcher, content.as_bytes());
 
-                    // Strip trailing newline before computing match range so byte
-                    // offsets are consistent with the stored `line_content`.
-                    let content = line_content.trim_end_matches('\n').trim_end_matches('\r');
-                    let match_range = find_match_range(&matcher, content.as_bytes());
+                        let search_match = SearchMatch {
+                            path: path.clone(),
+                            line_number,
+                            line_content: content.to_string(),
+                            match_range,
+                        };
 
-                    let search_match = SearchMatch {
-                        path: path.clone(),
-                        line_number,
-                        line_content: content.to_string(),
-                        match_range,
-                    };
+                        // Increment match counter and enforce the shared cap.
+                        let prev = match_count.fetch_add(1, Ordering::Relaxed);
+                        if prev >= RESULT_CAP {
+                            return Ok(false);
+                        }
 
-                    // Increment match counter and enforce the shared cap.
-                    let prev = match_count.fetch_add(1, Ordering::Relaxed);
-                    if prev >= RESULT_CAP {
-                        return Ok(false);
-                    }
+                        let _ = tx.send(SearchEvent::Match(search_match));
 
-                    let _ = tx.send(SearchEvent::Match(search_match));
+                        if prev + 1 >= RESULT_CAP {
+                            let _ = tx.send(SearchEvent::ResultCap);
+                            cancel.store(true, Ordering::Relaxed);
+                            return Ok(false);
+                        }
 
-                    if prev + 1 >= RESULT_CAP {
-                        let _ = tx.send(SearchEvent::ResultCap);
-                        cancel.store(true, Ordering::Relaxed);
-                        return Ok(false);
-                    }
+                        Ok(true)
+                    }),
+                );
 
-                    Ok(true)
-                }),
-            );
+                if let Err(e) = search_result {
+                    tracing::warn!("Skipping {} during search: {e}", path.display());
+                }
 
-            if let Err(e) = search_result {
-                tracing::warn!("Skipping {} during search: {e}", path.display());
-            }
+                if cancel.load(Ordering::Relaxed) {
+                    return WalkState::Quit;
+                }
 
-            if cancel.load(Ordering::Relaxed) {
-                return WalkState::Quit;
-            }
-
-            WalkState::Continue
-        })
-    });
+                WalkState::Continue
+            })
+        });
+    }
 
     if let Some(flag) = &completion_flag {
         flag.store(true, Ordering::Relaxed);
@@ -244,6 +249,19 @@ fn find_match_range(matcher: &grep_regex::RegexMatcher, line: &[u8]) -> std::ops
     }
 }
 
+/// Claim one file by canonical identity before searching it.
+///
+/// Overlapping workspace folders can reach the same file through a parent and a
+/// descendant tree. Canonicalizing before the lock keeps slow filesystem work
+/// outside the shared critical section, while the path fallback keeps unusual
+/// but readable files searchable when identity lookup fails.
+fn claim_file_identity(path: &Path, visited_files: &Mutex<HashSet<PathBuf>>) -> bool {
+    let identity = fs_metadata::canonical_path(path).unwrap_or_else(|_| path.to_path_buf());
+    visited_files
+        .lock()
+        .is_ok_and(|mut visited| visited.insert(identity))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,12 +272,12 @@ mod tests {
     /// Helper: run a search and collect all events into a Vec.
     fn search_collect(
         query: &str,
-        roots: &[&Path],
+        workspace_folders: &[&Path],
         options: &ContentSearchOptions,
     ) -> Vec<SearchEvent> {
         let (tx, rx) = crossbeam_channel::unbounded();
         let cancel = Arc::new(AtomicBool::new(false));
-        search(query, roots, options, tx, cancel, None, None);
+        search(query, workspace_folders, options, tx, cancel, None, None);
         rx.iter().collect()
     }
 
@@ -271,6 +289,17 @@ mod tests {
             .count()
     }
 
+    /// Borrow Match payloads from an event stream for focused assertions.
+    fn search_matches(events: &[SearchEvent]) -> Vec<&SearchMatch> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                SearchEvent::Match(search_match) => Some(search_match),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Check that the last event is Done.
     fn assert_ends_with_done(events: &[SearchEvent]) {
         assert_matches!(events.last(), Some(SearchEvent::Done));
@@ -279,13 +308,20 @@ mod tests {
     #[test]
     fn literal_search_finds_matches() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
-        fixture::write_text(&root.join("a.rs"), "fn hello() {}\nfn world() {}\n");
-        fixture::write_text(&root.join("b.rs"), "fn hello_again() {}\n");
-        fixture::write_text(&root.join("c.rs"), "no match here\n");
+        fixture::write_text(
+            &workspace_folder.join("a.rs"),
+            "fn hello() {}\nfn world() {}\n",
+        );
+        fixture::write_text(&workspace_folder.join("b.rs"), "fn hello_again() {}\n");
+        fixture::write_text(&workspace_folder.join("c.rs"), "no match here\n");
 
-        let events = search_collect("hello", &[root], &ContentSearchOptions::default());
+        let events = search_collect(
+            "hello",
+            &[workspace_folder],
+            &ContentSearchOptions::default(),
+        );
         assert_ends_with_done(&events);
 
         let matches: Vec<_> = events
@@ -312,10 +348,13 @@ mod tests {
     #[test]
     fn cancel_stops_search() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
         for i in 0..200 {
-            fixture::write_text(&root.join(format!("file_{i}.txt")), &"needle\n".repeat(100));
+            fixture::write_text(
+                &workspace_folder.join(format!("file_{i}.txt")),
+                &"needle\n".repeat(100),
+            );
         }
 
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -340,7 +379,7 @@ mod tests {
 
         search(
             "needle",
-            &[root],
+            &[workspace_folder],
             &ContentSearchOptions::default(),
             tx,
             cancel,
@@ -358,14 +397,18 @@ mod tests {
     #[test]
     fn binary_files_skipped() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
         let mut png_data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         png_data.extend_from_slice(b"needle somewhere in binary\x00\x00");
-        fixture::write_bytes(&root.join("image.png"), &png_data);
-        fixture::write_text(&root.join("code.rs"), "let needle = 42;\n");
+        fixture::write_bytes(&workspace_folder.join("image.png"), &png_data);
+        fixture::write_text(&workspace_folder.join("code.rs"), "let needle = 42;\n");
 
-        let events = search_collect("needle", &[root], &ContentSearchOptions::default());
+        let events = search_collect(
+            "needle",
+            &[workspace_folder],
+            &ContentSearchOptions::default(),
+        );
         assert_ends_with_done(&events);
 
         let matches: Vec<_> = events
@@ -384,9 +427,9 @@ mod tests {
     #[test]
     fn unreadable_file_does_not_abort_search() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
-        let visible = root.join("visible.rs");
-        let unreadable = root.join("secret.rs");
+        let workspace_folder = dir.path();
+        let visible = workspace_folder.join("visible.rs");
+        let unreadable = workspace_folder.join("secret.rs");
 
         fixture::write_text(&visible, "needle\n");
         fixture::write_text(&unreadable, "needle\n");
@@ -400,7 +443,11 @@ mod tests {
             return;
         }
 
-        let events = search_collect("needle", &[root], &ContentSearchOptions::default());
+        let events = search_collect(
+            "needle",
+            &[workspace_folder],
+            &ContentSearchOptions::default(),
+        );
 
         fixture::set_mode(&unreadable, 0o644);
 
@@ -419,16 +466,20 @@ mod tests {
     #[test]
     fn gitignore_respected() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
-        fixture::create_dir(&root.join(".git"));
-        fixture::write_text(&root.join(".gitignore"), "target/\n");
+        fixture::create_dir(&workspace_folder.join(".git"));
+        fixture::write_text(&workspace_folder.join(".gitignore"), "target/\n");
 
-        fixture::create_dir(&root.join("target"));
-        fixture::write_text(&root.join("target/ignored.rs"), "needle\n");
-        fixture::write_text(&root.join("visible.rs"), "needle\n");
+        fixture::create_dir(&workspace_folder.join("target"));
+        fixture::write_text(&workspace_folder.join("target/ignored.rs"), "needle\n");
+        fixture::write_text(&workspace_folder.join("visible.rs"), "needle\n");
 
-        let events = search_collect("needle", &[root], &ContentSearchOptions::default());
+        let events = search_collect(
+            "needle",
+            &[workspace_folder],
+            &ContentSearchOptions::default(),
+        );
         assert_ends_with_done(&events);
         assert_eq!(
             count_matches(&events),
@@ -440,7 +491,7 @@ mod tests {
             gitignore: false,
             ..Default::default()
         };
-        let events = search_collect("needle", &[root], &opts);
+        let events = search_collect("needle", &[workspace_folder], &opts);
         assert_ends_with_done(&events);
         assert_eq!(
             count_matches(&events),
@@ -452,14 +503,18 @@ mod tests {
     #[test]
     fn result_cap_at_10000() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
         for i in 0..20 {
             let content = "needle\n".repeat(600);
-            fixture::write_text(&root.join(format!("big_{i}.txt")), &content);
+            fixture::write_text(&workspace_folder.join(format!("big_{i}.txt")), &content);
         }
 
-        let events = search_collect("needle", &[root], &ContentSearchOptions::default());
+        let events = search_collect(
+            "needle",
+            &[workspace_folder],
+            &ContentSearchOptions::default(),
+        );
         assert_ends_with_done(&events);
 
         let match_count = count_matches(&events);
@@ -476,10 +531,10 @@ mod tests {
     #[test]
     fn regex_search() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
         fixture::write_text(
-            &root.join("code.rs"),
+            &workspace_folder.join("code.rs"),
             "fn hello() {}\nlet x = 42;\nfn world() {}\n",
         );
 
@@ -487,7 +542,7 @@ mod tests {
             regex: true,
             ..Default::default()
         };
-        let events = search_collect(r"fn\s+\w+", &[root], &opts);
+        let events = search_collect(r"fn\s+\w+", &[workspace_folder], &opts);
         assert_ends_with_done(&events);
 
         let matches: Vec<_> = events
@@ -511,15 +566,18 @@ mod tests {
     #[test]
     fn case_sensitive_search() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
-        fixture::write_text(&root.join("code.rs"), "Error happened\nerror happened\n");
+        fixture::write_text(
+            &workspace_folder.join("code.rs"),
+            "Error happened\nerror happened\n",
+        );
 
         let opts = ContentSearchOptions {
             case_sensitive: true,
             ..Default::default()
         };
-        let events = search_collect("Error", &[root], &opts);
+        let events = search_collect("Error", &[workspace_folder], &opts);
         assert_ends_with_done(&events);
 
         let matches: Vec<_> = events
@@ -537,10 +595,10 @@ mod tests {
     #[test]
     fn whole_word_search() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
         fixture::write_text(
-            &root.join("code.rs"),
+            &workspace_folder.join("code.rs"),
             "let port = 8080;\nlet report = true;\nlet export = false;\n",
         );
 
@@ -548,7 +606,7 @@ mod tests {
             whole_word: true,
             ..Default::default()
         };
-        let events = search_collect("port", &[root], &opts);
+        let events = search_collect("port", &[workspace_folder], &opts);
         assert_ends_with_done(&events);
 
         let matches: Vec<_> = events
@@ -566,17 +624,17 @@ mod tests {
     #[test]
     fn glob_filter() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
-        fixture::write_text(&root.join("code.rs"), "needle\n");
-        fixture::write_text(&root.join("notes.txt"), "needle\n");
-        fixture::write_text(&root.join("data.json"), "needle\n");
+        fixture::write_text(&workspace_folder.join("code.rs"), "needle\n");
+        fixture::write_text(&workspace_folder.join("notes.txt"), "needle\n");
+        fixture::write_text(&workspace_folder.join("data.json"), "needle\n");
 
         let opts = ContentSearchOptions {
             glob: Some("*.rs".to_string()),
             ..Default::default()
         };
-        let events = search_collect("needle", &[root], &opts);
+        let events = search_collect("needle", &[workspace_folder], &opts);
         assert_ends_with_done(&events);
 
         let matches: Vec<_> = events
@@ -592,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_root_search() {
+    fn multiple_search_folders() {
         let dir1 = tempdir().expect("expected operation to succeed");
         let dir2 = tempdir().expect("expected operation to succeed");
 
@@ -609,8 +667,67 @@ mod tests {
         assert_eq!(
             count_matches(&events),
             2,
-            "should find matches in both roots"
+            "should find matches in both folders"
         );
+    }
+
+    #[test]
+    fn overlapping_search_folders_deduplicate_files() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let workspace_folder = dir.path().to_path_buf();
+        let nested_folder = workspace_folder.join("src");
+        let nested_file = nested_folder.join("main.rs");
+        fixture::create_dir(&nested_folder);
+        fixture::write_text(&nested_file, "needle one\nneedle two\n");
+
+        for folders in [
+            vec![workspace_folder.clone(), nested_folder.clone()],
+            vec![nested_folder, workspace_folder],
+        ] {
+            let folder_refs: Vec<&Path> = folders.iter().map(PathBuf::as_path).collect();
+            let events = search_collect("needle", &folder_refs, &ContentSearchOptions::default());
+            assert_ends_with_done(&events);
+
+            let matches = search_matches(&events);
+            assert_eq!(
+                matches.len(),
+                2,
+                "one file's two matching lines should appear once"
+            );
+            assert!(
+                matches
+                    .iter()
+                    .all(|search_match| search_match.path == nested_file),
+                "overlap should not emit a second route to the same canonical file"
+            );
+        }
+    }
+
+    #[test]
+    fn overlapping_search_folders_preserve_distinct_parent_files() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let workspace_folder = dir.path().to_path_buf();
+        let nested_folder = workspace_folder.join("src");
+        let parent_file = workspace_folder.join("README.md");
+        let nested_file = nested_folder.join("main.rs");
+        fixture::create_dir(&nested_folder);
+        fixture::write_text(&parent_file, "needle in readme\n");
+        fixture::write_text(&nested_file, "needle in main\n");
+
+        let events = search_collect(
+            "needle",
+            &[workspace_folder.as_path(), nested_folder.as_path()],
+            &ContentSearchOptions::default(),
+        );
+        assert_ends_with_done(&events);
+
+        let paths: HashSet<_> = search_matches(&events)
+            .into_iter()
+            .map(|search_match| search_match.path.clone())
+            .collect();
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&parent_file));
+        assert!(paths.contains(&nested_file));
     }
 
     #[test]
@@ -627,15 +744,15 @@ mod tests {
     #[test]
     fn progress_events_emitted() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
         for i in 0..250 {
-            fixture::write_text(&root.join(format!("file_{i}.txt")), "content\n");
+            fixture::write_text(&workspace_folder.join(format!("file_{i}.txt")), "content\n");
         }
 
         let events = search_collect(
             "nonexistent_needle",
-            &[root],
+            &[workspace_folder],
             &ContentSearchOptions::default(),
         );
         assert_ends_with_done(&events);
@@ -665,10 +782,10 @@ mod tests {
     #[test]
     fn progress_counter_tracks_all_visited_files() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path();
+        let workspace_folder = dir.path();
 
         for i in 0..250 {
-            fixture::write_text(&root.join(format!("file_{i}.txt")), "content\n");
+            fixture::write_text(&workspace_folder.join(format!("file_{i}.txt")), "content\n");
         }
 
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -677,7 +794,7 @@ mod tests {
 
         search(
             "nonexistent_needle",
-            &[root],
+            &[workspace_folder],
             &ContentSearchOptions::default(),
             tx,
             cancel,
@@ -699,10 +816,10 @@ mod tests {
     #[test]
     fn completion_flag_is_set_before_done_send_unblocks() {
         let dir = tempdir().expect("expected operation to succeed");
-        let root = dir.path().to_path_buf();
+        let workspace_folder = dir.path().to_path_buf();
 
         for i in 0..100 {
-            fixture::write_text(&root.join(format!("file_{i}.txt")), "content\n");
+            fixture::write_text(&workspace_folder.join(format!("file_{i}.txt")), "content\n");
         }
 
         let (tx, rx) = crossbeam_channel::bounded(1);
@@ -713,7 +830,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             search(
                 "nonexistent_needle",
-                &[root.as_path()],
+                &[workspace_folder.as_path()],
                 &ContentSearchOptions::default(),
                 tx,
                 cancel,

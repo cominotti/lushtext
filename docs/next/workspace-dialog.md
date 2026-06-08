@@ -4,7 +4,7 @@
 
 ## Description
 A dialog for managing workspaces: creating, renaming, switching between workspaces,
-and adding/removing root directories and files from a workspace.
+and adding/removing workspace folders and files from a workspace.
 
 ## Implementation Plan
 1. Create `LushtextWorkspaceDialog` (extends `AdwDialog`)

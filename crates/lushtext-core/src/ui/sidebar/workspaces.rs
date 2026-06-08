@@ -6,16 +6,22 @@
 //! disk, building section widgets, persisting changes, and drill-down layout
 //! coordination across sections.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
+use crate::model::workspace::{
+    WorkspaceConfig, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId, WorkspaceScope,
+    WorkspacesFile,
+};
 use crate::services::notifications::NotificationSeverity;
 use crate::services::{async_task, json_store, workspace_manager};
+use workspace_manager::{
+    WorkspaceFolderAddError, WorkspaceFolderRemoveError, WorkspaceFolderReorderError,
+};
 
 use super::{LushtextSidebar, WorkspaceSection};
 
@@ -51,14 +57,25 @@ impl LushtextSidebar {
         let imp = self.imp();
 
         let old_sections = imp.sections.borrow().clone();
+        let collapsed_section_ids = old_sections
+            .iter()
+            .filter(|section| section.is_section_body_collapsed())
+            .map(WorkspaceSection::workspace_id)
+            .collect::<Vec<_>>();
         for section in &old_sections {
+            section.stop_workspace_watch();
             imp.sections_box.remove(section);
         }
         imp.sections.borrow_mut().clear();
 
         for workspace in &workspaces_file.workspaces {
-            let section =
-                self.create_section(workspace.id.clone(), &workspace.name, &workspace.root);
+            let section = self.create_section(workspace);
+            if collapsed_section_ids
+                .iter()
+                .any(|workspace_id| workspace_id == &workspace.id)
+            {
+                section.set_section_body_collapsed(true);
+            }
             imp.sections_box.append(&section);
             imp.sections.borrow_mut().push(section);
         }
@@ -174,16 +191,11 @@ impl LushtextSidebar {
         self.build_sections_from_file(current);
     }
 
-    /// Create a single workspace section, load its root, and wire callbacks.
-    pub(super) fn create_section(
-        &self,
-        workspace_id: WorkspaceId,
-        name: &str,
-        root: &Path,
-    ) -> WorkspaceSection {
-        let section = WorkspaceSection::new(workspace_id);
-        section.set_workspace_name(name);
-        section.load_workspace_root(root);
+    /// Create one workspace section, load its persisted folders, and wire callbacks.
+    pub(super) fn create_section(&self, workspace: &WorkspaceConfig) -> WorkspaceSection {
+        let section = WorkspaceSection::new(workspace.id.clone());
+        section.set_workspace_name(&workspace.name);
+        section.load_workspace_folders(&workspace.folders);
         self.wire_section_callbacks(&section);
         section
     }
@@ -209,7 +221,7 @@ impl LushtextSidebar {
         {
             for section in self.imp().sections.borrow().iter() {
                 if section.workspace_id() != *focused_workspace_id {
-                    section.collapse_roots();
+                    section.collapse_folders();
                 }
             }
         }
@@ -230,20 +242,393 @@ impl LushtextSidebar {
         }
     }
 
-    /// Handle "New Workspace" creation after a folder is selected.
-    pub(super) fn handle_new_workspace(&self, path: &Path) {
-        let imp = self.imp();
-        let name = folder_display_name(path);
-
-        {
-            let mut workspaces = imp.workspaces_file.borrow_mut();
-            workspaces.add_workspace(&name, path.to_path_buf());
-            *imp.current_scope.borrow_mut() = workspaces.current_scope();
+    /// Handle confirmed "New Workspace" name entry by creating an empty workspace.
+    pub(super) fn handle_new_workspace_name(&self, name: &str) -> Option<WorkspaceId> {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
         }
+
+        let workspace_id = {
+            let imp = self.imp();
+            let mut workspaces = imp.workspaces_file.borrow_mut();
+            let workspace_id = workspaces.add_empty_workspace(name);
+            *imp.current_scope.borrow_mut() = workspaces.current_scope();
+            workspace_id
+        };
         self.persist();
         self.rebuild_sections_from_state();
         self.notify_workspace_structure_changed();
         self.notify_workspace_scope_changed();
+        Some(workspace_id)
+    }
+
+    /// Append one folder to an existing workspace and refresh dependent views.
+    pub(super) fn handle_add_folder_to_workspace(&self, workspace_id: &WorkspaceId, path: &Path) {
+        let workspace_id = workspace_id.clone();
+        let folder_path = path.to_path_buf();
+        let Some(existing_paths) = self
+            .imp()
+            .workspaces_file
+            .borrow()
+            .workspace(&workspace_id)
+            .map(WorkspaceConfig::folder_paths)
+        else {
+            self.emit_add_folder_error(WorkspaceFolderAddError::WorkspaceNotFound);
+            return;
+        };
+
+        async_task::spawn_blocking_then(
+            self.clone(),
+            {
+                move || {
+                    let folder_identity = workspace_manager::folder_identity(&folder_path);
+                    let existing_identities = workspace_manager::folder_identities(&existing_paths);
+                    (
+                        workspace_id,
+                        folder_path,
+                        existing_paths,
+                        folder_identity,
+                        existing_identities,
+                    )
+                }
+            },
+            |sidebar,
+             (
+                workspace_id,
+                folder_path,
+                existing_paths,
+                folder_identity,
+                existing_identities,
+            )| {
+                sidebar.apply_add_folder_to_workspace(
+                    &workspace_id,
+                    &folder_path,
+                    &existing_paths,
+                    &folder_identity,
+                    &existing_identities,
+                );
+            },
+        );
+    }
+
+    fn apply_add_folder_to_workspace(
+        &self,
+        workspace_id: &WorkspaceId,
+        folder_path: &Path,
+        existing_paths: &[PathBuf],
+        folder_identity: &workspace_manager::WorkspaceFolderIdentity,
+        existing_identities: &[workspace_manager::WorkspaceFolderIdentity],
+    ) {
+        let result = {
+            let mut workspaces = self.imp().workspaces_file.borrow_mut();
+            workspace_manager::add_folder_to_workspace_with_identities(
+                &mut workspaces,
+                workspace_id,
+                folder_path.to_path_buf(),
+                existing_paths,
+                folder_identity,
+                existing_identities,
+            )
+        };
+
+        match result {
+            Ok(folder_id) => {
+                if let Some(section) = self
+                    .imp()
+                    .sections
+                    .borrow()
+                    .iter()
+                    .find(|section| section.workspace_id() == *workspace_id)
+                {
+                    section.add_workspace_folder(&folder_id, folder_path);
+                } else {
+                    self.rebuild_sections_from_state();
+                }
+                self.persist();
+                self.notify_workspace_structure_changed();
+            }
+            Err(WorkspaceFolderAddError::StaleFolderSnapshot) => {
+                self.handle_add_folder_to_workspace(workspace_id, folder_path);
+            }
+            Err(error) => self.emit_add_folder_error(error),
+        }
+    }
+
+    /// Remove one folder membership from an existing workspace.
+    pub(super) fn handle_remove_folder_from_workspace(
+        &self,
+        workspace_id: &WorkspaceId,
+        folder_id: &WorkspaceFolderId,
+        _folder_path: &Path,
+    ) {
+        let result = {
+            let mut workspaces = self.imp().workspaces_file.borrow_mut();
+            workspace_manager::remove_folder_from_workspace(
+                &mut workspaces,
+                workspace_id,
+                folder_id,
+            )
+        };
+
+        match result {
+            Ok(removed_path) => {
+                if let Some(section) = self
+                    .imp()
+                    .sections
+                    .borrow()
+                    .iter()
+                    .find(|section| section.workspace_id() == *workspace_id)
+                {
+                    section.remove_workspace_folder(folder_id, &removed_path);
+                } else {
+                    self.rebuild_sections_from_state();
+                }
+                self.persist();
+                self.notify_workspace_structure_changed();
+                if let Some(ref callback) = *self.imp().message_callback.borrow() {
+                    callback("Folder removed from workspace", NotificationSeverity::Info);
+                }
+            }
+            Err(error) => self.emit_remove_folder_error(error),
+        }
+    }
+
+    /// Reorder one folder membership inside an existing workspace.
+    pub(super) fn handle_reorder_folder_in_workspace(
+        &self,
+        workspace_id: &WorkspaceId,
+        folder_id: &WorkspaceFolderId,
+        direction: WorkspaceFolderMoveDirection,
+    ) {
+        let (result, reordered_folders) = {
+            let mut workspaces = self.imp().workspaces_file.borrow_mut();
+            let result = workspace_manager::move_folder_in_workspace(
+                &mut workspaces,
+                workspace_id,
+                folder_id,
+                direction,
+            );
+            let reordered_folders = result.as_ref().ok().and_then(|()| {
+                workspaces
+                    .workspace(workspace_id)
+                    .map(|workspace| workspace.folders.clone())
+            });
+            (result, reordered_folders)
+        };
+
+        self.finish_folder_reorder(workspace_id, result, reordered_folders);
+    }
+
+    /// Reorder one folder membership to a concrete post-drop index.
+    pub(super) fn handle_reorder_folder_to_index_in_workspace(
+        &self,
+        workspace_id: &WorkspaceId,
+        folder_id: &WorkspaceFolderId,
+        new_index: usize,
+    ) {
+        let (result, reordered_folders) = {
+            let mut workspaces = self.imp().workspaces_file.borrow_mut();
+            let result = workspace_manager::reorder_folder_in_workspace(
+                &mut workspaces,
+                workspace_id,
+                folder_id,
+                new_index,
+            );
+            let reordered_folders = result.as_ref().ok().and_then(|()| {
+                workspaces
+                    .workspace(workspace_id)
+                    .map(|workspace| workspace.folders.clone())
+            });
+            (result, reordered_folders)
+        };
+
+        self.finish_folder_reorder(workspace_id, result, reordered_folders);
+    }
+
+    fn finish_folder_reorder(
+        &self,
+        workspace_id: &WorkspaceId,
+        result: std::result::Result<(), WorkspaceFolderReorderError>,
+        reordered_folders: Option<Vec<crate::model::workspace::WorkspaceFolder>>,
+    ) {
+        match result {
+            Ok(()) => {
+                if let Some(section) = self
+                    .imp()
+                    .sections
+                    .borrow()
+                    .iter()
+                    .find(|section| section.workspace_id() == *workspace_id)
+                {
+                    if let Some(folders) = reordered_folders {
+                        section.load_workspace_folders(&folders);
+                    } else {
+                        self.rebuild_sections_from_state();
+                    }
+                } else {
+                    self.rebuild_sections_from_state();
+                }
+                self.persist();
+                self.notify_workspace_structure_changed();
+                if let Some(ref callback) = *self.imp().message_callback.borrow() {
+                    callback("Workspace folder order updated", NotificationSeverity::Info);
+                }
+            }
+            Err(error) => self.emit_reorder_folder_error(error),
+        }
+    }
+
+    /// Rename an existing workspace through the shared persistence pipeline.
+    pub(super) fn handle_rename_workspace(&self, workspace_id: &WorkspaceId, new_name: &str) {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return;
+        }
+
+        let renamed = self
+            .imp()
+            .workspaces_file
+            .borrow_mut()
+            .rename_workspace(workspace_id, new_name);
+        if !renamed {
+            return;
+        }
+
+        if let Some(section) = self
+            .imp()
+            .sections
+            .borrow()
+            .iter()
+            .find(|section| section.workspace_id() == *workspace_id)
+        {
+            section.set_workspace_name(new_name);
+        } else {
+            self.rebuild_sections_from_state();
+            self.persist();
+            self.notify_workspace_structure_changed();
+            return;
+        }
+
+        self.refresh_workspace_filter_dropdown();
+        self.persist();
+        self.notify_workspace_structure_changed();
+    }
+
+    /// Remove one workspace and persist the normalized scope that remains.
+    pub(super) fn handle_remove_workspace(&self, workspace_id: &WorkspaceId) {
+        let previous_scope = self.imp().current_scope.borrow().clone();
+        let (removed, normalized_scope) = {
+            let mut workspaces = self.imp().workspaces_file.borrow_mut();
+            let previous_len = workspaces.workspaces.len();
+            workspaces.remove_workspace(workspace_id);
+            (
+                workspaces.workspaces.len() != previous_len,
+                workspaces.current_scope(),
+            )
+        };
+        let scope_changed = previous_scope != normalized_scope;
+        if !removed && !scope_changed {
+            return;
+        }
+        *self.imp().current_scope.borrow_mut() = normalized_scope;
+
+        if removed {
+            let removed_section = {
+                let mut sections = self.imp().sections.borrow_mut();
+                sections
+                    .iter()
+                    .position(|section| section.workspace_id() == *workspace_id)
+                    .map(|index| sections.remove(index))
+            };
+            if let Some(section) = removed_section {
+                section.stop_workspace_watch();
+                self.imp().sections_box.remove(&section);
+            } else {
+                self.rebuild_sections_from_state();
+                self.persist();
+                self.notify_workspace_structure_changed();
+                if scope_changed {
+                    self.notify_workspace_scope_changed();
+                }
+                return;
+            }
+        }
+
+        self.refresh_workspace_filter_dropdown();
+        self.apply_workspace_filter_visibility();
+        self.persist();
+        self.notify_workspace_structure_changed();
+        if scope_changed {
+            self.notify_workspace_scope_changed();
+        }
+    }
+
+    fn emit_remove_folder_error(&self, error: WorkspaceFolderRemoveError) {
+        let Some(ref callback) = *self.imp().message_callback.borrow() else {
+            return;
+        };
+        match error {
+            WorkspaceFolderRemoveError::FolderNotFound => {
+                callback(
+                    "Folder is no longer in this workspace",
+                    NotificationSeverity::Warning,
+                );
+            }
+            WorkspaceFolderRemoveError::WorkspaceNotFound => {
+                callback(
+                    "Workspace is no longer available",
+                    NotificationSeverity::Warning,
+                );
+            }
+        }
+    }
+
+    fn emit_reorder_folder_error(&self, error: WorkspaceFolderReorderError) {
+        let Some(ref callback) = *self.imp().message_callback.borrow() else {
+            return;
+        };
+        match error {
+            WorkspaceFolderReorderError::AlreadyAtBoundary => {
+                callback(
+                    "Folder is already at that edge of the workspace",
+                    NotificationSeverity::Info,
+                );
+            }
+            WorkspaceFolderReorderError::FolderNotFound => {
+                callback(
+                    "Folder is no longer in this workspace",
+                    NotificationSeverity::Warning,
+                );
+            }
+            WorkspaceFolderReorderError::WorkspaceNotFound => {
+                callback(
+                    "Workspace is no longer available",
+                    NotificationSeverity::Warning,
+                );
+            }
+        }
+    }
+
+    fn emit_add_folder_error(&self, error: WorkspaceFolderAddError) {
+        let Some(ref callback) = *self.imp().message_callback.borrow() else {
+            return;
+        };
+        match error {
+            WorkspaceFolderAddError::DuplicateFolder => {
+                callback(
+                    "Folder already belongs to this workspace",
+                    NotificationSeverity::Warning,
+                );
+            }
+            WorkspaceFolderAddError::WorkspaceNotFound => {
+                callback(
+                    "Workspace is no longer available",
+                    NotificationSeverity::Warning,
+                );
+            }
+            WorkspaceFolderAddError::StaleFolderSnapshot => {}
+        }
     }
 
     /// Notify the window that workspace structure changed.
@@ -325,12 +710,4 @@ impl LushtextSidebar {
             },
         );
     }
-}
-
-/// Extract a display name from a path's last component.
-pub(super) fn folder_display_name(path: &Path) -> String {
-    path.file_name().map_or_else(
-        || "Workspace".to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    )
 }

@@ -62,19 +62,19 @@ This tells the reader nothing they couldn't guess from the file path. Better:
 ```rust
 /// A file discovered during workspace directory scanning, ready for fuzzy search.
 ///
-/// Each indexed file stores its display path (relative to workspace root) for
-/// search matching, plus a shared reference to the workspace root for resolving
+/// Each indexed file stores its display path (relative to workspace folder) for
+/// search matching, plus a shared reference to the workspace folder for resolving
 /// the full filesystem path when the user selects a result.
 pub struct IndexedFile {
-    /// Path relative to the workspace root, used as the fuzzy search haystack.
+    /// Path relative to the workspace folder, used as the fuzzy search haystack.
     /// Example: `"src/ui/window/mod.rs"` for a file at
     /// `/home/user/project/src/ui/window/mod.rs`.
     pub relative_path: String,
 
-    /// The workspace root directory. Shared via `Arc` across all files in the
-    /// same workspace to avoid cloning the full path per file — a workspace
-    /// with 50k files saves ~2.4MB (50k x 48 bytes/PathBuf).
-    pub workspace_root: Arc<PathBuf>,
+    /// The workspace folder directory. Shared via `Arc` across all files in the
+    /// same folder to avoid cloning the full path per file — a folder with
+    /// 50k files saves ~2.4MB (50k x 48 bytes/PathBuf).
+    pub workspace_folder: Arc<PathBuf>,
 }
 ```
 

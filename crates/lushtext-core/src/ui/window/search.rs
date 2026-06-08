@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Search panel wiring: toggle action, keyboard shortcut, pre-fill,
-//! result activation, workspace root forwarding, and focus management.
+//! result activation, workspace folder forwarding, and focus management.
 //!
 //! Extracted from `window/mod.rs` to keep the main window responsibilities
 //! split into smaller modules.
@@ -48,13 +48,13 @@ fn selection_within_search_prefill_limit(start_offset: i32, end_offset: i32) -> 
     start_offset.abs_diff(end_offset) <= SEARCH_PANEL_PREFILL_CHAR_LIMIT as u32
 }
 
-/// Set up the search panel action, callbacks, and workspace root forwarding.
+/// Set up the search panel action, callbacks, and workspace folder forwarding.
 pub fn setup_search_panel(window: &LushtextWindow) {
     let imp = window.imp();
 
-    // --- Workspace roots: forward current roots and future changes ---
-    let initial_roots = window.current_workspace_directory_roots();
-    imp.search_panel.set_workspace_roots(initial_roots);
+    // --- Workspace folders: forward current folders and future changes ---
+    let initial_folders = window.current_workspace_folder_paths();
+    imp.search_panel.set_workspace_folders(initial_folders);
 
     // --- Result activation: open file at line ---
     // GTK signal closures may outlive the current window instance; weak refs

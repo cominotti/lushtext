@@ -180,8 +180,15 @@ impl LushtextSidebar {
         *self.imp().message_callback.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_workspace_note_requested<F: Fn(WorkspaceId) + 'static>(&self, f: F) {
-        *self.imp().workspace_note_callback.borrow_mut() = Some(Box::new(f));
+    pub fn connect_folder_note_requested<F: Fn(WorkspaceId) + 'static>(&self, f: F) {
+        *self.imp().folder_note_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_folder_note_for_folder_requested<F: Fn(WorkspaceId, PathBuf) + 'static>(
+        &self,
+        f: F,
+    ) {
+        *self.imp().folder_note_for_folder_callback.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_workspace_structure_changed<F: Fn() + 'static>(&self, f: F) {
@@ -199,29 +206,29 @@ impl LushtextSidebar {
         self.imp().current_scope.borrow().clone()
     }
 
-    /// Collect all persisted workspace roots regardless of the current scope.
+    /// Collect all persisted workspace folders regardless of the current scope.
     #[must_use]
-    pub fn all_workspace_root_paths(&self) -> Vec<PathBuf> {
+    pub fn all_workspace_folder_paths(&self) -> Vec<PathBuf> {
         self.imp()
             .workspaces_file
             .borrow()
-            .all_workspace_root_paths()
+            .all_workspace_folder_paths()
     }
 
-    /// Collect the workspace roots covered by one explicit scope.
+    /// Collect the workspace folders covered by one explicit scope.
     #[must_use]
-    pub fn root_paths_for_scope(&self, scope: &WorkspaceScope) -> Vec<PathBuf> {
+    pub fn folder_paths_for_scope(&self, scope: &WorkspaceScope) -> Vec<PathBuf> {
         self.imp()
             .workspaces_file
             .borrow()
-            .root_paths_for_scope(scope)
+            .folder_paths_for_scope(scope)
     }
 
-    /// Collect the current scope's workspace roots.
+    /// Collect the current scope's workspace folders.
     #[must_use]
-    pub fn current_scope_root_paths(&self) -> Vec<PathBuf> {
+    pub fn current_scope_folder_paths(&self) -> Vec<PathBuf> {
         let scope = self.current_scope();
-        self.root_paths_for_scope(&scope)
+        self.folder_paths_for_scope(&scope)
     }
 
     /// Return a snapshot of the current persisted workspace state.

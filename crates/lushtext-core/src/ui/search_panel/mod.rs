@@ -3,7 +3,7 @@
 //! Workspace-wide content search panel.
 //!
 //! Opened via Ctrl+Shift+F, this panel slides up from below the content stack
-//! and provides streaming file content search across all workspace roots. The
+//! and provides streaming file content search across all workspace folders. The
 //! widget remains the driving adapter, while runtime search, history, replace
 //! flows, and result rendering live in separate files for readability.
 
@@ -143,9 +143,9 @@ impl LushtextSearchPanel {
         )
     }
 
-    /// Update the workspace roots to search. Called when workspaces change.
-    pub fn set_workspace_roots(&self, roots: Vec<PathBuf>) {
-        self.imp().runtime.workspace_roots.replace(roots);
+    /// Update the workspace folders to search. Called when workspaces change.
+    pub fn set_workspace_folders(&self, folders: Vec<PathBuf>) {
+        self.imp().runtime.workspace_folders.replace(folders);
     }
 
     /// Register a callback invoked when the user activates a match result.

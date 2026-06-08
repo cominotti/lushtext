@@ -64,7 +64,7 @@ proptest! {
 
     #[test]
     fn path_hash_matches_lossy_path_bytes(suffix in support::path_suffix()) {
-        let path = append_suffix(Path::new("/workspace/root"), &suffix);
+        let path = append_suffix(Path::new("/workspace/folder"), &suffix);
 
         prop_assert_eq!(
             stable_path_hash(&path),
@@ -73,11 +73,11 @@ proptest! {
     }
 }
 
-/// Append a generated relative suffix to a stable absolute root.
-fn append_suffix(root: &Path, suffix: &Path) -> PathBuf {
+/// Append a generated relative suffix to a stable absolute folder.
+fn append_suffix(folder: &Path, suffix: &Path) -> PathBuf {
     if suffix.as_os_str().is_empty() {
-        root.to_path_buf()
+        folder.to_path_buf()
     } else {
-        root.join(suffix)
+        folder.join(suffix)
     }
 }

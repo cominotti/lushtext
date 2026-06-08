@@ -56,8 +56,8 @@ pub struct SearchRuntimeState {
     pub search_generation: Cell<u32>,
     /// Generation counter for debouncing the glob entry separately from the main query.
     pub glob_generation: Cell<u32>,
-    /// Workspace roots to search. Updated by the window when workspaces change.
-    pub workspace_roots: RefCell<Vec<PathBuf>>,
+    /// Workspace folders to search. Updated by the window when workspaces change.
+    pub workspace_folders: RefCell<Vec<PathBuf>>,
     /// Running total of matches in the current search.
     pub total_matches: Cell<u32>,
     /// Running total of files that currently have at least one match.
@@ -79,7 +79,7 @@ impl Default for SearchRuntimeState {
             cancel_token: RefCell::new(None),
             search_generation: Cell::new(0),
             glob_generation: Cell::new(0),
-            workspace_roots: RefCell::new(Vec::new()),
+            workspace_folders: RefCell::new(Vec::new()),
             total_matches: Cell::new(0),
             total_files: Cell::new(0),
             searching: Cell::new(false),
@@ -661,10 +661,10 @@ impl LushtextSearchPanel {
 }
 
 /// Compute a display-friendly relative path for a result file.
-/// Strips the workspace root prefix for readability.
-pub fn make_display_path(path: &Path, roots: &[PathBuf]) -> String {
-    for root in roots {
-        if let Ok(relative) = path.strip_prefix(root) {
+/// Strips the workspace folder prefix for readability.
+pub fn make_display_path(path: &Path, workspace_folders: &[PathBuf]) -> String {
+    for folder in workspace_folders {
+        if let Ok(relative) = path.strip_prefix(folder) {
             return relative.display().to_string();
         }
     }
@@ -692,4 +692,25 @@ fn schedule_panel_debounce<F>(
             callback(panel);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_path_uses_first_covering_workspace_folder() {
+        let workspace_folder = PathBuf::from("/repo");
+        let nested_folder = PathBuf::from("/repo/src");
+        let path = Path::new("/repo/src/main.rs");
+
+        assert_eq!(
+            make_display_path(path, &[workspace_folder, nested_folder.clone()]),
+            Path::new("src/main.rs").display().to_string()
+        );
+        assert_eq!(
+            make_display_path(path, &[nested_folder]),
+            Path::new("main.rs").display().to_string()
+        );
+    }
 }

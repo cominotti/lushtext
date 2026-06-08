@@ -423,7 +423,7 @@ impl LushtextWindow {
                 let text = buffer_snapshot::snapshot_buffer_text_direct(&buffer);
                 let context = MarkdownPreviewRenderContext::new(
                     editor.file_path(),
-                    self.current_workspace_directory_roots(),
+                    self.current_workspace_folder_paths(),
                 );
                 preview.render_markdown_with_context(&text, &context);
                 preview.refresh_embedded_code_block_layouts();

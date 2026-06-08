@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gtk4::glib;
-use sourceview5::prelude::*;
+use gtk4::prelude::*;
 
 /// Files at or above roughly 10 MB use chunked snapshotting.
 ///
@@ -38,13 +38,13 @@ pub(crate) fn char_count_requires_chunked_snapshot(char_count: i32) -> bool {
 
 /// Decide whether copying the live buffer should yield through the main loop.
 #[must_use]
-pub(crate) fn buffer_requires_chunked_snapshot(buffer: &sourceview5::Buffer) -> bool {
+pub(crate) fn buffer_requires_chunked_snapshot(buffer: &impl IsA<gtk4::TextBuffer>) -> bool {
     char_count_requires_chunked_snapshot(buffer.char_count())
 }
 
 /// Copy the whole buffer immediately for workflows already below the threshold.
 #[must_use]
-pub(crate) fn snapshot_buffer_text_direct(buffer: &sourceview5::Buffer) -> String {
+pub(crate) fn snapshot_buffer_text_direct(buffer: &impl IsA<gtk4::TextBuffer>) -> String {
     buffer
         .text(&buffer.start_iter(), &buffer.end_iter(), true)
         .to_string()
@@ -55,21 +55,18 @@ pub(crate) fn snapshot_buffer_text_direct(buffer: &sourceview5::Buffer) -> Strin
 /// The callback runs on the GTK thread after all chunks have been collected.
 /// Worker-thread I/O or pure analysis should be scheduled from that callback
 /// using owned text, never by sending the `Buffer` itself across threads.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "GtkSource buffers are ref-counted GObjects, so pass-by-value keeps async callbacks simple"
-)]
 pub(crate) fn snapshot_buffer_text_async<F: FnOnce(String) + 'static>(
-    buffer: sourceview5::Buffer,
+    buffer: impl IsA<gtk4::TextBuffer> + Clone + 'static,
     callback: F,
 ) {
+    let buffer = buffer.upcast::<gtk4::TextBuffer>();
     let text = Rc::new(RefCell::new(String::new()));
     let callback: ChunkedCallback = Rc::new(RefCell::new(Some(Box::new(callback))));
     snapshot_buffer_text_chunk(buffer.clone(), buffer.start_iter(), text, callback);
 }
 
 fn snapshot_buffer_text_chunk(
-    buffer: sourceview5::Buffer,
+    buffer: gtk4::TextBuffer,
     start: gtk4::TextIter,
     text: Rc<RefCell<String>>,
     callback: ChunkedCallback,

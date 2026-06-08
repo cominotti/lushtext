@@ -25,7 +25,7 @@ replacement for LushText's current workspace file sidebar.
 
 The current `LushtextSidebar` is more than navigation:
 
-- It owns a persisted set of workspace roots and the `All workspaces` aggregate
+- It owns persisted workspace folder sets and the `All workspaces` aggregate
   scope.
 - Each workspace section uses `GtkTreeListModel` plus `GtkTreeExpander` for a
   real file tree.
@@ -46,7 +46,7 @@ Instead, use the new Adwaita sidebar family for shallow browse rails where the
 data is naturally sectioned and activation-oriented:
 
 1. Replace the unified Notes browser's hand-built `GtkListBox` rail with
-   `AdwSidebar` sections for bookmarks, workspace notes, and document notes.
+   `AdwSidebar` sections for bookmarks, folder notes, and document notes.
 2. Preserve the current Notes browser contract: dialog sizing, Markdown preview,
    search behavior, Open action, compact `AdwNavigationSplitView` handoff, and
    all existing note activation flows.
@@ -75,7 +75,7 @@ pages would be stable and page-like.
 - Widget tests cover selecting every Notes and Local History section/item,
   search/filter behavior, compact-width allocation, and active item state after
   page changes.
-- The change does not regress existing bookmark, document-note, workspace-note,
+- The change does not regress existing bookmark, document-note, folder-note,
   or local-history flows.
 
 ### Risks
@@ -159,7 +159,7 @@ Treat `ENABLE_WIKILINKS` as a product feature, not just a parser toggle.
 
 Proposed behavior:
 
-- Resolve `[[Name]]` against current workspace roots.
+- Resolve `[[Name]]` against current workspace folder sets.
 - Prefer exact Markdown filename matches such as `Name.md`.
 - Never fetch remote content.
 - Reuse the existing Markdown local-path resolver where possible.

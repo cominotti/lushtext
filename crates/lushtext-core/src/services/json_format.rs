@@ -28,8 +28,11 @@ pub const KIND_DRAFT_MANIFEST: &str = "dev.cominotti.lushtext.draft-manifest";
 pub const KIND_BOOKMARK_SIDECAR: &str = "dev.cominotti.lushtext.bookmark-sidecar";
 /// Stable document kind for document-note sidecars.
 pub const KIND_DOCUMENT_NOTE_SIDECAR: &str = "dev.cominotti.lushtext.document-note-sidecar";
-/// Stable document kind for workspace-note sidecars.
-pub const KIND_WORKSPACE_NOTE_SIDECAR: &str = "dev.cominotti.lushtext.workspace-note-sidecar";
+/// Stable document kind for folder-note sidecars.
+pub const KIND_FOLDER_NOTE_SIDECAR: &str = "dev.cominotti.lushtext.folder-note-sidecar";
+/// Legacy document kind accepted only when reading pre-rename folder-note sidecars.
+pub const KIND_LEGACY_WORKSPACE_NOTE_SIDECAR: &str =
+    "dev.cominotti.lushtext.workspace-note-sidecar";
 /// Stable document kind for local-history lineage indexes.
 pub const KIND_LOCAL_HISTORY_INDEX: &str = "dev.cominotti.lushtext.local-history-index";
 /// Stable document kind for the post-rename migration ledger.
@@ -98,6 +101,27 @@ pub fn parse_v1_payload<T>(bytes: &[u8], expected_kind: &'static str) -> Result<
 where
     T: DeserializeOwned,
 {
+    parse_v1_payload_accepting(bytes, expected_kind, &[])
+}
+
+/// Parse a supported v1 envelope, accepting explicit legacy document kinds.
+///
+/// New writes must still use `expected_kind`; this helper exists for narrow
+/// compatibility readers that have a documented pre-rename kind to support.
+///
+/// # Errors
+///
+/// Returns the same parse, format, kind, version, and payload errors as
+/// [`parse_v1_payload`], with `accepted_legacy_kinds` considered compatible
+/// only for the envelope kind check.
+pub fn parse_v1_payload_accepting<T>(
+    bytes: &[u8],
+    expected_kind: &'static str,
+    accepted_legacy_kinds: &[&'static str],
+) -> Result<T, JsonFormatError>
+where
+    T: DeserializeOwned,
+{
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|error| JsonFormatError::Malformed {
             detail: error.to_string(),
@@ -114,9 +138,15 @@ where
             detail: format!("missing string kind for {expected_kind}"),
         });
     };
-    if kind != expected_kind {
+    let kind_accepted = kind == expected_kind || accepted_legacy_kinds.contains(&kind);
+    if !kind_accepted {
+        let accepted_detail = if accepted_legacy_kinds.is_empty() {
+            expected_kind.to_string()
+        } else {
+            format!("{expected_kind} or {}", accepted_legacy_kinds.join(", "))
+        };
         return Err(JsonFormatError::UnsupportedFormat {
-            detail: format!("expected kind {expected_kind}, found {kind}"),
+            detail: format!("expected kind {accepted_detail}, found {kind}"),
         });
     }
 
@@ -199,5 +229,32 @@ mod tests {
             error,
             JsonFormatError::UnsupportedVersion { version: 2, .. }
         ));
+    }
+
+    #[test]
+    fn parses_explicit_legacy_kind_only_when_accepted() {
+        let bytes = br#"{
+            "kind": "dev.cominotti.lushtext.legacy-session",
+            "version": 1,
+            "data": { "name": "old" }
+        }"#;
+
+        let value: FixturePayload = parse_v1_payload_accepting(
+            bytes,
+            KIND_SESSION,
+            &["dev.cominotti.lushtext.legacy-session"],
+        )
+        .expect("accepted legacy kind should parse");
+        assert_eq!(
+            value,
+            FixturePayload {
+                name: "old".to_string(),
+                optional: false
+            }
+        );
+
+        let error = parse_v1_payload::<FixturePayload>(bytes, KIND_SESSION)
+            .expect_err("unlisted legacy kind should remain unsupported");
+        assert!(matches!(error, JsonFormatError::UnsupportedFormat { .. }));
     }
 }

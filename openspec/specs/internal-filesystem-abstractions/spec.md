@@ -45,7 +45,7 @@ The internal filesystem boundary SHALL expose small, intention-revealing APIs th
 - **AND** metadata, canonical identity, file size, encoding inputs, and mtime facts are returned through app-facing types
 
 #### Scenario: Workspace scanning reads through tree helpers
-- **WHEN** sidebar, palette, or search code scans a workspace directory
+- **WHEN** sidebar, palette, or search code scans a workspace folder
 - **THEN** the call site requests a workspace or bounded directory scan with a readable policy object
 - **AND** raw descriptor-relative traversal details stay inside the filesystem backend
 
@@ -159,7 +159,7 @@ The filesystem boundary SHALL own policies for file and directory creation, dura
 - **AND** cancellation cleanup uses a filesystem boundary helper rather than a raw remove call
 
 #### Scenario: Sidecar migration uses boundary move and remove helpers
-- **WHEN** an in-app rename or delete requires document notes, workspace notes, bookmarks, or local-history sidecars to move or be removed
+- **WHEN** an in-app rename or delete requires document notes, folder notes, bookmarks, or local-history sidecars to move or be removed
 - **THEN** the sidecar service uses filesystem boundary helpers for listing, durable writing, moving, and cleanup
 
 ### Requirement: Public filesystem operation families have no duplicate safety contracts
@@ -176,7 +176,7 @@ The filesystem boundary SHALL expose one clear public entry point for each safet
 - **AND** tests and fixtures use fixture helpers rather than production-only durability helpers unless the test is specifically validating durability behavior
 
 ### Requirement: Sidecar filesystem helpers are either adopted or removed
-The implementation SHALL not leave an exported sidecar filesystem helper surface unused. Bookmark, document-note, workspace-note, and local-history workflows MUST either reuse a common sidecar filesystem helper for shared ensure/list/move/remove mechanics or the unused helper surface MUST be removed in favor of the already-used workflow-specific storage helpers.
+The implementation SHALL not leave an exported sidecar filesystem helper surface unused. Bookmark, document-note, folder-note, and local-history workflows MUST either reuse a common sidecar filesystem helper for shared ensure/list/move/remove mechanics or the unused helper surface MUST be removed in favor of the already-used workflow-specific storage helpers.
 
 #### Scenario: Shared sidecar filesystem mechanics are reused
 - **WHEN** multiple sidecar services need to ensure a storage directory, list visible sidecar files, move sidecar paths, or remove stale sidecar files
@@ -189,11 +189,11 @@ The implementation SHALL not leave an exported sidecar filesystem helper surface
 - **AND** the no-leftovers audit confirms there is no unused public sidecar filesystem surface
 
 ### Requirement: Sidecar filesystem helper cleanup is intentional
-Bookmark, document-note, workspace-note, and local-history workflows SHALL either share a small helper for repeated sidecar filesystem mechanics or keep workflow-specific helpers when that is clearer. Any shared helper MUST have active callers and MUST only own filesystem mechanics such as listing candidate JSON sidecars, removing stale sidecar paths, or applying common directory-scan policy; workflow identity, filtering, merge, retention, and empty-document rules MUST remain in the owning service.
+Bookmark, document-note, folder-note, and local-history workflows SHALL either share a small helper for repeated sidecar filesystem mechanics or keep workflow-specific helpers when that is clearer. Any shared helper MUST have active callers and MUST only own filesystem mechanics such as listing candidate JSON sidecars, removing stale sidecar paths, or applying common directory-scan policy; workflow identity, filtering, merge, retention, and empty-document rules MUST remain in the owning service.
 
 #### Scenario: Shared sidecar helper has active callers
 - **WHEN** implementation extracts a shared sidecar filesystem helper
-- **THEN** bookmark, document-note, workspace-note, or local-history code uses it for repeated filesystem mechanics
+- **THEN** bookmark, document-note, folder-note, or local-history code uses it for repeated filesystem mechanics
 - **AND** the no-leftovers audit or final search evidence confirms the helper is not an unused public surface
 
 #### Scenario: Workflow-specific sidecar helpers remain clear

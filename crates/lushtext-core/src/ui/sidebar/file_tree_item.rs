@@ -10,10 +10,12 @@ use gtk4::glib;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
+use crate::model::workspace::WorkspaceFolderId;
+
 // Private implementation module. In GTK's GObject system, every type has
 // a private struct (imp) holding data and a public wrapper providing the API.
 mod imp {
-    use super::{Cell, ObjectImpl, ObjectSubclass, PathBuf, RefCell, glib};
+    use super::{Cell, ObjectImpl, ObjectSubclass, PathBuf, RefCell, WorkspaceFolderId, glib};
 
     // GObject methods take &self (not &mut self) because GTK's list model
     // infrastructure holds multiple references to each item. Interior
@@ -33,6 +35,8 @@ mod imp {
         pub pending_rename: Cell<bool>,
         /// Whether the directory was confirmed empty during scan (peeking).
         pub is_empty: Cell<Option<bool>>,
+        /// Stable workspace-folder id for persisted top-level folder rows.
+        pub workspace_folder_id: RefCell<Option<WorkspaceFolderId>>,
     }
 
     // ObjectSubclass registers this struct with GLib's runtime type system.
@@ -64,6 +68,17 @@ impl FileTreeItem {
         obj.imp().path.replace(Some(path));
         obj.imp().is_dir.set(is_dir);
         obj.imp().is_empty.set(is_empty);
+        obj
+    }
+
+    #[must_use]
+    pub fn new_workspace_folder(
+        path: PathBuf,
+        folder_id: WorkspaceFolderId,
+        is_empty: Option<bool>,
+    ) -> Self {
+        let obj = Self::new(path, true, is_empty);
+        obj.imp().workspace_folder_id.replace(Some(folder_id));
         obj
     }
 
@@ -102,7 +117,7 @@ impl FileTreeItem {
         self.imp().is_empty.get()
     }
 
-    /// Update the empty-directory hint after an async root or child scan finishes.
+    /// Update the empty-directory hint after an async top-level or child scan finishes.
     pub fn set_is_empty(&self, is_empty: Option<bool>) {
         self.imp().is_empty.set(is_empty);
     }
@@ -119,6 +134,11 @@ impl FileTreeItem {
 
     pub fn set_pending_rename(&self, pending: bool) {
         self.imp().pending_rename.set(pending);
+    }
+
+    #[must_use]
+    pub fn workspace_folder_id(&self) -> Option<WorkspaceFolderId> {
+        self.imp().workspace_folder_id.borrow().clone()
     }
 }
 

@@ -12,6 +12,8 @@ use crate::services::file_tree::DirectoryEntry;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
+#[cfg(feature = "test-utils")]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -43,19 +45,71 @@ const MAX_DIR_ENTRIES: usize = 10_000;
 /// 256 items splice in <2ms, staying under the 16ms frame budget.
 const CHILD_APPEND_BATCH_SIZE: usize = 256;
 
+#[cfg(feature = "test-utils")]
+thread_local! {
+    /// Counts defensive DnD child-model fallbacks during widget regression tests.
+    static DRAG_HOVER_EMPTY_CHILD_MODEL_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
 /// Build the child model for one expanded directory and kick off its background scan.
 pub(super) fn build_children_model(
     section: &LushtextWorkspaceSection,
     dir_path: &Path,
 ) -> gio::ListStore {
+    if super::dnd::folder_reorder_drag_is_active() {
+        return empty_children_model_for_drag_hover(section, dir_path);
+    }
+
     // ListStore is GObject's observable list; TreeListModel/ListView react when
     // rows are appended or replaced.
     let store = gio::ListStore::new::<FileTreeItem>();
-    // Expanding a directory materializes a new visible scope, so restart the
-    // scoped watcher set now that this directory participates in auto-refresh.
-    section.restart_workspace_watch();
+    let section_weak = section.downgrade();
+    // Expanding a directory materializes a new visible scope. Defer watcher
+    // reconciliation so TreeListModel can return its child store immediately.
+    glib::idle_add_local_once(move || {
+        if let Some(section) = section_weak.upgrade() {
+            section.restart_workspace_watch();
+        }
+    });
     populate_child_store(section, dir_path, &store);
     store
+}
+
+fn empty_children_model_for_drag_hover(
+    section: &LushtextWorkspaceSection,
+    dir_path: &Path,
+) -> gio::ListStore {
+    #[cfg(feature = "test-utils")]
+    DRAG_HOVER_EMPTY_CHILD_MODEL_COUNT.with(|count| count.set(count.get() + 1));
+
+    let store = gio::ListStore::new::<FileTreeItem>();
+    let path = dir_path.to_path_buf();
+    let section_weak = section.downgrade();
+    // GTK can ask TreeListModel for children if a row auto-expands during DnD
+    // hover. Return an empty temporary model and collapse the row back without
+    // scanning or restarting watches; reorder hover must only move the line cue.
+    glib::idle_add_local_once(move || {
+        if let Some(section) = section_weak.upgrade()
+            && let Some(row) = section.find_dir_row(&path)
+            && row.is_expanded()
+        {
+            super::dnd::suppress_next_expanded_watch_for_drag(&row);
+            row.set_expanded(false);
+        }
+    });
+    store
+}
+
+/// Reset the defensive DnD fallback counter before a widget-test observation.
+#[cfg(feature = "test-utils")]
+pub(super) fn reset_drag_hover_child_model_count_for_test() {
+    DRAG_HOVER_EMPTY_CHILD_MODEL_COUNT.with(|count| count.set(0));
+}
+
+/// Read how often drag hover accidentally requested child-model creation.
+#[cfg(feature = "test-utils")]
+pub(super) fn drag_hover_child_model_count_for_test() -> usize {
+    DRAG_HOVER_EMPTY_CHILD_MODEL_COUNT.with(Cell::get)
 }
 
 /// Reuse an existing child store when a refresh only needs to reload one subtree.
@@ -73,16 +127,15 @@ pub(super) fn populate_child_store(
         .borrow_mut()
         .insert(path.clone(), store.downgrade());
 
-    // One active scan owns each directory; replacing the token tells older scans
-    // not to publish rows over a newer expansion or refresh.
-    if let Some(previous) = section
+    // Each expanded row gets its own scan token. Paths are not unique in the
+    // flattened model when a workspace includes overlapping folders.
+    section
         .imp()
         .child_scan_tokens
         .borrow_mut()
-        .insert(path.clone(), Arc::clone(&cancel))
-    {
-        previous.store(true, Ordering::Release);
-    }
+        .entry(path.clone())
+        .or_default()
+        .push(Arc::clone(&cancel));
 
     let section_weak = section.downgrade();
     let lookahead_cap = gtk4::gio::Settings::new(crate::config::APP_ID)
@@ -112,7 +165,14 @@ pub(super) fn populate_child_store(
                 return;
             };
 
-            if !child_scan_is_active(&section, &path, &cancel) {
+            if !child_scan_is_active(&section, &path, &store, &cancel) {
+                return;
+            }
+
+            if let Some(error) = scan.error {
+                section.report_refresh_error(&format!("Workspace refresh failed: {error}"));
+                section.recache_child_store(&path, &store);
+                finish_child_scan(&section, &path, &cancel);
                 return;
             }
 
@@ -123,6 +183,23 @@ pub(super) fn populate_child_store(
 
 /// Drop cached rows, child stores, and in-flight scans for one directory subtree.
 pub(super) fn clear_dir_state(section: &LushtextWorkspaceSection, dir_path: &Path) {
+    let removed_child_paths = section
+        .imp()
+        .child_paths
+        .borrow()
+        .iter()
+        .filter(|(path, _)| path.as_path() == dir_path || path.starts_with(dir_path))
+        .flat_map(|(_, paths)| paths.clone())
+        .collect::<Vec<_>>();
+    section
+        .imp()
+        .child_paths
+        .borrow_mut()
+        .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
+    for path in removed_child_paths {
+        section.forget_visible_path_occurrence(&path);
+    }
+
     section
         .imp()
         .dir_rows
@@ -131,11 +208,6 @@ pub(super) fn clear_dir_state(section: &LushtextWorkspaceSection, dir_path: &Pat
     section
         .imp()
         .dir_stores
-        .borrow_mut()
-        .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
-    section
-        .imp()
-        .child_paths
         .borrow_mut()
         .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
     section
@@ -150,7 +222,7 @@ pub(super) fn clear_dir_state(section: &LushtextWorkspaceSection, dir_path: &Pat
         // subtree as inactive before their cancellation flags are flipped.
         tokens
             .extract_if(|path, _| path.as_path() == dir_path || path.starts_with(dir_path))
-            .map(|(_, token)| token)
+            .flat_map(|(_, tokens)| tokens)
             .collect()
     };
 
@@ -159,20 +231,20 @@ pub(super) fn clear_dir_state(section: &LushtextWorkspaceSection, dir_path: &Pat
     }
 }
 
-/// Clear all cached tree-loading state before reloading the workspace roots.
+/// Clear all cached tree-loading state before reloading the workspace folders.
 pub(super) fn clear_all_dir_state(section: &LushtextWorkspaceSection) {
     section.imp().dir_rows.borrow_mut().clear();
     section.imp().dir_stores.borrow_mut().clear();
     section.imp().child_paths.borrow_mut().clear();
     section.imp().item_locations.borrow_mut().clear();
-    section.imp().root_paths.borrow_mut().clear();
+    section.imp().folder_paths.borrow_mut().clear();
 
     let cancelled: Vec<_> = section
         .imp()
         .child_scan_tokens
         .borrow_mut()
         .drain()
-        .map(|(_, token)| token)
+        .flat_map(|(_, tokens)| tokens)
         .collect();
     for token in cancelled {
         token.store(true, Ordering::Release);
@@ -182,10 +254,11 @@ pub(super) fn clear_all_dir_state(section: &LushtextWorkspaceSection) {
 /// Drop the active scan token for `dir_path` if it still matches `token`.
 fn finish_child_scan(section: &LushtextWorkspaceSection, dir_path: &Path, token: &Arc<AtomicBool>) {
     let mut tokens = section.imp().child_scan_tokens.borrow_mut();
-    let should_remove = tokens
-        .get(dir_path)
-        .is_some_and(|active| Arc::ptr_eq(active, token));
-    if should_remove {
+    let Some(active_tokens) = tokens.get_mut(dir_path) else {
+        return;
+    };
+    active_tokens.retain(|active| !Arc::ptr_eq(active, token));
+    if active_tokens.is_empty() {
         tokens.remove(dir_path);
     }
 }
@@ -194,6 +267,7 @@ fn finish_child_scan(section: &LushtextWorkspaceSection, dir_path: &Path, token:
 fn child_scan_is_active(
     section: &LushtextWorkspaceSection,
     dir_path: &Path,
+    store: &gio::ListStore,
     token: &Arc<AtomicBool>,
 ) -> bool {
     if token.load(Ordering::Acquire) {
@@ -203,23 +277,50 @@ fn child_scan_is_active(
 
     {
         let tokens = section.imp().child_scan_tokens.borrow();
-        let Some(active) = tokens.get(dir_path) else {
+        let Some(active_tokens) = tokens.get(dir_path) else {
             return false;
         };
-        if !Arc::ptr_eq(active, token) {
+        if !active_tokens
+            .iter()
+            .any(|active| Arc::ptr_eq(active, token))
+        {
             return false;
         }
     }
 
-    if let Some(row) = section.find_dir_row(dir_path)
-        && !row.is_expanded()
-    {
+    if !expanded_dir_row_owns_store(section, dir_path, store) {
         token.store(true, Ordering::Release);
         finish_child_scan(section, dir_path, token);
         return false;
     }
 
     true
+}
+
+/// Verify this async scan still belongs to the expanded row owning this store.
+fn expanded_dir_row_owns_store(
+    section: &LushtextWorkspaceSection,
+    dir_path: &Path,
+    store: &gio::ListStore,
+) -> bool {
+    let Some(tree_model) = section.imp().tree_model.borrow().as_ref().cloned() else {
+        return false;
+    };
+    for index in 0..tree_model.n_items() {
+        if let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()
+            && row.is_expanded()
+            && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+            && item.is_dir()
+            && item.path().as_deref() == Some(dir_path)
+            && row
+                .children()
+                .and_then(|children| children.downcast::<gio::ListStore>().ok())
+                .is_some_and(|children| children.as_ptr() == store.as_ptr())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Schedule batched GTK appends so large directories do not block a whole frame.
@@ -244,7 +345,7 @@ fn append_next_child_batch(
     pending: PendingEntries,
     truncated: bool,
 ) {
-    if !child_scan_is_active(section, &dir_path, &token) {
+    if !child_scan_is_active(section, &dir_path, &store, &token) {
         return;
     }
 
@@ -325,6 +426,7 @@ fn truncated_directory_label() -> String {
     format!("{MAX_DIR_ENTRIES}+ items - showing first {MAX_DIR_ENTRIES}")
 }
 
+/// Apply a completed scan, streaming first loads and reconciling refreshes.
 fn apply_scanned_children(
     section: &LushtextWorkspaceSection,
     store: gio::ListStore,
@@ -345,6 +447,7 @@ fn apply_scanned_children(
     reconcile_child_store(section, &store, &dir_path, &token, entries, truncated);
 }
 
+/// Reconcile a refreshed child store with minimal row churn.
 fn reconcile_child_store(
     section: &LushtextWorkspaceSection,
     store: &gio::ListStore,
@@ -375,6 +478,7 @@ fn reconcile_child_store(
     finish_child_scan(section, dir_path, token);
 }
 
+/// Snapshot the current child store into comparable refresh state.
 fn snapshot_child_rows(store: &gio::ListStore) -> Vec<ChildRowState> {
     let mut rows = Vec::with_capacity(store.n_items() as usize);
     for index in 0..store.n_items() {
@@ -390,6 +494,7 @@ fn snapshot_child_rows(store: &gio::ListStore) -> Vec<ChildRowState> {
     rows
 }
 
+/// Build the desired child-row state from a fresh scan.
 fn desired_child_rows(entries: Vec<DirectoryEntry>, truncated: bool) -> Vec<ChildRowState> {
     let mut rows = entries
         .into_iter()
@@ -413,6 +518,7 @@ fn desired_child_rows(entries: Vec<DirectoryEntry>, truncated: bool) -> Vec<Chil
     rows
 }
 
+/// Convert comparable row state back into GTK row objects for splicing.
 fn build_child_items(rows: &[ChildRowState]) -> Vec<FileTreeItem> {
     rows.iter()
         .map(|row| match (&row.path, &row.placeholder_label) {
@@ -440,6 +546,7 @@ fn common_suffix_len(current: &[ChildRowState], desired: &[ChildRowState]) -> us
         .count()
 }
 
+/// Restore expansion and pending selection after reconciliation may replace rows.
 fn schedule_child_state_restore(section: &LushtextWorkspaceSection) {
     let expanded_paths = section.imp().expanded_paths.borrow().clone();
     let pending_selection = section.imp().pending_selection.borrow().clone();

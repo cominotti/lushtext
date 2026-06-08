@@ -2,9 +2,9 @@
 
 //! Shared sidecar persistence helpers for note-like workflows.
 //!
-//! Bookmarks and the richer document/workspace note flows all use
+//! Bookmarks and the richer document/folder note flows all use
 //! the same patterns: canonical-path identity resolution, JSON sidecar loading,
-//! workspace-root filtering, and in-app rename migration. Keeping those helpers
+//! workspace-folder filtering, and in-app rename migration. Keeping those helpers
 //! here avoids subtle drift between the different persistence services.
 
 use anyhow::{Context, Result};
@@ -17,13 +17,16 @@ use crate::services::filesystem::metadata as fs_metadata;
 #[cfg(test)]
 use crate::services::filesystem::read as fs_read;
 use crate::services::json_format::{
-    KIND_BOOKMARK_SIDECAR, KIND_DOCUMENT_NOTE_SIDECAR, KIND_LOCAL_HISTORY_INDEX,
-    KIND_WORKSPACE_NOTE_SIDECAR,
+    KIND_BOOKMARK_SIDECAR, KIND_DOCUMENT_NOTE_SIDECAR, KIND_FOLDER_NOTE_SIDECAR,
+    KIND_LEGACY_WORKSPACE_NOTE_SIDECAR, KIND_LOCAL_HISTORY_INDEX,
 };
 use crate::services::recovery_metadata::{
     RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass,
-    load_enveloped_json_optional, save_enveloped_json_path,
+    load_enveloped_json_optional_accepting, save_enveloped_json_path_accepting,
 };
+
+const NO_LEGACY_SIDECAR_KINDS: &[&str] = &[];
+const LEGACY_FOLDER_NOTE_SIDECAR_KINDS: &[&str] = &[KIND_LEGACY_WORKSPACE_NOTE_SIDECAR];
 
 /// Resolve the stable identity for one saved document path.
 ///
@@ -46,20 +49,23 @@ pub fn sidecar_filename(sidecar_id: &str) -> String {
     format!("{sidecar_id}.json")
 }
 
-/// Canonicalize workspace roots before scope matching.
+/// Canonicalize workspace folders before scope matching.
 #[must_use]
-pub fn canonicalize_roots(workspace_roots: &[PathBuf]) -> Vec<PathBuf> {
-    workspace_roots
+pub fn canonicalize_folders(workspace_folders: &[PathBuf]) -> Vec<PathBuf> {
+    workspace_folders
         .iter()
-        .map(|root| fs_metadata::canonical_path(root).unwrap_or_else(|_| root.clone()))
+        .map(|folder| fs_metadata::canonical_path(folder).unwrap_or_else(|_| folder.clone()))
         .collect()
 }
 
-/// Return whether a saved-document identity lives under any selected workspace root.
+/// Return whether a saved-document identity lives under any selected workspace folder.
 #[must_use]
-pub fn matches_any_root(identity: &DocumentSidecarIdentity, workspace_roots: &[PathBuf]) -> bool {
-    workspace_roots.iter().any(|root| {
-        identity.canonical_path.starts_with(root) || identity.display_path.starts_with(root)
+pub fn matches_any_folder(
+    identity: &DocumentSidecarIdentity,
+    workspace_folders: &[PathBuf],
+) -> bool {
+    workspace_folders.iter().any(|folder| {
+        identity.canonical_path.starts_with(folder) || identity.display_path.starts_with(folder)
     })
 }
 
@@ -136,9 +142,10 @@ pub fn load_json_file_recovering<T: DeserializeOwned>(
     path: &Path,
     class: RecoveryMetadataClass,
 ) -> RecoveryLoad<Option<T>> {
-    load_enveloped_json_optional(
+    load_enveloped_json_optional_accepting(
         &RecoveryLoadConfig::new(data_dir, path, class),
         sidecar_document_kind(class),
+        legacy_sidecar_document_kinds(class),
     )
 }
 
@@ -158,7 +165,12 @@ where
     T: Serialize + DeserializeOwned,
 {
     let config = RecoveryLoadConfig::new(data_dir, path, class);
-    let diagnostics = save_enveloped_json_path(&config, sidecar_document_kind(class), value)?;
+    let diagnostics = save_enveloped_json_path_accepting(
+        &config,
+        sidecar_document_kind(class),
+        legacy_sidecar_document_kinds(class),
+        value,
+    )?;
     trace_recovery_diagnostics(&diagnostics);
     Ok(())
 }
@@ -174,10 +186,23 @@ fn sidecar_document_kind(class: RecoveryMetadataClass) -> &'static str {
     match class {
         RecoveryMetadataClass::BookmarkSidecar => KIND_BOOKMARK_SIDECAR,
         RecoveryMetadataClass::DocumentNoteSidecar => KIND_DOCUMENT_NOTE_SIDECAR,
-        RecoveryMetadataClass::WorkspaceNoteSidecar => KIND_WORKSPACE_NOTE_SIDECAR,
+        RecoveryMetadataClass::FolderNoteSidecar => KIND_FOLDER_NOTE_SIDECAR,
         RecoveryMetadataClass::LocalHistoryIndex => KIND_LOCAL_HISTORY_INDEX,
         other => panic!(
             "recovery class {} does not map to a note-storage sidecar kind",
+            other.slug()
+        ),
+    }
+}
+
+fn legacy_sidecar_document_kinds(class: RecoveryMetadataClass) -> &'static [&'static str] {
+    match class {
+        RecoveryMetadataClass::FolderNoteSidecar => LEGACY_FOLDER_NOTE_SIDECAR_KINDS,
+        RecoveryMetadataClass::BookmarkSidecar
+        | RecoveryMetadataClass::DocumentNoteSidecar
+        | RecoveryMetadataClass::LocalHistoryIndex => NO_LEGACY_SIDECAR_KINDS,
+        other => panic!(
+            "recovery class {} does not map to note-storage legacy kinds",
             other.slug()
         ),
     }
@@ -190,24 +215,24 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn canonicalize_roots_resolves_existing_roots_and_keeps_missing_roots() {
+    fn canonicalize_folders_resolves_existing_folders_and_keeps_missing_folders() {
         let dir = TempDir::new().expect("tempdir");
         let existing = dir.path().join("workspace");
         let missing = dir.path().join("missing");
         fixture::create_dir_all(&existing);
 
-        let roots = canonicalize_roots(&[existing.clone(), missing.clone()]);
+        let folders = canonicalize_folders(&[existing.clone(), missing.clone()]);
 
         assert_eq!(
-            roots[0],
+            folders[0],
             fs_metadata::canonical_path(&existing).expect("canonical workspace")
         );
-        assert_eq!(roots[1], missing);
+        assert_eq!(folders[1], missing);
     }
 
     #[test]
-    fn matches_any_root_accepts_display_or_canonical_roots_only() {
-        let root = PathBuf::from("/workspace");
+    fn matches_any_folder_accepts_display_or_canonical_folders_only() {
+        let folder = PathBuf::from("/workspace");
         let canonical_match = DocumentSidecarIdentity::from_paths(
             PathBuf::from("/visible/file.rs"),
             PathBuf::from("/workspace/file.rs"),
@@ -221,21 +246,21 @@ mod tests {
             PathBuf::from("/canonical/file.rs"),
         );
 
-        assert!(matches_any_root(
+        assert!(matches_any_folder(
             &canonical_match,
-            std::slice::from_ref(&root)
+            std::slice::from_ref(&folder)
         ));
-        assert!(matches_any_root(
+        assert!(matches_any_folder(
             &display_match,
-            std::slice::from_ref(&root)
+            std::slice::from_ref(&folder)
         ));
-        assert!(!matches_any_root(&outside, &[root]));
+        assert!(!matches_any_folder(&outside, &[folder]));
     }
 
     #[test]
     fn rebase_identity_paths_handles_display_and_canonical_prefixes() {
-        let old_root = Path::new("/project/old");
-        let new_root = Path::new("/project/new");
+        let old_folder = Path::new("/project/old");
+        let new_folder = Path::new("/project/new");
         let display_nested = DocumentSidecarIdentity::from_paths(
             PathBuf::from("/project/old/src/file.txt"),
             PathBuf::from("/canonical/elsewhere/file.txt"),
@@ -250,18 +275,18 @@ mod tests {
         );
 
         let (display_path, canonical_path) =
-            rebase_identity_paths(&display_nested, old_root, new_root)
+            rebase_identity_paths(&display_nested, old_folder, new_folder)
                 .expect("display path should rebase");
         assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
         assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
 
         let (display_path, canonical_path) =
-            rebase_identity_paths(&canonical_nested, old_root, new_root)
+            rebase_identity_paths(&canonical_nested, old_folder, new_folder)
                 .expect("canonical path should rebase");
         assert_eq!(display_path, PathBuf::from("/project/new/src/file.txt"));
         assert_eq!(canonical_path, PathBuf::from("/project/new/src/file.txt"));
 
-        assert!(rebase_identity_paths(&unrelated, old_root, new_root).is_none());
+        assert!(rebase_identity_paths(&unrelated, old_folder, new_folder).is_none());
     }
 
     #[test]

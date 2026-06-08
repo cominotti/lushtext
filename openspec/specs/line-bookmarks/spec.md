@@ -134,22 +134,29 @@ The system SHALL persist bookmark sidecars as supported v1 app-owned JSON envelo
 - **AND** unrelated valid bookmark sidecars continue to load
 
 ### Requirement: Bookmarks appear in the unified notes browser
-The system SHALL include saved-file bookmarks in the `Browse Notes...` surface when they either belong to the current workspace scope or belong to saved open tabs outside that scope. Workspace-scoped bookmark entries MUST appear in the dedicated `Bookmarks` section, respect the current workspace scope, preview bookmark metadata explicitly, and open or focus the bookmarked file at the bookmarked line. Open-tab bookmark entries outside the current workspace scope MUST appear in the dedicated `Open Tabs` section, identify themselves as open-tab rows, reflect the current live editor bookmark state even when debounced bookmark sidecar persistence has not completed, and MUST NOT be represented as belonging to a fake workspace.
+The system SHALL include saved-file bookmarks in the `Browse Notes...` surface when they either belong to the current workspace scope's folder coverage or belong to saved open tabs outside that scope. Workspace-scoped bookmark entries MUST appear in the dedicated `Bookmarks` section, respect the current workspace scope, preview bookmark metadata explicitly, and open or focus the bookmarked file at the bookmarked line. Open-tab bookmark entries outside the current workspace scope MUST appear in the dedicated `Open Tabs` section, identify themselves as open-tab rows, reflect the current live editor bookmark state even when debounced bookmark sidecar persistence has not completed, and MUST NOT be represented as belonging to a fake workspace. When overlapping folders cover the same saved file, the browser MUST show one bookmark row per bookmark identity, not one duplicate row per covering folder.
 
 #### Scenario: Browse bookmarks with notes inside one workspace
 - **WHEN** a concrete workspace is the current shared scope and the user opens `Browse Notes...`
-- **THEN** the browser lists bookmarks for saved files inside that workspace root in a dedicated `Bookmarks` section
-- **AND** closed-file bookmarks outside that workspace are excluded
+- **THEN** the browser lists bookmarks for saved files covered by that workspace's folder set in a dedicated `Bookmarks` section
+- **AND** closed-file bookmarks outside that workspace's folder set are excluded
 - **AND** bookmarks attached to saved open tabs outside that workspace appear only in the `Open Tabs` section
 
 #### Scenario: Browse bookmarks across all workspaces
 - **WHEN** the current shared scope is `All workspaces` and the user opens `Browse Notes...`
-- **THEN** the browser aggregates bookmarks from every restored workspace root
-- **AND** each bookmark row preserves enough workspace and file metadata for the user to tell where it belongs
-- **AND** bookmarks attached to saved open tabs outside every restored workspace root appear only in the `Open Tabs` section
+- **THEN** the browser aggregates bookmarks from every restored workspace folder
+- **AND** each bookmark row preserves enough workspace, primary folder, and file metadata for the user to tell where it belongs
+- **AND** bookmarks attached to saved open tabs outside every restored workspace folder appear only in the `Open Tabs` section
 
-#### Scenario: Browse open-tab bookmarks without a workspace
-- **WHEN** no workspace roots are restored
+#### Scenario: Overlapping folders do not duplicate a bookmark
+- **WHEN** the selected workspace contains folders `/repo` and `/repo/src`
+- **AND** `/repo/src/main.rs` has one bookmark
+- **AND** the user opens `Browse Notes...`
+- **THEN** the `Bookmarks` section shows one row for that bookmark
+- **AND** the row uses the earliest covering folder by workspace folder order as its primary context
+
+#### Scenario: Browse open-tab bookmarks without a workspace folder
+- **WHEN** no workspace folders are restored
 - **AND** a saved open editor has one or more bookmarks
 - **AND** the user opens `Browse Notes...`
 - **THEN** the browser lists those bookmarks in the `Open Tabs` section
@@ -164,7 +171,7 @@ The system SHALL include saved-file bookmarks in the `Browse Notes...` surface w
 #### Scenario: Preview a bookmark from the unified notes browser
 - **WHEN** the user selects a bookmark row in `Browse Notes...`
 - **THEN** the preview pane identifies the bookmark label or fallback line title
-- **AND** the preview pane shows the associated source, file path, and line number instead of an empty markdown note
+- **AND** the preview pane shows the associated source, file path, line number, and source context instead of an empty markdown note
 - **AND** the Open action targets the selected bookmark
 
 #### Scenario: Open a bookmark from the unified notes browser
@@ -174,7 +181,7 @@ The system SHALL include saved-file bookmarks in the `Browse Notes...` surface w
 
 #### Scenario: Search bookmarks in the unified notes browser
 - **WHEN** the user searches in `Browse Notes...`
-- **THEN** bookmark rows match by label, saved file metadata, workspace or open-tab source metadata, or line number
+- **THEN** bookmark rows match by label, saved file metadata, workspace metadata, primary folder metadata, open-tab source metadata, or line number
 - **AND** non-matching bookmark rows are hidden without changing persisted bookmark data
 
 ### Requirement: Bookmark browser previews show anchored source excerpts
@@ -183,7 +190,7 @@ The system SHALL show a contextual source excerpt in the `Browse Notes...` previ
 #### Scenario: Preview a Markdown bookmark as rendered context
 - **WHEN** the user selects a bookmark row for a Markdown-like saved file in `Browse Notes...`
 - **THEN** the preview pane renders a bounded Markdown excerpt around the bookmarked line
-- **AND** relative preview context uses the bookmarked file path and available workspace roots
+- **AND** relative preview context uses the bookmarked file path and current workspace folder coverage
 - **AND** the preview still identifies the bookmark label or fallback line title, source, file path, and line number
 
 #### Scenario: Preview a plain text bookmark as raw context

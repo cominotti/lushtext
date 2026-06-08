@@ -272,7 +272,7 @@ impl LushtextWindow {
         }
     }
 
-    /// Build the file index from all workspace roots on a background thread.
+    /// Build the file index from all workspace folders on a background thread.
     pub fn rebuild_file_index(&self) {
         let generation = self.imp().index_rebuild_generation.get().wrapping_add(1);
         self.imp().index_rebuild_generation.set(generation);
@@ -286,15 +286,15 @@ impl LushtextWindow {
                 return;
             }
             let prev_count = window.imp().command_palette.file_index_len();
-            let roots = window.current_workspace_directory_roots();
+            let folders = window.current_workspace_folder_paths();
             let window_weak = window.downgrade();
             async_task::spawn_blocking_then(
                 (),
                 move || {
                     if prev_count == 0 {
-                        FileIndex::rebuild(&roots)
+                        FileIndex::rebuild(&folders)
                     } else {
-                        FileIndex::rebuild_with_hint(&roots, prev_count)
+                        FileIndex::rebuild_with_hint(&folders, prev_count)
                     }
                 },
                 move |(), index| {

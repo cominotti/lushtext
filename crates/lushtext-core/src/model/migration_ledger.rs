@@ -16,8 +16,10 @@ pub enum MigrationKind {
     Bookmarks,
     /// Per-file rich document-note sidecars.
     DocumentNotes,
-    /// Workspace-root rich note sidecars.
-    WorkspaceNotes,
+    /// Workspace-folder rich note sidecars.
+    // Preserve retry ledgers written before the note concept was renamed to folder notes.
+    #[serde(alias = "WorkspaceNotes")]
+    FolderNotes,
     /// Per-file local-history lineage directories.
     LocalHistory,
 }
@@ -29,7 +31,7 @@ impl MigrationKind {
         match self {
             Self::Bookmarks => "bookmarks",
             Self::DocumentNotes => "document-notes",
-            Self::WorkspaceNotes => "workspace-notes",
+            Self::FolderNotes => "folder-notes",
             Self::LocalHistory => "local-history",
         }
     }

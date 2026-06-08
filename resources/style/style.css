@@ -242,6 +242,41 @@
   min-height: 1px;
 }
 
+/* Transparent full-row shield that owns reorder hover before GtkTreeExpander can react. */
+.workspace-folder-dnd-shield {
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+}
+
+/* Transparent overlay that positions the one painted workspace-folder reorder line. */
+.workspace-folder-drop-target {
+  min-height: 2px;
+  margin-left: 10px;
+  margin-right: 10px;
+  padding: 0;
+  background: transparent;
+}
+
+.workspace-folder-dnd-surface:drop(active),
+.workspace-folder-dnd-shield:drop(active),
+.workspace-folder-drop-target:drop(active) {
+  background: none;
+  background-color: transparent;
+  box-shadow: none;
+  outline-width: 0;
+  outline-color: transparent;
+  border-width: 0;
+  border-color: transparent;
+}
+
+/* Workspace-folder reorder target line shown only for valid same-workspace drops. */
+.workspace-folder-drop-indicator {
+  min-height: 2px;
+  background-color: @accent_bg_color;
+  border-radius: 999px;
+}
+
 /* Minimap: slim overview map with a dedicated semantic marker edge */
 .minimap-shell {
   border-left: 1px solid alpha(@borders, 0.3);

@@ -128,11 +128,11 @@ impl LushtextWindow {
             gio::ActionEntry::builder("notes-open-document-note")
                 .activate(|window: &Self, _, _| window.open_document_note())
                 .build(),
-            gio::ActionEntry::builder("open-workspace-note")
-                .activate(|window: &Self, _, _| window.open_workspace_note())
+            gio::ActionEntry::builder("open-folder-note")
+                .activate(|window: &Self, _, _| window.open_folder_note())
                 .build(),
-            gio::ActionEntry::builder("notes-open-workspace-note")
-                .activate(|window: &Self, _, _| window.open_workspace_note())
+            gio::ActionEntry::builder("notes-open-folder-note")
+                .activate(|window: &Self, _, _| window.open_folder_note())
                 .build(),
             gio::ActionEntry::builder("show-notes")
                 .activate(|window: &Self, _, _| window.show_notes_dialog())
@@ -308,11 +308,13 @@ impl LushtextWindow {
             });
         }
 
-        let action_clone = action.clone();
+        let action_weak = action.downgrade();
         self.imp()
             .settings
             .connect_changed(Some(settings_key), move |s, _| {
-                action_clone.set_state(&s.boolean(settings_key).to_variant());
+                if let Some(action) = action_weak.upgrade() {
+                    action.set_state(&s.boolean(settings_key).to_variant());
+                }
             });
 
         self.add_action(&action);

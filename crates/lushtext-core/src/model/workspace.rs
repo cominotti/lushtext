@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Workspace model — persisted single-root workspaces plus the current scope.
+//! Workspace model — persisted folder-set workspaces plus the current scope.
 //!
 //! This module stays framework-free and defines the durable workspace contract
 //! that the sidebar shell, search, palette, and note workflows all share.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
+
+use crate::model::sidecar_identity::stable_bytes_hash;
 
 /// Stable identifier for a workspace.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -28,6 +30,39 @@ impl WorkspaceId {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+/// Stable identifier for one configured folder inside a workspace.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct WorkspaceFolderId(String);
+
+impl WorkspaceFolderId {
+    /// Build a workspace-folder identifier from stored or generated text.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Borrow the underlying identifier string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Return whether this identifier is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Derive a repeatable folder id when loading the old single-folder payload.
+    #[must_use]
+    fn from_legacy_payload(workspace_id: &WorkspaceId, folder_path: &Path) -> Self {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(workspace_id.as_str().as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(folder_path.to_string_lossy().as_bytes());
+        Self(format!("migrated-folder-{}", stable_bytes_hash(&bytes)))
     }
 }
 
@@ -71,41 +106,180 @@ impl WorkspaceScope {
     }
 }
 
-/// Legacy or section-local root entry shape used during migration and tree setup.
+/// One configured folder that belongs to a workspace.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceFolder {
+    /// Stable folder id used by UI reorder/remove operations.
+    pub id: WorkspaceFolderId,
+    /// Configured folder path persisted for this workspace membership.
+    pub path: PathBuf,
+}
+
+impl WorkspaceFolder {
+    /// Create a folder membership with a freshly generated id.
+    #[must_use]
+    pub fn new(path: PathBuf) -> Self {
+        Self::with_id(WorkspaceFolderId::new(generate_id()), path)
+    }
+
+    /// Create a folder membership with a caller-provided stable id.
+    #[must_use]
+    pub fn with_id(id: WorkspaceFolderId, path: PathBuf) -> Self {
+        Self { id, path }
+    }
+
+    /// Borrow the configured folder path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Relative direction for moving one workspace folder in its ordered set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceFolderMoveDirection {
+    /// Move the folder one position earlier.
+    Up,
+    /// Move the folder one position later.
+    Down,
+}
+
+/// Section-local row seed used while building workspace folder trees.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WorkspaceEntry {
-    /// Directory root used by legacy persisted workspaces and drill-down views.
+pub enum FolderTreeEntry {
+    /// Directory row seed used by configured folders and drill-down views.
     Directory { path: PathBuf },
-    /// Standalone file root used only by legacy persisted workspaces.
+    /// Standalone file row seed used by older sidebar fixtures and tree setup.
     File { path: PathBuf },
 }
 
-impl WorkspaceEntry {
-    /// Borrow the filesystem path behind this legacy entry.
+impl FolderTreeEntry {
+    /// Borrow the filesystem path behind this tree row seed.
     #[must_use]
     pub fn path(&self) -> &Path {
         match self {
-            WorkspaceEntry::Directory { path } | WorkspaceEntry::File { path } => path,
+            FolderTreeEntry::Directory { path } | FolderTreeEntry::File { path } => path,
         }
     }
 
-    /// Return whether this entry points at a directory.
+    /// Return whether this row seed points at a directory.
     #[must_use]
     pub fn is_dir(&self) -> bool {
-        matches!(self, WorkspaceEntry::Directory { .. })
+        matches!(self, FolderTreeEntry::Directory { .. })
     }
 }
 
-/// One persisted workspace with exactly one root directory.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// One persisted workspace containing an ordered set of folders.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct WorkspaceConfig {
     /// Stable identifier used by persisted scope selection and callbacks.
     pub id: WorkspaceId,
     /// User-visible workspace label shown in the selector and section header.
     pub name: String,
-    /// Canonical root directory for this workspace.
-    pub root: PathBuf,
+    /// Ordered folder memberships that define this workspace.
+    #[serde(default)]
+    pub folders: Vec<WorkspaceFolder>,
+}
+
+impl WorkspaceConfig {
+    /// Build a workspace with one initial folder.
+    #[must_use]
+    pub fn with_one_folder(id: WorkspaceId, name: impl Into<String>, path: PathBuf) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            folders: vec![WorkspaceFolder::new(path)],
+        }
+    }
+
+    /// Build a workspace with an explicit folder list.
+    #[must_use]
+    pub fn with_folders(
+        id: WorkspaceId,
+        name: impl Into<String>,
+        folders: Vec<WorkspaceFolder>,
+    ) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            folders,
+        }
+    }
+
+    /// Collect this workspace's folder paths in stored order.
+    #[must_use]
+    pub fn folder_paths(&self) -> Vec<PathBuf> {
+        self.folders
+            .iter()
+            .map(|folder| folder.path.clone())
+            .collect()
+    }
+
+    /// Append one folder membership and return its stable folder id.
+    pub fn add_folder(&mut self, path: PathBuf) -> WorkspaceFolderId {
+        let folder = WorkspaceFolder::new(path);
+        let id = folder.id.clone();
+        self.folders.push(folder);
+        id
+    }
+
+    /// Remove one folder membership by id.
+    pub fn remove_folder(&mut self, folder_id: &WorkspaceFolderId) -> Option<WorkspaceFolder> {
+        let index = self
+            .folders
+            .iter()
+            .position(|folder| &folder.id == folder_id)?;
+        Some(self.folders.remove(index))
+    }
+
+    /// Move one folder membership to a new index within this workspace.
+    pub fn move_folder(&mut self, folder_id: &WorkspaceFolderId, new_index: usize) -> bool {
+        let Some(old_index) = self
+            .folders
+            .iter()
+            .position(|folder| &folder.id == folder_id)
+        else {
+            return false;
+        };
+        let folder = self.folders.remove(old_index);
+        let insert_at = new_index.min(self.folders.len());
+        self.folders.insert(insert_at, folder);
+        old_index != insert_at
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkspaceConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawWorkspaceConfig {
+            id: WorkspaceId,
+            name: String,
+            folders: Option<Vec<WorkspaceFolder>>,
+            #[serde(rename = "root")]
+            legacy_folder: Option<PathBuf>,
+        }
+
+        let raw = RawWorkspaceConfig::deserialize(deserializer)?;
+        let folders = match raw.folders {
+            Some(folders) => folders,
+            None => raw.legacy_folder.map_or_else(Vec::new, |folder_path| {
+                vec![WorkspaceFolder::with_id(
+                    WorkspaceFolderId::from_legacy_payload(&raw.id, &folder_path),
+                    folder_path,
+                )]
+            }),
+        };
+
+        Ok(Self {
+            id: raw.id,
+            name: raw.name,
+            folders,
+        })
+    }
 }
 
 /// Top-level persisted state for all workspaces plus the current scope.
@@ -114,20 +288,29 @@ pub struct WorkspacesFile {
     /// The user's last explicit workspace scope selection.
     #[serde(default)]
     pub current_scope: WorkspaceScope,
-    /// All restored workspaces, each with exactly one root directory.
+    /// All restored workspaces, each with an ordered folder set.
     #[serde(default)]
     pub workspaces: Vec<WorkspaceConfig>,
 }
 
 impl WorkspacesFile {
-    /// Add a new single-root workspace and select it immediately.
-    pub fn add_workspace(&mut self, name: &str, root: PathBuf) -> WorkspaceId {
+    /// Add a new workspace with one initial folder and select it immediately.
+    pub fn add_workspace(&mut self, name: &str, folder_path: PathBuf) -> WorkspaceId {
         let id = WorkspaceId::new(generate_id());
-        self.workspaces.push(WorkspaceConfig {
-            id: id.clone(),
-            name: name.to_string(),
-            root,
-        });
+        self.workspaces.push(WorkspaceConfig::with_one_folder(
+            id.clone(),
+            name,
+            folder_path,
+        ));
+        self.current_scope = WorkspaceScope::workspace(id.clone());
+        id
+    }
+
+    /// Add a new empty workspace and select it immediately.
+    pub fn add_empty_workspace(&mut self, name: &str) -> WorkspaceId {
+        let id = WorkspaceId::new(generate_id());
+        self.workspaces
+            .push(WorkspaceConfig::with_folders(id.clone(), name, Vec::new()));
         self.current_scope = WorkspaceScope::workspace(id.clone());
         id
     }
@@ -142,15 +325,33 @@ impl WorkspacesFile {
         }
     }
 
-    /// Rename one workspace. No-op if the workspace id is not found.
-    pub fn rename_workspace(&mut self, ws_id: &WorkspaceId, new_name: &str) {
+    /// Rename one workspace and report whether the id was found.
+    pub fn rename_workspace(&mut self, ws_id: &WorkspaceId, new_name: &str) -> bool {
         if let Some(workspace) = self
             .workspaces
             .iter_mut()
             .find(|workspace| &workspace.id == ws_id)
         {
             workspace.name = new_name.to_string();
+            true
+        } else {
+            false
         }
+    }
+
+    /// Borrow one workspace by id.
+    #[must_use]
+    pub fn workspace(&self, ws_id: &WorkspaceId) -> Option<&WorkspaceConfig> {
+        self.workspaces
+            .iter()
+            .find(|workspace| &workspace.id == ws_id)
+    }
+
+    /// Mutably borrow one workspace by id.
+    pub fn workspace_mut(&mut self, ws_id: &WorkspaceId) -> Option<&mut WorkspaceConfig> {
+        self.workspaces
+            .iter_mut()
+            .find(|workspace| &workspace.id == ws_id)
     }
 
     /// Persist a new current scope, falling back to `All` if the target is gone.
@@ -164,25 +365,25 @@ impl WorkspacesFile {
         self.normalized_scope(self.current_scope.clone())
     }
 
-    /// Collect every persisted workspace root directory.
+    /// Collect every persisted workspace folder in workspace and folder order.
     #[must_use]
-    pub fn all_workspace_root_paths(&self) -> Vec<PathBuf> {
+    pub fn all_workspace_folder_paths(&self) -> Vec<PathBuf> {
         self.workspaces
             .iter()
-            .map(|workspace| workspace.root.clone())
+            .flat_map(WorkspaceConfig::folder_paths)
             .collect()
     }
 
-    /// Collect the workspace roots covered by the given scope.
+    /// Collect the workspace folders covered by the given scope.
     #[must_use]
-    pub fn root_paths_for_scope(&self, scope: &WorkspaceScope) -> Vec<PathBuf> {
+    pub fn folder_paths_for_scope(&self, scope: &WorkspaceScope) -> Vec<PathBuf> {
         match self.normalized_scope(scope.clone()) {
-            WorkspaceScope::All => self.all_workspace_root_paths(),
+            WorkspaceScope::All => self.all_workspace_folder_paths(),
             WorkspaceScope::Workspace(workspace_id) => self
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == workspace_id)
-                .map_or_else(Vec::new, |workspace| vec![workspace.root.clone()]),
+                .map_or_else(Vec::new, WorkspaceConfig::folder_paths),
         }
     }
 
@@ -237,6 +438,17 @@ mod tests {
     }
 
     #[test]
+    fn workspace_folder_id_accessors_report_underlying_identifier() {
+        let id = WorkspaceFolderId::new("folder-1");
+        let empty = WorkspaceFolderId::new("");
+
+        assert_eq!(id.as_str(), "folder-1");
+        assert!(!id.is_empty());
+        assert_eq!(empty.as_str(), "");
+        assert!(empty.is_empty());
+    }
+
+    #[test]
     fn workspace_scope_queries_distinguish_all_from_specific_workspace() {
         let first = WorkspaceId::new("first");
         let second = WorkspaceId::new("second");
@@ -261,7 +473,20 @@ mod tests {
 
         assert_eq!(file.workspaces.len(), 1);
         assert_eq!(file.current_scope(), WorkspaceScope::workspace(id));
-        assert_eq!(file.workspaces[0].root, Path::new("/tmp/project"));
+        assert_eq!(
+            file.workspaces[0].folder_paths(),
+            vec![PathBuf::from("/tmp/project")]
+        );
+    }
+
+    #[test]
+    fn add_empty_workspace_selects_new_workspace_without_fake_folder() {
+        let mut file = WorkspacesFile::default();
+        let id = file.add_empty_workspace("empty");
+
+        assert_eq!(file.workspaces.len(), 1);
+        assert_eq!(file.current_scope(), WorkspaceScope::workspace(id));
+        assert!(file.workspaces[0].folders.is_empty());
     }
 
     #[test]
@@ -290,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_and_add_different_root_creates_distinct_workspace_identity() {
+    fn remove_and_add_different_folder_creates_distinct_workspace_identity() {
         let mut file = WorkspacesFile::default();
         let old_id = file.add_workspace("old", "/tmp/old".into());
 
@@ -300,33 +525,94 @@ mod tests {
         assert_ne!(old_id, new_id);
         assert_eq!(file.workspaces.len(), 1);
         assert_eq!(file.workspaces[0].id, new_id);
-        assert_eq!(file.workspaces[0].root, Path::new("/tmp/new"));
+        assert_eq!(
+            file.workspaces[0].folder_paths(),
+            vec![PathBuf::from("/tmp/new")]
+        );
         assert_eq!(file.workspaces[0].name, "new");
     }
 
     #[test]
-    fn root_paths_for_scope_returns_selected_workspace_only() {
+    fn folder_paths_for_scope_returns_selected_workspace_only() {
         let mut file = WorkspacesFile::default();
         let first = file.add_workspace("first", "/tmp/first".into());
         let _second = file.add_workspace("second", "/tmp/second".into());
 
-        let roots = file.root_paths_for_scope(&WorkspaceScope::workspace(first));
+        let folders = file.folder_paths_for_scope(&WorkspaceScope::workspace(first));
 
-        assert_eq!(roots, vec![PathBuf::from("/tmp/first")]);
+        assert_eq!(folders, vec![PathBuf::from("/tmp/first")]);
     }
 
     #[test]
-    fn root_paths_for_all_scope_returns_every_root() {
+    fn folder_paths_for_all_scope_returns_every_folder() {
         let mut file = WorkspacesFile::default();
         let _ = file.add_workspace("first", "/tmp/first".into());
         let _ = file.add_workspace("second", "/tmp/second".into());
 
-        let roots = file.root_paths_for_scope(&WorkspaceScope::All);
+        let folders = file.folder_paths_for_scope(&WorkspaceScope::All);
 
         assert_eq!(
-            roots,
+            folders,
             vec![PathBuf::from("/tmp/first"), PathBuf::from("/tmp/second")]
         );
+    }
+
+    #[test]
+    fn workspace_folder_commands_add_remove_and_move_entries() {
+        let mut workspace = WorkspaceConfig::with_folders(
+            WorkspaceId::new("workspace"),
+            "workspace",
+            vec![
+                WorkspaceFolder::with_id(WorkspaceFolderId::new("a"), "/tmp/a".into()),
+                WorkspaceFolder::with_id(WorkspaceFolderId::new("b"), "/tmp/b".into()),
+            ],
+        );
+
+        let added = workspace.add_folder("/tmp/c".into());
+        assert_eq!(
+            workspace.folder_paths(),
+            vec![
+                PathBuf::from("/tmp/a"),
+                PathBuf::from("/tmp/b"),
+                PathBuf::from("/tmp/c")
+            ]
+        );
+
+        assert!(workspace.move_folder(&added, 0));
+        assert_eq!(
+            workspace.folder_paths(),
+            vec![
+                PathBuf::from("/tmp/c"),
+                PathBuf::from("/tmp/a"),
+                PathBuf::from("/tmp/b")
+            ]
+        );
+
+        let removed = workspace
+            .remove_folder(&WorkspaceFolderId::new("a"))
+            .expect("remove folder");
+        assert_eq!(removed.path, PathBuf::from("/tmp/a"));
+        assert_eq!(
+            workspace.folder_paths(),
+            vec![PathBuf::from("/tmp/c"), PathBuf::from("/tmp/b")]
+        );
+    }
+
+    #[test]
+    fn workspaces_file_borrows_workspace_by_id() {
+        let mut file = WorkspacesFile::default();
+        let id = file.add_workspace("workspace", "/tmp/workspace".into());
+
+        assert_eq!(
+            file.workspace(&id).map(|workspace| &workspace.name),
+            Some(&"workspace".to_string())
+        );
+        file.workspace_mut(&id).expect("workspace").name = "renamed".to_string();
+        assert_eq!(
+            file.workspace(&id).map(|workspace| &workspace.name),
+            Some(&"renamed".to_string())
+        );
+        assert!(file.workspace(&WorkspaceId::new("missing")).is_none());
     }
 
     #[test]
@@ -339,22 +625,22 @@ mod tests {
     }
 
     #[test]
-    fn workspace_entry_serialization_directory() {
-        let entry = WorkspaceEntry::Directory {
+    fn folder_tree_entry_serialization_directory() {
+        let entry = FolderTreeEntry::Directory {
             path: "/tmp/project".into(),
         };
         let json = serde_json::to_string(&entry).expect("expected operation to succeed");
-        let restored: WorkspaceEntry =
+        let restored: FolderTreeEntry =
             serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(restored, entry);
     }
 
     #[test]
-    fn workspace_entry_queries_expose_path_and_kind() {
-        let directory = WorkspaceEntry::Directory {
+    fn folder_tree_entry_queries_expose_path_and_kind() {
+        let directory = FolderTreeEntry::Directory {
             path: "/tmp/project".into(),
         };
-        let file = WorkspaceEntry::File {
+        let file = FolderTreeEntry::File {
             path: "/tmp/project/file.txt".into(),
         };
 
@@ -412,26 +698,75 @@ mod tests {
     }
 
     #[test]
-    fn workspace_entry_serialization_file() {
-        let entry = WorkspaceEntry::File {
+    fn folder_tree_entry_serialization_file() {
+        let entry = FolderTreeEntry::File {
             path: "/tmp/file.txt".into(),
         };
         let json = serde_json::to_string(&entry).expect("expected operation to succeed");
-        let restored: WorkspaceEntry =
+        let restored: FolderTreeEntry =
             serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(restored, entry);
     }
 
     #[test]
     fn workspace_config_serialization_roundtrip() {
-        let config = WorkspaceConfig {
-            id: WorkspaceId::new("ws-123"),
-            name: "project".into(),
-            root: "/tmp/project".into(),
-        };
+        let config = WorkspaceConfig::with_folders(
+            WorkspaceId::new("ws-123"),
+            "project",
+            vec![WorkspaceFolder::with_id(
+                WorkspaceFolderId::new("folder-1"),
+                "/tmp/project".into(),
+            )],
+        );
         let json = serde_json::to_string(&config).expect("expected operation to succeed");
         let restored: WorkspaceConfig =
             serde_json::from_str(&json).expect("expected operation to succeed");
         assert_eq!(restored, config);
+        assert!(!json.contains("\"root\""));
+    }
+
+    #[test]
+    fn workspace_config_deserializes_legacy_single_folder_payload() {
+        let restored: WorkspaceConfig = serde_json::from_value(serde_json::json!({
+            "id": "legacy",
+            "name": "Legacy",
+            "root": "/tmp/legacy"
+        }))
+        .expect("legacy workspace config");
+
+        assert_eq!(restored.id, WorkspaceId::new("legacy"));
+        assert_eq!(restored.name, "Legacy");
+        assert_eq!(restored.folder_paths(), vec![PathBuf::from("/tmp/legacy")]);
+        assert_eq!(
+            restored.folders[0].id,
+            WorkspaceFolderId::new("migrated-folder-75ab1baeef54db5a")
+        );
+    }
+
+    #[test]
+    fn workspace_config_deserializes_empty_folder_set() {
+        let restored: WorkspaceConfig = serde_json::from_value(serde_json::json!({
+            "id": "empty",
+            "name": "Empty",
+            "folders": []
+        }))
+        .expect("empty workspace config");
+
+        assert_eq!(restored.id, WorkspaceId::new("empty"));
+        assert_eq!(restored.name, "Empty");
+        assert!(restored.folders.is_empty());
+    }
+
+    #[test]
+    fn explicit_empty_folder_set_does_not_fall_back_to_legacy_root() {
+        let restored: WorkspaceConfig = serde_json::from_value(serde_json::json!({
+            "id": "empty",
+            "name": "Empty",
+            "root": "/tmp/legacy",
+            "folders": []
+        }))
+        .expect("empty workspace config");
+
+        assert!(restored.folders.is_empty());
     }
 }

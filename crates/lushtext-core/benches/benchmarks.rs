@@ -30,7 +30,7 @@ use lushtext_core::model::palette::SearchMode;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, stable_bytes_hash};
 use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
+    WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
 use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
@@ -78,7 +78,7 @@ fn make_synthetic_index(n: usize) -> FileIndex {
             IndexedFile {
                 path,
                 name,
-                workspace_root: Arc::clone(&root),
+                workspace_folder: Arc::clone(&root),
             }
         })
         .collect();
@@ -147,7 +147,9 @@ fn make_workspaces_file(n_workspaces: usize, entries_per: usize) -> WorkspacesFi
         .map(|w| WorkspaceConfig {
             id: WorkspaceId::new(format!("ws-{w}")),
             name: format!("Workspace {w}"),
-            root: PathBuf::from(format!("/home/user/project_{w}/root_{entries_per}")),
+            folders: vec![WorkspaceFolder::new(PathBuf::from(format!(
+                "/home/user/project_{w}/folder_{entries_per}"
+            )))],
         })
         .collect();
 
@@ -551,9 +553,15 @@ fn bench_search_all(c: &mut Criterion) {
 
     for size in [10_000, 100_000] {
         let index = make_synthetic_index(size);
-        for mode in [SearchMode::Files, SearchMode::Commands, SearchMode::All] {
+        for mode in [
+            SearchMode::Files,
+            SearchMode::Notes,
+            SearchMode::Commands,
+            SearchMode::All,
+        ] {
             let label = match mode {
                 SearchMode::Files => "files",
+                SearchMode::Notes => "notes",
                 SearchMode::Commands => "commands",
                 SearchMode::All => "all",
             };
@@ -1006,7 +1014,7 @@ fn bench_file_index_incremental(c: &mut Criterion) {
                     let new_file = IndexedFile {
                         path: PathBuf::from("/synthetic/project/src/new_file.rs"),
                         name: "new_file.rs".to_string(),
-                        workspace_root: root,
+                        workspace_folder: root,
                     };
                     (index, new_file)
                 },

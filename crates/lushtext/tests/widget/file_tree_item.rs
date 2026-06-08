@@ -37,7 +37,7 @@ fn test_name_directory() {
 }
 
 #[test]
-fn test_name_root_path_returns_display() {
+fn test_name_filesystem_slash_returns_display() {
     ensure_gtk_init();
     // "/" has no file_name component, so name() falls back to display()
     let item = FileTreeItem::new(PathBuf::from("/"), false, None);

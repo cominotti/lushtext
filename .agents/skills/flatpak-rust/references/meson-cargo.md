@@ -115,7 +115,7 @@ else
 fi
 ```
 
-**Important**: The `--manifest-path` flag points to the workspace root `Cargo.toml`, and `-p lushtext` builds only the binary crate. This avoids building workspace-hack or other internal crates unnecessarily.
+**Important**: The `--manifest-path` flag points to the repository-root `Cargo.toml`, and `-p lushtext` builds only the binary crate. This avoids building workspace-hack or other internal crates unnecessarily.
 
 ## `data/meson.build`
 

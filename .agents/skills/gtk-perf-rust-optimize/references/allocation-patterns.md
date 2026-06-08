@@ -86,6 +86,6 @@ This matters for UI smoothness — per-item `append()` fires N signals causing v
 These patterns have been reviewed and are acceptable. Do not flag them:
 
 - **`to_string_lossy().into_owned()`** — Used in file tree sort and index building. The `.into_owned()` pattern is already in place where it matters.
-- **`Arc<PathBuf>` for workspace roots** — Already implemented in `IndexedFile`. Files in the same workspace share one allocation.
+- **`Arc<PathBuf>` for workspace folders** — Already implemented in `IndexedFile`. Files in the same indexed folder share one allocation.
 - **Vec + sort + truncate for top-N search results** — Already implemented in `search_items`. Simple collect, sort descending, truncate at max=50. Readable and fast enough for the fixed small k.
 - **`Vec::with_capacity` for large known-size collections** — Used where the size is clearly known (e.g., index rebuild). Don't flag missing capacity hints for small or unknown-size collections.

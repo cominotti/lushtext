@@ -8,13 +8,13 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Focus Mode** -- `Ctrl+Shift+F11` enters a reversible fullscreen writing shell with chrome suppressed, readable editor/Markdown columns, a subtle source text-origin guide, optional typewriter scrolling, and `Alt+P` preview-only support
 - **Adaptive workspace sidebar width** -- choose `Small`, `Comfy`, or `Large` in `Preferences > Workspace`; each preset stays comfortable on large displays by clamping to a bounded desktop width
 - **Tab content transparency** -- adjust `Transparency` in `Preferences > Editor > Appearance` to soften editor and Markdown preview backgrounds while keeping the header, side panels, status/search chrome, and minimap opaque
-- **Workspaces** -- named single-root directories with a shared current workspace scope, persisted across sessions
-- **Workspace auto-refresh** -- external file and folder changes refresh the sidebar's currently materialized root rows and expanded directories automatically, with access-noise filtering plus in-place reconciliation for both subtree and manual root refreshes to avoid visible flashing, and a per-section `Refresh` button for deterministic broader reloads
+- **Workspaces** -- named ordered folder sets with a shared current workspace scope, persisted across sessions
+- **Workspace auto-refresh** -- external file and folder changes refresh the sidebar's currently materialized top-level folder rows and expanded directories automatically, with access-noise filtering plus in-place reconciliation for both subtree and manual folder refreshes to avoid visible flashing, and a per-section `Refresh` button for deterministic broader reloads
 - **File peek** -- press `Space` on a selected sidebar file to inspect a bounded read-only preview in a floating card with the absolute file path, then `Enter` or `Open` to promote it into a real tab
-- **Focus Folder** -- re-root a workspace section into a deep subfolder so the sidebar can drill into nested trees without wasting width on clipped ancestors
+- **Focus Folder** -- focus a workspace section on a deep subfolder so the sidebar can drill into nested trees without wasting width on clipped ancestors
 - **Syntax highlighting** -- via GtkSourceView for common file types (Rust, Python, JSON, TOML, YAML, Markdown, and more)
 - **EditorConfig support** -- per-file formatting overrides from `.editorconfig` files (`indent_style`, `tab_width`, `indent_size`); toggle in Preferences
-- **Bookmarks and rich notes** -- saved-file bookmark gutter marks with labels and F2 navigation, plus markdown-capable document notes, workspace notes, and a unified notes browser
+- **Bookmarks and rich notes** -- saved-file bookmark gutter marks with labels and F2 navigation, plus markdown-capable document notes, folder notes, and a unified notes browser
 - **Local history** -- saved-file snapshot browser with automatic baseline, periodic, and save-boundary restore points, an adaptive Adwaita browse/preview UI, restore safety snapshots, and one-click undo of a restore
 - **Minimap** -- toggleable right-edge document overview with semantic markers for bookmarks, active in-tab search matches, modified-since-save regions, and long-line warnings on supported files
 - **Session persistence** -- tabs, pinned state, cursor positions, and scroll offsets restored on restart
@@ -254,7 +254,7 @@ for recovery metadata, quarantine, migration-ledger, and crash-smoke triage.
 1. Open a file with `Ctrl+O`, from the header-bar open button, or by launching
    `lushtext PATH`.
 2. Add a workspace folder from the left sidebar to browse a project directory.
-3. Use the workspace selector to choose `All workspaces` or one specific root.
+3. Use the workspace selector to choose `All workspaces` or one specific workspace.
 4. Open the command palette with `Ctrl+Shift+P` to search files and commands.
 5. Open the main menu and choose **Keyboard Shortcuts** for the complete
    shortcut reference shipped with the app.
@@ -314,11 +314,12 @@ Stored state can include document text:
 | Path | Contains |
 |------|----------|
 | `session.json` | Open tabs, pinned state, cursor positions, and scroll offsets |
-| `workspaces.json` | Saved workspace roots and names |
+| `workspaces.json` | Saved workspace names and ordered folder sets |
 | `drafts/` | Plain-text autosaved drafts for unsaved changes |
 | `bookmarks/` | Saved-file bookmark metadata |
 | `document-notes/` | Per-file document notes |
-| `workspace-notes/` | Per-workspace-root notes |
+| `folder-notes/` | Per-folder note sidecars |
+| `workspace-notes/` | Legacy-compatible folder-note sidecars from older releases |
 | `local-history/` | Local-history snapshots for saved files |
 | `migration-ledger.json` | Retryable sidecar and local-history migration work after in-app renames |
 | `recovery-quarantine/` | Preserved malformed or unsupported app-owned recovery metadata |
@@ -489,11 +490,11 @@ The feature can be toggled in **Preferences > Use EditorConfig** (enabled by def
 
 ## Bookmarks and Notes
 
-LushText includes non-destructive notes for saved files and explicit workspace roots:
+LushText includes non-destructive notes for saved files and explicit workspace folders:
 
 - **Bookmarks** live in the GtkSourceView gutter, can carry an optional label, and support next/previous navigation with `F2` / `Shift+F2`.
 - **Document notes** store one markdown-capable note for a saved file as a whole.
-- **Workspace notes** store one markdown-capable note for each workspace root.
+- **Folder notes** store one markdown-capable note for each workspace folder.
 - **Browse bookmarks** operates on the currently selected workspace scope, while **Browse notes** keeps workspace results scoped and adds an `Open Tabs` section for saved open files outside that scope.
 
 ### Shortcuts
@@ -521,15 +522,15 @@ Use this checklist to exercise the full shipped bookmark and rich-note flow:
 6. Press `Ctrl+Alt+B`.
    Expected: the bookmark browser opens for the current workspace scope, supports search, and clicking a row opens or focuses the bookmarked file and jumps to its line.
 7. Press `Ctrl+Alt+A`.
-   Expected: the unified notes browser opens for the current workspace scope, previews bookmarks, document notes, and workspace notes, shows saved out-of-scope open-tab notes in `Open Tabs`, and clicking Open on a row routes to the right surface.
+   Expected: the unified notes browser opens for the current workspace scope, previews bookmarks, document notes, and folder notes, shows saved out-of-scope open-tab notes in `Open Tabs`, and clicking Open on a row routes to the right surface.
 8. Open **Document Note…** for the active saved file.
     Expected: the file-level note opens, supports Edit/Render switching, and Save persists it without changing the file bytes.
-9. Select one concrete workspace and open **Workspace Note…**.
-    Expected: the workspace-level note opens for that root; in `All workspaces`, the single-workspace action stays disabled and the unified browser remains available.
+9. Select one concrete workspace and open **Folder Note…**.
+    Expected: the folder-level note opens for that workspace's concrete folder target; in `All workspaces`, the direct folder-note action stays disabled and the unified browser remains available.
 10. Toggle **Preferences > Show Bookmark Gutter**.
     Expected: bookmark gutter indicators hide and reappear without losing stored bookmarks.
 11. Close and reopen the file, then restart the app and open it again.
-    Expected: bookmarks and document notes restore automatically; workspace notes return when the same workspace root is restored.
+    Expected: bookmarks and document notes restore automatically; folder notes return when the same workspace folder is restored.
 12. Rename the file from the LushText sidebar.
     Expected: reopening the renamed file keeps the same bookmarks and document note.
 13. Use **Save As** to write the file to a new path.
@@ -540,10 +541,10 @@ Use this checklist to exercise the full shipped bookmark and rich-note flow:
 ### Persistence rules
 
 - Bookmarks and document notes require a **saved file path**. Untitled tabs show feedback instead of creating note state.
-- Workspace notes require a **concrete workspace root**. `All workspaces` keeps the browser available, but the single-workspace note action stays disabled until one workspace is selected.
-- Sidecars live under `$XDG_DATA_HOME/lushtext/bookmarks/`, `$XDG_DATA_HOME/lushtext/document-notes/`, and `$XDG_DATA_HOME/lushtext/workspace-notes/`.
+- Folder notes require a **concrete workspace folder**. `All workspaces` keeps the browser available, but the direct folder-note action stays disabled until one workspace is selected.
+- Sidecars live under `$XDG_DATA_HOME/lushtext/bookmarks/`, `$XDG_DATA_HOME/lushtext/document-notes/`, and `$XDG_DATA_HOME/lushtext/folder-notes/`; older `$XDG_DATA_HOME/lushtext/workspace-notes/` folder-note sidecars remain legacy-compatible.
 - **Save As** creates a new file-backed note identity and does not copy the old file's bookmarks or document notes by default.
-- **Sidebar rename inside LushText** migrates file-backed and workspace-root note sidecars to the new path automatically.
+- **Sidebar rename inside LushText** migrates file-backed and folder-note sidecars to the new path automatically.
 
 ### First-release limitations
 
@@ -613,7 +614,7 @@ When deep directory nesting makes a folder hard to browse comfortably in the
 workspace tree, the sidebar provides a **Focus Folder** action.
 
 - Open the context menu on a directory in the sidebar and choose **Focus Folder**.
-- The selected directory becomes the effective root for that workspace section,
+- The selected directory becomes the temporary focus for that workspace section,
   so the tree can drill into that area without wasting width on all of its
   ancestors.
 - If **Auto-Collapse Workspaces** is enabled, focusing a folder can collapse
@@ -664,7 +665,7 @@ lushtext-core/src/
     content_search.rs  Content search types (SearchMatch, SearchEvent, etc.)
     encoding.rs      Document encoding, line endings, file health, and invisible-character modes
     sidecar_identity.rs  Canonical-path sidecar identity helpers for notes and history
-    workspace_note.rs  Workspace-root note model
+    folder_note.rs    Folder-note model
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
     bookmark_service.rs  Bookmark sidecar load/save/move/list helpers
@@ -687,7 +688,7 @@ lushtext-core/src/
     search_history.rs  Search history persistence
     saved_searches.rs  Named saved search persistence
     session_service.rs  Session load/save
-    workspace_note_service.rs  Workspace-root note load/save/move/list helpers
+    folder_note_service.rs  Folder-note load/save/move/list helpers
     workspace_manager.rs  Workspace CRUD
     workspace_watch.rs  Materialized-scope filesystem watch service for sidebar auto-refresh
     async_task.rs    spawn_blocking_then concurrency guard

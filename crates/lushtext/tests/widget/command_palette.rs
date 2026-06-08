@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Tests for the Command Palette widget and its components.
+//! Widget and window-integration tests for command palette template wiring,
+//! grouped results, keyboard flow, and focus restoration.
 
 use crate::common::{ensure_gtk_init, fixture, flush_events, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -34,6 +35,7 @@ fn spin_until(predicate: impl Fn() -> bool) {
     }
 }
 
+/// Present a test window and wait until the headless compositor allocates it.
 fn present_window(window: &LushtextWindow) {
     window.present();
     // Realization is a precondition: give the headless compositor a generous
@@ -44,35 +46,33 @@ fn present_window(window: &LushtextWindow) {
     flush_events();
 }
 
+/// Seed two persisted workspaces so window construction observes real app state.
 fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, PathBuf, PathBuf) {
     ensure_gtk_init();
-    let roots_dir = tempfile::tempdir().expect("scoped workspace roots tempdir");
-    let left_root = roots_dir.path().join("left");
-    let right_root = roots_dir.path().join("right");
-    fixture::create_dir_all(&left_root);
-    fixture::create_dir_all(&right_root);
-    fixture::write_text(&left_root.join("alpha.rs"), "fn alpha() {}\n");
-    fixture::write_text(&right_root.join("beta.rs"), "fn beta() {}\n");
+    let folders_dir = tempfile::tempdir().expect("scoped workspace folders tempdir");
+    let left_folder = folders_dir.path().join("left");
+    let right_folder = folders_dir.path().join("right");
+    fixture::create_dir_all(&left_folder);
+    fixture::create_dir_all(&right_folder);
+    fixture::write_text(&left_folder.join("alpha.rs"), "fn alpha() {}\n");
+    fixture::write_text(&right_folder.join("beta.rs"), "fn beta() {}\n");
 
     let workspaces = WorkspacesFile {
         current_scope: initial_scope,
         workspaces: vec![
-            WorkspaceConfig {
-                id: WorkspaceId::new("ws-left"),
-                name: "left".to_string(),
-                root: left_root.clone(),
-            },
-            WorkspaceConfig {
-                id: WorkspaceId::new("ws-right"),
-                name: "right".to_string(),
-                root: right_root.clone(),
-            },
+            WorkspaceConfig::with_one_folder(WorkspaceId::new("ws-left"), "left", left_folder.clone()),
+            WorkspaceConfig::with_one_folder(
+                WorkspaceId::new("ws-right"),
+                "right",
+                right_folder.clone(),
+            ),
         ],
     };
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save scoped workspaces");
-    (roots_dir, left_root, right_root)
+    (folders_dir, left_folder, right_folder)
 }
 
+/// Wait until the window's async command-palette index rebuild reaches a size.
 fn wait_for_palette_index(window: &LushtextWindow, expected_index: usize) {
     wait_until(Duration::from_secs(3), || {
         window.imp().command_palette.file_index_len() == expected_index
@@ -82,6 +82,8 @@ fn wait_for_palette_index(window: &LushtextWindow, expected_index: usize) {
 fn emit_key(widget: &gtk4::Widget, key: gtk4::gdk::Key) -> glib::Propagation {
     let controllers = widget.observe_controllers();
     for index in 0..controllers.n_items() {
+        // Controller lists store generic GObjects, so the test downcasts to the
+        // key controller before emitting GTK's "key-pressed" signal by name.
         if let Some(controller) = controllers
             .item(index)
             .and_then(|object| object.downcast::<gtk4::EventControllerKey>().ok())
@@ -120,9 +122,35 @@ fn row_position(labels: &[String], label: &str) -> usize {
         .unwrap_or_else(|| panic!("expected label '{label}' in {labels:?}"))
 }
 
+fn row_with_label(palette: &LushtextCommandPalette, label: &str) -> PaletteItem {
+    palette_rows(palette)
+        .into_iter()
+        .find(|item| item.display_name() == label)
+        .unwrap_or_else(|| panic!("expected row '{label}' in {:?}", palette_labels(palette)))
+}
+
+fn row_subtitle(palette: &LushtextCommandPalette, label: &str) -> Option<String> {
+    palette_rows(palette)
+        .into_iter()
+        .find(|item| item.display_name() == label)
+        .map(|item| item.subtitle())
+}
+
 fn rebuild_and_wait_for_label(palette: &LushtextCommandPalette, query: &str, label: &str) {
     palette.imp().rebuild_results(query);
     spin_until(|| palette_labels(palette).iter().any(|item| item == label));
+}
+
+fn rebuild_and_wait_until(
+    palette: &LushtextCommandPalette,
+    query: &str,
+    predicate: impl Fn(&[String]) -> bool,
+) {
+    palette.imp().rebuild_results(query);
+    wait_until(Duration::from_secs(5), || {
+        let labels = palette_labels(palette);
+        predicate(&labels)
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +163,7 @@ fn test_palette_item_from_indexed_file() {
     let file = IndexedFile {
         path: "/home/user/project/src/main.rs".into(),
         name: "main.rs".to_string(),
-        workspace_root: std::sync::Arc::new("/home/user/project".into()),
+        workspace_folder: std::sync::Arc::new("/home/user/project".into()),
     };
     let item = PaletteItem::from_indexed_file(&file);
     assert_eq!(item.display_name(), "main.rs");
@@ -181,12 +209,12 @@ fn test_palette_item_command_without_shortcut() {
 }
 
 #[test]
-fn test_palette_item_file_at_root() {
+fn test_palette_item_file_at_workspace_folder_top_level() {
     ensure_gtk_init();
     let file = IndexedFile {
         path: "/home/user/project/Cargo.toml".into(),
         name: "Cargo.toml".to_string(),
-        workspace_root: std::sync::Arc::new("/home/user/project".into()),
+        workspace_folder: std::sync::Arc::new("/home/user/project".into()),
     };
     let item = PaletteItem::from_indexed_file(&file);
     assert_eq!(item.subtitle(), "Cargo.toml");
@@ -235,10 +263,11 @@ fn test_command_palette_mode_dropdown_initial() {
         .model()
         .and_downcast::<gtk4::StringList>()
         .expect("mode dropdown should use a StringList model");
-    assert_eq!(model.n_items(), 3);
+    assert_eq!(model.n_items(), 4);
     assert_eq!(model.string(0).as_deref(), Some("All"));
     assert_eq!(model.string(1).as_deref(), Some("Files"));
-    assert_eq!(model.string(2).as_deref(), Some("Commands"));
+    assert_eq!(model.string(2).as_deref(), Some("Notes"));
+    assert_eq!(model.string(3).as_deref(), Some("Commands"));
     assert_eq!(dropdown.selected(), SearchMode::All.position());
 }
 
@@ -284,12 +313,22 @@ fn test_command_palette_tab_syncs_mode_dropdown() {
     assert_eq!(
         emit_key(
             palette.imp().search_entry.upcast_ref::<gtk4::Widget>(),
+            gtk4::gdk::Key::Tab,
+        ),
+        glib::Propagation::Stop,
+    );
+    assert_eq!(palette.mode(), SearchMode::Notes);
+    assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::Notes.position());
+
+    assert_eq!(
+        emit_key(
+            palette.imp().search_entry.upcast_ref::<gtk4::Widget>(),
             gtk4::gdk::Key::ISO_Left_Tab,
         ),
         glib::Propagation::Stop,
     );
-    assert_eq!(palette.mode(), SearchMode::All);
-    assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::All.position());
+    assert_eq!(palette.mode(), SearchMode::Files);
+    assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::Files.position());
 }
 
 #[test]
@@ -318,7 +357,6 @@ fn test_command_palette_placeholder_changes_with_mode() {
 
     let imp = palette.imp();
 
-    // Cycle All → Files
     imp.set_mode(imp.mode.get().next());
     assert_eq!(palette.mode(), SearchMode::Files);
     assert_eq!(imp.mode_dropdown.selected(), SearchMode::Files.position());
@@ -327,7 +365,14 @@ fn test_command_palette_placeholder_changes_with_mode() {
         SearchMode::Files.placeholder(),
     );
 
-    // Cycle Files → Commands
+    imp.set_mode(imp.mode.get().next());
+    assert_eq!(palette.mode(), SearchMode::Notes);
+    assert_eq!(imp.mode_dropdown.selected(), SearchMode::Notes.position());
+    assert_eq!(
+        imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
+        SearchMode::Notes.placeholder(),
+    );
+
     imp.set_mode(imp.mode.get().next());
     assert_eq!(palette.mode(), SearchMode::Commands);
     assert_eq!(imp.mode_dropdown.selected(), SearchMode::Commands.position());
@@ -336,7 +381,6 @@ fn test_command_palette_placeholder_changes_with_mode() {
         SearchMode::Commands.placeholder(),
     );
 
-    // Cycle Commands → All
     imp.set_mode(imp.mode.get().next());
     assert_eq!(palette.mode(), SearchMode::All);
     assert_eq!(imp.mode_dropdown.selected(), SearchMode::All.position());
@@ -517,35 +561,227 @@ fn test_command_palette_files_mode_uses_all_workspaces_label() {
 }
 
 #[test]
+fn test_command_palette_files_mode_empty_workspace_index_clears_workspace_group() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("alpha.rs"), "");
+
+    palette.set_workspace_group_label("Selected Workspace");
+    palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
+    palette.imp().set_mode(SearchMode::Files);
+    rebuild_and_wait_for_label(&palette, "alpha", "Selected Workspace");
+
+    palette.set_file_index(FileIndex::default());
+    rebuild_and_wait_until(&palette, "alpha", |labels| {
+        labels.is_empty() && palette.imp().no_results_label.property::<bool>("visible")
+    });
+    let labels = palette_labels(&palette);
+    assert!(!labels.iter().any(|label| label == "Selected Workspace"));
+    assert!(!labels.iter().any(|label| label == "alpha.rs"));
+}
+
+#[test]
 fn test_command_palette_all_mode_groups_sources_by_priority() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
 
     let dir = tempfile::tempdir().expect("expected operation to succeed");
-    fixture::write_text(&dir.path().join("save_workspace.rs"), "");
+    fixture::write_text(&dir.path().join("open_workspace.rs"), "");
 
     palette.set_workspace_group_label("Selected Workspace");
     palette.set_open_tabs(vec![PaletteFileEntry::new(
-        "save_open.rs".to_string(),
-        "/tmp/save_open.rs".to_string(),
-        PathBuf::from("/tmp/save_open.rs"),
+        "open_tab.rs".to_string(),
+        "/tmp/open_tab.rs".to_string(),
+        PathBuf::from("/tmp/open_tab.rs"),
     )]);
     palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
     palette.imp().set_mode(SearchMode::All);
 
-    rebuild_and_wait_for_label(&palette, "save", "Commands");
+    rebuild_and_wait_for_label(&palette, "open", "Commands");
     let labels = palette_labels(&palette);
 
     let open_tabs = row_position(&labels, "Open Tabs");
     let workspace = row_position(&labels, "Selected Workspace");
+    let notes = row_position(&labels, "Notes");
     let commands = row_position(&labels, "Commands");
     assert!(
-        open_tabs < workspace && workspace < commands,
+        open_tabs < workspace && workspace < notes && notes < commands,
         "All mode groups should preserve priority: {labels:?}",
     );
-    assert!(labels.iter().any(|label| label == "save_open.rs"));
-    assert!(labels.iter().any(|label| label == "save_workspace.rs"));
-    assert!(labels.iter().any(|label| label == "Save"));
+    assert!(labels.iter().any(|label| label == "open_tab.rs"));
+    assert!(labels.iter().any(|label| label == "open_workspace.rs"));
+    assert!(labels.iter().any(|label| label == "Open Document Note"));
+    assert!(labels.iter().any(|label| label == "Open File"));
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|label| label.as_str() == "Open Document Note")
+            .count(),
+        1,
+        "note commands should not be duplicated under Commands: {labels:?}",
+    );
+}
+
+#[test]
+fn test_command_palette_all_mode_uses_all_workspaces_label() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("open_workspace.rs"), "");
+
+    palette.set_workspace_group_label("All Workspaces");
+    palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
+    palette.imp().set_mode(SearchMode::All);
+
+    rebuild_and_wait_for_label(&palette, "open", "Commands");
+    let labels = palette_labels(&palette);
+    assert!(labels.iter().any(|label| label == "All Workspaces"));
+    assert!(!labels.iter().any(|label| label == "Selected Workspace"));
+    assert!(
+        row_position(&labels, "All Workspaces") < row_position(&labels, "Commands"),
+        "workspace files should appear before command rows in All mode: {labels:?}",
+    );
+}
+
+#[test]
+fn test_command_palette_workspace_file_group_deduplicates_overlapping_folder_rows() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let workspace_folder = dir.path().to_path_buf();
+    let nested_folder = workspace_folder.join("src");
+    let nested_file = nested_folder.join("main.rs");
+    fixture::create_dir_all(&nested_folder);
+    fixture::write_text(&workspace_folder.join("README.md"), "");
+    fixture::write_text(&nested_file, "");
+
+    palette.set_workspace_group_label("Selected Workspace");
+    palette.set_file_index(FileIndex::rebuild(&[
+        workspace_folder.clone(),
+        nested_folder.clone(),
+    ]));
+    palette.imp().set_mode(SearchMode::Files);
+    rebuild_and_wait_for_label(&palette, "main", "main.rs");
+
+    let labels = palette_labels(&palette);
+    assert_eq!(
+        labels.iter().filter(|label| label.as_str() == "main.rs").count(),
+        1,
+        "overlapping workspace folders should show one palette row: {labels:?}",
+    );
+    assert_eq!(row_with_label(&palette, "main.rs").subtitle(), "src/main.rs");
+
+    palette.set_file_index(FileIndex::rebuild(&[nested_folder, workspace_folder]));
+    palette.imp().rebuild_results("main");
+    wait_until(Duration::from_secs(5), || {
+        row_subtitle(&palette, "main.rs").as_deref() == Some("main.rs")
+    });
+    assert_eq!(
+        row_with_label(&palette, "main.rs").subtitle(),
+        "main.rs",
+        "folder order should choose the primary display context",
+    );
+}
+
+#[test]
+fn test_command_palette_aggregate_scope_deduplicates_duplicate_workspace_files() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("alpha.rs"), "");
+
+    palette.set_workspace_group_label("All Workspaces");
+    palette.set_file_index(FileIndex::rebuild(&[
+        dir.path().to_path_buf(),
+        dir.path().to_path_buf(),
+    ]));
+    palette.imp().set_mode(SearchMode::Files);
+    rebuild_and_wait_for_label(&palette, "alpha", "All Workspaces");
+
+    let labels = palette_labels(&palette);
+    assert_eq!(
+        labels.iter().filter(|label| label.as_str() == "alpha.rs").count(),
+        1,
+        "aggregate scope should show one row for the same canonical file: {labels:?}",
+    );
+}
+
+#[test]
+fn test_command_palette_notes_mode_groups_note_commands_by_intent() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    palette.imp().set_mode(SearchMode::Notes);
+
+    rebuild_and_wait_for_label(&palette, "", "Workspace");
+    let labels = palette_labels(&palette);
+
+    let browse = row_position(&labels, "Browse");
+    let current_document = row_position(&labels, "Current Document");
+    let bookmark_navigation = row_position(&labels, "Bookmark Navigation");
+    let workspace = row_position(&labels, "Workspace");
+    assert!(
+        browse < current_document
+            && current_document < bookmark_navigation
+            && bookmark_navigation < workspace,
+        "Notes mode groups should preserve intent order: {labels:?}",
+    );
+    assert!(labels.iter().any(|label| label == "Browse Notes"));
+    assert!(labels.iter().any(|label| label == "Browse Bookmarks"));
+    assert!(labels.iter().any(|label| label == "Toggle Bookmark"));
+    assert!(labels.iter().any(|label| label == "Edit Bookmark"));
+    assert!(labels.iter().any(|label| label == "Open Document Note"));
+    assert!(labels.iter().any(|label| label == "Next Bookmark"));
+    assert!(labels.iter().any(|label| label == "Previous Bookmark"));
+    assert!(labels.iter().any(|label| label == "Open Folder Note"));
+    assert!(!labels.iter().any(|label| label == "Commands"));
+}
+
+#[test]
+fn test_command_palette_notes_mode_excludes_files_and_non_note_commands() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("open_notes.rs"), "");
+
+    palette.set_workspace_group_label("Selected Workspace");
+    palette.set_open_tabs(vec![PaletteFileEntry::new(
+        "open_notes_tab.rs".to_string(),
+        "/tmp/open_notes_tab.rs".to_string(),
+        PathBuf::from("/tmp/open_notes_tab.rs"),
+    )]);
+    palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
+    palette.imp().set_mode(SearchMode::Notes);
+
+    rebuild_and_wait_for_label(&palette, "open", "Open Document Note");
+    let labels = palette_labels(&palette);
+
+    assert!(labels.iter().any(|label| label == "Open Document Note"));
+    assert!(labels.iter().any(|label| label == "Open Folder Note"));
+    assert!(!labels.iter().any(|label| label == "Open Tabs"));
+    assert!(!labels.iter().any(|label| label == "Selected Workspace"));
+    assert!(!labels.iter().any(|label| label == "open_notes.rs"));
+    assert!(!labels.iter().any(|label| label == "open_notes_tab.rs"));
+    assert!(!labels.iter().any(|label| label == "Open File"));
+}
+
+#[test]
+fn test_command_palette_commands_mode_keeps_note_commands_with_notes_subtitle() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    palette.imp().set_mode(SearchMode::Commands);
+
+    rebuild_and_wait_for_label(&palette, "browse notes", "Browse Notes");
+
+    let row = row_with_label(&palette, "Browse Notes");
+    assert!(row.is_command());
+    assert_eq!(row.action_id(), "win.show-notes");
+    assert_eq!(row.subtitle(), "Notes · Ctrl+Alt+A");
 }
 
 #[test]
@@ -849,7 +1085,7 @@ fn test_palette_width_request_set() {
 #[test]
 fn test_palette_workspace_group_label_follows_concrete_workspace_scope() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) =
+    let (_folders_dir, left_folder, _right_folder) =
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-left")));
     let window = test_window();
     present_window(&window);
@@ -867,15 +1103,15 @@ fn test_palette_workspace_group_label_follows_concrete_workspace_scope() {
         window
             .imp()
             .sidebar
-            .root_paths_for_scope(&WorkspaceScope::workspace(WorkspaceId::new("ws-left"))),
-        vec![left_root],
+            .folder_paths_for_scope(&WorkspaceScope::workspace(WorkspaceId::new("ws-left"))),
+        vec![left_folder],
     );
 }
 
 #[test]
 fn test_palette_workspace_group_label_follows_aggregate_workspace_scope() {
     ensure_gtk_init();
-    let (_roots_dir, _left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let (_folders_dir, _left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let window = test_window();
     present_window(&window);
     wait_for_palette_index(&window, 2);
@@ -891,13 +1127,52 @@ fn test_palette_workspace_group_label_follows_aggregate_workspace_scope() {
 }
 
 #[test]
+fn test_palette_empty_selected_workspace_scope_has_no_workspace_file_rows() {
+    ensure_gtk_init();
+    let folders_dir = tempfile::tempdir().expect("scoped workspace folders tempdir");
+    let other_folder = folders_dir.path().join("other");
+    fixture::create_dir_all(&other_folder);
+    fixture::write_text(&other_folder.join("beta.rs"), "fn beta() {}\n");
+
+    let workspaces = WorkspacesFile {
+        current_scope: WorkspaceScope::workspace(WorkspaceId::new("ws-empty")),
+        workspaces: vec![
+            WorkspaceConfig::with_folders(WorkspaceId::new("ws-empty"), "empty", Vec::new()),
+            WorkspaceConfig::with_one_folder(
+                WorkspaceId::new("ws-other"),
+                "other",
+                other_folder,
+            ),
+        ],
+    };
+    workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save scoped workspaces");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_palette_index(&window, 0);
+
+    activate_action(&window, "toggle-command-palette");
+    let palette = window.imp().command_palette.clone();
+    palette.imp().set_mode(SearchMode::Files);
+    palette.imp().rebuild_results("beta");
+    wait_until(Duration::from_secs(5), || {
+        palette.imp().no_results_label.property::<bool>("visible")
+    });
+
+    let labels = palette_labels(&palette);
+    assert!(!labels.iter().any(|label| label == "Selected Workspace"));
+    assert!(!labels.iter().any(|label| label == "All Workspaces"));
+    assert!(!labels.iter().any(|label| label == "beta.rs"));
+}
+
+#[test]
 fn test_palette_open_tabs_can_appear_outside_selected_workspace() {
     ensure_gtk_init();
-    let roots_dir = tempfile::tempdir().expect("outer roots tempdir");
-    let outside_file = roots_dir.path().join("beta.rs");
+    let folders_dir = tempfile::tempdir().expect("outer workspace folders tempdir");
+    let outside_file = folders_dir.path().join("beta.rs");
     fixture::write_text(&outside_file, "fn beta() {}\n");
 
-    let (_workspace_roots_dir, _left_root, _right_root) =
+    let (_workspace_folders_dir, _left_folder, _right_folder) =
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-left")));
     let window = test_window();
     present_window(&window);

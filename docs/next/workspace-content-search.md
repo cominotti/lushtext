@@ -4,12 +4,12 @@
 
 ## Description
 A full-text search mode in the command palette (or a dedicated panel) that searches
-file contents across all workspace roots at ripgrep-like speed, with streaming results,
-match highlighting, and click-to-open-at-line. Triggered via `Ctrl+Shift+F`.
+file contents across all workspace folders at ripgrep-like speed, with streaming
+results, match highlighting, and click-to-open-at-line. Triggered via `Ctrl+Shift+F`.
 
 ## Current State
 - Command palette (`Ctrl+P`) supports fuzzy file name search using nucleo (SIMD-accelerated)
-- `FileIndex` scans workspace roots and maintains an in-memory file list
+- `FileIndex` scans workspace folders and maintains an in-memory file list
 - No file content search exists — users must alt-tab to a terminal and use grep/ripgrep
 - The in-editor search bar (`Ctrl+F`) only searches the current buffer
 
@@ -26,7 +26,7 @@ choose LushText.
 1. Add `grep` or `ripgrep` as a library dependency — evaluate:
    - `grep-regex` + `grep-searcher` crates (ripgrep's internal libraries, pure Rust)
    - `ignore` crate for respecting `.gitignore` during traversal
-2. `ContentSearchService` struct with `search(query, roots, options) -> Receiver<SearchMatch>`
+2. `ContentSearchService` struct with `search(query, workspace_folders, options) -> Receiver<SearchMatch>`
 3. `SearchMatch`: `{ path, line_number, line_content, match_range, context_before, context_after }`
 4. Options: regex toggle, case sensitivity, whole word, file glob filter
 5. Cancellation via `Arc<AtomicBool>` token (same pattern as file load cancellation)
@@ -57,7 +57,7 @@ choose LushText.
 
 ### Phase 4: Integration
 1. Status bar shows search progress ("Searching 1,234 / 5,678 files...")
-2. File glob filter integrates with workspace root awareness
+2. File glob filter integrates with workspace folder awareness
 3. Search results respect `.gitignore` by default (toggleable)
 4. Keyboard navigation: `F4` / `Shift+F4` to cycle through matches across files
 
@@ -75,7 +75,7 @@ choose LushText.
 ## Dependencies
 - `grep-regex` + `grep-searcher` crates (ripgrep internals)
 - `ignore` crate (gitignore-aware traversal)
-- Existing `FileIndex` and workspace root infrastructure
+- Existing `FileIndex` and workspace folder-set infrastructure
 - New UI widget (search panel) or command palette extension
 
 ## Risks

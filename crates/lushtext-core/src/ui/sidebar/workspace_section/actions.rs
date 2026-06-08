@@ -295,7 +295,7 @@ impl super::LushtextWorkspaceSection {
                                     let _ = fs_mutate::remove_file_if_exists(&old_path_bg);
                                 }
                             });
-                            section.remove_from_model(&old_path);
+                            let _ = section.remove_from_model(&old_path);
                         }
                     }
                 }
@@ -328,7 +328,7 @@ impl super::LushtextWorkspaceSection {
             }
         });
 
-        self.remove_from_model(temp_path);
+        let _ = self.remove_from_model(temp_path);
     }
 
     pub(crate) fn show_delete_confirmation(&self) {
@@ -374,7 +374,7 @@ impl super::LushtextWorkspaceSection {
                 },
                 |section, (path, result)| match result {
                     Ok(_) => {
-                        section.remove_from_model(&path);
+                        let _ = section.remove_from_model(&path);
                         if let Some(ref cb) = *section.imp().delete_callback.borrow() {
                             cb(&path);
                         }
@@ -384,6 +384,40 @@ impl super::LushtextWorkspaceSection {
                     }
                 },
             );
+        });
+
+        if let Some(root) = self.root() {
+            dialog.present(Some(&root));
+        }
+    }
+
+    pub(crate) fn show_remove_folder_confirmation(&self) {
+        let imp = self.imp();
+        let path = imp.context_path.borrow().clone();
+        let Some(path) = path else { return };
+        let folder_id = imp.context_workspace_folder_id.borrow().clone();
+        let Some(folder_id) = folder_id else { return };
+
+        let name = super::super::file_tree_item::display_name_for_path(&path);
+
+        let dialog = libadwaita::AlertDialog::builder()
+            .heading(format!("Remove '{name}' from workspace?"))
+            .body("The folder will be removed from this workspace. Files on disk and folder notes will be kept.")
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("remove", "Remove");
+        dialog.set_response_appearance("remove", libadwaita::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let section_weak = self.downgrade();
+        dialog.connect_response(None::<&str>, move |_, response| {
+            if response != "remove" {
+                return;
+            }
+            if let Some(section) = section_weak.upgrade() {
+                section.notify_remove_folder_requested(&folder_id, &path);
+            }
         });
 
         if let Some(root) = self.root() {

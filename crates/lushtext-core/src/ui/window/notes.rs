@@ -27,9 +27,10 @@ use crate::model::note::{NoteViewMode, RichNoteBody, note_preview_line};
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScope};
 use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{
-    async_task, bookmark_excerpt, bookmark_service, document_note_service, json_store,
-    local_history_service, migration_ledger, workspace_note_service,
+    async_task, bookmark_excerpt, bookmark_service, document_note_service, folder_note_service,
+    json_store, local_history_service, migration_ledger,
 };
+use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
 };
@@ -57,6 +58,12 @@ const WORKSPACE_SCOPE_TITLE: &str = "Current Workspace";
 const NOTES_BROWSER_WIDTH_SP: i32 = 980;
 /// Fixed notes browser height leaves room for the list, preview, and action row.
 const NOTES_BROWSER_HEIGHT_SP: i32 = 700;
+/// Compact empty-browser width keeps status text readable without opening the
+/// full split-view browser when there is nothing to list yet.
+const EMPTY_NOTES_BROWSER_WIDTH_SP: i32 = 640;
+/// Compact empty-browser height fits the normal status-page icon, title, and
+/// description without introducing a scrollbar.
+const EMPTY_NOTES_BROWSER_HEIGHT_SP: i32 = 480;
 /// Maximum note rows materialized into the Adwaita sidebar at once.
 ///
 /// The full notes set is still loaded and searched, but building thousands of
@@ -118,8 +125,33 @@ struct OpenEditorNoteSnapshot {
 struct OpenTabSource {
     /// Restored workspace that owns this path, when it is merely outside the active scope.
     workspace_name: Option<String>,
-    /// Real restored workspace root for Markdown context, never synthesized.
-    workspace_root: Option<PathBuf>,
+    /// Real restored workspace folder for Markdown context, never synthesized.
+    workspace_folder: Option<PathBuf>,
+}
+
+/// Decision for `Open Folder Note...` when the caller has not supplied an exact folder row.
+///
+/// Folder notes are attached to folders, not workspaces. Naming this decision
+/// keeps the zero/one/many rules explicit so command actions and workspace
+/// header actions cannot quietly fall back to the first configured folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FolderNoteOpenTarget {
+    /// The current shared scope is `All workspaces`, so no single folder can be inferred.
+    AggregateScope,
+    /// A concrete workspace ID was requested but no restored workspace matched it.
+    WorkspaceMissing,
+    /// The concrete workspace exists but has no folders to attach a note to.
+    EmptyWorkspace { workspace_name: String },
+    /// The concrete workspace has exactly one folder and can open directly.
+    SingleFolder {
+        workspace_name: String,
+        folder: PathBuf,
+    },
+    /// The concrete workspace has multiple folders and needs a visible choice.
+    ChooseFolder {
+        workspace_name: String,
+        folders: Vec<PathBuf>,
+    },
 }
 
 /// Origin of a browser row that is attached to a saved document path.
@@ -129,8 +161,8 @@ enum NotesBrowserDocumentSource {
     Workspace {
         /// User-visible workspace label.
         workspace_name: String,
-        /// Workspace root used for Markdown context and document-note actions.
-        workspace_root: PathBuf,
+        /// Workspace folder used for Markdown context and document-note actions.
+        workspace_folder: PathBuf,
     },
     /// The row comes from a saved open tab outside the current scope.
     OpenTab(OpenTabSource),
@@ -145,9 +177,9 @@ enum NotesBrowserEntry {
         line: u32,
         label: Option<String>,
     },
-    Workspace {
+    FolderNote {
         workspace_name: String,
-        root: PathBuf,
+        folder: PathBuf,
         note: RichNoteBody,
     },
     Document {
@@ -176,7 +208,7 @@ struct NotesBrowserState {
     split_view: libadwaita::NavigationSplitView,
     /// Search field driving the current filtered row set.
     search_entry: gtk4::SearchEntry,
-    /// Adwaita browse rail for bookmarks, workspace notes, and document notes.
+    /// Adwaita browse rail for bookmarks, folder notes, and document notes.
     sidebar: libadwaita::Sidebar,
     /// Visible notice when the current result set is capped for responsiveness.
     limit_label: gtk4::Label,
@@ -323,7 +355,7 @@ impl LushtextWindow {
                     &[
                         MigrationKind::Bookmarks,
                         MigrationKind::DocumentNotes,
-                        MigrationKind::WorkspaceNotes,
+                        MigrationKind::FolderNotes,
                     ],
                 )?;
                 let bookmark_count = migration_ledger::run_tracked_kind(
@@ -350,19 +382,19 @@ impl LushtextWindow {
                         )
                     },
                 )?;
-                let workspace_note_count = migration_ledger::run_tracked_kind(
+                let folder_note_count = migration_ledger::run_tracked_kind(
                     &data_dir,
                     generation,
-                    MigrationKind::WorkspaceNotes,
+                    MigrationKind::FolderNotes,
                     || {
-                        workspace_note_service::move_root_tree(
+                        folder_note_service::move_folder_tree(
                             &data_dir,
                             &old_path_for_move,
                             &new_path_for_move,
                         )
                     },
                 )?;
-                Ok::<_, anyhow::Error>((bookmark_count, document_note_count, workspace_note_count))
+                Ok::<_, anyhow::Error>((bookmark_count, document_note_count, folder_note_count))
             },
             move |(), result| {
                 if let Err(error) = result {
@@ -653,8 +685,8 @@ impl LushtextWindow {
 
     /// Browse workspace bookmarks in a searchable dialog.
     pub(super) fn show_bookmarks_dialog(&self) {
-        let scope_paths = self.workspace_note_scope_paths();
-        if scope_paths.is_empty() {
+        let workspace_folders = self.workspace_folder_paths_for_notes();
+        if workspace_folders.is_empty() {
             self.publish_status_message(
                 "Add a workspace before browsing bookmarks",
                 MessageKind::Warning,
@@ -666,7 +698,7 @@ impl LushtextWindow {
             self.clone(),
             move || {
                 let data_dir = json_store::data_dir();
-                bookmark_service::list_workspace_bookmarks_recovering(&data_dir, &scope_paths)
+                bookmark_service::list_workspace_bookmarks_recovering(&data_dir, &workspace_folders)
             },
             |window, result| match result {
                 Ok(listing) => {
@@ -718,25 +750,38 @@ impl LushtextWindow {
 
     /// Open the document note for a concrete saved file path.
     pub(super) fn open_document_note_for_path(&self, path: &Path) {
-        self.open_document_note_for_path_with_roots(path, self.current_workspace_directory_roots());
+        self.open_document_note_for_path_with_folders(path, self.current_workspace_folder_paths());
     }
 
-    /// Open the workspace note for the current concrete workspace scope.
-    pub(super) fn open_workspace_note(&self) {
-        let Some(workspace) = self.current_workspace_note_target() else {
-            self.publish_status_message(
-                "Select one workspace before opening a workspace note",
-                MessageKind::Warning,
-            );
-            return;
-        };
-        self.open_workspace_note_for_root(&workspace.name, &workspace.root);
+    /// Open the folder note for the current concrete workspace scope.
+    pub(super) fn open_folder_note(&self) {
+        self.open_folder_note_target(self.current_folder_note_open_target());
     }
 
-    /// Open the workspace note for a concrete workspace selected from the sidebar.
-    pub(super) fn open_workspace_note_for_id(
+    /// Open the folder note for a concrete workspace selected from the sidebar.
+    pub(super) fn open_folder_note_for_id(
         &self,
         workspace_id: &crate::model::workspace::WorkspaceId,
+    ) {
+        let target = self
+            .imp()
+            .sidebar
+            .workspaces_file()
+            .workspaces
+            .into_iter()
+            .find(|workspace| &workspace.id == workspace_id)
+            .map_or(
+                FolderNoteOpenTarget::WorkspaceMissing,
+                folder_note_target_for_workspace,
+            );
+        self.open_folder_note_target(target);
+    }
+
+    /// Open the folder note for an exact workspace folder row target.
+    pub(super) fn open_folder_note_for_workspace_folder(
+        &self,
+        workspace_id: &crate::model::workspace::WorkspaceId,
+        folder: &Path,
     ) {
         let Some(workspace) = self
             .imp()
@@ -746,13 +791,50 @@ impl LushtextWindow {
             .into_iter()
             .find(|workspace| &workspace.id == workspace_id)
         else {
-            self.publish_status_message(
-                "Workspace note target was not found",
-                MessageKind::Warning,
-            );
+            self.publish_status_message("Folder note target was not found", MessageKind::Warning);
             return;
         };
-        self.open_workspace_note_for_root(&workspace.name, &workspace.root);
+        if !workspace
+            .folders
+            .iter()
+            .any(|workspace_folder| workspace_folder.path() == folder)
+        {
+            self.publish_status_message("Folder note target was not found", MessageKind::Warning);
+            return;
+        }
+        self.open_folder_note_for_folder(&workspace.name, folder);
+    }
+
+    /// Apply the already-decided folder-note target by warning, choosing, or opening directly.
+    fn open_folder_note_target(&self, target: FolderNoteOpenTarget) {
+        match target {
+            FolderNoteOpenTarget::AggregateScope => {
+                self.publish_status_message(
+                    "Select one workspace before opening a folder note",
+                    MessageKind::Warning,
+                );
+            }
+            FolderNoteOpenTarget::WorkspaceMissing => {
+                self.publish_status_message(
+                    "Folder note target was not found",
+                    MessageKind::Warning,
+                );
+            }
+            FolderNoteOpenTarget::EmptyWorkspace { workspace_name } => {
+                self.publish_status_message(
+                    &format!("Add a folder to {workspace_name} before opening a folder note"),
+                    MessageKind::Warning,
+                );
+            }
+            FolderNoteOpenTarget::SingleFolder {
+                workspace_name,
+                folder,
+            } => self.open_folder_note_for_folder(&workspace_name, &folder),
+            FolderNoteOpenTarget::ChooseFolder {
+                workspace_name,
+                folders,
+            } => self.present_folder_note_target_chooser(&workspace_name, folders),
+        }
     }
 
     /// Browse notes across the current workspace scope.
@@ -770,35 +852,39 @@ impl LushtextWindow {
                 .cloned()
                 .collect(),
         };
-        let scope_roots: Vec<PathBuf> = visible_workspaces
+        let scope_folders: Vec<PathBuf> = visible_workspaces
             .iter()
-            .map(|workspace| workspace.root.clone())
+            .flat_map(WorkspaceConfig::folder_paths)
             .collect();
-        let open_editor_snapshots = self.open_editor_note_snapshots(&scope_roots, &all_workspaces);
+        let open_editor_snapshots =
+            self.open_editor_note_snapshots(&scope_folders, &all_workspaces);
 
         async_task::spawn_blocking_then(
             self.clone(),
             move || {
                 let data_dir = json_store::data_dir();
-                let workspace_notes = if visible_workspaces.is_empty() {
-                    workspace_note_service::WorkspaceNoteListing {
+                let folder_notes = if visible_workspaces.is_empty() {
+                    folder_note_service::FolderNoteListing {
                         notes: Vec::new(),
                         diagnostics: Vec::new(),
                     }
                 } else {
-                    workspace_note_service::list_workspace_notes_for_scope_recovering(
+                    folder_note_service::list_folder_notes_for_scope_recovering(
                         &data_dir,
                         &visible_workspaces,
                         &scope,
                     )?
                 };
-                let bookmark_listing = if scope_roots.is_empty() {
+                let bookmark_listing = if scope_folders.is_empty() {
                     bookmark_service::WorkspaceBookmarkListing {
                         bookmarks: Vec::new(),
                         diagnostics: Vec::new(),
                     }
                 } else {
-                    bookmark_service::list_workspace_bookmarks_recovering(&data_dir, &scope_roots)?
+                    bookmark_service::list_workspace_bookmarks_recovering(
+                        &data_dir,
+                        &scope_folders,
+                    )?
                 };
                 let bookmark_diagnostics = bookmark_listing.diagnostics;
                 let live_bookmarks = open_editor_snapshots
@@ -812,7 +898,7 @@ impl LushtextWindow {
                     .collect();
                 let bookmarks =
                     merge_live_bookmark_snapshots(bookmark_listing.bookmarks, live_bookmarks);
-                let document_notes = if scope_roots.is_empty() {
+                let document_notes = if scope_folders.is_empty() {
                     document_note_service::WorkspaceDocumentNoteListing {
                         notes: Vec::new(),
                         diagnostics: Vec::new(),
@@ -820,17 +906,17 @@ impl LushtextWindow {
                 } else {
                     document_note_service::list_workspace_document_notes_recovering(
                         &data_dir,
-                        &scope_roots,
+                        &scope_folders,
                     )?
                 };
                 let mut diagnostics = Vec::new();
-                diagnostics.extend(workspace_notes.diagnostics);
+                diagnostics.extend(folder_notes.diagnostics);
                 diagnostics.extend(bookmark_diagnostics);
                 diagnostics.extend(document_notes.diagnostics);
                 let entries = build_notes_browser_entries(
                     &visible_workspaces,
                     bookmarks,
-                    workspace_notes.notes,
+                    folder_notes.notes,
                     document_notes.notes,
                     open_editor_snapshots,
                     &data_dir,
@@ -877,7 +963,11 @@ impl LushtextWindow {
     }
 
     /// Load and present the document note attached to one saved file.
-    fn open_document_note_for_path_with_roots(&self, path: &Path, workspace_roots: Vec<PathBuf>) {
+    fn open_document_note_for_path_with_folders(
+        &self,
+        path: &Path,
+        workspace_folders: Vec<PathBuf>,
+    ) {
         let path = path.to_path_buf();
         let path_for_load = path.clone();
         let path_for_dialog = path;
@@ -893,7 +983,7 @@ impl LushtextWindow {
                     if let Some(window) = window_weak.upgrade() {
                         window.present_document_note_dialog(
                             &path_for_dialog,
-                            workspace_roots,
+                            workspace_folders,
                             note.as_ref().map(|document| &document.note),
                         );
                     }
@@ -914,37 +1004,102 @@ impl LushtextWindow {
         );
     }
 
-    /// Load and present the workspace note attached to one workspace root.
-    fn open_workspace_note_for_root(&self, workspace_name: &str, root: &Path) {
+    /// Present a folder choice when a workspace has more than one folder-note target.
+    fn present_folder_note_target_chooser(&self, workspace_name: &str, folders: Vec<PathBuf>) {
+        let dialog = libadwaita::AlertDialog::new(
+            Some("Open Folder Note"),
+            Some("Choose which workspace folder to open a note for."),
+        );
+        dialog.add_response(RESPONSE_CANCEL, "Cancel");
+        dialog.set_close_response(RESPONSE_CANCEL);
+
+        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        content.set_margin_start(6);
+        content.set_margin_end(6);
+        content.set_margin_top(6);
+        content.set_margin_bottom(6);
+
+        let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        for folder in folders {
+            let button = gtk4::Button::new();
+            button.set_hexpand(true);
+            button.set_halign(gtk4::Align::Fill);
+            button.set_tooltip_text(Some(&folder.display().to_string()));
+
+            let label = gtk4::Label::new(Some(&folder.display().to_string()));
+            label.set_xalign(0.0);
+            label.set_wrap(true);
+            label.set_halign(gtk4::Align::Fill);
+            label.set_hexpand(true);
+            button.set_child(Some(&label));
+
+            let workspace_name = workspace_name.to_string();
+            let folder_for_button = folder;
+            let window_weak = self.downgrade();
+            let dialog_weak = dialog.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(dialog) = dialog_weak.upgrade() {
+                    dialog.close();
+                }
+                if let Some(window) = window_weak.upgrade() {
+                    window.open_folder_note_for_folder(&workspace_name, &folder_for_button);
+                }
+            });
+            rows_box.append(&button);
+        }
+
+        let scroll = gtk4::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .min_content_width(420)
+            .max_content_height(280)
+            .propagate_natural_height(true)
+            .child(&rows_box)
+            .build();
+        content.append(&scroll);
+        dialog.set_extra_child(Some(&content));
+        dialog.present(Some(self));
+    }
+
+    /// Load and present the folder note attached to one workspace folder.
+    fn open_folder_note_for_folder(&self, workspace_name: &str, folder: &Path) {
         let workspace_name = workspace_name.to_string();
-        let root = root.to_path_buf();
-        let root_for_load = root.clone();
-        let root_for_dialog = root;
+        let folder = folder.to_path_buf();
+        let folder_for_load = folder.clone();
+        let folder_for_dialog = folder;
         let window_weak = self.downgrade();
         async_task::spawn_blocking_then(
             (),
             move || {
                 let data_dir = json_store::data_dir();
-                workspace_note_service::load_for_root(&data_dir, &root_for_load)
+                folder_note_service::load_for_folder_recovering(&data_dir, &folder_for_load)
             },
             move |(), result| match result {
-                Ok(note) => {
+                Ok(load) => {
+                    let has_diagnostics = !load.diagnostics.is_empty();
+                    Self::trace_browse_recovery_diagnostics(&load.diagnostics);
                     if let Some(window) = window_weak.upgrade() {
-                        window.present_workspace_note_dialog(
+                        window.present_folder_note_dialog(
                             &workspace_name,
-                            &root_for_dialog,
-                            note.as_ref().map(|document| &document.note),
+                            &folder_for_dialog,
+                            load.document.as_ref().map(|document| &document.note),
                         );
+                        if has_diagnostics {
+                            window.publish_status_message(
+                                "Some folder note data could not be loaded",
+                                MessageKind::Warning,
+                            );
+                        }
                     }
                 }
                 Err(error) => {
                     tracing::error!(
-                        "Failed to load workspace note for {}: {error}",
-                        root_for_dialog.display()
+                        "Failed to load folder note for {}: {error}",
+                        folder_for_dialog.display()
                     );
                     if let Some(window) = window_weak.upgrade() {
                         window.publish_status_message(
-                            "Workspace note could not be loaded",
+                            "Folder note could not be loaded",
                             MessageKind::Error,
                         );
                     }
@@ -957,7 +1112,7 @@ impl LushtextWindow {
     fn present_document_note_dialog(
         &self,
         path: &Path,
-        workspace_roots: Vec<PathBuf>,
+        workspace_folders: Vec<PathBuf>,
         existing_note: Option<&RichNoteBody>,
     ) {
         let dialog = libadwaita::AlertDialog::new(
@@ -993,7 +1148,7 @@ impl LushtextWindow {
         let initial_text = existing_note.as_ref().map_or("", |note| note.text.as_str());
         let (surface, note_view) = build_note_editor_surface(
             initial_text,
-            &MarkdownPreviewRenderContext::new(Some(path.to_path_buf()), workspace_roots),
+            &MarkdownPreviewRenderContext::new(Some(path.to_path_buf()), workspace_folders),
             NoteViewMode::Edit,
             "Write some note text to preview rendered markdown.",
         );
@@ -1026,61 +1181,65 @@ impl LushtextWindow {
                 );
             } else if response == RESPONSE_SAVE {
                 let buffer = note_view.buffer();
-                let note_text = buffer
-                    .text(&buffer.start_iter(), &buffer.end_iter(), true)
-                    .to_string();
-                if note_text.trim().is_empty() {
-                    window.publish_status_message(
-                        "Document notes need note text",
-                        MessageKind::Warning,
-                    );
-                    return;
-                }
-
-                let mut note = existing_note
-                    .clone()
-                    .unwrap_or_else(|| RichNoteBody::new(""));
-                if existing_note.is_some() {
-                    let _ = note.update_text(&note_text);
-                } else {
-                    note = RichNoteBody::new(&note_text);
-                }
-
                 let path_for_save = path.clone();
-                async_task::spawn_blocking_then(
-                    window,
-                    move || {
-                        let data_dir = json_store::data_dir();
-                        document_note_service::save_for_path(&data_dir, &path_for_save, &note)
-                            .map(|_| ())
-                    },
-                    |window, result| match result {
-                        Ok(()) => {
-                            window.publish_status_message("Document note saved", MessageKind::Info);
-                        }
-                        Err(error) => {
-                            tracing::error!("Failed to save document note: {error}");
-                            window.publish_status_message(
-                                "Document note could not be saved",
-                                MessageKind::Error,
-                            );
-                        }
-                    },
-                );
+                let existing_note_for_save = existing_note.clone();
+                let window_for_save = window;
+                snapshot_note_buffer_text(buffer, move |note_text| {
+                    if note_text.trim().is_empty() {
+                        window_for_save.publish_status_message(
+                            "Document notes need note text",
+                            MessageKind::Warning,
+                        );
+                        return;
+                    }
+
+                    let mut note = existing_note_for_save
+                        .clone()
+                        .unwrap_or_else(|| RichNoteBody::new(""));
+                    if existing_note_for_save.is_some() {
+                        let _ = note.update_text(&note_text);
+                    } else {
+                        note = RichNoteBody::new(&note_text);
+                    }
+
+                    async_task::spawn_blocking_then(
+                        window_for_save,
+                        move || {
+                            let data_dir = json_store::data_dir();
+                            document_note_service::save_for_path(&data_dir, &path_for_save, &note)
+                                .map(|_| ())
+                        },
+                        |window, result| match result {
+                            Ok(()) => {
+                                window.publish_status_message(
+                                    "Document note saved",
+                                    MessageKind::Info,
+                                );
+                            }
+                            Err(error) => {
+                                tracing::error!("Failed to save document note: {error}");
+                                window.publish_status_message(
+                                    "Document note could not be saved",
+                                    MessageKind::Error,
+                                );
+                            }
+                        },
+                    );
+                });
             }
         });
     }
 
-    /// Present the workspace note editor for one concrete workspace root.
-    fn present_workspace_note_dialog(
+    /// Present the folder note editor for one concrete workspace folder.
+    fn present_folder_note_dialog(
         &self,
         workspace_name: &str,
-        root: &Path,
+        folder: &Path,
         existing_note: Option<&RichNoteBody>,
     ) {
         let dialog = libadwaita::AlertDialog::new(
-            Some("Workspace Note"),
-            Some("Keep one project-scoped note for this workspace root."),
+            Some("Folder Note"),
+            Some("Keep one project-scoped note for this workspace folder."),
         );
         dialog.add_response(RESPONSE_CANCEL, "Cancel");
         if existing_note.is_some() {
@@ -1107,42 +1266,43 @@ impl LushtextWindow {
         title_label.add_css_class("heading");
         content.append(&title_label);
 
-        let root_label = gtk4::Label::new(Some(&root.display().to_string()));
-        root_label.set_halign(gtk4::Align::Start);
-        root_label.set_xalign(0.0);
-        root_label.set_wrap(true);
-        root_label.add_css_class("dim-label");
-        content.append(&root_label);
+        let folder_label = gtk4::Label::new(Some(&folder.display().to_string()));
+        folder_label.set_halign(gtk4::Align::Start);
+        folder_label.set_xalign(0.0);
+        folder_label.set_wrap(true);
+        folder_label.add_css_class("dim-label");
+        content.append(&folder_label);
 
         let initial_text = existing_note.as_ref().map_or("", |note| note.text.as_str());
         let (surface, note_view) = build_note_editor_surface(
             initial_text,
-            &MarkdownPreviewRenderContext::new(None, vec![root.to_path_buf()]),
+            &MarkdownPreviewRenderContext::new(None, vec![folder.to_path_buf()]),
             NoteViewMode::Edit,
             "Write some note text to preview rendered markdown.",
         );
         content.append(&surface);
         dialog.set_extra_child(Some(&content));
 
-        let root = root.to_path_buf();
+        let folder = folder.to_path_buf();
         let existing_note = existing_note.cloned();
         let window = self.clone();
         dialog.choose(Some(self), gio::Cancellable::NONE, move |response| {
             if response == RESPONSE_CLEAR {
-                let root_for_delete = root.clone();
+                let folder_for_delete = folder.clone();
                 async_task::spawn_blocking_then(
                     window,
                     move || {
                         let data_dir = json_store::data_dir();
-                        workspace_note_service::delete_for_root(&data_dir, &root_for_delete)
+                        folder_note_service::delete_for_folder(&data_dir, &folder_for_delete)
                     },
                     |window, result| match result {
-                        Ok(()) => window
-                            .publish_status_message("Workspace note cleared", MessageKind::Info),
+                        Ok(()) => {
+                            window.publish_status_message("Folder note cleared", MessageKind::Info);
+                        }
                         Err(error) => {
-                            tracing::error!("Failed to clear workspace note: {error}");
+                            tracing::error!("Failed to clear folder note: {error}");
                             window.publish_status_message(
-                                "Workspace note could not be cleared",
+                                "Folder note could not be cleared",
                                 MessageKind::Error,
                             );
                         }
@@ -1150,48 +1310,49 @@ impl LushtextWindow {
                 );
             } else if response == RESPONSE_SAVE {
                 let buffer = note_view.buffer();
-                let note_text = buffer
-                    .text(&buffer.start_iter(), &buffer.end_iter(), true)
-                    .to_string();
-                if note_text.trim().is_empty() {
-                    window.publish_status_message(
-                        "Workspace notes need note text",
-                        MessageKind::Warning,
+                let folder_for_save = folder.clone();
+                let existing_note_for_save = existing_note.clone();
+                let window_for_save = window;
+                snapshot_note_buffer_text(buffer, move |note_text| {
+                    if note_text.trim().is_empty() {
+                        window_for_save.publish_status_message(
+                            "Folder notes need note text",
+                            MessageKind::Warning,
+                        );
+                        return;
+                    }
+
+                    let mut note = existing_note_for_save
+                        .clone()
+                        .unwrap_or_else(|| RichNoteBody::new(""));
+                    if existing_note_for_save.is_some() {
+                        let _ = note.update_text(&note_text);
+                    } else {
+                        note = RichNoteBody::new(&note_text);
+                    }
+
+                    async_task::spawn_blocking_then(
+                        window_for_save,
+                        move || {
+                            let data_dir = json_store::data_dir();
+                            folder_note_service::save_for_folder(&data_dir, &folder_for_save, &note)
+                                .map(|_| ())
+                        },
+                        |window, result| match result {
+                            Ok(()) => {
+                                window
+                                    .publish_status_message("Folder note saved", MessageKind::Info);
+                            }
+                            Err(error) => {
+                                tracing::error!("Failed to save folder note: {error}");
+                                window.publish_status_message(
+                                    "Folder note could not be saved",
+                                    MessageKind::Error,
+                                );
+                            }
+                        },
                     );
-                    return;
-                }
-
-                let mut note = existing_note
-                    .clone()
-                    .unwrap_or_else(|| RichNoteBody::new(""));
-                if existing_note.is_some() {
-                    let _ = note.update_text(&note_text);
-                } else {
-                    note = RichNoteBody::new(&note_text);
-                }
-
-                let root_for_save = root.clone();
-                async_task::spawn_blocking_then(
-                    window,
-                    move || {
-                        let data_dir = json_store::data_dir();
-                        workspace_note_service::save_for_root(&data_dir, &root_for_save, &note)
-                            .map(|_| ())
-                    },
-                    |window, result| match result {
-                        Ok(()) => {
-                            window
-                                .publish_status_message("Workspace note saved", MessageKind::Info);
-                        }
-                        Err(error) => {
-                            tracing::error!("Failed to save workspace note: {error}");
-                            window.publish_status_message(
-                                "Workspace note could not be saved",
-                                MessageKind::Error,
-                            );
-                        }
-                    },
-                );
+                });
             }
         });
     }
@@ -1271,7 +1432,7 @@ impl LushtextWindow {
     /// deduplication stay in the existing background browse task.
     fn open_editor_note_snapshots(
         &self,
-        scope_roots: &[PathBuf],
+        scope_folders: &[PathBuf],
         all_workspaces: &[WorkspaceConfig],
     ) -> Vec<OpenEditorNoteSnapshot> {
         let tab_view = &self.imp().tab_view;
@@ -1285,7 +1446,7 @@ impl LushtextWindow {
             let Some(path) = editor.file_path() else {
                 continue;
             };
-            let open_tab_source = (!path_is_in_roots(&path, scope_roots))
+            let open_tab_source = (!path_is_in_folders(&path, scope_folders))
                 .then(|| open_tab_source_for_path(all_workspaces, &path));
             snapshots.push(OpenEditorNoteSnapshot {
                 path: path.clone(),
@@ -1323,30 +1484,45 @@ impl LushtextWindow {
         None
     }
 
-    /// Collect the current workspace scope for bookmark and note workflows.
-    fn workspace_note_scope_paths(&self) -> Vec<PathBuf> {
-        self.current_workspace_scope_paths()
+    /// Collect current workspace folders for bookmark and note workflows.
+    fn workspace_folder_paths_for_notes(&self) -> Vec<PathBuf> {
+        self.current_workspace_folder_paths()
     }
 
-    /// Return the currently selected concrete workspace, if one exists.
-    fn current_workspace_note_target(&self) -> Option<WorkspaceConfig> {
+    /// Decide what `Open Folder Note...` can do in the current shared scope.
+    fn current_folder_note_open_target(&self) -> FolderNoteOpenTarget {
         let workspaces_file = self.imp().sidebar.workspaces_file();
         let WorkspaceScope::Workspace(workspace_id) = workspaces_file.current_scope() else {
-            return None;
+            return FolderNoteOpenTarget::AggregateScope;
         };
         workspaces_file
             .workspaces
             .into_iter()
             .find(|workspace| workspace.id == workspace_id)
+            .map_or(
+                FolderNoteOpenTarget::WorkspaceMissing,
+                folder_note_target_for_workspace,
+            )
     }
 
-    /// Recompute the Notes menu button visibility and menu-only action state.
+    /// Return whether the header menu can start a folder-note workflow immediately.
+    fn current_folder_note_action_available(&self) -> bool {
+        matches!(
+            self.current_folder_note_open_target(),
+            FolderNoteOpenTarget::SingleFolder { .. } | FolderNoteOpenTarget::ChooseFolder { .. }
+        )
+    }
+
+    /// Refresh the window-scoped Notes menu label and menu-only action state.
+    ///
+    /// The header button and `Browse Notes…` stay window-scoped so the browser
+    /// can show workspace rows, open-tab rows, or its empty state even when no
+    /// editor tab is active. Target-specific rows still use sensitivity below.
     ///
     /// The dedicated menu uses its own `notes-*` actions so it can become
     /// insensitive without disabling the existing shortcuts or command-palette
     /// commands that still rely on the workflow guards below.
     pub(super) fn refresh_notes_menu_state(&self) {
-        let workspace_actions_available = self.notes_workspace_actions_available();
         let active_editor = self.active_editor();
         let saved_editor = active_editor
             .as_ref()
@@ -1364,20 +1540,15 @@ impl LushtextWindow {
             self.rebuild_notes_menu(bookmark_label);
         }
 
-        self.imp()
-            .notes_menu_button
-            .set_visible(active_editor.is_some() || workspace_actions_available);
+        self.imp().notes_menu_button.set_visible(true);
 
         self.set_notes_menu_action_enabled("notes-toggle-bookmark", saved_editor.is_some());
         self.set_notes_menu_action_enabled("notes-open-document-note", saved_editor.is_some());
         self.set_notes_menu_action_enabled(
-            "notes-open-workspace-note",
-            self.current_workspace_note_target().is_some(),
+            "notes-open-folder-note",
+            self.current_folder_note_action_available(),
         );
-        self.set_notes_menu_action_enabled(
-            "notes-show-notes",
-            workspace_actions_available || saved_editor.is_some(),
-        );
+        self.set_notes_menu_action_enabled("notes-show-notes", true);
     }
 
     /// Check the existing menu model before replacing it during ordinary state refreshes.
@@ -1438,17 +1609,12 @@ impl LushtextWindow {
 
         let workspace_section = gio::Menu::new();
         workspace_section.append(
-            Some("Open Workspace Note…"),
-            Some("win.notes-open-workspace-note"),
+            Some("Open Folder Note…"),
+            Some("win.notes-open-folder-note"),
         );
         menu.append_section(None, &workspace_section);
 
         self.imp().notes_menu_button.set_menu_model(Some(&menu));
-    }
-
-    /// Return whether the current shared workspace scope exposes any roots.
-    fn notes_workspace_actions_available(&self) -> bool {
-        !self.workspace_note_scope_paths().is_empty()
     }
 
     /// Update one Notes-menu-only action without affecting shortcut actions.
@@ -1546,7 +1712,7 @@ impl LushtextWindow {
         search_entry.update_property(&[
             gtk4::accessible::Property::Label("Search notes"),
             gtk4::accessible::Property::Description(
-                "Filter bookmarks, document notes, and workspace notes",
+                "Filter bookmarks, document notes, and folder notes",
             ),
         ]);
 
@@ -1558,7 +1724,7 @@ impl LushtextWindow {
         sidebar.update_property(&[
             gtk4::accessible::Property::Label("Notes results"),
             gtk4::accessible::Property::Description(
-                "Choose a bookmark, document note, or workspace note",
+                "Choose a bookmark, document note, or folder note",
             ),
         ]);
         let limit_label = gtk4::Label::new(None);
@@ -1575,7 +1741,7 @@ impl LushtextWindow {
         preview_title.add_css_class("title-4");
 
         let preview_meta = gtk4::Label::new(Some(
-            "Choose a bookmark, workspace note, or document note to preview it here.",
+            "Choose a bookmark, folder note, or document note to preview it here.",
         ));
         preview_meta.set_halign(gtk4::Align::Start);
         preview_meta.set_xalign(0.0);
@@ -1771,7 +1937,7 @@ fn build_notes_browser_shell(
     shell
 }
 
-/// Build the shared edit/render note surface used by document and workspace notes.
+/// Build the shared edit/render note surface used by document and folder notes.
 #[must_use]
 fn build_note_editor_surface(
     initial_text: &str,
@@ -1896,15 +2062,25 @@ fn render_note_preview(
     preview: &LushtextMarkdownPreview,
     buffer: &gtk4::TextBuffer,
     render_context: &MarkdownPreviewRenderContext,
-    empty_preview_description: &str,
+    empty_preview_description: &'static str,
 ) {
-    let text = buffer
-        .text(&buffer.start_iter(), &buffer.end_iter(), true)
-        .to_string();
-    if text.trim().is_empty() {
-        preview.show_content_placeholder(empty_preview_description);
+    let preview = preview.clone();
+    let render_context = render_context.clone();
+    snapshot_note_buffer_text(buffer.clone(), move |text| {
+        if text.trim().is_empty() {
+            preview.show_content_placeholder(empty_preview_description);
+        } else {
+            preview.render_markdown_with_context(&text, &render_context);
+        }
+    });
+}
+
+/// Snapshot note editor text without monopolizing the GTK main loop.
+fn snapshot_note_buffer_text<F: FnOnce(String) + 'static>(buffer: gtk4::TextBuffer, callback: F) {
+    if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
+        buffer_snapshot::snapshot_buffer_text_async(buffer, callback);
     } else {
-        preview.render_markdown_with_context(&text, render_context);
+        callback(buffer_snapshot::snapshot_buffer_text_direct(&buffer));
     }
 }
 
@@ -1912,12 +2088,16 @@ fn render_note_preview(
 fn build_empty_notes_dialog() -> libadwaita::Dialog {
     let dialog = libadwaita::Dialog::builder()
         .title("Notes")
-        .content_width(560)
-        .content_height(360)
-        .follows_content_size(true)
+        .content_width(EMPTY_NOTES_BROWSER_WIDTH_SP)
+        .content_height(EMPTY_NOTES_BROWSER_HEIGHT_SP)
+        // `AdwStatusPage` has a narrow natural request; following content size
+        // recreates the cramped empty-state column instead of this readable target.
+        .follows_content_size(false)
         .build();
 
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+    content.set_hexpand(true);
+    content.set_vexpand(true);
     content.set_margin_start(18);
     content.set_margin_end(18);
     content.set_margin_top(18);
@@ -1939,9 +2119,10 @@ fn build_empty_notes_dialog() -> libadwaita::Dialog {
         .icon_name("text-x-generic-symbolic")
         .title("No notes yet")
         .description(
-            "Bookmarks, document notes, and workspace notes will appear here once you save one.",
+            "Bookmarks, document notes, and folder notes will appear here once you save one.",
         )
         .build();
+    status.set_hexpand(true);
     status.set_vexpand(true);
     content.append(&status);
     dialog.set_child(Some(&content));
@@ -2016,10 +2197,13 @@ impl OpenTabSource {
     /// User-facing source label for rows that come from a saved open tab.
     #[must_use]
     fn row_label(&self) -> String {
-        self.workspace_name.as_ref().map_or_else(
-            || "Open tab · Outside workspace".to_string(),
-            |workspace_name| format!("Open tab · {workspace_name}"),
-        )
+        match (&self.workspace_name, &self.workspace_folder) {
+            (Some(workspace_name), Some(folder)) => {
+                format!("Open tab · {workspace_name} · {}", folder.display())
+            }
+            (Some(workspace_name), None) => format!("Open tab · {workspace_name}"),
+            (None, _) => "Open tab · Outside workspace".to_string(),
+        }
     }
 }
 
@@ -2028,7 +2212,10 @@ impl NotesBrowserDocumentSource {
     #[must_use]
     fn row_label(&self) -> String {
         match self {
-            Self::Workspace { workspace_name, .. } => workspace_name.clone(),
+            Self::Workspace {
+                workspace_name,
+                workspace_folder,
+            } => format!("{workspace_name} · {}", workspace_folder.display()),
             Self::OpenTab(source) => source.row_label(),
         }
     }
@@ -2039,12 +2226,14 @@ impl NotesBrowserDocumentSource {
         matches!(self, Self::OpenTab(_))
     }
 
-    /// Real workspace roots available for Markdown rendering and note actions.
+    /// Real workspace folders available for Markdown rendering and note actions.
     #[must_use]
-    fn workspace_roots(&self) -> Vec<PathBuf> {
+    fn workspace_folders(&self) -> Vec<PathBuf> {
         match self {
-            Self::Workspace { workspace_root, .. } => vec![workspace_root.clone()],
-            Self::OpenTab(source) => source.workspace_root.iter().cloned().collect(),
+            Self::Workspace {
+                workspace_folder, ..
+            } => vec![workspace_folder.clone()],
+            Self::OpenTab(source) => source.workspace_folder.iter().cloned().collect(),
         }
     }
 }
@@ -2060,7 +2249,7 @@ impl NotesBrowserEntry {
                     bookmark_display_label(label.as_deref(), *line)
                 )
             }
-            Self::Workspace { workspace_name, .. } => format!("Workspace Note · {workspace_name}"),
+            Self::FolderNote { workspace_name, .. } => format!("Folder Note · {workspace_name}"),
             Self::Document { path, .. } => {
                 let file_name = path.file_name().map_or_else(
                     || path.display().to_string(),
@@ -2083,11 +2272,11 @@ impl NotesBrowserEntry {
                 path.display(),
                 format_line_label(*line)
             ),
-            Self::Workspace {
+            Self::FolderNote {
                 workspace_name,
-                root,
+                folder,
                 ..
-            } => format!("{workspace_name} · {}", root.display()),
+            } => format!("{workspace_name} · {}", folder.display()),
             Self::Document { source, path, .. } => {
                 format!("{} · {}", source.row_label(), path.display())
             }
@@ -2115,7 +2304,7 @@ impl NotesBrowserEntry {
                     bookmark_display_label(label.as_deref(), *line)
                 )
             }
-            Self::Workspace { workspace_name, .. } => format!("Workspace Note · {workspace_name}"),
+            Self::FolderNote { workspace_name, .. } => format!("Folder Note · {workspace_name}"),
             Self::Document { path, .. } => {
                 let file_name = path.file_name().map_or_else(
                     || path.display().to_string(),
@@ -2138,11 +2327,11 @@ impl NotesBrowserEntry {
                 path.display(),
                 format_line_label(*line)
             ),
-            Self::Workspace {
+            Self::FolderNote {
                 workspace_name,
-                root,
+                folder,
                 ..
-            } => format!("{workspace_name} · {}", root.display()),
+            } => format!("{workspace_name} · {}", folder.display()),
             Self::Document { source, path, .. } => {
                 format!("{} · {}", source.row_label(), path.display())
             }
@@ -2154,7 +2343,7 @@ impl NotesBrowserEntry {
     fn note_text(&self) -> &str {
         match self {
             Self::Bookmark { .. } => "",
-            Self::Workspace { note, .. } | Self::Document { note, .. } => &note.text,
+            Self::FolderNote { note, .. } | Self::Document { note, .. } => &note.text,
         }
     }
 
@@ -2162,11 +2351,11 @@ impl NotesBrowserEntry {
     #[must_use]
     fn render_context(&self) -> MarkdownPreviewRenderContext {
         match self {
-            Self::Workspace { root, .. } => {
-                MarkdownPreviewRenderContext::new(None, vec![root.clone()])
+            Self::FolderNote { folder, .. } => {
+                MarkdownPreviewRenderContext::new(None, vec![folder.clone()])
             }
             Self::Bookmark { source, path, .. } | Self::Document { source, path, .. } => {
-                MarkdownPreviewRenderContext::new(Some(path.clone()), source.workspace_roots())
+                MarkdownPreviewRenderContext::new(Some(path.clone()), source.workspace_folders())
             }
         }
     }
@@ -2176,7 +2365,7 @@ impl NotesBrowserEntry {
     fn sidebar_icon_name(&self) -> &'static str {
         match self {
             Self::Bookmark { .. } => "bookmark-new-symbolic",
-            Self::Workspace { .. } => "folder-symbolic",
+            Self::FolderNote { .. } => "folder-symbolic",
             Self::Document { .. } => "text-x-generic-symbolic",
         }
     }
@@ -2186,7 +2375,7 @@ impl NotesBrowserEntry {
     fn is_open_tab(&self) -> bool {
         match self {
             Self::Bookmark { source, .. } | Self::Document { source, .. } => source.is_open_tab(),
-            Self::Workspace { .. } => false,
+            Self::FolderNote { .. } => false,
         }
     }
 
@@ -2301,7 +2490,7 @@ impl NotesBrowserState {
     fn show_unselected_preview(&self) {
         self.preview_title.set_label("Select a note");
         self.preview_meta
-            .set_label("Choose a bookmark, workspace note, or document note to preview it here.");
+            .set_label("Choose a bookmark, folder note, or document note to preview it here.");
         self.show_markdown_placeholder("Select a note to preview its details.");
         self.open_button.set_sensitive(false);
     }
@@ -2735,11 +2924,11 @@ fn append_notes_sidebar_sections(
     );
     append_note_sidebar_section(
         sidebar,
-        "Workspace Notes",
+        "Folder Notes",
         matching_indices.iter().copied().filter(|index| {
             all_entries
                 .get(*index)
-                .is_some_and(|entry| matches!(entry, NotesBrowserEntry::Workspace { .. }))
+                .is_some_and(|entry| matches!(entry, NotesBrowserEntry::FolderNote { .. }))
         }),
         all_entries,
         &mut ordered_indices,
@@ -2820,37 +3009,63 @@ fn activate_notes_browser_entry(window: &LushtextWindow, entry: &NotesBrowserEnt
         NotesBrowserEntry::Bookmark { path, line, .. } => {
             open_editor_at_line(window, path, line.saturating_add(1));
         }
-        NotesBrowserEntry::Workspace {
+        NotesBrowserEntry::FolderNote {
             workspace_name,
-            root,
+            folder,
             ..
-        } => window.open_workspace_note_for_root(workspace_name, root),
+        } => window.open_folder_note_for_folder(workspace_name, folder),
         NotesBrowserEntry::Document { path, source, .. } => {
             window.open_document(path);
-            window.open_document_note_for_path_with_roots(path, source.workspace_roots());
+            window.open_document_note_for_path_with_folders(path, source.workspace_folders());
         }
     }
 }
 
-/// Merge bookmarks plus workspace and document notes into one browser entry list.
+/// Convert one concrete workspace into the only valid folder-note action shape.
+fn folder_note_target_for_workspace(workspace: WorkspaceConfig) -> FolderNoteOpenTarget {
+    let workspace_name = workspace.name;
+    let folders = workspace
+        .folders
+        .into_iter()
+        .map(|folder| folder.path().to_path_buf())
+        .collect::<Vec<_>>();
+
+    match folders.as_slice() {
+        [] => FolderNoteOpenTarget::EmptyWorkspace { workspace_name },
+        [folder] => FolderNoteOpenTarget::SingleFolder {
+            workspace_name,
+            folder: folder.clone(),
+        },
+        _ => FolderNoteOpenTarget::ChooseFolder {
+            workspace_name,
+            folders,
+        },
+    }
+}
+
+/// Merge bookmarks plus folder and document notes into one browser entry list.
 fn build_notes_browser_entries(
     visible_workspaces: &[WorkspaceConfig],
     bookmarks: Vec<bookmark_service::WorkspaceBookmark>,
-    workspace_notes: Vec<workspace_note_service::ListedWorkspaceNote>,
+    folder_notes: Vec<folder_note_service::ListedFolderNote>,
     document_notes: Vec<document_note_service::WorkspaceDocumentNote>,
     open_editor_snapshots: Vec<OpenEditorNoteSnapshot>,
     data_dir: &Path,
 ) -> Vec<NotesBrowserEntry> {
-    let mut entries = Vec::new();
+    let mut bookmark_entries = Vec::new();
+    let mut folder_note_entries = Vec::new();
+    let mut document_entries = Vec::new();
     let mut scoped_document_ids = HashSet::new();
 
     for bookmark in bookmarks {
         if let Some(workspace) = workspace_for_path(visible_workspaces, &bookmark.path) {
             remember_document_identity(&mut scoped_document_ids, &bookmark.path);
-            entries.push(NotesBrowserEntry::Bookmark {
+            let workspace_folder = workspace_folder_for_path(workspace, &bookmark.path)
+                .unwrap_or_else(|| bookmark.path.clone());
+            bookmark_entries.push(NotesBrowserEntry::Bookmark {
                 source: NotesBrowserDocumentSource::Workspace {
                     workspace_name: workspace.name.clone(),
-                    workspace_root: workspace.root.clone(),
+                    workspace_folder,
                 },
                 path: bookmark.path,
                 line: bookmark.line,
@@ -2859,23 +3074,23 @@ fn build_notes_browser_entries(
         }
     }
 
-    entries.extend(
-        workspace_notes
-            .into_iter()
-            .map(|note| NotesBrowserEntry::Workspace {
-                workspace_name: note.workspace_name,
-                root: note.root,
-                note: note.note,
-            }),
-    );
+    folder_note_entries.extend(folder_notes.into_iter().map(|note| {
+        NotesBrowserEntry::FolderNote {
+            workspace_name: note.workspace_name,
+            folder: note.folder,
+            note: note.note,
+        }
+    }));
 
     for note in document_notes {
         if let Some(workspace) = workspace_for_path(visible_workspaces, &note.path) {
             remember_document_identity(&mut scoped_document_ids, &note.path);
-            entries.push(NotesBrowserEntry::Document {
+            let workspace_folder = workspace_folder_for_path(workspace, &note.path)
+                .unwrap_or_else(|| note.path.clone());
+            document_entries.push(NotesBrowserEntry::Document {
                 source: NotesBrowserDocumentSource::Workspace {
                     workspace_name: workspace.name.clone(),
-                    workspace_root: workspace.root.clone(),
+                    workspace_folder,
                 },
                 path: note.path,
                 note: note.note,
@@ -2883,18 +3098,28 @@ fn build_notes_browser_entries(
         }
     }
 
-    entries.extend(build_open_tab_notes_browser_entries(
-        data_dir,
-        open_editor_snapshots,
-        &scoped_document_ids,
-    ));
+    let mut open_tab_entries =
+        build_open_tab_notes_browser_entries(data_dir, open_editor_snapshots, &scoped_document_ids);
 
+    sort_notes_browser_entries_by_label(&mut bookmark_entries);
+    sort_notes_browser_entries_by_label(&mut document_entries);
+    sort_notes_browser_entries_by_label(&mut open_tab_entries);
+
+    let mut entries = Vec::new();
+    entries.extend(bookmark_entries);
+    entries.extend(folder_note_entries);
+    entries.extend(document_entries);
+    entries.extend(open_tab_entries);
+    entries
+}
+
+/// Keep non-folder note rows in their familiar title/subtitle order.
+fn sort_notes_browser_entries_by_label(entries: &mut [NotesBrowserEntry]) {
     entries.sort_by(|left, right| {
         left.row_title()
             .cmp(&right.row_title())
             .then_with(|| left.row_subtitle().cmp(&right.row_subtitle()))
     });
-    entries
 }
 
 /// Add a resolved document identity to the defensive dedupe set when possible.
@@ -3000,9 +3225,9 @@ fn merge_live_bookmark_snapshots(
     merged
 }
 
-/// Return whether one path is inside any root in the current browse scope.
-fn path_is_in_roots(path: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|root| path.starts_with(root))
+/// Return whether one path is inside any folder in the current browse scope.
+fn path_is_in_folders(path: &Path, folders: &[PathBuf]) -> bool {
+    folders.iter().any(|folder| path.starts_with(folder))
 }
 
 /// Classify an out-of-scope saved open tab for browser source metadata.
@@ -3010,19 +3235,35 @@ fn open_tab_source_for_path(all_workspaces: &[WorkspaceConfig], path: &Path) -> 
     let owning_workspace = workspace_for_path(all_workspaces, path);
     OpenTabSource {
         workspace_name: owning_workspace.map(|workspace| workspace.name.clone()),
-        workspace_root: owning_workspace.map(|workspace| workspace.root.clone()),
+        workspace_folder: owning_workspace
+            .and_then(|workspace| workspace_folder_for_path(workspace, path)),
     }
 }
 
-/// Find the most specific workspace that owns one saved path.
+/// Find the first configured workspace that owns one saved path.
+///
+/// Workspace order is user-authored, so overlapping folder coverage uses the
+/// same primary-context rule as the sidebar and search surfaces.
 fn workspace_for_path<'a>(
     workspaces: &'a [WorkspaceConfig],
     path: &Path,
 ) -> Option<&'a WorkspaceConfig> {
     workspaces
         .iter()
-        .filter(|workspace| path.starts_with(&workspace.root))
-        .max_by_key(|workspace| workspace.root.components().count())
+        .find(|workspace| workspace_folder_for_path(workspace, path).is_some())
+}
+
+/// Find the first configured folder in one workspace that owns a path.
+///
+/// A workspace may intentionally list both a parent folder and one of its
+/// descendants. The ordered folder set, not path depth, decides the primary
+/// folder context for metadata and Markdown rendering.
+fn workspace_folder_for_path(workspace: &WorkspaceConfig, path: &Path) -> Option<PathBuf> {
+    workspace
+        .folders
+        .iter()
+        .find(|folder| path.starts_with(folder.path()))
+        .map(|folder| folder.path.clone())
 }
 
 /// Display one zero-based bookmark line in the 1-based form users expect.

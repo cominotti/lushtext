@@ -400,7 +400,7 @@ pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
 /// Create one directory and sync the parent directory that received the entry.
 ///
 /// `create_dir()` mutates a directory namespace just like `rename()`, so callers
-/// that create user-visible workspace entries need the same parent-sync policy.
+/// that create user-visible folders need the same parent-sync policy.
 ///
 /// # Errors
 ///

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use lushtext_core::model::bookmark::{BookmarkDocument, BookmarkId, BookmarkRecord};
 use lushtext_core::model::document_note::DocumentNoteDocument;
+use lushtext_core::model::folder_note::FolderNoteDocument;
 use lushtext_core::model::local_history::{
     LocalHistoryDocument, LocalHistorySnapshotMeta, LocalHistorySnapshotOrigin,
 };
@@ -18,12 +19,12 @@ use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::sidecar_identity::{
     DocumentSidecarIdentity, next_record_id, now_epoch_millis, stable_bytes_hash,
 };
-use lushtext_core::model::workspace_note::WorkspaceNoteDocument;
 use lushtext_core::services::{
     bookmark_service, document_note_service,
     filesystem::{fixture, metadata as fs_metadata},
+    folder_note_service,
     json_format::{JsonEnvelopeRef, KIND_LOCAL_HISTORY_INDEX},
-    local_history_service, workspace_note_service,
+    local_history_service,
 };
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -37,8 +38,8 @@ enum SidecarReconcileCase {
     BookmarkDuplicate,
     DocumentSourceOnly,
     DocumentAmbiguous,
-    WorkspaceSourceOnly,
-    WorkspaceAmbiguous,
+    FolderSourceOnly,
+    FolderAmbiguous,
     LocalHistoryDuplicate,
     LocalHistoryOrphan,
 }
@@ -66,8 +67,8 @@ fn sidecar_reconcile_case() -> impl Strategy<Value = SidecarReconcileCase> {
         Just(SidecarReconcileCase::BookmarkDuplicate),
         Just(SidecarReconcileCase::DocumentSourceOnly),
         Just(SidecarReconcileCase::DocumentAmbiguous),
-        Just(SidecarReconcileCase::WorkspaceSourceOnly),
-        Just(SidecarReconcileCase::WorkspaceAmbiguous),
+        Just(SidecarReconcileCase::FolderSourceOnly),
+        Just(SidecarReconcileCase::FolderAmbiguous),
         Just(SidecarReconcileCase::LocalHistoryDuplicate),
         Just(SidecarReconcileCase::LocalHistoryOrphan),
     ]
@@ -86,9 +87,9 @@ fn run_case(
         SidecarReconcileCase::DocumentAmbiguous => {
             document_ambiguous(data_dir, source_text, target_text)
         }
-        SidecarReconcileCase::WorkspaceSourceOnly => workspace_source_only(data_dir, source_text),
-        SidecarReconcileCase::WorkspaceAmbiguous => {
-            workspace_ambiguous(data_dir, source_text, target_text)
+        SidecarReconcileCase::FolderSourceOnly => folder_source_only(data_dir, source_text),
+        SidecarReconcileCase::FolderAmbiguous => {
+            folder_ambiguous(data_dir, source_text, target_text)
         }
         SidecarReconcileCase::LocalHistoryDuplicate => {
             local_history_duplicate(data_dir, source_text, target_text)
@@ -199,48 +200,44 @@ fn document_ambiguous(data_dir: &Path, source_text: &str, target_text: &str) -> 
     Ok(())
 }
 
-fn workspace_source_only(data_dir: &Path, text: &str) -> anyhow::Result<()> {
-    let old_root = seed_dir(data_dir, "old-workspace-note");
-    let new_root = seed_dir(data_dir, "new-workspace-note");
+fn folder_source_only(data_dir: &Path, text: &str) -> anyhow::Result<()> {
+    let old_folder = seed_dir(data_dir, "old-folder-note");
+    let new_folder = seed_dir(data_dir, "new-folder-note");
     let old_identity =
-        workspace_note_service::save_for_root(data_dir, &old_root, &RichNoteBody::new(text))?;
-    let old_sidecar = workspace_sidecar_path(data_dir, &old_identity.sidecar_id);
+        folder_note_service::save_for_folder(data_dir, &old_folder, &RichNoteBody::new(text))?;
+    let old_sidecar = folder_sidecar_path(data_dir, &old_identity.sidecar_id);
 
-    workspace_note_service::move_root_tree(data_dir, &old_root, &new_root)?;
+    folder_note_service::move_folder_tree(data_dir, &old_folder, &new_folder)?;
 
     assert!(!fs_metadata::exists(&old_sidecar));
-    assert!(workspace_note_service::load_for_root(data_dir, &new_root)?.is_some());
+    assert!(folder_note_service::load_for_folder(data_dir, &new_folder)?.is_some());
     Ok(())
 }
 
-fn workspace_ambiguous(
-    data_dir: &Path,
-    source_text: &str,
-    target_text: &str,
-) -> anyhow::Result<()> {
-    let old_root = seed_dir(data_dir, "old-workspace-conflict");
-    let new_root = seed_dir(data_dir, "new-workspace-conflict");
-    let old_identity = workspace_note_service::resolve_workspace_root_identity(&old_root)?;
-    let new_identity = workspace_note_service::resolve_workspace_root_identity(&new_root)?;
-    let old_sidecar = workspace_sidecar_path(data_dir, &old_identity.sidecar_id);
-    let new_sidecar = workspace_sidecar_path(data_dir, &new_identity.sidecar_id);
+fn folder_ambiguous(data_dir: &Path, source_text: &str, target_text: &str) -> anyhow::Result<()> {
+    let old_folder = seed_dir(data_dir, "old-folder-conflict");
+    let new_folder = seed_dir(data_dir, "new-folder-conflict");
+    let old_identity = folder_note_service::resolve_folder_note_identity(&old_folder)?;
+    let new_identity = folder_note_service::resolve_folder_note_identity(&new_folder)?;
+    let old_sidecar = folder_sidecar_path(data_dir, &old_identity.sidecar_id);
+    let new_sidecar = folder_sidecar_path(data_dir, &new_identity.sidecar_id);
     let target_text = distinct_target_text(source_text, target_text);
-    workspace_note_service::save_document(
+    folder_note_service::save_document(
         data_dir,
-        &WorkspaceNoteDocument {
+        &FolderNoteDocument {
             identity: old_identity,
             note: note_with_timestamp(source_text, 10),
         },
     )?;
-    workspace_note_service::save_document(
+    folder_note_service::save_document(
         data_dir,
-        &WorkspaceNoteDocument {
+        &FolderNoteDocument {
             identity: new_identity,
             note: note_with_timestamp(&target_text, 10),
         },
     )?;
 
-    let result = workspace_note_service::move_root_tree(data_dir, &old_root, &new_root);
+    let result = folder_note_service::move_folder_tree(data_dir, &old_folder, &new_folder);
 
     assert!(result.is_err());
     assert!(fs_metadata::exists(&old_sidecar));
@@ -369,6 +366,6 @@ fn document_sidecar_path(data_dir: &Path, sidecar_id: &str) -> PathBuf {
     document_note_service::document_notes_dir(data_dir).join(format!("{sidecar_id}.json"))
 }
 
-fn workspace_sidecar_path(data_dir: &Path, sidecar_id: &str) -> PathBuf {
-    workspace_note_service::workspace_notes_dir(data_dir).join(format!("{sidecar_id}.json"))
+fn folder_sidecar_path(data_dir: &Path, sidecar_id: &str) -> PathBuf {
+    folder_note_service::folder_notes_dir(data_dir).join(format!("{sidecar_id}.json"))
 }

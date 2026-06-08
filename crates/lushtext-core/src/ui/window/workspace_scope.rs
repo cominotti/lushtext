@@ -28,26 +28,21 @@ impl LushtextWindow {
         self.imp().workspace_scope.borrow().clone()
     }
 
-    /// Return the root directories covered by the current shared scope.
+    /// Return the folder paths covered by the current shared scope.
     #[must_use]
-    pub(super) fn current_workspace_directory_roots(&self) -> Vec<PathBuf> {
+    pub(super) fn current_workspace_folder_paths(&self) -> Vec<PathBuf> {
         let scope = self.current_workspace_scope();
-        self.imp().sidebar.root_paths_for_scope(&scope)
-    }
-
-    /// Return the current shared scope as filesystem paths for workspace-aware flows.
-    #[must_use]
-    pub(super) fn current_workspace_scope_paths(&self) -> Vec<PathBuf> {
-        self.current_workspace_directory_roots()
+        self.imp().sidebar.folder_paths_for_scope(&scope)
     }
 
     /// Refresh every window-level consumer that depends on the shared workspace scope.
     pub(super) fn refresh_workspace_scope_consumers(&self) {
         *self.imp().workspace_scope.borrow_mut() = self.imp().sidebar.current_scope();
-        let roots = self.current_workspace_directory_roots();
-        self.imp().search_panel.set_workspace_roots(roots);
+        let folders = self.current_workspace_folder_paths();
+        self.imp().search_panel.set_workspace_folders(folders);
         self.refresh_command_palette_sources();
         self.rebuild_file_index();
         self.refresh_notes_menu_state();
+        self.refresh_preview();
     }
 }

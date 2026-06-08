@@ -89,7 +89,7 @@ P0 targets affect every search interaction. P1 affects periodic operations. P2 r
 
 ### `benches/benchmarks.rs` (key patterns)
 
-All benchmarks live in a single file. Synthetic indexes use `FileIndex::from(Vec<IndexedFile>)` (the `From` trait impl). The `IndexedFile` struct requires an `Arc<PathBuf>` for `workspace_root`:
+All benchmarks live in a single file. Synthetic indexes use `FileIndex::from(Vec<IndexedFile>)` (the `From` trait impl). The `IndexedFile` struct requires an `Arc<PathBuf>` for `workspace_folder`:
 
 ```rust
 use std::sync::Arc;
@@ -97,12 +97,12 @@ use lushtext_core::model::palette::IndexedFile;
 use lushtext_core::services::palette::FileIndex;
 
 // Construct synthetic indexes for benchmarks:
-let root = Arc::new(PathBuf::from("/workspace"));
+let folder = Arc::new(PathBuf::from("/workspace"));
 let files: Vec<_> = (0..size)
     .map(|i| IndexedFile {
         path: PathBuf::from(format!("/workspace/src/file_{}.rs", i)),
         name: format!("file_{}.rs", i),
-        workspace_root: Arc::clone(&root),
+        workspace_folder: Arc::clone(&folder),
     })
     .collect();
 let index = FileIndex::from(files);

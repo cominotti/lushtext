@@ -4,7 +4,7 @@
 
 ## Description
 A toggleable bottom panel (`Ctrl+`` `) running the user's shell, scoped to the active
-workspace root as the working directory. Ephemeral and unobtrusive — a scratchpad for
+workspace folder as the working directory. Ephemeral and unobtrusive — a scratchpad for
 quick commands, not a full terminal emulator ambition. Keeps users in LushText instead
 of alt-tabbing to GNOME Terminal for the 30% of tasks that need a quick command.
 
@@ -42,7 +42,7 @@ session management, no tabs within tabs, no tmux complexity.
 5. Persist terminal panel height in GSettings (`terminal-height` key)
 
 ### Phase 3: Workspace-Aware Working Directory
-1. On terminal open, set `cwd` to the active workspace's first root directory
+1. On terminal open, set `cwd` to the active workspace's first folder directory
 2. If no workspace is active, use the directory of the currently focused file
 3. If no file is open, use `$HOME`
 4. Switching workspaces does NOT change the terminal's `cwd` (would be confusing mid-command)

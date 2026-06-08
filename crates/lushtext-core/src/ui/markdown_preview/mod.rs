@@ -30,6 +30,8 @@ use sourceview5::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::services::async_task::spawn_blocking_then;
+use crate::services::filesystem::{PathStatus, metadata as fs_metadata};
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
 
 use imp::{
@@ -131,22 +133,22 @@ const CODE_BLOCK_BACKGROUND_CSS_PRIORITY: u32 = gtk4::STYLE_PROVIDER_PRIORITY_AP
 /// Extra render context supplied by the window when previewing a real Markdown file.
 ///
 /// Relative links and images need a stable base path, and workspace-relative
-/// image paths need the active sidebar roots. Keeping those inputs in one
+/// image paths need the active sidebar folders. Keeping those inputs in one
 /// value object lets the preview stay a reusable widget instead of reaching
 /// back into the window shell directly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MarkdownPreviewRenderContext {
     document_path: Option<PathBuf>,
-    workspace_roots: Vec<PathBuf>,
+    workspace_folders: Vec<PathBuf>,
 }
 
 impl MarkdownPreviewRenderContext {
     /// Create one render context for a Markdown preview pass.
     #[must_use]
-    pub fn new(document_path: Option<PathBuf>, workspace_roots: Vec<PathBuf>) -> Self {
+    pub fn new(document_path: Option<PathBuf>, workspace_folders: Vec<PathBuf>) -> Self {
         Self {
             document_path,
-            workspace_roots,
+            workspace_folders,
         }
     }
 }
@@ -331,7 +333,7 @@ enum LocalPathResolution {
     Resolved(PathBuf),
     /// No document or workspace base can produce a local path candidate.
     Missing,
-    /// More than one workspace-relative path is possible, so preview should not guess.
+    /// More than one workspace-relative path is possible, so link activation should not guess.
     Ambiguous(Vec<PathBuf>),
 }
 
@@ -340,8 +342,21 @@ enum LocalPathResolution {
 enum ResolvedImageTarget {
     /// A local file that should render as a native preview image block.
     LocalFile(PathBuf),
+    /// Ordered relative image candidates resolved off the GTK thread.
+    OrderedCandidates(Vec<PathBuf>),
     /// A fallback block that should appear inline instead of silently dropping the image.
     Fallback { title: &'static str, body: String },
+}
+
+/// Result of checking workspace-relative image candidates on a background thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OrderedImageCandidateResult {
+    /// The first decodable candidate in workspace-folder order.
+    Loadable(PathBuf),
+    /// At least one candidate existed, but none could be decoded as an image.
+    Unloadable { path: PathBuf, error: String },
+    /// None of the candidate paths were present as decodable files.
+    Missing { raw_target: String },
 }
 
 /// Buffered Markdown image collected from pulldown-cmark's event stream.
@@ -1516,21 +1531,17 @@ impl LushtextMarkdownPreview {
         context: &MarkdownPreviewRenderContext,
     ) {
         match resolve_image_target(&image.destination, context) {
-            ResolvedImageTarget::LocalFile(path) => match build_image_paintable(&path) {
-                Ok(paintable) => buffer.insert_paintable(iter, &paintable),
-                Err(error) => {
-                    let widget = build_image_fallback_widget(
-                        "Image could not be loaded",
-                        &format!("{}\n{error}", path.display()),
-                    );
-                    self.insert_embedded_widget(
-                        buffer,
-                        iter,
-                        widget.upcast_ref::<gtk4::Widget>(),
-                        EmbeddedBlockLayout::default(),
-                    );
-                }
-            },
+            ResolvedImageTarget::LocalFile(path) => {
+                self.insert_local_image_or_fallback(
+                    buffer,
+                    iter,
+                    &path,
+                    EmbeddedBlockLayout::default(),
+                );
+            }
+            ResolvedImageTarget::OrderedCandidates(paths) => {
+                self.insert_ordered_image_placeholder(buffer, iter, image, paths);
+            }
             ResolvedImageTarget::Fallback { title, body } => {
                 let widget = build_image_fallback_widget(title, &body);
                 self.insert_embedded_widget(
@@ -1539,6 +1550,100 @@ impl LushtextMarkdownPreview {
                     widget.upcast_ref::<gtk4::Widget>(),
                     EmbeddedBlockLayout::default(),
                 );
+            }
+        }
+    }
+
+    /// Insert one image path or a precise decode fallback at the current buffer position.
+    fn insert_local_image_or_fallback(
+        &self,
+        buffer: &gtk4::TextBuffer,
+        iter: &mut gtk4::TextIter,
+        path: &Path,
+        layout: EmbeddedBlockLayout,
+    ) {
+        match build_image_paintable(path) {
+            Ok(paintable) => buffer.insert_paintable(iter, &paintable),
+            Err(error) => {
+                let widget = build_image_fallback_widget(
+                    "Image could not be loaded",
+                    &format!("{}\n{error}", path.display()),
+                );
+                self.insert_embedded_widget(
+                    buffer,
+                    iter,
+                    widget.upcast_ref::<gtk4::Widget>(),
+                    layout,
+                );
+            }
+        }
+    }
+
+    /// Insert a placeholder while relative candidates are checked off the GTK thread.
+    fn insert_ordered_image_placeholder(
+        &self,
+        buffer: &gtk4::TextBuffer,
+        iter: &mut gtk4::TextIter,
+        image: &BufferedImage,
+        paths: Vec<PathBuf>,
+    ) {
+        let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        container.append(&build_image_fallback_widget(
+            "Loading image",
+            &image.destination,
+        ));
+        self.insert_embedded_widget(
+            buffer,
+            iter,
+            container.upcast_ref::<gtk4::Widget>(),
+            EmbeddedBlockLayout::default(),
+        );
+
+        let raw_target = image.destination.clone();
+        let container_weak = container.downgrade();
+        spawn_blocking_then(
+            self.clone(),
+            move || first_loadable_ordered_image(raw_target, paths),
+            move |_preview, result| {
+                let Some(container) = container_weak.upgrade() else {
+                    return;
+                };
+                Self::replace_ordered_image_placeholder(&container, result);
+            },
+        );
+    }
+
+    /// Replace an async image placeholder with the resolved image or fallback.
+    fn replace_ordered_image_placeholder(
+        container: &gtk4::Box,
+        result: OrderedImageCandidateResult,
+    ) {
+        clear_box_children(container);
+        match result {
+            OrderedImageCandidateResult::Loadable(path) => match build_image_paintable(&path) {
+                Ok(paintable) => {
+                    let picture = gtk4::Picture::for_paintable(&paintable);
+                    picture.add_css_class("markdown-preview-image");
+                    container.append(&picture);
+                }
+                Err(error) => {
+                    container.append(&build_image_fallback_widget(
+                        "Image could not be loaded",
+                        &format!("{}\n{error}", path.display()),
+                    ));
+                }
+            },
+            OrderedImageCandidateResult::Unloadable { path, error } => {
+                container.append(&build_image_fallback_widget(
+                    "Image could not be loaded",
+                    &format!("{}\n{error}", path.display()),
+                ));
+            }
+            OrderedImageCandidateResult::Missing { raw_target } => {
+                container.append(&build_image_fallback_widget(
+                    "Image file not found",
+                    &raw_target,
+                ));
             }
         }
     }
@@ -1975,24 +2080,62 @@ fn resolve_image_target(
         };
     }
 
-    match resolve_local_path(raw_target, context) {
-        LocalPathResolution::Resolved(path) => ResolvedImageTarget::LocalFile(path),
-        LocalPathResolution::Missing => ResolvedImageTarget::Fallback {
+    match resolve_local_image_path(raw_target, context) {
+        ImagePathResolution::Resolved(path) => ResolvedImageTarget::LocalFile(path),
+        ImagePathResolution::OrderedCandidates(paths) => {
+            ResolvedImageTarget::OrderedCandidates(paths)
+        }
+        ImagePathResolution::Missing => ResolvedImageTarget::Fallback {
             title: "Image file not found",
             body: raw_target.to_string(),
-        },
-        LocalPathResolution::Ambiguous(paths) => ResolvedImageTarget::Fallback {
-            title: "Image path is ambiguous",
-            body: paths
-                .into_iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join("\n"),
         },
     }
 }
 
-/// Resolve one Markdown local path against the current document and workspace roots.
+/// Result of resolving a Markdown image's local filesystem target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ImagePathResolution {
+    /// One direct file-relative, absolute, or URI-backed path should be tried.
+    Resolved(PathBuf),
+    /// Relative candidates should be checked and decoded in the listed scope order.
+    OrderedCandidates(Vec<PathBuf>),
+    /// No file-relative or workspace-relative candidate can be formed.
+    Missing,
+}
+
+/// Resolve one Markdown image path through file-relative and ordered workspace candidates.
+fn resolve_local_image_path(
+    raw_target: &str,
+    context: &MarkdownPreviewRenderContext,
+) -> ImagePathResolution {
+    let path = Path::new(raw_target);
+    if path.is_absolute() {
+        return ImagePathResolution::Resolved(path.to_path_buf());
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(document_path) = &context.document_path
+        && let Some(parent) = document_path.parent()
+    {
+        candidates.push(parent.join(path));
+    }
+    candidates.extend(
+        context
+            .workspace_folders
+            .iter()
+            .map(|folder| folder.join(path)),
+    );
+
+    match candidates.len() {
+        0 => ImagePathResolution::Missing,
+        1 if context.workspace_folders.is_empty() => {
+            ImagePathResolution::Resolved(candidates.pop().expect("one candidate exists"))
+        }
+        _ => ImagePathResolution::OrderedCandidates(candidates),
+    }
+}
+
+/// Resolve one Markdown local path against the current document and workspace folders.
 fn resolve_local_path(
     raw_target: &str,
     context: &MarkdownPreviewRenderContext,
@@ -2009,9 +2152,9 @@ fn resolve_local_path(
     }
 
     let candidates = context
-        .workspace_roots
+        .workspace_folders
         .iter()
-        .map(|root| root.join(path))
+        .map(|folder| folder.join(path))
         .collect::<Vec<_>>();
 
     match candidates.len() {
@@ -2243,6 +2386,42 @@ fn build_image_paintable(path: &Path) -> Result<gdk::Paintable, glib::Error> {
             display_height as f32,
         )))
         .ok_or_else(|| glib::Error::new(gio::IOErrorEnum::Failed, "failed to snapshot image"))
+}
+
+/// Remove every current child from a GTK box before replacing async image content.
+fn clear_box_children(container: &gtk4::Box) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+}
+
+/// Find the first candidate that the platform image loaders can decode.
+fn first_loadable_ordered_image(
+    raw_target: String,
+    paths: Vec<PathBuf>,
+) -> OrderedImageCandidateResult {
+    let mut first_unloadable = None;
+    for path in paths {
+        match fs_metadata::path_status(&path) {
+            Ok(PathStatus::Missing) => continue,
+            Ok(PathStatus::File) | Err(_) => match gtk4::gdk_pixbuf::Pixbuf::from_file(&path) {
+                Ok(_) => return OrderedImageCandidateResult::Loadable(path),
+                Err(error) if first_unloadable.is_none() => {
+                    first_unloadable = Some((path, error.to_string()));
+                }
+                Err(_) => {}
+            },
+            Ok(PathStatus::Directory | PathStatus::Other) if first_unloadable.is_none() => {
+                first_unloadable = Some((path, "not a regular image file".to_string()));
+            }
+            Ok(PathStatus::Directory | PathStatus::Other) => {}
+        }
+    }
+
+    first_unloadable.map_or(
+        OrderedImageCandidateResult::Missing { raw_target },
+        |(path, error)| OrderedImageCandidateResult::Unloadable { path, error },
+    )
 }
 
 /// Build one fallback block for unsupported or unresolved Markdown images.
@@ -2503,15 +2682,15 @@ mod tests {
     fn test_resolve_local_path_prefers_document_relative_match() {
         let tempdir = tempdir().expect("tempdir");
         let document_dir = tempdir.path().join("docs");
-        let workspace_root = tempdir.path().join("workspace");
+        let workspace_folder = tempdir.path().join("workspace");
         fixture::create_dir_all(&document_dir);
-        fixture::create_dir_all(&workspace_root.join("images"));
+        fixture::create_dir_all(&workspace_folder.join("images"));
         fixture::write_bytes(&document_dir.join("logo.png"), b"doc");
-        fixture::write_bytes(&workspace_root.join("logo.png"), b"workspace");
+        fixture::write_bytes(&workspace_folder.join("logo.png"), b"workspace");
 
         let context = MarkdownPreviewRenderContext::new(
             Some(document_dir.join("guide.md")),
-            vec![workspace_root],
+            vec![workspace_folder],
         );
 
         assert_eq!(
@@ -2540,21 +2719,132 @@ mod tests {
     #[test]
     fn test_resolve_local_path_reports_ambiguous_workspace_candidates() {
         let tempdir = tempdir().expect("tempdir");
-        let root_a = tempdir.path().join("root-a");
-        let root_b = tempdir.path().join("root-b");
-        fixture::create_dir_all(&root_a.join("images"));
-        fixture::create_dir_all(&root_b.join("images"));
-        fixture::write_bytes(&root_a.join("images/logo.png"), b"a");
-        fixture::write_bytes(&root_b.join("images/logo.png"), b"b");
+        let folder_a = tempdir.path().join("folder-a");
+        let folder_b = tempdir.path().join("folder-b");
+        fixture::create_dir_all(&folder_a.join("images"));
+        fixture::create_dir_all(&folder_b.join("images"));
+        fixture::write_bytes(&folder_a.join("images/logo.png"), b"a");
+        fixture::write_bytes(&folder_b.join("images/logo.png"), b"b");
 
-        let context = MarkdownPreviewRenderContext::new(None, vec![root_a.clone(), root_b.clone()]);
+        let context =
+            MarkdownPreviewRenderContext::new(None, vec![folder_a.clone(), folder_b.clone()]);
 
         assert_eq!(
             resolve_local_path("images/logo.png", &context),
             LocalPathResolution::Ambiguous(vec![
-                root_a.join("images/logo.png"),
-                root_b.join("images/logo.png"),
+                folder_a.join("images/logo.png"),
+                folder_b.join("images/logo.png"),
             ])
+        );
+    }
+
+    #[test]
+    fn test_resolve_image_target_prefers_document_relative_file_before_workspace() {
+        let tempdir = tempdir().expect("tempdir");
+        let document_dir = tempdir.path().join("docs");
+        let workspace_folder = tempdir.path().join("workspace");
+        fixture::create_dir_all(&document_dir);
+        fixture::create_dir_all(&workspace_folder);
+        fixture::write_bytes(&document_dir.join("logo.png"), b"doc");
+        fixture::write_bytes(&workspace_folder.join("logo.png"), b"workspace");
+
+        let context = MarkdownPreviewRenderContext::new(
+            Some(document_dir.join("guide.md")),
+            vec![workspace_folder.clone()],
+        );
+
+        assert_eq!(
+            resolve_image_target("logo.png", &context),
+            ResolvedImageTarget::OrderedCandidates(vec![
+                document_dir.join("logo.png"),
+                workspace_folder.join("logo.png"),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_resolve_image_target_falls_back_to_workspace_when_document_relative_missing() {
+        let tempdir = tempdir().expect("tempdir");
+        let document_dir = tempdir.path().join("docs");
+        let workspace_folder = tempdir.path().join("workspace");
+        fixture::create_dir_all(&document_dir);
+        fixture::create_dir_all(&workspace_folder.join("images"));
+        fixture::write_bytes(&workspace_folder.join("images/logo.png"), b"workspace");
+
+        let context = MarkdownPreviewRenderContext::new(
+            Some(document_dir.join("guide.md")),
+            vec![workspace_folder.clone()],
+        );
+
+        assert_eq!(
+            resolve_image_target("images/logo.png", &context),
+            ResolvedImageTarget::OrderedCandidates(vec![
+                document_dir.join("images/logo.png"),
+                workspace_folder.join("images/logo.png")
+            ])
+        );
+    }
+
+    #[test]
+    fn test_resolve_image_target_uses_folder_order_for_workspace_candidates() {
+        let tempdir = tempdir().expect("tempdir");
+        let folder_a = tempdir.path().join("folder-a");
+        let folder_b = tempdir.path().join("folder-b");
+        fixture::create_dir_all(&folder_a.join("images"));
+        fixture::create_dir_all(&folder_b.join("images"));
+        fixture::write_bytes(&folder_a.join("images/logo.png"), b"a");
+        fixture::write_bytes(&folder_b.join("images/logo.png"), b"b");
+
+        let context =
+            MarkdownPreviewRenderContext::new(None, vec![folder_b.clone(), folder_a.clone()]);
+
+        assert_eq!(
+            resolve_image_target("images/logo.png", &context),
+            ResolvedImageTarget::OrderedCandidates(vec![
+                folder_b.join("images/logo.png"),
+                folder_a.join("images/logo.png"),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_first_loadable_ordered_image_skips_missing_and_unloadable_candidates() {
+        let tempdir = tempdir().expect("tempdir");
+        let missing_folder = tempdir.path().join("missing-folder");
+        let invalid_folder = tempdir.path().join("invalid-folder");
+        let folder_b = tempdir.path().join("folder-b");
+        fixture::create_dir_all(&invalid_folder.join("images"));
+        fixture::create_dir_all(&folder_b.join("images"));
+        fixture::write_bytes(&invalid_folder.join("images/logo.svg"), b"not an image");
+        fixture::write_text(
+            &folder_b.join("images/logo.svg"),
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"##,
+        );
+
+        assert_eq!(
+            first_loadable_ordered_image(
+                "images/logo.svg".to_string(),
+                vec![
+                    missing_folder.join("images/logo.svg"),
+                    invalid_folder.join("images/logo.svg"),
+                    folder_b.join("images/logo.svg"),
+                ],
+            ),
+            OrderedImageCandidateResult::Loadable(folder_b.join("images/logo.svg"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_image_target_reports_missing_for_zero_folder_scope() {
+        assert_eq!(
+            resolve_image_target(
+                "images/logo.png",
+                &MarkdownPreviewRenderContext::new(None, Vec::new()),
+            ),
+            ResolvedImageTarget::Fallback {
+                title: "Image file not found",
+                body: "images/logo.png".to_string(),
+            }
         );
     }
 

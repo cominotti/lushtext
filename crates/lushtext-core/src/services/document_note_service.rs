@@ -250,7 +250,7 @@ fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
     }
 }
 
-/// Collect document notes under the current workspace roots for note browsers.
+/// Collect document notes under the current workspace folders for note browsers.
 ///
 /// # Errors
 ///
@@ -258,9 +258,9 @@ fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
 /// note cannot be read or parsed.
 pub fn list_workspace_document_notes(
     data_dir: &Path,
-    workspace_roots: &[PathBuf],
+    workspace_folders: &[PathBuf],
 ) -> Result<Vec<WorkspaceDocumentNote>> {
-    Ok(list_workspace_document_notes_recovering(data_dir, workspace_roots)?.notes)
+    Ok(list_workspace_document_notes_recovering(data_dir, workspace_folders)?.notes)
 }
 
 /// Collect document notes and preserve partial-recovery diagnostics.
@@ -270,9 +270,9 @@ pub fn list_workspace_document_notes(
 /// Returns an error only when the sidecar directory itself cannot be scanned.
 pub fn list_workspace_document_notes_recovering(
     data_dir: &Path,
-    workspace_roots: &[PathBuf],
+    workspace_folders: &[PathBuf],
 ) -> Result<WorkspaceDocumentNoteListing> {
-    let canonical_roots = note_storage::canonicalize_roots(workspace_roots);
+    let canonical_folders = note_storage::canonicalize_folders(workspace_folders);
     let dir = document_notes_dir(data_dir);
     if !fs_metadata::path_status(&dir)?.is_present() {
         return Ok(WorkspaceDocumentNoteListing {
@@ -296,7 +296,7 @@ pub fn list_workspace_document_notes_recovering(
         let Some(document) = load.value else {
             continue;
         };
-        if !note_storage::matches_any_root(&document.identity, &canonical_roots) {
+        if !note_storage::matches_any_folder(&document.identity, &canonical_folders) {
             continue;
         }
         notes.push(WorkspaceDocumentNote {
@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn list_workspace_document_notes_filters_roots_and_sorts_rows() {
+    fn list_workspace_document_notes_filters_folders_and_sorts_rows() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let workspace = dir.path().join("workspace");
         let alpha = workspace.join("alpha.rs");

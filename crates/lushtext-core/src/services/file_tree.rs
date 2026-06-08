@@ -42,6 +42,8 @@ pub struct DirectoryScan {
     pub truncated: bool,
     /// True if the cancellation token was set during scanning.
     pub cancelled: bool,
+    /// Human-readable scan error when the directory could not be read.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -145,9 +147,13 @@ pub fn scan_directory_bounded(
 
     match scan {
         Ok(()) => {}
-        Err(e) => {
-            tracing::warn!("Cannot read {}: {}", dir_path.display(), e);
-            return DirectoryScan::default();
+        Err(error) => {
+            let message = format!("Cannot read {}: {}", dir_path.display(), error);
+            tracing::warn!("{message}");
+            return DirectoryScan {
+                error: Some(message),
+                ..DirectoryScan::default()
+            };
         }
     }
 
@@ -155,6 +161,7 @@ pub fn scan_directory_bounded(
         entries: drain_sorted_entries(heap),
         truncated,
         cancelled,
+        error: None,
     }
 }
 
@@ -417,5 +424,22 @@ mod tests {
         let scan = scan_directory_bounded(dir.path(), 10, 1000, Some(&cancel));
         assert!(scan.cancelled);
         assert!(scan.entries.is_empty());
+    }
+
+    #[test]
+    fn test_bounded_scan_reports_read_errors() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let missing = dir.path().join("missing");
+
+        let scan = scan_directory_bounded(&missing, 10, 1000, None);
+
+        assert!(scan.entries.is_empty());
+        assert!(!scan.cancelled);
+        assert!(
+            scan.error
+                .as_deref()
+                .is_some_and(|message| message.contains(missing.to_string_lossy().as_ref())),
+            "scan error should identify the unreadable folder"
+        );
     }
 }

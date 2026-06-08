@@ -10,31 +10,32 @@ use lushtext_core::model::content_search::{
 };
 use lushtext_core::model::document_note::DocumentNoteDocument;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
+use lushtext_core::model::folder_note::{FolderNoteDocument, FolderNoteIdentity};
 use lushtext_core::model::local_history::{LocalHistoryDocument, LocalHistorySnapshotOrigin};
 use lushtext_core::model::migration_ledger::{MigrationKind, MigrationLedgerDocument};
 use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::sidecar_identity::{DocumentSidecarIdentity, stable_path_hash};
 use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
+    WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
-use lushtext_core::model::workspace_note::{WorkspaceNoteDocument, WorkspaceRootIdentity};
 use lushtext_core::services::content_search::{ReplaceUndoBackup, ReplaceUndoEntry};
 use lushtext_core::services::filesystem::fixture;
 use lushtext_core::services::json_format::{
     self, JsonFormatError, KIND_BOOKMARK_SIDECAR, KIND_DOCUMENT_NOTE_SIDECAR, KIND_DRAFT_MANIFEST,
-    KIND_LOCAL_HISTORY_INDEX, KIND_MIGRATION_LEDGER, KIND_REPLACE_UNDO_CLEANUP_MARKER,
-    KIND_REPLACE_UNDO_ENTRY, KIND_REPLACE_UNDO_MANIFEST, KIND_SAVED_SEARCHES, KIND_SEARCH_HISTORY,
-    KIND_SESSION, KIND_WORKSPACE_NOTE_SIDECAR, KIND_WORKSPACE_STATE,
+    KIND_FOLDER_NOTE_SIDECAR, KIND_LEGACY_WORKSPACE_NOTE_SIDECAR, KIND_LOCAL_HISTORY_INDEX,
+    KIND_MIGRATION_LEDGER, KIND_REPLACE_UNDO_CLEANUP_MARKER, KIND_REPLACE_UNDO_ENTRY,
+    KIND_REPLACE_UNDO_MANIFEST, KIND_SAVED_SEARCHES, KIND_SEARCH_HISTORY, KIND_SESSION,
+    KIND_WORKSPACE_STATE,
 };
 use lushtext_core::services::recovery_metadata::{
     RecoveryLoadConfig, RecoveryLoadOutcome, RecoveryMetadataClass, RecoveryProblem,
     load_enveloped_json_or_default,
 };
 use lushtext_core::services::{
-    bookmark_service, document_note_service, draft_service, local_history_service,
-    migration_ledger, saved_searches, search_backup, search_history, session_service,
-    workspace_manager, workspace_note_service,
+    bookmark_service, document_note_service, draft_service, folder_note_service,
+    local_history_service, migration_ledger, saved_searches, search_backup, search_history,
+    session_service, workspace_manager,
 };
 use serde::de::DeserializeOwned;
 use tempfile::TempDir;
@@ -73,6 +74,21 @@ fn golden_v1_fixtures_parse_supported_payloads() {
         KIND_WORKSPACE_STATE,
     );
     assert_eq!(workspace.workspaces[0].id.as_str(), "workspace-a");
+    assert_eq!(
+        workspace.workspaces[0].folder_paths(),
+        vec![
+            Path::new("/tmp/project").to_path_buf(),
+            Path::new("/tmp/project/docs").to_path_buf(),
+        ]
+    );
+    assert_eq!(
+        workspace.workspaces[0].folders[0].id.as_str(),
+        "folder-project"
+    );
+    assert_eq!(
+        workspace.workspaces[0].folders[1].id.as_str(),
+        "folder-docs"
+    );
     assert_eq!(
         workspace.current_scope.workspace_id(),
         Some(&workspace.workspaces[0].id)
@@ -122,11 +138,17 @@ fn golden_v1_fixtures_parse_supported_payloads() {
     );
     assert_eq!(document_note.note.text, "Remember this file");
 
-    let workspace_note: WorkspaceNoteDocument = parse_fixture(
-        fixture_bytes!("workspace-note-sidecar-v1.json"),
-        KIND_WORKSPACE_NOTE_SIDECAR,
+    let folder_note: FolderNoteDocument = parse_fixture(
+        fixture_bytes!("folder-note-sidecar-v1.json"),
+        KIND_FOLDER_NOTE_SIDECAR,
     );
-    assert_eq!(workspace_note.note.text, "Workspace note");
+    assert_eq!(folder_note.note.text, "Folder note");
+
+    let legacy_folder_note: FolderNoteDocument = parse_fixture(
+        fixture_bytes!("legacy-folder-note-sidecar-v1.json"),
+        KIND_LEGACY_WORKSPACE_NOTE_SIDECAR,
+    );
+    assert_eq!(legacy_folder_note.note.text, "Legacy folder note");
 
     let history_index: LocalHistoryDocument = parse_fixture(
         fixture_bytes!("local-history-index-v1.json"),
@@ -365,20 +387,20 @@ fn public_service_saves_write_v1_envelopes() {
         KIND_DOCUMENT_NOTE_SIDECAR,
     );
 
-    let workspace_identity = WorkspaceRootIdentity::from_roots(data_dir.into(), data_dir.into());
-    workspace_note_service::save_document(
+    let folder_identity = FolderNoteIdentity::from_folders(data_dir.into(), data_dir.into());
+    folder_note_service::save_document(
         data_dir,
-        &WorkspaceNoteDocument {
-            identity: workspace_identity.clone(),
-            note: RichNoteBody::new("Workspace note"),
+        &FolderNoteDocument {
+            identity: folder_identity.clone(),
+            note: RichNoteBody::new("Folder note"),
         },
     )
-    .expect("save workspace note");
+    .expect("save folder note");
     assert_file_kind(
         &data_dir
-            .join("workspace-notes")
-            .join(format!("{}.json", workspace_identity.sidecar_id)),
-        KIND_WORKSPACE_NOTE_SIDECAR,
+            .join("folder-notes")
+            .join(format!("{}.json", folder_identity.sidecar_id)),
+        KIND_FOLDER_NOTE_SIDECAR,
     );
 
     local_history_service::capture_snapshot_for_path(
@@ -451,14 +473,14 @@ fn assert_json_value_field(
     assert_eq!(current.as_str(), Some(expected));
 }
 
-fn sample_workspaces_file(root: &Path) -> WorkspacesFile {
+fn sample_workspaces_file(folder: &Path) -> WorkspacesFile {
     let id = WorkspaceId::new("workspace-a");
     WorkspacesFile {
         current_scope: WorkspaceScope::workspace(id.clone()),
         workspaces: vec![WorkspaceConfig {
             id,
             name: "Project".to_string(),
-            root: root.to_path_buf(),
+            folders: vec![WorkspaceFolder::new(folder.to_path_buf())],
         }],
     }
 }

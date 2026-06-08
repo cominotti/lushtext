@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Shared note-body primitives for range, document, and workspace notes.
+//! Shared note-body primitives for range, document, and folder notes.
 //!
 //! The app stores notes in a few different scopes, but they all need the same
 //! core behavior: normalized UTF-8 text, stable timestamps, a short preview
@@ -21,7 +21,7 @@ pub enum NoteViewMode {
     Render,
 }
 
-/// Shared persisted note body used by document and workspace notes.
+/// Shared persisted note body used by document and folder notes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RichNoteBody {
     /// User-authored UTF-8 note text stored outside user source files.

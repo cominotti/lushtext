@@ -206,7 +206,7 @@ If an API takes booleans whose meaning is hard to remember, recommend:
 - a domain value object
 
 Example:
-- `load_roots(roots, true)` is weaker than `load_roots(roots, AutoExpand::Yes)` or a named helper method when the flag carries workflow meaning.
+- `load_folders(folders, true)` is weaker than `load_folders(folders, AutoExpand::Yes)` or a named helper method when the flag carries workflow meaning.
 
 ## Architectural Shape
 

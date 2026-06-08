@@ -10,7 +10,16 @@
       {
         "id": "workspace-a",
         "name": "Project",
-        "root": "/tmp/project"
+        "folders": [
+          {
+            "id": "folder-project",
+            "path": "/tmp/project"
+          },
+          {
+            "id": "folder-docs",
+            "path": "/tmp/project/docs"
+          }
+        ]
       }
     ]
   }

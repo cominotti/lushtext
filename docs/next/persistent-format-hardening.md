@@ -42,7 +42,7 @@ Good future SQLite candidates:
 
 - A global notes and bookmarks knowledge surface with tags, backlinks,
   favorites, archive state, sort/filter facets, and instant search
-- A metadata index over note, bookmark, workspace-note, and local-history
+- A metadata index over note, bookmark, folder-note, and local-history
   sidecars while keeping JSON or text bodies as the inspectable source of truth
 - A persistent command-palette file index for very large workspaces with mtimes,
   ignore state, ranking data, and last-opened signals

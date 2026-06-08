@@ -12,10 +12,11 @@ This folder owns the multi-workspace sidebar adapter and its workspace-section s
 ## Local Contracts
 
 - The top workspace-selector row stays fixed outside the scroller. Do not let it scroll away.
-- Each persisted workspace owns exactly one root directory and therefore one workspace section. Do not reintroduce multi-root section behavior.
+- Each persisted workspace owns one ordered folder set and therefore one workspace section. Keep one top-level tree entry per configured folder, in stored order, and preserve empty workspaces as real sections.
 - Width presets are selected from `Preferences > Workspace` and keep their `Small=20%`, `Comfy=30%`, `Large=40%` identities while the window layer clamps their visible width on large displays. Do not reinterpret them as local paned fractions.
-- Preserve the no-horizontal-scrollbar contract. Prefer tooltips, focused roots, or explicit drill-down behavior over widening the sidebar or clipping silently.
+- Preserve the no-horizontal-scrollbar contract. Prefer tooltips, focused folders, or explicit drill-down behavior over widening the sidebar or clipping silently.
 - Keep workspace-section async tree loading off the main thread and preserve deduplication/placeholder behavior for large directories.
+- In workspace-section rows, workspace-folder reorder DnD hover belongs to the transparent row-level shield. `GtkTreeExpander` owns normal disclosure behavior, and any idle collapse after drag-hover child-model creation is defensive only, not the intended reorder path.
 
 ## Editing Rules
 

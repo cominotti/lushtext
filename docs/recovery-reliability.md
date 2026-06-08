@@ -21,8 +21,9 @@ Important files and directories:
   scroll position, and pinned state.
 - `drafts/manifest.json` maps draft IDs to file-backed or untitled draft files.
 - `drafts/*.draft` stores unsaved buffer text as plain UTF-8.
-- `bookmarks/`, `document-notes/`, and `workspace-notes/` store per-identity
-  JSON sidecars.
+- `bookmarks/`, `document-notes/`, and `folder-notes/` store per-identity
+  JSON sidecars; older `workspace-notes/` sidecars remain legacy-compatible
+  folder-note data.
 - `local-history/` stores per-file lineage indexes plus snapshot bodies.
 - `search-backups/` stores Replace All undo journals during the active safety
   window.
@@ -56,7 +57,7 @@ pending work by source path, target path, generation, affected metadata kind,
 attempt count, completion state, and diagnostics.
 
 Startup reconciliation retries incomplete ledger entries before browse
-surfaces rely on bookmark, note, workspace-note, or local-history listings.
+surfaces rely on bookmark, document-note, folder-note, or local-history listings.
 Duplicate reconciliation must write the merged target durably before removing
 an obsolete non-empty source. Failed cleanup remains diagnostic and retryable
 instead of becoming a tight loop.

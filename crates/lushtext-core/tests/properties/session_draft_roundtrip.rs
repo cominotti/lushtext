@@ -15,8 +15,8 @@ use proptest::test_runner::TestCaseError;
 
 use crate::support;
 
-/// Stable absolute root for generated model paths.
-const GENERATED_PATH_ROOT: &str = "/workspace/property-root";
+/// Stable absolute folder for generated model paths.
+const GENERATED_PATH_FOLDER: &str = "/workspace/property-folder";
 /// Maximum cursor and scroll positions generated for session tabs.
 ///
 /// The value is larger than normal examples but small enough to keep shrunk
@@ -135,17 +135,18 @@ fn draft_id() -> impl Strategy<Value = String> {
     (0u32..=999_999).prop_map(|id| format!("draft-{id:06}"))
 }
 
-/// Generate an absolute path under a synthetic workspace root.
+/// Generate an absolute path under a synthetic workspace folder.
 fn generated_path() -> impl Strategy<Value = PathBuf> {
-    support::path_suffix().prop_map(|suffix| append_suffix(Path::new(GENERATED_PATH_ROOT), &suffix))
+    support::path_suffix()
+        .prop_map(|suffix| append_suffix(Path::new(GENERATED_PATH_FOLDER), &suffix))
 }
 
-/// Append a generated relative suffix to a stable absolute root.
-fn append_suffix(root: &Path, suffix: &Path) -> PathBuf {
+/// Append a generated relative suffix to a stable absolute folder.
+fn append_suffix(folder: &Path, suffix: &Path) -> PathBuf {
     if suffix.as_os_str().is_empty() {
-        root.to_path_buf()
+        folder.to_path_buf()
     } else {
-        root.join(suffix)
+        folder.join(suffix)
     }
 }
 

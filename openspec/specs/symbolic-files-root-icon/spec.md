@@ -1,14 +1,14 @@
 # symbolic-files-root-icon Specification
 
 ## Purpose
-Define the workspace sidebar icon boundary for the synthetic `Files` root row: the row is a structural landmark and stays symbolic, while actual file-tree directories and files keep regular themed content icons.
+Define the workspace sidebar icon boundary for the synthetic `Files` tree root row: the row is a structural landmark and stays symbolic, while actual file-tree directories and files keep regular themed content icons.
 
 ## Requirements
 ### Requirement: Synthetic Files root row uses a symbolic icon
-The system SHALL render the normal single-directory workspace root row labeled `Files` with a symbolic workspace/navigation icon. The row MUST preserve the `Files` label and MUST NOT use the regular themed folder icon reserved for actual directory content rows.
+The system SHALL render the normal single-directory folder tree root row labeled `Files` with a symbolic workspace/navigation icon. The row MUST preserve the `Files` label and MUST NOT use the regular themed folder icon reserved for actual directory content rows.
 
-#### Scenario: Single-directory workspace root row renders symbolically
-- **WHEN** a workspace section renders its normal single-directory root row with the display label `Files`
+#### Scenario: Single-directory folder tree root row renders symbolically
+- **WHEN** a workspace section renders its normal single-directory tree root row with the display label `Files`
 - **THEN** the row icon is symbolic, preferably `view-list-symbolic`
 - **AND** the row label remains `Files`
 

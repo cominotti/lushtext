@@ -5,17 +5,69 @@
 //! This slice owns GTK dialog presentation and the follow-up workspace updates
 //! that happen once the user confirms a sidebar action.
 
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
-use std::path::Path;
 
 use super::LushtextSidebar;
 use crate::model::workspace::WorkspaceId;
 
 impl LushtextSidebar {
-    /// Create a new workspace by opening a folder dialog.
+    /// Create a new empty workspace through a name-entry dialog.
     pub fn create_new_workspace(&self) {
+        let Some(root) = self.root() else {
+            return;
+        };
+
+        let dialog = libadwaita::AlertDialog::builder()
+            .heading("New Workspace")
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("create", "Create");
+        dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("create"));
+        dialog.set_close_response("cancel");
+        dialog.set_response_enabled("create", false);
+
+        let entry = gtk4::Entry::new();
+        entry.set_placeholder_text(Some("Workspace name"));
+        entry.set_activates_default(true);
+        dialog.set_extra_child(Some(&entry));
+
+        let dialog_for_entry = dialog.clone();
+        entry.connect_changed(move |entry| {
+            dialog_for_entry.set_response_enabled("create", !entry.text().trim().is_empty());
+        });
+
+        let sidebar_weak = self.downgrade();
+        dialog.connect_response(None::<&str>, move |_, response| {
+            if response != "create" {
+                return;
+            }
+            let name = entry.text();
+            let name = name.trim();
+            if name.is_empty() {
+                return;
+            }
+            if let Some(sidebar) = sidebar_weak.upgrade() {
+                sidebar.handle_new_workspace_name(name);
+            }
+        });
+
+        dialog.present(Some(&root));
+    }
+
+    /// Test helper for confirmed New Workspace name entry.
+    #[cfg(feature = "test-utils")]
+    pub fn enter_new_workspace_name_for_test(&self, name: &str) {
+        self.handle_new_workspace_name(name);
+    }
+
+    /// Test helper for New Workspace cancellation.
+    #[cfg(feature = "test-utils")]
+    pub fn cancel_new_workspace_for_test(&self) {}
+
+    /// Add another folder to an existing workspace by opening a folder dialog.
+    pub(super) fn show_add_folder_dialog(&self, workspace_id: &WorkspaceId) {
         let Some(root) = self.root() else {
             return;
         };
@@ -24,38 +76,54 @@ impl LushtextSidebar {
         };
 
         let dialog = gtk4::FileDialog::builder()
-            .title("Open Folder")
+            .title("Add Folder")
             .modal(true)
             .build();
 
         let sidebar_weak = self.downgrade();
+        let workspace_id = workspace_id.clone();
         dialog.select_folder(Some(window), gtk4::gio::Cancellable::NONE, move |result| {
             if let Ok(file) = result
                 && let Some(path) = file.path()
                 && let Some(sidebar) = sidebar_weak.upgrade()
             {
-                sidebar.handle_workspace_folder_selection(&path);
+                sidebar.handle_add_folder_to_workspace(&workspace_id, &path);
             }
         });
     }
 
-    /// Complete the Add Workspace Folder chooser after GTK or a portal returns
-    /// a folder path. Cancellation intentionally skips this helper so the
-    /// workspace list is unchanged.
-    fn handle_workspace_folder_selection(&self, path: &Path) {
-        self.handle_new_workspace(path);
+    /// Test helper for the existing-workspace Add Folder chooser.
+    #[cfg(feature = "test-utils")]
+    pub fn select_folder_for_workspace_for_test(
+        &self,
+        workspace_id: &WorkspaceId,
+        path: &std::path::Path,
+    ) {
+        self.handle_add_folder_to_workspace(workspace_id, path);
     }
 
-    /// Test helper for the folder chooser's successful Add Workspace result.
+    /// Test helper for confirmed Remove from Workspace actions.
     #[cfg(feature = "test-utils")]
-    pub fn select_workspace_folder_for_test(&self, path: &std::path::Path) {
-        self.handle_workspace_folder_selection(path);
+    pub fn remove_folder_from_workspace_for_test(
+        &self,
+        workspace_id: &WorkspaceId,
+        folder_id: &crate::model::workspace::WorkspaceFolderId,
+        path: &std::path::Path,
+    ) {
+        self.handle_remove_folder_from_workspace(workspace_id, folder_id, path);
     }
 
-    /// Test helper for Add Workspace cancellation. This explicit no-op keeps
-    /// cancellation coverage readable without exposing GTK dialog internals.
+    /// Test helper for confirmed Rename Workspace actions.
     #[cfg(feature = "test-utils")]
-    pub fn cancel_workspace_folder_for_test(&self) {}
+    pub fn rename_workspace_for_test(&self, workspace_id: &WorkspaceId, new_name: &str) {
+        self.handle_rename_workspace(workspace_id, new_name);
+    }
+
+    /// Test helper for confirmed Remove Workspace actions.
+    #[cfg(feature = "test-utils")]
+    pub fn remove_workspace_for_test(&self, workspace_id: &WorkspaceId) {
+        self.handle_remove_workspace(workspace_id);
+    }
 
     /// Show the rename workspace dialog.
     pub(super) fn show_rename_workspace_dialog(&self, workspace_id: &WorkspaceId) {
@@ -91,14 +159,7 @@ impl LushtextSidebar {
             }
 
             if let Some(sidebar) = sidebar_weak.upgrade() {
-                sidebar
-                    .imp()
-                    .workspaces_file
-                    .borrow_mut()
-                    .rename_workspace(&workspace_id, new_name);
-                sidebar.persist();
-                sidebar.rebuild_sections_from_state();
-                sidebar.notify_workspace_structure_changed();
+                sidebar.handle_rename_workspace(&workspace_id, new_name);
             }
         });
 
@@ -129,23 +190,7 @@ impl LushtextSidebar {
                 return;
             }
             if let Some(sidebar) = sidebar_weak.upgrade() {
-                let scope_changed =
-                    sidebar.imp().current_scope.borrow().workspace_id() == Some(&workspace_id);
-                sidebar
-                    .imp()
-                    .workspaces_file
-                    .borrow_mut()
-                    .remove_workspace(&workspace_id);
-                if scope_changed {
-                    *sidebar.imp().current_scope.borrow_mut() =
-                        sidebar.imp().workspaces_file.borrow().current_scope();
-                }
-                sidebar.persist();
-                sidebar.rebuild_sections_from_state();
-                sidebar.notify_workspace_structure_changed();
-                if scope_changed {
-                    sidebar.notify_workspace_scope_changed();
-                }
+                sidebar.handle_remove_workspace(&workspace_id);
             }
         });
 

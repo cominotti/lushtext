@@ -21,7 +21,7 @@ fn test_missing_workspace_file_restores_empty_shell_state() {
 }
 
 #[test]
-fn test_add_workspace_persists_single_root_and_scope() {
+fn test_add_workspace_persists_one_folder_and_scope() {
     let ctx = TestContext::new();
     let project_dir = ctx.mkdir("projects/my-app");
 
@@ -34,7 +34,7 @@ fn test_add_workspace_persists_single_root_and_scope() {
     assert_eq!(restored.workspaces.len(), 1);
     assert_eq!(restored.workspaces[0].id, workspace_id);
     assert_eq!(restored.workspaces[0].name, "my project");
-    assert_eq!(restored.workspaces[0].root, project_dir);
+    assert_eq!(restored.workspaces[0].folder_paths(), vec![project_dir]);
     assert_eq!(
         restored.current_scope(),
         WorkspaceScope::workspace(workspace_id)
@@ -65,15 +65,15 @@ fn test_remove_selected_workspace_falls_back_to_all_scope() {
 }
 
 #[test]
-fn test_remove_and_add_different_root_persists_new_workspace_entry() {
+fn test_remove_and_add_different_folder_persists_new_folder_membership() {
     let ctx = TestContext::new();
-    let old_root = ctx.mkdir("old-root");
-    let new_root = ctx.mkdir("new-root");
+    let old_folder = ctx.mkdir("old-folder");
+    let new_folder = ctx.mkdir("new-folder");
 
     let mut file = WorkspacesFile::default();
-    let old_id = file.add_workspace("old", old_root.clone());
+    let old_id = file.add_workspace("old", old_folder.clone());
     file.remove_workspace(&old_id);
-    let new_id = file.add_workspace("new", new_root.clone());
+    let new_id = file.add_workspace("new", new_folder.clone());
 
     workspace_manager::save(ctx.data_dir(), &file).expect("expected operation to succeed");
     let restored = workspace_manager::load(ctx.data_dir()).expect("expected operation to succeed");
@@ -81,13 +81,13 @@ fn test_remove_and_add_different_root_persists_new_workspace_entry() {
     assert_eq!(restored.workspaces.len(), 1);
     assert_eq!(restored.workspaces[0].id, new_id);
     assert_ne!(restored.workspaces[0].id, old_id);
-    assert_eq!(restored.workspaces[0].root, new_root);
-    assert_ne!(restored.workspaces[0].root, old_root);
+    assert_eq!(restored.workspaces[0].folder_paths(), vec![new_folder]);
+    assert_ne!(restored.workspaces[0].folder_paths(), vec![old_folder]);
     assert_eq!(restored.workspaces[0].name, "new");
 }
 
 #[test]
-fn test_pre_public_multi_root_workspace_is_preserved_and_reset() {
+fn test_legacy_entries_workspace_payload_is_preserved_and_reset() {
     let ctx = TestContext::new();
     fixture::write_text(
         &ctx.data_dir().join("workspaces.json"),
@@ -125,11 +125,11 @@ fn test_scope_falls_back_to_all_when_persisted_target_is_missing() {
     let ctx = TestContext::new();
     let file = WorkspacesFile {
         current_scope: WorkspaceScope::workspace(WorkspaceId::new("missing")),
-        workspaces: vec![WorkspaceConfig {
-            id: WorkspaceId::new("existing"),
-            name: "existing".into(),
-            root: "/tmp/existing".into(),
-        }],
+        workspaces: vec![WorkspaceConfig::with_one_folder(
+            WorkspaceId::new("existing"),
+            "existing",
+            "/tmp/existing".into(),
+        )],
     };
 
     workspace_manager::save(ctx.data_dir(), &file).expect("expected operation to succeed");

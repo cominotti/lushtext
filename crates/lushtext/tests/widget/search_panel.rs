@@ -197,15 +197,18 @@ fn test_search_panel_set_query() {
 }
 
 #[test]
-fn test_search_panel_set_workspace_roots() {
+fn test_search_panel_set_workspace_folders() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let roots = vec![
-        std::path::PathBuf::from("/project/root1"),
-        std::path::PathBuf::from("/project/root2"),
+    let workspace_folders = vec![
+        std::path::PathBuf::from("/project/folder1"),
+        std::path::PathBuf::from("/project/folder2"),
     ];
-    panel.set_workspace_roots(roots.clone());
-    assert_eq!(*panel.imp().runtime.workspace_roots.borrow(), roots);
+    panel.set_workspace_folders(workspace_folders.clone());
+    assert_eq!(
+        *panel.imp().runtime.workspace_folders.borrow(),
+        workspace_folders
+    );
 }
 
 #[test]
@@ -215,7 +218,7 @@ fn test_start_search_uses_passed_query_spec_instead_of_live_widget_state() {
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     fixture::write_text(&dir.path().join("notes.txt"), "needle here\n");
 
-    panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.set_query("absent");
     panel.start_search(&search_spec("needle"));
 
@@ -1443,7 +1446,7 @@ fn test_search_panel_no_results_keeps_results_body_hidden() {
     fixture::write_text(&dir.path().join("notes.txt"), "completely unrelated text");
 
     panel.clamp_results_height(240);
-    panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {
@@ -1468,7 +1471,7 @@ fn test_search_panel_first_result_reveals_fixed_max_height_results_body() {
     );
 
     panel.clamp_results_height(240);
-    panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {
@@ -1491,7 +1494,7 @@ fn test_search_panel_clearing_query_hides_results_revealers_after_results() {
     fixture::write_text(&dir.path().join("notes.txt"), "needle once\n");
 
     panel.clamp_results_height(240);
-    panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {
@@ -1516,7 +1519,7 @@ fn test_search_panel_followup_search_keeps_results_body_open_until_new_outcome()
     fixture::write_text(&dir.path().join("notes.txt"), "needle once\n");
 
     panel.clamp_results_height(240);
-    panel.set_workspace_roots(vec![dir.path().to_path_buf()]);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {

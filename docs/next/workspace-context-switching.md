@@ -9,7 +9,7 @@ and active file. Switching workspaces instantly swaps the entire editing context
 like virtual desktops for editing sessions.
 
 ## Current State
-- `WorkspacesFile` persists workspace definitions (name + root directories) to
+- `WorkspacesFile` persists workspace definitions (name + workspace folders) to
   `workspaces.json`
 - Session persistence (`session.json`) is global — all tabs share one `AdwTabView`
   and one session file regardless of workspace
@@ -36,7 +36,7 @@ lightweight editors that support workspaces.
 1. Add an "active workspace" concept to `LushtextWindow` (`Cell<Option<WorkspaceId>>`)
 2. When a workspace is active, `AdwTabView` shows only tabs belonging to that workspace
 3. Unaffiliated tabs (opened via CLI, drag-and-drop) remain visible in all contexts
-4. Tab affiliation is determined by `Path::starts_with` against workspace roots
+4. Tab affiliation is determined by `Path::starts_with` against workspace folders
 
 ### Phase 3: Sidebar Expansion Persistence
 1. Track expanded directories per workspace section as `HashSet<PathBuf>` in

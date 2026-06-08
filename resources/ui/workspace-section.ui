@@ -20,6 +20,19 @@
         <property name="margin-end">6</property>
 
         <child>
+          <object class="GtkButton" id="collapse_button">
+            <property name="icon-name">pan-down-symbolic</property>
+            <property name="tooltip-text" translatable="yes">Collapse Workspace</property>
+            <property name="valign">center</property>
+            <property name="margin-top">6</property>
+            <property name="margin-bottom">6</property>
+            <style>
+              <class name="flat"/>
+              <class name="circular"/>
+            </style>
+          </object>
+        </child>
+        <child>
           <object class="GtkLabel" id="header_label">
             <property name="label">New Workspace</property>
             <property name="hexpand">true</property>
@@ -30,10 +43,21 @@
           </object>
         </child>
         <child>
+          <object class="GtkButton" id="add_folder_button">
+            <property name="icon-name">folder-new-symbolic</property>
+            <property name="tooltip-text" translatable="yes">Add Folder</property>
+            <property name="valign">center</property>
+            <property name="margin-top">6</property>
+            <property name="margin-bottom">6</property>
+            <style>
+              <class name="flat"/>
+            </style>
+          </object>
+        </child>
+        <child>
           <object class="GtkButton" id="refresh_button">
             <property name="icon-name">view-refresh-symbolic</property>
-            <property name="tooltip-text" translatable="yes">Refresh Workspace</property>
-            <property name="sensitive">false</property>
+            <property name="tooltip-text" translatable="yes">Refresh Workspace Folders</property>
             <property name="valign">center</property>
             <property name="margin-top">6</property>
             <property name="margin-bottom">6</property>
@@ -91,6 +115,21 @@
             </style>
           </object>
         </child>
+      </object>
+    </child>
+    <child>
+      <object class="GtkLabel" id="empty_folder_set_label">
+        <property name="label" translatable="yes">No folders in this workspace</property>
+        <property name="visible">false</property>
+        <property name="wrap">true</property>
+        <property name="xalign">0</property>
+        <property name="margin-start">18</property>
+        <property name="margin-end">18</property>
+        <property name="margin-top">10</property>
+        <property name="margin-bottom">12</property>
+        <style>
+          <class name="dim-label"/>
+        </style>
       </object>
     </child>
   </template>

@@ -21,6 +21,7 @@ pub mod file_limits;
 pub mod file_peek;
 pub mod file_tree;
 pub mod filesystem;
+pub mod folder_note_service;
 pub mod json_format;
 pub mod json_store;
 pub mod local_history_service;
@@ -34,7 +35,6 @@ pub mod search_backup;
 pub mod search_history;
 pub mod session_service;
 pub mod workspace_manager;
-pub mod workspace_note_service;
 pub mod workspace_watch;
 
 /// Feature-gated pure service hooks used only by the property-test target.
@@ -47,7 +47,7 @@ pub mod property_testing {
     /// Rebase a saved-document sidecar identity through the shared note helper.
     ///
     /// Property tests use this to prove the same path-prefix policy that
-    /// document-note and workspace search sidecars rely on during rename flows.
+    /// document-note sidecars rely on during rename flows.
     #[must_use]
     pub fn rebase_document_identity_paths(
         identity: &DocumentSidecarIdentity,

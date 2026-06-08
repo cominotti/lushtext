@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! Command palette GObject implementation: template binding, search scheduling,
+//! and grouped result presentation.
+
 use crate::model::palette::{PaletteFileEntry, SearchMode, SearchResultItem};
 use crate::services::palette::{self, FileIndex};
 use crate::ui::command_palette::item::PaletteItem;
@@ -13,8 +16,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Owned transport type for search results that can cross thread boundaries.
-/// Created on the background thread, converted to `PaletteItem` GObjects
-/// on the main thread. At max=50 results, total clone cost is ~15KB — negligible.
+///
+/// Created on the background thread, then converted to `PaletteItem` GObjects
+/// on the main thread. Only owned display data crosses the thread boundary;
+/// GTK objects stay on the main thread.
 enum SearchHit {
     Header {
         label: String,
@@ -92,23 +97,29 @@ type CloseCallback = Box<dyn Fn()>;
 // GObject methods always take &self because multiple widgets can hold
 // references at once. Cell<T> for Copy types (SearchMode, generation counters),
 // RefCell<T> for complex types (Arc<FileIndex>, callbacks).
+/// Implementation object for the template-backed command palette widget.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/command-palette.ui")]
 pub struct LushtextCommandPalette {
+    /// Search entry that receives text, activation, Escape, and key-navigation events.
     #[template_child]
     pub search_entry: TemplateChild<gtk4::SearchEntry>,
-    /// Dropdown showing the current search mode ("All", "Files", "Commands").
+    /// Dropdown showing the current search mode ("All", "Files", "Notes", "Commands").
     #[template_child]
     pub mode_dropdown: TemplateChild<gtk4::DropDown>,
+    /// ListView that renders result rows backed by `results_store`.
     #[template_child]
     pub results_view: TemplateChild<gtk4::ListView>,
     /// "No results" message shown when a non-empty query has zero matches.
     #[template_child]
     pub no_results_label: TemplateChild<gtk4::Label>,
 
-    /// Current search mode filter (All, Files, or Commands).
+    /// Current search mode filter (All, Files, Notes, or Commands).
     pub mode: Cell<SearchMode>,
-    /// Backing store for the results ListView. Items are `PaletteItem` GObjects.
+    /// GObject observable list watched by the results ListView.
+    ///
+    /// Items are `PaletteItem` GObjects, and batch replacement uses `splice()`
+    /// so GTK receives one `items-changed` notification.
     pub results_store: gio::ListStore,
     /// Shared file index for fuzzy search. `Arc` allows cloning to background
     /// threads without copying the index.
@@ -163,7 +174,8 @@ impl ObjectSubclass for LushtextCommandPalette {
     type ParentType = gtk4::Box;
 
     fn class_init(klass: &mut Self::Class) {
-        // Register PaletteItem BEFORE the template is parsed.
+        // Register PaletteItem with GLib before template/class setup needs it;
+        // custom GObject types must be known before GTK can store them.
         PaletteItem::ensure_type();
         klass.bind_template();
     }
@@ -175,6 +187,9 @@ impl ObjectSubclass for LushtextCommandPalette {
 
 impl ObjectImpl for LushtextCommandPalette {
     fn constructed(&self) {
+        // ObjectImpl hosts GObject lifecycle callbacks. constructed() runs
+        // after template children are initialized, so models and signals are
+        // safe to wire here.
         self.parent_constructed();
 
         let selection = gtk4::SingleSelection::new(Some(self.results_store.clone()));
@@ -197,6 +212,9 @@ impl LushtextCommandPalette {
         let factory = gtk4::SignalListItemFactory::new();
 
         factory.connect_setup(|_, list_item| {
+            // SignalListItemFactory uses GObject signals to set up and bind
+            // recycled rows. GTK passes rows as generic Objects, so handlers
+            // downcast before attaching or updating row widgets.
             let list_item = list_item
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("ListItem");
@@ -313,13 +331,17 @@ impl LushtextCommandPalette {
 
             let query = entry.text().to_string();
 
-            // Empty queries bypass debounce for instant clear (expected UX).
+            // Empty queries bypass debounce so default results update
+            // immediately when the query is cleared.
             if query.is_empty() {
                 imp.rebuild_results_owned(query);
                 return;
             }
 
             let obj_weak = obj.downgrade();
+            // Schedule debounce work on GTK's main loop. The `_local` variant
+            // is safe for this non-Send closure because it runs on the main
+            // thread after the delay.
             glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
                 let Some(obj) = obj_weak.upgrade() else {
                     return;
@@ -407,6 +429,10 @@ impl LushtextCommandPalette {
         self.rebuild_results_owned(query.to_string());
     }
 
+    /// Rebuild results from an owned query snapshot.
+    ///
+    /// Fuzzy matching runs on a background thread, then the main-thread
+    /// completion applies results only if its generation is still current.
     pub fn rebuild_results_owned(&self, query: String) {
         let generation = self.search_generation.get().wrapping_add(1);
         self.search_generation.set(generation);
@@ -472,6 +498,10 @@ impl LushtextCommandPalette {
             .scroll_to(new_pos, gtk4::ListScrollFlags::NONE, None);
     }
 
+    /// Activate the currently selected actionable row.
+    ///
+    /// Presentation-only source headers are ignored before forwarding the row
+    /// to the registered activation callback.
     pub fn activate_selected(&self) {
         let Some(selection) = self.selection_model() else {
             return;
@@ -558,7 +588,10 @@ impl LushtextCommandPalette {
     }
 }
 
-/// Assemble grouped palette rows in the priority order required for each mode.
+/// Assemble GTK-ready rows from service-owned palette policy.
+///
+/// The UI controls presentation order and headers here, while command
+/// membership and Notes section rules stay in `services::palette`.
 fn grouped_hits(
     index: &FileIndex,
     open_tabs: &[PaletteFileEntry],
@@ -582,8 +615,11 @@ fn grouped_hits(
                 max_per_source,
             );
         }
+        SearchMode::Notes => {
+            append_note_command_sections(&mut hits, query, max_per_source);
+        }
         SearchMode::Commands => {
-            append_command_group(&mut hits, query, max_per_source, false);
+            append_command_group(&mut hits, query, max_per_source);
         }
         SearchMode::All => {
             append_file_groups(
@@ -595,7 +631,8 @@ fn grouped_hits(
                 query,
                 max_per_source,
             );
-            append_command_group(&mut hits, query, max_per_source, true);
+            append_note_command_group(&mut hits, query, max_per_source);
+            append_non_note_command_group(&mut hits, query, max_per_source);
         }
     }
 
@@ -641,20 +678,44 @@ fn append_file_groups(
     append_group(hits, workspace_group_label, workspace_hits);
 }
 
-/// Append command results, optionally with a header for mixed `All` mode.
-fn append_command_group(hits: &mut Vec<SearchHit>, query: &str, max: usize, include_header: bool) {
-    let command_hits: Vec<_> = palette::search_commands(query, max)
+/// Append all command results for dedicated `Commands` mode.
+fn append_command_group(hits: &mut Vec<SearchHit>, query: &str, max: usize) {
+    let command_hits = command_hits_from_results(palette::search_commands(query, max));
+    hits.extend(command_hits);
+}
+
+/// Append note workflow commands as one source group in mixed `All` mode.
+fn append_note_command_group(hits: &mut Vec<SearchHit>, query: &str, max: usize) {
+    let command_hits = command_hits_from_results(palette::search_note_commands(query, max));
+    append_group(hits, "Notes", command_hits);
+}
+
+/// Append non-note commands in mixed `All` mode to avoid duplicate note rows.
+fn append_non_note_command_group(hits: &mut Vec<SearchHit>, query: &str, max: usize) {
+    let command_hits = command_hits_from_results(palette::search_non_note_commands(query, max));
+    append_group(hits, "Commands", command_hits);
+}
+
+/// Append Notes mode groups in the workflow-oriented section order.
+fn append_note_command_sections(hits: &mut Vec<SearchHit>, query: &str, max: usize) {
+    for section in palette::NoteCommandSection::ALL {
+        let command_hits = command_hits_from_results(palette::search_note_commands_for_section(
+            section, query, max,
+        ));
+        append_group(hits, section.label(), command_hits);
+    }
+}
+
+fn command_hits_from_results(
+    results: Vec<crate::model::palette::ScoredResult<'static>>,
+) -> Vec<SearchHit> {
+    results
         .into_iter()
         .filter_map(|result| match result.item {
             SearchResultItem::Command(command) => Some(SearchHit::from_command(command)),
             SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => None,
         })
-        .collect();
-    if include_header {
-        append_group(hits, "Commands", command_hits);
-    } else {
-        hits.extend(command_hits);
-    }
+        .collect()
 }
 
 /// Add a section only when that source has matching activatable rows.

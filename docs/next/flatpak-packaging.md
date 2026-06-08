@@ -231,9 +231,9 @@ surface needed for hardware-accelerated rendering on Wayland with X11 fallback.
 
 The broad `host` filesystem permission is intentionally retained for the
 current workspace model and live-monitoring contract. LushText persists
-workspace root paths and then uses them for sidebar tree loading, file watches,
-command-palette indexing, workspace search and replace, sidecar notes, local
-history, draft/session recovery, and in-app file operations. LushText must also
+workspace folder paths and then uses them for sidebar tree loading, file
+watches, command-palette indexing, workspace search and replace, sidecar notes,
+local history, draft/session recovery, and in-app file operations. LushText must also
 support event-driven external-change monitoring for user-selected files and
 directories outside the home directory, not only one-off portal opens.
 

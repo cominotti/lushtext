@@ -48,6 +48,12 @@ const LOCAL_HISTORY_VIEWER_MAX_HEIGHT_SP: i32 = 1080;
 const LOCAL_HISTORY_VIEWER_MIN_SIDEBAR_WIDTH_SP: f64 = 260.0;
 /// The snapshot list should behave like a browse rail, not a co-equal pane.
 const LOCAL_HISTORY_VIEWER_MAX_SIDEBAR_WIDTH_SP: f64 = 340.0;
+/// Compact empty-history width mirrors the Notes empty browser so status pages
+/// have a readable line length instead of collapsing to their natural text size.
+const EMPTY_LOCAL_HISTORY_WIDTH_SP: i32 = 640;
+/// Compact empty-history height fits the normal status-page icon, title, and
+/// description without introducing a scrollbar.
+const EMPTY_LOCAL_HISTORY_HEIGHT_SP: i32 = 480;
 
 /// UI state for one open local-history browser dialog.
 struct LocalHistoryBrowserState {
@@ -534,9 +540,11 @@ impl LushtextWindow {
     fn build_empty_local_history_dialog(path: &Path) -> libadwaita::Dialog {
         let dialog = libadwaita::Dialog::builder()
             .title("Local History")
-            .content_width(560)
-            .content_height(360)
-            .follows_content_size(true)
+            .content_width(EMPTY_LOCAL_HISTORY_WIDTH_SP)
+            .content_height(EMPTY_LOCAL_HISTORY_HEIGHT_SP)
+            // `AdwStatusPage` has a narrow natural request; following content size
+            // would collapse this empty-state browser instead of using the target.
+            .follows_content_size(false)
             .build();
 
         let status = libadwaita::StatusPage::builder()
@@ -547,6 +555,8 @@ impl LushtextWindow {
                 path.display()
             ))
             .build();
+        status.set_hexpand(true);
+        status.set_vexpand(true);
         dialog.set_child(Some(&status));
         dialog
     }

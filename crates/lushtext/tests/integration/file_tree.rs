@@ -65,21 +65,21 @@ fn test_scan_subdirectory_contents() {
 }
 
 #[test]
-fn test_scan_workspace_with_multiple_roots() {
+fn test_scan_multiple_workspace_folders() {
     let ctx = TestContext::new();
 
-    // Simulate two workspace root directories
-    let root1 = ctx.mkdir("frontend");
+    // Simulate two workspace folders
+    let folder1 = ctx.mkdir("frontend");
     ctx.write_file("frontend/index.html", "<html>");
     ctx.mkdir("frontend/src");
 
-    let root2 = ctx.mkdir("backend");
+    let folder2 = ctx.mkdir("backend");
     ctx.write_file("backend/main.go", "package main");
     ctx.mkdir("backend/pkg");
 
-    let entries1 = file_tree::scan_directory(&root1);
+    let entries1 = file_tree::scan_directory(&folder1);
     assert_eq!(names(&entries1), vec!["src", "index.html"]);
 
-    let entries2 = file_tree::scan_directory(&root2);
+    let entries2 = file_tree::scan_directory(&folder2);
     assert_eq!(names(&entries2), vec!["pkg", "main.go"]);
 }

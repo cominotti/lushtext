@@ -17,8 +17,8 @@ the home directory. Keep portal-first access as a future direction only where it
 can preserve the product contract.
 
 The broad permission is defensible because LushText's shipped workspace model
-persists root paths and uses them for tree loading, search, replace, notes,
-local history, file monitoring, and session restore. The stronger requirement is
+persists workspace folder sets and uses them for tree loading, search, replace,
+notes, local history, file monitoring, and session restore. The stronger requirement is
 that LushText must preserve event-driven external-change monitoring for
 user-selected local workspaces outside `/home`. Document-portal paths did not
 deliver events for host-side changes to the original path in the probes below,
@@ -81,7 +81,7 @@ Portal behavior verified during exploration:
   file-forwarding paths, and low-level inotify on document-portal paths did not
   produce events for host-side mutations made to the original file or
   directory.
-- Portal-backed workspace roots should therefore assume that app-initiated
+- Portal-backed workspace folders should therefore assume that app-initiated
   operations are observable, but external host-side changes are not event-driven
   through the portal path on the tested stack.
 
@@ -150,8 +150,8 @@ Likely scope:
   existing workspace entries.
 - Add reauthorization states for missing, revoked, stale, or inaccessible
   grants.
-- Define how Save As, Open File, file-manager launch, and Add Workspace Root
-  create or update grants.
+- Define how Save As, Open File, file-manager launch, and adding workspace
+  folders create or update grants.
 - Define how sidecar identity should use canonical host-path hints when
   available, while still working on portal paths when host paths cannot be
   resolved.
@@ -162,8 +162,9 @@ Acceptance shape:
 - A user can add a folder workspace through a portal-backed grant.
 - The persisted workspace state can distinguish a normal host path from a
   portal-backed grant.
-- The persisted workspace state can distinguish event-driven roots from roots
-  that require polling or manual refresh fallback.
+- The persisted workspace state can distinguish workspace folders with
+  event-driven monitoring from folders that require polling or manual refresh
+  fallback.
 - LushText can show a clear reauthorization state instead of silently dropping
   a workspace when a grant is unavailable.
 - Existing `workspaces.json` entries migrate without data loss.
@@ -178,12 +179,12 @@ can mark whether external changes are event-driven or degraded.
 
 Purpose:
 
-Adapt the shipped workspace and document workflows so portal-backed roots are
+Adapt the shipped workspace and document workflows so portal-backed folders are
 first-class, reliable, and honest about their limitations.
 
 Core problem:
 
-The product behavior is larger than opening files. LushText's workspace roots
+The product behavior is larger than opening files. LushText's workspace folders
 drive the sidebar tree, command palette indexing, workspace search and replace,
 file peek, notes, local history, document restore, file monitoring, and in-app
 filesystem operations.
@@ -191,9 +192,9 @@ filesystem operations.
 Likely scope:
 
 - Make sidebar tree loading operate on portal-backed directory paths.
-- Add a portal-root refresh policy that does not claim event-driven external
+- Add a portal-folder refresh policy that does not claim event-driven external
   host-side monitoring unless the implementation proves it on the target stack.
-- Add manual refresh and bounded polling/reconcile behavior for portal roots
+- Add manual refresh and bounded polling/reconcile behavior for portal folders
   when direct external-change events are unavailable.
 - Benchmark directory scanning, file peek, and search over document-portal FUSE
   paths.
@@ -201,7 +202,7 @@ Likely scope:
   permissions.
 - Ensure session restore and draft recovery handle portal paths and
   reauthorization states.
-- Ensure document notes, workspace notes, bookmarks, and local
+- Ensure document notes, folder notes, bookmarks, and local
   history keep stable identities through in-app rename and Save As flows.
 - Decide how symlinks that leave the granted tree should behave.
 - Keep unsupported or degraded behavior visible in the UI rather than hidden in
@@ -215,7 +216,7 @@ Acceptance shape:
   existing undo/backup safety contract.
 - Notes, bookmarks, and local history still attach to the expected
   documents after restart.
-- External changes under a portal-backed root are either event-driven on the
+- External changes under a portal-backed folder are either event-driven on the
   target stack or honestly reflected through a documented degraded mode such as
   polling or manual refresh.
 - The UI tells the user when a grant needs reauthorization or when automatic
@@ -224,7 +225,7 @@ Acceptance shape:
 Go/no-go gate:
 
 Do not narrow broad filesystem access until this spec proves the main workspace
-loops on portal-backed roots with acceptable performance, no data-loss
+loops on portal-backed folders with acceptable performance, no data-loss
 regression, and no unacceptable loss of event-driven external-change detection.
 
 ## Future Spec 3: Permission Tightening Decision
@@ -256,7 +257,7 @@ Likely scope:
   behavior.
 - Add migration notes for users with existing path-backed workspaces.
 - Document any remaining degraded behavior, especially delayed refresh for
-  portal-backed roots.
+  portal-backed folders.
 
 Acceptance shape:
 
@@ -265,7 +266,7 @@ Acceptance shape:
   permission is necessary.
 - Opening supported files from the file manager still works through
   file-forwarding.
-- Open File, Save As, and Add Workspace Root still work through native dialogs.
+- Open File, Save As, and adding workspace folders still work through native dialogs.
 - Previously saved workspaces either restore or present a reauthorization flow.
 - If the manifest is tightened, GNOME Software/Flathub no longer flags LushText
   because of broad filesystem access, assuming no other static permission
@@ -284,7 +285,7 @@ access. These are the important tradeoffs to either accept explicitly or design
 around:
 
 - External-change detection becomes delayed or manual-refresh-based for
-  portal-backed roots when the external mutation happens on the original host
+  portal-backed folders when the external mutation happens on the original host
   path rather than through the portal path.
 - File monitor warnings may need polling or focus-time stat checks.
 - Workspace startup may need reauthorization prompts.
@@ -311,13 +312,13 @@ around:
 
 ## Open Questions For Proposal Time
 
-- Should portal-backed roots be opt-in first while `--filesystem=host` remains
+- Should portal-backed folders be opt-in first while `--filesystem=host` remains
   available, or should the app internally use portal grants everywhere that does
   not require event-driven external host-side monitoring?
-- Should LushText request delete permission for workspace roots by default, or
+- Should LushText request delete permission for workspace folders by default, or
   split destructive in-app operations behind an additional confirmation and
   reauthorization step?
-- What polling cadence is acceptable for portal-backed roots without hurting
+- What polling cadence is acceptable for portal-backed folders without hurting
   battery life or large-workspace performance?
 - Should existing path-backed workspace entries be migrated eagerly on first
   launch, lazily when opened, or only when the user chooses to tighten sandbox

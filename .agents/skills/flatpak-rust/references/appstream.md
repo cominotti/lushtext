@@ -28,7 +28,7 @@ Complete template and guidelines for the AppStream metainfo file.
     <p>Features:</p>
     <ul>
       <li>Always-visible file tree sidebar</li>
-      <li>Workspace support with multiple root directories</li>
+      <li>Workspace support with ordered workspace folders</li>
       <li>Syntax highlighting via GtkSourceView</li>
       <li>Tab-based editing with session persistence</li>
       <li>Automatic dark mode support</li>

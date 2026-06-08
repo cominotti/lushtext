@@ -37,19 +37,20 @@ impl LushtextWorkspaceSection {
     }
 
     pub(super) fn reset_item_cache(&self) {
-        self.imp().root_paths.borrow_mut().clear();
+        self.imp().folder_paths.borrow_mut().clear();
         self.imp().child_paths.borrow_mut().clear();
+        self.imp().visible_path_counts.borrow_mut().clear();
         self.imp().item_locations.borrow_mut().clear();
     }
 
-    pub(super) fn cache_root_item(&self, path: PathBuf, index: usize) {
+    pub(super) fn cache_top_level_item(&self, path: PathBuf, index: usize) {
         let imp = self.imp();
-        let mut root_paths = imp.root_paths.borrow_mut();
-        let insert_at = index.min(root_paths.len());
-        root_paths.insert(insert_at, path.clone());
-        drop(root_paths);
+        let mut folder_paths = imp.folder_paths.borrow_mut();
+        let insert_at = index.min(folder_paths.len());
+        folder_paths.insert(insert_at, path.clone());
+        drop(folder_paths);
         self.shift_cached_indices(None, insert_at, 1);
-        imp.item_locations.borrow_mut().insert(
+        self.cache_item_location(
             path,
             ItemLocation {
                 parent_dir: None,
@@ -58,19 +59,23 @@ impl LushtextWorkspaceSection {
         );
     }
 
-    /// Rebuild the root-item cache from the current root `ListStore` contents.
-    pub(super) fn recache_root_store(&self, store: &gio::ListStore) {
-        self.imp().root_paths.borrow_mut().clear();
+    /// Rebuild the item cache from the current top-level folder `ListStore` contents.
+    pub(super) fn recache_top_level_store(&self, store: &gio::ListStore) {
+        let old_paths = self.imp().folder_paths.borrow().clone();
+        self.imp().folder_paths.borrow_mut().clear();
         self.imp()
             .item_locations
             .borrow_mut()
             .retain(|_, location| location.parent_dir.is_some());
+        for path in old_paths {
+            self.forget_visible_path_occurrence(&path);
+        }
 
         for index in 0..store.n_items() {
             if let Some(item) = store.item(index).and_downcast::<FileTreeItem>()
                 && let Some(path) = item.path()
             {
-                self.cache_root_item(path, index as usize);
+                self.cache_top_level_item(path, index as usize);
             }
         }
     }
@@ -85,7 +90,7 @@ impl LushtextWorkspaceSection {
         siblings.insert(insert_at, path.clone());
         drop(child_paths);
         self.shift_cached_indices(Some(parent_dir), insert_at, 1);
-        imp.item_locations.borrow_mut().insert(
+        self.cache_item_location(
             path,
             ItemLocation {
                 parent_dir: Some(parent_key),
@@ -97,7 +102,15 @@ impl LushtextWorkspaceSection {
     /// Rebuild the direct-child cache for one directory from the current
     /// `ListStore` contents after a refresh splice.
     pub(super) fn recache_child_store(&self, parent_dir: &Path, store: &gio::ListStore) {
-        self.imp().child_paths.borrow_mut().remove(parent_dir);
+        let old_paths = self
+            .imp()
+            .child_paths
+            .borrow_mut()
+            .remove(parent_dir)
+            .unwrap_or_default();
+        for path in old_paths {
+            self.forget_visible_path_occurrence(&path);
+        }
         self.imp()
             .item_locations
             .borrow_mut()
@@ -119,7 +132,7 @@ impl LushtextWorkspaceSection {
 
         match location.parent_dir.as_deref() {
             None => {
-                if let Some(cached) = self.imp().root_paths.borrow_mut().get_mut(location.index) {
+                if let Some(cached) = self.imp().folder_paths.borrow_mut().get_mut(location.index) {
                     *cached = new_path.to_path_buf();
                 }
             }
@@ -132,10 +145,8 @@ impl LushtextWorkspaceSection {
             }
         }
 
-        self.imp()
-            .item_locations
-            .borrow_mut()
-            .insert(new_path.to_path_buf(), location);
+        self.forget_visible_path_occurrence(old_path);
+        self.cache_item_location(new_path.to_path_buf(), location);
     }
 
     pub(super) fn append_item_preserving_placeholder(
@@ -222,9 +233,12 @@ impl LushtextWorkspaceSection {
     }
 
     /// Remove an item from the tree model by path. Returns true if found and removed.
+    #[must_use]
     pub fn remove_from_model(&self, target_path: &Path) -> bool {
         let imp = self.imp();
         tree_loading::clear_dir_state(self, target_path);
+        let mut removed_any = false;
+        let may_have_multiple_visible_rows = self.visible_path_is_ambiguous(target_path);
 
         if let Some(location) = self.remove_cached_item(target_path) {
             #[expect(
@@ -233,54 +247,86 @@ impl LushtextWorkspaceSection {
             )]
             let idx = location.index as u32;
             match location.parent_dir.as_deref() {
-                None if let Some(ref root_store) = *imp.root_store.borrow()
-                    && idx < root_store.n_items() =>
+                None if let Some(ref top_level_store) = *imp.top_level_store.borrow()
+                    && idx < top_level_store.n_items() =>
                 {
-                    root_store.remove(idx);
-                    return true;
+                    top_level_store.remove(idx);
+                    removed_any = true;
                 }
                 Some(parent_dir)
                     if let Some(store) = self.find_store_for_dir(parent_dir)
                         && idx < store.n_items() =>
                 {
                     store.remove(idx);
-                    return true;
+                    removed_any = true;
                 }
                 _ => {}
             }
         }
 
-        if let Some(ref root_store) = *imp.root_store.borrow() {
-            for i in 0..root_store.n_items() {
-                if let Some(item) = root_store.item(i).and_downcast::<FileTreeItem>()
-                    && item.path().as_deref() == Some(target_path)
-                {
-                    root_store.remove(i);
-                    return true;
+        if may_have_multiple_visible_rows || !removed_any {
+            if let Some(ref top_level_store) = *imp.top_level_store.borrow()
+                && remove_matching_items(top_level_store, target_path)
+            {
+                self.recache_top_level_store(top_level_store);
+                removed_any = true;
+            }
+
+            let child_stores = imp
+                .dir_stores
+                .borrow()
+                .iter()
+                .filter_map(|(parent_dir, weak_store)| {
+                    weak_store
+                        .upgrade()
+                        .map(|store| (parent_dir.clone(), store))
+                })
+                .collect::<Vec<_>>();
+
+            for (parent_dir, store) in child_stores {
+                if remove_matching_items(&store, target_path) {
+                    self.recache_child_store(&parent_dir, &store);
+                    removed_any = true;
+                }
+            }
+
+            if !removed_any {
+                for (parent_dir, store) in self.visible_child_stores() {
+                    if remove_matching_items(&store, target_path) {
+                        self.recache_child_store(&parent_dir, &store);
+                        removed_any = true;
+                    }
                 }
             }
         }
 
-        let Some(parent_dir) = target_path.parent() else {
-            return false;
+        removed_any
+    }
+
+    fn visible_child_stores(&self) -> Vec<(PathBuf, gio::ListStore)> {
+        let Some(tree_model) = self.imp().tree_model.borrow().as_ref().cloned() else {
+            return Vec::new();
         };
-
-        if let Some(store) = self.find_store_for_dir(parent_dir) {
-            for j in 0..store.n_items() {
-                if let Some(child) = store.item(j).and_downcast::<FileTreeItem>()
-                    && child.path().as_deref() == Some(target_path)
-                {
-                    store.remove(j);
-                    return true;
-                }
-            }
-        } else {
-            tracing::warn!(
-                "remove_from_model: missing store for {}",
-                parent_dir.display()
-            );
+        let mut stores = Vec::new();
+        for index in 0..tree_model.n_items() {
+            let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>() else {
+                continue;
+            };
+            let Some(item) = row.item().and_downcast::<FileTreeItem>() else {
+                continue;
+            };
+            let Some(parent_dir) = item.path() else {
+                continue;
+            };
+            let Some(store) = row
+                .children()
+                .and_then(|model| model.downcast::<gio::ListStore>().ok())
+            else {
+                continue;
+            };
+            stores.push((parent_dir, store));
         }
-        false
+        stores
     }
 
     fn shift_cached_indices(&self, parent_dir: Option<&Path>, start: usize, delta: isize) {
@@ -296,23 +342,24 @@ impl LushtextWorkspaceSection {
         let removed = self.imp().item_locations.borrow_mut().remove(target_path)?;
         match removed.parent_dir.as_deref() {
             None => {
-                let mut root_paths = self.imp().root_paths.borrow_mut();
-                let removed_index = if root_paths
+                let mut folder_paths = self.imp().folder_paths.borrow_mut();
+                let removed_index = if folder_paths
                     .get(removed.index)
                     .is_some_and(|path| path == target_path)
                 {
-                    root_paths.remove(removed.index);
+                    folder_paths.remove(removed.index);
                     removed.index
                 } else if let Some(position) =
-                    root_paths.iter().position(|path| path == target_path)
+                    folder_paths.iter().position(|path| path == target_path)
                 {
-                    root_paths.remove(position);
+                    folder_paths.remove(position);
                     position
                 } else {
                     removed.index
                 };
-                drop(root_paths);
+                drop(folder_paths);
                 self.shift_cached_indices(None, removed_index.saturating_add(1), -1);
+                self.forget_visible_path_occurrence(target_path);
             }
             Some(parent_dir) => {
                 let mut child_paths = self.imp().child_paths.borrow_mut();
@@ -345,8 +392,101 @@ impl LushtextWorkspaceSection {
                     child_paths.remove(parent_dir);
                 }
                 drop(child_paths);
+                self.forget_visible_path_occurrence(target_path);
             }
         }
         Some(removed)
     }
+
+    fn cache_item_location(&self, path: PathBuf, location: ItemLocation) {
+        let count = {
+            let mut counts = self.imp().visible_path_counts.borrow_mut();
+            let count = counts.entry(path.clone()).or_insert(0);
+            *count += 1;
+            *count
+        };
+
+        let mut locations = self.imp().item_locations.borrow_mut();
+        if count == 1 {
+            locations.insert(path, location);
+        } else {
+            locations.remove(&path);
+        }
+    }
+
+    pub(super) fn forget_visible_path_occurrence(&self, path: &Path) {
+        let remaining = {
+            let mut counts = self.imp().visible_path_counts.borrow_mut();
+            let Some(count) = counts.get_mut(path) else {
+                return;
+            };
+            if *count <= 1 {
+                counts.remove(path);
+                0
+            } else {
+                *count -= 1;
+                *count
+            }
+        };
+
+        self.imp().item_locations.borrow_mut().remove(path);
+        if remaining == 1 {
+            self.restore_unique_item_location(path);
+        }
+    }
+
+    fn restore_unique_item_location(&self, path: &Path) {
+        if let Some(index) = self
+            .imp()
+            .folder_paths
+            .borrow()
+            .iter()
+            .position(|folder| folder.as_path() == path)
+        {
+            self.imp().item_locations.borrow_mut().insert(
+                path.to_path_buf(),
+                ItemLocation {
+                    parent_dir: None,
+                    index,
+                },
+            );
+            return;
+        }
+
+        for (parent_dir, siblings) in self.imp().child_paths.borrow().iter() {
+            if let Some(index) = siblings.iter().position(|child| child.as_path() == path) {
+                self.imp().item_locations.borrow_mut().insert(
+                    path.to_path_buf(),
+                    ItemLocation {
+                        parent_dir: Some(parent_dir.clone()),
+                        index,
+                    },
+                );
+                return;
+            }
+        }
+    }
+
+    fn visible_path_is_ambiguous(&self, path: &Path) -> bool {
+        self.imp()
+            .visible_path_counts
+            .borrow()
+            .get(path)
+            .copied()
+            .unwrap_or(0)
+            > 1
+    }
+}
+
+fn remove_matching_items(store: &gio::ListStore, target_path: &Path) -> bool {
+    let mut removed_any = false;
+    for index in (0..store.n_items()).rev() {
+        if let Some(item) = store.item(index).and_downcast::<FileTreeItem>()
+            && item.path().as_deref() == Some(target_path)
+        {
+            store.remove(index);
+            removed_any = true;
+        }
+    }
+    removed_any
 }

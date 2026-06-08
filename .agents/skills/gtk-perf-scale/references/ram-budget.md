@@ -48,7 +48,7 @@ GtkSourceView's `GtkTextBuffer` uses a B-tree of text segments with gap buffers 
 |-------|------|-----------------|-------------|
 | `path` | `PathBuf` | Yes — one heap alloc per file | ~80-120 bytes (typical path length) |
 | `name` | `String` | Yes — one heap alloc per file | ~20-40 bytes (typical filename) |
-| `workspace_root` | `Arc<PathBuf>` | Shared — one alloc per workspace | ~8 bytes (Arc pointer) |
+| `workspace_folder` | `Arc<PathBuf>` | Shared — one alloc per indexed workspace folder | ~8 bytes (Arc pointer) |
 
 **Total per entry**: ~120-170 bytes, conservatively ~200 bytes including Vec overhead and alignment.
 
@@ -98,7 +98,7 @@ This is why the thread spawn guard (max 8 concurrent) matters for RAM, not just 
 
 These patterns are already implemented and should be preserved:
 
-- **`Arc<PathBuf>` sharing** for workspace roots in `IndexedFile` — files in the same workspace share one allocation instead of cloning per file. 10x memory reduction at 50k files.
+- **`Arc<PathBuf>` sharing** for workspace folders in `IndexedFile` — files in the same indexed folder share one allocation instead of cloning per file. 10x memory reduction at 50k files.
 - **Buffer eviction** on tab switch when total memory exceeds 256MB budget.
 - **`ListStore::splice()`** for batch updates — single `items-changed` signal instead of per-item `append()`.
 - **Thread spawn guard** (max 8 concurrent) — caps peak thread memory.

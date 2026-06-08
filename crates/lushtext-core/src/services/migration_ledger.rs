@@ -20,7 +20,7 @@ use crate::services::recovery_metadata::{
     load_enveloped_json_or_default, save_enveloped_json_path,
 };
 use crate::services::{
-    bookmark_service, document_note_service, local_history_service, workspace_note_service,
+    bookmark_service, document_note_service, folder_note_service, local_history_service,
 };
 
 /// Persistent ledger filename under the app data directory.
@@ -317,8 +317,8 @@ fn run_migration_kind(data_dir: &Path, entry: &MigrationEntry, kind: MigrationKi
         MigrationKind::DocumentNotes => {
             document_note_service::move_path_tree(data_dir, &entry.old_path, &entry.new_path)?;
         }
-        MigrationKind::WorkspaceNotes => {
-            workspace_note_service::move_root_tree(data_dir, &entry.old_path, &entry.new_path)?;
+        MigrationKind::FolderNotes => {
+            folder_note_service::move_folder_tree(data_dir, &entry.old_path, &entry.new_path)?;
         }
         MigrationKind::LocalHistory => {
             local_history_service::move_path_tree(data_dir, &entry.old_path, &entry.new_path)?;
@@ -334,8 +334,8 @@ mod tests {
     use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
-    fn seed_file(root: &Path, relative: &str) -> std::path::PathBuf {
-        let path = root.join(relative);
+    fn seed_file(folder: &Path, relative: &str) -> std::path::PathBuf {
+        let path = folder.join(relative);
         if let Some(parent) = path.parent() {
             fixture::create_dir_all(parent);
         }

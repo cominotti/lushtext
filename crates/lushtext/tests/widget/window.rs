@@ -28,7 +28,8 @@ use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
+    WorkspaceConfig, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection,
+    WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
 use lushtext_core::services::file_limits::{
     DISABLE_SYNTAX_HIGHLIGHTING, DISABLE_UNDO_HISTORY, FileSizeCheck, REFUSE_TO_OPEN,
@@ -41,7 +42,7 @@ use lushtext_core::services::notifications::{
 use lushtext_core::services::{
     bookmark_service, document_note_service, draft_service, editor_io, json_store,
     local_history_service, saved_searches, session_service, workspace_manager,
-    workspace_note_service,
+    folder_note_service,
 };
 use lushtext_core::ui::editor_page::{
     LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
@@ -201,50 +202,142 @@ fn test_window_with_legacy_sidebar_state(visible: bool, position: i32) -> Lushte
 
 fn seed_restored_workspaces() -> tempfile::TempDir {
     ensure_gtk_init();
-    let roots_dir = tempfile::tempdir().expect("workspace roots tempdir");
+    let folders_dir = tempfile::tempdir().expect("workspace folders tempdir");
     let mut workspaces = WorkspacesFile::default();
 
     for (idx, name) in ["one", "two", "three"].into_iter().enumerate() {
-        let path = roots_dir.path().join(name);
+        let path = folders_dir.path().join(name);
         fixture::create_dir_all(&path);
-        workspaces.workspaces.push(WorkspaceConfig {
-            id: WorkspaceId::new(format!("ws-{idx}")),
-            name: name.to_string(),
-            root: path,
-        });
+        workspaces.workspaces.push(WorkspaceConfig::with_one_folder(
+            WorkspaceId::new(format!("ws-{idx}")),
+            name,
+            path,
+        ));
     }
 
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save workspaces.json");
-    roots_dir
+    folders_dir
 }
 
 fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, PathBuf, PathBuf) {
     ensure_gtk_init();
-    let roots_dir = tempfile::tempdir().expect("scoped workspace roots tempdir");
-    let left_root = roots_dir.path().join("left");
-    let right_root = roots_dir.path().join("right");
-    fixture::create_dir_all(&left_root);
-    fixture::create_dir_all(&right_root);
-    fixture::write_text(&left_root.join("alpha.rs"), "fn alpha() {}\n");
-    fixture::write_text(&right_root.join("beta.rs"), "fn beta() {}\n");
+    let folders_dir = tempfile::tempdir().expect("scoped workspace folders tempdir");
+    let left_folder = folders_dir.path().join("left");
+    let right_folder = folders_dir.path().join("right");
+    fixture::create_dir_all(&left_folder);
+    fixture::create_dir_all(&right_folder);
+    fixture::write_text(&left_folder.join("alpha.rs"), "fn alpha() {}\n");
+    fixture::write_text(&right_folder.join("beta.rs"), "fn beta() {}\n");
 
     let workspaces = WorkspacesFile {
         current_scope: initial_scope,
         workspaces: vec![
-            WorkspaceConfig {
-                id: WorkspaceId::new("ws-left"),
-                name: "left".to_string(),
-                root: left_root.clone(),
-            },
-            WorkspaceConfig {
-                id: WorkspaceId::new("ws-right"),
-                name: "right".to_string(),
-                root: right_root.clone(),
-            },
+            WorkspaceConfig::with_one_folder(WorkspaceId::new("ws-left"), "left", left_folder.clone()),
+            WorkspaceConfig::with_one_folder(
+                WorkspaceId::new("ws-right"),
+                "right",
+                right_folder.clone(),
+            ),
         ],
     };
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save scoped workspaces");
-    (roots_dir, left_root, right_root)
+    (folders_dir, left_folder, right_folder)
+}
+
+fn seed_folder_set_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    seed_folder_set_workspace_with_scope(WorkspaceScope::All)
+}
+
+fn seed_folder_set_workspace_with_scope(
+    initial_scope: WorkspaceScope,
+) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    ensure_gtk_init();
+    let folders_dir = tempfile::tempdir().expect("folder-set workspace tempdir");
+    let first_folder = folders_dir.path().join("first");
+    let second_folder = folders_dir.path().join("second");
+    fixture::create_dir_all(&first_folder);
+    fixture::create_dir_all(&second_folder);
+
+    let workspaces = WorkspacesFile {
+        current_scope: initial_scope,
+        workspaces: vec![WorkspaceConfig::with_folders(
+            WorkspaceId::new("ws-folder-set"),
+            "folder set",
+            vec![
+                WorkspaceFolder::with_id(WorkspaceFolderId::new("first"), first_folder.clone()),
+                WorkspaceFolder::with_id(WorkspaceFolderId::new("second"), second_folder.clone()),
+            ],
+        )],
+    };
+    workspace_manager::save(&json_store::data_dir(), &workspaces)
+        .expect("save folder-set workspace");
+    (folders_dir, first_folder, second_folder)
+}
+
+fn seed_overlapping_folder_workspace() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+    ensure_gtk_init();
+    let folders_dir = tempfile::tempdir().expect("overlapping workspace tempdir");
+    let parent_folder = folders_dir.path().join("project");
+    let child_folder = parent_folder.join("src");
+    let file_path = child_folder.join("main.rs");
+    fixture::create_dir_all(&child_folder);
+    fixture::write_text(&file_path, "fn main() {}\n// note target\n");
+
+    let workspaces = WorkspacesFile {
+        current_scope: WorkspaceScope::All,
+        workspaces: vec![WorkspaceConfig::with_folders(
+            WorkspaceId::new("ws-overlap"),
+            "overlap",
+            vec![
+                WorkspaceFolder::with_id(WorkspaceFolderId::new("parent"), parent_folder.clone()),
+                WorkspaceFolder::with_id(WorkspaceFolderId::new("child"), child_folder.clone()),
+            ],
+        )],
+    };
+    workspace_manager::save(&json_store::data_dir(), &workspaces)
+        .expect("save overlapping folder-set workspace");
+    (folders_dir, parent_folder, child_folder, file_path)
+}
+
+fn seed_empty_folder_set_workspace() {
+    ensure_gtk_init();
+    let workspaces = WorkspacesFile {
+        current_scope: WorkspaceScope::workspace(WorkspaceId::new("ws-empty")),
+        workspaces: vec![WorkspaceConfig::with_folders(
+            WorkspaceId::new("ws-empty"),
+            "empty folder set",
+            Vec::new(),
+        )],
+    };
+    workspace_manager::save(&json_store::data_dir(), &workspaces)
+        .expect("save empty folder-set workspace");
+}
+
+fn seed_empty_and_populated_workspaces() -> (tempfile::TempDir, PathBuf) {
+    ensure_gtk_init();
+    let folders_dir = tempfile::tempdir().expect("mixed workspace folders tempdir");
+    let populated_folder = folders_dir.path().join("populated");
+    fixture::create_dir_all(&populated_folder);
+    fixture::write_text(&populated_folder.join("main.rs"), "fn main() {}\n");
+
+    let workspaces = WorkspacesFile {
+        current_scope: WorkspaceScope::All,
+        workspaces: vec![
+            WorkspaceConfig::with_folders(
+                WorkspaceId::new("ws-empty"),
+                "empty folder set",
+                Vec::new(),
+            ),
+            WorkspaceConfig::with_one_folder(
+                WorkspaceId::new("ws-populated"),
+                "populated",
+                populated_folder.clone(),
+            ),
+        ],
+    };
+    workspace_manager::save(&json_store::data_dir(), &workspaces)
+        .expect("save mixed workspace file");
+    (folders_dir, populated_folder)
 }
 
 fn seed_no_workspaces() {
@@ -253,29 +346,35 @@ fn seed_no_workspaces() {
         .expect("save empty workspace file");
 }
 
-fn wait_for_workspace_roots(window: &LushtextWindow, expected: usize) {
+fn wait_for_workspace_folders(window: &LushtextWindow, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        if window.imp().sidebar.all_workspace_root_paths().len() == expected {
+        if window.imp().sidebar.all_workspace_folder_paths().len() == expected {
             return;
         }
         flush_after_delay(Duration::from_millis(20));
     }
-    let actual = window.imp().sidebar.all_workspace_root_paths().len();
-    panic!("expected {expected} restored workspace roots, got {actual}");
+    let actual = window.imp().sidebar.all_workspace_folder_paths().len();
+    panic!("expected {expected} restored workspace folders, got {actual}");
 }
 
-fn wait_for_workspace_consumers(window: &LushtextWindow, expected_roots: usize, expected_index: usize) {
+fn wait_for_workspace_sections(window: &LushtextWindow, expected: usize) {
+    wait_until(Duration::from_secs(3), || {
+        window.imp().sidebar.imp().sections.borrow().len() == expected
+    });
+}
+
+fn wait_for_workspace_consumers(window: &LushtextWindow, expected_folders: usize, expected_index: usize) {
     wait_until(Duration::from_secs(3), || {
         window
             .imp()
             .search_panel
             .imp()
             .runtime
-            .workspace_roots
+            .workspace_folders
             .borrow()
             .len()
-            == expected_roots
+            == expected_folders
             && window.imp().command_palette.file_index_len() == expected_index
     });
 }
@@ -444,6 +543,10 @@ fn save_changes_response_button(
     dialog: &libadwaita::AlertDialog,
     response: &str,
 ) -> gtk4::Button {
+    alert_response_button(dialog, response)
+}
+
+fn alert_response_button(dialog: &libadwaita::AlertDialog, response: &str) -> gtk4::Button {
     let response_label = dialog.response_label(response);
     let fallback_label = response_label.replace('_', "");
     find_button_by_label(dialog.upcast_ref(), response_label.as_str())
@@ -608,6 +711,20 @@ fn code_block_containers(preview: &LushtextMarkdownPreview) -> Vec<gtk4::Box> {
 
 fn code_block_scrollers(preview: &LushtextMarkdownPreview) -> Vec<gtk4::ScrolledWindow> {
     widgets_with_css_class::<gtk4::ScrolledWindow>(preview, "markdown-code-block-scroller")
+}
+
+fn markdown_preview_has_image_fallback_title(window: &LushtextWindow, title: &str) -> bool {
+    let preview: &LushtextMarkdownPreview = &window.imp().markdown_preview;
+    widgets_with_css_class::<gtk4::Label>(preview, "markdown-preview-image-fallback-title")
+        .iter()
+        .any(|label| label.label() == title)
+}
+
+fn markdown_preview_has_image_fallback_body_containing(window: &LushtextWindow, text: &str) -> bool {
+    let preview: &LushtextMarkdownPreview = &window.imp().markdown_preview;
+    widgets_with_css_class::<gtk4::Label>(preview, "markdown-preview-image-fallback-body")
+        .iter()
+        .any(|label| label.label().contains(text))
 }
 
 fn preview_text_column_width(preview: &LushtextMarkdownPreview) -> i32 {
@@ -782,55 +899,55 @@ fn visible_sheet_dialog(window: &LushtextWindow) -> Option<libadwaita::Dialog> {
         .and_then(|dialog| dialog.downcast::<libadwaita::Dialog>().ok())
 }
 
-fn find_button_by_label(root: &gtk4::Widget, label: &str) -> Option<gtk4::Button> {
-    if let Ok(button) = root.clone().downcast::<gtk4::Button>()
+fn find_button_by_label(widget: &gtk4::Widget, label: &str) -> Option<gtk4::Button> {
+    if let Ok(button) = widget.clone().downcast::<gtk4::Button>()
         && button.label().as_deref() == Some(label)
     {
         return Some(button);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_button_by_label(&widget, label) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_button_by_label(&child_widget, label) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     None
 }
 
-fn find_button_by_tooltip(root: &gtk4::Widget, tooltip: &str) -> Option<gtk4::Button> {
-    if let Ok(button) = root.clone().downcast::<gtk4::Button>()
+fn find_button_by_tooltip(widget: &gtk4::Widget, tooltip: &str) -> Option<gtk4::Button> {
+    if let Ok(button) = widget.clone().downcast::<gtk4::Button>()
         && button.tooltip_text().as_deref() == Some(tooltip)
     {
         return Some(button);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_button_by_tooltip(&widget, tooltip) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_button_by_tooltip(&child_widget, tooltip) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     None
 }
 
-fn visible_buttons_by_tooltip(root: &gtk4::Widget, tooltip: &str) -> Vec<gtk4::Button> {
+fn visible_buttons_by_tooltip(widget: &gtk4::Widget, tooltip: &str) -> Vec<gtk4::Button> {
     let mut buttons = Vec::new();
-    collect_visible_buttons_by_tooltip(root, tooltip, &mut buttons);
+    collect_visible_buttons_by_tooltip(widget, tooltip, &mut buttons);
     buttons
 }
 
 /// Collect visible icon buttons by tooltip so adaptive chrome tests can count actual affordances.
 fn collect_visible_buttons_by_tooltip(
-    root: &gtk4::Widget,
+    widget: &gtk4::Widget,
     tooltip: &str,
     buttons: &mut Vec<gtk4::Button>,
 ) {
-    if let Ok(button) = root.clone().downcast::<gtk4::Button>()
+    if let Ok(button) = widget.clone().downcast::<gtk4::Button>()
         && button.tooltip_text().as_deref() == Some(tooltip)
         && button.is_visible()
     {
@@ -838,16 +955,16 @@ fn collect_visible_buttons_by_tooltip(
         return;
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        collect_visible_buttons_by_tooltip(&widget, tooltip, buttons);
-        child = widget.next_sibling();
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        collect_visible_buttons_by_tooltip(&child_widget, tooltip, buttons);
+        child = child_widget.next_sibling();
     }
 }
 
 /// Return the one visible Close/X control that a dialog surface is allowed to expose.
-fn single_visible_close_button(root: &gtk4::Widget) -> gtk4::Button {
-    let buttons = visible_buttons_by_tooltip(root, "Close");
+fn single_visible_close_button(widget: &gtk4::Widget) -> gtk4::Button {
+    let buttons = visible_buttons_by_tooltip(widget, "Close");
     assert_eq!(
         buttons.len(),
         1,
@@ -856,69 +973,85 @@ fn single_visible_close_button(root: &gtk4::Widget) -> gtk4::Button {
     buttons.into_iter().next().expect("visible close button")
 }
 
-fn find_label_by_text(root: &gtk4::Widget, text: &str) -> Option<gtk4::Label> {
-    if let Ok(label) = root.clone().downcast::<gtk4::Label>()
+fn find_label_by_text(widget: &gtk4::Widget, text: &str) -> Option<gtk4::Label> {
+    if let Ok(label) = widget.clone().downcast::<gtk4::Label>()
         && label.label() == text
     {
         return Some(label);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_label_by_text(&widget, text) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_label_by_text(&child_widget, text) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     None
 }
 
-fn find_entry_row_by_title(root: &gtk4::Widget, title: &str) -> Option<libadwaita::EntryRow> {
-    if let Ok(row) = root.clone().downcast::<libadwaita::EntryRow>()
+fn find_entry_row_by_title(widget: &gtk4::Widget, title: &str) -> Option<libadwaita::EntryRow> {
+    if let Ok(row) = widget.clone().downcast::<libadwaita::EntryRow>()
         && row.title() == title
     {
         return Some(row);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_entry_row_by_title(&widget, title) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_entry_row_by_title(&child_widget, title) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     None
 }
 
-fn find_navigation_split_view(root: &gtk4::Widget) -> Option<libadwaita::NavigationSplitView> {
-    if let Ok(split_view) = root.clone().downcast::<libadwaita::NavigationSplitView>() {
+fn find_navigation_split_view(widget: &gtk4::Widget) -> Option<libadwaita::NavigationSplitView> {
+    if let Ok(split_view) = widget.clone().downcast::<libadwaita::NavigationSplitView>() {
         return Some(split_view);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_navigation_split_view(&widget) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_navigation_split_view(&child_widget) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     None
 }
 
-fn find_adw_sidebar(root: &gtk4::Widget) -> Option<libadwaita::Sidebar> {
-    if let Ok(sidebar) = root.clone().downcast::<libadwaita::Sidebar>() {
+fn find_adw_sidebar(widget: &gtk4::Widget) -> Option<libadwaita::Sidebar> {
+    if let Ok(sidebar) = widget.clone().downcast::<libadwaita::Sidebar>() {
         return Some(sidebar);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_adw_sidebar(&widget) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_adw_sidebar(&child_widget) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
+    }
+
+    None
+}
+
+fn find_status_page(widget: &gtk4::Widget) -> Option<libadwaita::StatusPage> {
+    if let Ok(status_page) = widget.clone().downcast::<libadwaita::StatusPage>() {
+        return Some(status_page);
+    }
+
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_status_page(&child_widget) {
+            return Some(found);
+        }
+        child = child_widget.next_sibling();
     }
 
     None
@@ -931,8 +1064,8 @@ fn adw_sidebar_section_titles(sidebar: &libadwaita::Sidebar) -> Vec<String> {
         .collect()
 }
 
-fn has_tree_list_model_list_view(root: &gtk4::Widget) -> bool {
-    if let Ok(list_view) = root.clone().downcast::<gtk4::ListView>()
+fn has_tree_list_model_list_view(widget: &gtk4::Widget) -> bool {
+    if let Ok(list_view) = widget.clone().downcast::<gtk4::ListView>()
         && let Some(selection) = list_view.model().and_downcast::<gtk4::SingleSelection>()
         && selection
             .model()
@@ -941,107 +1074,107 @@ fn has_tree_list_model_list_view(root: &gtk4::Widget) -> bool {
         return true;
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if has_tree_list_model_list_view(&widget) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if has_tree_list_model_list_view(&child_widget) {
             return true;
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     false
 }
 
-fn find_search_entry(root: &gtk4::Widget) -> Option<gtk4::SearchEntry> {
-    if let Ok(search_entry) = root.clone().downcast::<gtk4::SearchEntry>() {
+fn find_search_entry(widget: &gtk4::Widget) -> Option<gtk4::SearchEntry> {
+    if let Ok(search_entry) = widget.clone().downcast::<gtk4::SearchEntry>() {
         return Some(search_entry);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_search_entry(&widget) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_search_entry(&child_widget) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     None
 }
 
-fn find_stack_switcher(root: &gtk4::Widget) -> Option<gtk4::StackSwitcher> {
-    if let Ok(switcher) = root.clone().downcast::<gtk4::StackSwitcher>() {
+fn find_stack_switcher(widget: &gtk4::Widget) -> Option<gtk4::StackSwitcher> {
+    if let Ok(switcher) = widget.clone().downcast::<gtk4::StackSwitcher>() {
         return Some(switcher);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_stack_switcher(&widget) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_stack_switcher(&child_widget) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     None
 }
 
-fn find_note_editor_stack(root: &gtk4::Widget) -> Option<gtk4::Stack> {
-    if let Ok(stack) = root.clone().downcast::<gtk4::Stack>()
+fn find_note_editor_stack(widget: &gtk4::Widget) -> Option<gtk4::Stack> {
+    if let Ok(stack) = widget.clone().downcast::<gtk4::Stack>()
         && stack.child_by_name("edit").is_some()
         && stack.child_by_name("render").is_some()
     {
         return Some(stack);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_note_editor_stack(&widget) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_note_editor_stack(&child_widget) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     None
 }
 
-fn find_notes_preview_stack(root: &gtk4::Widget) -> Option<gtk4::Stack> {
-    if let Ok(stack) = root.clone().downcast::<gtk4::Stack>()
+fn find_notes_preview_stack(widget: &gtk4::Widget) -> Option<gtk4::Stack> {
+    if let Ok(stack) = widget.clone().downcast::<gtk4::Stack>()
         && stack.child_by_name("markdown").is_some()
         && stack.child_by_name("raw").is_some()
     {
         return Some(stack);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_notes_preview_stack(&widget) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_notes_preview_stack(&child_widget) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     None
 }
 
-fn collect_text_views(root: &gtk4::Widget, text_views: &mut Vec<gtk4::TextView>) {
-    if let Ok(text_view) = root.clone().downcast::<gtk4::TextView>() {
+fn collect_text_views(widget: &gtk4::Widget, text_views: &mut Vec<gtk4::TextView>) {
+    if let Ok(text_view) = widget.clone().downcast::<gtk4::TextView>() {
         text_views.push(text_view);
         return;
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        collect_text_views(&widget, text_views);
-        child = widget.next_sibling();
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        collect_text_views(&child_widget, text_views);
+        child = child_widget.next_sibling();
     }
 }
 
-fn notes_preview_visible_child_name(root: &gtk4::Widget) -> Option<String> {
-    find_notes_preview_stack(root)
+fn notes_preview_visible_child_name(widget: &gtk4::Widget) -> Option<String> {
+    find_notes_preview_stack(widget)
         .and_then(|stack| stack.visible_child_name().map(|name| name.to_string()))
 }
 
-fn notes_preview_text(root: &gtk4::Widget) -> Option<String> {
-    let stack = find_notes_preview_stack(root)?;
+fn notes_preview_text(widget: &gtk4::Widget) -> Option<String> {
+    let stack = find_notes_preview_stack(widget)?;
     let child = stack.visible_child()?;
     let mut text_views = Vec::new();
     collect_text_views(&child, &mut text_views);
@@ -1056,15 +1189,15 @@ fn notes_preview_text(root: &gtk4::Widget) -> Option<String> {
         })
 }
 
-fn wait_for_notes_preview_text(root: &gtk4::Widget, expected: &str) {
+fn wait_for_notes_preview_text(widget: &gtk4::Widget, expected: &str) {
     wait_until(Duration::from_secs(5), || {
-        notes_preview_text(root).is_some_and(|text| text.contains(expected))
+        notes_preview_text(widget).is_some_and(|text| text.contains(expected))
     });
 }
 
-fn local_history_preview_text(root: &gtk4::Widget) -> Option<String> {
+fn local_history_preview_text(widget: &gtk4::Widget) -> Option<String> {
     let mut text_views = Vec::new();
-    collect_text_views(root, &mut text_views);
+    collect_text_views(widget, &mut text_views);
     text_views
         .into_iter()
         .find(|text_view| !text_view.is_editable())
@@ -1076,15 +1209,15 @@ fn local_history_preview_text(root: &gtk4::Widget) -> Option<String> {
         })
 }
 
-fn wait_for_local_history_preview_text(root: &gtk4::Widget, expected: &str) {
+fn wait_for_local_history_preview_text(widget: &gtk4::Widget, expected: &str) {
     wait_until(Duration::from_secs(5), || {
-        local_history_preview_text(root).as_deref() == Some(expected)
+        local_history_preview_text(widget).as_deref() == Some(expected)
     });
 }
 
-fn note_editor_text_views(root: &gtk4::Widget) -> (gtk4::TextView, gtk4::TextView) {
+fn note_editor_text_views(widget: &gtk4::Widget) -> (gtk4::TextView, gtk4::TextView) {
     let mut text_views = Vec::new();
-    collect_text_views(root, &mut text_views);
+    collect_text_views(widget, &mut text_views);
 
     let edit = text_views
         .iter()
@@ -1099,8 +1232,8 @@ fn note_editor_text_views(root: &gtk4::Widget) -> (gtk4::TextView, gtk4::TextVie
     (edit, render)
 }
 
-fn assert_note_editor_text_margins_match(root: &gtk4::Widget) {
-    let (edit, render) = note_editor_text_views(root);
+fn assert_note_editor_text_margins_match(widget: &gtk4::Widget) {
+    let (edit, render) = note_editor_text_views(widget);
     assert_eq!(edit.left_margin(), render.left_margin());
     assert_eq!(edit.right_margin(), render.right_margin());
     assert_eq!(edit.top_margin(), render.top_margin());
@@ -1112,6 +1245,17 @@ struct WidgetOuterSize {
     width: i32,
     height: i32,
 }
+
+/// Empty status dialogs use this compact target instead of full browser size.
+const EMPTY_STATUS_DIALOG_TARGET_WIDTH: i32 = 640;
+/// The target height must fit the normal status page and dialog header without scrolling.
+const EMPTY_STATUS_DIALOG_TARGET_HEIGHT: i32 = 480;
+/// Theme chrome can vary, so allocation assertions use a lower bound near the target.
+const EMPTY_STATUS_DIALOG_MIN_RENDERED_WIDTH: i32 = 600;
+/// Keep enough vertical allocation for icon, title, description, and margins.
+const EMPTY_STATUS_DIALOG_MIN_RENDERED_HEIGHT: i32 = 440;
+/// The status page itself should receive enough width for readable copy.
+const EMPTY_STATUS_PAGE_MIN_RENDERED_WIDTH: i32 = 560;
 
 fn settled_widget_outer_size(widget: &impl IsA<gtk4::Widget>) -> WidgetOuterSize {
     let widget = widget.as_ref();
@@ -1143,6 +1287,69 @@ fn assert_settled_widget_outer_size(
         actual, expected,
         "{context} must not change the modal outer allocation"
     );
+}
+
+/// Assert the empty browser is readable in the rendered widget tree.
+///
+/// `content_width()` alone is not enough: an `AdwDialog` that follows child
+/// content size can still report a target while rendering the status page as a
+/// narrow column or scrollable body.
+fn assert_readable_empty_status_dialog(
+    dialog: &libadwaita::Dialog,
+    child: &gtk4::Widget,
+    context: &str,
+) {
+    assert!(
+        !dialog.follows_content_size(),
+        "{context} should honor its compact target size instead of following status-page natural size"
+    );
+    assert_eq!(
+        dialog.content_width(),
+        EMPTY_STATUS_DIALOG_TARGET_WIDTH,
+        "{context} should keep its compact target width"
+    );
+    assert_eq!(
+        dialog.content_height(),
+        EMPTY_STATUS_DIALOG_TARGET_HEIGHT,
+        "{context} should keep its compact target height"
+    );
+
+    let dialog_size = settled_widget_outer_size(dialog);
+    assert!(
+        dialog_size.width >= EMPTY_STATUS_DIALOG_MIN_RENDERED_WIDTH,
+        "{context} should render wide enough for readable empty-state copy, got {dialog_size:?}"
+    );
+    assert!(
+        dialog_size.height >= EMPTY_STATUS_DIALOG_MIN_RENDERED_HEIGHT,
+        "{context} should render tall enough for readable empty-state copy, got {dialog_size:?}"
+    );
+    assert!(
+        !has_vertical_scroll_overflow(dialog),
+        "{context} should fit without vertical scrolling"
+    );
+
+    let status = find_status_page(child).expect("empty-state status page");
+    let status_size = settled_widget_outer_size(&status);
+    assert!(
+        status_size.width >= EMPTY_STATUS_PAGE_MIN_RENDERED_WIDTH,
+        "{context} status page should receive a readable line length, got {status_size:?}"
+    );
+}
+
+fn has_vertical_scroll_overflow(folder: &impl IsA<gtk4::Widget>) -> bool {
+    descendants(folder).into_iter().any(|widget| {
+        if let Ok(scroller) = widget.clone().downcast::<gtk4::ScrolledWindow>() {
+            let adjustment = scroller.vadjustment();
+            return scroller.is_visible() && adjustment.upper() > adjustment.page_size() + 1.0;
+        }
+
+        widget.downcast::<gtk4::Scrollbar>().is_ok_and(|scrollbar| {
+            scrollbar.orientation() == gtk4::Orientation::Vertical
+                && scrollbar.is_visible()
+                && scrollbar.width() > 0
+                && scrollbar.height() > 0
+        })
+    })
 }
 
 fn measured_natural_outer_size(widget: &impl IsA<gtk4::Widget>) -> WidgetOuterSize {
@@ -1194,9 +1401,9 @@ fn allocate_widget_for_test(widget: &impl IsA<gtk4::Widget>, width: i32) {
     clippy::cast_possible_truncation,
     reason = "Widget tests round allocated f32 bounds back to device pixels for exact geometry assertions"
 )]
-fn note_editor_text_origin(root: &gtk4::Widget, text_view: &gtk4::TextView) -> (i32, i32) {
+fn note_editor_text_origin(widget: &gtk4::Widget, text_view: &gtk4::TextView) -> (i32, i32) {
     let bounds = text_view
-        .compute_bounds(root)
+        .compute_bounds(widget)
         .expect("note text view should have allocated bounds");
     (
         (bounds.x() + text_view.left_margin() as f32).round() as i32,
@@ -1204,10 +1411,10 @@ fn note_editor_text_origin(root: &gtk4::Widget, text_view: &gtk4::TextView) -> (
     )
 }
 
-fn note_editor_visible_text_origin(root: &gtk4::Widget, editable: bool) -> (i32, i32) {
-    let (edit, render) = note_editor_text_views(root);
+fn note_editor_visible_text_origin(widget: &gtk4::Widget, editable: bool) -> (i32, i32) {
+    let (edit, render) = note_editor_text_views(widget);
     let text_view = if editable { edit } else { render };
-    note_editor_text_origin(root, &text_view)
+    note_editor_text_origin(widget, &text_view)
 }
 
 fn text_view_scrolled_window(text_view: &gtk4::TextView) -> gtk4::ScrolledWindow {
@@ -1222,8 +1429,8 @@ fn text_view_scrolled_window(text_view: &gtk4::TextView) -> gtk4::ScrolledWindow
     panic!("note text view should live inside a scrolled window");
 }
 
-fn assert_note_editor_render_surface_ready_before_first_render(root: &gtk4::Widget) {
-    let (_, render) = note_editor_text_views(root);
+fn assert_note_editor_render_surface_ready_before_first_render(widget: &gtk4::Widget) {
+    let (_, render) = note_editor_text_views(widget);
     let scrolled_window = text_view_scrolled_window(&render);
     assert!(
         scrolled_window.property::<bool>("visible"),
@@ -1386,13 +1593,13 @@ fn click_alert_extra_button(dialog: &libadwaita::AlertDialog, label: &str) {
     flush_events();
 }
 
-fn click_labeled_widget(root: &gtk4::Widget, label: &str) {
-    if let Some(button) = find_button_by_label(root, label) {
+fn click_labeled_widget(widget: &gtk4::Widget, label: &str) {
+    if let Some(button) = find_button_by_label(widget, label) {
         button.emit_clicked();
         return;
     }
 
-    if let Some(toggle) = find_toggle_button_by_label(root, label) {
+    if let Some(toggle) = find_toggle_button_by_label(widget, label) {
         toggle.emit_clicked();
         return;
     }
@@ -1400,19 +1607,19 @@ fn click_labeled_widget(root: &gtk4::Widget, label: &str) {
     panic!("clickable widget '{label}' not found");
 }
 
-fn find_toggle_button_by_label(root: &gtk4::Widget, label: &str) -> Option<gtk4::ToggleButton> {
-    if let Ok(toggle) = root.clone().downcast::<gtk4::ToggleButton>()
+fn find_toggle_button_by_label(widget: &gtk4::Widget, label: &str) -> Option<gtk4::ToggleButton> {
+    if let Ok(toggle) = widget.clone().downcast::<gtk4::ToggleButton>()
         && toggle.label().as_deref() == Some(label)
     {
         return Some(toggle);
     }
 
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_toggle_button_by_label(&widget, label) {
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_toggle_button_by_label(&child_widget, label) {
             return Some(found);
         }
-        child = widget.next_sibling();
+        child = child_widget.next_sibling();
     }
 
     None
@@ -1834,21 +2041,23 @@ fn preview_animation(window: &LushtextWindow) -> libadwaita::TimedAnimation {
 
 fn seed_peek_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
     ensure_gtk_init();
-    let root_dir = tempfile::tempdir().expect("peek workspace tempdir");
-    let alpha = root_dir.path().join("alpha.rs");
-    let beta = root_dir.path().join("beta.rs");
+    let folder_dir = tempfile::tempdir().expect("peek workspace tempdir");
+    let alpha = folder_dir.path().join("alpha.rs");
+    let beta = folder_dir.path().join("beta.rs");
     fixture::write_text(&alpha, "fn alpha() {\n    println!(\"alpha\");\n}\n");
     fixture::write_text(&beta, "fn beta() {\n    println!(\"beta\");\n}\n");
 
     let mut workspaces = WorkspacesFile::default();
-    workspaces.workspaces.push(WorkspaceConfig {
-        id: WorkspaceId::new("peek-ws"),
-        name: "peek".to_string(),
-        root: root_dir.path().to_path_buf(),
-    });
+    workspaces
+        .workspaces
+        .push(WorkspaceConfig::with_one_folder(
+            WorkspaceId::new("peek-ws"),
+            "peek",
+            folder_dir.path().to_path_buf(),
+        ));
     workspaces.current_scope = WorkspaceScope::workspace(WorkspaceId::new("peek-ws"));
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save peek workspaces");
-    (root_dir, alpha, beta)
+    (folder_dir, alpha, beta)
 }
 
 fn seed_named_tab_files(names: &[&str]) -> (tempfile::TempDir, Vec<PathBuf>) {
@@ -2024,9 +2233,9 @@ fn select_sidebar_path(section: &lushtext_core::ui::sidebar::WorkspaceSection, p
         return;
     }
 
-    // Single-root workspaces now expose files under a real directory root, so
-    // expand the root tree once before giving up on a nested file-path lookup.
-    section.expand_roots();
+    // Single-folder workspaces now expose files under a real directory folder, so
+    // expand the folder tree once before giving up on a nested file-path lookup.
+    section.expand_folders();
     wait_until(Duration::from_secs(2), || try_select_path(section, path));
 }
 
@@ -2068,7 +2277,7 @@ fn test_split_view_settings_defaults() {
 
 #[test]
 fn test_sidebar_peek_does_not_create_tab_until_promoted() {
-    let (_root_dir, alpha, _beta) = seed_peek_workspace();
+    let (_folder_dir, alpha, _beta) = seed_peek_workspace();
     let window = test_window();
     present_window(&window);
 
@@ -2112,7 +2321,7 @@ fn test_sidebar_peek_does_not_create_tab_until_promoted() {
 
 #[test]
 fn test_sidebar_peek_promotion_reuses_existing_tab() {
-    let (_root_dir, alpha, _beta) = seed_peek_workspace();
+    let (_folder_dir, alpha, _beta) = seed_peek_workspace();
     let window = test_window();
     present_window(&window);
 
@@ -2173,11 +2382,11 @@ fn test_split_view_defaults_restore_on_window() {
 #[test]
 fn test_workspace_file_sidebar_keeps_list_view_tree_model_rail() {
     ensure_gtk_init();
-    let (_roots_dir, _left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let (_folders_dir, _left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let window = test_window();
     present_window(&window);
 
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 2);
 
     let workspace_sidebar = window.imp().sidebar.upcast_ref::<gtk4::Widget>();
@@ -2484,8 +2693,8 @@ fn test_local_history_browser_controls_expose_accessibility_roles() {
 #[test]
 fn test_notes_browser_controls_expose_accessibility_roles() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("notes-roles.md");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("notes-roles.md");
     fixture::write_text(&path, "# Notes\n");
     document_note_service::save_for_path(
         &json_store::data_dir(),
@@ -2496,7 +2705,7 @@ fn test_notes_browser_controls_expose_accessibility_roles() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
@@ -4705,23 +4914,492 @@ fn test_dismissing_one_editor_inline_alert_preserves_other_editor_alert() {
 #[test]
 fn test_restored_workspaces_survive_dual_sidebar_shell() {
     ensure_gtk_init();
-    let _roots_dir = seed_restored_workspaces();
+    let _folders_dir = seed_restored_workspaces();
     let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
 
     present_window(&window);
-    wait_for_workspace_roots(&window, 3);
+    wait_for_workspace_folders(&window, 3);
     assert!(workspace_sidebar_visible(&window));
-    assert_eq!(window.imp().sidebar.all_workspace_root_paths().len(), 3);
+    assert_eq!(window.imp().sidebar.all_workspace_folder_paths().len(), 3);
+}
+
+#[test]
+fn test_restored_folder_set_workspace_uses_one_section_with_ordered_folder_rows() {
+    ensure_gtk_init();
+    let (_folders_dir, first_folder, second_folder) = seed_folder_set_workspace();
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_sections(&window, 1);
+
+    let section = first_sidebar_section(&window);
+    assert_eq!(section.imp().header_label.text(), "folder set");
+    assert!(section.has_folders());
+    assert!(
+        !section.imp().empty_folder_set_label.is_visible(),
+        "folder-set workspaces with folders should show the tree"
+    );
+
+    let top_level_store = section.imp().top_level_store.borrow();
+    let top_level_store = top_level_store
+        .as_ref()
+        .expect("folder-set workspace should install a top-level store");
+    let folder_paths = (0..top_level_store.n_items())
+        .filter_map(|index| top_level_store.item(index).and_downcast::<lushtext_core::ui::sidebar::FileTreeItem>())
+        .filter_map(|item| item.path())
+        .collect::<Vec<_>>();
+
+    assert_eq!(folder_paths, vec![first_folder, second_folder]);
+}
+
+#[test]
+fn test_restored_empty_folder_set_workspace_keeps_real_section() {
+    ensure_gtk_init();
+    seed_empty_folder_set_workspace();
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_sections(&window, 1);
+
+    let section = first_sidebar_section(&window);
+    assert_eq!(section.imp().header_label.text(), "empty folder set");
+    assert!(!section.has_folders());
+    assert_eq!(window.imp().sidebar.all_workspace_folder_paths(), Vec::<PathBuf>::new());
+    assert!(
+        section.imp().empty_folder_set_label.is_visible(),
+        "empty folder-set workspaces should keep an explicit empty state"
+    );
+    assert!(
+        !section.imp().inner_scrolled_window.is_visible(),
+        "empty folder-set workspaces should not show an empty tree shell"
+    );
+    assert!(
+        section.imp().add_folder_button.is_sensitive(),
+        "empty folder-set workspaces should keep their Add Folder affordance available"
+    );
+    assert_eq!(
+        window.imp().sidebar.current_scope(),
+        WorkspaceScope::workspace(WorkspaceId::new("ws-empty"))
+    );
+    assert_eq!(
+        window.imp().sidebar.current_scope_folder_paths(),
+        Vec::<PathBuf>::new()
+    );
+}
+
+#[test]
+fn test_selecting_empty_workspace_scope_keeps_empty_coverage() {
+    ensure_gtk_init();
+    let (_folders_dir, populated_folder) = seed_empty_and_populated_workspaces();
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_sections(&window, 2);
+    wait_for_workspace_folders(&window, 1);
+    wait_for_workspace_consumers(&window, 1, 1);
+    assert_eq!(
+        window.imp().sidebar.all_workspace_folder_paths(),
+        vec![populated_folder]
+    );
+
+    let dropdown = &window.imp().sidebar.imp().workspace_filter_dropdown;
+    dropdown.set_selected(1);
+    flush_events();
+
+    wait_until(Duration::from_secs(3), || {
+        window.imp().sidebar.current_scope() == WorkspaceScope::workspace(WorkspaceId::new("ws-empty"))
+            && window.imp().sidebar.current_scope_folder_paths().is_empty()
+            && window
+                .imp()
+                .search_panel
+                .imp()
+                .runtime
+                .workspace_folders
+                .borrow()
+                .is_empty()
+            && window.imp().command_palette.file_index_len() == 0
+    });
+
+    assert_eq!(dropdown.selected(), 1);
+    let sections = window.imp().sidebar.imp().sections.borrow();
+    assert!(sections[0].property::<bool>("visible"));
+    assert!(
+        !sections[1].property::<bool>("visible"),
+        "selecting an empty workspace should not rebase to the populated workspace"
+    );
+}
+
+#[test]
+fn test_add_folder_to_existing_workspace_updates_state_and_consumers() {
+    ensure_gtk_init();
+    seed_empty_folder_set_workspace();
+    let folders_dir = tempfile::tempdir().expect("new workspace folder tempdir");
+    let folder = folders_dir.path().join("added-folder");
+    fixture::create_dir_all(&folder);
+    fixture::write_text(&folder.join("added.rs"), "fn added() {}\n");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_sections(&window, 1);
+
+    window
+        .imp()
+        .sidebar
+        .select_folder_for_workspace_for_test(&WorkspaceId::new("ws-empty"), &folder);
+
+    wait_for_workspace_folders(&window, 1);
+    wait_for_workspace_consumers(&window, 1, 1);
+
+    let section = first_sidebar_section(&window);
+    assert!(section.has_folders());
+    assert!(
+        !section.imp().empty_folder_set_label.is_visible(),
+        "adding a folder should replace the empty folder-set state with the tree"
+    );
+    assert_eq!(window.imp().sidebar.current_scope_folder_paths(), vec![folder]);
+}
+
+#[test]
+fn test_add_duplicate_folder_to_existing_workspace_reports_feedback() {
+    ensure_gtk_init();
+    let (_folders_dir, first_folder, second_folder) = seed_folder_set_workspace();
+    let window = test_window();
+    let messages = Rc::new(RefCell::new(Vec::<(String, NotificationSeverity)>::new()));
+    let messages_clone = Rc::clone(&messages);
+    window.imp().sidebar.connect_message(move |text, severity| {
+        messages_clone
+            .borrow_mut()
+            .push((text.to_string(), severity));
+    });
+
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+
+    window
+        .imp()
+        .sidebar
+        .select_folder_for_workspace_for_test(&WorkspaceId::new("ws-folder-set"), &first_folder);
+
+    wait_until(Duration::from_secs(10), || {
+        messages.borrow().iter().any(|(text, severity)| {
+            text == "Folder already belongs to this workspace"
+                && *severity == NotificationSeverity::Warning
+        })
+    });
+
+    assert_eq!(
+        window.imp().sidebar.all_workspace_folder_paths(),
+        vec![first_folder, second_folder]
+    );
+    assert!(
+        messages.borrow().iter().any(|(text, severity)| {
+            text == "Folder already belongs to this workspace"
+                && *severity == NotificationSeverity::Warning
+        }),
+        "duplicate folder adds should produce recoverable status feedback"
+    );
+}
+
+#[test]
+fn test_remove_folder_from_workspace_preserves_files_notes_and_empty_section() {
+    ensure_gtk_init();
+    let (_folders_dir, first_folder, second_folder) = seed_folder_set_workspace();
+    let marker = first_folder.join("keep.txt");
+    fixture::write_text(&marker, "do not delete\n");
+    let data_dir = json_store::data_dir();
+    folder_note_service::save_for_folder(
+        &data_dir,
+        &first_folder,
+        &RichNoteBody::new("Keep this folder note"),
+    )
+    .expect("save folder note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+
+    window.imp().sidebar.remove_folder_from_workspace_for_test(
+        &WorkspaceId::new("ws-folder-set"),
+        &WorkspaceFolderId::new("first"),
+        &first_folder,
+    );
+
+    wait_until(Duration::from_secs(3), || {
+        window.imp().sidebar.all_workspace_folder_paths() == vec![second_folder.clone()]
+    });
+    assert!(fs_metadata::exists(&first_folder));
+    assert_eq!(fs_read::text(&marker).expect("read marker"), "do not delete\n");
+    assert_eq!(
+        folder_note_service::load_for_folder(&data_dir, &first_folder)
+            .expect("load preserved folder note")
+            .expect("folder note should remain")
+            .note
+            .text,
+        "Keep this folder note"
+    );
+
+    window.imp().sidebar.remove_folder_from_workspace_for_test(
+        &WorkspaceId::new("ws-folder-set"),
+        &WorkspaceFolderId::new("second"),
+        &second_folder,
+    );
+
+    wait_for_workspace_folders(&window, 0);
+    wait_for_workspace_sections(&window, 1);
+    let section = first_sidebar_section(&window);
+    assert!(!section.has_folders());
+    assert!(section.imp().empty_folder_set_label.is_visible());
+}
+
+#[test]
+fn test_remove_folder_from_workspace_refreshes_scope_consumers_without_changing_scope() {
+    ensure_gtk_init();
+    let workspace_id = WorkspaceId::new("ws-folder-set");
+    let (_folders_dir, first_folder, second_folder) =
+        seed_folder_set_workspace_with_scope(WorkspaceScope::workspace(workspace_id.clone()));
+    fixture::create_dir_all(&first_folder.join("images"));
+    fixture::write_bytes(&first_folder.join("images/logo.png"), b"not really a png");
+    fixture::write_text(&second_folder.join("beta.rs"), "fn beta() {}\n");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 2);
+
+    let editor = active_editor(&window);
+    let markdown_language = sourceview5::LanguageManager::default()
+        .language("markdown")
+        .expect("markdown language");
+    editor.buffer().set_language(Some(&markdown_language));
+    editor.buffer().set_text("![Logo](images/logo.png)");
+
+    activate_action(&window, "toggle-preview-mode");
+    wait_until(Duration::from_secs(3), || {
+        window.imp().preview_mode.get()
+            && markdown_preview_has_image_fallback_title(&window, "Image could not be loaded")
+    });
+    assert!(action_enabled(&window, "notes-open-folder-note"));
+
+    window.imp().sidebar.remove_folder_from_workspace_for_test(
+        &workspace_id,
+        &WorkspaceFolderId::new("second"),
+        &second_folder,
+    );
+
+    wait_until(Duration::from_secs(3), || {
+        window.imp().sidebar.current_scope() == WorkspaceScope::workspace(workspace_id.clone())
+            && window.imp().sidebar.current_scope_folder_paths() == vec![first_folder.clone()]
+    });
+    wait_for_workspace_consumers(&window, 1, 1);
+    wait_until(Duration::from_secs(3), || {
+        markdown_preview_has_image_fallback_title(&window, "Image could not be loaded")
+    });
+    assert!(action_enabled(&window, "notes-open-folder-note"));
+
+    window.imp().sidebar.remove_folder_from_workspace_for_test(
+        &workspace_id,
+        &WorkspaceFolderId::new("first"),
+        &first_folder,
+    );
+
+    wait_until(Duration::from_secs(3), || {
+        window.imp().sidebar.current_scope() == WorkspaceScope::workspace(workspace_id.clone())
+            && window.imp().sidebar.current_scope_folder_paths().is_empty()
+    });
+    wait_for_workspace_consumers(&window, 0, 0);
+    wait_until(Duration::from_secs(3), || {
+        markdown_preview_has_image_fallback_title(&window, "Image file not found")
+    });
+    assert!(!action_enabled(&window, "notes-open-folder-note"));
+}
+
+#[test]
+fn test_reorder_workspace_folders_refreshes_markdown_preview_image_context() {
+    ensure_gtk_init();
+    let workspace_id = WorkspaceId::new("ws-folder-set");
+    let (_folders_dir, first_folder, second_folder) =
+        seed_folder_set_workspace_with_scope(WorkspaceScope::workspace(workspace_id.clone()));
+    for folder in [&first_folder, &second_folder] {
+        fixture::create_dir_all(&folder.join("images"));
+        fixture::write_bytes(&folder.join("images/logo.png"), b"not really an image");
+    }
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 2);
+
+    let editor = active_editor(&window);
+    let markdown_language = sourceview5::LanguageManager::default()
+        .language("markdown")
+        .expect("markdown language");
+    editor.buffer().set_language(Some(&markdown_language));
+    editor.buffer().set_text("![Logo](images/logo.png)");
+
+    activate_action(&window, "toggle-preview-mode");
+    let first_image = first_folder.join("images/logo.png").display().to_string();
+    wait_until(Duration::from_secs(3), || {
+        markdown_preview_has_image_fallback_title(&window, "Image could not be loaded")
+            && markdown_preview_has_image_fallback_body_containing(&window, &first_image)
+    });
+
+    let section = first_sidebar_section(&window);
+    section.notify_reorder_folder_requested(
+        &WorkspaceFolderId::new("second"),
+        WorkspaceFolderMoveDirection::Up,
+    );
+    let second_image = second_folder.join("images/logo.png").display().to_string();
+    wait_until(Duration::from_secs(3), || {
+        window
+            .imp()
+            .sidebar
+            .workspaces_file()
+            .workspace(&workspace_id)
+            .is_some_and(|workspace| {
+                workspace.folder_paths() == vec![second_folder.clone(), first_folder.clone()]
+            })
+            && markdown_preview_has_image_fallback_body_containing(&window, &second_image)
+    });
+}
+
+#[test]
+fn test_rapid_workspace_mutations_persist_latest_sidebar_state() {
+    ensure_gtk_init();
+    let folders_dir = tempfile::tempdir().expect("workspace mutation tempdir");
+    let alpha_first = folders_dir.path().join("alpha-first");
+    let alpha_second = folders_dir.path().join("alpha-second");
+    let alpha_added = folders_dir.path().join("alpha-added");
+    let beta_folder = folders_dir.path().join("beta");
+    for folder in [&alpha_first, &alpha_second, &alpha_added, &beta_folder] {
+        fixture::create_dir_all(folder);
+    }
+
+    let alpha = WorkspaceId::new("ws-alpha");
+    let beta = WorkspaceId::new("ws-beta");
+    let workspaces = WorkspacesFile {
+        current_scope: WorkspaceScope::workspace(alpha.clone()),
+        workspaces: vec![
+            WorkspaceConfig::with_folders(
+                alpha.clone(),
+                "Alpha",
+                vec![
+                    WorkspaceFolder::with_id(WorkspaceFolderId::new("alpha-first"), alpha_first.clone()),
+                    WorkspaceFolder::with_id(WorkspaceFolderId::new("alpha-second"), alpha_second.clone()),
+                ],
+            ),
+            WorkspaceConfig::with_one_folder(beta.clone(), "Beta", beta_folder),
+        ],
+    };
+    workspace_manager::save(&json_store::data_dir(), &workspaces)
+        .expect("save rapid-mutation seed workspaces");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_sections(&window, 2);
+    wait_for_workspace_folders(&window, 3);
+
+    window
+        .imp()
+        .sidebar
+        .select_folder_for_workspace_for_test(&alpha, &alpha_added);
+    wait_for_workspace_folders(&window, 4);
+    let added_id = window
+        .imp()
+        .sidebar
+        .workspaces_file()
+        .workspace(&alpha)
+        .and_then(|workspace| {
+            workspace
+                .folders
+                .iter()
+                .find(|folder| folder.path == alpha_added)
+                .map(|folder| folder.id.clone())
+        })
+        .expect("added folder id");
+
+    let alpha_section = first_sidebar_section(&window);
+    alpha_section.notify_reorder_folder_requested(&added_id, WorkspaceFolderMoveDirection::Up);
+    wait_until(Duration::from_secs(3), || {
+        window
+            .imp()
+            .sidebar
+            .workspaces_file()
+            .workspace(&alpha)
+            .is_some_and(|workspace| {
+                workspace.folder_paths()
+                    == vec![
+                        alpha_first.clone(),
+                        alpha_added.clone(),
+                        alpha_second.clone(),
+                    ]
+            })
+    });
+
+    window.imp().sidebar.remove_folder_from_workspace_for_test(
+        &alpha,
+        &WorkspaceFolderId::new("alpha-first"),
+        &alpha_first,
+    );
+    wait_until(Duration::from_secs(3), || {
+        window
+            .imp()
+            .sidebar
+            .workspaces_file()
+            .workspace(&alpha)
+            .is_some_and(|workspace| {
+                workspace.folder_paths() == vec![alpha_added.clone(), alpha_second.clone()]
+            })
+    });
+
+    window
+        .imp()
+        .sidebar
+        .rename_workspace_for_test(&alpha, "Latest Alpha");
+    let dropdown = &window.imp().sidebar.imp().workspace_filter_dropdown;
+    dropdown.set_selected(2);
+    flush_events();
+    wait_until(Duration::from_secs(3), || {
+        window.imp().sidebar.current_scope() == WorkspaceScope::workspace(beta.clone())
+    });
+
+    window.imp().sidebar.remove_workspace_for_test(&beta);
+    wait_for_workspace_sections(&window, 1);
+    wait_until(Duration::from_secs(5), || {
+        let loaded = workspace_manager::load(&json_store::data_dir()).expect("load workspaces");
+        loaded.current_scope() == WorkspaceScope::All
+            && loaded.workspaces.len() == 1
+            && loaded.workspace(&alpha).is_some_and(|workspace| {
+                workspace.name == "Latest Alpha"
+                    && workspace.folder_paths()
+                        == vec![alpha_added.clone(), alpha_second.clone()]
+                    && workspace
+                        .folders
+                        .first()
+                        .is_some_and(|folder| folder.id == added_id)
+            })
+    });
+
+    flush_after_delay(Duration::from_millis(350));
+    let loaded = workspace_manager::load(&json_store::data_dir())
+        .expect("reload final rapid-mutation workspace state");
+    let workspace = loaded.workspace(&alpha).expect("remaining workspace");
+    assert_eq!(loaded.current_scope(), WorkspaceScope::All);
+    assert_eq!(workspace.name, "Latest Alpha");
+    assert_eq!(workspace.folder_paths(), vec![alpha_added, alpha_second]);
+    assert_eq!(workspace.folders[0].id, added_id);
 }
 
 #[test]
 fn test_workspace_selector_updates_search_and_palette_scope() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let window = test_window();
     present_window(&window);
 
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 2);
 
     let dropdown = &window.imp().sidebar.imp().workspace_filter_dropdown;
@@ -4735,10 +5413,10 @@ fn test_workspace_selector_updates_search_and_palette_scope() {
             .search_panel
             .imp()
             .runtime
-            .workspace_roots
+            .workspace_folders
             .borrow()
             .as_slice(),
-        &[left_root],
+        &[left_folder],
     );
 
     dropdown.set_selected(0);
@@ -4749,12 +5427,12 @@ fn test_workspace_selector_updates_search_and_palette_scope() {
 #[test]
 fn test_restored_workspace_scope_narrows_consumers_on_startup() {
     ensure_gtk_init();
-    let (_roots_dir, _left_root, right_root) =
+    let (_folders_dir, _left_folder, right_folder) =
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-right")));
     let window = test_window();
     present_window(&window);
 
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 1, 1);
 
     let dropdown = &window.imp().sidebar.imp().workspace_filter_dropdown;
@@ -4765,10 +5443,10 @@ fn test_restored_workspace_scope_narrows_consumers_on_startup() {
             .search_panel
             .imp()
             .runtime
-            .workspace_roots
+            .workspace_folders
             .borrow()
             .as_slice(),
-        &[right_root],
+        &[right_folder],
     );
 }
 
@@ -5225,36 +5903,54 @@ fn test_save_as_canonical_refresh_after_tab_close_does_not_reopen_path_key() {
 }
 
 #[test]
-fn test_file_chooser_workspace_folder_selection_adds_workspace() {
+fn test_new_workspace_name_entry_creates_empty_selected_workspace() {
     ensure_gtk_init();
-    let dir = tempfile::tempdir().expect("workspace chooser tempdir");
-    let root = dir.path().join("chosen-workspace");
-    fixture::create_dir_all(&root);
+    seed_no_workspaces();
 
     let window = test_window();
-    window.imp().sidebar.select_workspace_folder_for_test(&root);
+    present_window(&window);
 
-    // Adding a workspace folder kicks off background work (file-tree scan +
-    // persistence via spawn_blocking_then), so this waits on async completion,
-    // not a synchronous UI flip. Async/scheduling-dependent waits get a generous
-    // budget: the predicate returns the instant the work lands, so the larger
-    // ceiling only matters when a loaded machine delays the background thread.
-    wait_until(Duration::from_secs(10), || {
-        window
-            .imp()
-            .sidebar
-            .all_workspace_root_paths()
-            .iter()
-            .any(|candidate| candidate == &root)
-    });
-    assert!(
-        window
-            .imp()
-            .sidebar
-            .current_scope_root_paths()
-            .iter()
-            .any(|candidate| candidate == &root),
-        "newly selected workspace should become the current scope",
+    window
+        .imp()
+        .sidebar
+        .enter_new_workspace_name_for_test("  writing plans  ");
+
+    wait_for_workspace_sections(&window, 1);
+    let section = first_sidebar_section(&window);
+    assert_eq!(section.imp().header_label.text(), "writing plans");
+    assert!(!section.has_folders());
+    assert!(section.imp().empty_folder_set_label.is_visible());
+    assert_eq!(window.imp().sidebar.all_workspace_folder_paths(), Vec::<PathBuf>::new());
+    assert_eq!(
+        window.imp().sidebar.current_scope(),
+        WorkspaceScope::workspace(section.workspace_id())
+    );
+    assert_eq!(
+        window.imp().sidebar.current_scope_folder_paths(),
+        Vec::<PathBuf>::new()
+    );
+}
+
+#[test]
+fn test_new_workspace_whitespace_name_does_not_mutate_workspace_state() {
+    ensure_gtk_init();
+    seed_no_workspaces();
+
+    let window = test_window();
+    present_window(&window);
+
+    window
+        .imp()
+        .sidebar
+        .enter_new_workspace_name_for_test("   \n\t  ");
+    flush_events();
+
+    assert!(window.imp().sidebar.imp().sections.borrow().is_empty());
+    assert_eq!(window.imp().sidebar.current_scope(), WorkspaceScope::All);
+    assert_eq!(window.imp().sidebar.all_workspace_folder_paths(), Vec::<PathBuf>::new());
+    assert_eq!(
+        window.imp().sidebar.current_scope_folder_paths(),
+        Vec::<PathBuf>::new()
     );
 }
 
@@ -5272,11 +5968,11 @@ fn test_file_chooser_cancellation_preserves_document_workspace_and_draft_state()
     let data_dir = json_store::data_dir();
     draft_service::write_draft(&data_dir, &old_draft_id, "cancelled chooser draft\n")
         .expect("seed draft");
-    let workspace_roots = window.imp().sidebar.all_workspace_root_paths();
+    let workspace_folders = window.imp().sidebar.all_workspace_folder_paths();
 
     window.cancel_open_file_for_test();
     window.cancel_save_as_destination_for_test();
-    window.imp().sidebar.cancel_workspace_folder_for_test();
+    window.imp().sidebar.cancel_new_workspace_for_test();
     flush_events();
 
     assert_tab_count(&window, 1);
@@ -5288,7 +5984,7 @@ fn test_file_chooser_cancellation_preserves_document_workspace_and_draft_state()
         draft_service::read_draft(&data_dir, &old_draft_id).expect("read draft"),
         Some("cancelled chooser draft\n".to_string()),
     );
-    assert_eq!(window.imp().sidebar.all_workspace_root_paths(), workspace_roots);
+    assert_eq!(window.imp().sidebar.all_workspace_folder_paths(), workspace_folders);
 }
 
 #[test]
@@ -5379,26 +6075,7 @@ fn test_local_history_dialog_shows_empty_state_without_snapshots() {
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
-    assert_eq!(
-        dialog.content_width(),
-        560,
-        "empty-state browser should keep its compact target width"
-    );
-    assert_eq!(
-        dialog.content_height(),
-        360,
-        "empty-state browser should keep its compact target height"
-    );
-    assert!(
-        dialog.content_width() <= 720,
-        "empty-state browser should stay compact on screen, got width {}",
-        dialog.content_width()
-    );
-    assert!(
-        dialog.content_height() <= 520,
-        "empty-state browser should stay compact on screen, got height {}",
-        dialog.content_height()
-    );
+    assert_readable_empty_status_dialog(&dialog, &child, "empty local-history browser");
     assert!(
         find_label_by_text(&child, "No local history yet").is_some(),
         "empty-state browser should explain why no snapshots are listed"
@@ -7243,7 +7920,7 @@ fn test_notes_menu_exists_and_primary_menu_excludes_note_actions() {
             "Browse Notes…".to_string(),
             "Add Bookmark".to_string(),
             "Open Document Note…".to_string(),
-            "Open Workspace Note…".to_string(),
+            "Open Folder Note…".to_string(),
         ]
     );
 
@@ -7256,7 +7933,7 @@ fn test_notes_menu_exists_and_primary_menu_excludes_note_actions() {
     for label in [
         "Add Bookmark",
         "Open Document Note…",
-        "Open Workspace Note…",
+        "Open Folder Note…",
         "Browse Notes…",
         "Edit Bookmark…",
         "Browse Bookmarks…",
@@ -7269,27 +7946,41 @@ fn test_notes_menu_exists_and_primary_menu_excludes_note_actions() {
 }
 
 #[test]
-fn test_notes_menu_button_hides_without_editor_or_workspace() {
+fn test_notes_menu_button_shows_without_editor_or_workspace() {
     ensure_gtk_init();
+    seed_no_workspaces();
     let window = test_window();
-    assert!(!notes_menu_button_visible(&window));
+    present_window(&window);
+
+    wait_until(Duration::from_secs(2), || notes_menu_button_visible(&window));
+    assert!(action_enabled(&window, "notes-show-notes"));
+    for name in [
+        "notes-toggle-bookmark",
+        "notes-open-document-note",
+        "notes-open-folder-note",
+    ] {
+        assert!(
+            !action_enabled(&window, name),
+            "expected '{name}' to stay disabled without a document or concrete workspace",
+        );
+    }
 }
 
 #[test]
 fn test_notes_menu_state_for_workspace_without_saved_file() {
     ensure_gtk_init();
-    let (_roots_dir, _left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let (_folders_dir, _left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let window = test_window();
     present_window(&window);
 
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 2);
     assert!(notes_menu_button_visible(&window));
 
     for name in [
         "notes-toggle-bookmark",
         "notes-open-document-note",
-        "notes-open-workspace-note",
+        "notes-open-folder-note",
     ] {
         assert!(
             !action_enabled(&window, name),
@@ -7303,7 +7994,7 @@ fn test_notes_menu_state_for_workspace_without_saved_file() {
     for name in [
         "notes-toggle-bookmark",
         "notes-open-document-note",
-        "notes-open-workspace-note",
+        "notes-open-folder-note",
     ] {
         assert!(
             !action_enabled(&window, name),
@@ -7313,25 +8004,134 @@ fn test_notes_menu_state_for_workspace_without_saved_file() {
 }
 
 #[test]
-fn test_notes_menu_workspace_note_action_enables_for_concrete_scope() {
+fn test_notes_menu_stays_available_after_closing_last_tab_with_workspaces() {
     ensure_gtk_init();
-    let (_roots_dir, _left_root, _right_root) =
+    let (_folders_dir, _left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 2);
+    activate_action(&window, "new-tab");
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
+
+    close_selected_tab(&window);
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+
+    assert!(notes_menu_button_visible(&window));
+    assert!(action_enabled(&window, "notes-show-notes"));
+    for name in [
+        "notes-toggle-bookmark",
+        "notes-open-document-note",
+        "notes-open-folder-note",
+    ] {
+        assert!(
+            !action_enabled(&window, name),
+            "expected '{name}' to stay disabled after the last tab closes",
+        );
+    }
+}
+
+#[test]
+fn test_notes_menu_folder_note_action_enables_for_concrete_scope() {
+    ensure_gtk_init();
+    let (_folders_dir, _left_folder, _right_folder) =
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-right")));
     let window = test_window();
     present_window(&window);
 
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 1, 1);
     assert!(notes_menu_button_visible(&window));
-    assert!(action_enabled(&window, "notes-open-workspace-note"));
+    assert!(action_enabled(&window, "notes-open-folder-note"));
     assert!(action_enabled(&window, "notes-show-notes"));
+}
+
+#[test]
+fn test_notes_menu_folder_note_action_disables_for_empty_workspace_scope() {
+    ensure_gtk_init();
+    seed_empty_folder_set_workspace();
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_sections(&window, 1);
+    assert!(notes_menu_button_visible(&window));
+    assert!(!action_enabled(&window, "notes-open-folder-note"));
+    assert!(action_enabled(&window, "notes-show-notes"));
+}
+
+#[test]
+fn test_open_folder_note_for_multi_folder_workspace_requires_folder_choice() {
+    ensure_gtk_init();
+    let (_folders_dir, first_folder, second_folder) = seed_folder_set_workspace_with_scope(
+        WorkspaceScope::workspace(WorkspaceId::new("ws-folder-set")),
+    );
+    let data_dir = json_store::data_dir();
+    folder_note_service::save_for_folder(
+        &data_dir,
+        &second_folder,
+        &RichNoteBody::new("Second folder note"),
+    )
+    .expect("save second folder note");
+
+    let window = test_window();
+    present_window(&window);
+
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 0);
+    assert!(action_enabled(&window, "notes-open-folder-note"));
+
+    activate_action(&window, "notes-open-folder-note");
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Open Folder Note")
+    });
+
+    let dialog = visible_alert_dialog(&window).expect("folder choice dialog");
+    let extra = dialog.extra_child().expect("folder choice extra child");
+    assert!(
+        find_label_by_text(&extra, &first_folder.display().to_string()).is_some(),
+        "folder choice dialog should include the first workspace folder"
+    );
+    assert!(
+        find_label_by_text(&extra, &second_folder.display().to_string()).is_some(),
+        "folder choice dialog should include the second workspace folder"
+    );
+    assert!(
+        find_note_editor_stack(&extra).is_none(),
+        "multi-folder action must choose a folder before showing the note editor"
+    );
+
+    let second_button = find_button_by_tooltip(&extra, &second_folder.display().to_string())
+        .expect("second folder chooser button");
+    second_button.emit_clicked();
+    flush_events();
+
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Folder Note")
+    });
+    let dialog = visible_alert_dialog(&window).expect("folder note dialog");
+    let extra = dialog.extra_child().expect("folder note extra child");
+    assert!(
+        find_label_by_text(&extra, &second_folder.display().to_string()).is_some(),
+        "choosing the second folder should open that folder's note"
+    );
+    assert!(
+        find_label_by_text(&extra, &first_folder.display().to_string()).is_none(),
+        "choosing the second folder must not fall back to the first folder"
+    );
 }
 
 #[test]
 fn test_notes_menu_popup_opens_for_add_and_remove_bookmark_states() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("notes-popup.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("notes-popup.rs");
     fixture::write_text(&path, "one\ntwo\nthree\n");
 
     let data_dir = json_store::data_dir();
@@ -7347,7 +8147,7 @@ fn test_notes_menu_popup_opens_for_add_and_remove_bookmark_states() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     window.open_document(&path);
@@ -7410,11 +8210,11 @@ fn test_notes_menu_popup_opens_for_add_and_remove_bookmark_states() {
 #[test]
 fn test_sidebar_context_menus_include_note_entry_points() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let window = test_window();
     present_window(&window);
 
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 2);
 
     let section = window
@@ -7451,11 +8251,11 @@ fn test_sidebar_context_menus_include_note_entry_points() {
     assert!(
         menu_model_labels(&header_menu)
             .iter()
-            .any(|label| label == "Open Workspace Note…"),
-        "workspace header context menu should expose workspace notes"
+            .any(|label| label == "Open Folder Note…"),
+        "workspace header context menu should expose folder notes"
     );
 
-    *section.imp().context_path.borrow_mut() = Some(left_root.join("alpha.rs"));
+    *section.imp().context_path.borrow_mut() = Some(left_folder.join("alpha.rs"));
     section.imp().context_is_dir.set(false);
     section
         .activate_action("section.document-note", None)
@@ -7472,21 +8272,21 @@ fn test_sidebar_context_menus_include_note_entry_points() {
     flush_events();
 
     section
-        .activate_action("ws-header.open-workspace-note", None)
-        .expect("workspace-note widget action should exist");
+        .activate_action("ws-header.open-folder-note", None)
+        .expect("folder-note widget action should exist");
     wait_until(Duration::from_secs(2), || {
         visible_alert_dialog(&window)
             .and_then(|dialog| dialog.heading())
             .as_deref()
-            == Some("Workspace Note")
+            == Some("Folder Note")
     });
 }
 
 #[test]
 fn test_document_note_dialog_supports_edit_and_render_modes() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("document-note.md");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("document-note.md");
     fixture::write_text(&path, "# Heading\n\nBody\n");
 
     let data_dir = json_store::data_dir();
@@ -7499,7 +8299,7 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     window.open_document(&path);
@@ -7547,13 +8347,13 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
 #[test]
 fn test_empty_document_note_first_render_keeps_modal_geometry_after_typing() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("empty-document-note.md");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("empty-document-note.md");
     fixture::write_text(&path, "# Source\n\nBody\n");
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     window.open_document(&path);
@@ -7583,69 +8383,178 @@ fn test_empty_document_note_first_render_keeps_modal_geometry_after_typing() {
 }
 
 #[test]
-fn test_open_workspace_note_dialog_for_concrete_scope() {
+fn test_open_folder_note_dialog_for_concrete_scope() {
     ensure_gtk_init();
-    let (_roots_dir, _left_root, right_root) =
+    let (_folders_dir, _left_folder, right_folder) =
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-right")));
 
     let data_dir = json_store::data_dir();
-    workspace_note_service::save_for_root(
+    folder_note_service::save_for_folder(
         &data_dir,
-        &right_root,
-        &RichNoteBody::new("Workspace note"),
+        &right_folder,
+        &RichNoteBody::new("Folder note"),
     )
-    .expect("save workspace note");
+    .expect("save folder note");
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 1, 1);
 
-    activate_action(&window, "open-workspace-note");
+    activate_action(&window, "open-folder-note");
     wait_until(Duration::from_secs(2), || {
         visible_alert_dialog(&window)
             .and_then(|dialog| dialog.heading())
             .as_deref()
-            == Some("Workspace Note")
+            == Some("Folder Note")
     });
 }
 
 #[test]
-fn test_empty_workspace_note_first_render_keeps_modal_geometry_after_typing() {
+fn test_open_folder_note_warns_when_sidecar_is_corrupt() {
     ensure_gtk_init();
-    let (_roots_dir, _left_root, _right_root) =
+    let (_folders_dir, _left_folder, right_folder) =
+        seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-right")));
+    let data_dir = json_store::data_dir();
+    let corrupt_identity =
+        folder_note_service::resolve_folder_note_identity(&right_folder).expect("folder identity");
+    let corrupt_sidecar =
+        folder_note_service::folder_notes_dir(&data_dir).join(format!("{}.json", corrupt_identity.sidecar_id));
+    fixture::create_dir_all(corrupt_sidecar.parent().expect("sidecar parent"));
+    fixture::write_text(&corrupt_sidecar, "not folder note json");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 1, 1);
+
+    activate_action(&window, "open-folder-note");
+    wait_until(Duration::from_secs(5), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Folder Note")
+            && window
+                .imp()
+                .notification_bus
+                .status_bar_view()
+                .is_some_and(|status| {
+                    status
+                        .text
+                        .contains("Some folder note data could not be loaded")
+                })
+    });
+}
+
+#[test]
+fn test_folder_note_dialog_saves_renders_and_clears_note() {
+    ensure_gtk_init();
+    let (_folders_dir, _left_folder, right_folder) =
+        seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-right")));
+    let data_dir = json_store::data_dir();
+    let note_text = "# Saved folder note\n\nPersistent body";
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 1, 1);
+
+    activate_action(&window, "open-folder-note");
+    wait_until(Duration::from_secs(5), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Folder Note")
+    });
+
+    let dialog = visible_alert_dialog(&window).expect("folder note dialog");
+    let extra = dialog.extra_child().expect("folder note extra child");
+    let stack = find_note_editor_stack(&extra).expect("folder note editor stack");
+    let (edit, render) = note_editor_text_views(&extra);
+    edit.buffer().set_text(note_text);
+    stack.set_visible_child_name("render");
+    flush_events();
+    wait_until(Duration::from_secs(5), || {
+        let buffer = render.buffer();
+        buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .contains("Saved folder note")
+    });
+
+    stack.set_visible_child_name("edit");
+    flush_events();
+    alert_response_button(&dialog, "save").emit_clicked();
+    flush_events();
+    wait_until(Duration::from_secs(5), || {
+        folder_note_service::load_for_folder(&data_dir, &right_folder)
+            .ok()
+            .flatten()
+            .is_some_and(|document| document.note.text == note_text)
+            && window
+                .imp()
+                .notification_bus
+                .status_bar_view()
+                .is_some_and(|status| status.text.contains("Folder note saved"))
+    });
+
+    activate_action(&window, "open-folder-note");
+    wait_until(Duration::from_secs(5), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Folder Note")
+    });
+    let dialog = visible_alert_dialog(&window).expect("reopened folder note dialog");
+    alert_response_button(&dialog, "clear").emit_clicked();
+    flush_events();
+    wait_until(Duration::from_secs(5), || {
+        folder_note_service::load_for_folder(&data_dir, &right_folder)
+            .expect("folder note load after clear")
+            .is_none()
+            && window
+                .imp()
+                .notification_bus
+                .status_bar_view()
+                .is_some_and(|status| status.text.contains("Folder note cleared"))
+    });
+}
+
+#[test]
+fn test_empty_folder_note_first_render_keeps_modal_geometry_after_typing() {
+    ensure_gtk_init();
+    let (_folders_dir, _left_folder, _right_folder) =
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-right")));
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 1, 1);
 
-    activate_action(&window, "open-workspace-note");
+    activate_action(&window, "open-folder-note");
     wait_until(Duration::from_secs(2), || {
         visible_alert_dialog(&window)
             .and_then(|dialog| dialog.heading())
             .as_deref()
-            == Some("Workspace Note")
+            == Some("Folder Note")
     });
 
-    let dialog = visible_alert_dialog(&window).expect("workspace note dialog");
-    let extra = dialog.extra_child().expect("workspace note extra child");
-    let stack = find_note_editor_stack(&extra).expect("workspace note editor stack");
+    let dialog = visible_alert_dialog(&window).expect("folder note dialog");
+    let extra = dialog.extra_child().expect("folder note extra child");
+    let stack = find_note_editor_stack(&extra).expect("folder note editor stack");
     assert_note_editor_text_margins_match(&extra);
     assert_typed_note_editor_first_render_keeps_modal_geometry(
         &dialog,
         &extra,
         &stack,
-        "# Typed workspace note\n\nPreview me",
+        "# Typed folder note\n\nPreview me",
     );
 }
 
 #[test]
 fn test_browse_notes_opens_document_note_for_selected_row() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("browse-notes.md");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("browse-notes.md");
     fixture::write_text(&path, "# Notes\n");
 
     let data_dir = json_store::data_dir();
@@ -7658,7 +8567,7 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
@@ -7700,9 +8609,9 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
 #[test]
 fn test_notes_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let valid_path = left_root.join("valid-note.md");
-    let corrupt_path = left_root.join("corrupt-note.md");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let valid_path = left_folder.join("valid-note.md");
+    let corrupt_path = left_folder.join("corrupt-note.md");
     fixture::write_text(&valid_path, "# Valid\n");
     fixture::write_text(&corrupt_path, "# Corrupt\n");
 
@@ -7722,7 +8631,7 @@ fn test_notes_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
 
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
@@ -7750,8 +8659,8 @@ fn test_notes_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
 #[test]
 fn test_browse_notes_opens_bookmark_for_selected_row() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("browse-bookmark.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("browse-bookmark.rs");
     fixture::write_text(&path, "one\ntwo\nthree\n");
 
     let data_dir = json_store::data_dir();
@@ -7767,7 +8676,7 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
@@ -7804,8 +8713,8 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
 #[test]
 fn test_notes_browser_renders_markdown_bookmark_excerpt() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("bookmark-preview.md");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("bookmark-preview.md");
     fixture::write_text(
         &path,
         "opening context\n\n# Target bookmark heading\n\nfollowing context\n",
@@ -7823,7 +8732,7 @@ fn test_notes_browser_renders_markdown_bookmark_excerpt() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
@@ -7852,8 +8761,8 @@ fn test_notes_browser_renders_markdown_bookmark_excerpt() {
 #[test]
 fn test_notes_browser_renders_raw_bookmark_excerpt_with_target_marker() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("bookmark-preview.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("bookmark-preview.rs");
     fixture::write_text(
         &path,
         "raw first\nraw before\nraw target\nraw after\nraw final\n",
@@ -7871,7 +8780,7 @@ fn test_notes_browser_renders_raw_bookmark_excerpt_with_target_marker() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
@@ -7895,13 +8804,13 @@ fn test_notes_browser_renders_raw_bookmark_excerpt_with_target_marker() {
 #[test]
 fn test_notes_browser_bookmark_preview_uses_live_open_editor_buffer() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("live-bookmark-preview.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("live-bookmark-preview.rs");
     fixture::write_text(&path, "disk before\ndisk target\ndisk after\n");
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
     window.open_document(&path);
     wait_until(Duration::from_secs(5), || {
@@ -7939,9 +8848,9 @@ fn test_notes_browser_ignores_stale_bookmark_excerpt_completion() {
     ensure_gtk_init();
     let _delay_reset = BookmarkExcerptPreviewDelayReset;
     set_bookmark_excerpt_preview_delay_for_test(250);
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let slow_path = left_root.join("slow-bookmark-preview.rs");
-    let fast_path = left_root.join("fast-bookmark-preview.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let slow_path = left_folder.join("slow-bookmark-preview.rs");
+    let fast_path = left_folder.join("fast-bookmark-preview.rs");
     fixture::write_text(&slow_path, "slow before\nslow target\nslow after\n");
     fixture::write_text(&fast_path, "fast before\nfast target\nfast after\n");
 
@@ -7966,7 +8875,7 @@ fn test_notes_browser_ignores_stale_bookmark_excerpt_completion() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 4);
 
     activate_action(&window, "show-notes");
@@ -7993,8 +8902,8 @@ fn test_notes_browser_ignores_stale_bookmark_excerpt_completion() {
 #[test]
 fn test_notes_browser_search_ignores_bookmark_excerpt_text() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("metadata-only-bookmark.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("metadata-only-bookmark.rs");
     fixture::write_text(
         &path,
         "before\nneedle-only-in-source-excerpt\nafter\n",
@@ -8012,7 +8921,7 @@ fn test_notes_browser_search_ignores_bookmark_excerpt_text() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
@@ -8033,13 +8942,13 @@ fn test_notes_browser_search_ignores_bookmark_excerpt_text() {
 #[test]
 fn test_browse_notes_includes_fresh_live_bookmark_before_sidecar_save() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("fresh-live-bookmark.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("fresh-live-bookmark.rs");
     fixture::write_text(&path, "one\ntwo\nthree\n");
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
     window.open_document(&path);
     wait_until(Duration::from_secs(5), || {
@@ -8069,8 +8978,8 @@ fn test_browse_notes_includes_fresh_live_bookmark_before_sidecar_save() {
 #[test]
 fn test_browse_notes_prefers_open_editor_bookmarks_over_stale_sidecar() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("stale-sidecar-bookmark.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("stale-sidecar-bookmark.rs");
     fixture::write_text(&path, "one\ntwo\nthree\n");
 
     let data_dir = json_store::data_dir();
@@ -8086,7 +8995,7 @@ fn test_browse_notes_prefers_open_editor_bookmarks_over_stale_sidecar() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
     window.open_document(&path);
     wait_until(Duration::from_secs(5), || {
@@ -8224,10 +9133,10 @@ fn test_browse_notes_shows_open_tab_document_note_without_workspace() {
 #[test]
 fn test_browse_notes_keeps_scope_rows_strict_and_lists_other_open_workspace_tab() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, right_root) =
+    let (_folders_dir, left_folder, right_folder) =
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-left")));
-    let left_path = left_root.join("left-scoped-bookmark.rs");
-    let right_path = right_root.join("right-open-bookmark.rs");
+    let left_path = left_folder.join("left-scoped-bookmark.rs");
+    let right_path = right_folder.join("right-open-bookmark.rs");
     fixture::write_text(&left_path, "left\n");
     fixture::write_text(&right_path, "right\n");
 
@@ -8243,7 +9152,7 @@ fn test_browse_notes_keeps_scope_rows_strict_and_lists_other_open_workspace_tab(
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 1, 2);
     window.open_document(&right_path);
     wait_until(Duration::from_secs(5), || {
@@ -8278,11 +9187,127 @@ fn test_browse_notes_keeps_scope_rows_strict_and_lists_other_open_workspace_tab(
 }
 
 #[test]
+fn test_notes_browser_uses_folder_order_for_overlapping_primary_context() {
+    ensure_gtk_init();
+    let (_folders_dir, parent_folder, _child_folder, path) = seed_overlapping_folder_workspace();
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            1,
+            Some("overlap bookmark".to_string()),
+        )],
+    )
+    .expect("save overlapping bookmark");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("overlap document note"),
+    )
+    .expect("save overlapping document note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
+
+    let primary_context_prefix = format!("overlap · {} · ", parent_folder.display());
+    let subtitles = (0..sidebar.items().n_items())
+        .filter_map(|index| sidebar.item(index))
+        .filter_map(|item| item.subtitle().map(|subtitle| subtitle.to_string()))
+        .collect::<Vec<_>>();
+    assert!(
+        subtitles
+            .iter()
+            .any(|subtitle| subtitle.starts_with(&primary_context_prefix)
+                && subtitle.contains("Line 2")),
+        "bookmark rows should use the first configured covering folder as primary context"
+    );
+    assert!(
+        subtitles
+            .iter()
+            .any(|subtitle| subtitle
+                .starts_with(&format!("{}{}", primary_context_prefix, path.display()))),
+        "document-note rows should use the first configured covering folder as primary context"
+    );
+}
+
+#[test]
+fn test_notes_browser_preserves_configured_folder_note_order() {
+    ensure_gtk_init();
+    let folders_dir = tempfile::tempdir().expect("folder-note order tempdir");
+    let first_folder = folders_dir.path().join("z-first");
+    let second_folder = folders_dir.path().join("a-second");
+    fixture::create_dir_all(&first_folder);
+    fixture::create_dir_all(&second_folder);
+    let workspaces = WorkspacesFile {
+        current_scope: WorkspaceScope::All,
+        workspaces: vec![WorkspaceConfig::with_folders(
+            WorkspaceId::new("ws-folder-note-order"),
+            "ordered",
+            vec![
+                WorkspaceFolder::with_id(WorkspaceFolderId::new("first"), first_folder.clone()),
+                WorkspaceFolder::with_id(WorkspaceFolderId::new("second"), second_folder.clone()),
+            ],
+        )],
+    };
+    workspace_manager::save(&json_store::data_dir(), &workspaces)
+        .expect("save folder-note order workspace");
+    folder_note_service::save_for_folder(
+        &json_store::data_dir(),
+        &first_folder,
+        &RichNoteBody::new("first configured folder"),
+    )
+    .expect("save first folder note");
+    folder_note_service::save_for_folder(
+        &json_store::data_dir(),
+        &second_folder,
+        &RichNoteBody::new("second configured folder"),
+    )
+    .expect("save second folder note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
+
+    assert_eq!(adw_sidebar_section_titles(&sidebar), ["Folder Notes"]);
+    assert!(
+        sidebar
+            .item(0)
+            .and_then(|item| item.subtitle())
+            .is_some_and(|subtitle| subtitle.contains(&first_folder.display().to_string())),
+        "first configured folder note should stay first even when its path sorts later"
+    );
+    assert!(
+        sidebar
+            .item(1)
+            .and_then(|item| item.subtitle())
+            .is_some_and(|subtitle| subtitle.contains(&second_folder.display().to_string())),
+        "second configured folder note should stay second"
+    );
+}
+
+#[test]
 fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let valid_path = left_root.join("valid-bookmark.rs");
-    let corrupt_path = left_root.join("corrupt-bookmark.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let valid_path = left_folder.join("valid-bookmark.rs");
+    let corrupt_path = left_folder.join("corrupt-bookmark.rs");
     fixture::write_text(&valid_path, "one\ntwo\n");
     fixture::write_text(&corrupt_path, "bad\n");
 
@@ -8305,7 +9330,7 @@ fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
 
     activate_action(&window, "show-bookmarks");
     wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
@@ -8329,8 +9354,8 @@ fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
 #[test]
 fn test_notes_browser_close_button_dismisses_populated_browser() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("close-notes-browser.md");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("close-notes-browser.md");
     fixture::write_text(&path, "# Close\n");
     document_note_service::save_for_path(
         &json_store::data_dir(),
@@ -8341,7 +9366,7 @@ fn test_notes_browser_close_button_dismisses_populated_browser() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
@@ -8366,8 +9391,8 @@ fn test_notes_browser_close_button_dismisses_populated_browser() {
 #[test]
 fn test_notes_browser_close_button_dismisses_collapsed_sidebar_page() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("close-sidebar-notes-browser.md");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("close-sidebar-notes-browser.md");
     fixture::write_text(&path, "# Close sidebar\n");
     document_note_service::save_for_path(
         &json_store::data_dir(),
@@ -8378,7 +9403,7 @@ fn test_notes_browser_close_button_dismisses_collapsed_sidebar_page() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
@@ -8404,8 +9429,8 @@ fn test_notes_browser_close_button_dismisses_collapsed_sidebar_page() {
 #[test]
 fn test_notes_browser_back_navigates_and_close_dismisses_collapsed_preview() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("close-preview-notes-browser.md");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("close-preview-notes-browser.md");
     fixture::write_text(&path, "# Close preview\n");
     document_note_service::save_for_path(
         &json_store::data_dir(),
@@ -8416,7 +9441,7 @@ fn test_notes_browser_back_navigates_and_close_dismisses_collapsed_preview() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
@@ -8460,11 +9485,11 @@ fn test_notes_browser_back_navigates_and_close_dismisses_collapsed_preview() {
 #[test]
 fn test_empty_notes_browser_close_button_and_escape_dismiss() {
     ensure_gtk_init();
-    let (_roots_dir, _left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let (_folders_dir, _left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 2);
 
     activate_action(&window, "show-notes");
@@ -8472,6 +9497,7 @@ fn test_empty_notes_browser_close_button_and_escape_dismiss() {
 
     let dialog = visible_sheet_dialog(&window).expect("empty notes browser dialog");
     let child = dialog.child().expect("empty notes browser child");
+    assert_readable_empty_status_dialog(&dialog, &child, "empty Browse Notes browser");
     assert!(
         find_label_by_text(&child, "No notes yet").is_some(),
         "empty Browse Notes should present an explicit empty state"
@@ -8491,16 +9517,22 @@ fn test_empty_notes_browser_close_button_and_escape_dismiss() {
 }
 
 #[test]
-fn test_empty_notes_browser_opens_without_workspace_or_open_tab_rows() {
+fn test_empty_notes_browser_opens_from_header_without_workspace_or_open_tab_rows() {
     seed_no_workspaces();
 
     let window = test_window();
     present_window(&window);
-    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(2), || {
+        notes_menu_button_visible(&window) && action_enabled(&window, "notes-show-notes")
+    });
+
+    // Use the menu-scoped action so this covers the header `Browse Notes…` row.
+    activate_action(&window, "notes-show-notes");
     wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
 
     let dialog = visible_sheet_dialog(&window).expect("empty notes browser dialog");
     let child = dialog.child().expect("empty notes browser child");
+    assert_readable_empty_status_dialog(&dialog, &child, "empty Browse Notes browser");
     assert!(
         find_label_by_text(&child, "No notes yet").is_some(),
         "Browse Notes should present an explicit empty state even without workspaces"
@@ -8514,10 +9546,10 @@ fn test_empty_notes_browser_opens_without_workspace_or_open_tab_rows() {
 #[test]
 fn test_browse_notes_filters_bookmarks_to_current_workspace_scope() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, right_root) =
+    let (_folders_dir, left_folder, right_folder) =
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-left")));
-    let left_path = left_root.join("left-bookmark.rs");
-    let right_path = right_root.join("right-bookmark.rs");
+    let left_path = left_folder.join("left-bookmark.rs");
+    let right_path = right_folder.join("right-bookmark.rs");
     fixture::write_text(&left_path, "left\n");
     fixture::write_text(&right_path, "right\n");
 
@@ -8543,7 +9575,7 @@ fn test_browse_notes_filters_bookmarks_to_current_workspace_scope() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 1, 2);
 
     activate_action(&window, "show-notes");
@@ -8570,8 +9602,8 @@ fn test_browse_notes_filters_bookmarks_to_current_workspace_scope() {
 #[test]
 fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("sectioned-notes.md");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("sectioned-notes.md");
     fixture::write_text(&path, "one\ntwo\nthree\n");
 
     let data_dir = json_store::data_dir();
@@ -8584,12 +9616,12 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         )],
     )
     .expect("save bookmark");
-    workspace_note_service::save_for_root(
+    folder_note_service::save_for_folder(
         &data_dir,
-        &left_root,
-        &RichNoteBody::new("workspace needle"),
+        &left_folder,
+        &RichNoteBody::new("folder needle"),
     )
-    .expect("save workspace note");
+    .expect("save folder note");
     document_note_service::save_for_path(
         &data_dir,
         &path,
@@ -8598,7 +9630,7 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     .expect("save document note");
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
@@ -8634,7 +9666,7 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         .collect();
     assert_eq!(
         section_titles,
-        ["Bookmarks", "Workspace Notes", "Document Notes"],
+        ["Bookmarks", "Folder Notes", "Document Notes"],
         "notes browser should expose semantic Adwaita sidebar sections"
     );
 
@@ -8655,10 +9687,10 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     assert!(
         find_label_by_text(
             &child,
-            &format!("left · {} · Line 2", path.display()),
+            &format!("left · {} · {} · Line 2", left_folder.display(), path.display()),
         )
         .is_some(),
-        "bookmark preview metadata should include workspace, file path, and line"
+        "bookmark preview metadata should include workspace, primary folder, file path, and line"
     );
 
     sidebar.set_selected(2);
@@ -8736,8 +9768,8 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
 #[test]
 fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("many-bookmarks.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("many-bookmarks.rs");
     let content = (0..510)
         .map(|line| format!("line {line}\n"))
         .collect::<String>();
@@ -8756,7 +9788,7 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
@@ -8779,11 +9811,11 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
 #[test]
 fn test_notes_menu_renders_immediately_left_of_main_menu() {
     ensure_gtk_init();
-    let (_roots_dir, _left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
+    let (_folders_dir, _left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let window = test_window();
     present_window(&window);
 
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 2);
     wait_until(Duration::from_secs(2), || {
         let header_bar = window.imp().header_bar.upcast_ref::<gtk4::Widget>();
@@ -8813,8 +9845,8 @@ fn test_notes_menu_renders_immediately_left_of_main_menu() {
 #[test]
 fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
     ensure_gtk_init();
-    let (_roots_dir, left_root, _right_root) = seed_scoped_workspaces(WorkspaceScope::All);
-    let path = left_root.join("notes-state.rs");
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("notes-state.rs");
     fixture::write_text(&path, "one\ntwo\nthree\n");
 
     let data_dir = json_store::data_dir();
@@ -8829,7 +9861,7 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
     .expect("save bookmark sidecar");
     let window = test_window();
     present_window(&window);
-    wait_for_workspace_roots(&window, 2);
+    wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     window.open_document(&path);
@@ -8849,7 +9881,7 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
 
     assert!(action_enabled(&window, "notes-toggle-bookmark"));
     assert!(action_enabled(&window, "notes-open-document-note"));
-    assert!(!action_enabled(&window, "notes-open-workspace-note"));
+    assert!(!action_enabled(&window, "notes-open-folder-note"));
     assert!(action_enabled(&window, "edit-bookmark-label"));
 
     let editor = active_editor(&window);
