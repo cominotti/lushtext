@@ -353,7 +353,7 @@ only under the home directory. It does not request network access.
 The planned Snap uses **strict confinement plus xdg portals** instead — a
 narrower posture than the Flatpak's `--filesystem=host`. It declares only the
 `home` and `removable-media` interfaces (the `gnome` extension supplies Wayland,
-X11 fallback, GPU, and portals). Workspace roots and files outside those
+X11 fallback, GPU, and portals). Workspace folders and files outside those
 locations are reached through portals; the app surfaces an access error rather
 than crashing or losing data when a path is out of scope.
 
