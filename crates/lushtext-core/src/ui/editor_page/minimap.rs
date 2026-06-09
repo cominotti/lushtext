@@ -26,6 +26,12 @@ use super::LushtextEditorPage;
 /// Eight pixels is enough to show four stacked marker lanes while still
 /// leaving almost all of the overview map readable underneath.
 const MINIMAP_MARKER_STRIP_WIDTH: i32 = 8;
+/// Minimum top inset for the minimap text projection.
+///
+/// `GtkSourceMap` paints with a tiny font and sits inside a shell that owns its
+/// own border/padding. Keeping a real text margin here prevents the first map
+/// line from painting flush against a clipped top edge after width-only reflow.
+const MINIMAP_TOP_CONTENT_MARGIN: i32 = 6;
 /// Debounce for minimap marker refresh work.
 ///
 /// This coalesces bursts from buffer edits, search updates, and resize-driven
@@ -190,13 +196,12 @@ impl LushtextEditorPage {
         source_map.set_show_line_marks(false);
         source_map.set_highlight_current_line(false);
         source_map.set_monospace(true);
-        source_map.set_left_margin(0);
-        source_map.set_right_margin(0);
         source_map.set_overflow(gtk4::Overflow::Visible);
         source_map.add_css_class("monospace");
         source_map.add_css_class("minimap-view");
         source_map.set_hexpand(true);
         source_map.set_vexpand(true);
+        sync_source_map_geometry(&source_map, self.source_view());
 
         let marker_strip = gtk4::DrawingArea::new();
         marker_strip.set_width_request(MINIMAP_MARKER_STRIP_WIDTH);
@@ -312,23 +317,28 @@ impl LushtextEditorPage {
         self.schedule_minimap_refresh();
     }
 
-    /// Keep the source map's wrapping policy aligned with the main editor.
+    /// Keep the source map's wrapping and text insets aligned with the editor.
     ///
     /// The minimap viewport is a visual promise about the editor, so width
     /// reflow from word wrap must be reflected in the map before its native
-    /// viewport slider and our marker strip settle.
-    pub(crate) fn sync_minimap_wrap_mode(&self) {
+    /// viewport slider and our marker strip settle. The top margin is explicit
+    /// because the minimap shell has its own border/padding and a flush first
+    /// line is easy to clip by one pixel after adaptive shell reallocation.
+    pub(crate) fn sync_minimap_view_geometry(&self) {
         let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
             return;
         };
-        let wrap_mode = self.source_view().wrap_mode();
-        if source_map.wrap_mode() != wrap_mode {
-            source_map.set_wrap_mode(wrap_mode);
-        }
+        sync_source_map_geometry(&source_map, self.source_view());
+    }
+
+    /// Compatibility helper for callers whose trigger is specifically wrap policy.
+    pub(crate) fn sync_minimap_wrap_mode(&self) {
+        self.sync_minimap_view_geometry();
     }
 
     /// Refresh minimap visibility, markers, and any one-shot availability feedback.
     pub(crate) fn refresh_minimap(&self) {
+        self.imp().minimap.refresh_pending.set(false);
         let availability = current_availability(self);
         self.imp().minimap.availability.set(availability);
         if availability != MinimapAvailability::TooLarge {
@@ -346,6 +356,7 @@ impl LushtextEditorPage {
         }
 
         self.apply_minimap_width_from_settings();
+        self.sync_minimap_view_geometry();
         *self.imp().minimap.markers.borrow_mut() = collect_markers(self);
         self.queue_minimap_draw();
     }
@@ -354,6 +365,7 @@ impl LushtextEditorPage {
     pub(crate) fn schedule_minimap_refresh(&self) {
         let generation = self.imp().minimap.refresh_generation.get().wrapping_add(1);
         self.imp().minimap.refresh_generation.set(generation);
+        self.imp().minimap.refresh_pending.set(true);
 
         let editor_weak = self.downgrade();
         glib::timeout_add_local_once(MINIMAP_REFRESH_DEBOUNCE, move || {
@@ -452,6 +464,30 @@ impl LushtextEditorPage {
             MessageKind::Warning,
         );
         self.imp().minimap.too_large_feedback_shown.set(true);
+    }
+}
+
+fn sync_source_map_geometry(source_map: &sourceview5::Map, source_view: &sourceview5::View) {
+    let wrap_mode = source_view.wrap_mode();
+    if source_map.wrap_mode() != wrap_mode {
+        source_map.set_wrap_mode(wrap_mode);
+    }
+
+    let top_margin = source_view.top_margin().max(MINIMAP_TOP_CONTENT_MARGIN);
+    if source_map.top_margin() != top_margin {
+        source_map.set_top_margin(top_margin);
+    }
+
+    let bottom_margin = source_view.bottom_margin();
+    if source_map.bottom_margin() != bottom_margin {
+        source_map.set_bottom_margin(bottom_margin);
+    }
+
+    if source_map.left_margin() != 0 {
+        source_map.set_left_margin(0);
+    }
+    if source_map.right_margin() != 0 {
+        source_map.set_right_margin(0);
     }
 }
 

@@ -21,6 +21,7 @@ make fuzz-corpus-replay # stable replay of committed fuzz corpus seeds
 make fuzz-smoke # bounded local cargo-fuzz smoke, requires nightly tooling
 make fuzz-operation-smoke # bounded structured-operation fuzz smoke
 make test-widget-headless # CI-style mutter/dbus widget run
+make visual-geometry-smoke # same-session visual invariant screenshots and geometry snapshots
 make visual-smoke # real-session screenshot smoke with artifacts
 make crash-recovery-smoke # real-process SIGKILL/relaunch recovery smoke with artifacts
 make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
@@ -29,6 +30,7 @@ make performance-smoke # lightweight Criterion performance smoke
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
 make check-policy # fast policy audits beside rustfmt and Clippy
 make check-automation-docs # automation docs drift check against action/D-Bus contracts
+make check-visual-proof-policy # require visual geometry proof for local visual-sensitive changes
 make automation-client-self-test # reusable D-Bus automation client/parser self-test
 make blueprint-generate # regenerate generated .ui files from Blueprint sources
 make check-blueprint # validate Blueprint drift and UI template contract
@@ -60,6 +62,13 @@ scenario-helper flag marker, plus the reusable automation-client command,
 status, exit, result-field, and artifact-summary contracts. If
 `scripts/lushtext-automation.py` changes, also run
 `make automation-client-self-test`; `make check-policy` includes both checks.
+Screenshot-reported or geometry-sensitive UI fixes should also run
+`make visual-geometry-smoke` when the intended invariant is same-session pixel
+stability across a layout action. `make check-visual-proof-policy` is part of
+`make check-policy` and fails local visual-sensitive worktree changes until a
+passing, unfiltered visual geometry summary under `build/smoke/visual-geometry`
+matches the current visual-sensitive diff; skipped or stale visual geometry runs
+do not count as proof.
 
 Portal and headless smoke scripts must keep their temporary runtime directories
 short (for example directly under `$XDG_RUNTIME_DIR` or `/tmp`) rather than
@@ -271,6 +280,11 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   action-parameter rendering, and artifact-summary checks without launching the
   app. It is a fast policy gate for client and documentation changes, not a
   replacement for real-process D-Bus smoke.
+- `make visual-geometry-smoke` builds the debug binary, launches LushText under
+  isolated headless Mutter, captures same-session before/after screenshots and
+  bounded visual geometry snapshots, compares protected regions exactly, and
+  stores per-case manifests, comparison artifacts, and a current visual-sensitive
+  diff fingerprint under `build/smoke/visual-geometry` by default.
 - `make visual-smoke` builds the debug binary, launches LushText under isolated
   headless Mutter through the existing screenshot automation, captures a
   representative editor/search/minimap screenshot, and stores environment and
@@ -305,8 +319,8 @@ AT-SPI, installed-package, and deeper performance checks scheduled, manual,
 release-only, or opt-in unless a later change proves they are reliable as
 blocking PR gates.
 `.github/workflows/end-user-smoke.yml` is the scheduled/manual artifact lane
-for automation, visual, crash-recovery, portal/sandbox, accessibility,
-performance smoke, and full benchmark report coverage.
+for automation, visual-geometry, visual, crash-recovery, portal/sandbox,
+accessibility, performance smoke, and full benchmark report coverage.
 
 ## Meson Build (Installed / Flatpak)
 
@@ -387,7 +401,7 @@ All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but thi
 
 - `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, Blueprint template drift/contract validation, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources licenses`.
 - `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
-- `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive automation, visual, portal/sandbox, accessibility, crash-recovery, and performance-smoke lanes plus a full benchmark report. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
+- `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive automation, visual-geometry, visual, portal/sandbox, accessibility, crash-recovery, and performance-smoke lanes plus a full benchmark report. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
 - `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, Cominotti repository metadata tests, a no-mutation release preview, and current metadata validation.
 - `.github/workflows/release.yml` — `v*` tag release validation and manual dry-run workflow. It validates release metadata, builds the Flatpak from the release source, prepares/deploys Cominotti Flatpak repository artifacts when signing and deploy configuration are available, creates or updates the GitHub Release context, and opens an optional Flathub manifest PR when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.

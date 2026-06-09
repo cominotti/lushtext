@@ -87,7 +87,10 @@ After the reproduction, inspect the generated `summary.md`, then open the raw `a
    any reachable screen. Prefer no items/no required context for empty-state
    regressions, and many or awkward items for overflow, clipped controls,
    virtualization, or scrolling regressions. When practical, capture the
-   opposing state too so the fix is not tuned only to one end of the matrix.
+   opposing state too so the fix is not tuned only to one end of the matrix. If
+   the claim is that some chrome must remain pixel-identical while another
+   surface changes, prefer the same-session visual geometry runner over
+   independent one-off screenshots.
 8. Run `scripts/capture-screenshot.py --portal-only --non-interactive` only after the liveness/tool check succeeds, and note whether the desktop allowed or denied the request.
 9. Run `scripts/summarize-runtime-logs.py` or read the auto-generated `summary.md`.
 10. Use [references/log-patterns.md](references/log-patterns.md) to map the signature to likely GTK, GLib, Adwaita, or D-Bus causes.
@@ -116,6 +119,11 @@ This is the preferred workflow over broad speculative code changes. For geometry
 
 - Prefer `tty: true` for the live runner. PTY-backed sessions are the most reliable way to preserve stdout and stderr ordering.
 - For automated visual inspection, prefer the headless Mutter helper before live-desktop portal screenshots and before Xvfb. Mutter matches the CI compositor path and avoids stealing the human's focus.
+- For pixel invariants, prefer `make visual-geometry-smoke` or
+  `scripts/visual-geometry-smoke.py --case-filter ...` so before/after
+  screenshots come from the same process, wait on `visual-geometry-settled`,
+  compare protected regions exactly, and preserve bounded geometry snapshots
+  beside the PNGs.
 - For visual UI work, inspect the state matrix through actual screenshots when
   widget assertions cannot prove legibility: empty/no-context, representative
   populated, dense/many-item, and constrained-size states. Open the PNG and
@@ -176,6 +184,16 @@ This is the preferred workflow over broad speculative code changes. For geometry
   - Use repeated `--window-string-action ACTION=TEXT` flags when a visible workflow exposes a string-parameter action, such as filtering Browse Notes through `set-notes-browser-query=Visual note`.
   - Use repeated `--wait-window-action` flags when a dialog action must become enabled before AT-SPI tree capture, such as `set-notes-browser-query`.
   - Use repeated `--wait-atspi-text` flags when the best readiness proof is visible dialog text, such as `No notes yet`.
+- `scripts/visual-geometry-smoke.py`
+  - Runs same-session visual invariant scenarios under isolated headless Mutter.
+  - Captures before/after screenshots and bounded Automation1
+    `visual_geometry` snapshots from one process, waits for
+    `visual-geometry-settled`, and compares protected regions with explicit
+    masks.
+  - Writes per-case manifests, comparison reports, warning scans, and a root
+    summary under the requested artifact directory. Keep generated artifacts
+    under ignored `build/` paths unless the human explicitly asks to check them
+    in.
 - `scripts/capture-lushtext-xvfb.sh`
   - Fallback isolated display when headless Mutter or PipeWire capture is unavailable.
   - Launches a debug-owned LushText process in an isolated `dbus-run-session` + Xvfb display with temporary XDG state.

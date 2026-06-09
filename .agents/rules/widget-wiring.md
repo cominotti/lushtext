@@ -55,6 +55,12 @@ When a widget's behavior depends on its parent's size (e.g., sidebar ≤ 1/3 win
 - If allocation-derived geometry updates an `AdwBreakpoint` condition, cache the derived condition or threshold and call `set_condition()` only when it actually changes. Reparsing or reinstalling breakpoint conditions on every animation frame adds main-thread layout churn.
 - If `notify::position` also persists state, suppress that persistence while a programmatic paned animation is in flight. Clamp can stay live every frame; debounced settings writes should run once from the animation completion path.
 - Treat `notify::position` primarily as the **user-drag** path. If a timed animation is already driving valid paned positions directly, short-circuit the `notify::position` handler while that animation is active so the same frame is not reprocessed as if it were a manual drag.
+- When a layout action is expected to leave neighboring chrome unchanged,
+  protect that chrome with same-session visual geometry comparisons rather
+  than relying on separate before/after launches. Protected regions must be
+  exact except for declared masks, and allowed-changing regions must have
+  geometry-anchor assertions such as scroll anchors, visibility, and allocation
+  bounds.
 
 **Known Flatpak animation regression:** sidebar and document-properties open/close animations looked like they were running below the monitor refresh rate even though no obvious blocking I/O was present. The root cause was allocation-frame churn: `size_allocate()` repeatedly synchronized split-view widths, the properties fraction notify path rewrote GSettings, and the adaptive properties breakpoint was reparsed/reinstalled for each animated frame. The durable fix pattern is:
 
@@ -164,7 +170,10 @@ item regions scroll instead of expanding the shell, critical controls are not
 pushed off-screen, and no unintended horizontal or vertical scrollbar appears
 in an empty status-only surface. When an allocation, overflow, or rendered
 legibility bug prompted the change, add an assertion for that failure mode
-directly or pair the widget test with a headless screenshot proof.
+directly. If the bug is about pixels staying identical while another surface
+changes, pair the widget test with the visual geometry lane so the proof captures
+both screenshots in one process and compares protected regions after
+`visual-geometry-settled`.
 
 **Test the preconditions, not just the wiring:** When a feature depends on a GTK widget property (like `single-click-activate=true`), write a test that asserts the property value directly. This catches template regressions even when end-to-end click simulation isn't possible in headless tests.
 

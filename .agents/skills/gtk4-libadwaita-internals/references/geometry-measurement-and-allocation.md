@@ -242,6 +242,12 @@ Read them as a family:
 - In Rust subclasses, the same measurement and allocation rules apply. If your widget implements `measure` or `size_allocate`, obey GTK's contracts exactly.
 - When reviewing application code, clamp animated widths before they reach paned or split-view allocation, not after warnings appear.
 - Treat one-pixel warnings as real. They often mean a layout budget is only accidentally valid on one frame or one monitor scale.
+- When a GTK allocation contract becomes a screenshot-visible invariant, prove
+  both layers: widget tests should assert the allocation, scroll anchor, and
+  readiness state, while same-session visual geometry smoke should capture the
+  before/after pixels and verify protected regions have zero unexpected
+  variance. Do not substitute two separate launches for a same-process
+  invariant.
 - If a snapshot surface replaces a live paned child, preserve the live child's minimum width on the snapshot widget or host container. Otherwise GTK can under-measure the opposite child while still naming that opposite child in the warning.
 - If the actual paned child is a wrapper host, preserve the legal width floor on that host too. A descendant `width-request` does not automatically satisfy GTK when the host itself is what `GtkPaned` measures.
 - If a paned hide animation still warns by exactly one pixel after the end host advertises the correct floor, inspect the paned's own minimum width. The collapsing opposite child may still require a `+1px` budget while it participates in layout.

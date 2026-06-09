@@ -18,9 +18,12 @@ The testing approach is pragmatic:
 - Use the existing integration helpers for cross-service filesystem workflows.
 - Use the custom widget harness for real window and widget behavior.
 - Reach for the automation client self-test for reusable D-Bus client/parser
-  changes, and reach for the visual, portal/sandbox, accessibility, or
-  performance smoke lanes only when the current widget target cannot express
-  the behavior.
+  changes. Use widget tests for allocation and state contracts that GTK can
+  expose directly. Use the visual geometry smoke lane when the invariant is
+  screenshot-visible, same-session, or says that one surface must not change
+  pixels while another surface appears, disappears, or resizes. Reach for the
+  broader visual, portal/sandbox, accessibility, or performance smoke lanes only
+  when the current widget target cannot express the behavior.
 
 ## Current Test Map
 
@@ -36,6 +39,7 @@ The testing approach is pragmatic:
 | Automation docs drift | Exported action, D-Bus, snapshot, readiness, automation-client, and helper-flag documentation contract | `docs/automation.md`, `docs/automation-reference.md`, `scripts/check-automation-docs.py` | No | `make check-automation-docs` |
 | Automation client self-test | Reusable D-Bus helper parser, typed action parameters, statuses, and artifact summaries | `scripts/lushtext-automation.py` | No | `make automation-client-self-test` |
 | Visual smoke | Rendered desktop screenshots and compositor/session artifacts | `scripts/run-visual-smoke.sh` | Yes | `make visual-smoke` |
+| Visual geometry smoke | Same-process before/after screenshots with protected-region pixel comparisons and bounded geometry snapshots | `scripts/visual-geometry-smoke.py` | Yes | `make visual-geometry-smoke` |
 | Portal/sandbox smoke | Confined Flatpak/Snap runtime diagnostics and skip-aware package checks | `scripts/run-portal-sandbox-smoke.sh` | Host-dependent | `make portal-sandbox-smoke` |
 | Accessibility smoke | AT-SPI-enabled focus and accessible metadata checks outside the accessibility-disabled widget harness | `scripts/run-accessibility-smoke.sh` | Yes | `make accessibility-smoke` |
 | Performance smoke | Lightweight user-visible latency and throughput sanity checks | `scripts/run-performance-smoke.sh` | No | `make performance-smoke` |
@@ -71,8 +75,9 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 - `make automation-client-self-test` proves the reusable
   `scripts/lushtext-automation.py` contract without launching the app. It is a
   fast policy check, not a replacement for real-process automation smoke.
-- `make visual-smoke`, `make portal-sandbox-smoke`, `make accessibility-smoke`,
-  and `make performance-smoke` are host-sensitive smoke lanes. They preserve
+- `make visual-geometry-smoke`, `make visual-smoke`,
+  `make portal-sandbox-smoke`, `make accessibility-smoke`, and
+  `make performance-smoke` are host-sensitive smoke lanes. They preserve
   artifacts and skip clearly when the host lacks required desktop, portal,
   accessibility, packaging, or benchmark support.
 - The widget harness supports `--list --format terse`, which matters for CI and nextest-style discovery.
@@ -104,9 +109,12 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
    `scripts/lushtext-automation.py` changed, also run
    `make automation-client-self-test` before any heavier smoke lane.
 10. When refactoring a large widget or window into sibling modules without changing behavior, still run the widget target for that surface and its adjacent orchestration surface. Visibility and wiring regressions often show up only from the external `crates/lushtext` test crate, not from `lushtext-core` alone.
-11. For rendered pixels, portals, installed package confinement, AT-SPI, or
-   coarse user-visible latency, use the matching smoke lane and keep its
-   artifacts.
+11. For rendered pixels, first decide whether the proof needs a same-session
+   before/after invariant. If yes, use `make visual-geometry-smoke` and inspect
+   the protected-region comparison artifacts; if the state is a standalone
+   visual coverage point, use `make visual-smoke`. For portals, installed
+   package confinement, AT-SPI, or coarse user-visible latency, use the matching
+   smoke lane and keep its artifacts.
 
 ## Headless GTK Runs
 
@@ -155,6 +163,11 @@ This applies to load-amplified flakes too: heavy local load exposing a 2s async 
 - For `GtkListView` keyboard shortcuts, do not assume the focused widget is the list itself. In real sessions focus usually sits on a realized row descendant, so synthetic key delivery should target the focused widget and, if needed, walk up its parent chain until it reaches the ancestor that owns the `EventControllerKey`. Emitting the key directly on the list view can produce false-green tests for shortcuts that do nothing in the live app.
 - For adaptive surfaces that animate, especially `AdwBottomSheet` used by the document-properties pane, do not close the animated surface as a cleanup step in headless widget tests unless the test is specifically proving the close animation. Assert the open/compact state, then explicitly destroy the presented test window and flush once. Closing the sheet right before process teardown can make Mutter report `gdk-frame-clock: layout continuously requested` and `Trying to snapshot LushtextWindow ... without a current allocation`, even when the production UI state is correct.
 - For split-view animation regressions, add widget tests around the contracts the harness can prove: allocation sync should not rewrite persisted GSettings fractions, and cached breakpoint thresholds should only change when the effective integer threshold changes. Do not try to prove frame-rate smoothness in the widget harness; confirm that part in the real app or locally installed Flatpak after the contract tests pass.
+- For same-session visual invariants, widget tests should assert the GTK
+  allocation and scroll-anchor contract, while `make visual-geometry-smoke`
+  should protect unaffected chrome with exact pixel comparisons and describe
+  every allowed-changing region. Do not count two unrelated screenshots from
+  separate launches as proof that an unaffected element had zero pixel variance.
 - Test behavior, not GTK implementation details. Avoid pixel assertions, CSS rendering expectations, or proving that GTK's own containers work.
 - Keep widget tests narrowly scoped. A real window is fine; an enormous end-to-end script is usually not.
 - If a failure only reproduces in a live desktop session with compositor or portal behavior, switch to `gtk-agentic-debugging`.

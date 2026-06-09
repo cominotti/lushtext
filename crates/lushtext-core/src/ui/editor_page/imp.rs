@@ -268,6 +268,8 @@ pub struct MinimapState {
     pub wrapped_layout_too_large: Cell<Option<bool>>,
     /// Generation counter for coalescing expensive marker refresh work.
     pub refresh_generation: Cell<u32>,
+    /// Whether a debounced minimap refresh callback is still waiting to run.
+    pub refresh_pending: Cell<bool>,
     /// Prevents programmatic loads and evictions from being recorded as user edits.
     pub tracking_suspended: Cell<bool>,
     /// Tracks which lines already own a modified marker for O(1) de-duplication.
@@ -793,8 +795,8 @@ impl WidgetImpl for LushtextEditorPage {
         // `visible_rect()` reflects the real viewport height for this frame.
         self.obj().schedule_dynamic_overscroll_update();
         if width_changed {
-            self.obj().sync_minimap_wrap_mode();
-            self.obj().schedule_minimap_refresh();
+            self.obj()
+                .schedule_minimap_projection_refresh_after_reflow(vadjustment_was_at_top);
             if hadjustment_was_at_left {
                 self.obj().schedule_left_edge_horizontal_scroll_clamp();
             }

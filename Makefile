@@ -20,6 +20,7 @@
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make automation-smoke - Real-process D-Bus automation smoke under headless Mutter
 #   make visual-smoke - Real-session screenshot smoke under headless Mutter
+#   make visual-geometry-smoke - Same-session visual invariant screenshot smoke
 #   make crash-recovery-smoke - Real-process crash/restart recovery smoke with artifacts
 #   make portal-sandbox-smoke - Confined runtime smoke for available Flatpak/Snap paths
 #   make accessibility-smoke - AT-SPI-enabled accessibility smoke
@@ -35,6 +36,7 @@
 #   make lint-blueprint - Advisory grouped lint triage for Blueprint templates
 #   make check-flatpak-permissions - Ensure Flatpak keeps full filesystem access
 #   make check-end-user-smoke-workflow - Ensure scheduled smoke lanes match docs
+#   make check-visual-proof-policy - Require visual geometry proof for local visual-sensitive changes
 #   make automation-client-self-test - Validate the reusable D-Bus automation CLI helper
 #   make check-agent-docs - validate agent rules/skills guidance
 #   make lint-advisory - grouped advisory lint discovery for Rust policy reviews
@@ -53,8 +55,8 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless automation-smoke visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless automation-smoke visual-smoke visual-geometry-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -234,6 +236,10 @@ visual-smoke: build-debug
 	@echo "Running visual smoke lane..."
 	./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual"
 
+visual-geometry-smoke: build-debug
+	@echo "Running same-session visual geometry invariant lane..."
+	./scripts/visual-geometry-smoke.py --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --binary "$(PWD)/target/debug/lushtext"
+
 # Real-process crash/restart smoke under isolated headless Mutter. This lane
 # creates draft/session recovery state through the app, SIGKILLs the process,
 # relaunches with the same app data, and preserves recovery artifacts.
@@ -263,7 +269,7 @@ performance-smoke:
 
 # Run all host-supported end-user smoke lanes. Individual scripts own their
 # dependency checks, artifact paths, and skip messages.
-end-user-smoke: automation-smoke visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke
+end-user-smoke: automation-smoke visual-geometry-smoke visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke
 
 # Small mutation pass for checking cargo-mutants tooling and timeout behavior.
 mutants-smoke:
@@ -358,13 +364,18 @@ check-end-user-smoke-workflow:
 	@echo "Checking end-user smoke workflow matrix..."
 	./scripts/check-end-user-smoke-workflow.py
 
+# Guard local UI-sensitive edits against missing same-session visual proof.
+check-visual-proof-policy:
+	@echo "Checking visual geometry proof policy..."
+	./scripts/check-visual-proof-policy.py --self-test
+
 # Validate the reusable agent/developer client without needing a live D-Bus app.
 automation-client-self-test:
 	@echo "Checking automation CLI helper..."
 	./scripts/lushtext-automation.py self-test
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow automation-client-self-test
+check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy automation-client-self-test
 
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
@@ -571,8 +582,10 @@ help:
 	@echo "  test-widget-headless Widget tests with the CI headless setup"
 	@echo "  automation-smoke Real-process D-Bus automation smoke under headless Mutter"
 	@echo "  check-end-user-smoke-workflow Verify scheduled/manual smoke matrix lanes"
+	@echo "  check-visual-proof-policy Require visual geometry proof for local visual-sensitive changes"
 	@echo "  automation-client-self-test Validate the reusable D-Bus automation CLI helper"
 	@echo "  visual-smoke Real-session screenshot smoke under headless Mutter"
+	@echo "  visual-geometry-smoke Same-session visual invariant screenshot smoke"
 	@echo "  portal-sandbox-smoke Confined runtime smoke for available Flatpak/Snap paths"
 	@echo "  accessibility-smoke AT-SPI-enabled accessibility smoke"
 	@echo "  performance-smoke Lightweight Criterion performance smoke"

@@ -34,7 +34,10 @@ owns the action group.
 state, load state, visible shell surfaces, preview/search/focus states,
 workspace scope and persistence state, command-palette mode and counters,
 notes/bookmark availability, local-history availability, content-search and
-Replace All counters, and notification/progress summaries. It intentionally
+Replace All counters, notification/progress summaries, and named visual
+geometry anchors for screenshot invariant tooling. Geometry anchors include
+surface rectangles, allocation sizes, absence reasons, scale factor, and scroll
+anchor state; they do not include rendered text. It intentionally
 avoids dumping document text, draft identifiers, note bodies, bookmark labels,
 sidecar contents, local-history contents, command-palette result bodies, or
 search result bodies. File-backed tabs can expose their path because paths are
@@ -48,8 +51,11 @@ synchronization point for agents after activating an action, opening a file,
 changing search state, or waiting for preview/search/save/workspace work. Use
 the narrowest predicate that matches the workflow under test, such as
 `file-open-complete`, `search-complete`, `save-complete`, or
-`workspace-refresh-complete`. `WaitForIdle(timeout_msec)` remains as a
-compatibility alias for waiting on the broader `idle` predicate.
+`workspace-refresh-complete`. Screenshot scenario helpers should use
+`visual-geometry-settled` before capture so layout, adaptive shell state,
+minimap refresh/debounce, and visual workflow blockers have settled.
+`WaitForIdle(timeout_msec)` remains as a compatibility alias for waiting on the
+broader `idle` predicate.
 
 When a wait cannot report readiness, its status distinguishes
 `predicate-timeout`, `workflow-failure`, `automation-unavailable`,
@@ -84,7 +90,9 @@ based on the action catalog, and renders typed GVariant parameters for normal
 readiness waits return `ready`, `predicate-timeout`, `unknown-predicate`, or
 `workflow-failure`; action validation distinguishes `unknown-action`,
 `unsupported-action`, and `parameter-mismatch`; artifact review uses
-`artifact-error` or the distinct successful `artifact-skipped` status:
+`artifact-error`, visual-specific failures such as
+`visual-comparison-failed`, `state-mismatch`, and `warning-scan-failed`, or the
+distinct successful `artifact-skipped` status:
 
 ```sh
 scripts/lushtext-automation.py action win.set-search-query --string needle
@@ -177,13 +185,16 @@ allowing known headless portal/accessibility and compositor-shutdown noise.
 returns a compact pass/fail/skip summary over the same manifest and artifacts.
 
 Automation and crash-recovery smoke runs write `scenario-manifest.json`; visual
-smoke writes one `assertions/<capture>-manifest.json` per capture. The manifest
-is the review index for the run: it records `schema_version`, the scenario id,
-launch mode, helper arguments, fixture setup, command/action steps, waits,
-`state_assertions`, screenshot and AT-SPI assertion slots, `dbus_summaries`,
-warning-scan status, selected environment details, `bounded_artifact_policy`,
-and any skip or failure reason. Large payloads stay in sibling artifacts such
-as snapshots, logs, action lists, screenshots, and warning reports; the
+smoke writes one `assertions/<capture>-manifest.json` per capture; visual
+geometry smoke writes one case-level `scenario-manifest.json` plus a root
+`summary.json`. The manifest is the review index for the run: it records
+`schema_version`, the scenario id, launch mode or scenario type, helper
+arguments, fixture setup, command/action steps, waits, `state_assertions`,
+screenshot and AT-SPI assertion slots, protected and allowed-changing visual
+regions, geometry snapshot rows, `dbus_summaries`, warning-scan status,
+selected environment details, `bounded_artifact_policy`, and any skip or
+failure reason. Large payloads stay in sibling artifacts such as snapshots,
+logs, action lists, screenshots, comparison crops, and warning reports; the
 manifest embeds only bounded text and relative artifact paths.
 
 For screenshot-backed state, run:
@@ -206,6 +217,27 @@ workspace-refresh readiness, no-notes browser, few notes/bookmarks,
 dense notes/bookmarks, constrained notes/bookmarks, command palette files,
 commands, notes mode, no-results, dense files, dismissed state, short-layout
 chrome, dark style, and recovery startup diagnostics.
+
+For same-session pixel invariants, run:
+
+```sh
+make visual-geometry-smoke
+```
+
+The visual geometry lane launches each scenario in one isolated headless Mutter
+session, waits for `visual-geometry-settled`, captures before/after screenshots
+and bounded `visual_geometry` snapshots from the same app process, compares
+protected regions with exact PNG crops and declared masks, asserts
+allowed-changing region relationships through geometry anchors, scans runtime
+warnings, and writes per-case manifests plus comparison reports under
+`build/smoke/visual-geometry`. It skips with an explicit host-tooling reason
+when the compositor, PipeWire, D-Bus, GSettings, or screenshot path is
+unavailable; skipped invariant coverage is not counted as verified.
+`make check-visual-proof-policy` is the fast companion gate: when local
+visual-sensitive files have changed, it requires a passing
+unfiltered `build/smoke/visual-geometry/summary.json` whose recorded
+visual-sensitive diff fingerprint still matches the current worktree before
+`make check-policy` can pass.
 
 The crash-recovery lane also uses Automation1 after relaunch: it waits for
 `recovery-restore-complete`, writes `relaunch-automation-snapshot.json`, and

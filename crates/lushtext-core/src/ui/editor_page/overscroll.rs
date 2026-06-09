@@ -80,6 +80,32 @@ impl LushtextEditorPage {
         });
     }
 
+    /// Refresh minimap projection after width-only layout changes.
+    ///
+    /// Width reflow can change wrapped visual-line heights even when GTK leaves
+    /// the editor's visible height untouched. If the user was already at the
+    /// top edge, preserve that anchor and then refresh the minimap's source-map
+    /// geometry and marker projection from the settled allocation.
+    pub(crate) fn schedule_minimap_projection_refresh_after_reflow(&self, preserve_top: bool) {
+        let editor_weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(editor) = editor_weak.upgrade() else {
+                return;
+            };
+
+            if preserve_top && let Some(adjustment) = editor.source_view().vadjustment() {
+                let lower = adjustment.lower();
+                if (adjustment.value() - lower).abs() > 0.5 {
+                    adjustment.set_value(lower);
+                }
+            }
+
+            editor.sync_minimap_view_geometry();
+            editor.schedule_minimap_refresh();
+            editor.queue_minimap_draw();
+        });
+    }
+
     /// Coalesce repeated size allocations into one idle overscroll refresh.
     pub(crate) fn schedule_dynamic_overscroll_update(&self) {
         let generation = self
@@ -121,6 +147,8 @@ impl LushtextEditorPage {
         }
 
         source_view.set_bottom_margin(desired_margin);
+        self.sync_minimap_view_geometry();
         self.schedule_minimap_refresh();
+        self.queue_minimap_draw();
     }
 }

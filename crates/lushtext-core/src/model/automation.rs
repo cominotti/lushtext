@@ -30,6 +30,8 @@ pub const AUTOMATION_WORKFLOW_CONTENT_SEARCH: &str = "content-search";
 pub const AUTOMATION_WORKFLOW_REPLACE_PREVIEW: &str = "replace-preview";
 /// Stable workflow ID for startup session restore.
 pub const AUTOMATION_WORKFLOW_SESSION_RESTORE: &str = "session-restore";
+/// Stable workflow ID for minimap layout and marker projection refresh.
+pub const AUTOMATION_WORKFLOW_MINIMAP_REFRESH: &str = "minimap-refresh";
 
 /// One live workflow observation supplied by the UI automation adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -386,6 +388,69 @@ mod tests {
         assert_eq!(value["events"][0]["summary"], "save finished");
         assert_eq!(value["events"][0]["blocker"], READINESS_BLOCKER_SAVE);
     }
+
+    #[test]
+    fn visual_geometry_snapshot_serializes_bounded_rects_and_absence_reasons() {
+        let snapshot = AutomationVisualGeometrySnapshot {
+            scale_factor: 1,
+            coordinate_space: "window-logical-pixels".to_string(),
+            ready: false,
+            blocker: Some(READINESS_BLOCKER_MINIMAP_REFRESH.to_string()),
+            surfaces: vec![
+                AutomationVisualSurfaceSnapshot {
+                    name: "header-bar".to_string(),
+                    visible: true,
+                    rect: Some(AutomationVisualRect {
+                        x: 0,
+                        y: 0,
+                        width: 1280,
+                        height: 48,
+                    }),
+                    allocation: Some(AutomationVisualSize {
+                        width: 1280,
+                        height: 48,
+                    }),
+                    absence_reason: None,
+                },
+                AutomationVisualSurfaceSnapshot {
+                    name: "minimap-source-map".to_string(),
+                    visible: false,
+                    rect: None,
+                    allocation: None,
+                    absence_reason: Some("minimap-disabled".to_string()),
+                },
+            ],
+            scroll_anchors: vec![AutomationVisualScrollAnchorSnapshot {
+                name: "source-view".to_string(),
+                at_left: Some(true),
+                at_top: Some(true),
+                x_value_milli: Some(0),
+                x_lower_milli: Some(0),
+                y_value_milli: Some(0),
+                y_lower_milli: Some(0),
+            }],
+        };
+
+        let value =
+            serde_json::to_value(snapshot).expect("visual geometry snapshot should serialize");
+        let fields = value
+            .as_object()
+            .expect("visual geometry snapshot should serialize as an object");
+
+        assert_eq!(value["scale_factor"], 1);
+        assert_eq!(value["coordinate_space"], "window-logical-pixels");
+        assert_eq!(value["ready"], false);
+        assert_eq!(value["blocker"], READINESS_BLOCKER_MINIMAP_REFRESH);
+        assert_eq!(value["surfaces"][0]["name"], "header-bar");
+        assert_eq!(value["surfaces"][0]["rect"]["width"], 1280);
+        assert_eq!(value["surfaces"][1]["absence_reason"], "minimap-disabled");
+        assert_eq!(value["scroll_anchors"][0]["at_top"], true);
+        assert!(!fields.contains_key("document_text"));
+        assert!(!fields.contains_key("minimap_text"));
+        assert!(!fields.contains_key("note_body"));
+        assert!(!fields.contains_key("draft_body"));
+        assert!(!fields.contains_key("local_history_contents"));
+    }
 }
 
 /// Stable serialized blocker ID for startup before an active window exists.
@@ -400,6 +465,8 @@ pub const READINESS_BLOCKER_DRAFT_AUTOSAVE: &str = "draft-autosave";
 pub const READINESS_BLOCKER_EDITOR_SEARCH: &str = "editor-search";
 /// Stable serialized blocker ID for editor file loading.
 pub const READINESS_BLOCKER_FILE_LOAD: &str = "file-load";
+/// Stable serialized blocker ID for minimap layout and marker projection refresh.
+pub const READINESS_BLOCKER_MINIMAP_REFRESH: &str = "minimap-refresh";
 /// Stable serialized blocker ID for Markdown preview layout animation.
 pub const READINESS_BLOCKER_PREVIEW_ANIMATION: &str = "preview-animation";
 /// Stable serialized blocker ID for Replace All preview generation.
@@ -431,6 +498,7 @@ const IDLE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
     READINESS_BLOCKER_FILE_LOAD,
+    READINESS_BLOCKER_MINIMAP_REFRESH,
     READINESS_BLOCKER_SAVE,
     READINESS_BLOCKER_EDITOR_SEARCH,
 ];
@@ -489,6 +557,21 @@ const RECOVERY_RESTORE_COMPLETE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
 ];
+/// Layout and workflow blockers that can make screenshot geometry stale.
+const VISUAL_GEOMETRY_SETTLED_BLOCKERS: &[&str] = &[
+    READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_SESSION_RESTORE,
+    READINESS_BLOCKER_FILE_LOAD,
+    READINESS_BLOCKER_DRAFT_AUTOSAVE,
+    READINESS_BLOCKER_PREVIEW_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_PERSIST,
+    READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
+    READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
+    READINESS_BLOCKER_WORKSPACE_SEARCH,
+    READINESS_BLOCKER_EDITOR_SEARCH,
+    READINESS_BLOCKER_REPLACE_PREVIEW,
+    READINESS_BLOCKER_MINIMAP_REFRESH,
+];
 
 /// Named readiness predicates exposed through the automation D-Bus surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -509,6 +592,8 @@ pub enum AutomationReadinessPredicate {
     SessionRestoreComplete,
     /// Startup recovery restore and immediate post-restore indexing/persistence settled.
     RecoveryRestoreComplete,
+    /// GTK layout, adaptive shell state, minimap projection, and visual workflow blockers settled.
+    VisualGeometrySettled,
     /// Every app-owned blocker known to Automation1 has settled.
     Idle,
 }
@@ -518,7 +603,7 @@ impl AutomationReadinessPredicate {
     ///
     /// Keep this order append-only so generated docs, D-Bus artifacts, and smoke
     /// outputs diff predictably across releases.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::AppStartup,
         Self::WindowActionsExported,
         Self::FileOpenComplete,
@@ -527,6 +612,7 @@ impl AutomationReadinessPredicate {
         Self::WorkspaceRefreshComplete,
         Self::SessionRestoreComplete,
         Self::RecoveryRestoreComplete,
+        Self::VisualGeometrySettled,
         Self::Idle,
     ];
 
@@ -551,6 +637,7 @@ impl AutomationReadinessPredicate {
             Self::WorkspaceRefreshComplete => "workspace-refresh-complete",
             Self::SessionRestoreComplete => "session-restore-complete",
             Self::RecoveryRestoreComplete => "recovery-restore-complete",
+            Self::VisualGeometrySettled => "visual-geometry-settled",
             Self::Idle => "idle",
         }
     }
@@ -587,6 +674,9 @@ impl AutomationReadinessPredicate {
             Self::RecoveryRestoreComplete => {
                 "Startup recovery restore and immediate post-restore indexing or persistence work are settled."
             }
+            Self::VisualGeometrySettled => {
+                "GTK layout, adaptive shell state, minimap projection, and visual scenario blockers are settled for screenshot capture."
+            }
             Self::Idle => "Every tracked app-owned readiness blocker is settled.",
         }
     }
@@ -603,6 +693,7 @@ impl AutomationReadinessPredicate {
             Self::WorkspaceRefreshComplete => WORKSPACE_REFRESH_COMPLETE_BLOCKERS,
             Self::SessionRestoreComplete => SESSION_RESTORE_COMPLETE_BLOCKERS,
             Self::RecoveryRestoreComplete => RECOVERY_RESTORE_COMPLETE_BLOCKERS,
+            Self::VisualGeometrySettled => VISUAL_GEOMETRY_SETTLED_BLOCKERS,
             Self::Idle => IDLE_BLOCKERS,
         }
     }
@@ -743,6 +834,8 @@ pub struct AutomationWindowSnapshot {
     pub content_search: AutomationContentSearchSnapshot,
     /// Current notification summary for status and progress assertions.
     pub notifications: AutomationNotificationSnapshot,
+    /// Bounded visual geometry anchors used by screenshot invariant tooling.
+    pub visual_geometry: AutomationVisualGeometrySnapshot,
 }
 
 /// Non-content metadata for one tab.
@@ -803,6 +896,79 @@ pub struct AutomationSurfaceSnapshot {
     pub status_bar_visible: bool,
     /// Topmost transient surface known to the shell.
     pub active_transient_surface: Option<String>,
+}
+
+/// Visual geometry state for named, screenshot-relevant surfaces.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AutomationVisualGeometrySnapshot {
+    /// Window scale factor used when screenshots map logical coordinates to pixels.
+    pub scale_factor: i32,
+    /// Coordinate space used for every rectangle in this snapshot.
+    pub coordinate_space: String,
+    /// Whether the visual readiness predicate is currently satisfied.
+    pub ready: bool,
+    /// First visual readiness blocker, if any.
+    pub blocker: Option<String>,
+    /// Named surface rectangles and absence reasons.
+    pub surfaces: Vec<AutomationVisualSurfaceSnapshot>,
+    /// Scroll anchors that explain whether editor-like surfaces are at top/left.
+    pub scroll_anchors: Vec<AutomationVisualScrollAnchorSnapshot>,
+}
+
+/// Rectangle in the visual snapshot coordinate space.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct AutomationVisualRect {
+    /// Left coordinate in logical GTK pixels.
+    pub x: i32,
+    /// Top coordinate in logical GTK pixels.
+    pub y: i32,
+    /// Width in logical GTK pixels.
+    pub width: i32,
+    /// Height in logical GTK pixels.
+    pub height: i32,
+}
+
+/// Allocation size for a named surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct AutomationVisualSize {
+    /// Allocated width in logical GTK pixels.
+    pub width: i32,
+    /// Allocated height in logical GTK pixels.
+    pub height: i32,
+}
+
+/// One named visual surface used by screenshot manifests and masks.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AutomationVisualSurfaceSnapshot {
+    /// Stable surface name, such as `header-bar` or `minimap-source-map`.
+    pub name: String,
+    /// Whether the surface is rendered and eligible for rectangle-based comparison.
+    pub visible: bool,
+    /// Rectangle in the window coordinate space when visible.
+    pub rect: Option<AutomationVisualRect>,
+    /// Allocated size when the widget or computed region exists.
+    pub allocation: Option<AutomationVisualSize>,
+    /// Stable absence reason when the surface is hidden or unavailable.
+    pub absence_reason: Option<String>,
+}
+
+/// Scroll state for one visual surface, stored as bounded milli-pixel values.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AutomationVisualScrollAnchorSnapshot {
+    /// Stable surface name associated with the scroll state.
+    pub name: String,
+    /// Whether the horizontal adjustment is at its lower bound, when present.
+    pub at_left: Option<bool>,
+    /// Whether the vertical adjustment is at its lower bound, when present.
+    pub at_top: Option<bool>,
+    /// Horizontal adjustment value multiplied by 1000.
+    pub x_value_milli: Option<i64>,
+    /// Horizontal lower bound multiplied by 1000.
+    pub x_lower_milli: Option<i64>,
+    /// Vertical adjustment value multiplied by 1000.
+    pub y_value_milli: Option<i64>,
+    /// Vertical lower bound multiplied by 1000.
+    pub y_lower_milli: Option<i64>,
 }
 
 /// Search-related state with bounded query/count fields only.

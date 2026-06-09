@@ -19,7 +19,7 @@ terms, scenario-helper flag entries, and scenario manifest field anchors in
 this file, every reusable automation-client command/status/result/artifact
 anchor, plus every stable AT-SPI anchor used by the accessibility smoke helper.
 
-<!-- automation-helper-flags: run-automation-smoke --artifact-dir --binary run-crash-recovery-smoke --artifact-dir --binary run-accessibility-smoke --artifact-dir --binary run-visual-smoke --artifact-dir --binary capture-lushtext-mutter --file --output --search --expected-search-matches --enable-minimap --enable-atspi --window-action --window-string-action --wait-predicate --wait-window-action --wait-atspi-text --color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary self-test --bus-name --object-path --interface --window-path --timeout-ms --json --field --string --bool --uint32 --variant-json -->
+<!-- automation-helper-flags: run-automation-smoke --artifact-dir --binary run-crash-recovery-smoke --artifact-dir --binary run-accessibility-smoke --artifact-dir --binary run-visual-smoke --artifact-dir --binary visual-geometry-smoke --artifact-dir --binary --scenario-dir --case-filter capture-lushtext-mutter --file --output --search --expected-search-matches --enable-minimap --enable-atspi --window-action --window-string-action --wait-predicate --wait-window-action --wait-atspi-text --color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary self-test --bus-name --object-path --interface --window-path --timeout-ms --json --field --string --bool --uint32 --variant-json -->
 
 ## Stability Policy
 
@@ -143,6 +143,9 @@ status vocabulary.
 | <span id="automation-client-status-unsupported-action"></span><span id="automation-client-exit-unsupported-action"></span>`unsupported-action` | `unsupported-action` | `2` | The action is cataloged but not exported, widget-scoped, or marked unsupported. |
 | <span id="automation-client-status-parameter-mismatch"></span><span id="automation-client-exit-parameter-mismatch"></span>`parameter-mismatch` | `parameter-mismatch` | `2` | Supplied action parameter type does not match the cataloged parameter type. |
 | <span id="automation-client-status-predicate-timeout"></span><span id="automation-client-exit-predicate-timeout"></span>`predicate-timeout` | `predicate-timeout` | `1` | A readiness wait returned `ok=false` before the requested predicate settled. |
+| <span id="automation-client-status-visual-comparison-failed"></span><span id="automation-client-exit-visual-comparison-failed"></span>`visual-comparison-failed` | `visual-comparison-failed` | `1` | `artifact-summary` found a protected-region pixel difference in a visual geometry scenario. |
+| <span id="automation-client-status-state-mismatch"></span><span id="automation-client-exit-state-mismatch"></span>`state-mismatch` | `state-mismatch` | `1` | `artifact-summary` found a geometry-anchor relationship mismatch in a visual geometry scenario. |
+| <span id="automation-client-status-warning-scan-failed"></span><span id="automation-client-exit-warning-scan-failed"></span>`warning-scan-failed` | `warning-scan-failed` | `1` | `artifact-summary` found unexpected GTK, GDK, Adwaita, AT-SPI, or assertion warnings. |
 | <span id="automation-client-status-workflow-failure"></span><span id="automation-client-exit-workflow-failure"></span>`workflow-failure` | `workflow-failure` | `1` | Automation1 or the client self-test reported a failed workflow/invariant. |
 | <span id="automation-client-status-artifact-error"></span><span id="automation-client-exit-artifact-error"></span>`artifact-error` | `artifact-error` | `1` | `artifact-summary` found missing, malformed, failed, or unrecognized artifact evidence. |
 | <span id="automation-client-status-artifact-skipped"></span><span id="automation-client-exit-artifact-skipped"></span>`artifact-skipped` | `artifact-skipped` | `0` | `artifact-summary` found a skipped lane and reports it distinctly without claiming coverage passed. |
@@ -154,13 +157,23 @@ status vocabulary.
 | <span id="automation-client-artifact-field-artifact-dir"></span>`automation-client-artifact-field-artifact-dir` | `artifact_dir` | Absolute artifact directory that was summarized. |
 | <span id="automation-client-artifact-field-status"></span>`automation-client-artifact-field-status` | `status` | Final manifest status, usually `passed`, `failed`, or `skipped`. |
 | <span id="automation-client-artifact-field-scenario-id"></span>`automation-client-artifact-field-scenario-id` | `scenario_id` | Stable scenario id from the manifest. |
+| <span id="automation-client-artifact-field-scenario-type"></span>`automation-client-artifact-field-scenario-type` | `scenario_type` | Visual geometry scenario family, when present. |
+| <span id="automation-client-artifact-field-failure-status"></span>`automation-client-artifact-field-failure-status` | `failure_status` | Stable machine-readable failure status for visual geometry artifacts. |
 | <span id="automation-client-artifact-field-failure-reason"></span>`automation-client-artifact-field-failure-reason` | `failure_reason` | Bounded failure reason when the scenario failed. |
 | <span id="automation-client-artifact-field-skip-reason"></span>`automation-client-artifact-field-skip-reason` | `skip_reason` | Bounded host or tooling reason when the scenario skipped. |
 | <span id="automation-client-artifact-field-manifest"></span>`automation-client-artifact-field-manifest` | `manifest` | Absolute path to `scenario-manifest.json`. |
+| <span id="automation-client-artifact-field-source-manifest"></span>`automation-client-artifact-field-source-manifest` | `source_manifest` | Source scenario manifest that generated a visual geometry case. |
 | <span id="automation-client-artifact-field-summary"></span>`automation-client-artifact-field-summary` | `summary` | Parsed `summary.json` payload when present. |
 | <span id="automation-client-artifact-field-runtime-warning-scan"></span>`automation-client-artifact-field-runtime-warning-scan` | `runtime_warning_scan` | Text from `assertions/runtime-warning-scan.txt` when present. |
+| <span id="automation-client-artifact-field-warnings"></span>`automation-client-artifact-field-warnings` | `warnings` | Parsed warning-scan status for visual geometry artifacts. |
 | <span id="automation-client-artifact-field-workflow-events"></span>`automation-client-artifact-field-workflow-events` | `workflow_events` | Bounded workflow-event artifact summary: relative path, last sequence, capped flag, and event count. |
 | <span id="automation-client-artifact-field-snapshots"></span>`automation-client-artifact-field-snapshots` | `snapshots` | Relative paths for snapshot JSON artifacts without embedding their payloads. |
+| <span id="automation-client-artifact-field-geometry-snapshots"></span>`automation-client-artifact-field-geometry-snapshots` | `geometry_snapshots` | Visual geometry snapshot artifact rows by capture step, without embedding document contents. |
+| <span id="automation-client-artifact-field-screenshots"></span>`automation-client-artifact-field-screenshots` | `screenshots` | Screenshot artifact rows by capture step. |
+| <span id="automation-client-artifact-field-protected-regions"></span>`automation-client-artifact-field-protected-regions` | `protected_regions` | Manifest regions that must remain pixel-identical except for declared masks. |
+| <span id="automation-client-artifact-field-allowed-changing-regions"></span>`automation-client-artifact-field-allowed-changing-regions` | `allowed_changing_regions` | Manifest regions that may change only under explicit geometry-anchor assertions. |
+| <span id="automation-client-artifact-field-comparison-report"></span>`automation-client-artifact-field-comparison-report` | `comparison_report` | Parsed protected-region comparison result when present. |
+| <span id="automation-client-artifact-field-visual-geometry-cases"></span>`automation-client-artifact-field-visual-geometry-cases` | `visual_geometry_cases` | Root-lane case rows with pass, fail, skip, protected-region, and manifest summaries. |
 | <span id="automation-client-artifact-field-dbus-artifacts"></span>`automation-client-artifact-field-dbus-artifacts` | `dbus_artifacts` | Relative paths for D-Bus, catalog, snapshot, workflow, and introspection artifacts. |
 | <span id="automation-client-artifact-field-state-assertions"></span>`automation-client-artifact-field-state-assertions` | `state_assertions` | Manifest state-proof rows. |
 | <span id="automation-client-artifact-field-waits"></span>`automation-client-artifact-field-waits` | `waits` | Manifest readiness waits. |
@@ -178,6 +191,10 @@ status vocabulary.
 | `scripts/run-accessibility-smoke.sh` | `--binary PATH` | Runs the given LushText binary instead of `target/debug/lushtext`. |
 | `scripts/run-visual-smoke.sh` | `--artifact-dir DIR` | Writes screenshot, Automation1 snapshot, surface/search/workspace/notes/bookmarks/command-palette assertions, per-capture `*-manifest.json`, warning-scan, capture-session, environment, and summary artifacts to `DIR`. |
 | `scripts/run-visual-smoke.sh` | `--binary PATH` | Runs the given LushText binary instead of `target/debug/lushtext`. |
+| `scripts/visual-geometry-smoke.py` | `--artifact-dir DIR` | Writes same-session before/after screenshots, bounded geometry snapshots, protected-region comparison reports, warning scans, per-case manifests, and root summary artifacts to `DIR`. |
+| `scripts/visual-geometry-smoke.py` | `--binary PATH` | Runs the given LushText binary instead of `target/debug/lushtext`. |
+| `scripts/visual-geometry-smoke.py` | `--scenario-dir DIR` | Loads visual invariant scenario manifests from `DIR`. |
+| `scripts/visual-geometry-smoke.py` | `--case-filter TEXT` | Runs only visual geometry cases whose generated id contains `TEXT`. |
 | `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--file PATH` | Opens the fixture file in the isolated LushText process before capture. |
 | `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--output PATH` | Writes the captured headless Mutter monitor PNG to this path. |
 | `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--search TEXT` | Sets in-document search through `win.set-search-query` and waits for `search-complete`. |
@@ -259,12 +276,18 @@ when the expected focus target remains visible in the same AT-SPI tree.
 `scripts/run-automation-smoke.sh` and
 `scripts/run-crash-recovery-smoke.sh` write `scenario-manifest.json` beside the
 assertion artifacts, while `scripts/run-visual-smoke.sh` writes one bounded
-`assertions/<capture>-manifest.json` per visual scenario. These manifests are
-the review indexes for their scenarios: rich payloads stay in sibling files,
-while each manifest records paths, compact status rows, selected environment
-details, and failure or skip reasons. The canonical field list is checked
-against `scripts/automation-smoke-driver.py`; adding, removing, or renaming a
-field requires updating this table and rerunning `make check-automation-docs`.
+`assertions/<capture>-manifest.json` per visual scenario. The visual geometry
+runner writes one case-level `scenario-manifest.json` per generated matrix case
+and a root `summary.json`; those case manifests extend the same bounded review
+index idea with `scenario_type`, `protected_regions`,
+`allowed_changing_regions`, `geometry_snapshots`, and `comparison_report`
+fields summarized by `scripts/lushtext-automation.py artifact-summary`. These
+manifests are the review indexes for their scenarios: rich payloads stay in
+sibling files, while each manifest records paths, compact status rows, selected
+environment details, and failure or skip reasons. The canonical shared field
+list is checked against `scripts/automation-smoke-driver.py`; adding, removing,
+or renaming a shared field requires updating this table and rerunning
+`make check-automation-docs`.
 
 | Anchor | Field | Meaning |
 | --- | --- | --- |
@@ -299,8 +322,8 @@ diagnostic state-change records derived from the same readiness blockers used
 by `WaitForReady`; they are not a command channel and do not include document
 contents. Current stable workflow IDs include `file-load`, `save`, `search`,
 `workspace-refresh`, `content-search`, `replace-preview`, `session-restore`,
-while recovery restore remains a readiness predicate until a dedicated
-recovery-specific event source exists.
+and `minimap-refresh`, while recovery restore remains a readiness predicate
+until a dedicated recovery-specific event source exists.
 
 | Anchor | Field | Type | Meaning |
 | --- | --- | --- | --- |
@@ -380,6 +403,26 @@ receive a ` [truncated]` suffix when shortened.
 | <span id="snapshot-field-local-history"></span>`snapshot-field-local-history` | `window.local_history` | `object` | Local-history availability state that can be answered from active editor policy. |
 | <span id="snapshot-field-content-search"></span>`snapshot-field-content-search` | `window.content_search` | `object` | Workspace content-search and Replace All state summaries, without match bodies or file content. |
 | <span id="snapshot-field-notifications"></span>`snapshot-field-notifications` | `window.notifications` | `object` | Status/progress notification summary for assertions. |
+| <span id="snapshot-field-visual-geometry"></span>`snapshot-field-visual-geometry` | `window.visual_geometry` | `object` | Bounded geometry anchors for screenshot invariant tooling, without document text. |
+| <span id="snapshot-field-scale-factor"></span>`snapshot-field-scale-factor` | `visual_geometry.scale_factor` | `i32` | Window scale factor used when logical rectangles map to screenshot pixels. |
+| <span id="snapshot-field-coordinate-space"></span>`snapshot-field-coordinate-space` | `visual_geometry.coordinate_space` | `string` | Coordinate space shared by all rectangles, currently window logical pixels. |
+| <span id="snapshot-field-ready"></span>`snapshot-field-ready` | `visual_geometry.ready` | `bool` | Whether `visual-geometry-settled` is currently satisfied. |
+| <span id="snapshot-field-blocker"></span>`snapshot-field-blocker` | `visual_geometry.blocker` | `string?` | First visual readiness blocker, if any. |
+| <span id="snapshot-field-name"></span>`snapshot-field-name` | `visual_geometry.surfaces[].name`, `visual_geometry.scroll_anchors[].name` | `string` | Stable visual surface or scroll-anchor name. |
+| <span id="snapshot-field-rect"></span>`snapshot-field-rect` | `visual_geometry.surfaces[].rect` | `object?` | Rectangle for a visible surface in the snapshot coordinate space. |
+| <span id="snapshot-field-allocation"></span>`snapshot-field-allocation` | `visual_geometry.surfaces[].allocation` | `object?` | Allocated surface size when a widget or computed region exists. |
+| <span id="snapshot-field-absence-reason"></span>`snapshot-field-absence-reason` | `visual_geometry.surfaces[].absence_reason` | `string?` | Stable reason a surface is hidden, unavailable, zero-sized, or absent. |
+| <span id="snapshot-field-x"></span>`snapshot-field-x` | `visual_geometry.surfaces[].rect.x` | `i32` | Left coordinate in the snapshot coordinate space. |
+| <span id="snapshot-field-y"></span>`snapshot-field-y` | `visual_geometry.surfaces[].rect.y` | `i32` | Top coordinate in the snapshot coordinate space. |
+| <span id="snapshot-field-width"></span>`snapshot-field-width` | `visual_geometry.surfaces[].rect.width`, `visual_geometry.surfaces[].allocation.width` | `i32` | Surface width in logical GTK pixels. |
+| <span id="snapshot-field-height"></span>`snapshot-field-height` | `visual_geometry.surfaces[].rect.height`, `visual_geometry.surfaces[].allocation.height` | `i32` | Surface height in logical GTK pixels. |
+| <span id="snapshot-field-scroll-anchors"></span>`snapshot-field-scroll-anchors` | `visual_geometry.scroll_anchors` | `array` | Scroll anchors for editor-like surfaces that explain top and left stability. |
+| <span id="snapshot-field-at-left"></span>`snapshot-field-at-left` | `visual_geometry.scroll_anchors[].at_left` | `bool?` | Whether the horizontal adjustment is at the lower content edge, allowing the widget's own margin tolerance. |
+| <span id="snapshot-field-at-top"></span>`snapshot-field-at-top` | `visual_geometry.scroll_anchors[].at_top` | `bool?` | Whether the vertical adjustment is at the lower content edge, allowing the widget's own margin tolerance. |
+| <span id="snapshot-field-x-value-milli"></span>`snapshot-field-x-value-milli` | `visual_geometry.scroll_anchors[].x_value_milli` | `i64?` | Horizontal adjustment value multiplied by 1000. |
+| <span id="snapshot-field-x-lower-milli"></span>`snapshot-field-x-lower-milli` | `visual_geometry.scroll_anchors[].x_lower_milli` | `i64?` | Horizontal lower bound multiplied by 1000. |
+| <span id="snapshot-field-y-value-milli"></span>`snapshot-field-y-value-milli` | `visual_geometry.scroll_anchors[].y_value_milli` | `i64?` | Vertical adjustment value multiplied by 1000. |
+| <span id="snapshot-field-y-lower-milli"></span>`snapshot-field-y-lower-milli` | `visual_geometry.scroll_anchors[].y_lower_milli` | `i64?` | Vertical lower bound multiplied by 1000. |
 | <span id="snapshot-field-scope-kind"></span>`snapshot-field-scope-kind` | `workspace.scope_kind` | `string` | Current workspace scope kind: `all` or `workspace`. |
 | <span id="snapshot-field-scope-workspace-id"></span>`snapshot-field-scope-workspace-id` | `workspace.scope_workspace_id` | `string?` | Stable automation identity for the selected visible workspace scope. |
 | <span id="snapshot-field-scope-workspace-name"></span>`snapshot-field-scope-workspace-name` | `workspace.scope_workspace_name` | `string?` | User-visible selected workspace name, if any. |
@@ -447,6 +490,7 @@ a scenario truly needs all tracked app-owned work to settle.
 | <span id="readiness-predicate-workspace-refresh-complete"></span>`readiness-predicate-workspace-refresh-complete` | `workspace-refresh-complete` | stable | `app-startup`, `workspace-persist`, `workspace-filter-animation`, `command-palette-index` | Workspace persistence, scope filter animation, and command-palette index debounce are settled. |
 | <span id="readiness-predicate-session-restore-complete"></span>`readiness-predicate-session-restore-complete` | `session-restore-complete` | stable | `app-startup`, `session-restore`, `file-load`, `draft-autosave` | Session restore and immediate file/draft follow-up work are settled. |
 | <span id="readiness-predicate-recovery-restore-complete"></span>`readiness-predicate-recovery-restore-complete` | `recovery-restore-complete` | stable | `app-startup`, `session-restore`, `file-load`, `draft-autosave`, `workspace-persist`, `command-palette-index` | Startup recovery restore and immediate post-restore indexing or persistence work are settled. |
+| <span id="readiness-predicate-visual-geometry-settled"></span>`readiness-predicate-visual-geometry-settled` | `visual-geometry-settled` | stable | `app-startup`, `session-restore`, `file-load`, `draft-autosave`, `preview-animation`, `workspace-persist`, `workspace-filter-animation`, `command-palette-index`, `workspace-search`, `editor-search`, `replace-preview`, `minimap-refresh` | GTK layout, adaptive shell state, minimap projection, and visual scenario blockers are settled for screenshot capture. |
 | <span id="readiness-predicate-idle"></span>`readiness-predicate-idle` | `idle` | stable | all readiness blockers | Every tracked app-owned readiness blocker is settled. |
 
 ## Readiness Blockers
@@ -462,6 +506,7 @@ a scenario truly needs all tracked app-owned work to settle.
 | <span id="readiness-draft-autosave"></span>`readiness-draft-autosave` | `draft-autosave` | A draft autosave is in flight. |
 | <span id="readiness-editor-search"></span>`readiness-editor-search` | `editor-search` | The selected editor search context has not finished counting occurrences. |
 | <span id="readiness-file-load"></span>`readiness-file-load` | `file-load` | At least one editor tab is still loading file contents. |
+| <span id="readiness-minimap-refresh"></span>`readiness-minimap-refresh` | `minimap-refresh` | Minimap projection, marker, or viewport geometry is waiting for the post-layout refresh debounce. |
 | <span id="readiness-preview-animation"></span>`readiness-preview-animation` | `preview-animation` | Preview pane animation is active. |
 | <span id="readiness-replace-preview"></span>`readiness-replace-preview` | `replace-preview` | Replace All preview generation is still running. |
 | <span id="readiness-save"></span>`readiness-save` | `save` | At least one editor tab has a save in flight. |

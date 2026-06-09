@@ -32,6 +32,9 @@ jobs:
           - lane: automation
             command: make automation-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/automation
+          - lane: visual-geometry
+            command: make visual-geometry-smoke SMOKE_ARTIFACT_DIR=build/smoke
+            artifact_path: build/smoke/visual-geometry
           - lane: visual
             command: make visual-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/visual

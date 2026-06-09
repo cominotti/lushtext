@@ -2085,13 +2085,29 @@ fn minimap_source_map(editor: &LushtextEditorPage) -> sourceview5::Map {
         .expect("source map should exist")
 }
 
+fn minimap_marker_strip(editor: &LushtextEditorPage) -> gtk4::DrawingArea {
+    editor
+        .imp()
+        .minimap
+        .marker_strip
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("marker strip should exist")
+}
+
 #[derive(Debug, Clone, Copy)]
 struct MinimapGeometrySnapshot {
     editor_width: i32,
     editor_visible_height: i32,
     editor_wrap_mode: gtk4::WrapMode,
     source_map_width: i32,
+    source_map_height: i32,
+    source_map_top_margin: i32,
     source_map_wrap_mode: gtk4::WrapMode,
+    marker_strip_height: i32,
+    minimap_first_line_top: f64,
+    vertical_lower: f64,
     vertical_value: f64,
     vertical_page_size: f64,
     vertical_upper: f64,
@@ -2101,6 +2117,7 @@ struct MinimapGeometrySnapshot {
 fn minimap_geometry_snapshot(editor: &LushtextEditorPage) -> MinimapGeometrySnapshot {
     let source_view = editor.source_view();
     let source_map = minimap_source_map(editor);
+    let marker_strip = minimap_marker_strip(editor);
     let visible_rect = source_view.visible_rect();
     let (_, buffer_y) = source_view.window_to_buffer_coords(
         gtk4::TextWindowType::Widget,
@@ -2111,17 +2128,108 @@ fn minimap_geometry_snapshot(editor: &LushtextEditorPage) -> MinimapGeometrySnap
         .iter_at_location(0, buffer_y)
         .map_or(0, |iter| iter.line());
     let vadjustment = source_view.vadjustment().expect("source view vadjustment");
+    let map_bounds = source_map
+        .compute_bounds(&*editor.imp().minimap_overlay)
+        .expect("source map should have overlay-relative bounds");
+    let start_iter = source_map.buffer().start_iter();
+    let (line_y, _) = source_map.line_yrange(&start_iter);
+    let (_, widget_y) =
+        source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, line_y);
 
     MinimapGeometrySnapshot {
         editor_width: source_view.width(),
         editor_visible_height: visible_rect.height(),
         editor_wrap_mode: source_view.wrap_mode(),
         source_map_width: source_map.width(),
+        source_map_height: source_map.height(),
+        source_map_top_margin: source_map.top_margin(),
         source_map_wrap_mode: source_map.wrap_mode(),
+        marker_strip_height: marker_strip.height(),
+        minimap_first_line_top: f64::from(map_bounds.y()) + f64::from(widget_y),
+        vertical_lower: vadjustment.lower(),
         vertical_value: vadjustment.value(),
         vertical_page_size: vadjustment.page_size(),
         vertical_upper: vadjustment.upper(),
         visible_start_line,
+    }
+}
+
+fn put_editor_at_top_left(editor: &LushtextEditorPage) {
+    let source_view = editor.source_view();
+    let buffer = editor.buffer();
+    let start = buffer.start_iter();
+    buffer.place_cursor(&start);
+    if let Some(adjustment) = source_view.vadjustment() {
+        adjustment.set_value(adjustment.lower());
+    }
+    if let Some(adjustment) = source_view.hadjustment() {
+        adjustment.set_value(adjustment.lower());
+    }
+    flush_events();
+}
+
+fn add_top_bookmark_marker(editor: &LushtextEditorPage) {
+    let buffer = editor.buffer();
+    let start = buffer.start_iter();
+    buffer.place_cursor(&start);
+    let _ = editor.toggle_bookmark_at_cursor();
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::Bookmark) == 1
+            && !editor
+                .minimap_marker_bounds(MinimapMarkerKind::Bookmark)
+                .is_empty()
+    });
+}
+
+fn assert_top_minimap_reflow_invariants(
+    editor: &LushtextEditorPage,
+    geometry: MinimapGeometrySnapshot,
+    expected_wrap_mode: gtk4::WrapMode,
+) {
+    assert_eq!(geometry.editor_wrap_mode, expected_wrap_mode);
+    assert_eq!(
+        geometry.source_map_wrap_mode, expected_wrap_mode,
+        "minimap source map should mirror editor wrap mode after reflow: {geometry:?}"
+    );
+    assert!(
+        geometry.source_map_width > 0
+            && geometry.source_map_height > 0
+            && geometry.marker_strip_height > 0
+            && geometry.editor_visible_height > 0,
+        "editor, source map, and marker strip should all have positive settled allocation: {geometry:?}"
+    );
+    assert!(
+        geometry.source_map_top_margin >= 6,
+        "minimap needs an explicit top content inset, got {geometry:?}"
+    );
+    assert_eq!(
+        geometry.visible_start_line, 0,
+        "top-anchored reflow should keep line one visible: {geometry:?}"
+    );
+    assert!(
+        (geometry.vertical_value - geometry.vertical_lower).abs() <= 0.5,
+        "top-anchored reflow should keep the vertical adjustment at its lower bound: {geometry:?}"
+    );
+    assert!(
+        geometry.vertical_upper > geometry.vertical_page_size,
+        "fixture should remain scrollable so the top-anchor assertion is meaningful: {geometry:?}"
+    );
+    assert!(
+        geometry.minimap_first_line_top >= 1.0,
+        "first minimap content line should render below the minimap shell top edge: {geometry:?}"
+    );
+
+    let marker_bounds = editor.minimap_marker_bounds(MinimapMarkerKind::Bookmark);
+    assert!(
+        !marker_bounds.is_empty(),
+        "top bookmark marker should remain projectable after reflow"
+    );
+    for bounds in marker_bounds {
+        assert!(
+            bounds.top >= -0.5 && bounds.bottom <= f64::from(geometry.marker_strip_height) + 0.5,
+            "projected marker should remain inside the marker strip after reflow: {bounds:?}, {geometry:?}"
+        );
+        assert!(bounds.height() > 0.0, "projected marker should have positive height: {bounds:?}");
     }
 }
 
@@ -4670,6 +4778,84 @@ fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
 
     window.destroy();
     flush_after_delay(Duration::from_millis(50));
+}
+
+fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible: bool) {
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+    settings
+        .set_boolean(keys::WORD_WRAP, word_wrap)
+        .expect("set word wrap");
+
+    let window =
+        test_window_with_split_view_state_and_size(initially_visible, 0.3, false, 0.25, 1260, 900);
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let long_line_stride = usize::from(word_wrap);
+    write_document_with_long_lines(&editor, 280, long_line_stride, 0);
+    wait_until(Duration::from_secs(2), || editor.is_minimap_visible());
+    add_top_bookmark_marker(&editor);
+    put_editor_at_top_left(&editor);
+
+    let expected_wrap_mode = if word_wrap {
+        gtk4::WrapMode::Word
+    } else {
+        gtk4::WrapMode::None
+    };
+    wait_until(Duration::from_secs(2), || {
+        let geometry = minimap_geometry_snapshot(&editor);
+        geometry.visible_start_line == 0
+            && (geometry.vertical_value - geometry.vertical_lower).abs() <= 0.5
+            && geometry.source_map_wrap_mode == expected_wrap_mode
+            && geometry.minimap_first_line_top >= 1.0
+    });
+    let before = minimap_geometry_snapshot(&editor);
+    assert_top_minimap_reflow_invariants(&editor, before, expected_wrap_mode);
+
+    activate_action(&window, "toggle-sidebar");
+    let expected_sidebar_visible = !initially_visible;
+    wait_until(Duration::from_secs(2), || {
+        let geometry = minimap_geometry_snapshot(&editor);
+        workspace_sidebar_visible(&window) == expected_sidebar_visible
+            && if expected_sidebar_visible {
+                geometry.editor_width < before.editor_width
+            } else {
+                geometry.editor_width > before.editor_width
+            }
+    });
+    wait_until(Duration::from_secs(2), || {
+        let geometry = minimap_geometry_snapshot(&editor);
+        geometry.visible_start_line == 0
+            && (geometry.vertical_value - geometry.vertical_lower).abs() <= 0.5
+            && geometry.source_map_wrap_mode == expected_wrap_mode
+            && geometry.minimap_first_line_top >= 1.0
+            && !editor
+                .minimap_marker_bounds(MinimapMarkerKind::Bookmark)
+                .is_empty()
+    });
+
+    let after = minimap_geometry_snapshot(&editor);
+    assert_top_minimap_reflow_invariants(&editor, after, expected_wrap_mode);
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_minimap_top_anchor_survives_sidebar_hide_with_wrap_enabled_and_disabled() {
+    ensure_gtk_init();
+    run_minimap_top_anchor_sidebar_reflow_case(true, true);
+    run_minimap_top_anchor_sidebar_reflow_case(false, true);
+}
+
+#[test]
+fn test_minimap_top_anchor_survives_sidebar_show_with_wrap_enabled_and_disabled() {
+    ensure_gtk_init();
+    run_minimap_top_anchor_sidebar_reflow_case(true, false);
+    run_minimap_top_anchor_sidebar_reflow_case(false, false);
 }
 
 #[test]

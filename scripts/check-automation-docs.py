@@ -25,7 +25,9 @@ EXPECTED_HELPER_FLAG_MARKER = (
     "<!-- automation-helper-flags: run-automation-smoke --artifact-dir --binary "
     "run-crash-recovery-smoke --artifact-dir --binary "
     "run-accessibility-smoke --artifact-dir --binary "
-    "run-visual-smoke --artifact-dir --binary capture-lushtext-mutter "
+    "run-visual-smoke --artifact-dir --binary "
+    "visual-geometry-smoke --artifact-dir --binary --scenario-dir --case-filter "
+    "capture-lushtext-mutter "
     "--file --output --search --expected-search-matches --enable-minimap "
     "--enable-atspi --window-action --window-string-action --wait-predicate --wait-window-action --wait-atspi-text "
     "--color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts "
@@ -496,11 +498,14 @@ def run_checks(
         "scripts/run-automation-smoke.sh",
         "scripts/run-crash-recovery-smoke.sh",
         "scripts/run-accessibility-smoke.sh",
+        "scripts/visual-geometry-smoke.py",
         "scripts/run-portal-sandbox-smoke.sh",
         "scripts/lushtext-automation.py",
         "scripts/check-flatpak-permissions.py",
         "--artifact-dir DIR",
         "--binary PATH",
+        "--scenario-dir DIR",
+        "--case-filter TEXT",
         "--manifest PATH",
         "--self-test",
         *client_flags(client_source),

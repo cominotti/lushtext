@@ -105,9 +105,13 @@ Acceptance for these states:
   must not expand fixed shells, create horizontal scrollbars, or push critical
   controls out of view.
 - If the bug or feature is visual, geometry-related, adaptive, or user-reported
-  from a screenshot, include either widget-level allocation/overflow assertions
-  or an agent-owned headless screenshot proof. A green action test is not enough
-  when the question is "can a human actually see and read it?"
+  from a screenshot, include widget-level allocation/overflow assertions when
+  the invariant is purely geometric. If the invariant is pixel-visible, crosses
+  adaptive layout states, or depends on what should remain unchanged while
+  another surface moves, add a same-session visual geometry proof with protected
+  zero-difference regions and explicit allowed-changing regions. A green action
+  test is not enough when the question is "can a human actually see and read
+  it?"
 
 ## Adaptive Dialog Navigation
 
@@ -171,6 +175,9 @@ Acceptance for these states:
 - Do not hand-edit generated `.ui` files. Edit the `.blp`, run
   `make blueprint-generate`, then run `make check-blueprint`. For
   geometry-sensitive edits, also run the relevant widget and visual smoke lanes.
+  Blueprint drift checks prove generated XML/source fidelity; they do not
+  replace widget allocation assertions or same-session visual invariant proof
+  when a template edit changes screenshot-visible geometry.
 - Blueprint compile warnings are blocking unless they match the documented
   `resources/ui/shortcuts.blp` GTK shortcuts deprecation policy. Blueprint lint
   is a curated advisory gate; use `make lint-blueprint` to keep promoted

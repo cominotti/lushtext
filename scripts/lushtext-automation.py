@@ -47,6 +47,9 @@ CLIENT_STATUSES = (
     "unsupported-action",
     "parameter-mismatch",
     "predicate-timeout",
+    "visual-comparison-failed",
+    "state-mismatch",
+    "warning-scan-failed",
     "workflow-failure",
     "artifact-error",
     "artifact-skipped",
@@ -57,6 +60,9 @@ EXIT_CODES = {
     "ready": 0,
     "artifact-skipped": 0,
     "predicate-timeout": 1,
+    "visual-comparison-failed": 1,
+    "state-mismatch": 1,
+    "warning-scan-failed": 1,
     "workflow-failure": 1,
     "dbus-error": 1,
     "artifact-error": 1,
@@ -72,13 +78,23 @@ ARTIFACT_SUMMARY_FIELDS = (
     "artifact_dir",
     "status",
     "scenario_id",
+    "scenario_type",
+    "failure_status",
     "failure_reason",
     "skip_reason",
     "manifest",
+    "source_manifest",
     "summary",
     "runtime_warning_scan",
+    "warnings",
     "workflow_events",
     "snapshots",
+    "geometry_snapshots",
+    "screenshots",
+    "protected_regions",
+    "allowed_changing_regions",
+    "comparison_report",
+    "visual_geometry_cases",
     "dbus_artifacts",
     "state_assertions",
     "waits",
@@ -457,6 +473,12 @@ def artifact_text(path: Path | None) -> str | None:
     return bounded_text(path.read_text(encoding="utf-8", errors="replace"))
 
 
+def artifact_json(path: Path | None) -> Any | None:
+    if path is None or not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def summarize_artifacts(artifact_dir: Path) -> ClientResult:
     manifest_path = artifact_dir / "scenario-manifest.json"
     if not manifest_path.is_file():
@@ -469,6 +491,12 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
     status = str(manifest.get("status") or "unknown")
     summary_path = artifact_dir / "summary.json"
     warning_path = artifact_dir / "assertions/runtime-warning-scan.txt"
+    visual_warning_path = artifact_dir / "warning-scan.json"
+    visual_comparison_path = (
+        artifact_dir / str(manifest["comparison_report"])
+        if manifest.get("comparison_report")
+        else None
+    )
     dbus_artifacts = sorted(
         path.relative_to(artifact_dir).as_posix()
         for path in (artifact_dir / "assertions").glob("*")
@@ -483,20 +511,34 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
         "artifact_dir": str(artifact_dir),
         "status": status,
         "scenario_id": manifest.get("scenario_id"),
+        "scenario_type": manifest.get("scenario_type"),
+        "failure_status": manifest.get("failure_status"),
         "failure_reason": manifest.get("failure_reason"),
         "skip_reason": manifest.get("skip_reason"),
         "manifest": str(manifest_path),
-        "summary": json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.is_file() else None,
+        "source_manifest": manifest.get("source_manifest"),
+        "summary": artifact_json(summary_path),
         "runtime_warning_scan": artifact_text(warning_path),
+        "warnings": manifest.get("warnings") or artifact_json(visual_warning_path),
         "workflow_events": workflow_events,
         "snapshots": snapshots,
+        "geometry_snapshots": manifest.get("geometry_snapshots", []),
+        "screenshots": manifest.get("screenshots", []),
+        "protected_regions": manifest.get("protected_regions", []),
+        "allowed_changing_regions": manifest.get("allowed_changing_regions", []),
+        "comparison_report": artifact_json(visual_comparison_path),
+        "visual_geometry_cases": [],
         "dbus_artifacts": dbus_artifacts,
         "state_assertions": manifest.get("state_assertions", []),
         "waits": manifest.get("waits", []),
         "actions": manifest.get("actions", []),
     }
     if status == "failed":
-        return failure("artifact-summary", "artifact-error", "scenario manifest reports failure", data)
+        failure_status = str(manifest.get("failure_status") or "artifact-error")
+        detail = str(manifest.get("failure_reason") or "scenario manifest reports failure")
+        if failure_status not in CLIENT_STATUSES:
+            failure_status = "artifact-error"
+        return failure("artifact-summary", failure_status, detail, data)
     if status == "passed":
         return success("artifact-summary", "scenario manifest reports success", data)
     if status == "skipped":
@@ -558,20 +600,31 @@ def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
                 {"summary": str(summary_path)},
             )
 
+    visual_cases = visual_geometry_case_rows(artifact_dir, summary_payload)
     data = {
         "artifact_dir": str(artifact_dir),
-        "status": "generic",
+        "status": summary_payload.get("status") if isinstance(summary_payload, dict) else "generic",
         "scenario_id": None,
+        "scenario_type": None,
+        "failure_status": None,
         "failure_reason": None,
-        "skip_reason": None,
+        "skip_reason": summary_payload.get("skip_reason") if isinstance(summary_payload, dict) else None,
         "manifest": [row["artifact"] for row in manifest_rows],
+        "source_manifest": None,
         "summary": summary_payload,
         "runtime_warning_scan": artifact_text(artifact_dir / "assertions/runtime-warning-scan.txt"),
+        "warnings": None,
         "workflow_events": workflow_event_summary(artifact_dir),
         "snapshots": sorted(
             path.relative_to(artifact_dir).as_posix()
             for path in (artifact_dir / "assertions").glob("*snapshot*.json")
         ),
+        "geometry_snapshots": [],
+        "screenshots": [],
+        "protected_regions": [],
+        "allowed_changing_regions": [],
+        "comparison_report": None,
+        "visual_geometry_cases": visual_cases,
         "dbus_artifacts": sorted(
             path.relative_to(artifact_dir).as_posix()
             for path in (artifact_dir / "assertions").glob("*")
@@ -582,11 +635,61 @@ def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
         "actions": [],
     }
 
+    if isinstance(summary_payload, dict) and summary_payload.get("status") == "skipped":
+        return success("artifact-summary", "visual geometry lane was skipped", data, status="artifact-skipped")
+    failed_visual = next((row for row in visual_cases if row.get("status") == "failed"), None)
+    if failed_visual is not None:
+        failure_status = str(failed_visual.get("failure_status") or "artifact-error")
+        if failure_status not in CLIENT_STATUSES:
+            failure_status = "artifact-error"
+        return failure("artifact-summary", failure_status, "visual geometry summary includes a failed case", data)
     if any(row.get("status") in {"failed", "parse-error"} for row in manifest_rows):
         return failure("artifact-summary", "artifact-error", "generic smoke artifact includes a failed manifest", data)
     if any(row.get("status") == "skipped" for row in manifest_rows):
         return success("artifact-summary", "generic smoke artifact includes a skipped manifest", data, status="artifact-skipped")
     return success("artifact-summary", "generic smoke artifact summary read", data)
+
+
+def visual_geometry_case_rows(artifact_dir: Path, summary_payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(summary_payload, dict):
+        return []
+    cases = summary_payload.get("cases")
+    if not isinstance(cases, list):
+        return []
+    rows = []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        case_dir_name = case.get("artifact_dir")
+        manifest_name = case.get("manifest")
+        manifest_path = None
+        if isinstance(case_dir_name, str) and isinstance(manifest_name, str):
+            manifest_path = artifact_dir / case_dir_name / manifest_name
+        row = {
+            "case_id": case.get("case_id"),
+            "status": case.get("status"),
+            "failure_status": case.get("failure_status"),
+            "artifact_dir": case_dir_name,
+            "manifest": str(manifest_path) if manifest_path and manifest_path.is_file() else None,
+        }
+        if manifest_path and manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                row.update(
+                    {
+                        "scenario_type": manifest.get("scenario_type"),
+                        "protected_region_count": len(manifest.get("protected_regions", [])),
+                        "allowed_changing_region_count": len(
+                            manifest.get("allowed_changing_regions", [])
+                        ),
+                        "comparison_report": manifest.get("comparison_report"),
+                        "warnings": manifest.get("warnings"),
+                    }
+                )
+            except json.JSONDecodeError as exc:
+                row.update({"status": "parse-error", "detail": bounded_text(exc)})
+        rows.append(row)
+    return rows
 
 
 def workflow_event_summary(artifact_dir: Path) -> dict[str, Any] | None:
@@ -711,6 +814,115 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
             assert summary.data["status"] == "passed"
             missing = summarize_artifacts(artifact_dir / "missing")
             assert missing.status == "artifact-error"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case_dir = root / "visual-case"
+            (case_dir / "comparisons").mkdir(parents=True)
+            (case_dir / "before-geometry-snapshot.json").write_text(
+                '{"document_text":"SECRET"}\n',
+                encoding="utf-8",
+            )
+            (case_dir / "comparisons/comparison-report.json").write_text(
+                '{"status":"passed","regions":[{"name":"header","status":"passed"}]}\n',
+                encoding="utf-8",
+            )
+            (case_dir / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "scenario_id": "visual-self-test",
+                        "scenario_type": "minimap-sidebar",
+                        "status": "passed",
+                        "failure_status": None,
+                        "failure_reason": None,
+                        "skip_reason": None,
+                        "source_manifest": "scripts/visual-geometry-scenarios/minimap-sidebar-top.json",
+                        "same_session": True,
+                        "screenshots": [{"name": "before", "artifact": "before.png"}],
+                        "geometry_snapshots": [
+                            {"name": "before", "artifact": "before-geometry-snapshot.json"}
+                        ],
+                        "protected_regions": [{"name": "header", "surface": "header-bar"}],
+                        "allowed_changing_regions": [
+                            {"surface": "editor-viewport", "relationship": "width changes"}
+                        ],
+                        "comparison_report": "comparisons/comparison-report.json",
+                        "warnings": {"status": "passed"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (case_dir / "summary.json").write_text('{"status":"passed"}\n', encoding="utf-8")
+            visual_summary = summarize_artifacts(case_dir)
+            assert visual_summary.ok
+            assert visual_summary.data["scenario_type"] == "minimap-sidebar"
+            assert visual_summary.data["comparison_report"]["status"] == "passed"
+            assert "SECRET" not in json.dumps(visual_summary.data)
+
+            (root / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "passed",
+                        "case_count": 1,
+                        "cases": [
+                            {
+                                "case_id": "visual-self-test",
+                                "status": "passed",
+                                "artifact_dir": "visual-case",
+                                "manifest": "scenario-manifest.json",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            root_summary = summarize_artifacts(root)
+            assert root_summary.ok
+            assert root_summary.data["visual_geometry_cases"][0]["protected_region_count"] == 1
+
+            failed_dir = root / "failed-case"
+            failed_dir.mkdir()
+            (failed_dir / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "scenario_id": "visual-failed",
+                        "scenario_type": "minimap-sidebar",
+                        "status": "failed",
+                        "failure_status": "visual-comparison-failed",
+                        "failure_reason": "pixel delta",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            failed_summary = summarize_artifacts(failed_dir)
+            assert not failed_summary.ok
+            assert failed_summary.status == "visual-comparison-failed"
+
+            skipped_dir = root / "skipped-case"
+            skipped_dir.mkdir()
+            (skipped_dir / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "scenario_id": "visual-skipped",
+                        "scenario_type": "minimap-sidebar",
+                        "status": "skipped",
+                        "skip_reason": "missing compositor",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            skipped_summary = summarize_artifacts(skipped_dir)
+            assert skipped_summary.ok
+            assert skipped_summary.status == "artifact-skipped"
+
+            malformed_dir = root / "malformed-case"
+            malformed_dir.mkdir()
+            (malformed_dir / "scenario-manifest.json").write_text("{not json", encoding="utf-8")
+            malformed_summary = summarize_artifacts(malformed_dir)
+            assert malformed_summary.status == "artifact-error"
     except Exception as exc:  # pragma: no cover - deliberately catches assertion details for CLI users.
         return failure("self-test", "workflow-failure", f"self-test failed: {exc}")
     return success("self-test", "lushtext automation client self-test passed")

@@ -11,19 +11,22 @@ use crate::app::LushtextApplication;
 use crate::config;
 use crate::model::automation::{
     AUTOMATION_WORKFLOW_CONTENT_SEARCH, AUTOMATION_WORKFLOW_FILE_LOAD,
-    AUTOMATION_WORKFLOW_REPLACE_PREVIEW, AUTOMATION_WORKFLOW_SAVE, AUTOMATION_WORKFLOW_SEARCH,
-    AUTOMATION_WORKFLOW_SESSION_RESTORE, AUTOMATION_WORKFLOW_WORKSPACE_REFRESH,
-    AutomationCommandPaletteSnapshot, AutomationContentSearchSnapshot,
-    AutomationLocalHistorySnapshot, AutomationNotesSnapshot, AutomationNotificationSnapshot,
-    AutomationReadinessPredicate, AutomationReadinessResult, AutomationReadinessStatus,
-    AutomationSearchSnapshot, AutomationSnapshot, AutomationSurfaceSnapshot, AutomationTabSnapshot,
-    AutomationWindowSnapshot, AutomationWorkflowEventsSnapshot, AutomationWorkflowObservation,
-    AutomationWorkspaceSnapshot, READINESS_BLOCKER_APP_STARTUP, READINESS_BLOCKER_CLOSE_SAFETY,
-    READINESS_BLOCKER_COMMAND_PALETTE_INDEX, READINESS_BLOCKER_DRAFT_AUTOSAVE,
-    READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD,
-    READINESS_BLOCKER_PREVIEW_ANIMATION, READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE,
-    READINESS_BLOCKER_SESSION_RESTORE, READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
-    READINESS_BLOCKER_WORKSPACE_PERSIST, READINESS_BLOCKER_WORKSPACE_SEARCH,
+    AUTOMATION_WORKFLOW_MINIMAP_REFRESH, AUTOMATION_WORKFLOW_REPLACE_PREVIEW,
+    AUTOMATION_WORKFLOW_SAVE, AUTOMATION_WORKFLOW_SEARCH, AUTOMATION_WORKFLOW_SESSION_RESTORE,
+    AUTOMATION_WORKFLOW_WORKSPACE_REFRESH, AutomationCommandPaletteSnapshot,
+    AutomationContentSearchSnapshot, AutomationLocalHistorySnapshot, AutomationNotesSnapshot,
+    AutomationNotificationSnapshot, AutomationReadinessPredicate, AutomationReadinessResult,
+    AutomationReadinessStatus, AutomationSearchSnapshot, AutomationSnapshot,
+    AutomationSurfaceSnapshot, AutomationTabSnapshot, AutomationVisualGeometrySnapshot,
+    AutomationVisualRect, AutomationVisualScrollAnchorSnapshot, AutomationVisualSize,
+    AutomationVisualSurfaceSnapshot, AutomationWindowSnapshot, AutomationWorkflowEventsSnapshot,
+    AutomationWorkflowObservation, AutomationWorkspaceSnapshot, READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_CLOSE_SAFETY, READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
+    READINESS_BLOCKER_DRAFT_AUTOSAVE, READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD,
+    READINESS_BLOCKER_MINIMAP_REFRESH, READINESS_BLOCKER_PREVIEW_ANIMATION,
+    READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE, READINESS_BLOCKER_SESSION_RESTORE,
+    READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION, READINESS_BLOCKER_WORKSPACE_PERSIST,
+    READINESS_BLOCKER_WORKSPACE_SEARCH,
 };
 use crate::model::palette::SearchMode;
 use crate::model::workspace::WorkspaceScope;
@@ -543,6 +546,7 @@ fn inactive_workflow_observations() -> Vec<AutomationWorkflowObservation> {
         AUTOMATION_WORKFLOW_CONTENT_SEARCH,
         AUTOMATION_WORKFLOW_REPLACE_PREVIEW,
         AUTOMATION_WORKFLOW_SESSION_RESTORE,
+        AUTOMATION_WORKFLOW_MINIMAP_REFRESH,
     ]
     .into_iter()
     .map(|workflow_id| AutomationWorkflowObservation::new(workflow_id, false, None))
@@ -564,6 +568,7 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
     let mut file_load_active = false;
     let mut save_active = false;
     let mut editor_search_active = false;
+    let mut minimap_refresh_active = false;
 
     for index in 0..imp.tab_view.n_pages() {
         let page = imp.tab_view.nth_page(index);
@@ -576,6 +581,7 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
             .search_bar()
             .search_context()
             .is_some_and(|context| context.occurrences_count() < 0);
+        minimap_refresh_active |= editor.imp().minimap.refresh_pending.get();
     }
 
     let workspace_refresh_blocker = window_readiness_blocker(
@@ -624,6 +630,11 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
                 .restoring
                 .get()
                 .then_some(READINESS_BLOCKER_SESSION_RESTORE),
+        ),
+        AutomationWorkflowObservation::new(
+            AUTOMATION_WORKFLOW_MINIMAP_REFRESH,
+            minimap_refresh_active,
+            minimap_refresh_active.then_some(READINESS_BLOCKER_MINIMAP_REFRESH),
         ),
     ]
 }
@@ -737,6 +748,13 @@ fn window_readiness_blocker(
         ) {
             return Some(blocker);
         }
+        if let Some(blocker) = included_blocker(
+            predicate,
+            editor.imp().minimap.refresh_pending.get(),
+            READINESS_BLOCKER_MINIMAP_REFRESH,
+        ) {
+            return Some(blocker);
+        }
     }
 
     None
@@ -784,6 +802,7 @@ fn window_snapshot(window: &LushtextWindow) -> AutomationWindowSnapshot {
         local_history: local_history_snapshot(window),
         content_search: content_search_snapshot(window),
         notifications: notification_snapshot(window),
+        visual_geometry: visual_geometry_snapshot(window),
     }
 }
 
@@ -952,6 +971,315 @@ fn notification_snapshot(window: &LushtextWindow) -> AutomationNotificationSnaps
         generation: imp.notification_bus.generation(),
         search_progress_visible: imp.search_progress.visible.get(),
     }
+}
+
+/// Collect bounded rectangles for surfaces that visual smoke may crop or mask.
+///
+/// The snapshot uses stable names and window-relative logical pixels only. It
+/// never inspects text contents or widget-rendered glyphs, so editor, minimap,
+/// preview, notes, and search surfaces stay inside the automation privacy boundary.
+fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometrySnapshot {
+    let imp = window.imp();
+    let root: &gtk4::Widget = window.upcast_ref();
+    let mut surfaces = Vec::new();
+    let mut scroll_anchors = Vec::new();
+
+    push_widget_surface(&mut surfaces, "header-bar", &*imp.header_bar, root);
+    push_widget_surface(&mut surfaces, "tab-strip", &*imp.tab_bar, root);
+    push_widget_surface(&mut surfaces, "status-bar", &*imp.status_bar, root);
+    push_widget_surface(&mut surfaces, "workspace-sidebar", &*imp.sidebar, root);
+    push_widget_surface(
+        &mut surfaces,
+        "document-properties",
+        &*imp.properties_panel,
+        root,
+    );
+    push_widget_surface(&mut surfaces, "preview", &*imp.markdown_preview, root);
+    push_widget_surface(&mut surfaces, "search-panel", &*imp.search_panel, root);
+
+    if let Some(editor) = active_editor(window) {
+        push_widget_surface(
+            &mut surfaces,
+            "editor-viewport",
+            &*editor.imp().scrolled_window,
+            root,
+        );
+        push_widget_surface(&mut surfaces, "source-view", editor.source_view(), root);
+        push_widget_surface(
+            &mut surfaces,
+            "minimap-shell",
+            &*editor.imp().minimap_overlay,
+            root,
+        );
+        if let Some(source_map) = editor.imp().minimap.source_map.borrow().as_ref().cloned() {
+            push_widget_surface(&mut surfaces, "minimap-source-map", &source_map, root);
+            surfaces.push(minimap_viewport_surface(&editor, &source_map, root));
+        } else {
+            surfaces.push(absent_visual_surface("minimap-source-map", "not-created"));
+            surfaces.push(absent_visual_surface(
+                "minimap-viewport-overlay",
+                "not-created",
+            ));
+        }
+        if let Some(marker_strip) = editor.imp().minimap.marker_strip.borrow().as_ref().cloned() {
+            push_widget_surface(&mut surfaces, "minimap-marker-strip", &marker_strip, root);
+        } else {
+            surfaces.push(absent_visual_surface("minimap-marker-strip", "not-created"));
+        }
+        if editor.is_search_visible() {
+            push_widget_surface(&mut surfaces, "active-transient", editor.search_bar(), root);
+        } else {
+            push_active_transient_surface(window, &mut surfaces, root);
+        }
+        let source_view = editor.source_view();
+        let hadjustment = source_view.hadjustment();
+        let vadjustment = source_view.vadjustment();
+        scroll_anchors.push(scroll_anchor_snapshot(
+            "source-view",
+            hadjustment.as_ref(),
+            vadjustment.as_ref(),
+            f64::from(source_view.left_margin().max(0)),
+            f64::from(source_view.top_margin().max(0)),
+        ));
+    } else {
+        surfaces.push(absent_visual_surface("editor-viewport", "no-active-editor"));
+        surfaces.push(absent_visual_surface("source-view", "no-active-editor"));
+        surfaces.push(absent_visual_surface("minimap-shell", "no-active-editor"));
+        surfaces.push(absent_visual_surface(
+            "minimap-source-map",
+            "no-active-editor",
+        ));
+        surfaces.push(absent_visual_surface(
+            "minimap-viewport-overlay",
+            "no-active-editor",
+        ));
+        surfaces.push(absent_visual_surface(
+            "minimap-marker-strip",
+            "no-active-editor",
+        ));
+        surfaces.push(absent_visual_surface("active-transient", "none-active"));
+    }
+
+    let blocker =
+        window_readiness_blocker(window, AutomationReadinessPredicate::VisualGeometrySettled)
+            .map(ToOwned::to_owned);
+
+    AutomationVisualGeometrySnapshot {
+        scale_factor: window.scale_factor(),
+        coordinate_space: "window-logical-pixels".to_string(),
+        ready: blocker.is_none(),
+        blocker,
+        surfaces,
+        scroll_anchors,
+    }
+}
+
+fn push_active_transient_surface(
+    window: &LushtextWindow,
+    surfaces: &mut Vec<AutomationVisualSurfaceSnapshot>,
+    root: &gtk4::Widget,
+) {
+    let imp = window.imp();
+    if imp.palette_revealer.reveals_child() {
+        push_widget_surface(surfaces, "active-transient", &*imp.command_palette, root);
+    } else if imp.search_panel_revealer.reveals_child() {
+        push_widget_surface(surfaces, "active-transient", &*imp.search_panel, root);
+    } else {
+        surfaces.push(absent_visual_surface("active-transient", "none-active"));
+    }
+}
+
+fn push_widget_surface(
+    surfaces: &mut Vec<AutomationVisualSurfaceSnapshot>,
+    name: &str,
+    widget: &impl IsA<gtk4::Widget>,
+    root: &gtk4::Widget,
+) {
+    surfaces.push(widget_visual_surface(name, widget, root));
+}
+
+fn widget_visual_surface(
+    name: &str,
+    widget: &impl IsA<gtk4::Widget>,
+    root: &gtk4::Widget,
+) -> AutomationVisualSurfaceSnapshot {
+    let widget = widget.as_ref();
+    let allocation = positive_allocation(widget);
+    let rect = allocation
+        .filter(|_| widget.is_visible())
+        .and_then(|_| widget.compute_bounds(root))
+        .and_then(visual_rect_from_bounds);
+    let visible = rect.is_some();
+    let absence_reason = (!visible).then(|| widget_absence_reason(widget).to_string());
+
+    AutomationVisualSurfaceSnapshot {
+        name: name.to_string(),
+        visible,
+        rect,
+        allocation,
+        absence_reason,
+    }
+}
+
+fn computed_visual_surface(
+    name: &str,
+    rect: Option<AutomationVisualRect>,
+    absence_reason: &'static str,
+) -> AutomationVisualSurfaceSnapshot {
+    AutomationVisualSurfaceSnapshot {
+        name: name.to_string(),
+        visible: rect.is_some(),
+        allocation: rect.map(|rect| AutomationVisualSize {
+            width: rect.width,
+            height: rect.height,
+        }),
+        rect,
+        absence_reason: rect.is_none().then(|| absence_reason.to_string()),
+    }
+}
+
+fn absent_visual_surface(
+    name: &str,
+    absence_reason: &'static str,
+) -> AutomationVisualSurfaceSnapshot {
+    computed_visual_surface(name, None, absence_reason)
+}
+
+fn positive_allocation(widget: &gtk4::Widget) -> Option<AutomationVisualSize> {
+    let width = widget.width();
+    let height = widget.height();
+    (width > 0 && height > 0).then_some(AutomationVisualSize { width, height })
+}
+
+fn widget_absence_reason(widget: &gtk4::Widget) -> &'static str {
+    if !widget.property::<bool>("visible") {
+        "hidden"
+    } else if !widget.is_visible() {
+        "ancestor-hidden"
+    } else if widget.width() <= 0 || widget.height() <= 0 {
+        "zero-allocation"
+    } else {
+        "bounds-unavailable"
+    }
+}
+
+fn minimap_viewport_surface(
+    editor: &LushtextEditorPage,
+    source_map: &sourceview5::Map,
+    root: &gtk4::Widget,
+) -> AutomationVisualSurfaceSnapshot {
+    if !editor.is_minimap_visible() {
+        return absent_visual_surface(
+            "minimap-viewport-overlay",
+            minimap_availability_absence_reason(editor),
+        );
+    }
+
+    let Some(map_bounds) = source_map
+        .compute_bounds(root)
+        .and_then(visual_rect_from_bounds)
+    else {
+        return absent_visual_surface("minimap-viewport-overlay", "bounds-unavailable");
+    };
+    let visible_rect = editor.source_view().visible_rect();
+    if visible_rect.width() <= 0 || visible_rect.height() <= 0 {
+        return absent_visual_surface("minimap-viewport-overlay", "source-view-zero-allocation");
+    }
+
+    let (_, start_buffer_y) = editor.source_view().window_to_buffer_coords(
+        gtk4::TextWindowType::Widget,
+        visible_rect.x(),
+        visible_rect.y(),
+    );
+    let (_, end_buffer_y) = editor.source_view().window_to_buffer_coords(
+        gtk4::TextWindowType::Widget,
+        visible_rect.x(),
+        visible_rect.y().saturating_add(visible_rect.height()),
+    );
+    let (_, start_widget_y) =
+        source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, start_buffer_y);
+    let (_, end_widget_y) =
+        source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, end_buffer_y);
+
+    let top = map_bounds
+        .y
+        .saturating_add(start_widget_y)
+        .max(map_bounds.y);
+    let bottom = map_bounds
+        .y
+        .saturating_add(end_widget_y)
+        .min(map_bounds.y.saturating_add(map_bounds.height));
+    let height = bottom.saturating_sub(top).max(1);
+    computed_visual_surface(
+        "minimap-viewport-overlay",
+        Some(AutomationVisualRect {
+            x: map_bounds.x,
+            y: top,
+            width: map_bounds.width,
+            height,
+        }),
+        "bounds-unavailable",
+    )
+}
+
+fn minimap_availability_absence_reason(editor: &LushtextEditorPage) -> &'static str {
+    match editor.minimap_availability() {
+        crate::ui::editor_page::MinimapAvailability::Disabled => "minimap-disabled",
+        crate::ui::editor_page::MinimapAvailability::TooLarge => "minimap-too-large",
+        crate::ui::editor_page::MinimapAvailability::Evicted => "minimap-evicted",
+        crate::ui::editor_page::MinimapAvailability::Visible => "bounds-unavailable",
+    }
+}
+
+fn scroll_anchor_snapshot(
+    name: &str,
+    hadjustment: Option<&gtk4::Adjustment>,
+    vadjustment: Option<&gtk4::Adjustment>,
+    left_margin_tolerance: f64,
+    top_margin_tolerance: f64,
+) -> AutomationVisualScrollAnchorSnapshot {
+    AutomationVisualScrollAnchorSnapshot {
+        name: name.to_string(),
+        at_left: hadjustment
+            .map(|adjustment| adjustment_at_lower_edge(adjustment, left_margin_tolerance)),
+        at_top: vadjustment
+            .map(|adjustment| adjustment_at_lower_edge(adjustment, top_margin_tolerance)),
+        x_value_milli: hadjustment.map(|adjustment| adjustment_milli(adjustment.value())),
+        x_lower_milli: hadjustment.map(|adjustment| adjustment_milli(adjustment.lower())),
+        y_value_milli: vadjustment.map(|adjustment| adjustment_milli(adjustment.value())),
+        y_lower_milli: vadjustment.map(|adjustment| adjustment_milli(adjustment.lower())),
+    }
+}
+
+fn adjustment_at_lower_edge(adjustment: &gtk4::Adjustment, tolerance: f64) -> bool {
+    adjustment.value() - adjustment.lower() <= tolerance + 0.5
+}
+
+fn visual_rect_from_bounds(bounds: gtk4::graphene::Rect) -> Option<AutomationVisualRect> {
+    let width = gtk_coord_to_i32(bounds.width());
+    let height = gtk_coord_to_i32(bounds.height());
+    (width > 0 && height > 0).then_some(AutomationVisualRect {
+        x: gtk_coord_to_i32(bounds.x()),
+        y: gtk_coord_to_i32(bounds.y()),
+        width,
+        height,
+    })
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "GTK widget coordinates are already bounded to practical window-sized logical pixels"
+)]
+fn gtk_coord_to_i32(value: f32) -> i32 {
+    value.round() as i32
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Scroll adjustment values are bounded by GTK widget geometry before conversion to milli-pixels"
+)]
+fn adjustment_milli(value: f64) -> i64 {
+    (value * 1000.0).round() as i64
 }
 
 /// Summarize shell surface visibility and requested state after layout mediation.

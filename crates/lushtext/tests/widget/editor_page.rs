@@ -106,6 +106,8 @@ fn baseline_source_map_for_view(view: &sourceview5::View) -> sourceview5::Map {
     map.set_show_line_marks(false);
     map.set_highlight_current_line(false);
     map.set_monospace(true);
+    map.set_top_margin(view.top_margin().max(6));
+    map.set_bottom_margin(view.bottom_margin());
     map.set_left_margin(0);
     map.set_right_margin(0);
     map.set_overflow(gtk4::Overflow::Visible);
