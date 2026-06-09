@@ -1012,7 +1012,7 @@ fn test_minimap_source_map_keeps_native_navigation_controller_set() {
 }
 
 #[test]
-fn test_minimap_slider_css_uses_neutral_viewport_colors() {
+fn test_minimap_slider_css_uses_neutral_rectangular_viewport() {
     let css = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../resources/style/style.css"
@@ -1032,6 +1032,10 @@ fn test_minimap_slider_css_uses_neutral_viewport_colors() {
     assert!(
         !rule_body.contains("@accent_color") && !rule_body.contains("@accent_bg_color"),
         "minimap viewport indicator should not use accent color tokens"
+    );
+    assert!(
+        rule_body.contains("border-radius: 0;"),
+        "minimap viewport indicator should be a square-cornered rectangle"
     );
 }
 

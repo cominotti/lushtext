@@ -297,7 +297,7 @@
 .minimap-view slider {
   background-color: alpha(@view_fg_color, 0.14);
   border: 1px solid alpha(@view_fg_color, 0.46);
-  border-radius: 6px;
+  border-radius: 0;
   box-shadow: none;
   margin-left: -13px;
   margin-right: -13px;
