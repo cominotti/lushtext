@@ -732,7 +732,7 @@
           "name": "label",
           "path": "0:template:LushtextInfoBar/1:child/0:object:GtkRevealer#alert_revealer/3:property/0:object:GtkBox#alert_box/3:child/0:object:AdwWrapBox#content_wrap/5:child/0:object:GtkBox#actions_box/5:child/0:object:GtkButton#discard_button/1:property",
           "translatable": "yes",
-          "value": "_Discard..."
+          "value": "_Discard\u2026"
         },
         {
           "context": "",
@@ -746,7 +746,7 @@
           "name": "label",
           "path": "0:template:LushtextInfoBar/1:child/0:object:GtkRevealer#alert_revealer/3:property/0:object:GtkBox#alert_box/3:child/0:object:AdwWrapBox#content_wrap/5:child/0:object:GtkBox#actions_box/6:child/0:object:GtkButton#save_button/1:property",
           "translatable": "yes",
-          "value": "_Save..."
+          "value": "_Save\u2026"
         },
         {
           "context": "",
@@ -830,13 +830,13 @@
           "context": "",
           "name": "label",
           "path": "0:template:LushtextInfoBar/1:child/0:object:GtkRevealer#alert_revealer/3:property/0:object:GtkBox#alert_box/3:child/0:object:AdwWrapBox#content_wrap/5:child/0:object:GtkBox#actions_box/5:child/0:object:GtkButton#discard_button/1:property",
-          "value": "_Discard..."
+          "value": "_Discard\u2026"
         },
         {
           "context": "",
           "name": "label",
           "path": "0:template:LushtextInfoBar/1:child/0:object:GtkRevealer#alert_revealer/3:property/0:object:GtkBox#alert_box/3:child/0:object:AdwWrapBox#content_wrap/5:child/0:object:GtkBox#actions_box/6:child/0:object:GtkButton#save_button/1:property",
-          "value": "_Save..."
+          "value": "_Save\u2026"
         },
         {
           "context": "",
@@ -1445,7 +1445,7 @@
         {
           "context": "",
           "name": "icon-name",
-          "path": "0:template:LushtextPreferences/1:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/4:child/0:object:AdwActionRow#transparency_row/3:child/0:object:GtkMenuButton#transparency_button/2:child/0:object:GtkBox/2:child/0:object:GtkImage/0:property",
+          "path": "0:template:LushtextPreferences/1:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/4:child/0:object:AdwActionRow#transparency_row/3:child/0:object:GtkMenuButton#transparency_button/2:child/0:object:GtkBox/2:child/0:object:GtkImage/1:property",
           "translatable": "",
           "value": "pan-down-symbolic"
         },
@@ -3527,7 +3527,7 @@
           "context": "",
           "name": "tooltip-text",
           "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child/0:object:GtkToggleButton#gitignore_toggle/1:property",
-          "translatable": "",
+          "translatable": "yes",
           "value": "Respect .gitignore patterns"
         },
         {
@@ -3541,7 +3541,7 @@
           "context": "",
           "name": "placeholder-text",
           "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child/0:object:GtkEntry#glob_entry/1:property",
-          "translatable": "",
+          "translatable": "yes",
           "value": "File filter (e.g., *.rs, *.toml)"
         },
         {
@@ -3803,6 +3803,18 @@
           "name": "tooltip-text",
           "path": "0:template:LushtextSearchPanel/3:child/0:object:GtkBox#header_box/10:child/0:object:GtkButton#close_button/1:property",
           "value": "Close Search Panel"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child/0:object:GtkToggleButton#gitignore_toggle/1:property",
+          "value": "Respect .gitignore patterns"
+        },
+        {
+          "context": "",
+          "name": "placeholder-text",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child/0:object:GtkEntry#glob_entry/1:property",
+          "value": "File filter (e.g., *.rs, *.toml)"
         },
         {
           "context": "",
@@ -6694,7 +6706,7 @@
           "context": "",
           "name": "label",
           "path": "0:template:LushtextWorkspaceSection/2:child/0:object:GtkBox#header_box/6:child/0:object:GtkLabel#header_label/0:property",
-          "translatable": "",
+          "translatable": "yes",
           "value": "New Workspace"
         },
         {
@@ -6988,6 +7000,12 @@
           "name": "tooltip-text",
           "path": "0:template:LushtextWorkspaceSection/2:child/0:object:GtkBox#header_box/5:child/0:object:GtkButton#collapse_button/1:property",
           "value": "Collapse Workspace"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextWorkspaceSection/2:child/0:object:GtkBox#header_box/6:child/0:object:GtkLabel#header_label/0:property",
+          "value": "New Workspace"
         },
         {
           "context": "",

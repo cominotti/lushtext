@@ -33,7 +33,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
         </child>
         <child>
           <object class="GtkLabel" id="header_label">
-            <property name="label">New Workspace</property>
+            <property name="label" translatable="yes">New Workspace</property>
             <property name="hexpand">true</property>
             <property name="xalign">0</property>
             <style>

@@ -12,7 +12,8 @@ This subtree contains GTK4/Libadwaita driving adapters.
 - UI templates are authored in `resources/ui/*.blp`; generated
   `resources/ui/*.ui` files stay committed for the GResource runtime contract.
   Edit `.blp`, run `make blueprint-generate`, then run `make check-blueprint`.
-  Use `make lint-blueprint` for advisory Blueprint lint triage, and use
+  Use `make lint-blueprint` for curated Blueprint lint triage that keeps
+  promoted diagnostics clean and bounds accepted warnings, and use
   `scripts/compare-blueprint-visuals.sh --baseline-ref <ref>` when a
   geometry-sensitive template edit needs before/after visual proof.
 

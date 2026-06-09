@@ -60,6 +60,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                         </child>
                         <child>
                           <object class="GtkImage">
+                            <property name="accessible-role">43</property>
                             <property name="icon-name">pan-down-symbolic</property>
                           </object>
                         </child>

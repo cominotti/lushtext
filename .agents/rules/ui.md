@@ -165,8 +165,9 @@ Acceptance for these states:
   geometry-sensitive edits, also run the relevant widget and visual smoke lanes.
 - Blueprint compile warnings are blocking unless they match the documented
   `resources/ui/shortcuts.blp` GTK shortcuts deprecation policy. Blueprint lint
-  remains advisory; use `make lint-blueprint` to group diagnostics, fix safe
-  findings, and classify geometry-sensitive suggestions before changing layout.
+  is a curated advisory gate; use `make lint-blueprint` to keep promoted
+  diagnostics clean, bound accepted findings by rule and file, and classify
+  geometry-sensitive suggestions before changing layout.
 - For UI source-format migrations, preserve a pre-change baseline and compare it
   to the migrated checkout through the same headless Mutter state matrix with
   shared fixtures. Pixel diffs must be zero, or every nonzero difference must be

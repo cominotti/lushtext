@@ -75,7 +75,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     <child>
                       <object class="GtkButton" id="discard_button">
                         <property name="visible">false</property>
-                        <property name="label" translatable="yes">_Discard...</property>
+                        <property name="label" translatable="yes">_Discard…</property>
                         <property name="use-underline">true</property>
                         <style>
                           <class name="inline-alert-button"/>
@@ -85,7 +85,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     <child>
                       <object class="GtkButton" id="save_button">
                         <property name="visible">false</property>
-                        <property name="label" translatable="yes">_Save...</property>
+                        <property name="label" translatable="yes">_Save…</property>
                         <property name="use-underline">true</property>
                         <style>
                           <class name="inline-alert-button"/>

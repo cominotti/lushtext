@@ -21,9 +21,11 @@ make check-blueprint
 `make check-blueprint` is blocking. It compiles every `.blp`, checks generated
 `.ui` drift, and runs the generated UI template contract audit.
 
-`./scripts/blueprint-templates.sh lint` is advisory. It runs
-`blueprint-compiler lint`, groups diagnostics by rule and file, and fails only
-when a lint rule is unclassified or reports an error.
+`./scripts/blueprint-templates.sh lint` is a curated advisory gate. It runs
+`blueprint-compiler lint`, groups diagnostics by rule and file, and fails when a
+lint rule is unclassified, reports an error, a promoted must-stay-clean rule
+regresses, or an accepted advisory finding exceeds its documented file/count
+ceiling.
 
 ## Compile Warning Policy
 
@@ -36,15 +38,15 @@ uses GTK's existing shortcuts window until a separate UI redesign replaces it.
 
 ## Advisory Lint Policy
 
-| Rule | Status | Rationale |
-| --- | --- | --- |
-| `adjustment_prop_order` | Classified | The source is normalized to lower, upper, then value, but blueprint-compiler 0.20.4 still warns when increment properties are present. Removing increments would change control behavior. |
-| `scrollable_parent` | Classified | Current findings involve custom composite templates and layout-owned children. Changes require widget or visual proof because scroll ownership affects geometry. |
-| `use_adw_bin` | Classified | Single-child boxes may carry CSS classes, margins, or layout semantics. Container swaps require generated-UI and visual proof. |
-| `translate_display_string` | Classified | Current findings include runtime-populated labels, symbolic toggle text, technical badges, and branding. Change them only during a localization-aware pass. |
-| `use_unicode` | Classified | Ellipsis cleanup is user-visible text churn and should move with localization review. |
-| `missing_descriptive_text` | Classified | The current image is decorative; accessibility semantics need widget-level verification before changing. |
-| `avoid_all_caps` | Classified | `LF` and `UTF-8` are compact technical status labels, not prose labels. |
+| Rule | Status | Accepted Ceiling | Rationale |
+| --- | --- | --- | --- |
+| `use_unicode` | Promoted | 0 | Visible labels use Unicode punctuation such as ellipsis. Reintroducing ASCII `...` is a policy regression. |
+| `missing_descriptive_text` | Promoted | 0 | Images need descriptive text or `accessible-role: presentation` when decorative. |
+| `translate_display_string` | Partially classified | `info-bar.blp` x2, `search-panel.blp` x4, `status-bar.blp` x3, `window.blp` x2 | Static user-facing strings that were safe to translate are fixed. Remaining findings are runtime-populated empty alert labels, symbolic search toggles or `.gitignore`, technical status tokens, and the LushText brand title. |
+| `adjustment_prop_order` | Classified | `preferences.blp` x4 | The source is normalized to lower, upper, then value, but blueprint-compiler 0.20.4 still warns when increment properties are present. Removing increments would change control behavior. |
+| `avoid_all_caps` | Classified | `status-bar.blp` x2 | `LF` and `UTF-8` are compact technical status labels, not prose labels. |
+| `scrollable_parent` | Classified | `editor-page.blp` x2, `window.blp` x7 | Current findings involve custom composite templates and layout-owned children. Changes require widget or visual proof because scroll ownership affects geometry. |
+| `use_adw_bin` | Classified | `info-bar.blp` x1, `search-panel.blp` x1, `status-bar.blp` x1, `window.blp` x1 | Single-child boxes carry CSS classes, Rust template-child bindings, animation state, or layout semantics. Container swaps require generated-UI and visual proof. |
 
 ## Visual Proof
 

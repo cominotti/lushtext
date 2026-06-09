@@ -118,14 +118,14 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                 <child>
                   <object class="GtkToggleButton" id="gitignore_toggle">
                     <property name="label">.gitignore</property>
-                    <property name="tooltip-text">Respect .gitignore patterns</property>
+                    <property name="tooltip-text" translatable="yes">Respect .gitignore patterns</property>
                     <property name="active">true</property>
                   </object>
                 </child>
                 <child>
                   <object class="GtkEntry" id="glob_entry">
                     <property name="hexpand">true</property>
-                    <property name="placeholder-text">File filter (e.g., *.rs, *.toml)</property>
+                    <property name="placeholder-text" translatable="yes">File filter (e.g., *.rs, *.toml)</property>
                   </object>
                 </child>
               </object>

@@ -265,14 +265,70 @@ for line in clean.splitlines():
         diagnostics.append((rule, severity, rel, location))
         current = None
 
-policy = {
-    "adjustment_prop_order": "classified: lower/upper/value is normalized; compiler 0.20.4 still warns when increment properties are present",
-    "scrollable_parent": "classified: geometry-sensitive composite-template ownership; verify through widget and visual-smoke lanes before changing",
-    "use_adw_bin": "classified: geometry-sensitive container semantics; only fix with generated-UI and visual proof",
-    "translate_display_string": "classified: runtime-populated, symbolic, technical, or branding text; review with localization intent before changing",
-    "use_unicode": "classified: text-label cleanup deferred to a localization-safe pass",
-    "missing_descriptive_text": "classified: decorative icon; accessibility semantics require widget-level verification before changing",
-    "avoid_all_caps": "classified: compact technical status labels such as LF and UTF-8 are intentionally uppercase",
+promoted_zero_rules = {
+    "missing_descriptive_text": "promoted: images need descriptive text or accessible-role=presentation",
+    "use_unicode": "promoted: visible text should use Unicode punctuation such as ellipsis",
+}
+
+accepted_policy = {
+    "adjustment_prop_order": {
+        "resources/ui/preferences.blp": (
+            4,
+            "classified: lower/upper/value is normalized; compiler 0.20.4 still warns when increment properties are present",
+        ),
+    },
+    "avoid_all_caps": {
+        "resources/ui/status-bar.blp": (
+            2,
+            "classified: compact technical status labels such as LF and UTF-8 are intentionally uppercase",
+        ),
+    },
+    "scrollable_parent": {
+        "resources/ui/editor-page.blp": (
+            2,
+            "classified: composite-template children are owned by editor geometry, not standalone scroll containers",
+        ),
+        "resources/ui/window.blp": (
+            7,
+            "classified: shell children own layout, overlay, and secondary-surface geometry",
+        ),
+    },
+    "translate_display_string": {
+        "resources/ui/info-bar.blp": (
+            2,
+            "classified: empty labels are runtime-populated inline alert text",
+        ),
+        "resources/ui/search-panel.blp": (
+            4,
+            "classified: remaining labels are symbolic search toggles or the .gitignore filename token",
+        ),
+        "resources/ui/status-bar.blp": (
+            3,
+            "classified: remaining labels are EditorConfig, LF, and UTF-8 technical tokens",
+        ),
+        "resources/ui/window.blp": (
+            2,
+            "classified: remaining strings are LushText brand titles",
+        ),
+    },
+    "use_adw_bin": {
+        "resources/ui/info-bar.blp": (
+            1,
+            "classified: alert_box carries alert role, CSS, and wrapping layout semantics",
+        ),
+        "resources/ui/search-panel.blp": (
+            1,
+            "classified: footer_box remains a GtkBox template child until structural proof is added",
+        ),
+        "resources/ui/status-bar.blp": (
+            1,
+            "classified: message_area_box owns full-lane status pulse CSS and tests",
+        ),
+        "resources/ui/window.blp": (
+            1,
+            "classified: editor_box participates in preview-mode visibility and paned animation",
+        ),
+    },
 }
 
 if lint_status == 0 and not diagnostics:
@@ -289,30 +345,59 @@ for rule, severity, rel, _location in diagnostics:
     by_rule[rule][rel] += 1
     severities[rule].add(severity)
 
-print("Blueprint lint advisory summary:")
+print("Blueprint lint policy summary:")
 print("rule\tseverity\tcount\tfiles\tpolicy")
-unknown_rules: list[str] = []
+unknown_findings: list[str] = []
+promoted_regressions: list[str] = []
+excess_findings: list[str] = []
 error_rules: list[str] = []
 for rule in sorted(by_rule):
     files = ", ".join(f"{path} x{count}" for path, count in sorted(by_rule[rule].items()))
     severity_text = ",".join(sorted(severities[rule]))
     count = sum(by_rule[rule].values())
-    rule_policy = policy.get(rule)
-    if rule_policy is None:
-        unknown_rules.append(rule)
-        rule_policy = "unclassified"
     if "error" in severities[rule]:
         error_rules.append(rule)
+
+    rule_policy_parts: list[str] = []
+    if rule in promoted_zero_rules:
+        rule_policy_parts.append(promoted_zero_rules[rule])
+        promoted_regressions.append(rule)
+
+    accepted_files = accepted_policy.get(rule, {})
+    for path, path_count in sorted(by_rule[rule].items()):
+        accepted = accepted_files.get(path)
+        if accepted is None:
+            if rule not in promoted_zero_rules:
+                unknown_findings.append(f"{rule} in {path}")
+            continue
+        max_count, rationale = accepted
+        if path_count > max_count:
+            excess_findings.append(f"{rule} in {path}: {path_count} > {max_count}")
+        rule_policy_parts.append(f"{path}: <= {max_count}; {rationale}")
+
+    rule_policy = "; ".join(rule_policy_parts) if rule_policy_parts else "unclassified"
     print(f"{rule}\t{severity_text}\t{count}\t{files}\t{rule_policy}")
 
-if unknown_rules:
-    print(f"error: unclassified Blueprint lint rules: {', '.join(sorted(unknown_rules))}", file=sys.stderr)
+if promoted_regressions:
+    print(
+        "error: promoted Blueprint lint rules regressed: "
+        + ", ".join(sorted(set(promoted_regressions))),
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+if unknown_findings:
+    print(f"error: unclassified Blueprint lint findings: {', '.join(sorted(unknown_findings))}", file=sys.stderr)
+    raise SystemExit(1)
+if excess_findings:
+    print(f"error: Blueprint lint findings exceeded accepted policy: {', '.join(sorted(excess_findings))}", file=sys.stderr)
     raise SystemExit(1)
 if error_rules:
     print(f"error: Blueprint lint reported errors for classified advisory rules: {', '.join(sorted(error_rules))}", file=sys.stderr)
     raise SystemExit(1)
 
-print("Blueprint lint remains advisory: all current warning rules are fixed or classified.")
+promoted_names = ", ".join(sorted(promoted_zero_rules))
+print(f"Blueprint lint promoted rules are clean: {promoted_names}.")
+print("Blueprint lint remains advisory for documented exceptions: all current warnings are classified.")
 PY
     then
         result=0

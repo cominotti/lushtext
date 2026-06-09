@@ -477,10 +477,11 @@ builds still consume the committed `.ui` resources.
 
 `make check-blueprint` treats unknown compiler warnings as blocking. The only
 accepted warnings are the documented GTK shortcuts deprecations in
-`resources/ui/shortcuts.blp`. Run `make lint-blueprint` for advisory lint
-triage; it groups diagnostics by rule and file and requires every current rule
-to be fixed or classified. See `docs/blueprint-validation.md` for the lint
-policy and the reusable visual comparison workflow:
+`resources/ui/shortcuts.blp`. Run `make lint-blueprint` for curated advisory
+lint triage; it groups diagnostics by rule and file, keeps promoted diagnostics
+clean, and fails when accepted advisory findings exceed the documented policy.
+See `docs/blueprint-validation.md` for the lint policy and the reusable visual
+comparison workflow:
 
 ```sh
 ./scripts/compare-blueprint-visuals.sh --baseline-ref origin/main
