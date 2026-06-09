@@ -32,9 +32,10 @@ Use this playbook when the failure only becomes visible while a GTK app is runni
    - If the check fails, do not interact with the app or capture a snapshot. Resolve the missing tool, missing process, or wrong-instance proof first.
    - For `ydotool`, the daemon matters as much as the binary. If background daemons are reaped when shell commands exit, run `ydotoold` in its own PTY session for the duration of the live debug run.
 6. **Prefer app D-Bus actions before synthetic input**
-   - Inspect `org.gtk.Actions` on the application and window objects before using `ydotool`.
-   - Use exported actions for real app behavior, such as opening search or toggling UI state.
-   - For visible editable widgets, try AT-SPI editable-text automation next. Example: activate `win.begin-search`, then run `scripts/atspi-set-text.py --application-regex '^lushtext$' --role-regex '^entry$' --text needle`.
+   - Prefer `scripts/lushtext-automation.py catalog`, `snapshot`, `wait`, and `action` for ordinary same-user D-Bus inspection and action replay.
+   - Inspect `/dev/cominotti/lushtext/Automation` with `dev.cominotti.lushtext.Automation1.GetActionCatalog` before using `ydotool` when you need raw D-Bus output.
+   - Use exported `org.gtk.Actions` for real app behavior, such as `win.set-search-query`, opening search, showing Keyboard Shortcuts, or setting target-state UI surfaces. After the action, call `WaitForReady` with the narrowest named predicate and assert `GetSnapshot`; reserve `WaitForIdle` for broad all-workflow settling.
+   - For visible editable widgets without a target-state action, try AT-SPI editable-text automation next. Example: activate `win.begin-search`, then run `scripts/atspi-set-text.py --application-regex '^lushtext$' --role-regex '^entry$' --text needle`.
    - If a CLI-opened file restores behind older session tabs, call `org.freedesktop.Application.Open` with that file's URI to exercise LushText's duplicate-tab activation path before opening search.
    - Restored tab strips can nest the search entry deeper than a shallow AT-SPI walk. Use the helper defaults or pass `--max-depth 30 --max-nodes 20000`.
    - Use `ydotool` only when neither app actions nor AT-SPI can express the operation.
@@ -90,14 +91,24 @@ This workflow is usually superior to broad speculative edits. It is also usually
 ## Screenshot Strategy
 
 - For repeatable agent-owned visual checks, prefer the headless Mutter helper first:
-  `scripts/capture-lushtext-mutter.py --file PATH --search TEXT --enable-minimap --output PATH`.
+  `scripts/capture-lushtext-mutter.py --file PATH --search TEXT --expected-search-matches N --enable-minimap --output PATH`.
   It runs LushText inside an isolated `dbus-run-session` and `mutter --headless`
   Wayland monitor, stores app state in temporary XDG directories with
-  `GSETTINGS_BACKEND=keyfile`, drives exported window actions over D-Bus, sets
-  visible editable text through a private AT-SPI registry, and captures the
-  existing Mutter monitor through PipeWire/GStreamer. This matches the CI
-  compositor family and avoids live-desktop focus, Shell Overview, and portal
-  approval races.
+  `GSETTINGS_BACKEND=keyfile`, drives exported window actions over D-Bus, waits
+  through Automation1 readiness predicates, records `automation-snapshot.json`,
+  and captures the existing Mutter monitor through PipeWire/GStreamer. This
+  matches the CI compositor family and avoids live-desktop focus, Shell
+  Overview, and portal approval races.
+- Use `--wait-predicate PREDICATE` for scenario-specific gates that should be
+  proven before the screenshot, such as `workspace-refresh-complete`.
+- Use `--wait-window-action ACTION` when a visible dialog owns the next stable
+  action state, such as waiting for `set-notes-browser-query` after Browse
+  Notes opens.
+- Use `--window-string-action ACTION=TEXT` after the owning action is enabled
+  when a visible workflow exposes a string-parameter action, such as filtering
+  Browse Notes through `set-notes-browser-query=Visual bookmark`.
+- Use `--wait-atspi-text TEXT` when an empty or read-only dialog has no
+  follow-up action but does expose stable visible text.
 - The proven Mutter screenshot path is `org.gnome.Mutter.ScreenCast.Session.RecordMonitor("Meta-0", {"is-recording": true})` followed by `Start` and `gst-launch-1.0 pipewiresrc path=<node> num-buffers=1 ! videoconvert ! pngenc ! filesink location=...`. Do not use `RecordVirtual` for screenshots of the app monitor; during the minimap investigation it created a separate 1x1 stream instead of the visible virtual monitor.
 - The isolated runtime directory must be mode `0700`, and PipeWire plus WirePlumber must run in the same private D-Bus/XDG runtime session as Mutter. A looser runtime dir can leave PipeWire unavailable to `pipewiresrc`.
 - For stripped headless sessions that need AT-SPI, activate `org.a11y.Bus`, set `org.a11y.Status.IsEnabled` to true, and start `/usr/libexec/at-spi2-registryd --dbus-name org.a11y.atspi.Registry` on the normal session bus. Do not run registryd with `DBUS_SESSION_BUS_ADDRESS` pointed at the accessibility bus; registryd itself needs the normal session bus to discover that address.
@@ -125,8 +136,9 @@ This workflow is usually superior to broad speculative edits. It is also usually
 
 - `org.gtk.Actions` on `/.../window/N`
   - Useful for replaying the exact action path after the first manual repro, especially for single-instance apps that are awkward to relaunch and click through repeatedly.
+  - For cataloged app/window actions, prefer `scripts/lushtext-automation.py action ACTION ...` before hand-writing `gdbus call` arguments.
   - Prefer this over ad hoc synthetic input when the bug is already narrowed to a specific exported action such as `toggle-sidebar`.
-  - Current LushText search automation can open the search UI with `begin-search`, but D-Bus alone cannot set the visible search query. Use AT-SPI editable text today, and report a missing app action such as `begin-search-with-text` if a pure D-Bus path is required.
+  - For search setup, prefer the exported `win.set-search-query` string action when available, then call automation `WaitForReady("search-complete", timeout)` and `GetSnapshot` before asserting the visible state.
 - `org.gnome.Shell.Introspect.WindowsChanged`
   - Often spikes during map, unmap, focus, and workspace transitions.
   - Useful for correlating “something on screen changed” with GTK warnings.

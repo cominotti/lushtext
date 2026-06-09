@@ -17,8 +17,10 @@ The testing approach is pragmatic:
   still pass on stable Rust without nightly or sanitizer setup.
 - Use the existing integration helpers for cross-service filesystem workflows.
 - Use the custom widget harness for real window and widget behavior.
-- Reach for the visual, portal/sandbox, accessibility, or performance smoke
-  lanes only when the current widget target cannot express the behavior.
+- Reach for the automation client self-test for reusable D-Bus client/parser
+  changes, and reach for the visual, portal/sandbox, accessibility, or
+  performance smoke lanes only when the current widget target cannot express
+  the behavior.
 
 ## Current Test Map
 
@@ -31,6 +33,8 @@ The testing approach is pragmatic:
 | Fuzz | Hostile byte ingestion and bounded operation scripts through narrow non-GTK helpers | `fuzz/fuzz_targets/*.rs` and `fuzz/corpus/**` | No | `make fuzz-smoke` |
 | Integration | Cross-service workflows with real temp directories | `crates/lushtext/tests/integration.rs` and `crates/lushtext/tests/integration/*.rs` | No | `make test-int` |
 | Widget | Widget and real-window behavior, including workflow-level UI regressions | `crates/lushtext/tests/widget.rs` and `crates/lushtext/tests/widget/*.rs` | Private headless Mutter only | `make test-widget` |
+| Automation docs drift | Exported action, D-Bus, snapshot, readiness, automation-client, and helper-flag documentation contract | `docs/automation.md`, `docs/automation-reference.md`, `scripts/check-automation-docs.py` | No | `make check-automation-docs` |
+| Automation client self-test | Reusable D-Bus helper parser, typed action parameters, statuses, and artifact summaries | `scripts/lushtext-automation.py` | No | `make automation-client-self-test` |
 | Visual smoke | Rendered desktop screenshots and compositor/session artifacts | `scripts/run-visual-smoke.sh` | Yes | `make visual-smoke` |
 | Portal/sandbox smoke | Confined Flatpak/Snap runtime diagnostics and skip-aware package checks | `scripts/run-portal-sandbox-smoke.sh` | Host-dependent | `make portal-sandbox-smoke` |
 | Accessibility smoke | AT-SPI-enabled focus and accessible metadata checks outside the accessibility-disabled widget harness | `scripts/run-accessibility-smoke.sh` | Yes | `make accessibility-smoke` |
@@ -64,6 +68,9 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 - `make test-prop` runs the feature-gated `lushtext-core/property-tests` target. Keep this lane deterministic, bounded, and out of default nextest and mutation runs.
 - `make fuzz-corpus-replay` runs the feature-gated `lushtext-core/fuzzing` replay target on stable Rust. Keep it read-only and out of default test and mutation lanes; CI runs it as a separate explicit job so committed seeds stay guarded.
 - `make fuzz-smoke` runs the isolated `cargo-fuzz` project under `fuzz/` with `lushtext-core/fuzzing`. Keep it out of default test, property, widget, benchmark, mutation, and pull-request CI lanes; use scheduled/manual fuzz smoke for coverage-guided discovery.
+- `make automation-client-self-test` proves the reusable
+  `scripts/lushtext-automation.py` contract without launching the app. It is a
+  fast policy check, not a replacement for real-process automation smoke.
 - `make visual-smoke`, `make portal-sandbox-smoke`, `make accessibility-smoke`,
   and `make performance-smoke` are host-sensitive smoke lanes. They preserve
   artifacts and skip clearly when the host lacks required desktop, portal,
@@ -79,15 +86,25 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
    where the surface still promises to work. Do not sign off on a collection,
    picker, browser, command palette, search panel, sidebar, tab header, dialog,
    or empty state after testing only the happy populated path.
-3. Reuse the existing helpers:
+3. For transient shell surfaces such as command palette overlays, search bars,
+   search panels, menus, popovers, and Focus Mode affordances, cover dismissal
+   as a workflow: Escape after focus moved elsewhere, click-away outside the
+   surface, inside clicks that must not dismiss, and one-Escape-only topmost
+   ordering when another dismissible surface sits underneath.
+4. Reuse the existing helpers:
    - `crates/lushtext/tests/integration/common.rs` for `TestContext`
    - `crates/lushtext/tests/widget/common.rs` for `ensure_gtk_init()`, `test_application()`, and `test_window()`
-4. For widget tests, use the shared `flush_events()` / `wait_until(...)` from `common.rs` over fixed sleeps. Never copy a private `wait_until`/`flush_*` into a test module — a fix to the shared version would then silently miss your copy.
-5. If the code under test uses async GTK callbacks or `spawn_blocking_then`, wait on a visible predicate with a **generous** budget (≥5–10s). These waits depend on background-thread scheduling and I/O, not just main-loop ticks, so a tight 2s budget flakes under load. A larger ceiling never costs time on the fast path — the predicate returns the instant the work lands — and only matters when a loaded machine delays the thread. Reserve short budgets for synchronous UI-state flips.
-6. If the behavior depends on real frame-clock progression, do **not** just sleep for the nominal animation duration. Assert on stable invariants or use the repo's narrow test-only knobs when they already exist.
-7. Run the smallest relevant command before broadening to the full suite.
-8. When refactoring a large widget or window into sibling modules without changing behavior, still run the widget target for that surface and its adjacent orchestration surface. Visibility and wiring regressions often show up only from the external `crates/lushtext` test crate, not from `lushtext-core` alone.
-9. For rendered pixels, portals, installed package confinement, AT-SPI, or
+5. For widget tests, use the shared `flush_events()` / `wait_until(...)` from `common.rs` over fixed sleeps. Never copy a private `wait_until`/`flush_*` into a test module — a fix to the shared version would then silently miss your copy.
+6. If the code under test uses async GTK callbacks or `spawn_blocking_then`, wait on a visible predicate with a **generous** budget (≥5–10s). These waits depend on background-thread scheduling and I/O, not just main-loop ticks, so a tight 2s budget flakes under load. A larger ceiling never costs time on the fast path — the predicate returns the instant the work lands — and only matters when a loaded machine delays the thread. Reserve short budgets for synchronous UI-state flips.
+7. If the behavior depends on real frame-clock progression, do **not** just sleep for the nominal animation duration. Assert on stable invariants or use the repo's narrow test-only knobs when they already exist.
+8. Run the smallest relevant command before broadening to the full suite.
+9. For action-catalog, read-only automation D-Bus, snapshot, readiness predicate/blocker,
+   automation-client, or helper-flag changes, update `docs/automation.md` plus
+   `docs/automation-reference.md` and run `make check-automation-docs`. If
+   `scripts/lushtext-automation.py` changed, also run
+   `make automation-client-self-test` before any heavier smoke lane.
+10. When refactoring a large widget or window into sibling modules without changing behavior, still run the widget target for that surface and its adjacent orchestration surface. Visibility and wiring regressions often show up only from the external `crates/lushtext` test crate, not from `lushtext-core` alone.
+11. For rendered pixels, portals, installed package confinement, AT-SPI, or
    coarse user-visible latency, use the matching smoke lane and keep its
    artifacts.
 
@@ -130,6 +147,10 @@ This applies to load-amplified flakes too: heavy local load exposing a 2s async 
   dense scrolling behavior, and constrained geometry. A model count assertion
   is not enough if the regression risk is visibility, legibility, clipping,
   unintended scrollbars, or controls pushed outside the allocation.
+- For transient overlays, test the user's dismissal contract rather than only
+  the revealer property: focus moved away but Escape still closes, outside
+  pointer presses close and restore focus, inside pointer presses keep the
+  surface open, and one Escape closes only the topmost surface when stacked.
 - For parented widgets inside an unpresented window, prefer `widget.property::<bool>("visible")` when you need the widget's own visibility flag. `is_visible()` answers a different question and walks the parent chain.
 - For `GtkListView` keyboard shortcuts, do not assume the focused widget is the list itself. In real sessions focus usually sits on a realized row descendant, so synthetic key delivery should target the focused widget and, if needed, walk up its parent chain until it reaches the ancestor that owns the `EventControllerKey`. Emitting the key directly on the list view can produce false-green tests for shortcuts that do nothing in the live app.
 - For adaptive surfaces that animate, especially `AdwBottomSheet` used by the document-properties pane, do not close the animated surface as a cleanup step in headless widget tests unless the test is specifically proving the close animation. Assert the open/compact state, then explicitly destroy the presented test window and flush once. Closing the sheet right before process teardown can make Mutter report `gdk-frame-clock: layout continuously requested` and `Trying to snapshot LushtextWindow ... without a current allocation`, even when the production UI state is correct.

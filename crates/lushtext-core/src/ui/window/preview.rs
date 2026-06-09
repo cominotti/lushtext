@@ -25,10 +25,9 @@ use super::LushtextWindow;
 
 /// Register the preview-related actions on the window.
 ///
-/// Two actions:
-/// - `toggle-preview-pane`: shows/hides the side-by-side preview (stateful bool)
-/// - `toggle-preview-mode`: Alt+P full-replacement toggle (stateful bool, only
-///   works when side-by-side is hidden)
+/// Stateful toggles back the visible UI, while parameterized target-state
+/// actions let automation and smoke tests request a final state without
+/// depending on toggle parity.
 pub fn setup_preview_actions(window: &LushtextWindow) {
     let imp = window.imp();
 
@@ -98,6 +97,29 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
         });
     }
     window.add_action(&mode_action);
+
+    window.add_action_entries([
+        gtk4::gio::ActionEntry::builder("set-preview-pane-visible")
+            .parameter_type(Some(glib::VariantTy::BOOLEAN))
+            .activate(|window: &LushtextWindow, _, parameter| {
+                let Some(visible) = parameter.and_then(glib::Variant::get::<bool>) else {
+                    tracing::error!("set-preview-pane-visible: expected bool parameter");
+                    return;
+                };
+                window.change_preview_action_state("toggle-preview-pane", visible);
+            })
+            .build(),
+        gtk4::gio::ActionEntry::builder("set-preview-mode")
+            .parameter_type(Some(glib::VariantTy::BOOLEAN))
+            .activate(|window: &LushtextWindow, _, parameter| {
+                let Some(enabled) = parameter.and_then(glib::Variant::get::<bool>) else {
+                    tracing::error!("set-preview-mode: expected bool parameter");
+                    return;
+                };
+                window.set_preview_mode_target(enabled);
+            })
+            .build(),
+    ]);
 }
 
 impl LushtextWindow {
@@ -274,6 +296,36 @@ impl LushtextWindow {
         if enabled {
             self.refresh_preview();
         }
+    }
+
+    /// Request a preview state through the normal GAction path.
+    ///
+    /// Target-state automation remains a thin request layer; Focus Mode
+    /// bookkeeping, GSettings writes, refreshes, and animations stay on the
+    /// existing preview action workflow.
+    pub(super) fn change_preview_action_state(&self, action_name: &str, enabled: bool) {
+        let Some(action) = self.lookup_action(action_name) else {
+            return;
+        };
+        if action
+            .state()
+            .and_then(|state| state.get::<bool>())
+            .is_some_and(|current| current == enabled)
+        {
+            return;
+        }
+        action.change_state(&enabled.to_variant());
+    }
+
+    /// Apply preview-only target state without creating a second preview policy path.
+    ///
+    /// Side-by-side and preview-only modes share one paned shell, so a request
+    /// for preview-only first exits side-by-side through the same action system.
+    fn set_preview_mode_target(&self, enabled: bool) {
+        if enabled && self.imp().preview_visible.get() {
+            self.change_preview_action_state("toggle-preview-pane", false);
+        }
+        self.change_preview_action_state("toggle-preview-mode", enabled);
     }
 
     fn set_preview_action_state(&self, action_name: &str, enabled: bool) {

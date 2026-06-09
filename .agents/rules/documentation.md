@@ -25,6 +25,9 @@ Whenever code changes are made, evaluate whether the following files need update
 **Trigger conditions** (any of these means you must check):
 - New widget or module added → update module layout in AGENTS.md and README.md, widget hierarchy in ui.md
 - New user-visible feature → update Features section in README.md
+- New exported action, action parameter/state, D-Bus automation method/property, snapshot field, workflow event field, readiness predicate/blocker, automation-client command/status/exit/result field, scenario-helper flag, scenario manifest field, or scenario artifact meaning → update `docs/automation.md`, `docs/automation-reference.md`, and run `make check-automation-docs` plus `make automation-client-self-test` when the client changed
+- Automation, portal/sandbox, or Flatpak permission posture changes → update
+  the user/developer automation docs and run `make check-flatpak-permissions`
 - New pattern introduced (timer, signal, async) → document in the appropriate rules file
 - New convention discovered or existing one refined → update rust.md or widget-wiring.md
 - Testing pitfall encountered → add to gtk-testing skill references

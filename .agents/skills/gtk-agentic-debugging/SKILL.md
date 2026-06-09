@@ -25,11 +25,12 @@ For repeatable agent-owned inspection, make headless Mutter the first path:
 .agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py \
   --file PATH \
   --search needle \
+  --expected-search-matches 3 \
   --enable-minimap \
   --output /tmp/lushtext-mutter.png
 ```
 
-This launches LushText on a private `mutter --headless` Wayland monitor, isolates XDG data/config/cache plus keyfile GSettings, opens search through the exported `win.begin-search` D-Bus action, sets editable text through a private AT-SPI registry, and captures the monitor through Mutter's `RecordMonitor("Meta-0")` screencast stream. Prefer this before touching the human's live GNOME session or falling back to Xvfb.
+This launches LushText on a private `mutter --headless` Wayland monitor, isolates XDG data/config/cache plus keyfile GSettings, sets in-document search through the exported `win.set-search-query` D-Bus action, waits through Automation1 readiness predicates, saves `automation-snapshot.json`, and captures the monitor through Mutter's `RecordMonitor("Meta-0")` screencast stream. Prefer this before touching the human's live GNOME session or falling back to Xvfb.
 
 Prefer a capture session over ad hoc commands. Run the helper through `functions.exec_command` with `tty: true`, then keep polling with `write_stdin` while the human interacts with the app window.
 
@@ -57,7 +58,7 @@ For agent-driven input, `ydotool` is only ready when both the binary and daemon 
 
 Before using `ydotool type` or `ydotool key`, ask the human to focus the specific LushText debug window you launched. Then rerun `check-lushtext-live.sh --session ... --require-launched-instance --require-tool ydotool` immediately before injection. `ydotool` targets the compositor's focused surface, so process liveness alone does not prove the keystrokes will go to LushText.
 
-Prefer D-Bus for interactions whenever LushText exports the needed behavior as a `org.gtk.Actions` action on the application or window object. For text entry into visible GTK widgets, prefer AT-SPI D-Bus editable-text automation before `ydotool`; for example, open the search UI with `org.gtk.Actions.Activate begin-search`, then set the focused/visible entry with `scripts/atspi-set-text.py`. Screenshot capture may also use D-Bus through the desktop portal or GNOME Shell, but those APIs are permission-gated and can return `AccessDenied` or wait for human approval.
+Prefer D-Bus for interactions whenever LushText exports the needed behavior as a `org.gtk.Actions` action on the application or window object. For ordinary inspection, use `scripts/lushtext-automation.py catalog`, `snapshot`, `wait`, and `action` so the action catalog, typed parameters, statuses, and result envelope stay consistent with docs. For lower-level tracing, inspect `/dev/cominotti/lushtext/Automation` with `dev.cominotti.lushtext.Automation1.GetActionCatalog`, then drive the documented app/window action and use `WaitForReady` with the narrowest named predicate plus `GetSnapshot` for bounded assertions. Fall back to broad `WaitForIdle` only when no narrower predicate matches the workflow. For text entry into visible GTK widgets that is not covered by a target-state action, prefer AT-SPI D-Bus editable-text automation before `ydotool`. Screenshot capture may also use D-Bus through the desktop portal or GNOME Shell, but those APIs are permission-gated and can return `AccessDenied` or wait for human approval.
 
 Prefer non-interactive portal screenshots before opening the GNOME Shell screenshot UI. In this Fedora Toolbx on Wayland, `capture-screenshot.py --portal-only --non-interactive` can save a PNG without a visible prompt, while `gnome-screenshot -f` may hang after falling back to X11. If an interactive portal UI appears, do not try to approve it with coordinate clicks; only use AT-SPI actions when the accessible exposes a real invokable action.
 
@@ -107,7 +108,7 @@ Prefer this loop for real GTK bugs that only show up in a live desktop session:
 5. Relaunch the real app, reproduce again, and compare the new traces with the warning timestamps.
 6. Match warned widget pointers to the real widget tree before deciding which widget is actually wrong.
 7. Only then make a narrow fix, rerun the same real-app loop, and verify both correctness and UX.
-8. Once the manual repro is proven, prefer driving the exact exported `org.gtk.Actions` window action over D-Bus for restart-to-restart verification. This keeps the reproduction on the real application path without guessing at lower-level input injection.
+8. Once the manual repro is proven, prefer driving the exact exported `org.gtk.Actions` window action for restart-to-restart verification, then call automation `WaitForReady` with the narrowest named predicate and `GetSnapshot`. This keeps the reproduction on the real application path without guessing at lower-level input injection.
 
 This is the preferred workflow over broad speculative code changes. For geometry bugs especially, "launch real app -> human reproduces -> inspect live warnings -> add narrow tracing -> pointer-match the real widgets -> rerun" is usually faster and more trustworthy than static reasoning alone.
 
@@ -126,9 +127,9 @@ This is the preferred workflow over broad speculative code changes. For geometry
 - Before interacting with LushText or capturing a visual snapshot, run `scripts/check-lushtext-live.sh`. For fresh debug sessions, include `--session` and `--require-launched-instance` so you do not accidentally drive a pre-existing LushText window.
 - If a required interaction or screenshot tool is missing, stop the live-debug flow and ask the human to install it, run `make dev-tools`, or give alternate instructions. Do not silently fall back to a weaker interaction path after discovering a missing tool.
 - Before `ydotool` keyboard input, ask the human to focus the LushText debug window. The liveness helper proves the process, not keyboard focus.
-- Prefer exported `org.gtk.Actions` over `ydotool` for app interactions. Fall back to `ydotool` only for missing operations such as arbitrary text entry into a focused widget.
+- Prefer exported `org.gtk.Actions` over `ydotool` for app interactions. Use `scripts/lushtext-automation.py action ...` when the reusable client can express the cataloged action; otherwise use the automation action catalog to confirm parameter and state signatures, then wait with `dev.cominotti.lushtext.Automation1.WaitForReady` using the narrowest named predicate and assert with `GetSnapshot`. Fall back to `WaitForIdle` only for broad all-workflow settling, and fall back to `ydotool` only for missing operations such as arbitrary text entry into a focused widget.
 - Prefer `scripts/atspi-set-text.py` over `ydotool type` for visible editable GTK widgets. It uses the accessibility D-Bus bus and avoids depending on compositor keyboard focus. In restored or deeply nested window layouts, use the script's default deep scan; earlier shallow scans can miss a visible search entry.
-- If a D-Bus-only automation path is desired for LushText search, report the missing app surface: current window actions can open search but cannot set the in-tab search query. Today the headless helper uses AT-SPI editable text for that final step.
+- For in-document search setup, prefer the exported `win.set-search-query` string action when the app build includes it. Use AT-SPI editable text only when intentionally testing the visible entry itself or an older build that lacks the target-state action.
 - Before screenshot capture, tell the human a GNOME/portal prompt may appear as a blank or white dialog for a few seconds and ask them to approve it if it appears. Treat a timeout after that as a capture permission failure, not as proof of app behavior.
 - Before screenshot capture, present the debug-owned LushText instance through D-Bus when possible, then ask the human to keep that window focused. A portal prompt can flash or miss AT-SPI discovery when another window owns focus.
 - If the human wants the agent to approve a visible portal prompt, treat that as UI automation, not D-Bus permission bypass. Prefer AT-SPI button invocation only when the visible control exposes a real accessibility action.
@@ -170,7 +171,11 @@ This is the preferred workflow over broad speculative code changes. For geometry
   - First-priority automated visual inspection path.
   - Launches LushText inside an isolated `dbus-run-session` plus `mutter --headless` Wayland monitor with temporary XDG state and keyfile GSettings.
   - Starts PipeWire and WirePlumber in the same session, captures Mutter's existing virtual monitor with `org.gnome.Mutter.ScreenCast.Session.RecordMonitor("Meta-0")`, and saves one PNG through `gst-launch-1.0 pipewiresrc`.
-  - For search repros, starts a private AT-SPI registry and sets the search entry after opening it with the exported `win.begin-search` action.
+  - For search repros, drives the exported `win.set-search-query` action, waits for `search-complete`, optionally waits for `--expected-search-matches`, and records the Automation1 snapshot before screenshot capture.
+  - Use repeated `--wait-predicate` flags when a scenario needs an extra Automation1 readiness gate such as `workspace-refresh-complete`.
+  - Use repeated `--window-string-action ACTION=TEXT` flags when a visible workflow exposes a string-parameter action, such as filtering Browse Notes through `set-notes-browser-query=Visual note`.
+  - Use repeated `--wait-window-action` flags when a dialog action must become enabled before AT-SPI tree capture, such as `set-notes-browser-query`.
+  - Use repeated `--wait-atspi-text` flags when the best readiness proof is visible dialog text, such as `No notes yet`.
 - `scripts/capture-lushtext-xvfb.sh`
   - Fallback isolated display when headless Mutter or PipeWire capture is unavailable.
   - Launches a debug-owned LushText process in an isolated `dbus-run-session` + Xvfb display with temporary XDG state.

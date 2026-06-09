@@ -6,6 +6,7 @@
 //! split-view persistence, and the callback glue that binds the sidebar,
 //! command palette, session restore, and notifications into one shell.
 
+use super::notes::ActiveNotesBrowser;
 use crate::config::{self, keys};
 use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
 use crate::model::workspace::WorkspaceScope;
@@ -342,6 +343,12 @@ pub struct LushtextWindow {
     pub index_rebuild_generation: Cell<u32>,
     /// Focus widget saved before the command palette steals focus.
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
+    /// One-tick latch for Escape already handled by a child command-palette entry.
+    ///
+    /// If GTK lets the same key event continue to the window bubble controller
+    /// after `stop-search`, the shell consumes that event without closing the
+    /// next surface underneath the palette.
+    pub transient_child_escape_handled: Cell<bool>,
     /// Set of file paths with open tabs, for O(1) duplicate detection in `open_document`.
     pub open_paths: RefCell<HashSet<PathBuf>>,
     /// Editor-memory accounting used by the eviction helpers.
@@ -354,6 +361,8 @@ pub struct LushtextWindow {
     pub drafts: DraftState,
     /// Tab-menu targeting, pinned-page wiring, and bulk-close authorization.
     pub tab_management: TabManagementState,
+    /// Weak handle for browser-navigation actions while Browse Notes is visible.
+    pub(super) active_notes_browser: RefCell<Option<ActiveNotesBrowser>>,
     /// Focus widget saved before the search panel steals focus.
     pub search_saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     /// Window-scoped notification bus + store.
@@ -425,12 +434,14 @@ impl Default for LushtextWindow {
             preview_persist_generation: Cell::new(0),
             index_rebuild_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
+            transient_child_escape_handled: Cell::new(false),
             open_paths: RefCell::new(HashSet::new()),
             editor_memory: EditorMemoryState::default(),
             session: SessionState::default(),
             focus_mode: FocusModeState::default(),
             drafts: DraftState::default(),
             tab_management: TabManagementState::default(),
+            active_notes_browser: RefCell::new(None),
             search_saved_focus: RefCell::new(None),
             notification_bus: NotificationBus::default(),
             notification_sweep_source_id: RefCell::new(None),
@@ -771,6 +782,7 @@ impl ObjectImpl for LushtextWindow {
         let window_weak = obj.downgrade();
         self.command_palette.connect_close_requested(move || {
             if let Some(window) = window_weak.upgrade() {
+                window.mark_child_transient_escape_handled();
                 window.close_command_palette();
             }
         });

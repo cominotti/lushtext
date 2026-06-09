@@ -80,3 +80,123 @@ behavior through a testable print operation path.
 - **WHEN** the print operation fails before completion
 - **THEN** LushText reports failure through the normal feedback path
 - **AND** the document remains editable and unchanged
+
+### Requirement: Visible commands SHALL be represented in the action catalog
+The test suite and documentation SHALL keep visible commands, menus, shortcuts,
+command-palette entries, toolbar buttons, context-menu items, and status-bar
+controls aligned with the action catalog. A visible command MUST either map to a
+stable action or document why it requires a different interaction surface.
+
+#### Scenario: Primary menu commands map to actions
+- **WHEN** the primary menu model is audited
+- **THEN** each actionable menu item maps to a cataloged app or window action
+- **AND** the catalog names the owning workflow, label, shortcut when present,
+  parameter type, and coverage lane
+
+#### Scenario: Notes, sidebar, tab, and search commands map to actions
+- **WHEN** notes menu items, sidebar context menu items, tab context menu items,
+  search controls, status controls, and command-palette commands are audited
+- **THEN** each visible command maps to a cataloged action or documented
+  non-action control
+- **AND** unsupported automation gaps are tracked as explicit follow-ups rather
+  than hidden test assumptions
+
+#### Scenario: Command palette uses cataloged commands
+- **WHEN** the command palette indexes commands
+- **THEN** indexed commands use cataloged action IDs and labels
+- **AND** stale command IDs, missing actions, or undocumented command entries
+  fail tests or catalog checks
+
+### Requirement: Menu and action workflow tests SHALL use the same public actions as users
+Menu workflow coverage SHALL prove behavior through user-visible actions and
+their D-Bus/catalog representation, while still using widget assertions for
+visible state and accessibility assertions where appropriate.
+
+#### Scenario: Action activation and menu activation agree
+- **WHEN** a workflow can be invoked through both a menu item and direct action
+  activation
+- **THEN** tests verify both paths reach the same state change or documented
+  no-op
+- **AND** the action catalog records both invocation surfaces
+
+#### Scenario: Disabled commands are observable
+- **WHEN** a command is unavailable because no document, no workspace folder, no
+  search context, save in progress, or another precondition applies
+- **THEN** the action enablement, menu sensitivity, command-palette
+  availability, and automation snapshot agree according to the documented rule
+
+#### Scenario: Parameterized commands are covered
+- **WHEN** a command accepts a parameter such as search text, workspace scope,
+  tab identity, preview mode, or zoom direction
+- **THEN** tests cover valid values, invalid values, and no-context behavior
+- **AND** the catalog documents parameter type and accepted values
+
+### Requirement: Command documentation SHALL stay synchronized
+The project SHALL document public commands in user-facing and developer-facing
+references and MUST keep command docs synchronized with action registration,
+menu resources, shortcuts, command palette entries, and tests.
+
+#### Scenario: User-facing command docs are current
+- **WHEN** a public command, shortcut, menu label, command-palette label, or
+  visible control changes
+- **THEN** user-facing docs such as README, shortcuts references, and automation
+  examples are updated in the same change
+
+#### Scenario: Developer command reference is current
+- **WHEN** an action is added, removed, renamed, retargeted, or changes
+  parameter/state type
+- **THEN** the developer reference and action catalog are updated
+- **AND** the documentation drift check fails if they are stale
+
+### Requirement: Keyboard Shortcuts Command Is Registered And Covered
+The visible Keyboard Shortcuts command SHALL resolve to a registered user-facing
+window action and SHALL be covered through the same menu, command-palette, and
+automation contracts as other visible commands.
+
+#### Scenario: Visible command resolves to registered action
+- **WHEN** LushText builds its window actions, primary menu, and command palette
+- **THEN** `win.show-help-overlay` is registered as a window action
+- **AND** the primary menu and command palette Keyboard Shortcuts entries
+  reference that registered action
+- **AND** the action catalog no longer marks the command as
+  `visible-unregistered-gap` or `unsupported-gap`
+
+#### Scenario: Action opens shipped shortcut window
+- **WHEN** the user or an automation client activates `win.show-help-overlay`
+- **THEN** LushText presents the shipped shortcut help window from
+  `resources/ui/shortcuts.ui`
+- **AND** the shortcut window is associated with the active LushText window
+- **AND** activating the action does not modify document contents, tab state,
+  workspace state, or persistent settings
+
+#### Scenario: Empty or no-document state can open shortcuts
+- **WHEN** LushText has no file-backed active document or starts in an
+  empty/no-context state
+- **THEN** the Keyboard Shortcuts action remains available
+- **AND** the shortcut window opens without requiring an editor, workspace,
+  note, bookmark, or search context
+
+#### Scenario: Shortcut window remains usable with many shortcuts
+- **WHEN** the shortcut help window contains several groups or more shortcuts
+  than fit vertically
+- **THEN** the shortcut content scrolls within the help window or
+  toolkit-provided shortcut surface
+- **AND** the window title/header, close affordance, and essential actions
+  remain reachable
+- **AND** no fake shortcut rows are inserted to satisfy tests
+
+#### Scenario: Shortcut window remains usable in constrained geometry
+- **WHEN** the Keyboard Shortcuts action is activated while the main window or
+  virtual monitor is narrow or short
+- **THEN** the shortcut help window remains bounded to the visible monitor area
+- **AND** text, section labels, and close controls do not overlap incoherently or
+  disappear behind unrelated app chrome
+
+#### Scenario: Documentation and audits reflect supported status
+- **WHEN** maintainers run action catalog, visible-static-action,
+  command-palette, and automation documentation drift checks
+- **THEN** `win.show-help-overlay` is represented as a supported exported action
+  with documented surfaces, safety classification, enablement rule, docs anchor,
+  and coverage lanes
+- **AND** stale documentation that still describes it as an unsupported gap
+  fails validation

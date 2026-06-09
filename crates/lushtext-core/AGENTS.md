@@ -8,6 +8,9 @@ This crate owns the application's real behavior: domain types, services, and GTK
 - Keep `model/` framework-free: no GTK, GLib, gio, or service/UI imports.
 - Keep `services/` GTK-free except for explicit infrastructure glue such as `async_task.rs`.
 - Keep GTK collections and widget-facing models in `ui/`; services should return plain Rust data.
+- Keep automation contract data split by layer: `model/` owns serializable
+  value objects, `services::action_catalog` owns the GTK-free action inventory
+  and audits, and `ui/automation.rs` is the only app-owned D-Bus adapter.
 
 ## Structure
 
@@ -21,3 +24,6 @@ This crate owns the application's real behavior: domain types, services, and GTK
 - When a subtree gains stable local contracts, prefer a nested `AGENTS.md` over stuffing more volatile detail into the repo root file.
 - Keep nested files local and non-duplicative. The root `AGENTS.md` should stay the canonical repo-wide contract.
 - Update `AGENTS.md` and `README.md` module-layout sections whenever modules are added, removed, or materially reorganized.
+- When an exported action, D-Bus automation member, snapshot field, readiness
+  predicate/blocker, or scenario-helper flag changes, update `docs/automation.md` plus
+  `docs/automation-reference.md` and run `make check-automation-docs`.

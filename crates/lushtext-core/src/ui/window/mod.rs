@@ -4,7 +4,8 @@
 //!
 //! The window is the top-level driving adapter for the application shell. Its
 //! public API stays here, while document lifecycle, action wiring, notifications,
-//! and focus/indexing helpers live in dedicated modules to keep the adapter readable.
+//! focus/indexing, and transient-surface dismissal live in dedicated modules to
+//! keep the adapter readable.
 
 mod actions;
 mod dialogs;
@@ -24,6 +25,7 @@ mod print;
 mod search;
 mod session_persistence;
 mod tabs;
+mod transient_surfaces;
 mod workspace_scope;
 mod zoom;
 
@@ -62,6 +64,11 @@ pub fn parse_color_scheme(value: &str) -> libadwaita::ColorScheme {
 // glib::wrapper! generates the public wrapper type for this widget.
 // @extends declares the GTK class hierarchy; @implements lists interfaces.
 glib::wrapper! {
+    /// Top-level Libadwaita application window for one LushText shell.
+    ///
+    /// This GObject wrapper owns the GTK widget hierarchy and delegates document,
+    /// workspace, command-palette, transient-surface, and persistence workflows
+    /// to sibling window modules. Like all GTK widgets, it is main-thread only.
     pub struct LushtextWindow(ObjectSubclass<imp::LushtextWindow>)
         @extends libadwaita::ApplicationWindow, gtk4::ApplicationWindow, gtk4::Window, gtk4::Widget,
         @implements gio::ActionMap, gio::ActionGroup, gtk4::Accessible, gtk4::Buildable,
@@ -69,6 +76,12 @@ glib::wrapper! {
 }
 
 impl LushtextWindow {
+    /// Construct a fully wired application window for the given application.
+    ///
+    /// This runs on the GTK main thread, builds the composite template, installs
+    /// window actions and surface dismissal, and starts notification rendering.
+    /// Callers receive a ready-to-present shell; this constructor performs no
+    /// disk writes.
     #[must_use]
     pub fn new(app: &libadwaita::Application) -> Self {
         let window: Self = Object::builder().property("application", app).build();
@@ -76,6 +89,7 @@ impl LushtextWindow {
         window.setup_tab_management();
         window.setup_fullscreen();
         window.setup_focus_mode();
+        window.setup_transient_surface_dismissal();
         window.setup_theme_selector();
         preview::setup_preview_actions(&window);
         print::setup_print_action(&window);
@@ -88,6 +102,16 @@ impl LushtextWindow {
         window.refresh_status_bar();
         window.render_notifications();
         window
+    }
+
+    /// Return the compact secondary-surface owner as a stable automation label.
+    #[must_use]
+    pub(crate) fn compact_surface_label(&self) -> Option<&'static str> {
+        match self.imp().secondary_surfaces.compact_surface.get() {
+            Some(imp::SecondarySurface::Workspace) => Some("workspace"),
+            Some(imp::SecondarySurface::DocumentProperties) => Some("document-properties"),
+            None => None,
+        }
     }
 
     /// Create the theme selector widget (follow-system/light/dark circles)

@@ -15,9 +15,12 @@ in the cheapest lane that can prove it honestly.
 | Fuzz corpus replay | `make fuzz-corpus-replay` | Committed fuzz seeds replayed on stable Rust without cargo-fuzz or sanitizer setup | Yes, separate CI job |
 | Fuzz smoke | `make fuzz-smoke` | Coverage-guided discovery for hostile byte and operation-script surfaces | No, scheduled or manual |
 | Widget tests | `make test-widget-headless` | Real GTK widget state, signal wiring, focus, action, and allocation contracts under Mutter | Yes |
+| Automation docs drift | `make check-automation-docs` | User/developer reference drift for exported actions, D-Bus members, snapshot JSON, readiness predicates/blockers, helper flags, and stable AT-SPI anchors | Yes, through `make check-policy` |
+| Automation client self-test | `make automation-client-self-test` | Reusable D-Bus client parser, typed action-parameter rendering, result envelope, exit statuses, and smoke artifact summary reader without a live app | Yes, through `make check-policy` |
+| Automation smoke | `make automation-smoke` | Real-process D-Bus introspection, action catalog, snapshots, reusable client commands, action-state sync, readiness waits, warning scans, and parameterized action activation under isolated Mutter | No, local, scheduled, or release validation |
 | Visual smoke | `make visual-smoke` | Rendered desktop screenshots, coarse pixel sanity, compositor behavior, and visual artifacts | No, local, scheduled, or release validation |
 | Crash recovery smoke | `make crash-recovery-smoke` | Real-process draft/session recovery across `SIGKILL` and relaunch, with recovery metadata and runtime artifacts | No, local, scheduled, or release validation |
-| Portal and sandbox smoke | `make portal-sandbox-smoke` | Confined Flatpak/Snap state, portal/sandbox runtime diagnostics, and host support reporting | No, local, scheduled, or release validation |
+| Portal and sandbox smoke | `make portal-sandbox-smoke` | Confined Flatpak/Snap state, full-filesystem permission posture, portal/sandbox runtime diagnostics, and host support reporting | No, local, scheduled, or release validation |
 | Accessibility smoke | `make accessibility-smoke` | AT-SPI-enabled focus and accessible metadata checks outside the accessibility-disabled widget harness | No, local or scheduled |
 | Performance smoke | `make performance-smoke` | Lightweight latency and throughput sanity checks distinct from full Criterion reports | No by default |
 | Full benchmarks | `make bench-report`, `make bench-report-full` | Reviewable Criterion benchmark reports for release and performance-sensitive work | No, release or manual |
@@ -27,7 +30,8 @@ in the cheapest lane that can prove it honestly.
 
 Pull-request CI should stay bounded and deterministic. It should run non-widget
 tests, property tests, stable fuzz corpus replay, widget tests, benchmark
-compile checks, dependency policy, and changed-code mutation where configured.
+compile checks, dependency policy, automation documentation drift checks, and
+changed-code mutation where configured.
 The default PR lane should not require installed Flatpak/Snap artifacts, live
 portal services, AT-SPI, screenshot capture, or full benchmark timing unless a
 future change proves a narrow check is cheap and stable enough.
@@ -37,18 +41,47 @@ future change proves a narrow check is cheap and stable enough.
 Host-sensitive lanes should be available through stable Make targets even when
 they are not default PR gates:
 
-- `make visual-smoke` captures a representative real-session screenshot using
-  isolated XDG state and preserves logs and environment metadata.
+- `make visual-smoke` captures isolated headless Mutter screenshots for
+  search/minimap, normal/compact/constrained document properties, normal and
+  constrained Markdown preview, zero-folder/representative/dense/awkward/
+  constrained workspace states, workspace-refresh readiness, short-layout
+  chrome, no-notes, few/dense/constrained notes, few/dense/constrained
+  bookmarks, command-palette files/commands/notes/no-results/dense-files/
+  dismissed states, dark style, and recovery startup diagnostics. Each capture
+  preserves logs, environment metadata, warning scans, PNG sanity checks,
+  bounded per-capture manifests, AT-SPI excerpts when a dialog is under test,
+  and Automation1 snapshot assertions where a state contract exists.
+- `make automation-smoke` launches the real debug binary under an isolated
+  D-Bus session and headless Mutter, introspects the app-owned automation
+  object, reads catalog/snapshot state, checks stateful action state against
+  snapshot fields, runs the reusable automation client against the live app for
+  catalog/snapshot/predicate/wait/event/action commands, waits for idle,
+  activates a parameterized GTK action, scans runtime logs for unexpected
+  GTK/GDK/Libadwaita/GIO/D-Bus/portal/AT-SPI or filesystem warnings, and
+  preserves D-Bus/log/assertion artifacts.
+- `make automation-client-self-test` proves the reusable
+  `scripts/lushtext-automation.py` parser, typed action-parameter rendering,
+  result statuses, and artifact-summary reader without launching LushText. Use
+  it as a fast local guard whenever the client or its documentation changes;
+  it is not a substitute for the real-process automation smoke lane.
 - `make crash-recovery-smoke` launches the real debug binary in isolated app
   state, creates file-backed and untitled draft/session recovery data through
-  GTK, sends `SIGKILL`, relaunches with the same data directory, and preserves
-  before/after metadata summaries, logs, assertions, and a relaunch screenshot.
-- `make portal-sandbox-smoke` records available Flatpak/Snap runtime state and
+  GTK, sends `SIGKILL`, relaunches with the same data directory, waits for
+  Automation1 `recovery-restore-complete`, asserts restored tabs, draft
+  metadata, and recovery diagnostics from the relaunch snapshot, and preserves
+  before/after metadata summaries, logs, assertions, a bounded scenario
+  manifest, and a relaunch screenshot.
+- `make portal-sandbox-smoke` records available Flatpak/Snap runtime state,
+  writes `permission-posture.txt`, preserves portal bus-name diagnostics, and
   runs supported confined smoke checks while skipping clearly when runtimes are
-  unavailable.
-- `make accessibility-smoke` keeps the accessibility bridge enabled and uses the
-  AT-SPI path, complementing widget tests that intentionally set
-  `NO_AT_BRIDGE=1`.
+  unavailable. Portal diagnostics are evidence only; they do not imply a
+  portals-only migration while the Flatpak keeps full filesystem access.
+- `make accessibility-smoke` keeps the accessibility bridge enabled, uses the
+  AT-SPI path, verifies stable shell/command-palette/notes-browser anchors plus
+  the command-palette focus target, and skips with an explicit host-runtime
+  reason when AT-SPI support is unavailable. It complements widget tests that
+  intentionally set `NO_AT_BRIDGE=1`; action or D-Bus checks alone are not
+  counted as accessibility coverage.
 - `make performance-smoke` runs a small Criterion smoke filter with coarse
   timing artifacts, including worker-side Replace preview generation and
   recovery fixtures for malformed metadata, pending migrations, duplicate
@@ -57,8 +90,8 @@ they are not default PR gates:
   remain opt-in or scheduled because they are intentionally more expensive.
 
 GitHub Actions mirrors that split: `.github/workflows/ci.yml` owns the bounded
-pull-request lanes, `.github/workflows/end-user-smoke.yml` runs visual,
-crash-recovery, portal/sandbox, accessibility, performance-smoke, and full
+pull-request lanes, `.github/workflows/end-user-smoke.yml` runs automation,
+visual, crash-recovery, portal/sandbox, accessibility, performance-smoke, and full
 benchmark-report artifact lanes on a schedule or manual dispatch, and
 `.github/workflows/release-benchmark.yml` attaches a full benchmark report to
 tagged release validation.
@@ -74,6 +107,7 @@ make test-int
 make test-widget-headless
 make test-prop
 make fuzz-corpus-replay
+make automation-smoke
 make visual-smoke
 make crash-recovery-smoke
 make portal-sandbox-smoke
@@ -94,8 +128,9 @@ property tests, fuzz targets, and mutation defaults. Those lanes are strongest
 when they stay deterministic.
 
 Use widget tests for GTK state and allocation contracts whenever possible.
-Reach for visual, portal/sandbox, accessibility, or performance smoke only when
-the existing widget and integration harnesses cannot prove the end-user risk.
+Reach for automation, visual, portal/sandbox, accessibility, or performance
+smoke only when the existing widget and integration harnesses cannot prove the
+end-user risk.
 
 When a smoke lane needs automation support, prefer stable actions, accessible
 names, read-only debug state, and observable predicates. Avoid coordinate-only

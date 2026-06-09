@@ -25,6 +25,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Multi-file Replace All** -- preview proposed changes with per-match checkboxes, atomic file writes, stable save/replace coordination, file and undo-memory caps, per-file durable undo journals, skip-modified-tabs safety, and full undo support within the active safety window
 - **Find and replace** -- per-tab search bar with match highlighting
 - **Command palette** -- Ctrl+P fuzzy search for files and commands, scoped to the current workspace selection unless `All workspaces` is active (SIMD-accelerated via nucleo)
+- **Automation spine** -- same-user agents and smoke tools can discover the action catalog, activate normal exported GTK actions, wait for app-owned workflows to become idle, inspect bounded D-Bus snapshots, and summarize smoke artifacts without exposing document contents or changing LushText's full-filesystem permission model
 - **Large file handling** -- graceful degradation: >1MB toast, >10MB disable syntax, >50MB disable undo, >500MB refuse
 - **Buffer eviction** -- background tabs evicted when total memory exceeds 256MB, transparently reloaded on focus
 - **Dark mode** -- automatic GtkSourceView scheme switching via Libadwaita StyleManager
@@ -261,10 +262,12 @@ record host details and skip clearly when a machine lacks the required runtime:
 
 ```sh
 make visual-smoke          # headless Mutter screenshot smoke with artifacts
+make automation-smoke      # real-process D-Bus automation smoke with artifacts
 make crash-recovery-smoke  # SIGKILL/relaunch recovery smoke with artifacts
 make portal-sandbox-smoke  # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke   # AT-SPI-enabled smoke outside the widget harness
 make performance-smoke     # lightweight Criterion timing smoke
+make automation-client-self-test # reusable D-Bus client/parser self-test
 make end-user-smoke        # run all host-supported smoke lanes
 ```
 
@@ -366,6 +369,10 @@ The Flatpak manifest grants host filesystem access because LushText is a local
 workspace text editor that must open, save, search, rename, delete, and
 event-monitor user-selected files and workspace folders across local paths, not
 only under the home directory. It does not request network access.
+Portal/sandbox diagnostics are intentionally observability-only for this
+release line. `make check-flatpak-permissions` validates the source manifest,
+and `make portal-sandbox-smoke` records `permission-posture.txt` plus runtime
+permission artifacts without migrating LushText to portals-only access.
 
 | Permission | Why it is used |
 |------------|----------------|
@@ -449,6 +456,9 @@ make test        # All tests (unit + integration + widget)
 make check       # fmt + all-feature Clippy + fast policy audits
 make blueprint-generate # Regenerate generated .ui files from Blueprint sources
 make check-blueprint    # Validate Blueprint drift and UI template contract
+make check-automation-docs # Validate automation docs against exported action/D-Bus contracts
+make automation-client-self-test # Validate reusable D-Bus automation CLI helper
+make check-flatpak-permissions # Verify the Flatpak keeps intentional full filesystem access
 make lint-blueprint     # Advisory grouped Blueprint lint triage
 make lint-advisory # grouped advisory Rust lint discovery
 make pre-commit  # repo pre-commit gate (fmt + all-feature Clippy + policy audits)
@@ -710,6 +720,8 @@ lushtext-core/src/
   config.rs          Compile-time constants
   lib.rs             Resource registration, CSS loading, and app bootstrap
   model/             Domain types (no GTK deps)
+    action_catalog.rs  Automation action catalog value objects
+    automation.rs    Bounded read-only automation snapshot value objects
     workspace.rs     Workspace persistence model
     session.rs       Tab session model
     palette.rs       Command palette types
@@ -725,6 +737,7 @@ lushtext-core/src/
     folder_note.rs    Folder-note model
     formatting_overrides.rs   Per-file EditorConfig overrides
   services/          Business logic (GTK-free where possible)
+    action_catalog/  Action catalog construction, audits, and developer-reference rows
     bookmark_service.rs  Bookmark sidecar load/save/move/list helpers
     bookmark_excerpt.rs  Bounded source excerpts for bookmark previews
     document_note_service.rs  Saved-file document-note load/save/move/list helpers
@@ -750,7 +763,8 @@ lushtext-core/src/
     workspace_watch.rs  Materialized-scope filesystem watch service for sidebar auto-refresh
     async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
-    window/          Main window shell plus actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, session persistence, tab management, print, and zoom wiring
+    automation.rs    App-owned read-only D-Bus automation adapter and snapshot collection
+    window/          Main window shell plus actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, session persistence, tab management, transient-surface dismissal, print, and zoom wiring
     editor_page/     GtkSourceView tab plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark projection, load/save, monitor, and in-tab search helpers
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
@@ -762,22 +776,42 @@ lushtext-core/src/
     preferences/     Settings dialog
 ```
 
+Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)
+and [`docs/automation-reference.md`](docs/automation-reference.md). The reusable
+developer/agent client is `scripts/lushtext-automation.py`; it wraps
+Automation1 reads, readiness waits, catalog-checked `org.gtk.Actions`
+activation, and smoke artifact summaries. Any change to exported actions, the
+read-only D-Bus interface, snapshot JSON, readiness blockers, client
+commands/statuses, or scenario-helper flags must update those docs and pass
+`make check-automation-docs` plus `make automation-client-self-test`.
+Automation and portal/sandbox work must also keep the Flatpak's intentional
+full-filesystem posture documented and guarded by `make check-flatpak-permissions`.
+
 ## Testing
 
 ```sh
 make test        # All tests
 make test-unit   # Unit tests only
 make test-int    # Integration tests only
-make test-widget # Widget tests with shared native/headless runner
+make test-widget # Widget tests through the private headless runner
 make test-widget-headless # Widget tests with the CI mutter/dbus setup
+make automation-smoke # Real-process D-Bus automation smoke with artifacts
 make visual-smoke # Headless Mutter screenshot smoke with artifacts
 make crash-recovery-smoke # SIGKILL/relaunch recovery smoke with artifacts
 make portal-sandbox-smoke # Confined Flatpak/Snap smoke diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # Lightweight Criterion performance smoke
+make check-automation-docs # Automation documentation drift check
+make automation-client-self-test # Reusable D-Bus automation client self-test
+make check-flatpak-permissions # Flatpak full-filesystem permission guard
 ```
 
-Widget tests require a display server. `make test` and `make test-widget-headless` use the CI-style `mutter --headless` path for deterministic full-suite runs. `make test-widget` uses `scripts/run-widget-tests.sh`, which runs against the current display session when one is available and otherwise falls back to headless mode if the required tools are installed. The runner defaults to GTK's Cairo renderer so headless containers do not fail the warning gate while probing unavailable GPU devices; set `GSK_RENDERER` explicitly when debugging a renderer-specific issue.
+Widget tests require a display server. `make test`, `make test-widget`, and
+`make test-widget-headless` use the private `mutter --headless` path for
+deterministic full-suite runs. The runner defaults to GTK's Cairo renderer so
+headless containers do not fail the warning gate while probing unavailable GPU
+devices; set `GSK_RENDERER` explicitly when debugging a renderer-specific
+issue.
 
 GTK widget tests run through the custom harness in [`crates/lushtext/tests/widget.rs`](./crates/lushtext/tests/widget.rs), which executes each widget test in its own process so GTK objects stay on a real main thread and test state cannot leak across cases. Because that binary is not owned by nextest, the shared runner keeps the native and headless `cargo test --test widget` paths aligned in one place.
 

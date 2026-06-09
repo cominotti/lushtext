@@ -216,6 +216,24 @@ The check verifies the Flatpak export marker, reports effective Flatpak
 permissions, detects same-ID non-Flatpak shadow entries, and confirms the MIME
 handler rows for plain text, Markdown, and empty documents remain registered.
 
+### Desktop D-Bus Activation
+
+Do not set `DBusActivatable=true` or add desktop-file `Actions=` entries for
+LushText unless the same change proves native, staged development, Flatpak,
+Snap, CLI, MIME, and file-manager activation behavior. The current production
+desktop file keeps `Exec=lushtext %U`; this preserves the existing document
+open path through `ApplicationImpl::open` and Flatpak/Snap file forwarding.
+
+The supported automation D-Bus surface is process-local: once LushText is
+running, same-user tools may inspect app/window `org.gtk.Actions`, activate
+documented GTK actions, and read `/dev/cominotti/lushtext/Automation`. That is
+separate from desktop-entry D-Bus activation, where launchers may ignore
+`Exec` and call `org.freedesktop.Application.Activate`, `Open`, or
+`ActivateAction` on the app service. Enabling that metadata requires packaging
+proof that file arguments, MIME launches, activation tokens, duplicate-tab
+selection, failed-placeholder recovery, and development desktop identity all
+continue to behave correctly.
+
 ## Permissions
 
 Current manifest permissions:

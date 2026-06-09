@@ -5,7 +5,7 @@ Every interactive element in a widget must be fully wired -- no dead-end buttons
 ## Checklist
 
 - **Buttons**: connect `clicked` (or equivalent action signal).
-- **Close/dismiss**: wire close buttons, Escape key (`stop-search`, `close-request`), and dismiss gestures.
+- **Close/dismiss**: wire close buttons, Escape key (`stop-search`, `close-request`, or the window transient-surface helper), and dismiss gestures.
 - **Entries**: propagate values where needed (search queries, replace text, etc.).
 - **Toggles/switches**: read and write to the relevant state.
 - **Child widget signals**: connect in the parent's `constructed()` (e.g., `SearchBar.connect_close`).
@@ -15,6 +15,22 @@ Every interactive element in a widget must be fully wired -- no dead-end buttons
 Actions that depend on app state (e.g., `save`, `toggle-search`, `close-tab` require an active tab) must disable themselves when preconditions are not met. Use `SimpleAction::set_enabled(bool)` so menu items gray out and shortcuts become no-ops.
 
 **Initialization order matters:** `add_action_entries()` creates actions with `enabled = true`. If initial state should be disabled, call the state-sync method (e.g., `update_content_stack()`) _after_ `setup_actions()` in the constructor.
+
+## Action Catalog And Automation Docs
+
+Every user operation exposed through an app action, window action, command
+palette command, static menu item, keyboard shortcut, context menu action group,
+or automation-only target-state action must have a row in
+`services::action_catalog` unless it is intentionally private widget plumbing.
+When adding or changing an externally observable action, update
+`docs/automation.md` and `docs/automation-reference.md`, keep the row's
+enablement, parameter, state, safety, surfaces, and coverage lanes current, and
+run `make check-automation-docs`.
+
+Prefer target-state actions for automation setup when the surface has toggle
+semantics (`set-*-visible`, `set-focus-mode`, `set-preview-mode`). Target-state
+actions must drive the same production path as the user toggle and then be
+assertable through the read-only automation snapshot.
 
 ## Overlay Widgets and CSS
 
@@ -90,6 +106,16 @@ When an overlay widget steals focus (command palette, search bar, inline rename)
 - The focus target is always the same editor's `source_view` — no saved state needed. Call `source_view.grab_focus()` in the close handler.
 
 **Do not rely on GTK4's automatic focus assignment** after hiding a revealer or removing a widget from the focus chain.
+
+## Window-Level Transient Surface Dismissal
+
+Shell-owned transient surfaces must share a single topmost dismissal order instead of each surface installing unrelated Escape behavior.
+
+- Install window-level Escape handlers in `PropagationPhase::Bubble` so focused children, dialogs, popovers, dropdowns, and text entries get first chance to handle Escape.
+- If Escape reaches the shell, close exactly one topmost visible dismissible surface and return handled. Do not close the palette, search bar, search panel, menus, and Focus Mode all from one key press.
+- Focus Mode exit comes after transient dismissal. If the command palette or another dismissible surface is visible above Focus Mode, the first Escape closes that surface; the next Escape may exit Focus Mode.
+- Command-palette click-away belongs at the window shell boundary. Primary presses outside the palette bounds must call `close_command_palette()` so the existing saved-focus restoration and cleanup path runs. Presses inside palette controls, result rows, scrollbars, and child popup/dropdown roots must not dismiss it.
+- When click-away dismisses the palette, claim or otherwise consume that pointer sequence so the same press does not also activate an underlying shell control.
 
 ## Auto-Dismiss Timers (Generation Counter)
 

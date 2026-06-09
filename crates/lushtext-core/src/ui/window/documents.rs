@@ -526,6 +526,7 @@ impl LushtextWindow {
 
         for name in [
             "begin-search",
+            "set-search-query",
             "begin-replace",
             "next-match",
             "prev-match",
@@ -537,10 +538,13 @@ impl LushtextWindow {
             "save-as",
             "show-local-history",
             "close-tab",
+            "select-tab",
             "discard-changes",
             "print",
             "toggle-preview-pane",
+            "set-preview-pane-visible",
             "toggle-preview-mode",
+            "set-preview-mode",
         ] {
             if let Some(action) = self.lookup_action(name)
                 && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()

@@ -35,7 +35,7 @@ mod imp {
         pub display_path: RefCell<String>,
         /// 1-based line number (match items only; 0 for file items).
         pub line_number: Cell<u32>,
-        /// Full text of the matching line (match items only; empty for file items).
+        /// Display text for the matching line (match items only; empty for file items).
         pub line_content: RefCell<String>,
         /// Number of matches found in this file (file items only; updated as
         /// results stream in). Registered as a GObject property so
@@ -48,8 +48,8 @@ mod imp {
         /// Byte offset where the match ends within `line_content` (match items only).
         /// Clamped to the truncated display content for highlight rendering.
         pub match_end: Cell<u32>,
-        /// Original full line content before truncation (match items only).
-        /// Used by Replace All to generate correct replacements on long lines.
+        /// Bounded line content before the 500-byte row display truncation.
+        /// Replace All preview ignores search matches already marked as source-line truncated.
         pub original_line_content: RefCell<String>,
         /// Unclamped match start from the search engine (match items only).
         pub original_match_start: Cell<u32>,
@@ -99,10 +99,11 @@ impl SearchResultItem {
     ///
     /// `match_start`/`match_end` are clamped to the truncated display content.
     /// `original_line_content` and `original_match_start`/`original_match_end`
-    /// store the unclamped values for Replace All correctness on long lines.
+    /// store the values before row-display truncation so preview rows can match
+    /// replacements without retaining unbounded source lines.
     #[expect(
         clippy::too_many_arguments,
-        reason = "Search result rows need both display-clamped and original match coordinates to keep Replace All correct on truncated lines"
+        reason = "Search result rows need both display-clamped and pre-display-truncation match coordinates for preview row lookup"
     )]
     #[must_use]
     pub fn new_match(

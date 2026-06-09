@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Widget and window-integration tests for command palette template wiring,
-//! grouped results, keyboard flow, and focus restoration.
+//! grouped results, keyboard flow, click-away dismissal, and focus restoration.
 
 use crate::common::{ensure_gtk_init, fixture, flush_events, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -943,6 +943,65 @@ fn active_editor_has_focus(window: &LushtextWindow) -> bool {
     })
 }
 
+/// Wait for the palette allocation and return its bounds in window coordinates.
+///
+/// Click-away tests use window-relative points because the production handler is
+/// attached to the top-level window rather than to the palette widget.
+fn command_palette_bounds_in_window(window: &LushtextWindow) -> gtk4::graphene::Rect {
+    let mut bounds = None;
+    wait_until(Duration::from_secs(2), || {
+        bounds = window
+            .imp()
+            .command_palette
+            .compute_bounds(window.upcast_ref::<gtk4::Widget>());
+        bounds.is_some()
+    });
+    bounds.expect("command palette should be allocated inside the window")
+}
+
+/// Return a stable point near the center of the allocated palette.
+fn point_inside_command_palette(window: &LushtextWindow) -> (f64, f64) {
+    let bounds = command_palette_bounds_in_window(window);
+    (
+        f64::from(bounds.x() + bounds.width() / 2.0),
+        f64::from(bounds.y() + bounds.height() / 2.0),
+    )
+}
+
+/// Return a window-relative point outside the palette for click-away tests.
+///
+/// Corner candidates avoid assuming there is always room beside the palette in
+/// constrained windows.
+fn point_outside_command_palette(window: &LushtextWindow) -> (f64, f64) {
+    let bounds = command_palette_bounds_in_window(window);
+    let width = f64::from(window.width());
+    let height = f64::from(window.height());
+    let candidates = [
+        (8.0, height - 8.0),
+        (width - 8.0, height - 8.0),
+        (8.0, 8.0),
+        (width - 8.0, 8.0),
+    ];
+    candidates
+        .into_iter()
+        .find(|(x, y)| {
+            *x >= 0.0
+                && *x <= width
+                && *y >= 0.0
+                && *y <= height
+                && !bounds.contains_point(&test_graphene_point(*x, *y))
+        })
+        .expect("test window should expose a point outside the command palette")
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Graphene uses f32 coordinates while GTK window dimensions are f64 in this helper."
+)]
+fn test_graphene_point(x: f64, y: f64) -> gtk4::graphene::Point {
+    gtk4::graphene::Point::new(x as f32, y as f32)
+}
+
 #[test]
 fn test_toggle_command_palette_action_exists() {
     ensure_gtk_init();
@@ -1007,11 +1066,9 @@ fn test_palette_close_callback_hides_revealer() {
     ensure_gtk_init();
     let window = test_window();
 
-    // Open palette
     activate_action(&window, "toggle-command-palette");
     assert!(window.imp().palette_revealer.reveals_child());
 
-    // Trigger stop-search (Escape)
     window
         .imp()
         .command_palette
@@ -1028,7 +1085,6 @@ fn test_palette_activation_closes_palette() {
     ensure_gtk_init();
     let window = test_window();
 
-    // Open palette
     activate_action(&window, "toggle-command-palette");
     assert!(window.imp().palette_revealer.reveals_child());
 
@@ -1036,8 +1092,185 @@ fn test_palette_activation_closes_palette() {
     let palette = window.imp().command_palette.clone();
     spin_until(move || palette.imp().results_store.n_items() > 0);
 
-    // Activate first result (should close palette)
     window.imp().command_palette.imp().activate_selected();
+    flush_events();
+
+    assert!(!window.imp().palette_revealer.reveals_child());
+}
+
+#[test]
+fn test_escape_closes_palette_after_focus_moves_to_editor() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window).expect("active editor");
+    editor.source_view().grab_focus();
+    wait_until(Duration::from_secs(2), || active_editor_has_focus(&window));
+
+    activate_action(&window, "toggle-command-palette");
+    assert!(window.imp().palette_revealer.reveals_child());
+
+    editor.source_view().grab_focus();
+    wait_until(Duration::from_secs(2), || active_editor_has_focus(&window));
+    assert!(window.handle_transient_escape_for_test());
+    flush_events();
+
+    assert!(!window.imp().palette_revealer.reveals_child());
+    assert!(active_editor_has_focus(&window));
+}
+
+#[test]
+fn test_escape_closes_palette_after_focus_leaves_palette() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    active_editor(&window)
+        .expect("active editor")
+        .source_view()
+        .grab_focus();
+    wait_until(Duration::from_secs(2), || active_editor_has_focus(&window));
+
+    activate_action(&window, "toggle-command-palette");
+    // Regression path: Escape must still close the palette when no widget
+    // inside it owns focus anymore.
+    gtk4::prelude::GtkWindowExt::set_focus(&window, gtk4::Widget::NONE);
+    flush_events();
+    assert!(
+        gtk4::prelude::GtkWindowExt::focus(&window).is_none(),
+        "test precondition: focus should no longer belong to the palette"
+    );
+
+    assert!(window.handle_transient_escape_for_test());
+    flush_events();
+
+    assert!(!window.imp().palette_revealer.reveals_child());
+    assert!(active_editor_has_focus(&window));
+}
+
+#[test]
+fn test_click_outside_command_palette_closes_and_restores_focus() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    active_editor(&window)
+        .expect("active editor")
+        .source_view()
+        .grab_focus();
+    wait_until(Duration::from_secs(2), || active_editor_has_focus(&window));
+
+    activate_action(&window, "toggle-command-palette");
+    assert!(window.imp().saved_focus.borrow().is_some());
+    let (x, y) = point_outside_command_palette(&window);
+
+    assert!(window.handle_command_palette_pointer_press_for_test(x, y));
+    flush_events();
+
+    assert!(!window.imp().palette_revealer.reveals_child());
+    assert!(window.imp().saved_focus.borrow().is_none());
+    assert!(active_editor_has_focus(&window));
+}
+
+#[test]
+fn test_click_inside_command_palette_keeps_it_open() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+
+    activate_action(&window, "toggle-command-palette");
+    let (x, y) = point_inside_command_palette(&window);
+
+    assert!(!window.handle_command_palette_pointer_press_for_test(x, y));
+    flush_events();
+
+    assert!(window.imp().palette_revealer.reveals_child());
+}
+
+#[test]
+fn test_escape_closes_only_palette_above_search_panel() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    activate_action(&window, "toggle-search-panel");
+    wait_until(Duration::from_secs(2), || {
+        window.imp().search_panel_revealer.reveals_child()
+    });
+    activate_action(&window, "toggle-command-palette");
+
+    assert!(window.handle_transient_escape_for_test());
+    flush_events();
+
+    assert!(!window.imp().palette_revealer.reveals_child());
+    assert!(window.imp().search_panel_revealer.reveals_child());
+}
+
+#[test]
+fn test_palette_stop_search_escape_does_not_cascade_to_search_panel() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    activate_action(&window, "toggle-search-panel");
+    wait_until(Duration::from_secs(2), || {
+        window.imp().search_panel_revealer.reveals_child()
+    });
+    activate_action(&window, "toggle-command-palette");
+
+    window
+        .imp()
+        .command_palette
+        .imp()
+        .search_entry
+        .emit_stop_search();
+    assert!(window.handle_transient_escape_for_test());
+    flush_events();
+
+    assert!(!window.imp().palette_revealer.reveals_child());
+    assert!(window.imp().search_panel_revealer.reveals_child());
+}
+
+#[test]
+fn test_escape_closes_palette_without_tabs_or_workspaces() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+
+    activate_action(&window, "toggle-command-palette");
+    assert!(window.imp().palette_revealer.reveals_child());
+
+    assert!(window.handle_transient_escape_for_test());
+    flush_events();
+
+    assert!(!window.imp().palette_revealer.reveals_child());
+}
+
+#[test]
+fn test_palette_dismissal_handles_dense_results_in_constrained_window() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("dense palette tempdir");
+    // Eighty files exceed the palette's visible rows, and 720x360 keeps the
+    // shell small enough to exercise constrained click/Escape geometry.
+    for index in 0..80 {
+        fixture::write_text(&dir.path().join(format!("palette-file-{index:02}.rs")), "");
+    }
+    let window = test_window();
+    window.set_default_size(720, 360);
+    present_window(&window);
+    let palette = window.imp().command_palette.clone();
+    palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
+    palette.imp().set_mode(SearchMode::Files);
+
+    activate_action(&window, "toggle-command-palette");
+    // Twenty rows prove the result list is dense without depending on the exact
+    // capped maximum returned by fuzzy search.
+    rebuild_and_wait_until(&palette, "palette", |labels| labels.len() >= 20);
+
+    assert!(window.handle_transient_escape_for_test());
     flush_events();
 
     assert!(!window.imp().palette_revealer.reveals_child());
@@ -1073,13 +1306,22 @@ fn test_palette_new_file_command_focuses_new_editor_after_close() {
 }
 
 #[test]
-fn test_palette_width_request_set() {
+fn test_palette_controls_expose_accessibility_roles() {
     ensure_gtk_init();
-    let window = test_window();
-    flush_events();
-    // Width request should be set by size_allocate; before realization
-    // we can at least verify the command_palette widget is accessible
-    let _cp = &window.imp().command_palette;
+    let palette = LushtextCommandPalette::new();
+
+    assert_eq!(
+        palette.imp().search_entry.accessible_role(),
+        gtk4::AccessibleRole::SearchBox
+    );
+    assert_eq!(
+        palette.imp().mode_dropdown.accessible_role(),
+        gtk4::AccessibleRole::ComboBox
+    );
+    assert_eq!(
+        palette.imp().results_view.accessible_role(),
+        gtk4::AccessibleRole::List
+    );
 }
 
 #[test]

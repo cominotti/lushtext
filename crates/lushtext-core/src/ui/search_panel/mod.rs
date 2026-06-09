@@ -8,6 +8,8 @@
 //! flows, and result rendering live in separate files for readability.
 
 mod history;
+// Private implementation module required by gtk-rs: imp.rs owns template
+// children, state, and trait impls; this file exposes the public widget API.
 mod imp;
 pub mod item;
 mod list_factory;
@@ -31,6 +33,10 @@ use gtk4::{self, gio};
 use self::item::SearchResultItem;
 
 glib::wrapper! {
+    /// Workspace search and Replace All panel owned by the main window shell.
+    ///
+    /// This is the GTK adapter for entries, toggles, and result models; search
+    /// execution and persistence details stay in services and split modules.
     pub struct LushtextSearchPanel(ObjectSubclass<imp::LushtextSearchPanel>)
         @extends gtk4::Box, gtk4::Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;
@@ -56,7 +62,7 @@ pub enum SearchProgressUpdate {
 pub struct SearchFileGroup {
     /// Root-level row representing one file in the results tree.
     pub header_item: SearchResultItem,
-    /// Child store containing the file's match rows.
+    /// Observable GObject list that the results tree watches for this file's match rows.
     pub child_store: gio::ListStore,
 }
 
@@ -118,6 +124,125 @@ impl LushtextSearchPanel {
     #[must_use]
     pub fn query(&self) -> String {
         self.imp().search_entry.text().to_string()
+    }
+
+    /// Return whether the workspace search worker is currently running.
+    #[must_use]
+    pub fn is_searching(&self) -> bool {
+        self.imp().runtime.searching.get()
+    }
+
+    /// Return total matches accumulated for the current workspace search.
+    #[must_use]
+    pub fn total_matches(&self) -> u32 {
+        self.imp().runtime.total_matches.get()
+    }
+
+    /// Return the number of files with matches for the current workspace search.
+    #[must_use]
+    pub fn total_files(&self) -> u32 {
+        self.imp().runtime.total_files.get()
+    }
+
+    /// Return whether the current workspace search hit its result cap.
+    #[must_use]
+    pub fn result_capped(&self) -> bool {
+        self.imp().runtime.result_capped.get()
+    }
+
+    /// Return whether the case-sensitive option is active.
+    #[must_use]
+    pub fn case_sensitive(&self) -> bool {
+        self.imp().case_toggle.is_active()
+    }
+
+    /// Return whether regular-expression search is active.
+    #[must_use]
+    pub fn regex_enabled(&self) -> bool {
+        self.imp().regex_toggle.is_active()
+    }
+
+    /// Return whether whole-word matching is active.
+    #[must_use]
+    pub fn whole_word_enabled(&self) -> bool {
+        self.imp().word_toggle.is_active()
+    }
+
+    /// Return whether .gitignore filtering is active.
+    #[must_use]
+    pub fn gitignore_enabled(&self) -> bool {
+        self.imp().gitignore_toggle.is_active()
+    }
+
+    /// Return the current glob filter text, if any.
+    #[must_use]
+    pub fn glob_filter(&self) -> Option<String> {
+        let text = self.imp().glob_entry.text();
+        (!text.is_empty()).then(|| text.to_string())
+    }
+
+    /// Return the current replacement text without applying it.
+    #[must_use]
+    pub fn replace_query(&self) -> String {
+        self.imp().replace_entry.text().to_string()
+    }
+
+    /// Return whether the result list is showing Replace All preview rows.
+    #[must_use]
+    pub fn replace_preview_mode(&self) -> bool {
+        self.imp().preview.preview_mode.get()
+    }
+
+    /// Return whether replacement preview generation is still running.
+    #[must_use]
+    pub fn replace_preview_pending(&self) -> bool {
+        self.imp().preview.preview_pending.get()
+    }
+
+    /// Return the number of replacement preview rows currently held in memory.
+    #[must_use]
+    pub fn replace_preview_count(&self) -> u32 {
+        u32::try_from(self.imp().preview.preview_replacements.borrow().len()).unwrap_or(u32::MAX)
+    }
+
+    /// Return the number of replacement preview rows selected for apply.
+    #[must_use]
+    pub fn checked_replacement_count(&self) -> u32 {
+        u32::try_from(self.imp().preview.checked_indices.borrow().len()).unwrap_or(u32::MAX)
+    }
+
+    /// Return whether a Replace All undo backup is currently available.
+    #[must_use]
+    pub fn has_undo_backup(&self) -> bool {
+        self.imp().preview.undo_backup.borrow().is_some()
+    }
+
+    /// Return the number of recent search-history entries loaded into the panel.
+    #[must_use]
+    pub fn history_count(&self) -> u32 {
+        u32::try_from(self.imp().history.history_entries.borrow().len()).unwrap_or(u32::MAX)
+    }
+
+    /// Return the number of named saved searches loaded into the panel.
+    #[must_use]
+    pub fn saved_search_count(&self) -> u32 {
+        u32::try_from(self.imp().history.saved_searches.borrow().len()).unwrap_or(u32::MAX)
+    }
+
+    /// Return the number of flat match targets available for keyboard navigation.
+    #[must_use]
+    pub fn navigation_match_count(&self) -> u32 {
+        u32::try_from(self.imp().navigation.match_positions.borrow().len()).unwrap_or(u32::MAX)
+    }
+
+    /// Return the current flat navigation index, if a match has been selected.
+    #[must_use]
+    pub fn current_navigation_match_index(&self) -> Option<u32> {
+        self.imp()
+            .navigation
+            .current_match_index
+            .get()
+            .and_then(|index| u32::try_from(index).ok())
     }
 
     /// Snapshot the current query text plus all search toggles into one value object.

@@ -8,6 +8,7 @@
 //! file size policy, bounded file peek and bookmark excerpt snapshots, fuzzy
 //! search, and the background task concurrency guard.
 
+pub mod action_catalog;
 pub mod async_task;
 pub mod bookmark_excerpt;
 pub mod bookmark_service;

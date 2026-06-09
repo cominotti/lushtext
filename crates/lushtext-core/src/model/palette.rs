@@ -213,6 +213,29 @@ impl SearchMode {
             Self::Commands => "Type a command (Tab to switch mode)",
         }
     }
+
+    /// Stable lowercase name used by automation snapshots and target-state actions.
+    #[must_use]
+    pub fn stable_name(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Files => "files",
+            Self::Notes => "notes",
+            Self::Commands => "commands",
+        }
+    }
+
+    /// Parse the stable action/snapshot spelling for command-palette mode.
+    #[must_use]
+    pub fn from_stable_name(value: &str) -> Option<Self> {
+        match value.trim() {
+            "all" => Some(Self::All),
+            "files" => Some(Self::Files),
+            "notes" => Some(Self::Notes),
+            "commands" => Some(Self::Commands),
+            _ => None,
+        }
+    }
 }
 
 /// A single search result with its relevance score.

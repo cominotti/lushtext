@@ -74,12 +74,12 @@ fn sample_replace_backup(path: &str) -> ReplaceUndoBackup {
 fn panel_with_one_search_match() -> LushtextSearchPanel {
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.set_query("hello");
-    let search_match = SearchMatch {
-        path: std::path::PathBuf::from("/test.rs"),
-        line_number: 1,
-        line_content: "let hello = 1;".to_string(),
-        match_range: 4..9,
-    };
+    let search_match = SearchMatch::new(
+        std::path::PathBuf::from("/test.rs"),
+        1,
+        "let hello = 1;",
+        4..9,
+    );
     let file_item = SearchResultItem::new_file("/test.rs", "test.rs", 1);
     let match_item = SearchResultItem::new_match(
         "/test.rs",
@@ -186,6 +186,51 @@ fn test_search_panel_construction() {
     assert!(panel.imp().search_entry.text().is_empty());
     assert!(panel.imp().count_label.text().is_empty());
     assert!(!panel.imp().error_label.is_visible());
+}
+
+#[test]
+fn test_search_panel_controls_expose_accessibility_roles() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let imp = panel.imp();
+
+    assert_eq!(
+        imp.search_entry.accessible_role(),
+        gtk4::AccessibleRole::SearchBox
+    );
+    assert_eq!(imp.results_list.accessible_role(), gtk4::AccessibleRole::List);
+    assert_eq!(
+        imp.case_toggle.accessible_role(),
+        gtk4::AccessibleRole::ToggleButton
+    );
+    assert_eq!(
+        imp.regex_toggle.accessible_role(),
+        gtk4::AccessibleRole::ToggleButton
+    );
+    assert_eq!(
+        imp.word_toggle.accessible_role(),
+        gtk4::AccessibleRole::ToggleButton
+    );
+    assert_eq!(
+        imp.more_toggle.accessible_role(),
+        gtk4::AccessibleRole::ToggleButton
+    );
+    assert_eq!(
+        imp.gitignore_toggle.accessible_role(),
+        gtk4::AccessibleRole::ToggleButton
+    );
+    assert_eq!(imp.glob_entry.accessible_role(), gtk4::AccessibleRole::TextBox);
+    assert_eq!(
+        imp.replace_entry.accessible_role(),
+        gtk4::AccessibleRole::TextBox
+    );
+    assert_eq!(
+        imp.replace_all_button.accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(imp.undo_button.accessible_role(), gtk4::AccessibleRole::Button);
+    assert_eq!(imp.save_button.accessible_role(), gtk4::AccessibleRole::Button);
+    assert_eq!(imp.close_button.accessible_role(), gtk4::AccessibleRole::Button);
 }
 
 #[test]
@@ -767,12 +812,12 @@ fn test_enter_preview_mode_uses_cached_search_matches_without_gtk_rows() {
         .runtime
         .search_matches
         .borrow_mut()
-        .push(SearchMatch {
-            path: std::path::PathBuf::from("/test.rs"),
-            line_number: 1,
-            line_content: "let hello = 1;".to_string(),
-            match_range: 4..9,
-        });
+        .push(SearchMatch::new(
+            std::path::PathBuf::from("/test.rs"),
+            1,
+            "let hello = 1;",
+            4..9,
+        ));
 
     panel.enter_preview_mode("goodbye");
 
@@ -1079,12 +1124,12 @@ fn test_replacement_and_replace_result_construction() {
 #[test]
 fn test_generate_replacement_preview_literal() {
     ensure_gtk_init();
-    let matches = vec![SearchMatch {
-        path: std::path::PathBuf::from("/test.rs"),
-        line_number: 1,
-        line_content: "let hello = 1;".to_string(),
-        match_range: 4..9,
-    }];
+    let matches = vec![SearchMatch::new(
+        std::path::PathBuf::from("/test.rs"),
+        1,
+        "let hello = 1;",
+        4..9,
+    )];
 
     let options = ContentSearchOptions::default();
     let result = generate_replacement_preview(&matches, "hello", "goodbye", &options);
@@ -1098,12 +1143,12 @@ fn test_generate_replacement_preview_literal() {
 #[test]
 fn test_generate_replacement_preview_regex_backreference() {
     ensure_gtk_init();
-    let matches = vec![SearchMatch {
-        path: std::path::PathBuf::from("/test.rs"),
-        line_number: 1,
-        line_content: "fn hello_world() {}".to_string(),
-        match_range: 3..14,
-    }];
+    let matches = vec![SearchMatch::new(
+        std::path::PathBuf::from("/test.rs"),
+        1,
+        "fn hello_world() {}",
+        3..14,
+    )];
 
     let options = ContentSearchOptions {
         regex: true,
@@ -1123,11 +1168,13 @@ fn test_generate_replacement_preview_regex_backreference() {
 fn test_generate_replacement_preview_large_match_set() {
     ensure_gtk_init();
     let matches = (0..5_000)
-        .map(|index| SearchMatch {
-            path: std::path::PathBuf::from("/test.rs"),
-            line_number: index + 1,
-            line_content: format!("let hello_{index} = hello;"),
-            match_range: 4..9,
+        .map(|index| {
+            SearchMatch::new(
+                std::path::PathBuf::from("/test.rs"),
+                index + 1,
+                &format!("let hello_{index} = hello;"),
+                4..9,
+            )
         })
         .collect::<Vec<_>>();
     let options = ContentSearchOptions::default();

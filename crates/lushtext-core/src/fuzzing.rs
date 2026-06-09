@@ -309,12 +309,12 @@ fn run_replacement_operation(reader: &mut ScriptReader<'_>, report: &mut Operati
     }
     let range = generated_char_boundary_range(&line, reader);
     let replacement = reader.take_text();
-    let matches = [SearchMatch {
-        path: reader.take_path(),
-        line_number: u64::from(reader.take_byte()) + 1,
-        line_content: line.clone(),
-        match_range: range,
-    }];
+    let matches = [SearchMatch::new(
+        reader.take_path(),
+        u64::from(reader.take_byte()) + 1,
+        &line,
+        range,
+    )];
     let options = ContentSearchOptions::default();
     let previews = generate_replacement_preview(&matches, "", &replacement, &options);
 

@@ -194,12 +194,8 @@ pub fn search(
                         let content = line_content.trim_end_matches('\n').trim_end_matches('\r');
                         let match_range = find_match_range(&matcher, content.as_bytes());
 
-                        let search_match = SearchMatch {
-                            path: path.clone(),
-                            line_number,
-                            line_content: content.to_string(),
-                            match_range,
-                        };
+                        let search_match =
+                            SearchMatch::new(path.clone(), line_number, content, match_range);
 
                         // Increment match counter and enforce the shared cap.
                         let prev = match_count.fetch_add(1, Ordering::Relaxed);
@@ -343,6 +339,38 @@ mod tests {
             assert_eq!(m.line_number, 1, "match should be on line 1");
             assert!(!m.match_range.is_empty(), "match range should be non-empty");
         }
+    }
+
+    #[test]
+    fn literal_search_bounds_long_matching_lines() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let workspace_folder = dir.path();
+        let prefix = "a".repeat(crate::model::content_search::MAX_SEARCH_MATCH_LINE_BYTES * 2);
+        let suffix = "b".repeat(crate::model::content_search::MAX_SEARCH_MATCH_LINE_BYTES * 2);
+        fixture::write_text(
+            &workspace_folder.join("minified.js"),
+            &format!("{prefix}needle{suffix}\n"),
+        );
+
+        let events = search_collect(
+            "needle",
+            &[workspace_folder],
+            &ContentSearchOptions::default(),
+        );
+        assert_ends_with_done(&events);
+        let matches = search_matches(&events);
+
+        assert_eq!(matches.len(), 1);
+        let search_match = matches[0];
+        assert!(search_match.line_truncated);
+        assert!(
+            search_match.line_content.len()
+                <= crate::model::content_search::MAX_SEARCH_MATCH_LINE_BYTES
+        );
+        assert_eq!(
+            &search_match.line_content[search_match.match_range.clone()],
+            "needle"
+        );
     }
 
     #[test]

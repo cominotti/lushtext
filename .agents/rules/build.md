@@ -28,6 +28,8 @@ make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # lightweight Criterion performance smoke
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
 make check-policy # fast policy audits beside rustfmt and Clippy
+make check-automation-docs # automation docs drift check against action/D-Bus contracts
+make automation-client-self-test # reusable D-Bus automation client/parser self-test
 make blueprint-generate # regenerate generated .ui files from Blueprint sources
 make check-blueprint # validate Blueprint drift and UI template contract
 make lint-blueprint # advisory grouped Blueprint lint triage
@@ -50,7 +52,14 @@ all-feature Clippy, and fast policy audits, including Blueprint template drift
 and generated UI contract validation. Filesystem-sensitive changes should
 also pass `make check-agent-docs`; that target verifies the
 `services::filesystem` guidance in rules and skills, then runs the raw
-filesystem no-leftovers audit.
+filesystem no-leftovers audit. Automation-surface changes should also pass
+`make check-automation-docs`; it verifies user/developer docs against the
+exported action catalog, read-only D-Bus interface, snapshot schema, workflow
+event schema, readiness predicates/blockers, scenario manifest fields, and
+scenario-helper flag marker, plus the reusable automation-client command,
+status, exit, result-field, and artifact-summary contracts. If
+`scripts/lushtext-automation.py` changes, also run
+`make automation-client-self-test`; `make check-policy` includes both checks.
 
 Portal and headless smoke scripts must keep their temporary runtime directories
 short (for example directly under `$XDG_RUNTIME_DIR` or `/tmp`) rather than
@@ -247,6 +256,21 @@ that nearby behavior still mutates.
 integration, property, fuzz, widget, benchmark, and mutation lanes cannot prove
 honestly. Keep those lane boundaries current when adding new smoke checks.
 
+- `make automation-smoke` builds the debug binary, launches LushText under
+  isolated headless Mutter and a private D-Bus session, introspects the
+  app-owned automation object, reads catalog/readiness/snapshot state, verifies
+  exported stateful action state against snapshot fields, runs
+  `scripts/lushtext-automation.py` against the live app for
+  catalog/snapshot/predicate/wait/event/action commands, waits on named
+  readiness predicates, activates a parameterized GTK action, scans runtime logs
+  for unexpected GTK/GDK/Adwaita/GIO/D-Bus/portal/AT-SPI/filesystem warnings,
+  and stores D-Bus/log/assertion artifacts under `build/smoke/automation` by
+  default.
+- `make automation-client-self-test` runs the local
+  `scripts/lushtext-automation.py` parser, status-envelope, typed
+  action-parameter rendering, and artifact-summary checks without launching the
+  app. It is a fast policy gate for client and documentation changes, not a
+  replacement for real-process D-Bus smoke.
 - `make visual-smoke` builds the debug binary, launches LushText under isolated
   headless Mutter through the existing screenshot automation, captures a
   representative editor/search/minimap screenshot, and stores environment and
@@ -258,9 +282,12 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   recovery through AT-SPI plus app-owned metadata, and stores before/after
   metadata summaries, runtime logs, assertions, and a screenshot under
   `build/smoke/crash-recovery` by default.
-- `make portal-sandbox-smoke` records available Flatpak/Snap runtime state and
+- `make portal-sandbox-smoke` records available Flatpak/Snap runtime state,
+  writes `permission-posture.txt`, preserves portal bus-name diagnostics, and
   invokes supported confined smoke checks. It must skip explicitly when neither
   runtime is installed or buildable; a skip is not proof that confinement works.
+  Portal/sandbox diagnostics must not imply a portals-only migration while the
+  Flatpak manifest intentionally keeps host filesystem access.
 - `make accessibility-smoke` keeps the accessibility bridge enabled and uses the
   AT-SPI path. Do not rely on the widget harness for this class of coverage
   because `scripts/run-widget-tests.sh` intentionally sets `NO_AT_BRIDGE=1`.
@@ -278,8 +305,8 @@ AT-SPI, installed-package, and deeper performance checks scheduled, manual,
 release-only, or opt-in unless a later change proves they are reliable as
 blocking PR gates.
 `.github/workflows/end-user-smoke.yml` is the scheduled/manual artifact lane
-for visual, crash-recovery, portal/sandbox, accessibility, performance smoke,
-and full benchmark report coverage.
+for automation, visual, crash-recovery, portal/sandbox, accessibility,
+performance smoke, and full benchmark report coverage.
 
 ## Meson Build (Installed / Flatpak)
 
@@ -300,6 +327,9 @@ Meson wraps Cargo for installed and Flatpak builds:
   before treating a Flatpak build failure as an application regression.
 - Use `make flatpak` for a local build without installing it; it first ensures the user Flathub remote and manifest runtime/SDK dependencies are available
 - Use `make flatpak-install` to build and install the latest checkout into the user Flatpak installation; the target is idempotent and installs missing runtime/SDK dependencies from Flathub
+- Use `make check-flatpak-permissions` after automation, portal/sandbox, or
+  packaging changes to prove the local Flatpak manifest still declares the
+  intentional `--filesystem=host` permission
 - Use `make verify-flatpak-identity` after install/export changes to catch stale same-ID dev launchers and verify `X-Flatpak`, permissions, and MIME registration
 - `build-aux/cargo-sources.json` vendors all Cargo dependencies for offline builds
 - Regenerate after dependency changes: `make cargo-sources` (requires `flatpak-cargo-generator`)
@@ -357,7 +387,7 @@ All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but thi
 
 - `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, Blueprint template drift/contract validation, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources licenses`.
 - `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
-- `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive visual, portal/sandbox, accessibility, crash-recovery, and performance-smoke lanes plus a full benchmark report. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
+- `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive automation, visual, portal/sandbox, accessibility, crash-recovery, and performance-smoke lanes plus a full benchmark report. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
 - `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, Cominotti repository metadata tests, a no-mutation release preview, and current metadata validation.
 - `.github/workflows/release.yml` — `v*` tag release validation and manual dry-run workflow. It validates release metadata, builds the Flatpak from the release source, prepares/deploys Cominotti Flatpak repository artifacts when signing and deploy configuration are available, creates or updates the GitHub Release context, and opens an optional Flathub manifest PR when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.

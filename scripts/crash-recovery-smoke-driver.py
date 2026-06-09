@@ -14,22 +14,50 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 SCRIPT_PATH = Path(__file__).resolve()
 REPO_ROOT = SCRIPT_PATH.parents[1]
+SCENARIO_MANIFEST_NAME = "scenario-manifest.json"
+MANIFEST_TEXT_LIMIT = 600
 SYSTEM_PYTHON = Path("/usr/bin/python3")
 ATSPI_REGISTRYD = Path("/usr/libexec/at-spi2-registryd")
 ATSPI_SET_TEXT = REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-set-text.py"
 ATSPI_DUMP_TREE = REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-dump-tree.py"
+APP_ID = "dev.cominotti.lushtext"
+APP_OBJECT_PATH = "/dev/cominotti/lushtext"
+WINDOW_OBJECT_PATH = f"{APP_OBJECT_PATH}/window/1"
+AUTOMATION_OBJECT_PATH = f"{APP_OBJECT_PATH}/Automation"
+AUTOMATION_INTERFACE = "dev.cominotti.lushtext.Automation1"
 
 WIDTH = 1280
 HEIGHT = 860
 FILE_BACKED_MARKER = "CRASH_SMOKE_FILE_BACKED_DRAFT_RESTORED"
 UNTITLED_MARKER = "CRASH_SMOKE_UNTITLED_DRAFT_RESTORED"
 BOOKMARK_WARNING = "Some bookmark data could not be loaded"
+
+
+OWNED_ARTIFACT_NAMES = {
+    "assertions",
+    "atspi-address.txt",
+    "data-dir.txt",
+    "fixtures",
+    "logs",
+    "metadata",
+    "runtime-dir-cleanup-error.txt",
+    "runtime-dir-cleanup-errors.txt",
+    "runtime-dir-status.txt",
+    "runtime-dir.txt",
+    "screenshots",
+    "state",
+    "state-dir.txt",
+    "summary.json",
+    "summary.txt",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,6 +111,13 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
 
 def prepare_state(args: argparse.Namespace) -> dict[str, str]:
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
+    for child in args.artifact_dir.iterdir():
+        if child.name not in OWNED_ARTIFACT_NAMES:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
     for name in (
         "assertions",
         "fixtures",
@@ -93,10 +128,19 @@ def prepare_state(args: argparse.Namespace) -> dict[str, str]:
         "state/cache",
         "state/config",
         "state/data",
-        "state/runtime",
     ):
         (args.artifact_dir / name).mkdir(parents=True, exist_ok=True)
-    os.chmod(args.artifact_dir / "state/runtime", 0o700)
+    # AT-SPI and PipeWire both create Unix sockets under XDG_RUNTIME_DIR. Keep
+    # it short so artifact paths inside a deep checkout do not exceed sun_path.
+    runtime_root = Path(tempfile.mkdtemp(prefix="lt-crash-rt-"))
+    runtime_dir = runtime_root / "runtime"
+    runtime_dir.mkdir()
+    os.chmod(runtime_dir, 0o700)
+    (args.artifact_dir / "runtime-dir.txt").write_text(str(runtime_dir) + "\n", encoding="utf-8")
+    (args.artifact_dir / "runtime-dir-status.txt").write_text(
+        f"path={runtime_dir}\nstatus=active\ncleanup=pending\n",
+        encoding="utf-8",
+    )
 
     data_dir = args.artifact_dir / "state/data/lushtext"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -105,15 +149,20 @@ def prepare_state(args: argparse.Namespace) -> dict[str, str]:
     file_backed = fixture_root / "file-backed.txt"
     file_backed.write_text("Original crash smoke file content\n", encoding="utf-8")
 
-    workspaces = {
+    workspaces_data = {
         "current_scope": {"kind": "all"},
         "workspaces": [
             {
                 "id": "crash-smoke-workspace",
                 "name": "Crash Smoke",
-                "root": str(fixture_root),
+                "folders": [{"id": "crash-smoke-folder", "path": str(fixture_root)}],
             }
         ],
+    }
+    workspaces = {
+        "kind": "dev.cominotti.lushtext.workspace-state",
+        "version": 1,
+        "data": workspaces_data,
     }
     (data_dir / "workspaces.json").write_text(
         json.dumps(workspaces, indent=2) + "\n",
@@ -143,16 +192,44 @@ def prepare_state(args: argparse.Namespace) -> dict[str, str]:
             "GSETTINGS_BACKEND": "keyfile",
             "GSETTINGS_SCHEMA_DIR": str(REPO_ROOT / "data"),
             "LUSHTEXT_CRASH_SMOKE_ARTIFACT_DIR": str(args.artifact_dir),
+            "LUSHTEXT_CRASH_SMOKE_BINARY": str(args.binary),
             "LUSHTEXT_CRASH_SMOKE_FILE_BACKED_PATH": str(file_backed),
+            "LUSHTEXT_CRASH_SMOKE_RUNTIME_ROOT": str(runtime_root),
             "LUSHTEXT_CRASH_SMOKE_STATE_DIR": str(args.artifact_dir / "state"),
             "LUSHTEXT_DATA_DIR": str(data_dir),
             "XDG_CACHE_HOME": str(args.artifact_dir / "state/cache"),
             "XDG_CONFIG_HOME": str(args.artifact_dir / "state/config"),
             "XDG_DATA_HOME": str(args.artifact_dir / "state/data"),
-            "XDG_RUNTIME_DIR": str(args.artifact_dir / "state/runtime"),
+            "XDG_RUNTIME_DIR": str(runtime_dir),
         }
     )
     return env
+
+
+def cleanup_runtime_root(runtime_root: Path, artifact_dir: Path) -> str:
+    errors: list[str] = []
+    for attempt in range(1, 6):
+        try:
+            shutil.rmtree(runtime_root)
+        except FileNotFoundError:
+            return "removed"
+        except Exception as exc:
+            errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
+        if not runtime_root.exists():
+            return "removed"
+        time.sleep(0.2)
+
+    remaining: list[str] = []
+    for path in runtime_root.rglob("*"):
+        try:
+            remaining.append(str(path.relative_to(runtime_root)))
+        except ValueError:
+            remaining.append(str(path))
+    (artifact_dir / "runtime-dir-cleanup-errors.txt").write_text(
+        "\n".join([*errors, "remaining:", *sorted(remaining)]) + "\n",
+        encoding="utf-8",
+    )
+    return "remove_failed"
 
 
 def outer_run(args: argparse.Namespace) -> int:
@@ -170,6 +247,20 @@ def outer_run(args: argparse.Namespace) -> int:
     ]
     with log_path.open("w", encoding="utf-8") as log:
         result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+
+    runtime_root = Path(env["LUSHTEXT_CRASH_SMOKE_RUNTIME_ROOT"])
+    runtime_dir = Path(env["XDG_RUNTIME_DIR"])
+    if result.returncode == 0:
+        cleanup_status = cleanup_runtime_root(runtime_root, args.artifact_dir)
+        (args.artifact_dir / "runtime-dir-status.txt").write_text(
+            f"path={runtime_dir}\nstatus=success\ncleanup={cleanup_status}\n",
+            encoding="utf-8",
+        )
+    else:
+        (args.artifact_dir / "runtime-dir-status.txt").write_text(
+            f"path={runtime_dir}\nstatus=failed\ncleanup=retained\n",
+            encoding="utf-8",
+        )
 
     if result.returncode != 0:
         tail_log(log_path, 160, sys.stderr)
@@ -388,8 +479,8 @@ def wait_for_window_actions(bus) -> None:
         try:
             bus_call(
                 bus,
-                "dev.cominotti.lushtext",
-                "/dev/cominotti/lushtext/window/1",
+                APP_ID,
+                WINDOW_OBJECT_PATH,
                 "org.gtk.Actions",
                 "List",
                 reply="(as)",
@@ -401,13 +492,73 @@ def wait_for_window_actions(bus) -> None:
     raise RuntimeError(f"LushText did not export window actions: {last_error}")
 
 
+def wait_for_automation_object(bus) -> None:
+    deadline = time.monotonic() + 15
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            bus_call(
+                bus,
+                APP_ID,
+                AUTOMATION_OBJECT_PATH,
+                "org.freedesktop.DBus.Introspectable",
+                "Introspect",
+                reply="(s)",
+            )
+            return
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.1)
+    raise RuntimeError(f"LushText did not export Automation1: {last_error}")
+
+
+def automation_call(bus, method: str, params=None, reply: str = "(s)"):
+    return bus_call(
+        bus,
+        APP_ID,
+        AUTOMATION_OBJECT_PATH,
+        AUTOMATION_INTERFACE,
+        method,
+        params,
+        reply,
+    )
+
+
+def wait_for_ready(bus, artifact_dir: Path, predicate: str, timeout_msec: int) -> None:
+    from gi.repository import GLib
+
+    ok, status, detail = automation_call(
+        bus,
+        "WaitForReady",
+        GLib.Variant("(su)", (predicate, timeout_msec)),
+        "(bss)",
+    ).unpack()
+    with (artifact_dir / "assertions/automation-waits.txt").open("a", encoding="utf-8") as waits:
+        waits.write(f"predicate={predicate} ok={ok} status={status} detail={detail}\n")
+    if not ok:
+        raise RuntimeError(f"Automation1 WaitForReady({predicate}) failed: {status}: {detail}")
+
+
+def snapshot_json(bus) -> dict:
+    return json.loads(automation_call(bus, "GetSnapshot").unpack()[0])
+
+
+def write_automation_snapshot(bus, artifact_dir: Path, phase: str) -> dict:
+    snapshot = snapshot_json(bus)
+    (artifact_dir / f"assertions/{phase}-automation-snapshot.json").write_text(
+        json.dumps(snapshot, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return snapshot
+
+
 def activate_window_action(bus, action_name: str) -> None:
     from gi.repository import GLib
 
     bus_call(
         bus,
-        "dev.cominotti.lushtext",
-        "/dev/cominotti/lushtext/window/1",
+        APP_ID,
+        WINDOW_OBJECT_PATH,
         "org.gtk.Actions",
         "Activate",
         GLib.Variant("(sava{sv})", (action_name, [], {})),
@@ -542,6 +693,40 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def now_utc() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def bounded_text(value: object) -> str:
+    text = str(value)
+    if len(text) <= MANIFEST_TEXT_LIMIT:
+        return text
+    return f"{text[:MANIFEST_TEXT_LIMIT]} [truncated]"
+
+
+def relative_artifact(artifact_dir: Path, path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(artifact_dir.resolve()))
+    except Exception:
+        return str(path)
+
+
+def existing_artifact(artifact_dir: Path, path: Path) -> str | None:
+    return relative_artifact(artifact_dir, path) if path.exists() else None
+
+
+def artifact_rows(artifact_dir: Path, paths: list[Path], *, status: str = "passed") -> list[dict[str, str]]:
+    rows = []
+    for path in sorted({p for p in paths if p.exists() and p.is_file()}):
+        rows.append({"name": path.stem, "status": status, "artifact": relative_artifact(artifact_dir, path)})
+    return rows
+
+
+def public_json_data(document: dict) -> dict:
+    data = document.get("data")
+    return data if isinstance(data, dict) else document
+
+
 def wait_for_recovery_metadata(data_dir: Path, file_backed: Path) -> None:
     manifest_path = data_dir / "drafts/manifest.json"
     session_path = data_dir / "session.json"
@@ -549,8 +734,8 @@ def wait_for_recovery_metadata(data_dir: Path, file_backed: Path) -> None:
     last_state = "<metadata not read yet>"
     while time.monotonic() < deadline:
         try:
-            manifest = load_json(manifest_path)
-            session = load_json(session_path)
+            manifest = public_json_data(load_json(manifest_path))
+            session = public_json_data(load_json(session_path))
             drafts = manifest.get("drafts", [])
             tabs = session.get("tabs", [])
             has_file_draft = any(entry.get("original_path") == str(file_backed) for entry in drafts)
@@ -585,7 +770,7 @@ def wait_for_relaunch_metadata(data_dir: Path, file_backed: Path) -> None:
     last_state = "<metadata not read yet>"
     while time.monotonic() < deadline:
         try:
-            session = load_json(data_dir / "session.json")
+            session = public_json_data(load_json(data_dir / "session.json"))
             tabs = session.get("tabs", [])
             if (
                 len(tabs) >= 2
@@ -615,7 +800,7 @@ def wait_for_visible_untitled(artifact_dir: Path, app_env: dict[str, str]) -> st
 
 
 def assert_file_backed_draft_body(data_dir: Path, file_backed: Path) -> None:
-    manifest = load_json(data_dir / "drafts/manifest.json")
+    manifest = public_json_data(load_json(data_dir / "drafts/manifest.json"))
     entry = next(
         (
             draft
@@ -648,6 +833,62 @@ def wait_for_sidecar_recovery_evidence(data_dir: Path, artifact_dir: Path, app_e
     raise RuntimeError(
         "Timed out waiting for corrupt bookmark sidecar recovery evidence. "
         f"Last AT-SPI tree excerpt:\n{last_tree[-2000:]}"
+    )
+
+
+def assert_relaunch_automation_snapshot(
+    snapshot: dict,
+    artifact_dir: Path,
+    file_backed: Path,
+    recovery_tree: str,
+) -> None:
+    window = snapshot.get("window")
+    if window is None:
+        raise RuntimeError("Automation snapshot did not include an active window after relaunch")
+
+    tabs = window.get("tabs", [])
+    file_tab = next((tab for tab in tabs if tab.get("path") == str(file_backed)), None)
+    untitled_tab = next((tab for tab in tabs if tab.get("document_kind") == "untitled"), None)
+    if file_tab is None:
+        raise RuntimeError(f"Automation snapshot did not include restored file tab: {tabs!r}")
+    if untitled_tab is None:
+        raise RuntimeError(f"Automation snapshot did not include restored untitled tab: {tabs!r}")
+    if not file_tab.get("draft_present"):
+        raise RuntimeError(f"Restored file tab did not report draft metadata: {file_tab!r}")
+    if not untitled_tab.get("draft_present"):
+        raise RuntimeError(f"Restored untitled tab did not report draft metadata: {untitled_tab!r}")
+    if window.get("active_tab_index") != untitled_tab.get("index"):
+        raise RuntimeError(
+            "Automation snapshot did not preserve the restored active untitled tab: "
+            f"active={window.get('active_tab_index')} untitled={untitled_tab!r}"
+        )
+
+    notifications = window.get("notifications", {})
+    notification_text = notifications.get("status_text") or ""
+    diagnostic_visible = BOOKMARK_WARNING in recovery_tree or BOOKMARK_WARNING in notification_text
+    quarantine_dir = Path(os.environ["LUSHTEXT_DATA_DIR"]) / "recovery-quarantine"
+    diagnostic_persisted = quarantine_dir.exists() and any(quarantine_dir.rglob("*"))
+    if not (diagnostic_visible or diagnostic_persisted):
+        raise RuntimeError(
+            "Automation recovery assertion did not find visible or persisted recovery diagnostics"
+        )
+
+    (artifact_dir / "assertions/relaunch-automation-summary.txt").write_text(
+        "\n".join(
+            [
+                f"tab_count={window.get('tab_count')}",
+                f"active_tab_index={window.get('active_tab_index')}",
+                f"file_tab_index={file_tab.get('index')}",
+                f"file_tab_draft_present={file_tab.get('draft_present')}",
+                f"untitled_tab_index={untitled_tab.get('index')}",
+                f"untitled_tab_draft_present={untitled_tab.get('draft_present')}",
+                f"diagnostic_visible={diagnostic_visible}",
+                f"diagnostic_persisted={diagnostic_persisted}",
+                f"notification_status={notification_text}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
     )
 
 
@@ -818,6 +1059,8 @@ def write_summary(artifact_dir: Path) -> None:
         "artifacts": {
             "before_crash_metadata": "metadata/before-crash",
             "after_relaunch_metadata": "metadata/after-relaunch",
+            "automation_snapshot": "assertions/relaunch-automation-snapshot.json",
+            "automation_summary": "assertions/relaunch-automation-summary.txt",
             "logs": "logs",
             "assertions": "assertions",
             "screenshots": "screenshots",
@@ -828,6 +1071,7 @@ def write_summary(artifact_dir: Path) -> None:
         "\n".join(f"{key}={value}" for key, value in summary.items()) + "\n",
         encoding="utf-8",
     )
+    write_crash_scenario_manifest(artifact_dir, "passed")
 
 
 def write_skip_summary(artifact_dir: Path, reason: str) -> None:
@@ -845,6 +1089,119 @@ def write_skip_summary(artifact_dir: Path, reason: str) -> None:
     (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     (artifact_dir / "summary.txt").write_text(
         "\n".join(f"{key}={value}" for key, value in summary.items()) + "\n",
+        encoding="utf-8",
+    )
+    write_crash_scenario_manifest(artifact_dir, "skipped", reason)
+
+
+def write_crash_scenario_manifest(artifact_dir: Path, status: str, reason: object | None = None) -> None:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    assertions = artifact_dir / "assertions"
+    assertions.mkdir(parents=True, exist_ok=True)
+    now = now_utc()
+    failure_reason = bounded_text(reason) if status == "failed" and reason is not None else None
+    skip_reason = bounded_text(reason) if status == "skipped" and reason is not None else None
+    warning_report = assertions / "runtime-warning-scan.txt"
+    screenshot = artifact_dir / "screenshots/after-relaunch.png"
+    state_paths = [
+        *assertions.glob("*.txt"),
+        *assertions.glob("*.json"),
+        artifact_dir / "metadata/before-crash/tree.txt",
+        artifact_dir / "metadata/after-relaunch/tree.txt",
+        artifact_dir / "summary.json",
+    ]
+    dbus_paths = [
+        assertions / "automation-waits.txt",
+        assertions / "relaunch-automation-snapshot.json",
+        assertions / "relaunch-automation-summary.txt",
+    ]
+    atspi_paths = [
+        *assertions.glob("*atspi-tree.txt"),
+        *assertions.glob("*atspi-focus.txt"),
+    ]
+
+    manifest = {
+        "schema_version": 1,
+        "scenario_id": "crash-recovery-smoke",
+        "description": "Real-process SIGKILL and relaunch recovery scenario with Automation1 snapshot assertions.",
+        "status": status,
+        "started_at": now,
+        "updated_at": now,
+        "finished_at": now,
+        "failure_reason": failure_reason,
+        "skip_reason": skip_reason,
+        "launch_mode": "dbus-run-session+headless-mutter+sigkill-relaunch",
+        "helper_arguments": {
+            "artifact_dir": str(artifact_dir),
+            "binary": str(Path(os.environ.get("LUSHTEXT_CRASH_SMOKE_BINARY", "")).resolve())
+            if os.environ.get("LUSHTEXT_CRASH_SMOKE_BINARY")
+            else None,
+        },
+        "fixture_setup": [
+            {
+                "name": "file-backed-document",
+                "kind": "text-file",
+                "artifact": existing_artifact(artifact_dir, artifact_dir / "fixtures/file-backed-path.txt"),
+                "detail": "Path to the file-backed tab used before crash.",
+            },
+            {
+                "name": "isolated-app-state",
+                "kind": "xdg-data-dir",
+                "artifact": existing_artifact(artifact_dir, artifact_dir / "data-dir.txt"),
+                "detail": "Crash smoke data directory containing session, drafts, sidecars, and quarantine.",
+            },
+        ],
+        "actions": [
+            {"name": "new-tab", "scope": "window", "status": "passed"},
+            {"name": "show-bookmarks", "scope": "window", "status": "passed"},
+        ],
+        "waits": artifact_rows(artifact_dir, [assertions / "automation-waits.txt"]),
+        "state_assertions": artifact_rows(artifact_dir, state_paths),
+        "screenshots": artifact_rows(artifact_dir, [screenshot])
+        or [{"name": "after-relaunch", "status": "not-run"}],
+        "at_spi_assertions": artifact_rows(artifact_dir, atspi_paths)
+        or [{"name": "recovery-diagnostics-atspi", "status": "not-run"}],
+        "dbus_summaries": artifact_rows(artifact_dir, dbus_paths),
+        "warnings": {
+            "status": "passed" if status == "passed" and warning_report.exists() else "not-run",
+            "artifact": existing_artifact(artifact_dir, warning_report),
+            "unexpected_count": 0 if warning_report.exists() else None,
+            "detail": "Unexpected warning matches fail the smoke lane.",
+        },
+        "environment": {
+            "environment_artifact": existing_artifact(artifact_dir, artifact_dir / "environment.txt"),
+            "runtime_dir_status": existing_artifact(artifact_dir, artifact_dir / "runtime-dir-status.txt"),
+            "dbus_session_log": existing_artifact(artifact_dir, artifact_dir / "logs/dbus-session.log"),
+            "app_id": APP_ID,
+            "automation_object_path": AUTOMATION_OBJECT_PATH,
+        },
+        "bounded_artifact_policy": {
+            "embedded_text_limit": MANIFEST_TEXT_LIMIT,
+            "large_payload_strategy": "manifest stores relative artifact paths and bounded summaries",
+        },
+        "steps": [
+            {"index": 1, "name": "launch file-backed tab", "kind": "launch", "status": "passed"},
+            {"index": 2, "name": "write draft text through AT-SPI", "kind": "state-assertion", "status": "passed"},
+            {"index": 3, "name": "terminate with SIGKILL", "kind": "command", "status": "passed"},
+            {"index": 4, "name": "relaunch and wait for recovery", "kind": "wait", "status": status},
+            {
+                "index": 5,
+                "name": "assert Automation1 recovery snapshot",
+                "kind": "state-assertion",
+                "status": "passed" if (assertions / "relaunch-automation-summary.txt").exists() else "not-run",
+                "artifact": existing_artifact(artifact_dir, assertions / "relaunch-automation-summary.txt"),
+            },
+            {
+                "index": 6,
+                "name": "scan runtime warnings",
+                "kind": "warning-scan",
+                "status": "passed" if warning_report.exists() else "not-run",
+                "artifact": existing_artifact(artifact_dir, warning_report),
+            },
+        ],
+    }
+    (artifact_dir / SCENARIO_MANIFEST_NAME).write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
@@ -865,7 +1222,8 @@ def mutter_child(args: argparse.Namespace) -> int:
     first_app = launch_app(args, artifact_dir, "before-crash", [str(file_backed)])
     try:
         wait_for_window_actions(bus)
-        time.sleep(0.8)
+        wait_for_automation_object(bus)
+        wait_for_ready(bus, artifact_dir, "file-open-complete", 10000)
         set_editor_text(
             artifact_dir,
             app_env,
@@ -896,6 +1254,8 @@ def mutter_child(args: argparse.Namespace) -> int:
     relaunch = launch_app(args, artifact_dir, "after-relaunch", [])
     try:
         wait_for_window_actions(bus)
+        wait_for_automation_object(bus)
+        wait_for_ready(bus, artifact_dir, "recovery-restore-complete", 15000)
         wait_for_relaunch_metadata(data_dir, file_backed)
         visible_listing = wait_for_visible_untitled(artifact_dir, app_env)
         assert_file_backed_draft_body(data_dir, file_backed)
@@ -906,6 +1266,9 @@ def mutter_child(args: argparse.Namespace) -> int:
 
         activate_window_action(bus, "show-bookmarks")
         wait_for_sidecar_recovery_evidence(data_dir, artifact_dir, app_env)
+        recovery_tree = dump_atspi_tree(artifact_dir, app_env, "relaunch-recovery-final")
+        snapshot = write_automation_snapshot(bus, artifact_dir, "relaunch")
+        assert_relaunch_automation_snapshot(snapshot, artifact_dir, file_backed, recovery_tree)
         if os.environ.get("LUSHTEXT_CRASH_SMOKE_SCREENSHOT") == "1":
             screenshot = artifact_dir / "screenshots/after-relaunch.png"
             try:
@@ -933,9 +1296,17 @@ def main() -> int:
             return mutter_child(args)
         return outer_run(args)
     except subprocess.CalledProcessError as exc:
+        try:
+            write_crash_scenario_manifest(args.artifact_dir.resolve(), "failed", exc)
+        except Exception:
+            pass
         print(f"Command failed: {exc}", file=sys.stderr)
         return exc.returncode or 1
     except Exception as exc:
+        try:
+            write_crash_scenario_manifest(args.artifact_dir.resolve(), "failed", exc)
+        except Exception:
+            pass
         print(str(exc), file=sys.stderr)
         return 1
 

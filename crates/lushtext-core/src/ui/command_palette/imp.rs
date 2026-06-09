@@ -201,6 +201,7 @@ impl ObjectImpl for LushtextCommandPalette {
         self.setup_search();
         self.setup_key_controller();
         self.setup_list_activation();
+        self.apply_accessibility_metadata();
     }
 }
 
@@ -208,6 +209,29 @@ impl WidgetImpl for LushtextCommandPalette {}
 impl BoxImpl for LushtextCommandPalette {}
 
 impl LushtextCommandPalette {
+    /// Give the palette's compact controls durable accessible names for screen
+    /// readers and AT-SPI smoke assertions.
+    fn apply_accessibility_metadata(&self) {
+        self.search_entry.update_property(&[
+            gtk4::accessible::Property::Label("Command palette query"),
+            gtk4::accessible::Property::Description(
+                "Search open tabs, workspace files, notes, and commands",
+            ),
+        ]);
+        self.mode_dropdown.update_property(&[
+            gtk4::accessible::Property::Label("Command palette mode"),
+            gtk4::accessible::Property::Description("Choose which result category to search"),
+        ]);
+        self.results_view.update_property(&[
+            gtk4::accessible::Property::Label("Command palette results"),
+            gtk4::accessible::Property::Description("Matching files, notes, and commands"),
+        ]);
+        self.no_results_label
+            .update_property(&[gtk4::accessible::Property::Label(
+                "Command palette no results",
+            )]);
+    }
+
     fn setup_factory(&self) {
         let factory = gtk4::SignalListItemFactory::new();
 

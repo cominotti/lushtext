@@ -20,7 +20,7 @@ use super::LushtextWindow;
 const TOP_EDGE_REVEAL_HEIGHT: f64 = 48.0;
 
 impl LushtextWindow {
-    /// Register the Focus Mode action, reveal behavior, Escape handling, and settings hooks.
+    /// Register the Focus Mode action, reveal behavior, and settings hooks.
     pub(super) fn setup_focus_mode(&self) {
         let action =
             gio::SimpleAction::new_stateful("toggle-focus-mode", None, &false.to_variant());
@@ -48,9 +48,18 @@ impl LushtextWindow {
             });
         }
         self.add_action(&action);
+        self.add_action_entries([gio::ActionEntry::builder("set-focus-mode")
+            .parameter_type(Some(glib::VariantTy::BOOLEAN))
+            .activate(|window: &Self, _, parameter| {
+                let Some(active) = parameter.and_then(glib::Variant::get::<bool>) else {
+                    tracing::error!("set-focus-mode: expected bool parameter");
+                    return;
+                };
+                window.set_focus_mode_action_state(active);
+            })
+            .build()]);
 
         self.setup_focus_mode_reveal();
-        self.setup_focus_mode_escape();
         self.setup_focus_mode_settings();
     }
 
@@ -235,6 +244,8 @@ impl LushtextWindow {
         imp.focus_mode.affordance_generation.set(generation);
 
         let window_weak = self.downgrade();
+        // Schedule delayed hide on GTK's main loop. `_local` is correct here
+        // because the closure upgrades a weak window and touches GTK widgets.
         glib::timeout_add_local_once(std::time::Duration::from_millis(1800), move || {
             let Some(window) = window_weak.upgrade() else {
                 return;
@@ -246,58 +257,6 @@ impl LushtextWindow {
                 imp.focus_mode_revealer.set_reveal_child(false);
             }
         });
-    }
-
-    /// Install the Escape handler that gives transient surfaces priority over mode exit.
-    fn setup_focus_mode_escape(&self) {
-        let controller = gtk4::EventControllerKey::new();
-        controller.set_propagation_phase(gtk4::PropagationPhase::Bubble);
-        {
-            let window_weak = self.downgrade();
-            controller.connect_key_pressed(move |_, key, _, _| {
-                let Some(window) = window_weak.upgrade() else {
-                    return glib::Propagation::Proceed;
-                };
-                if key != gtk4::gdk::Key::Escape || !window.is_focus_mode_active() {
-                    return glib::Propagation::Proceed;
-                }
-                if window.close_focus_mode_transient_surface() {
-                    glib::Propagation::Stop
-                } else {
-                    window.set_focus_mode_action_state(false);
-                    glib::Propagation::Stop
-                }
-            });
-        }
-        self.add_controller(controller);
-    }
-
-    /// Close the topmost transient Focus Mode surface, returning whether one was handled.
-    fn close_focus_mode_transient_surface(&self) -> bool {
-        let imp = self.imp();
-        if imp.palette_revealer.reveals_child() {
-            self.close_command_palette();
-            return true;
-        }
-        if let Some(editor) = self.active_editor()
-            && editor.is_search_visible()
-        {
-            editor.hide_search();
-            return true;
-        }
-        if imp.search_panel_revealer.reveals_child() {
-            self.close_search_panel();
-            return true;
-        }
-        if imp.primary_menu_button.is_active() {
-            imp.primary_menu_button.set_active(false);
-            return true;
-        }
-        if imp.notes_menu_button.is_active() {
-            imp.notes_menu_button.set_active(false);
-            return true;
-        }
-        false
     }
 
     /// Keep active Focus Mode presentation synchronized with preference changes.
@@ -332,8 +291,12 @@ impl LushtextWindow {
         self.set_focus_mode_action_state(self.is_focus_mode_active());
     }
 
-    /// Set or request the stateful Focus Mode action without duplicating transitions.
-    fn set_focus_mode_action_state(&self, active: bool) {
+    /// Request or mirror Focus Mode through the stateful window action.
+    ///
+    /// Shared transient Escape handling uses this so mode exit follows the same
+    /// action path as menus and shortcuts, including fullscreen, chrome, and
+    /// editor-presentation side effects.
+    pub(super) fn set_focus_mode_action_state(&self, active: bool) {
         let Some(action) = self.lookup_action("toggle-focus-mode") else {
             return;
         };

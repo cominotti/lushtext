@@ -113,6 +113,14 @@ Acceptance for these states:
 
 - When an `AdwSidebar` selection drives the content page of an `AdwNavigationSplitView`, user-selected rows should call `set_show_content(true)` regardless of the split view's current `is_collapsed()` value. `show-content` only affects the visible page while collapsed, but setting it before the adaptive layout settles preserves the user's navigation intent during resize transitions and widget-test collapse simulations. Back buttons can still call `set_show_content(false)` to return to the list page.
 
+## Transient Shell Surfaces
+
+- Window-level overlays and secondary shell surfaces must have a clear dismissal contract. Escape closes one topmost visible dismissible surface, then stops; it must not cascade through every open surface in one press.
+- Child-owned popups, dropdowns, dialogs, and focused entries get first chance to handle Escape. The window shell should handle Escape only after child propagation reaches it.
+- Command-palette click-away must close the palette from outside the palette geometry even if keyboard focus has moved elsewhere. Inside clicks on the search entry, mode selector, result rows, scrollbars, or child popup roots must keep the palette open and allow the child interaction to continue.
+- Focus restoration is part of the close contract. Close command-palette overlays through `close_command_palette()` rather than hiding the revealer directly.
+- Test no-context, representative, dense, and constrained states for overlay dismissal, especially when the surface has result lists or can appear above another transient surface such as the search panel or Focus Mode affordance.
+
 ## File Tree
 
 - Use `GtkListView` + `GtkTreeListModel` + `GtkTreeExpander` (modern GTK4 pattern).

@@ -9,6 +9,8 @@ source "$REPO_ROOT/scripts/smoke-common.sh"
 
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/portal-sandbox}"
 APP_ID="${LUSHTEXT_FLATPAK_APP_ID:-dev.cominotti.lushtext}"
+FLATPAK_MANIFEST="$REPO_ROOT/build-aux/dev.cominotti.lushtext.Flatpak.json"
+REQUIRED_FLATPAK_PERMISSION="--filesystem=host"
 FLATPAK_HOST_DIR=""
 TEMP_RUNTIME_DIRS=()
 
@@ -69,6 +71,31 @@ collect_runtime_denials() {
             >"$output" || true
     else
         echo "SKIP: journalctl is not installed." >"$output"
+    fi
+}
+
+flatpak_permissions_include_host() {
+    local path="$1"
+    grep -Eq '(^|[=;[:space:]])host([;[:space:]]|$)|--filesystem=host' "$path"
+}
+
+write_permission_posture_artifact() {
+    local output="$ARTIFACT_DIR/permission-posture.txt"
+
+    {
+        echo "posture=full-filesystem"
+        echo "required_permission=$REQUIRED_FLATPAK_PERMISSION"
+        echo "source_manifest=$FLATPAK_MANIFEST"
+        echo "portal_diagnostics=diagnostic-only"
+        echo "portals_only_migration=false"
+    } >"$output"
+
+    if "$REPO_ROOT/scripts/check-flatpak-permissions.py" --manifest "$FLATPAK_MANIFEST" \
+        >>"$output" 2>&1; then
+        echo "source_manifest_permission=present" >>"$output"
+    else
+        cat "$output" >&2
+        smoke_fail "source Flatpak manifest lost ${REQUIRED_FLATPAK_PERMISSION}. Artifacts: $ARTIFACT_DIR"
     fi
 }
 
@@ -244,6 +271,8 @@ run_flatpak_recovery_case() {
     return 0
 }
 
+write_permission_posture_artifact
+
 chooser_status="skipped"
 if run_chooser_widget_smoke; then
     chooser_status="passed"
@@ -275,10 +304,23 @@ collect_runtime_denials "$ARTIFACT_DIR/recent-runtime-denials-before.txt"
 
 flatpak_status="skipped"
 flatpak_recovery_status="skipped"
+installed_flatpak_permission_status="not-installed"
 if command -v flatpak >/dev/null 2>&1; then
     if flatpak info "$APP_ID" >"$ARTIFACT_DIR/flatpak-info.txt" 2>&1; then
         flatpak info --show-permissions "$APP_ID" >"$ARTIFACT_DIR/flatpak-permissions.txt" 2>&1 || true
         flatpak info --show-runtime "$APP_ID" >"$ARTIFACT_DIR/flatpak-runtime.txt" 2>&1 || true
+        if flatpak_permissions_include_host "$ARTIFACT_DIR/flatpak-permissions.txt"; then
+            installed_flatpak_permission_status="present"
+            echo "installed_flatpak_permission=present" >>"$ARTIFACT_DIR/permission-posture.txt"
+        else
+            installed_flatpak_permission_status="missing"
+            {
+                echo "installed_flatpak_permission=missing"
+                echo "expected=$REQUIRED_FLATPAK_PERMISSION"
+                echo "permissions_artifact=$ARTIFACT_DIR/flatpak-permissions.txt"
+            } >>"$ARTIFACT_DIR/permission-posture.txt"
+            smoke_fail "installed Flatpak '$APP_ID' lacks ${REQUIRED_FLATPAK_PERMISSION}. Artifacts: $ARTIFACT_DIR"
+        fi
         FLATPAK_HOST_DIR="$(mktemp -d "${HOME}/.lushtext-flatpak-smoke.XXXXXX")"
         mkdir -p "$FLATPAK_HOST_DIR/data"
         echo "$FLATPAK_HOST_DIR" >"$ARTIFACT_DIR/flatpak-host-fixture-dir.txt"
@@ -335,8 +377,12 @@ collect_runtime_denials "$ARTIFACT_DIR/recent-runtime-denials-after.txt"
     echo "chooser=$chooser_status"
     echo "flatpak=$flatpak_status"
     echo "flatpak_recovery=$flatpak_recovery_status"
+    echo "flatpak_permission=$installed_flatpak_permission_status"
     echo "snap=$snap_status"
     echo "portal=$portal_status"
+    echo "permission_posture=full-filesystem"
+    echo "portal_diagnostics=diagnostic-only"
+    echo "portals_only_migration=false"
     echo "artifacts=$ARTIFACT_DIR"
 } >"$ARTIFACT_DIR/summary.txt"
 

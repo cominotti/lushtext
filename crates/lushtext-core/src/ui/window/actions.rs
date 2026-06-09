@@ -3,10 +3,10 @@
 //! Window action and shortcut wiring.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::gio;
 use gtk4::prelude::*;
+use gtk4::{gio, glib};
 
-use crate::config::keys;
+use crate::config::{self, keys};
 use crate::ui::editor_page::BookmarkNavigationDirection;
 
 use super::{LushtextWindow, imp};
@@ -27,6 +27,9 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| {
                     window.imp().sidebar.create_new_workspace();
                 })
+                .build(),
+            gio::ActionEntry::builder("show-help-overlay")
+                .activate(|window: &Self, _, _| window.show_help_overlay())
                 .build(),
             gio::ActionEntry::builder("save")
                 .activate(|window: &Self, _, _| window.save_current())
@@ -51,6 +54,16 @@ impl LushtextWindow {
                 .build(),
             gio::ActionEntry::builder("begin-search")
                 .activate(|window: &Self, _, _| window.open_editor_search(false))
+                .build(),
+            gio::ActionEntry::builder("set-search-query")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(query) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!("set-search-query: expected string parameter");
+                        return;
+                    };
+                    window.set_editor_search_query(&query);
+                })
                 .build(),
             gio::ActionEntry::builder("begin-replace")
                 .activate(|window: &Self, _, _| window.open_editor_search(true))
@@ -81,11 +94,84 @@ impl LushtextWindow {
                     }
                 })
                 .build(),
+            gio::ActionEntry::builder("select-tab")
+                .parameter_type(Some(glib::VariantTy::UINT32))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(index) = parameter.and_then(glib::Variant::get::<u32>) else {
+                        tracing::error!("select-tab: expected uint32 parameter");
+                        return;
+                    };
+                    window.select_tab_by_index(index);
+                })
+                .build(),
             gio::ActionEntry::builder("toggle-command-palette")
                 .activate(|window: &Self, _, _| window.toggle_command_palette())
                 .build(),
+            gio::ActionEntry::builder("set-command-palette-query")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(query) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!("set-command-palette-query: expected string parameter");
+                        return;
+                    };
+                    window.set_command_palette_query(&query);
+                })
+                .build(),
+            gio::ActionEntry::builder("set-command-palette-mode")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(mode) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!("set-command-palette-mode: expected string parameter");
+                        return;
+                    };
+                    window.set_command_palette_mode(&mode);
+                })
+                .build(),
             gio::ActionEntry::builder("toggle-search-panel")
                 .activate(|window: &Self, _, _| window.toggle_search_panel())
+                .build(),
+            // Target-state actions give automation and smoke tests idempotent
+            // commands while routing through the same visible workflows as
+            // menus, shortcuts, and toggle buttons.
+            gio::ActionEntry::builder("set-sidebar-visible")
+                .parameter_type(Some(glib::VariantTy::BOOLEAN))
+                .activate(|window: &Self, _, parameter| {
+                    if let Some(visible) =
+                        boolean_action_parameter("set-sidebar-visible", parameter)
+                    {
+                        window.change_boolean_action_state("toggle-sidebar", visible);
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("set-properties-visible")
+                .parameter_type(Some(glib::VariantTy::BOOLEAN))
+                .activate(|window: &Self, _, parameter| {
+                    if let Some(visible) =
+                        boolean_action_parameter("set-properties-visible", parameter)
+                    {
+                        window.change_boolean_action_state("toggle-properties", visible);
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("set-minimap-visible")
+                .parameter_type(Some(glib::VariantTy::BOOLEAN))
+                .activate(|window: &Self, _, parameter| {
+                    if let Some(visible) =
+                        boolean_action_parameter("set-minimap-visible", parameter)
+                    {
+                        window.change_boolean_action_state("toggle-minimap", visible);
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("set-search-panel-visible")
+                .parameter_type(Some(glib::VariantTy::BOOLEAN))
+                .activate(|window: &Self, _, parameter| {
+                    if let Some(visible) =
+                        boolean_action_parameter("set-search-panel-visible", parameter)
+                    {
+                        window.set_search_panel_visible(visible);
+                    }
+                })
                 .build(),
             gio::ActionEntry::builder("search-next-match")
                 .activate(|window: &Self, _, _| {
@@ -140,7 +226,32 @@ impl LushtextWindow {
             gio::ActionEntry::builder("notes-show-notes")
                 .activate(|window: &Self, _, _| window.show_notes_dialog())
                 .build(),
+            gio::ActionEntry::builder("set-notes-browser-query")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(query) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!("set-notes-browser-query: expected string parameter");
+                        return;
+                    };
+                    window.set_notes_browser_query(&query);
+                })
+                .build(),
+            gio::ActionEntry::builder("select-notes-browser-row")
+                .parameter_type(Some(glib::VariantTy::UINT32))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(index) = parameter.and_then(glib::Variant::get::<u32>) else {
+                        tracing::error!("select-notes-browser-row: expected uint32 parameter");
+                        return;
+                    };
+                    window.select_notes_browser_row(index);
+                })
+                .build(),
+            gio::ActionEntry::builder("open-notes-browser-selection")
+                .activate(|window: &Self, _, _| window.open_notes_browser_selection())
+                .build(),
         ]);
+        self.set_notes_browser_actions_enabled(false);
+        self.set_command_palette_actions_enabled(false);
 
         let discard_action = gio::SimpleAction::new("discard-changes", None);
         discard_action.set_enabled(false);
@@ -165,6 +276,92 @@ impl LushtextWindow {
             Self::set_document_properties_requested_visible,
         );
         self.register_boolean_setting_toggle_action("toggle-minimap", keys::SHOW_MINIMAP);
+    }
+
+    fn change_boolean_action_state(&self, action_name: &str, desired: bool) {
+        let Some(action) = self.lookup_action(action_name) else {
+            return;
+        };
+        if action
+            .state()
+            .and_then(|state| state.get::<bool>())
+            .is_some_and(|current| current == desired)
+        {
+            return;
+        }
+        action.change_state(&desired.to_variant());
+    }
+
+    fn set_search_panel_visible(&self, visible: bool) {
+        let currently_visible = self.imp().search_panel_revealer.reveals_child();
+        if visible == currently_visible {
+            return;
+        }
+        if visible {
+            self.toggle_search_panel();
+        } else {
+            self.close_search_panel();
+        }
+    }
+
+    /// Present the shipped keyboard-shortcuts window through the normal action path.
+    ///
+    /// GTK keeps `GtkShortcutsWindow` as a top-level transient window rather
+    /// than a child widget. Looking up an existing transient first makes
+    /// repeated menu, palette, or D-Bus activation focus the same surface
+    /// instead of leaking duplicate help windows.
+    fn show_help_overlay(&self) {
+        if let Some(shortcuts) = self.existing_shortcuts_window() {
+            shortcuts.present();
+            return;
+        }
+
+        let builder = gtk4::Builder::from_resource(&format!(
+            "{}/ui/shortcuts.ui",
+            config::RESOURCE_BASE_PATH
+        ));
+        let shortcuts = builder
+            .object::<gtk4::Window>("help_overlay")
+            .expect("shortcuts.ui should define GtkShortcutsWindow#help_overlay");
+        shortcuts.set_transient_for(Some(self));
+        shortcuts.set_destroy_with_parent(true);
+        if let Some(application) = self.application() {
+            shortcuts.set_application(Some(&application));
+        }
+        shortcuts.present();
+    }
+
+    fn existing_shortcuts_window(&self) -> Option<gtk4::Window> {
+        let this_window: gtk4::Window = self.clone().upcast();
+        self.application()?
+            .windows()
+            .into_iter()
+            .filter(|window| window.type_().name() == "GtkShortcutsWindow")
+            .find(|shortcuts| {
+                shortcuts
+                    .transient_for()
+                    .is_some_and(|parent| parent == this_window)
+            })
+    }
+
+    /// Select an existing tab by its visible zero-based index for automation
+    /// and smoke helpers that should not depend on tab-strip coordinates.
+    fn select_tab_by_index(&self, index: u32) {
+        let Ok(index) = i32::try_from(index) else {
+            tracing::warn!("select-tab: index is too large for GTK tab positions");
+            return;
+        };
+        let tab_view = &self.imp().tab_view;
+        if index >= tab_view.n_pages() {
+            tracing::warn!("select-tab: index {index} is outside the open tab range");
+            return;
+        }
+
+        let page = tab_view.nth_page(index);
+        tab_view.set_selected_page(&page);
+        self.focus_selected_editor_after_action();
+        self.refresh_status_bar();
+        self.save_session_debounced();
     }
 
     fn register_secondary_surface_toggle_action(
@@ -437,4 +634,33 @@ impl LushtextWindow {
             }
         }
     }
+
+    /// Open or update the active editor search bar through the visible workflow.
+    ///
+    /// Automation uses this instead of mutating `SearchSettings` directly so
+    /// focus, minimap markers, match counts, and close behavior stay identical
+    /// to typing in the search entry after pressing Ctrl+F.
+    fn set_editor_search_query(&self, query: &str) {
+        if self.imp().search_panel_revealer.reveals_child() {
+            let query = query.to_owned();
+            self.close_search_panel();
+            self.after_search_panel_transition(move |window| {
+                if let Some(editor) = window.active_editor() {
+                    editor.show_search();
+                    editor.search_bar().search_entry().set_text(&query);
+                }
+            });
+        } else if let Some(editor) = self.active_editor() {
+            editor.show_search();
+            editor.search_bar().search_entry().set_text(query);
+        }
+    }
+}
+
+fn boolean_action_parameter(action_name: &str, parameter: Option<&glib::Variant>) -> Option<bool> {
+    let value = parameter.and_then(glib::Variant::get::<bool>);
+    if value.is_none() {
+        tracing::error!("{action_name}: expected bool parameter");
+    }
+    value
 }

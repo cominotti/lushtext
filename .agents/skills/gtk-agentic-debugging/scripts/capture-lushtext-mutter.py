@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -16,6 +17,11 @@ SCRIPT_PATH = Path(__file__).resolve()
 REPO_ROOT = SCRIPT_PATH.parents[4]
 SYSTEM_PYTHON = Path("/usr/bin/python3")
 ATSPI_REGISTRYD = Path("/usr/libexec/at-spi2-registryd")
+APP_ID = "dev.cominotti.lushtext"
+APP_OBJECT_PATH = "/dev/cominotti/lushtext"
+WINDOW_OBJECT_PATH = f"{APP_OBJECT_PATH}/window/1"
+AUTOMATION_OBJECT_PATH = f"{APP_OBJECT_PATH}/Automation"
+AUTOMATION_INTERFACE = "dev.cominotti.lushtext.Automation1"
 
 
 def usage_binary() -> Path:
@@ -26,6 +32,13 @@ def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or a positive integer")
     return parsed
 
 
@@ -40,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--file", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--search")
+    parser.add_argument(
+        "--expected-search-matches",
+        type=non_negative_int,
+        help="When --search is set, wait until Automation1 reports this editor match count.",
+    )
     parser.add_argument("--enable-minimap", action="store_true")
     parser.add_argument(
         "--enable-atspi",
@@ -51,6 +69,31 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Window action to activate before capture; may be repeated.",
+    )
+    parser.add_argument(
+        "--window-string-action",
+        action="append",
+        default=[],
+        metavar="ACTION=TEXT",
+        help="Window action with one string parameter to activate before capture; may be repeated.",
+    )
+    parser.add_argument(
+        "--wait-predicate",
+        action="append",
+        default=[],
+        help="Automation1 readiness predicate to wait for before the final snapshot; may be repeated.",
+    )
+    parser.add_argument(
+        "--wait-window-action",
+        action="append",
+        default=[],
+        help="Window action name that must become enabled before capture; may be repeated.",
+    )
+    parser.add_argument(
+        "--wait-atspi-text",
+        action="append",
+        default=[],
+        help="Text that must appear in a bounded AT-SPI tree before capture; may be repeated.",
     )
     parser.add_argument(
         "--color-scheme",
@@ -100,6 +143,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise RuntimeError(f"LushText binary is not executable: {args.binary}")
     if not SYSTEM_PYTHON.is_file():
         raise RuntimeError("Missing /usr/bin/python3. Run make dev-tools inside the Toolbx/container.")
+    if args.expected_search_matches is not None and args.search is None:
+        raise RuntimeError("--expected-search-matches requires --search.")
 
 
 def cleanup_runtime_root(runtime_root: Path, artifact_dir: Path) -> str:
@@ -144,6 +189,8 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
     ]
     if args.search is not None:
         cli.extend(["--search", args.search])
+    if args.expected_search_matches is not None:
+        cli.extend(["--expected-search-matches", str(args.expected_search_matches)])
     if args.enable_minimap:
         cli.append("--enable-minimap")
     if args.enable_atspi:
@@ -154,6 +201,14 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
         cli.extend(["--color-scheme", args.color_scheme])
     for action in args.window_action:
         cli.extend(["--window-action", action])
+    for action in args.window_string_action:
+        cli.extend(["--window-string-action", action])
+    for predicate in args.wait_predicate:
+        cli.extend(["--wait-predicate", predicate])
+    for action in args.wait_window_action:
+        cli.extend(["--wait-window-action", action])
+    for text in args.wait_atspi_text:
+        cli.extend(["--wait-atspi-text", text])
     if args.capture_artifact_dir is not None:
         cli.extend(["--capture-artifact-dir", str(args.capture_artifact_dir)])
     if args.atspi_tree_output is not None:
@@ -177,7 +232,7 @@ def outer_run(args: argparse.Namespace) -> int:
     ):
         require_command(command)
 
-    if args.search is not None or args.enable_atspi or args.atspi_tree_output is not None:
+    if args.enable_atspi or args.atspi_tree_output is not None:
         if not ATSPI_REGISTRYD.is_file():
             raise RuntimeError("Missing at-spi2-registryd. Run make dev-tools inside the Toolbx/container.")
         subprocess.run(
@@ -407,7 +462,7 @@ def internal_run(args: argparse.Namespace) -> int:
         wireplumber = start_logged(["wireplumber"], artifact_dir / "wireplumber.log")
         processes.append(wireplumber)
 
-        if args.search is not None or args.enable_atspi or args.atspi_tree_output is not None:
+        if args.enable_atspi or args.atspi_tree_output is not None:
             atspi_address, registry = setup_atspi(artifact_dir)
             processes.append(registry)
             os.environ["AT_SPI_BUS_ADDRESS"] = atspi_address
@@ -478,8 +533,8 @@ def wait_for_window_actions(bus) -> None:
         try:
             bus_call(
                 bus,
-                "dev.cominotti.lushtext",
-                "/dev/cominotti/lushtext/window/1",
+                APP_ID,
+                WINDOW_OBJECT_PATH,
                 "org.gtk.Actions",
                 "List",
                 reply="(as)",
@@ -491,17 +546,120 @@ def wait_for_window_actions(bus) -> None:
     raise RuntimeError(f"LushText did not export window actions: {last_error}")
 
 
-def activate_window_action(bus, action_name: str) -> None:
+def wait_for_automation_object(bus) -> None:
+    deadline = time.monotonic() + 15
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            bus_call(
+                bus,
+                APP_ID,
+                AUTOMATION_OBJECT_PATH,
+                "org.freedesktop.DBus.Introspectable",
+                "Introspect",
+                reply="(s)",
+            )
+            return
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.1)
+    raise RuntimeError(f"LushText did not export Automation1: {last_error}")
+
+
+def automation_call(bus, method: str, params=None, reply: str = "(s)"):
+    return bus_call(
+        bus,
+        APP_ID,
+        AUTOMATION_OBJECT_PATH,
+        AUTOMATION_INTERFACE,
+        method,
+        params,
+        reply,
+    )
+
+
+def wait_for_ready(bus, artifact_dir: Path, predicate: str, timeout_msec: int) -> None:
     from gi.repository import GLib
 
+    ok, status, detail = automation_call(
+        bus,
+        "WaitForReady",
+        GLib.Variant("(su)", (predicate, timeout_msec)),
+        "(bss)",
+    ).unpack()
+    with (artifact_dir / "automation-waits.txt").open("a", encoding="utf-8") as waits:
+        waits.write(f"predicate={predicate} ok={ok} status={status} detail={detail}\n")
+    if not ok:
+        raise RuntimeError(f"Automation1 WaitForReady({predicate}) failed: {status}: {detail}")
+
+
+def snapshot_json(bus) -> dict:
+    return json.loads(automation_call(bus, "GetSnapshot").unpack()[0])
+
+
+def wait_for_snapshot_predicate(bus, description: str, predicate, timeout_msec: int) -> dict:
+    deadline = time.monotonic() + (timeout_msec / 1000)
+    last_snapshot: dict | None = None
+    while time.monotonic() < deadline:
+        last_snapshot = snapshot_json(bus)
+        if predicate(last_snapshot):
+            return last_snapshot
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"Timed out waiting for Automation1 snapshot predicate {description}: "
+        f"{json.dumps(last_snapshot, sort_keys=True)[:1000]}"
+    )
+
+
+def write_automation_snapshot(bus, artifact_dir: Path) -> dict:
+    snapshot = snapshot_json(bus)
+    (artifact_dir / "automation-snapshot.json").write_text(
+        json.dumps(snapshot, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return snapshot
+
+
+def activate_window_action(bus, action_name: str, string_parameter: str | None = None) -> None:
+    from gi.repository import GLib
+
+    parameters = []
+    if string_parameter is not None:
+        parameters.append(GLib.Variant("s", string_parameter))
     bus_call(
         bus,
-        "dev.cominotti.lushtext",
-        "/dev/cominotti/lushtext/window/1",
+        APP_ID,
+        WINDOW_OBJECT_PATH,
         "org.gtk.Actions",
         "Activate",
-        GLib.Variant("(sava{sv})", (action_name, [], {})),
+        GLib.Variant("(sava{sv})", (action_name, parameters, {})),
     )
+
+
+def window_action_enabled(bus, action_name: str) -> bool:
+    from gi.repository import GLib
+
+    description = bus_call(
+        bus,
+        APP_ID,
+        WINDOW_OBJECT_PATH,
+        "org.gtk.Actions",
+        "Describe",
+        GLib.Variant("(s)", (action_name,)),
+    ).unpack()[0]
+    enabled, _parameter_type, _state_values = description
+    return bool(enabled)
+
+
+def wait_for_window_action_enabled(bus, artifact_dir: Path, action_name: str) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if window_action_enabled(bus, action_name):
+            with (artifact_dir / "automation-waits.txt").open("a", encoding="utf-8") as waits:
+                waits.write(f"window_action={action_name} enabled=True\n")
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"Timed out waiting for window action {action_name!r} to become enabled.")
 
 
 def set_search_text(args: argparse.Namespace, artifact_dir: Path, env: dict[str, str]) -> None:
@@ -568,6 +726,46 @@ def dump_atspi_tree(args: argparse.Namespace, artifact_dir: Path, env: dict[str,
         print(f"AT-SPI dump-tree stderr: {result.stderr.strip()}")
     if result.returncode != 0:
         raise RuntimeError("AT-SPI tree dump failed.")
+
+
+def wait_for_atspi_text(artifact_dir: Path, env: dict[str, str], expected_text: str) -> None:
+    output = artifact_dir / "wait-atspi-tree.txt"
+    focus_output = artifact_dir / "wait-atspi-focus.txt"
+    stdout_path = artifact_dir / "wait-atspi-tree.stdout"
+    stderr_path = artifact_dir / "wait-atspi-tree.stderr"
+    deadline = time.monotonic() + 10
+    last_text = ""
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            [
+                str(SYSTEM_PYTHON),
+                str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-dump-tree.py"),
+                "--application-regex",
+                "^lushtext$",
+                "--output",
+                str(output),
+                "--focus-output",
+                str(focus_output),
+                "--timeout",
+                "2",
+            ],
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=5,
+        )
+        stdout_path.write_text(result.stdout, encoding="utf-8")
+        stderr_path.write_text(result.stderr, encoding="utf-8")
+        if output.exists():
+            last_text = output.read_text(encoding="utf-8", errors="replace")
+            if expected_text in last_text:
+                with (artifact_dir / "automation-waits.txt").open("a", encoding="utf-8") as waits:
+                    waits.write(f"atspi_text={expected_text!r} present=True\n")
+                return
+        time.sleep(0.2)
+    raise RuntimeError(
+        f"Timed out waiting for AT-SPI text {expected_text!r}: {last_text[:1000]}"
+    )
 
 
 def capture_monitor(bus, output: Path) -> None:
@@ -693,17 +891,42 @@ def mutter_child(args: argparse.Namespace) -> int:
     try:
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         wait_for_window_actions(bus)
+        wait_for_automation_object(bus)
+        wait_for_ready(bus, artifact_dir, "file-open-complete", 5000)
         if args.search is not None:
-            activate_window_action(bus, "begin-search")
-            time.sleep(0.8)
-            set_search_text(args, artifact_dir, app_env)
-            time.sleep(0.5)
+            activate_window_action(bus, "set-search-query", args.search)
+            print(f"Activated window action: set-search-query({args.search!r})", flush=True)
+            wait_for_ready(bus, artifact_dir, "search-complete", 5000)
+            if args.expected_search_matches is not None:
+                wait_for_snapshot_predicate(
+                    bus,
+                    f"editor search query {args.search!r} with {args.expected_search_matches} matches",
+                    lambda snapshot: snapshot["window"] is not None
+                    and snapshot["window"]["search"]["editor_search_visible"]
+                    and snapshot["window"]["search"]["editor_query"] == args.search
+                    and snapshot["window"]["search"]["editor_match_count"]
+                    == args.expected_search_matches,
+                    5000,
+                )
         for action_name in args.window_action:
             activate_window_action(bus, action_name)
             print(f"Activated window action: {action_name}", flush=True)
-            time.sleep(0.8)
-        if args.search is None and not args.window_action:
-            time.sleep(0.8)
+            wait_for_ready(bus, artifact_dir, "idle", 5000)
+        for action_name in args.wait_window_action:
+            wait_for_window_action_enabled(bus, artifact_dir, action_name)
+        for action_spec in args.window_string_action:
+            action_name, separator, value = action_spec.partition("=")
+            if not separator or not action_name:
+                raise RuntimeError("--window-string-action requires ACTION=TEXT.")
+            activate_window_action(bus, action_name, value)
+            print(f"Activated window action: {action_name}({value!r})", flush=True)
+            wait_for_ready(bus, artifact_dir, "idle", 5000)
+        for predicate in args.wait_predicate:
+            wait_for_ready(bus, artifact_dir, predicate, 5000)
+        wait_for_ready(bus, artifact_dir, "idle", 5000)
+        for expected_text in args.wait_atspi_text:
+            wait_for_atspi_text(artifact_dir, app_env, expected_text)
+        write_automation_snapshot(bus, artifact_dir)
         dump_atspi_tree(args, artifact_dir, app_env)
         capture_monitor(bus, args.output)
         return 0

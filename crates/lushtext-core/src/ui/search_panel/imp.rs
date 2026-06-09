@@ -338,6 +338,7 @@ impl ObjectImpl for LushtextSearchPanel {
         self.setup_options();
         self.setup_history();
         self.setup_save_button();
+        self.apply_accessibility_metadata();
         self.obj().load_persisted_undo_backup();
         self.history.constructed_complete.set(true);
     }
@@ -521,6 +522,47 @@ impl LushtextSearchPanel {
                 },
             );
         });
+    }
+
+    /// Give the workspace-search controls explicit names that screen readers
+    /// and AT-SPI smoke helpers can target without relying on widget order.
+    fn apply_accessibility_metadata(&self) {
+        self.search_entry.update_property(&[
+            gtk4::accessible::Property::Label("Workspace search query"),
+            gtk4::accessible::Property::Description("Search across workspace files"),
+        ]);
+        self.results_list
+            .set_accessible_role(gtk4::AccessibleRole::List);
+        self.results_list.update_property(&[
+            gtk4::accessible::Property::Label("Workspace search results"),
+            gtk4::accessible::Property::Description("Matching files and lines"),
+        ]);
+        self.case_toggle
+            .update_property(&[gtk4::accessible::Property::Label("Match case")]);
+        self.regex_toggle
+            .update_property(&[gtk4::accessible::Property::Label("Use regular expression")]);
+        self.word_toggle
+            .update_property(&[gtk4::accessible::Property::Label("Match whole words")]);
+        self.more_toggle
+            .update_property(&[gtk4::accessible::Property::Label("Search options")]);
+        self.gitignore_toggle
+            .update_property(&[gtk4::accessible::Property::Label("Respect gitignore")]);
+        self.glob_entry.update_property(&[
+            gtk4::accessible::Property::Label("File glob filter"),
+            gtk4::accessible::Property::Description("Limit workspace search to matching paths"),
+        ]);
+        self.replace_entry.update_property(&[
+            gtk4::accessible::Property::Label("Workspace replacement text"),
+            gtk4::accessible::Property::Description("Replacement text for workspace matches"),
+        ]);
+        self.replace_all_button
+            .update_property(&[gtk4::accessible::Property::Label("Replace all matches")]);
+        self.undo_button
+            .update_property(&[gtk4::accessible::Property::Label("Undo replacements")]);
+        self.save_button
+            .update_property(&[gtk4::accessible::Property::Label("Save search")]);
+        self.close_button
+            .update_property(&[gtk4::accessible::Property::Label("Close workspace search")]);
     }
 
     /// Set up the search entry with debounced search triggering.

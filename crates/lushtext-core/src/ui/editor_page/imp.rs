@@ -666,7 +666,7 @@ impl ObjectImpl for LushtextEditorPage {
             let editor_weak = self.obj().downgrade();
             let id = settings.connect_changed(Some(keys::SHOW_MINIMAP), move |_, _| {
                 if let Some(editor) = editor_weak.upgrade() {
-                    editor.refresh_minimap();
+                    editor.schedule_minimap_refresh();
                 }
             });
             self.preference_bindings
@@ -679,7 +679,7 @@ impl ObjectImpl for LushtextEditorPage {
                 Some(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE),
                 move |_, _| {
                     if let Some(editor) = editor_weak.upgrade() {
-                        editor.refresh_minimap();
+                        editor.schedule_minimap_refresh();
                     }
                 },
             );

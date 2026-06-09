@@ -9,6 +9,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Maximum UTF-8 bytes retained for one matching search line.
+///
+/// Workspace search can keep up to 10,000 matches in memory. Four KiB per
+/// match keeps worst-case retained line text in the tens of MiB rather than
+/// allowing minified or generated files to retain multi-GiB result sets.
+pub const MAX_SEARCH_MATCH_LINE_BYTES: usize = 4 * 1024;
+/// ASCII marker added when a search-result line is shortened.
+const SEARCH_MATCH_TRUNCATION_MARKER: &str = " [truncated]";
+
 /// A single match within a file.
 #[derive(Debug, Clone)]
 pub struct SearchMatch {
@@ -16,10 +25,93 @@ pub struct SearchMatch {
     pub path: PathBuf,
     /// 1-based line number of the match.
     pub line_number: u64,
-    /// Full text content of the matching line (no trailing newline).
+    /// Bounded text of the matching line (no trailing newline).
+    ///
+    /// For long lines this is a match-containing excerpt, not the full source
+    /// line. `line_truncated` tells Replace All preview to avoid using it as a
+    /// correctness snapshot.
     pub line_content: String,
-    /// Byte range within `line_content` that matched the query.
+    /// Byte range within the stored `line_content` that matched the query.
     pub match_range: Range<usize>,
+    /// Whether `line_content` was shortened from the source line.
+    pub line_truncated: bool,
+    /// Original source line byte length before bounding.
+    pub original_line_byte_len: usize,
+}
+
+impl SearchMatch {
+    /// Build one bounded search match from a full source line.
+    #[must_use]
+    pub fn new(
+        path: PathBuf,
+        line_number: u64,
+        line_content: &str,
+        match_range: Range<usize>,
+    ) -> Self {
+        let original_line_byte_len = line_content.len();
+        let (line_content, match_range, line_truncated) =
+            bounded_match_line(line_content, match_range);
+        Self {
+            path,
+            line_number,
+            line_content,
+            match_range,
+            line_truncated,
+            original_line_byte_len,
+        }
+    }
+}
+
+fn bounded_match_line(
+    line_content: &str,
+    match_range: Range<usize>,
+) -> (String, Range<usize>, bool) {
+    let raw_match_start = match_range.start.min(line_content.len());
+    let raw_match_end = match_range
+        .end
+        .max(match_range.start)
+        .min(line_content.len());
+    if line_content.len() <= MAX_SEARCH_MATCH_LINE_BYTES {
+        return (
+            line_content.to_string(),
+            line_content.floor_char_boundary(raw_match_start)
+                ..line_content.ceil_char_boundary(raw_match_end),
+            false,
+        );
+    }
+
+    let marker_budget = SEARCH_MATCH_TRUNCATION_MARKER.len() * 2;
+    let excerpt_budget = MAX_SEARCH_MATCH_LINE_BYTES.saturating_sub(marker_budget);
+    let match_start = line_content.floor_char_boundary(raw_match_start);
+    let match_end = line_content.ceil_char_boundary(raw_match_end);
+    let match_len = match_end.saturating_sub(match_start);
+    let prefix_budget = excerpt_budget.saturating_sub(match_len) / 2;
+    let raw_start = match_start.saturating_sub(prefix_budget);
+    let excerpt_start = line_content.ceil_char_boundary(raw_start);
+    let raw_end = excerpt_start
+        .saturating_add(excerpt_budget)
+        .min(line_content.len());
+    let excerpt_end = line_content.floor_char_boundary(raw_end);
+    let has_prefix = excerpt_start > 0;
+    let has_suffix = excerpt_end < line_content.len();
+
+    let mut bounded = String::with_capacity(MAX_SEARCH_MATCH_LINE_BYTES);
+    if has_prefix {
+        bounded.push_str(SEARCH_MATCH_TRUNCATION_MARKER);
+    }
+    bounded.push_str(&line_content[excerpt_start..excerpt_end]);
+    if has_suffix {
+        bounded.push_str(SEARCH_MATCH_TRUNCATION_MARKER);
+    }
+
+    let marker_offset = if has_prefix {
+        SEARCH_MATCH_TRUNCATION_MARKER.len()
+    } else {
+        0
+    };
+    let adjusted_start = marker_offset + match_start.saturating_sub(excerpt_start);
+    let adjusted_end = marker_offset + match_end.min(excerpt_end).saturating_sub(excerpt_start);
+    (bounded, adjusted_start..adjusted_end, true)
 }
 
 /// Options controlling search behavior.
@@ -205,7 +297,10 @@ pub fn generate_replacement_preview(
 
     matches
         .iter()
-        .map(|m| {
+        .filter_map(|m| {
+            if m.line_truncated {
+                return None;
+            }
             let original_line = m.line_content.clone();
             let start =
                 original_line.floor_char_boundary(m.match_range.start.min(original_line.len()));
@@ -237,14 +332,14 @@ pub fn generate_replacement_preview(
                 (line, replacement_template.to_string())
             };
 
-            Replacement {
+            Some(Replacement {
                 path: m.path.clone(),
                 line_number: m.line_number,
                 original_line,
                 replaced_line,
                 replacement: replacement_text,
                 match_range: m.match_range.clone(),
-            }
+            })
         })
         .collect()
 }
@@ -330,12 +425,7 @@ mod tests {
     use super::*;
 
     fn match_in_line(line: &str, range: Range<usize>) -> SearchMatch {
-        SearchMatch {
-            path: PathBuf::from("/tmp/file.rs"),
-            line_number: 7,
-            line_content: line.to_string(),
-            match_range: range,
-        }
+        SearchMatch::new(PathBuf::from("/tmp/file.rs"), 7, line, range)
     }
 
     #[test]
@@ -365,6 +455,34 @@ mod tests {
         assert_eq!(spec.display_query(5), "abcd…");
         assert_eq!(spec.display_query(6), "abcdé…");
         assert_eq!(spec.display_query(8), "abcdéfg");
+    }
+
+    #[test]
+    fn search_match_bounds_long_lines_around_match_and_skips_replace_preview() {
+        let long_line = format!(
+            "{}needle{}",
+            "a".repeat(MAX_SEARCH_MATCH_LINE_BYTES * 2),
+            "b".repeat(MAX_SEARCH_MATCH_LINE_BYTES * 2)
+        );
+        let match_start = MAX_SEARCH_MATCH_LINE_BYTES * 2;
+        let search_match = match_in_line(&long_line, match_start..match_start + "needle".len());
+
+        assert!(search_match.line_truncated);
+        assert_eq!(search_match.original_line_byte_len, long_line.len());
+        assert!(search_match.line_content.len() <= MAX_SEARCH_MATCH_LINE_BYTES);
+        assert!(search_match.line_content.contains("needle"));
+        assert_eq!(
+            &search_match.line_content[search_match.match_range.clone()],
+            "needle"
+        );
+
+        let previews = generate_replacement_preview(
+            &[search_match],
+            "needle",
+            "thread",
+            &ContentSearchOptions::default(),
+        );
+        assert!(previews.is_empty());
     }
 
     #[test]

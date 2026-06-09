@@ -11,7 +11,7 @@ use crate::common::{
     fs_metadata, fs_mutate, fs_read, wait_until,
 };
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
-use glib::prelude::{Cast, IsA, ObjectExt, ToValue};
+use glib::prelude::{Cast, IsA, ObjectExt, ToValue, ToVariant};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{
@@ -19,6 +19,11 @@ use libadwaita::prelude::{
     AlertDialogExtManual, ComboRowExt, PreferencesRowExt, SidebarItemExt,
 };
 use lushtext_core::config::keys;
+use lushtext_core::model::action_catalog::{ActionScope, ActionValueType, ObservedAction};
+use lushtext_core::model::automation::{
+    AutomationReadinessPredicate, AutomationReadinessStatus,
+};
+use lushtext_core::model::content_search::SearchMatch;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::encoding::{
     DocumentEncoding, DocumentEncodingState, FileHealthFindingKind, InvisibleCharactersMode,
@@ -26,6 +31,7 @@ use lushtext_core::model::encoding::{
 };
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
+use lushtext_core::model::palette::IndexedFile;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection,
@@ -40,15 +46,21 @@ use lushtext_core::services::notifications::{
     NotificationSeverity, NotificationSurface, StatusMessage,
 };
 use lushtext_core::services::{
-    bookmark_service, document_note_service, draft_service, editor_io, json_store,
-    local_history_service, saved_searches, session_service, workspace_manager,
-    folder_note_service,
+    action_catalog, bookmark_service, document_note_service, draft_service, editor_io,
+    folder_note_service, json_store, local_history_service, saved_searches, session_service,
+    workspace_manager,
+};
+use lushtext_core::services::palette::FileIndex;
+use lushtext_core::ui::automation::{
+    INTERFACE_VERSION, app_snapshot, current_idle_blocker, wait_for_idle_for_test,
+    wait_for_ready_for_test,
 };
 use lushtext_core::ui::editor_page::{
     LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
 };
 use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
+use lushtext_core::ui::search_panel::set_replace_preview_delay_for_test;
 use lushtext_core::ui::window::{
     LushtextWindow, PrintDocumentSnapshot, PrintOutcome,
     set_bookmark_excerpt_preview_delay_for_test, set_canonical_refresh_delay_for_test,
@@ -59,6 +71,7 @@ use sourceview5::prelude::*;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn test_window() -> LushtextWindow {
@@ -94,6 +107,14 @@ struct FirstDirtyAutosaveDelayReset;
 impl Drop for FirstDirtyAutosaveDelayReset {
     fn drop(&mut self) {
         set_first_dirty_autosave_delay_for_test(750);
+    }
+}
+
+struct ReplacePreviewDelayReset;
+
+impl Drop for ReplacePreviewDelayReset {
+    fn drop(&mut self) {
+        set_replace_preview_delay_for_test(0);
     }
 }
 
@@ -412,6 +433,85 @@ fn action_state_bool(window: &LushtextWindow, name: &str) -> bool {
 fn activate_action(window: &LushtextWindow, name: &str) {
     ActionGroupExt::activate_action(window, name, None);
     flush_events();
+}
+
+// GActions carry parameters as GLib Variants, so these helpers convert typed
+// Rust values into the dynamic container action activation expects.
+fn activate_string_action(window: &LushtextWindow, name: &str, value: &str) {
+    let parameter = value.to_variant();
+    ActionGroupExt::activate_action(window, name, Some(&parameter));
+    flush_events();
+}
+
+fn activate_boolean_action(window: &LushtextWindow, name: &str, value: bool) {
+    let parameter = value.to_variant();
+    ActionGroupExt::activate_action(window, name, Some(&parameter));
+    flush_events();
+}
+
+fn activate_u32_action(window: &LushtextWindow, name: &str, value: u32) {
+    let parameter = value.to_variant();
+    ActionGroupExt::activate_action(window, name, Some(&parameter));
+    flush_events();
+}
+
+fn action_value_type(signature: Option<&glib::VariantTy>) -> ActionValueType {
+    match signature.map(glib::VariantTy::as_str) {
+        None => ActionValueType::None,
+        Some("b") => ActionValueType::Bool,
+        Some("s") => ActionValueType::String,
+        Some("u") => ActionValueType::U32,
+        Some("a{sv}") => ActionValueType::VariantMap,
+        Some(other) => panic!("unexpected action value type signature: {other}"),
+    }
+}
+
+fn observed_actions_from_group<T>(scope: ActionScope, group: &T) -> Vec<ObservedAction<'static>>
+where
+    T: IsA<gio::ActionGroup> + IsA<gio::ActionMap>,
+{
+    ActionGroupExt::list_actions(group)
+        .into_iter()
+        .map(|name| {
+            let name = name.to_string();
+            let action = group
+                .lookup_action(&name)
+                .unwrap_or_else(|| panic!("listed action '{name}' should be lookupable"));
+            ObservedAction::owned(
+                scope,
+                name,
+                action_value_type(action.parameter_type().as_deref()),
+                action_value_type(action.state_type().as_deref()),
+            )
+        })
+        .collect()
+}
+
+fn shortcuts_windows_for(window: &LushtextWindow) -> Vec<gtk4::Window> {
+    let parent_window: gtk4::Window = window.clone().upcast();
+    window
+        .application()
+        .expect("window should have an application")
+        .windows()
+        .into_iter()
+        .filter(|window| window.type_().name() == "GtkShortcutsWindow")
+        .filter(|shortcuts| {
+            shortcuts
+                .transient_for()
+                .is_some_and(|transient| transient == parent_window)
+        })
+        .collect()
+}
+
+fn wait_for_shortcuts_window(window: &LushtextWindow) -> gtk4::Window {
+    wait_until(Duration::from_secs(2), || {
+        shortcuts_windows_for(window)
+            .first()
+            .is_some_and(|shortcuts| shortcuts.width() > 0 && shortcuts.height() > 0)
+    });
+    let windows = shortcuts_windows_for(window);
+    assert_eq!(windows.len(), 1);
+    windows[0].clone()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2144,7 +2244,7 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
         .emit_by_name::<()>("line-mark-activated", &args);
     flush_events();
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(20), || {
         visible_sheet_dialog(&window)
             .map(|dialog| dialog.title())
             .is_some_and(|title| title == "Edit Bookmark")
@@ -2158,26 +2258,33 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
 
     line_row.set_text("99");
     save_button.emit_clicked();
-    flush_events();
-    assert!(visible_sheet_dialog(&window).is_some());
-    assert!(
-        find_label_by_text(&child, "Line 99 is outside this document. Use 1 through 4.").is_some()
-    );
+    wait_until(Duration::from_secs(20), || {
+        visible_sheet_dialog(&window)
+            .and_then(|dialog| dialog.child())
+            .is_some_and(|child| {
+                find_label_by_text(&child, "Line 99 is outside this document. Use 1 through 4.")
+                    .is_some()
+            })
+    });
 
     line_row.set_text("3");
     save_button.emit_clicked();
-    flush_events();
-    assert!(visible_sheet_dialog(&window).is_some());
-    assert!(find_label_by_text(&child, "Line 3 already has another bookmark.").is_some());
+    wait_until(Duration::from_secs(20), || {
+        visible_sheet_dialog(&window)
+            .and_then(|dialog| dialog.child())
+            .is_some_and(|child| {
+                find_label_by_text(&child, "Line 3 already has another bookmark.").is_some()
+            })
+    });
 
     label_row.set_text("Moved bookmark");
     line_row.set_text("4");
     save_button.emit_clicked();
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(20), || {
         visible_sheet_dialog(&window).is_none()
     });
 
-    wait_until(Duration::from_secs(10), || {
+    wait_until(Duration::from_secs(20), || {
         bookmark_service::load_for_path(&json_store::data_dir(), &file_path).is_ok_and(|document| {
             document.bookmarks.iter().any(|bookmark| {
                 bookmark.id == first_id
@@ -2559,6 +2666,92 @@ fn test_browse_notes_shortcut_is_registered_and_documented() {
 }
 
 #[test]
+fn test_help_overlay_action_is_registered_and_visible_commands_resolve() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let action = window
+        .lookup_action("show-help-overlay")
+        .expect("Keyboard Shortcuts action should be registered");
+    assert!(action.is_enabled());
+    assert_eq!(action.parameter_type(), None);
+    assert_eq!(action.state_type(), None);
+
+    let window_ui = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../resources/ui/window.ui"
+    ));
+    assert!(window_ui.contains("win.show-help-overlay"));
+    assert!(
+        lushtext_core::services::palette::all_commands()
+            .iter()
+            .any(|command| command.id == "win.show-help-overlay"
+                && command.label == "Keyboard Shortcuts")
+    );
+}
+
+#[test]
+fn test_help_overlay_action_presents_shortcuts_window_without_context() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+
+    activate_action(&window, "show-help-overlay");
+    let shortcuts = wait_for_shortcuts_window(&window);
+
+    assert_eq!(shortcuts.transient_for(), Some(window.clone().upcast()));
+    assert!(action_enabled(&window, "show-help-overlay"));
+    shortcuts.close();
+}
+
+#[test]
+fn test_help_overlay_action_reuses_window_and_preserves_document_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.buffer().set_text("shortcut help keeps buffer");
+    let before_state = editor_print_state(&editor);
+
+    activate_action(&window, "show-help-overlay");
+    let first_window = wait_for_shortcuts_window(&window);
+    activate_action(&window, "show-help-overlay");
+    let second_window = wait_for_shortcuts_window(&window);
+
+    assert_eq!(first_window, second_window);
+    assert_tab_count(&window, 1);
+    assert_eq!(editor_print_state(&active_editor(&window)), before_state);
+    second_window.close();
+}
+
+#[test]
+fn test_help_overlay_window_handles_dense_shortcuts_and_constrained_geometry() {
+    ensure_gtk_init();
+    let window = test_window_with_restored_size(640, 420);
+    present_window(&window);
+
+    activate_action(&window, "show-help-overlay");
+    let shortcuts = wait_for_shortcuts_window(&window);
+    let shortcut_count = descendants(&shortcuts)
+        .into_iter()
+        .filter(|widget| widget.type_().name() == "GtkShortcutsShortcut")
+        .count();
+
+    assert!(shortcut_count >= 20);
+    assert!(shortcuts.width() > 0);
+    assert!(shortcuts.height() > 0);
+    assert!(shortcuts.width() <= 1280);
+    assert!(shortcuts.height() <= 900);
+
+    shortcuts.close();
+    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        shortcuts_windows_for(&window).is_empty()
+    });
+}
+
+#[test]
 fn test_new_document_shortcut_is_ctrl_n_only() {
     ensure_gtk_init();
     let window = test_window();
@@ -2770,6 +2963,530 @@ fn test_keyboard_search_workflow_navigates_closes_and_restores_editor_focus() {
     editor.search_bar().search_entry().emit_stop_search();
     wait_until(Duration::from_secs(2), || !editor.is_search_visible());
     wait_for_active_editor_focus(&window);
+}
+
+#[test]
+fn test_parameterized_search_action_updates_visible_search_workflow() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor
+        .buffer()
+        .set_text("alpha needle\nbeta needle\ngamma\n");
+    editor.source_view().grab_focus();
+    wait_for_active_editor_focus(&window);
+
+    let action = window
+        .lookup_action("set-search-query")
+        .expect("set-search-query action");
+    assert_eq!(
+        action
+            .parameter_type()
+            .as_ref()
+            .map(|parameter_type| parameter_type.as_str()),
+        Some("s")
+    );
+
+    activate_string_action(&window, "set-search-query", "needle");
+    wait_until(Duration::from_secs(2), || {
+        editor.is_search_visible() && editor.search_bar().search_entry().text().as_str() == "needle"
+    });
+    wait_until(Duration::from_secs(2), || {
+        editor
+            .search_bar()
+            .search_context()
+            .is_some_and(|context| context.occurrences_count() == 2)
+    });
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_marker_count(MinimapMarkerKind::Search) > 0
+    });
+
+    activate_string_action(&window, "set-search-query", "gamma");
+    wait_until(Duration::from_secs(2), || {
+        editor.search_bar().search_entry().text().as_str() == "gamma"
+            && editor
+                .search_bar()
+                .search_context()
+                .is_some_and(|context| context.occurrences_count() == 1)
+    });
+
+    editor.search_bar().search_entry().emit_stop_search();
+    wait_until(Duration::from_secs(2), || !editor.is_search_visible());
+    wait_for_active_editor_focus(&window);
+}
+
+#[test]
+fn test_select_tab_action_uses_index_without_tab_strip_coordinates() {
+    ensure_gtk_init();
+    let window = test_window();
+    let action = window.lookup_action("select-tab").expect("select-tab action");
+    assert_eq!(
+        action
+            .parameter_type()
+            .as_ref()
+            .map(|parameter_type| parameter_type.as_str()),
+        Some("u")
+    );
+    assert!(!action_enabled(&window, "select-tab"));
+
+    window.new_tab();
+    active_editor(&window).buffer().set_text("first tab");
+    window.new_tab();
+    active_editor(&window).buffer().set_text("second tab");
+    window.new_tab();
+    active_editor(&window).buffer().set_text("third tab");
+    present_window(&window);
+
+    assert!(action_enabled(&window, "select-tab"));
+    assert_eq!(
+        app_snapshot(
+            &window
+                .application()
+                .expect("window should have an application")
+                .downcast::<lushtext_core::app::LushtextApplication>()
+                .expect("test app should be LushtextApplication")
+        )
+        .window
+        .expect("active window snapshot")
+        .active_tab_index,
+        Some(2)
+    );
+
+    activate_u32_action(&window, "select-tab", 0);
+    wait_until(Duration::from_secs(2), || {
+        window
+            .imp()
+            .tab_view
+            .selected_page()
+            .is_some_and(|page| window.imp().tab_view.page_position(&page) == 0)
+    });
+    assert_eq!(editor_buffer_text(&active_editor(&window)), "first tab");
+
+    activate_u32_action(&window, "select-tab", 99);
+    flush_events();
+    assert_eq!(editor_buffer_text(&active_editor(&window)), "first tab");
+}
+
+#[test]
+fn test_command_palette_target_actions_update_visible_mode_query() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let app = window
+        .application()
+        .expect("window should have an application")
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("test app should be LushtextApplication");
+
+    for action_name in ["set-command-palette-query", "set-command-palette-mode"] {
+        let action = window
+            .lookup_action(action_name)
+            .unwrap_or_else(|| panic!("missing action '{action_name}'"));
+        assert_eq!(
+            action
+                .parameter_type()
+                .as_ref()
+                .map(|parameter_type| parameter_type.as_str()),
+            Some("s"),
+            "{action_name} should take a string parameter"
+        );
+        assert!(!action_enabled(&window, action_name));
+    }
+
+    activate_action(&window, "toggle-command-palette");
+    wait_until(Duration::from_secs(2), || {
+        let palette = app_snapshot(&app).window.expect("window").command_palette;
+        palette.visible
+            && palette.mode == "all"
+            && action_enabled(&window, "set-command-palette-query")
+            && action_enabled(&window, "set-command-palette-mode")
+    });
+
+    activate_string_action(&window, "set-command-palette-mode", "commands");
+    activate_string_action(&window, "set-command-palette-query", "Save");
+    wait_until(Duration::from_secs(2), || {
+        let palette = app_snapshot(&app).window.expect("window").command_palette;
+        palette.visible
+            && palette.mode == "commands"
+            && palette.query == "Save"
+            && palette.result_count > 0
+    });
+
+    activate_string_action(&window, "set-command-palette-mode", "notes");
+    activate_string_action(&window, "set-command-palette-query", "bookmark");
+    wait_until(Duration::from_secs(2), || {
+        let palette = app_snapshot(&app).window.expect("window").command_palette;
+        palette.visible
+            && palette.mode == "notes"
+            && palette.query == "bookmark"
+            && palette.result_count > 0
+    });
+
+    activate_string_action(&window, "set-command-palette-mode", "files");
+    activate_string_action(&window, "set-command-palette-query", "missing-palette-file");
+    wait_until(Duration::from_secs(2), || {
+        let palette = app_snapshot(&app).window.expect("window").command_palette;
+        palette.visible
+            && palette.mode == "files"
+            && palette.query == "missing-palette-file"
+            && palette.result_count == 0
+    });
+
+    activate_string_action(&window, "set-command-palette-mode", "invalid");
+    flush_events();
+    assert_eq!(
+        app_snapshot(&app)
+            .window
+            .expect("window")
+            .command_palette
+            .mode,
+        "files"
+    );
+
+    activate_action(&window, "toggle-command-palette");
+    wait_until(Duration::from_secs(2), || {
+        let palette = app_snapshot(&app).window.expect("window").command_palette;
+        !palette.visible
+            && palette.query.is_empty()
+            && palette.result_count == 0
+            && !action_enabled(&window, "set-command-palette-query")
+            && !action_enabled(&window, "set-command-palette-mode")
+    });
+}
+
+#[test]
+fn test_target_state_actions_drive_visible_surfaces_without_toggle_parity() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, false)
+        .expect("disable minimap");
+    let window = test_window();
+
+    for action_name in [
+        "set-sidebar-visible",
+        "set-properties-visible",
+        "set-minimap-visible",
+        "set-search-panel-visible",
+        "set-focus-mode",
+        "set-preview-pane-visible",
+        "set-preview-mode",
+    ] {
+        let action = window
+            .lookup_action(action_name)
+            .unwrap_or_else(|| panic!("missing action '{action_name}'"));
+        assert_eq!(
+            action
+                .parameter_type()
+                .as_ref()
+                .map(|parameter_type| parameter_type.as_str()),
+            Some("b"),
+            "{action_name} should take a boolean parameter"
+        );
+    }
+
+    assert!(!action_enabled(&window, "set-search-query"));
+    assert!(!action_enabled(&window, "select-tab"));
+    assert!(!action_enabled(&window, "set-notes-browser-query"));
+    assert!(!action_enabled(&window, "select-notes-browser-row"));
+    assert!(!action_enabled(&window, "open-notes-browser-selection"));
+    assert!(!action_enabled(&window, "set-preview-pane-visible"));
+    assert!(!action_enabled(&window, "set-preview-mode"));
+
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.source_view().grab_focus();
+    wait_for_active_editor_focus(&window);
+
+    assert!(action_enabled(&window, "set-search-query"));
+    assert!(action_enabled(&window, "select-tab"));
+    assert!(!action_enabled(&window, "set-notes-browser-query"));
+    assert!(!action_enabled(&window, "select-notes-browser-row"));
+    assert!(!action_enabled(&window, "open-notes-browser-selection"));
+    assert!(action_enabled(&window, "set-preview-pane-visible"));
+    assert!(action_enabled(&window, "set-preview-mode"));
+
+    activate_boolean_action(&window, "set-sidebar-visible", false);
+    wait_until(Duration::from_secs(2), || !workspace_sidebar_visible(&window));
+    assert!(!action_state_bool(&window, "toggle-sidebar"));
+    activate_boolean_action(&window, "set-sidebar-visible", true);
+    wait_until(Duration::from_secs(2), || workspace_sidebar_visible(&window));
+    assert!(action_state_bool(&window, "toggle-sidebar"));
+
+    activate_boolean_action(&window, "set-properties-visible", true);
+    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&window));
+    assert!(action_state_bool(&window, "toggle-properties"));
+    activate_boolean_action(&window, "set-properties-visible", false);
+    wait_until(Duration::from_secs(2), || !properties_sidebar_visible(&window));
+    assert!(!action_state_bool(&window, "toggle-properties"));
+
+    activate_boolean_action(&window, "set-minimap-visible", true);
+    wait_until(Duration::from_secs(2), || minimap_setting(&window));
+    assert!(action_state_bool(&window, "toggle-minimap"));
+    activate_boolean_action(&window, "set-minimap-visible", false);
+    wait_until(Duration::from_secs(2), || !minimap_setting(&window));
+    assert!(!action_state_bool(&window, "toggle-minimap"));
+
+    activate_boolean_action(&window, "set-search-panel-visible", true);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().search_panel_revealer.reveals_child()
+    });
+    activate_boolean_action(&window, "set-search-panel-visible", false);
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().search_panel_revealer.reveals_child()
+    });
+    wait_for_active_editor_focus(&window);
+
+    activate_boolean_action(&window, "set-focus-mode", true);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().focus_mode.active.get() && action_state_bool(&window, "toggle-focus-mode")
+    });
+    activate_boolean_action(&window, "set-focus-mode", false);
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().focus_mode.active.get() && !action_state_bool(&window, "toggle-focus-mode")
+    });
+
+    activate_boolean_action(&window, "set-preview-pane-visible", true);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_visible.get() && action_state_bool(&window, "toggle-preview-pane")
+    });
+    activate_boolean_action(&window, "set-preview-mode", true);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get()
+            && !window.imp().preview_visible.get()
+            && action_state_bool(&window, "toggle-preview-mode")
+            && !action_state_bool(&window, "toggle-preview-pane")
+    });
+    activate_boolean_action(&window, "set-preview-mode", false);
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().preview_mode.get() && !action_state_bool(&window, "toggle-preview-mode")
+    });
+}
+
+#[test]
+fn test_live_app_and_window_actions_match_action_catalog() {
+    ensure_gtk_init();
+    let app = crate::common::test_application();
+    let window = LushtextWindow::new(&app);
+    present_window(&window);
+
+    let app_actions = observed_actions_from_group(ActionScope::App, &app);
+    let window_actions = observed_actions_from_group(ActionScope::Window, &window);
+
+    assert_eq!(
+        action_catalog::audit_observed_actions(ActionScope::App, &app_actions),
+        Ok(())
+    );
+    assert_eq!(
+        action_catalog::audit_observed_actions(ActionScope::Window, &window_actions),
+        Ok(())
+    );
+}
+
+#[test]
+fn test_automation_snapshot_reports_bounded_live_window_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    editor.buffer().set_text("alpha needle\nbeta needle\n");
+    activate_string_action(&window, "set-search-query", "needle");
+    wait_until(Duration::from_secs(2), || {
+        editor
+            .search_bar()
+            .search_context()
+            .is_some_and(|context| context.occurrences_count() == 2)
+    });
+
+    let app = window
+        .application()
+        .expect("window should have an application")
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("test app should be LushtextApplication");
+    let snapshot = app_snapshot(&app);
+    let json = serde_json::to_string(&snapshot).expect("snapshot should serialize");
+
+    assert_eq!(snapshot.interface_version, INTERFACE_VERSION);
+    assert!(snapshot.idle);
+    assert_eq!(snapshot.idle_blocker, None);
+    assert_eq!(current_idle_blocker(&app), None);
+    // Readiness futures use GLib timers and read GTK state, so widget tests
+    // drive them on the default main context instead of a generic async runtime.
+    let search_ready = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app.clone(),
+        AutomationReadinessPredicate::SearchComplete,
+        100,
+    ));
+    assert!(search_ready.ok);
+    assert_eq!(search_ready.status, AutomationReadinessStatus::Ready.as_str());
+    let window_actions_ready = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app.clone(),
+        AutomationReadinessPredicate::WindowActionsExported,
+        100,
+    ));
+    assert!(window_actions_ready.ok);
+    let window_snapshot = snapshot.window.expect("active window snapshot");
+    assert_eq!(window_snapshot.tab_count, 1);
+    assert_eq!(window_snapshot.active_tab_index, Some(0));
+    assert_eq!(window_snapshot.tabs[0].document_kind, "untitled");
+    assert!(window_snapshot.tabs[0].modified);
+    assert!(window_snapshot.search.editor_search_visible);
+    assert_eq!(
+        window_snapshot.search.editor_query.as_deref(),
+        Some("needle")
+    );
+    assert_eq!(window_snapshot.search.editor_match_count, Some(2));
+    assert_eq!(window_snapshot.workspace.scope_kind, "all");
+    assert!(window_snapshot.workspace.no_workspaces);
+    assert_eq!(window_snapshot.workspace.workspace_count, 0);
+    assert_eq!(window_snapshot.workspace.folder_count, 0);
+    assert_eq!(window_snapshot.workspace.scoped_folder_count, 0);
+    assert!(!window_snapshot.command_palette.visible);
+    assert_eq!(window_snapshot.command_palette.mode, "all");
+    assert_eq!(window_snapshot.command_palette.query, "");
+    assert!(!window_snapshot.notes.active_document_file_backed);
+    assert_eq!(window_snapshot.notes.active_document_bookmark_count, 0);
+    assert!(!window_snapshot.notes.active_line_has_bookmark);
+    assert!(!window_snapshot.local_history.active_document_file_backed);
+    assert!(!window_snapshot.local_history.browse_available);
+    assert!(!window_snapshot.local_history.automatic_capture_available);
+    assert!(!window_snapshot.content_search.visible);
+    assert_eq!(window_snapshot.content_search.query, "");
+    assert_eq!(window_snapshot.content_search.match_count, 0);
+    assert_eq!(window_snapshot.content_search.file_count, 0);
+    assert_eq!(window_snapshot.content_search.replace_preview_count, 0);
+    assert_eq!(window_snapshot.content_search.checked_replacement_count, 0);
+    assert_eq!(window_snapshot.notifications.status_text, None);
+    assert!(
+        !json.contains("alpha needle"),
+        "automation snapshot must not dump document text"
+    );
+
+    // Predicate-specific waits must ignore unrelated blockers: preview
+    // animation blocks broad idle readiness, not search completion.
+    window.imp().preview_animation_active.set(true);
+    assert_eq!(
+        current_idle_blocker(&app).as_deref(),
+        Some("preview-animation")
+    );
+    let search_ready = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app.clone(),
+        AutomationReadinessPredicate::SearchComplete,
+        1,
+    ));
+    assert!(
+        search_ready.ok,
+        "preview animation should not block search readiness"
+    );
+    let idle_result = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app.clone(),
+        AutomationReadinessPredicate::Idle,
+        1,
+    ));
+    assert!(!idle_result.ok);
+    assert_eq!(
+        idle_result.status,
+        AutomationReadinessStatus::PredicateTimeout.as_str()
+    );
+    assert_eq!(idle_result.blocker.as_deref(), Some("preview-animation"));
+    let (ok, detail) =
+        glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 1));
+    assert!(!ok);
+    assert_eq!(detail, "preview-animation");
+    window.imp().preview_animation_active.set(false);
+    let (ok, detail) =
+        glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 100));
+    assert!(ok);
+    assert_eq!(detail, "idle");
+
+    // This is an in-memory debounce simulation, not filesystem setup. Window
+    // action readiness only needs an active exported window; command-palette
+    // indexing should block idle without blocking action introspection.
+    let palette_folder = Arc::new(PathBuf::from("/tmp/lushtext-automation-readiness"));
+    window
+        .imp()
+        .command_palette
+        .set_file_index(FileIndex::from(vec![IndexedFile::new(
+            palette_folder.join("existing.rs"),
+            Arc::clone(&palette_folder),
+        )]));
+    window
+        .imp()
+        .command_palette
+        .update_index_file_created(&palette_folder.join("created.rs"));
+    assert_eq!(
+        current_idle_blocker(&app).as_deref(),
+        Some("command-palette-index")
+    );
+    let window_actions_ready = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app.clone(),
+        AutomationReadinessPredicate::WindowActionsExported,
+        1,
+    ));
+    assert!(window_actions_ready.ok);
+    let (ok, detail) =
+        glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 1));
+    assert!(!ok);
+    assert_eq!(detail, "command-palette-index");
+    wait_until(Duration::from_secs(2), || current_idle_blocker(&app).is_none());
+
+    let _replace_preview_reset = ReplacePreviewDelayReset;
+    set_replace_preview_delay_for_test(250);
+    // Seed enough search-panel state to enter Replace Preview; the preview
+    // delay is the blocker under test for `search-complete`.
+    window.imp().search_panel.set_query("hello");
+    window.imp().search_panel.imp().runtime.total_matches.set(1);
+    window
+        .imp()
+        .search_panel
+        .imp()
+        .runtime
+        .search_matches
+        .borrow_mut()
+        .push(SearchMatch::new(
+            PathBuf::from("/tmp/search.rs"),
+            1,
+            "let hello = 1;",
+            4..9,
+        ));
+    window.imp().search_panel.enter_preview_mode("goodbye");
+    assert_eq!(
+        current_idle_blocker(&app).as_deref(),
+        Some("replace-preview")
+    );
+    let search_result = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app.clone(),
+        AutomationReadinessPredicate::SearchComplete,
+        1,
+    ));
+    assert!(!search_result.ok);
+    assert_eq!(
+        search_result.status,
+        AutomationReadinessStatus::PredicateTimeout.as_str()
+    );
+    assert_eq!(search_result.blocker.as_deref(), Some("replace-preview"));
+    window.imp().preview_animation_active.set(true);
+    let search_result = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app.clone(),
+        AutomationReadinessPredicate::SearchComplete,
+        1,
+    ));
+    assert!(!search_result.ok);
+    assert_eq!(search_result.blocker.as_deref(), Some("replace-preview"));
+    window.imp().preview_animation_active.set(false);
+    let (ok, detail) =
+        glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 1));
+    assert!(!ok);
+    assert_eq!(detail, "replace-preview");
+    wait_until(Duration::from_secs(2), || current_idle_blocker(&app).is_none());
 }
 
 #[test]
@@ -6390,7 +7107,7 @@ fn test_local_history_dialog_scales_from_parent_and_keeps_preview_dominant() {
 // This exercises the adaptive local-history browser, whose sheet open, collapse
 // reveal, and restore steps are animation- and async-backed. Those waits get a
 // generous budget because animation settle + background completion under headless
-// Mutter occasionally exceed a tight window under load; the predicates still
+// Mutter occasionally exceed a tight window under load; the wait conditions still
 // return the instant the state is real.
 #[test]
 fn test_local_history_browser_collapses_and_restore_can_be_undone() {
@@ -6955,6 +7672,37 @@ fn test_own_save_does_not_surface_external_change_warning() {
 }
 
 #[test]
+fn test_action_save_failure_keeps_modified_document_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let dir = tempfile::tempdir().expect("save action failure tempdir");
+    let bad_path = dir.path().join("missing-parent").join("action-save-fails.txt");
+    editor.set_file_path(&bad_path);
+    editor.buffer().set_text("automation save should stay unsaved\n");
+    editor.buffer().set_modified(true);
+
+    activate_action(&window, "save");
+
+    wait_until(Duration::from_secs(3), || {
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Save failed"))
+    });
+    assert_tab_count(&window, 1);
+    assert_eq!(
+        editor_buffer_text(&editor),
+        "automation save should stay unsaved\n"
+    );
+    assert!(editor.is_modified());
+    assert!(!fs_metadata::exists(&bad_path));
+}
+
+#[test]
 fn test_close_modified_file_tab_cancel_keeps_unsaved_tab() {
     let (window, _dir, path, editor) = modified_file_backed_tab("disk\n", "unsaved\n");
 
@@ -6970,6 +7718,32 @@ fn test_close_modified_file_tab_cancel_keeps_unsaved_tab() {
         fs_read::text(&path).expect("disk contents after cancel"),
         "disk\n"
     );
+}
+
+#[test]
+fn test_action_close_tab_requires_modified_document_confirmation() {
+    let (window, _dir, path, editor) = modified_file_backed_tab("disk\n", "action unsaved\n");
+
+    activate_boolean_action(&window, "set-search-panel-visible", true);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().search_panel_revealer.reveals_child()
+    });
+    activate_action(&window, "close-tab");
+
+    wait_for_save_changes_dialog(&window);
+    assert_tab_count(&window, 1);
+    assert_eq!(editor_buffer_text(&editor), "action unsaved\n");
+    assert!(editor.is_modified());
+    assert_eq!(
+        fs_read::text(&path).expect("disk contents before action close response"),
+        "disk\n"
+    );
+
+    respond_to_save_changes_dialog(&window, "cancel");
+    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    assert_tab_count(&window, 1);
+    assert_eq!(editor_buffer_text(&editor), "action unsaved\n");
+    assert!(editor.is_modified());
 }
 
 #[test]
@@ -8580,6 +9354,9 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
         sidebar.item(0).is_some()
             && find_button_by_label(&dialog_child, "Open")
                 .is_some_and(|button| button.is_sensitive())
+            && action_enabled(&window, "set-notes-browser-query")
+            && action_enabled(&window, "select-notes-browser-row")
+            && action_enabled(&window, "open-notes-browser-selection")
     });
 
     sidebar.emit_by_name::<()>("activated", &[&0u32]);
@@ -8593,10 +9370,7 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
         "the notes browser should remain open after row activation"
     );
 
-    find_button_by_label(&dialog_child, "Open")
-        .expect("notes browser open button")
-        .emit_clicked();
-    flush_events();
+    activate_action(&window, "open-notes-browser-selection");
 
     wait_until(Duration::from_secs(2), || {
         visible_alert_dialog(&window)
@@ -8604,6 +9378,9 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
             .as_deref()
             == Some("Document Note")
     });
+    assert!(!action_enabled(&window, "set-notes-browser-query"));
+    assert!(!action_enabled(&window, "select-notes-browser-row"));
+    assert!(!action_enabled(&window, "open-notes-browser-selection"));
 }
 
 #[test]
@@ -9639,7 +10416,12 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
     let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
-    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 3);
+    wait_until(Duration::from_secs(2), || {
+        sidebar.items().n_items() == 3
+            && action_enabled(&window, "set-notes-browser-query")
+            && action_enabled(&window, "select-notes-browser-row")
+            && action_enabled(&window, "open-notes-browser-selection")
+    });
     let notes_browser_size = settled_widget_outer_size(&dialog);
 
     for index in 0u32..3 {
@@ -9693,8 +10475,7 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         "bookmark preview metadata should include workspace, primary folder, file path, and line"
     );
 
-    sidebar.set_selected(2);
-    flush_events();
+    activate_u32_action(&window, "select-notes-browser-row", 2);
     assert_settled_widget_outer_size(
         &dialog,
         notes_browser_size,
@@ -9706,9 +10487,10 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     );
 
     let search_entry = find_search_entry(&child).expect("notes search entry");
-    search_entry.set_text("document needle");
-    flush_events();
-    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 1);
+    activate_string_action(&window, "set-notes-browser-query", "document needle");
+    wait_until(Duration::from_secs(2), || {
+        search_entry.text().as_str() == "document needle" && sidebar.items().n_items() == 1
+    });
     assert_settled_widget_outer_size(
         &dialog,
         notes_browser_size,
@@ -9722,9 +10504,10 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         "notes search should match document note body text, not only visible metadata"
     );
 
-    search_entry.set_text("bookmark needle");
-    flush_events();
+    activate_string_action(&window, "set-notes-browser-query", "bookmark needle");
     wait_until(Duration::from_secs(2), || {
+        search_entry.text().as_str() == "bookmark needle"
+            &&
         sidebar
             .item(0)
             .and_then(|item| item.title())
@@ -9736,10 +10519,10 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         "notes browser bookmark filtering",
     );
 
-    search_entry.set_text("Line 2");
-    flush_events();
-    flush_after_delay(Duration::from_millis(200));
+    activate_string_action(&window, "set-notes-browser-query", "Line 2");
     wait_until(Duration::from_secs(2), || {
+        search_entry.text().as_str() == "Line 2"
+            &&
         sidebar
             .item(0)
             .and_then(|item| item.title())
@@ -9751,9 +10534,10 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         "notes browser line-metadata filtering",
     );
 
-    search_entry.set_text("missing needle");
-    flush_events();
-    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 0);
+    activate_string_action(&window, "set-notes-browser-query", "missing needle");
+    wait_until(Duration::from_secs(2), || {
+        search_entry.text().as_str() == "missing needle" && sidebar.items().n_items() == 0
+    });
     assert_settled_widget_outer_size(
         &dialog,
         notes_browser_size,

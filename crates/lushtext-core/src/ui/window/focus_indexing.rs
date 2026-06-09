@@ -5,9 +5,10 @@
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::gio;
 use gtk4::prelude::*;
 
-use crate::model::palette::PaletteFileEntry;
+use crate::model::palette::{PaletteFileEntry, SearchMode};
 use crate::services::async_task;
 use crate::services::palette::FileIndex;
 use crate::ui::editor_page::LushtextEditorPage;
@@ -78,6 +79,7 @@ impl LushtextWindow {
             self.refresh_command_palette_sources();
             imp.palette_revealer.set_reveal_child(true);
             imp.command_palette.open();
+            self.set_command_palette_actions_enabled(true);
         }
     }
 
@@ -85,7 +87,41 @@ impl LushtextWindow {
         let imp = self.imp();
         imp.command_palette.close();
         imp.palette_revealer.set_reveal_child(false);
+        self.set_command_palette_actions_enabled(false);
         self.restore_saved_focus();
+    }
+
+    /// Enable actions that require the visible command-palette overlay.
+    pub(super) fn set_command_palette_actions_enabled(&self, enabled: bool) {
+        for name in ["set-command-palette-query", "set-command-palette-mode"] {
+            if let Some(action) = self.lookup_action(name)
+                && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
+            {
+                simple.set_enabled(enabled);
+            }
+        }
+    }
+
+    /// Set command-palette text through the visible search entry.
+    pub(super) fn set_command_palette_query(&self, query: &str) {
+        if !self.imp().palette_revealer.reveals_child() {
+            return;
+        }
+        self.imp().command_palette.set_query(query);
+    }
+
+    /// Set the command-palette mode using the same stable names as snapshots.
+    pub(super) fn set_command_palette_mode(&self, mode_name: &str) {
+        if !self.imp().palette_revealer.reveals_child() {
+            return;
+        }
+        let Some(mode) = SearchMode::from_stable_name(mode_name) else {
+            tracing::error!(
+                "set-command-palette-mode: expected one of all, files, notes, commands"
+            );
+            return;
+        };
+        self.imp().command_palette.set_search_mode(mode);
     }
 
     /// Move keyboard focus to the editor that is selected when an action runs.

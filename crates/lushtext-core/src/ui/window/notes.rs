@@ -8,7 +8,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -234,6 +234,71 @@ struct NotesBrowserState {
     search_generation: Cell<u32>,
     /// Generation counter used to ignore stale closed-file bookmark preview loads.
     preview_generation: Cell<u32>,
+}
+
+/// Weak handle to the currently visible unified notes browser.
+///
+/// Window actions use this to drive the same search, selection, and Open button
+/// behavior a user sees in the dialog without keeping a closed dialog alive.
+#[derive(Clone)]
+pub(super) struct ActiveNotesBrowser {
+    state: Weak<NotesBrowserState>,
+}
+
+impl ActiveNotesBrowser {
+    /// Track one newly presented notes browser dialog.
+    fn new(state: &Rc<NotesBrowserState>) -> Self {
+        Self {
+            state: Rc::downgrade(state),
+        }
+    }
+
+    /// Return whether this handle still points to the same browser state.
+    fn same_target(&self, other: &Self) -> bool {
+        self.state.ptr_eq(&other.state)
+    }
+
+    /// Return whether the dialog state still exists.
+    fn is_alive(&self) -> bool {
+        self.state.upgrade().is_some()
+    }
+
+    /// Filter the visible notes browser through its normal search entry.
+    fn set_query(&self, query: &str) -> bool {
+        let Some(state) = self.state.upgrade() else {
+            return false;
+        };
+        state.search_entry.set_text(query);
+        true
+    }
+
+    /// Select one visible row by zero-based sidebar index.
+    fn select_visible_row(&self, index: u32) -> bool {
+        let Some(state) = self.state.upgrade() else {
+            return false;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return false;
+        };
+        if index >= state.filtered_indices.borrow().len() {
+            return false;
+        }
+        let selected = u32::try_from(index).expect("usize originated from u32");
+        state.sidebar.set_selected(selected);
+        true
+    }
+
+    /// Activate the same Open workflow as the visible notes browser button.
+    fn open_selected(&self) -> bool {
+        let Some(state) = self.state.upgrade() else {
+            return false;
+        };
+        if state.selected_entry_index().is_none() {
+            return false;
+        }
+        state.open_selected();
+        true
+    }
 }
 
 impl LushtextWindow {
@@ -1892,6 +1957,10 @@ impl LushtextWindow {
             }
         });
 
+        let active_browser = ActiveNotesBrowser::new(&state);
+        *self.imp().active_notes_browser.borrow_mut() = Some(active_browser.clone());
+        self.set_notes_browser_actions_enabled(true);
+
         // The dialog owns this holder while it is visible, keeping browser
         // state alive without child-widget signal closures strongly owning the
         // whole dialog subtree. The `closed` signal drops the state and breaks
@@ -1899,13 +1968,103 @@ impl LushtextWindow {
         let state_holder = Rc::new(RefCell::new(Some(Rc::clone(&state))));
         state.dialog.connect_closed({
             let state_holder = Rc::clone(&state_holder);
+            let window_weak = self.downgrade();
             move |_| {
                 state_holder.borrow_mut().take();
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                let should_disable = {
+                    let mut slot = window.imp().active_notes_browser.borrow_mut();
+                    if slot
+                        .as_ref()
+                        .is_some_and(|current| current.same_target(&active_browser))
+                    {
+                        slot.take();
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if should_disable {
+                    window.set_notes_browser_actions_enabled(false);
+                }
             }
         });
 
         state.dialog.present(Some(self));
         focus_after_present(&state.search_entry);
+    }
+
+    /// Enable or disable actions that require a visible unified notes browser.
+    pub(super) fn set_notes_browser_actions_enabled(&self, enabled: bool) {
+        for name in [
+            "set-notes-browser-query",
+            "select-notes-browser-row",
+            "open-notes-browser-selection",
+        ] {
+            if let Some(action) = self.lookup_action(name)
+                && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
+            {
+                simple.set_enabled(enabled);
+            }
+        }
+    }
+
+    /// Set the visible notes-browser filter text through the dialog search entry.
+    pub(super) fn set_notes_browser_query(&self, query: &str) {
+        let Some(browser) = self.current_notes_browser() else {
+            self.publish_status_message(
+                "Open Browse Notes before filtering notes",
+                MessageKind::Warning,
+            );
+            return;
+        };
+        if !browser.set_query(query) {
+            self.set_notes_browser_actions_enabled(false);
+        }
+    }
+
+    /// Select one visible notes-browser row without relying on pointer coordinates.
+    pub(super) fn select_notes_browser_row(&self, index: u32) {
+        let Some(browser) = self.current_notes_browser() else {
+            self.publish_status_message(
+                "Open Browse Notes before selecting a notes row",
+                MessageKind::Warning,
+            );
+            return;
+        };
+        if !browser.select_visible_row(index) {
+            self.publish_status_message("That notes row is not visible", MessageKind::Warning);
+        }
+    }
+
+    /// Open the currently selected notes-browser row through the visible workflow.
+    pub(super) fn open_notes_browser_selection(&self) {
+        let Some(browser) = self.current_notes_browser() else {
+            self.publish_status_message(
+                "Open Browse Notes before opening a note",
+                MessageKind::Warning,
+            );
+            return;
+        };
+        if !browser.open_selected() {
+            self.publish_status_message(
+                "Select a notes row before opening it",
+                MessageKind::Warning,
+            );
+        }
+    }
+
+    /// Return the current browser handle, clearing stale state left by a closed dialog.
+    fn current_notes_browser(&self) -> Option<ActiveNotesBrowser> {
+        let browser = self.imp().active_notes_browser.borrow().clone();
+        if browser.as_ref().is_some_and(ActiveNotesBrowser::is_alive) {
+            return browser;
+        }
+        self.imp().active_notes_browser.borrow_mut().take();
+        self.set_notes_browser_actions_enabled(false);
+        None
     }
 }
 

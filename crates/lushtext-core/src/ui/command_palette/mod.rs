@@ -2,8 +2,8 @@
 
 //! Command palette widget — floating search overlay for files and commands.
 
-// Private implementation module (GObject pattern: imp.rs has data + trait
-// impls, this file has the public API).
+// Private implementation module required by gtk-rs: imp.rs owns template
+// children, state, and trait impls; this file exposes the public widget API.
 mod imp;
 pub mod item;
 
@@ -19,8 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// A pending incremental mutation to the palette's file index.
-/// Queued by sidebar file operations and flushed to the background thread
-/// after a debounce interval to avoid rebuilding the full index.
+///
+/// Sidebar file operations queue these and a short main-loop debounce coalesces
+/// bursts before applying them to the in-memory index.
 #[derive(Clone)]
 pub(super) enum FileIndexUpdate {
     Create(IndexedFile),
@@ -44,6 +45,10 @@ impl FileIndexUpdate {
 // glib::wrapper! generates the public wrapper type for this widget.
 // @extends declares the GTK class hierarchy; @implements lists interfaces.
 glib::wrapper! {
+    /// Floating command/search widget owned by the window shell.
+    ///
+    /// The widget stays on the GTK main thread; expensive indexing and fuzzy
+    /// matching live in the GTK-free palette service.
     pub struct LushtextCommandPalette(ObjectSubclass<imp::LushtextCommandPalette>)
         @extends gtk4::Box, gtk4::Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;
@@ -128,10 +133,53 @@ impl LushtextCommandPalette {
         self.imp().mode.get()
     }
 
+    /// Set the visible search mode and rebuild the current result list.
+    pub fn set_search_mode(&self, mode: SearchMode) {
+        let imp = self.imp();
+        imp.set_mode(mode);
+        let query = imp.search_entry.text();
+        imp.rebuild_results(&query);
+        imp.search_entry.grab_focus();
+    }
+
+    /// Current query text in the palette entry.
+    #[must_use]
+    pub fn query(&self) -> String {
+        self.imp().search_entry.text().to_string()
+    }
+
+    /// Set the visible query text and rebuild through the normal search pipeline.
+    pub fn set_query(&self, query: &str) {
+        let imp = self.imp();
+        if imp.search_entry.text().as_str() != query {
+            imp.search_entry.set_text(query);
+        }
+        imp.rebuild_results(query);
+        imp.search_entry.grab_focus();
+    }
+
+    /// Number of rows currently rendered by the palette results model.
+    #[must_use]
+    pub fn result_count(&self) -> u32 {
+        self.imp().results_store.n_items()
+    }
+
     /// Number of files in the current index (used as capacity hint for rebuilds).
     #[must_use]
     pub fn file_index_len(&self) -> usize {
         self.imp().file_index.borrow().len()
+    }
+
+    /// Number of open file-backed tabs supplied by the window shell.
+    #[must_use]
+    pub fn open_tab_source_count(&self) -> usize {
+        self.imp().open_tabs.borrow().len()
+    }
+
+    /// Number of queued index mutations waiting for the debounce flush.
+    #[must_use]
+    pub fn pending_index_update_count(&self) -> usize {
+        self.imp().pending_index_updates.borrow().len()
     }
 
     // --- Incremental index updates ---
@@ -209,7 +257,9 @@ impl Default for LushtextCommandPalette {
     }
 }
 
-/// Debounce interval for flushing incremental index updates (ms).
-/// 75ms coalesces rapid sidebar operations (e.g., deleting a directory
-/// with many files) into a single background index update.
+/// Debounce interval for flushing incremental index updates on the GTK main thread.
+///
+/// Seventy-five milliseconds coalesces rapid sidebar mutations while keeping
+/// the common in-place `Arc::make_mut` path cheaper than cloning the index for
+/// a worker.
 const INDEX_UPDATE_DEBOUNCE_MS: u64 = 75;

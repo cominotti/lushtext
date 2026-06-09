@@ -271,11 +271,13 @@ fn make_replace_all_fixture(
 /// Create in-memory search matches for Replace preview generation benchmarks.
 fn make_replace_preview_matches(match_count: usize) -> Vec<SearchMatch> {
     (0..match_count)
-        .map(|index| SearchMatch {
-            path: PathBuf::from(format!("/synthetic/preview/file_{}.rs", index % 250)),
-            line_number: u64::try_from(index + 1).expect("benchmark match index fits in u64"),
-            line_content: format!("let needle_{index} = needle;"),
-            match_range: 4..10,
+        .map(|index| {
+            SearchMatch::new(
+                PathBuf::from(format!("/synthetic/preview/file_{}.rs", index % 250)),
+                u64::try_from(index + 1).expect("benchmark match index fits in u64"),
+                &format!("let needle_{index} = needle;"),
+                4..10,
+            )
         })
         .collect()
 }

@@ -9,6 +9,10 @@ This subtree contains GTK4/Libadwaita driving adapters.
 - Keep blocking I/O off the GTK main thread. Use `spawn_blocking_then` for filesystem work that can stall the UI.
 - Build GTK collections and presentation models here, not in `services/`.
 - Split large widget folders by workflow before adding traits or faux-manager types.
+- Keep read-only automation D-Bus collection and readiness waits in
+  `automation.rs`. They may observe UI state on the GTK main context, but must
+  not perform blocking I/O, index work, or private widget mutation. Mutating
+  automation setup belongs on normal app/window actions.
 - UI templates are authored in `resources/ui/*.blp`; generated
   `resources/ui/*.ui` files stay committed for the GResource runtime contract.
   Edit `.blp`, run `make blueprint-generate`, then run `make check-blueprint`.

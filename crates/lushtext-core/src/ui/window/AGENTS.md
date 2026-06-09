@@ -5,7 +5,7 @@ This folder owns the top-level application shell adapter.
 ## Responsibilities
 
 - Keep `mod.rs` as the small public facade for `LushtextWindow`.
-- Keep workflow-specific logic in sibling modules such as `actions`, `documents`, `drafts`, `focus_indexing`, `focus_mode`, `notes`, `notifications`, `preview`, `print`, `search`, `session_persistence`, `tabs`, and `zoom`.
+- Keep workflow-specific logic in sibling modules such as `actions`, `documents`, `drafts`, `focus_indexing`, `focus_mode`, `notes`, `notifications`, `preview`, `print`, `search`, `session_persistence`, `tabs`, `transient_surfaces`, and `zoom`.
 - Keep `imp.rs` focused on template children, state, and setup glue rather than long workflow implementations.
 
 ## Local Contracts
@@ -14,6 +14,11 @@ This folder owns the top-level application shell adapter.
 - Keep bookmark and note workflows in `notes.rs`: window actions, dialogs, workspace-scope browse flows, and sidecar migration belong there rather than in `documents.rs` or `imp.rs`.
 - Keep status-bar refresh and properties-panel refresh behavior aligned when window-level document state changes.
 - Keep search-panel shell integration here, but keep search-panel internal list/history/replace/runtime mechanics in `ui/search_panel/`.
+- Keep window-level transient dismissal in `transient_surfaces.rs`: Escape closes one topmost dismissible shell surface before Focus Mode exit, and command-palette click-away routes through `close_command_palette()` so focus restoration stays centralized.
+- Keep automation-friendly target-state actions in `actions.rs` thin and routed
+  through the same production workflows as visible toggles. After adding or
+  changing any externally observable action, update `services::action_catalog`
+  plus `docs/automation-reference.md` and run `make check-automation-docs`.
 - When split-view geometry changes, preserve the total-window width contracts and the mirrored status-bar toggle behavior described in the root `AGENTS.md` and `.agents/rules/ui.md`.
 - Keep split-view allocation paths cheap and runtime-only. `size_allocate()` may clamp live sidebar fractions and update cached breakpoint thresholds when the actual allocated width changes, but it must not persist GSettings, rebuild/reparse `AdwBreakpoint` conditions, or rehost secondary surfaces on every animation frame.
 

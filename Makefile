@@ -18,6 +18,7 @@
 #   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
 #   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
+#   make automation-smoke - Real-process D-Bus automation smoke under headless Mutter
 #   make visual-smoke - Real-session screenshot smoke under headless Mutter
 #   make crash-recovery-smoke - Real-process crash/restart recovery smoke with artifacts
 #   make portal-sandbox-smoke - Confined runtime smoke for available Flatpak/Snap paths
@@ -32,6 +33,9 @@
 #   make blueprint-generate - Regenerate generated GtkBuilder .ui files from Blueprint .blp sources
 #   make check-blueprint - Validate Blueprint drift and generated UI template contract
 #   make lint-blueprint - Advisory grouped lint triage for Blueprint templates
+#   make check-flatpak-permissions - Ensure Flatpak keeps full filesystem access
+#   make check-end-user-smoke-workflow - Ensure scheduled smoke lanes match docs
+#   make automation-client-self-test - Validate the reusable D-Bus automation CLI helper
 #   make check-agent-docs - validate agent rules/skills guidance
 #   make lint-advisory - grouped advisory lint discovery for Rust policy reviews
 #   make pre-commit  - repo pre-commit gate (fmt + all-feature clippy + policy audits)
@@ -49,8 +53,8 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-policy lint-advisory check check-agent-docs pre-commit dev-tools install-git-hooks clean help \
+.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless automation-smoke visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -217,6 +221,12 @@ test-widget-headless:
 	@echo "Running widget tests under mutter --headless..."
 	$(CARGO_TEST_WIDGET_HEADLESS)
 
+# Real-process D-Bus smoke under isolated headless Mutter. This proves the
+# app-owned automation object, snapshots, waits, and a parameterized action.
+automation-smoke: build-debug
+	@echo "Running D-Bus automation smoke lane..."
+	./scripts/run-automation-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/automation"
+
 # Real-session screenshot smoke under isolated headless Mutter. This is an
 # artifact-producing lane for rendered-pixel and compositor behavior; it skips
 # cleanly when host desktop-capture dependencies are unavailable.
@@ -253,7 +263,7 @@ performance-smoke:
 
 # Run all host-supported end-user smoke lanes. Individual scripts own their
 # dependency checks, artifact paths, and skip messages.
-end-user-smoke: visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke
+end-user-smoke: automation-smoke visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke
 
 # Small mutation pass for checking cargo-mutants tooling and timeout behavior.
 mutants-smoke:
@@ -336,8 +346,25 @@ lint-blueprint:
 	@echo "Running advisory Blueprint lint triage..."
 	./scripts/blueprint-templates.sh lint
 
+# Guard the intentional Flatpak permission posture. Portal/sandbox automation
+# may record diagnostics, but this change must not narrow filesystem access.
+check-flatpak-permissions:
+	@echo "Checking Flatpak filesystem permission policy..."
+	./scripts/check-flatpak-permissions.py --self-test --manifest "$(FLATPAK_MANIFEST)"
+
+# Guard the scheduled/manual smoke workflow matrix. This keeps the artifact-rich
+# lanes documented in `docs/end-user-coverage.md` from drifting away from CI.
+check-end-user-smoke-workflow:
+	@echo "Checking end-user smoke workflow matrix..."
+	./scripts/check-end-user-smoke-workflow.py
+
+# Validate the reusable agent/developer client without needing a live D-Bus app.
+automation-client-self-test:
+	@echo "Checking automation CLI helper..."
+	./scripts/lushtext-automation.py self-test
+
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-blueprint
+check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow automation-client-self-test
 
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
@@ -354,6 +381,12 @@ check: pre-commit
 check-agent-docs:
 	@echo "Checking agent documentation..."
 	./scripts/check-agent-docs.sh
+
+# Validate user/developer automation docs against the exported catalog, D-Bus
+# interface, snapshot schema, and readiness blockers.
+check-automation-docs:
+	@echo "Checking automation documentation..."
+	./scripts/check-automation-docs.py --self-test
 
 # Install repo-managed Git hooks
 install-git-hooks:
@@ -536,6 +569,9 @@ help:
 	@echo "  test-prop-deep Deeper property run with PROPTEST_DEEP_CASES"
 	@echo "  test-widget  Widget tests under the private headless runner"
 	@echo "  test-widget-headless Widget tests with the CI headless setup"
+	@echo "  automation-smoke Real-process D-Bus automation smoke under headless Mutter"
+	@echo "  check-end-user-smoke-workflow Verify scheduled/manual smoke matrix lanes"
+	@echo "  automation-client-self-test Validate the reusable D-Bus automation CLI helper"
 	@echo "  visual-smoke Real-session screenshot smoke under headless Mutter"
 	@echo "  portal-sandbox-smoke Confined runtime smoke for available Flatpak/Snap paths"
 	@echo "  accessibility-smoke AT-SPI-enabled accessibility smoke"
@@ -558,6 +594,7 @@ help:
 	@echo "  check-policy Fast policy audits, including filesystem and Blueprint checks"
 	@echo "  blueprint-generate Regenerate GtkBuilder .ui files from Blueprint sources"
 	@echo "  check-blueprint Validate Blueprint drift and UI template contract"
+	@echo "  check-flatpak-permissions Verify Flatpak keeps intentional full filesystem access"
 	@echo "  lint-blueprint Advisory grouped Blueprint lint triage"
 	@echo "  lint-advisory Grouped advisory Rust lint discovery"
 	@echo "  install-git-hooks Configure this repo to use .githooks/"
