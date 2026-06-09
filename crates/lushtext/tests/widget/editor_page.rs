@@ -238,6 +238,32 @@ fn test_inline_alert_buttons_use_scoped_contrast_class() {
     );
 }
 
+#[test]
+fn test_inline_alert_uses_balanced_compact_padding() {
+    let css = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../resources/style/style.css"
+    ));
+    let alert_block = css
+        .split(".editor-inline-alert {")
+        .nth(1)
+        .and_then(|tail| tail.split('}').next())
+        .expect("inline-alert CSS block should exist");
+
+    assert!(
+        alert_block.contains("padding: 6px 12px;"),
+        "inline alert should keep balanced compact vertical padding"
+    );
+    assert!(
+        !alert_block.contains("padding: 8px 12px 4px;"),
+        "inline alert should not use asymmetric one-off alignment padding"
+    );
+    assert!(
+        alert_block.contains("border-bottom: 1px solid @borders;"),
+        "inline alert should preserve the existing bottom divider"
+    );
+}
+
 // --- Adaptive inline-alert layout (AdwWrapBox) -----------------------------
 
 fn warning_notification() -> InlineActionNotification {

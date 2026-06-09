@@ -26,7 +26,7 @@ Keep this index in sync with `.agents/rules/*.md`. When a new rule file is added
 - `git.md` — git workflow and commit conventions
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, module-splitting, and state-grouping conventions
-- `ui.md` — UI, theming, state-extreme visibility checks, adaptive dialog navigation, file-tree DnD/TreeExpander behavior, TextView child-anchor geometry, adaptive bottom-sheet sizing, and GTK paned geometry/animation conventions
+- `ui.md` — UI, theming, state-extreme visibility checks, Libadwaita template-validation caveats, adaptive dialog navigation, file-tree DnD/TreeExpander behavior, TextView child-anchor geometry, adaptive bottom-sheet sizing, and GTK paned geometry/animation conventions
 - `widget-wiring.md` — GTK widget composition, signal wiring, state-extreme coverage, menu popup lifecycle, tab projection state, live paned-validation, and allocation-frame animation rules
 
 ## Architecture

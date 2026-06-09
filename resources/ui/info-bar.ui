@@ -66,6 +66,7 @@
                   <object class="GtkBox" id="actions_box">
                     <property name="orientation">horizontal</property>
                     <property name="spacing">6</property>
+                    <property name="margin-top">1</property>
                     <property name="valign">center</property>
                     <child>
                       <object class="GtkButton" id="retry_button">

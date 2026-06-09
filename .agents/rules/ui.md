@@ -158,6 +158,7 @@ Acceptance for these states:
 - GResource XML at `resources/dev.cominotti.lushtext.gresource.xml`.
 - Compiled by `glib-build-tools` in `build.rs` for dev builds.
 - Template `class` attribute must exactly match `ObjectSubclass::NAME`.
+- `gtk4-builder-tool validate` is useful for GTK-only templates, but it does not load Libadwaita widget types such as `AdwWrapBox` by itself. When a touched template contains Libadwaita-only types, record the expected standalone limitation and validate the template through the widget harness, which initializes Libadwaita before constructing widgets.
 
 ## Status Bar
 

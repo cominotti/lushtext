@@ -115,7 +115,7 @@
 /* Editor inline alerts replace GtkInfoBar with supported GTK widgets while
    keeping Adwaita semantic warning/error colors. */
 .editor-inline-alert {
-  padding: 8px 12px;
+  padding: 6px 12px;
   border-bottom: 1px solid @borders;
 }
 
