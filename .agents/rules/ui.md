@@ -154,10 +154,26 @@ Acceptance for these states:
 
 ## UI Templates
 
-- Composite templates in `resources/ui/*.ui` (GTK XML format).
+- Composite templates are authored in `resources/ui/*.blp` (Blueprint). The
+  matching `resources/ui/*.ui` files are generated GtkBuilder XML and remain
+  committed runtime GResource inputs.
 - GResource XML at `resources/dev.cominotti.lushtext.gresource.xml`.
 - Compiled by `glib-build-tools` in `build.rs` for dev builds.
 - Template `class` attribute must exactly match `ObjectSubclass::NAME`.
+- Do not hand-edit generated `.ui` files. Edit the `.blp`, run
+  `make blueprint-generate`, then run `make check-blueprint`. For
+  geometry-sensitive edits, also run the relevant widget and visual smoke lanes.
+- Blueprint compile warnings are blocking unless they match the documented
+  `resources/ui/shortcuts.blp` GTK shortcuts deprecation policy. Blueprint lint
+  remains advisory; use `make lint-blueprint` to group diagnostics, fix safe
+  findings, and classify geometry-sensitive suggestions before changing layout.
+- For UI source-format migrations, preserve a pre-change baseline and compare it
+  to the migrated checkout through the same headless Mutter state matrix with
+  shared fixtures. Pixel diffs must be zero, or every nonzero difference must be
+  intentionally explained and accepted before the change can claim 1:1 UI/UX.
+  Use `scripts/compare-blueprint-visuals.sh --baseline-ref <ref>` for this
+  reusable proof path; its screenshots and raw logs stay under ignored `build/`
+  artifact directories.
 - `gtk4-builder-tool validate` is useful for GTK-only templates, but it does not load Libadwaita widget types such as `AdwWrapBox` by itself. When a touched template contains Libadwaita-only types, record the expected standalone limitation and validate the template through the widget harness, which initializes Libadwaita before constructing widgets.
 
 ## Status Bar

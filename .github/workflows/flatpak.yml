@@ -27,4 +27,4 @@ jobs:
         with:
           manifest-path: build-aux/dev.cominotti.lushtext.Flatpak.json
           bundle: lushtext.flatpak
-          cache-key: flatpak-builder-gnome-50-${{ hashFiles('build-aux/dev.cominotti.lushtext.Flatpak.json', 'build-aux/cargo-sources.json', 'Cargo.lock', 'meson.build', 'meson_options.txt', 'build-aux/cargo.sh', 'data/meson.build', 'resources/meson.build') }}
+          cache-key: flatpak-builder-gnome-50-${{ hashFiles('build-aux/dev.cominotti.lushtext.Flatpak.json', 'build-aux/cargo-sources.json', 'Cargo.lock', 'meson.build', 'meson_options.txt', 'build-aux/cargo.sh', 'data/meson.build', 'resources/meson.build', 'resources/dev.cominotti.lushtext.gresource.xml', 'resources/ui/*.ui', 'resources/ui/*.blp', 'resources/ui/template-contract.json', 'scripts/blueprint-templates.sh', 'scripts/check-ui-template-contract.py') }}

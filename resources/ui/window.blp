@@ -1,0 +1,371 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $LushtextWindow: Adw.ApplicationWindow {
+  default-width: 1200;
+  default-height: 800;
+  width-request: 640;
+  title: "LushText";
+
+  content: Box {
+    orientation: vertical;
+    // Header bar.
+    Adw.HeaderBar header_bar {
+      styles [
+        "header-chrome-opaque",
+      ]
+
+      [start]
+      Button new_tab_button {
+        icon-name: "tab-new-symbolic";
+        tooltip-text: _("New File");
+        action-name: "win.new-tab";
+      }
+
+      [start]
+      Button open_button {
+        icon-name: "document-open-symbolic";
+        tooltip-text: _("Open File");
+        action-name: "win.open-file";
+      }
+
+      title-widget: Adw.WindowTitle title_widget {
+        title: "LushText";
+      };
+
+      [end]
+      ToggleButton document_properties_toggle_button {
+        icon-name: "info-outline-symbolic";
+        tooltip-text: _("Document Properties");
+        action-name: "win.toggle-properties";
+
+        styles [
+          "flat",
+        ]
+      }
+
+      [end]
+      MenuButton primary_menu_button {
+        icon-name: "open-menu-symbolic";
+        tooltip-text: _("Main Menu");
+        menu-model: primary_menu;
+      }
+
+      [end]
+      MenuButton notes_menu_button {
+        label: _("Notes");
+        tooltip-text: _("Notes");
+        menu-model: notes_menu;
+        visible: false;
+
+        styles [
+          "flat",
+        ]
+      }
+    }
+
+    // Tab bar.
+    Adw.TabBar tab_bar {
+      view: tab_view;
+
+      styles [
+        "header-chrome-opaque",
+      ]
+    }
+
+    // Main content: overlay wraps sidebar/editor chrome and floats transient
+    // surfaces such as the command palette above it.
+    Overlay window_overlay {
+      vexpand: true;
+      height-request: 0;
+      overflow: hidden;
+      // Base layer: nested split views around the existing content host.
+      child: $LushtextShrinkableBin window_content_clipper {
+        vexpand: "true";
+        height-request: "0";
+
+        child: Adw.OverlaySplitView workspace_split_view {
+          vexpand: true;
+
+          sidebar: $LushtextSidebar sidebar {
+            styles [
+              "shell-chrome-opaque",
+            ]
+          };
+
+          content: Adw.MultiLayoutView properties_layout_view {
+            vexpand: true;
+
+            Adw.Layout {
+              name: "pane";
+
+              content: Adw.OverlaySplitView properties_split_view {
+                vexpand: true;
+
+                content: Adw.LayoutSlot {
+                  id: "primary";
+                };
+
+                sidebar: Adw.LayoutSlot {
+                  id: "properties";
+                };
+              };
+            }
+
+            Adw.Layout {
+              name: "sheet";
+
+              content: Adw.BottomSheet properties_bottom_sheet {
+                vexpand: true;
+
+                content: Adw.LayoutSlot {
+                  id: "primary";
+                };
+
+                sheet: Adw.LayoutSlot {
+                  id: "properties";
+                };
+              };
+            }
+
+            [primary]
+            Box content_box {
+              orientation: vertical;
+
+              Stack content_stack {
+                vexpand: true;
+                hexpand: true;
+
+                StackPage {
+                  name: "tabs";
+
+                  child: Paned preview_paned {
+                    vexpand: true;
+                    shrink-start-child: false;
+                    shrink-end-child: false;
+                    resize-end-child: false;
+                    // Left: editor tab view.
+                    start-child: Box editor_box {
+                      orientation: vertical;
+
+                      Adw.TabView tab_view {
+                        vexpand: true;
+                      }
+                    };
+
+                    // Right: Markdown preview, initially hidden.
+                    end-child: $LushtextMarkdownPreview markdown_preview {
+                      visible: "false";
+                    };
+                  };
+                }
+
+                StackPage {
+                  name: "empty";
+
+                  child: Adw.StatusPage empty_page {
+                    icon-name: "document-edit-symbolic";
+                    title: _("Open a File");
+                    description: _("Open a file from the sidebar or create a new document");
+
+                    styles [
+                      "empty-state-opaque",
+                    ]
+                  };
+                }
+              }
+
+              Revealer search_panel_revealer {
+                transition-type: slide_up;
+                transition-duration: 250;
+                reveal-child: false;
+
+                $LushtextSearchPanel search_panel {}
+              }
+            }
+
+            [properties]
+            $LushtextPropertiesPanel properties_panel {
+              styles [
+                "shell-chrome-opaque",
+              ]
+            }
+          };
+        };
+      };
+
+      // Overlay: command palette revealer.
+
+      [overlay]
+      Revealer palette_revealer {
+        halign: center;
+        valign: start;
+        reveal-child: false;
+        transition-type: slide_down;
+
+        child: $LushtextCommandPalette command_palette {};
+      }
+
+      [overlay]
+      Revealer focus_mode_revealer {
+        halign: center;
+        valign: start;
+        reveal-child: false;
+        transition-type: slide_down;
+
+        child: Box focus_mode_affordance {
+          spacing: 6;
+          margin-top: 10;
+          margin-start: 10;
+          margin-end: 10;
+          focusable: true;
+
+          styles [
+            "linked",
+          ]
+
+          Label focus_mode_title {
+            label: _("Focus Mode");
+            xalign: 0;
+            ellipsize: end;
+          }
+
+          Button leave_focus_mode_button {
+            label: _("Leave");
+            tooltip-text: _("Leave Focus Mode");
+            action-name: "win.toggle-focus-mode";
+          }
+        };
+      }
+    }
+
+    // Bottom status bar: always visible, spans full window width.
+    $LushtextStatusBar status_bar {}
+  };
+}
+
+menu primary_menu {
+  section {
+    item {
+      custom: "theme";
+    }
+  }
+
+  section {
+    item {
+      custom: "zoom";
+    }
+  }
+
+  section {
+    item {
+      label: _("_New File");
+      action: "win.new-tab";
+    }
+  }
+
+  section {
+    item {
+      label: _("_Save");
+      action: "win.save";
+    }
+
+    item {
+      label: _("Save _As…");
+      action: "win.save-as";
+    }
+
+    item {
+      label: _("Local _History…");
+      action: "win.show-local-history";
+    }
+
+    item {
+      label: _("_Discard Changes…");
+      action: "win.discard-changes";
+    }
+  }
+
+  section {
+    item {
+      label: _("_Print…");
+      action: "win.print";
+    }
+  }
+
+  section {
+    item {
+      label: _("_Find and Replace…");
+      action: "win.begin-search";
+    }
+
+    item {
+      label: _("Toggle _Minimap");
+      action: "win.toggle-minimap";
+    }
+
+    item {
+      label: _("Markdown Preview");
+      action: "win.toggle-preview-mode";
+    }
+  }
+
+  section {
+    item {
+      label: _("_Fullscreen");
+      action: "win.fullscreen";
+      hidden-when: "action-disabled";
+    }
+
+    item {
+      label: _("_Leave Fullscreen");
+      action: "win.unfullscreen";
+      hidden-when: "action-disabled";
+    }
+  }
+
+  section {
+    item {
+      label: _("_Preferences");
+      action: "app.preferences";
+    }
+
+    item {
+      label: _("_Keyboard Shortcuts");
+      action: "win.show-help-overlay";
+    }
+
+    item {
+      label: _("_About LushText");
+      action: "app.about";
+    }
+  }
+}
+
+menu notes_menu {
+  section {
+    item {
+      label: _("Browse Notes…");
+      action: "win.notes-show-notes";
+    }
+  }
+
+  section {
+    item {
+      label: _("Add Bookmark");
+      action: "win.notes-toggle-bookmark";
+    }
+
+    item {
+      label: _("Open Document Note…");
+      action: "win.notes-open-document-note";
+    }
+  }
+
+  section {
+    item {
+      label: _("Open Folder Note…");
+      action: "win.notes-open-folder-note";
+    }
+  }
+}

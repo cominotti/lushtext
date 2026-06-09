@@ -1,0 +1,56 @@
+using Gtk 4.0;
+
+template $LushtextSidebar: Box {
+  orientation: vertical;
+
+  styles [
+    "sidebar",
+  ]
+
+  Box new_workspace_box {
+    orientation: horizontal;
+    height-request: 54;
+    spacing: 6;
+    // Match the left inset of navigation-sidebar top-level rows so the selector
+    // aligns with the workspace tree chrome instead of section headers.
+    margin-start: 6;
+    margin-end: 6;
+
+    DropDown workspace_filter_dropdown {
+      hexpand: true;
+      valign: center;
+    }
+
+    Button new_workspace_button {
+      icon-name: "folder-new-symbolic";
+      tooltip-text: _("New Workspace");
+      valign: center;
+      // Keep the hover pill inside the fixed selector row bounds.
+      margin-top: 6;
+      margin-bottom: 6;
+
+      styles [
+        "flat",
+      ]
+    }
+  }
+
+  Separator {}
+
+  Revealer workspace_list_revealer {
+    reveal-child: true;
+    transition-type: crossfade;
+    transition-duration: 250;
+    // Scrollable area for all workspace sections. Natural width propagation
+    // stays disabled so long file names cannot widen the sidebar split.
+    ScrolledWindow outer_scrolled_window {
+      vexpand: true;
+      propagate-natural-width: false;
+      hscrollbar-policy: never;
+      // Workspace sections are appended programmatically.
+      Box sections_box {
+        orientation: vertical;
+      }
+    }
+  }
+}

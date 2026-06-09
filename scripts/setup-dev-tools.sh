@@ -21,6 +21,7 @@ packages=(
     mutter
     dbus-daemon
     glib2
+    blueprint-compiler
 )
 runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
 socket_path="${YDOTOOL_SOCKET:-${runtime_dir}/.ydotool_socket}"
@@ -77,6 +78,9 @@ package_for_command() {
         Xvfb)
             printf 'xorg-x11-server-Xvfb'
             ;;
+        blueprint-compiler)
+            printf 'blueprint-compiler'
+            ;;
         xdotool)
             printf 'xdotool'
             ;;
@@ -124,6 +128,7 @@ install_missing_packages() {
         pw-dump
         wireplumber
         Xvfb
+        blueprint-compiler
         xdotool
         xwd
         ydotool
@@ -166,11 +171,11 @@ install_missing_packages() {
     fi
 
     if (( ${#missing_packages[@]} == 0 )); then
-        log "GTK debug helper packages are already installed."
+        log "Development helper packages are already installed."
         return 0
     fi
 
-    log "Installing missing GTK debug helper packages: ${missing_packages[*]}"
+    log "Installing missing development helper packages: ${missing_packages[*]}"
 
     if command -v dnf >/dev/null 2>&1; then
         run_cmd sudo dnf install -y "${missing_packages[@]}"

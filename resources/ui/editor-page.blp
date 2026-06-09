@@ -1,0 +1,56 @@
+using Gtk 4.0;
+
+template $LushtextEditorPage: Box {
+  orientation: vertical;
+  vexpand: true;
+
+  $LushtextInfoBar info_bar {}
+
+  Overlay overlay {
+    vexpand: true;
+
+    child: Box editor_body {
+      orientation: horizontal;
+      hexpand: true;
+      vexpand: true;
+
+      ScrolledWindow scrolled_window {
+        vexpand: true;
+        hexpand: true;
+
+        child: $GtkSourceView source_view {
+          auto-indent: "true";
+          smart-backspace: "true";
+          monospace: "true";
+          top-margin: "6";
+          bottom-margin: "6";
+          left-margin: "12";
+          right-margin: "12";
+
+          styles [
+            "tab-content-editor-surface",
+          ]
+        };
+      }
+
+      Overlay minimap_overlay {
+        visible: false;
+        hexpand: false;
+        vexpand: true;
+      }
+    };
+  }
+
+  Revealer search_revealer {
+    reveal-child: false;
+    transition-type: slide_up;
+
+    Box {
+      orientation: vertical;
+
+      Separator {}
+
+      $LushtextSearchBar search_bar {}
+    }
+  }
+}

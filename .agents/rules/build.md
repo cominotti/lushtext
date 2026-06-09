@@ -28,6 +28,9 @@ make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # lightweight Criterion performance smoke
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
 make check-policy # fast policy audits beside rustfmt and Clippy
+make blueprint-generate # regenerate generated .ui files from Blueprint sources
+make check-blueprint # validate Blueprint drift and UI template contract
+make lint-blueprint # advisory grouped Blueprint lint triage
 make lint-advisory # grouped advisory Clippy/rustc lint discovery
 make check-agent-docs # validate agent rules/skills guidance
 make end-user-smoke # run all host-supported end-user smoke lanes
@@ -43,7 +46,8 @@ The blocking Clippy command is `cargo clippy --workspace --all-targets
 --all-features -- -D warnings`, and it must stay identical in Makefile,
 pre-commit, CI, and contributor docs unless a narrower command is explicitly
 documented as a non-blocking smoke shortcut. `make check` runs rustfmt,
-all-feature Clippy, and fast policy audits. Filesystem-sensitive changes should
+all-feature Clippy, and fast policy audits, including Blueprint template drift
+and generated UI contract validation. Filesystem-sensitive changes should
 also pass `make check-agent-docs`; that target verifies the
 `services::filesystem` guidance in rules and skills, then runs the raw
 filesystem no-leftovers audit.
@@ -63,7 +67,7 @@ Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-lin
 
 The repo-managed Git hooks live under `.githooks/`. Install them with `make install-git-hooks`, which sets `core.hooksPath` for this checkout. The pre-commit hook runs `make pre-commit`, which must stay aligned with the formatting and Clippy gates enforced in CI.
 
-Use `make dev-tools` on a fresh local checkout before deep GTK debugging. It must remain idempotent and depend on `flatpak-deps` so Flatpak runtime/SDK setup and live-debug helper setup stay available through one command. The helper script installs headless Mutter/PipeWire/WirePlumber/GStreamer screenshot tooling, portal screenshot tools, system Python AT-SPI bindings, ydotool, isolated Xvfb fallback tooling, and D-Bus/GSettings utilities when missing, then starts a user `ydotoold` socket under `$XDG_RUNTIME_DIR` only when `/dev/uinput` is present and writable. Do not pollute the host/global environment: no shell-wide exports, no pip installs, no dotfile edits, and no automatic rpm-ostree host layering. Host layering requires `LUSHTEXT_DEV_TOOLS_ALLOW_RPM_OSTREE=1`.
+Use `make dev-tools` on a fresh local checkout before deep GTK debugging or UI template editing. It must remain idempotent and depend on `flatpak-deps` so Flatpak runtime/SDK setup and live-debug helper setup stay available through one command. The helper script installs headless Mutter/PipeWire/WirePlumber/GStreamer screenshot tooling, portal screenshot tools, system Python AT-SPI bindings, ydotool, isolated Xvfb fallback tooling, D-Bus/GSettings utilities, and `blueprint-compiler` when missing, then starts a user `ydotoold` socket under `$XDG_RUNTIME_DIR` only when `/dev/uinput` is present and writable. Do not pollute the host/global environment: no shell-wide exports, no pip installs, no dotfile edits, and no automatic rpm-ostree host layering. Host layering requires `LUSHTEXT_DEV_TOOLS_ALLOW_RPM_OSTREE=1`.
 
 On GNOME Shell, `make run` asks any already-running `dev.cominotti.lushtext` owner to quit before staging a desktop file plus `hicolor` icons and launching the freshly built debug binary. If the existing owner refuses to close, the launcher must fail instead of activating stale code. The staged desktop entry uses a content-addressed absolute icon file path. This avoids Shell holding onto a stale themed-icon cache entry when the app icon bytes change between dev runs while keeping the icon file alive for as long as a restored user-local desktop entry might reference it. The launcher must repair any stale absolute `Icon=` path before backing up or restoring an existing `dev.cominotti.lushtext.desktop` override. Because the staged desktop file also carries `MimeType` associations, the launcher must refresh the applications desktop database after staging or restoring it so GNOME Settings and `gio mime` see current handler metadata.
 
@@ -167,6 +171,15 @@ seed is appropriate.
 
 - **Dev builds**: `build.rs` in `lushtext-core` compiles resources via `glib-build-tools`. Embedded in the binary via `include_bytes!` in `lib.rs`.
 - **Installed/Flatpak builds**: `resources/meson.build` compiles resources via `gnome.compile_resources()` and installs to `$(pkgdatadir)/`. `lib.rs` loads the `.gresource` file from `LUSHTEXT_PKGDATADIR` at runtime, falling back to `include_bytes!`.
+- **UI templates**: edit `resources/ui/*.blp`, then run
+  `make blueprint-generate` and `make check-blueprint`. The generated
+  `resources/ui/*.ui` files stay committed because all runtime, Meson, Flatpak,
+  and Snap resource builds consume GtkBuilder XML. `blueprint-compiler` is a
+  contributor and CI validation tool only, not an end-user runtime dependency.
+  Unknown compile warnings are blocking; only the documented GTK shortcuts
+  deprecations in `resources/ui/shortcuts.blp` are accepted. Run
+  `make lint-blueprint` for advisory grouped lint triage before promoting any
+  lint rule to a blocking gate.
 
 ## GSettings Schemas
 
@@ -341,7 +354,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 
 All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but this repo targets the GNOME 50 platform family (GTK 4.22, Libadwaita 1.9).
 
-- `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources licenses`.
+- `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, Blueprint template drift/contract validation, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources licenses`.
 - `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
 - `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive visual, portal/sandbox, accessibility, crash-recovery, and performance-smoke lanes plus a full benchmark report. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.

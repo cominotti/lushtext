@@ -205,10 +205,11 @@ make dev-tools
 ```
 
 `make dev-tools` runs `make flatpak-deps` first, then idempotently installs the
-GTK debug helpers: headless Mutter/PipeWire/WirePlumber/GStreamer screenshot
-tooling, portal screenshot tools, system Python AT-SPI bindings, ydotool,
-isolated Xvfb fallback tooling, and the D-Bus/GSettings utilities used by the
-debug skills.
+GTK debug helpers and UI generation tooling: headless
+Mutter/PipeWire/WirePlumber/GStreamer screenshot tooling, portal screenshot
+tools, system Python AT-SPI bindings, ydotool, isolated Xvfb fallback tooling,
+the D-Bus/GSettings utilities used by the debug skills, and
+`blueprint-compiler` for template regeneration/drift checks.
 On Fedora Toolbx it uses `sudo dnf install`. It does not layer packages onto a
 Silverblue host by default; set `LUSHTEXT_DEV_TOOLS_ALLOW_RPM_OSTREE=1` only
 when host rpm-ostree mutation is intentional. If `/dev/uinput` is writable, the
@@ -446,12 +447,44 @@ make run         # Debug build + force a fresh run with temporary GNOME desktop 
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
 make test        # All tests (unit + integration + widget)
 make check       # fmt + all-feature Clippy + fast policy audits
+make blueprint-generate # Regenerate generated .ui files from Blueprint sources
+make check-blueprint    # Validate Blueprint drift and UI template contract
+make lint-blueprint     # Advisory grouped Blueprint lint triage
 make lint-advisory # grouped advisory Rust lint discovery
 make pre-commit  # repo pre-commit gate (fmt + all-feature Clippy + policy audits)
 make install-git-hooks
 ```
 
 LushText ships repo-managed Git hooks in `.githooks/`. Run `make install-git-hooks` once per checkout to configure `core.hooksPath`; after that, each commit runs the same rustfmt, all-targets/all-features Clippy, and fast policy-audit gate locally before Git creates the commit.
+
+### UI Templates
+
+UI templates are authored in Blueprint (`resources/ui/*.blp`). The generated
+GtkBuilder XML files (`resources/ui/*.ui`) stay committed and remain the runtime
+GResource inputs for direct Cargo, Meson, Flatpak, and Snap builds. Do not
+hand-edit generated `.ui` files; edit the matching `.blp`, then run:
+
+```sh
+make blueprint-generate
+make check-blueprint
+```
+
+Fedora/Toolbx and CI use the Fedora `blueprint-compiler` package (`sudo dnf
+install blueprint-compiler`, currently 0.20.x). You can point at another
+executable with `BLUEPRINT_COMPILER=/path/to/blueprint-compiler`. Missing
+Blueprint tooling only blocks regeneration and drift checks; ordinary runtime
+builds still consume the committed `.ui` resources.
+
+`make check-blueprint` treats unknown compiler warnings as blocking. The only
+accepted warnings are the documented GTK shortcuts deprecations in
+`resources/ui/shortcuts.blp`. Run `make lint-blueprint` for advisory lint
+triage; it groups diagnostics by rule and file and requires every current rule
+to be fixed or classified. See `docs/blueprint-validation.md` for the lint
+policy and the reusable visual comparison workflow:
+
+```sh
+./scripts/compare-blueprint-visuals.sh --baseline-ref origin/main
+```
 
 The blocking Rust lint command is `cargo clippy --workspace --all-targets --all-features -- -D warnings`. Broad Clippy groups stay advisory instead of blanket-blocking; run `make lint-advisory` after Rust or Clippy updates to get grouped Clippy/rustc findings and fail on any new unclassified category. CI pins validation helpers in workflow env variables, including cargo-deny `0.19.8`, cargo-nextest `0.9.137`, cargo-fuzz `0.13.1`, and cargo-mutants `27.0.0`.
 

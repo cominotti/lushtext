@@ -1,0 +1,122 @@
+using Gtk 4.0;
+
+template $LushtextWorkspaceSection: Box {
+  orientation: vertical;
+  // Top separator between workspace sections.
+  Separator {}
+
+  // Workspace header.
+  Box header_box {
+    orientation: horizontal;
+    height-request: 54;
+    spacing: 6;
+    margin-start: 12;
+    margin-end: 6;
+
+    Button collapse_button {
+      icon-name: "pan-down-symbolic";
+      tooltip-text: _("Collapse Workspace");
+      valign: center;
+      margin-top: 6;
+      margin-bottom: 6;
+
+      styles [
+        "flat",
+        "circular",
+      ]
+    }
+
+    Label header_label {
+      label: "New Workspace";
+      hexpand: true;
+      xalign: 0;
+
+      styles [
+        "heading",
+      ]
+    }
+
+    Button add_folder_button {
+      icon-name: "folder-new-symbolic";
+      tooltip-text: _("Add Folder");
+      valign: center;
+      margin-top: 6;
+      margin-bottom: 6;
+
+      styles [
+        "flat",
+      ]
+    }
+
+    Button refresh_button {
+      icon-name: "view-refresh-symbolic";
+      tooltip-text: _("Refresh Workspace Folders");
+      valign: center;
+      margin-top: 6;
+      margin-bottom: 6;
+
+      styles [
+        "flat",
+      ]
+    }
+  }
+
+  // Drilldown header, hidden until a focused folder is active.
+  Box drilldown_header_box {
+    orientation: horizontal;
+    height-request: 40;
+    spacing: 6;
+    margin-start: 6;
+    margin-end: 6;
+    visible: false;
+
+    Button drilldown_back_button {
+      icon-name: "go-previous-symbolic";
+      tooltip-text: _("Back to Parent");
+
+      styles [
+        "flat",
+      ]
+    }
+
+    Label drilldown_path_label {
+      hexpand: true;
+      xalign: 0;
+      ellipsize: middle;
+
+      styles [
+        "dim-label",
+      ]
+    }
+  }
+
+  // Inner ScrolledWindow provides a vadjustment for GtkListView and prevents
+  // deep tree indentation from expanding the outer sidebar width.
+  ScrolledWindow inner_scrolled_window {
+    propagate-natural-height: true;
+    propagate-natural-width: false;
+    vscrollbar-policy: never;
+    hscrollbar-policy: never;
+
+    ListView file_tree_view {
+      styles [
+        "navigation-sidebar",
+      ]
+    }
+  }
+
+  Label empty_folder_set_label {
+    label: _("No folders in this workspace");
+    visible: false;
+    wrap: true;
+    xalign: 0;
+    margin-start: 18;
+    margin-end: 18;
+    margin-top: 10;
+    margin-bottom: 12;
+
+    styles [
+      "dim-label",
+    ]
+  }
+}

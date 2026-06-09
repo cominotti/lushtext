@@ -197,6 +197,9 @@ make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # Lightweight Criterion performance smoke
 make end-user-smoke # Run all host-supported end-user smoke lanes
 make check       # fmt + all-feature Clippy + fast policy audits
+make blueprint-generate # Regenerate generated GtkBuilder .ui files from Blueprint sources
+make check-blueprint # Validate Blueprint drift and generated UI template contract
+make lint-blueprint # Advisory grouped Blueprint lint triage
 make lint-advisory # grouped advisory Rust lint discovery
 make pre-commit  # repo pre-commit gate (fmt + all-feature Clippy + policy audits)
 make install-git-hooks
@@ -277,7 +280,8 @@ All versions centralized in the repository-root `Cargo.toml` under `[workspace.d
 The blocking Rust lint gate is curated and all-featured:
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
 Local `make check`, `.githooks/pre-commit`, and CI must stay aligned with that
-command, and `make check` also runs the fast filesystem-boundary audit. Broad
+command, and `make check` also runs fast filesystem-boundary and Blueprint
+template drift/contract audits. Broad
 Clippy groups (`restriction`, `pedantic`, `nursery`, and `cargo`) remain
 advisory discovery inputs, not blanket blocking policy; run `make
 lint-advisory` when reviewing lint drift after a toolchain or dependency update.
@@ -289,12 +293,12 @@ local GTK, generated-code, test, or benchmark invariant.
 
 Meson wraps Cargo for installed/Flatpak builds. `build-aux/cargo.sh` bridges Meson → Cargo.
 
-- **GResource dual-path**: Meson compiles and installs `.gresource` to `$(pkgdatadir)/`. `cargo.sh` exports `LUSHTEXT_PKGDATADIR` env var. `config.rs` reads it via `option_env!()`. `lib.rs` loads from installed path first, falls back to `include_bytes!` (dev).
+- **GResource dual-path**: Meson compiles and installs `.gresource` to `$(pkgdatadir)/`. `cargo.sh` exports `LUSHTEXT_PKGDATADIR` env var. `config.rs` reads it via `option_env!()`. `lib.rs` loads from installed path first, falls back to `include_bytes!` (dev). UI templates are authored in `resources/ui/*.blp`, but committed generated `resources/ui/*.ui` files remain the resource inputs for Cargo, Meson, Flatpak, and Snap; `blueprint-compiler` is a contributor/CI regeneration and drift-check tool only. Unknown Blueprint compile warnings are blocking, while Blueprint lint remains advisory through `make lint-blueprint` until each rule is fixed or classified.
 - **GSettings**: `data/meson.build` installs schema to system path. `gnome.post_install()` compiles schemas. `build.rs` skips schema compilation when `LUSHTEXT_PKGDATADIR` is set.
 - **Flatpak manifest**: `build-aux/dev.cominotti.lushtext.Flatpak.json` for local builds. `cargo-sources.json` (same dir) vendors all Cargo dependencies for offline builds.
 - **Flatpak release lane**: `scripts/release.sh` owns release version computation, AppStream release-note insertion, metadata validation, release commit creation, and signed tag creation. Real releases require `RELEASE_NOTES_FILE` and a clean `main`; use `make release-bump TYPE=patch DRY_RUN=1` before mutating anything. The primary Flatpak publication channel is the Cominotti-owned remote at `https://flatpak.cominotti.dev/`: `scripts/generate-cominotti-flatpak-repo.sh` produces a signed repository plus `cominotti.flatpakrepo` and `lushtext.flatpakref`, while `scripts/verify-cominotti-flatpak-repo.sh` checks metadata, app refs, and manifest invariants. `scripts/verify-cominotti-pages-limits.sh` enforces Cloudflare Pages static asset size and file-count limits before the default Pages deployment; `COMINOTTI_FLATPAK_DEPLOY_COMMAND` remains an override, and Cloudflare R2 is the first fallback when Pages limits are exceeded. Public Cominotti install docs must not use `--no-gpg-verify`. The local Flatpak manifest remains checkout-based. `scripts/generate-flathub-manifest.sh`, `scripts/verify-flathub-manifest.sh`, and `scripts/verify-flathub-domain.sh` remain for optional Flathub handoff; linked GitHub accounts do not verify this custom-domain app ID, and Flathub publication defaults to a reviewable PR, not automerge.
 - **Snap manifest**: `snap/snapcraft.yaml` reuses the same Meson/Cargo build via the `meson` plugin. A `layout:` bind-mounts the baked `LUSHTEXT_PKGDATADIR` into `$SNAP`, so the GResource/GSettings dual-path needs no Rust changes. Strict confinement + portals. GATED on the GNOME 50 platform snap (GTK 4.22); not buildable until `base:` → `core26`. No `cargo-sources.json` needed (snap builds are online). `make snap-store-readiness` checks the external store/platform gates without mutating Snap Store state and exits nonzero while those gates remain pending. See `.agents/rules/build.md`.
-- **CI**: `.github/workflows/ci.yml` now covers rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, the rustdoc lint gate, non-widget tests, widget tests, benchmark compilation, and `cargo deny check advisories bans sources licenses`; `.github/workflows/flatpak.yml` owns Flatpak build validation; `.github/workflows/release-dry-run.yml` exercises release helper behavior, current release metadata validation, Flathub manifest generation, and Cominotti repository metadata generation; `.github/workflows/release.yml` validates `v*` tag releases, builds the Flatpak, prepares/deploys Cominotti Flatpak repository artifacts when signing/deploy configuration exists, creates/updates the GitHub Release, and opens an optional Flathub PR when configured; `.github/workflows/snap.yml` validates `snapcraft.yaml` (always) and builds/publishes to `edge` (gated on the `SNAP_PLATFORM_AVAILABLE` variable).
+- **CI**: `.github/workflows/ci.yml` now covers rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, Blueprint template drift/contract validation, the rustdoc lint gate, non-widget tests, widget tests, benchmark compilation, and `cargo deny check advisories bans sources licenses`; `.github/workflows/flatpak.yml` owns Flatpak build validation; `.github/workflows/release-dry-run.yml` exercises release helper behavior, current release metadata validation, Flathub manifest generation, and Cominotti repository metadata generation; `.github/workflows/release.yml` validates `v*` tag releases, builds the Flatpak, prepares/deploys Cominotti Flatpak repository artifacts when signing/deploy configuration exists, creates/updates the GitHub Release, and opens an optional Flathub PR when configured; `.github/workflows/snap.yml` validates `snapcraft.yaml` (always) and builds/publishes to `edge` (gated on the `SNAP_PLATFORM_AVAILABLE` variable).
 
 ## GTK Initialization Order
 

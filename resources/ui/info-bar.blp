@@ -1,0 +1,121 @@
+using Gtk 4.0;
+using Adw 1;
+// Editor-scoped inline alert replacing GtkInfoBar with GTK5-safe widgets.
+template $LushtextInfoBar: Box {
+  orientation: vertical;
+
+  Revealer alert_revealer {
+    visible: false;
+    reveal-child: false;
+    transition-type: slide_down;
+
+    child: Box alert_box {
+      orientation: vertical;
+      valign: start;
+
+      styles [
+        "editor-inline-alert",
+      ]
+
+      // The message and action group share one line when wide enough. The action
+      // group is one atomic child so buttons wrap together beneath the message
+      // on narrow editor columns instead of splitting across rows.
+      Adw.WrapBox content_wrap {
+        child-spacing: 12;
+        line-spacing: 8;
+        justify: spread;
+        justify-last-line: true;
+
+        Box message_box {
+          orientation: vertical;
+          spacing: 2;
+          hexpand: true;
+          valign: center;
+
+          Label alert_title {
+            label: "";
+            xalign: 0;
+            wrap: true;
+            wrap-mode: word_char;
+
+            styles [
+              "heading",
+            ]
+          }
+
+          Label alert_body {
+            label: "";
+            xalign: 0;
+            wrap: true;
+            wrap-mode: word_char;
+
+            styles [
+              "body",
+            ]
+          }
+        }
+
+        Box actions_box {
+          orientation: horizontal;
+          spacing: 6;
+          margin-top: 1;
+          valign: center;
+
+          Button retry_button {
+            visible: false;
+            label: _("_Retry");
+            use-underline: true;
+
+            styles [
+              "inline-alert-button",
+            ]
+          }
+
+          Button discard_button {
+            visible: false;
+            label: _("_Discard...");
+            use-underline: true;
+
+            styles [
+              "inline-alert-button",
+            ]
+          }
+
+          Button save_button {
+            visible: false;
+            label: _("_Save...");
+            use-underline: true;
+
+            styles [
+              "inline-alert-button",
+            ]
+          }
+
+          Button dismiss_button {
+            icon-name: "window-close-symbolic";
+            valign: center;
+            tooltip-text: _("Dismiss");
+
+            styles [
+              "circular",
+              "inline-alert-button",
+            ]
+
+            accessibility {
+              label: _("Dismiss");
+            }
+          }
+        }
+      }
+    };
+  }
+}
+
+SizeGroup {
+  mode: horizontal;
+
+  widgets [
+    discard_button,
+    save_button,
+  ]
+}

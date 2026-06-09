@@ -1,0 +1,177 @@
+using Gtk 4.0;
+// GtkGrid keeps the search and replace entries in column 0 so their widths
+// stay identical. The replace row uses revealers whose natural widths still
+// participate in grid sizing while only height animates, avoiding column shifts
+// when replace mode toggles.
+template $LushtextSearchBar: Grid {
+  row-spacing: 0;
+  column-spacing: 6;
+
+  styles [
+    "search-bar-container",
+  ]
+
+  // Search entry plus a right-aligned match-count overlay inside the same grid
+  // cell. This keeps the entry width equal to the replace entry below it.
+  Overlay {
+    hexpand: true;
+
+    layout {
+      column: "0";
+      row: "0";
+    }
+
+    SearchEntry search_entry {
+      hexpand: true;
+      placeholder-text: _("Find…");
+    }
+
+    [overlay]
+    Label match_label {
+      halign: end;
+      margin-end: 28;
+
+      styles [
+        "dim-label",
+      ]
+
+      attributes: "0 -1 font-features \"tnum=1\"";
+    }
+  }
+
+  Box {
+    orientation: horizontal;
+    homogeneous: true;
+
+    layout {
+      column: "1";
+      row: "0";
+    }
+
+    styles [
+      "linked",
+    ]
+
+    Button prev_button {
+      icon-name: "go-up-symbolic";
+      tooltip-text: _("Previous Match");
+      focus-on-click: false;
+
+      styles [
+        "flat",
+      ]
+    }
+
+    Button next_button {
+      icon-name: "go-down-symbolic";
+      tooltip-text: _("Next Match");
+      focus-on-click: false;
+
+      styles [
+        "flat",
+      ]
+    }
+  }
+
+  ToggleButton replace_mode_button {
+    icon-name: "edit-find-replace-symbolic";
+    tooltip-text: _("Toggle Replace");
+    focus-on-click: false;
+
+    layout {
+      column: "2";
+      row: "0";
+    }
+
+    styles [
+      "flat",
+    ]
+  }
+
+  MenuButton options_button {
+    icon-name: "emblem-system-symbolic";
+    tooltip-text: _("Search Options");
+    focus-on-click: false;
+
+    layout {
+      column: "3";
+      row: "0";
+    }
+
+    styles [
+      "flat",
+    ]
+  }
+
+  Button close_button {
+    icon-name: "window-close-symbolic";
+    tooltip-text: _("Close Search");
+    focus-on-click: false;
+
+    layout {
+      column: "4";
+      row: "0";
+    }
+
+    styles [
+      "flat",
+      "circular",
+    ]
+  }
+
+  // Row 1 widgets intentionally use vertical revealers. They keep their natural
+  // width in allocation calculations even when collapsed.
+  Revealer replace_entry_revealer {
+    transition-type: slide_down;
+    transition-duration: 150;
+    reveal-child: false;
+    hexpand: true;
+
+    layout {
+      column: "0";
+      row: "1";
+    }
+
+    Entry replace_entry {
+      hexpand: true;
+      margin-top: 6;
+      placeholder-text: _("Replace…");
+      primary-icon-name: "edit-find-replace-symbolic";
+    }
+  }
+
+  Revealer replace_button_revealer {
+    transition-type: slide_down;
+    transition-duration: 150;
+    reveal-child: false;
+
+    layout {
+      column: "1";
+      row: "1";
+    }
+
+    Button replace_button {
+      label: _("_Replace");
+      use-underline: true;
+      margin-top: 6;
+    }
+  }
+
+  Revealer replace_all_revealer {
+    transition-type: slide_down;
+    transition-duration: 150;
+    reveal-child: false;
+
+    layout {
+      column: "2";
+      row: "1";
+      column-span: "3";
+    }
+
+    Button replace_all_button {
+      label: _("Replace _All");
+      use-underline: true;
+      margin-top: 6;
+    }
+  }
+}

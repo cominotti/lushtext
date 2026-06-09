@@ -1,0 +1,56 @@
+using Gtk 4.0;
+
+template $LushtextCommandPalette: Box {
+  orientation: vertical;
+  spacing: 0;
+
+  styles [
+    "command-palette-container",
+  ]
+
+  Box {
+    orientation: horizontal;
+    spacing: 8;
+    margin-start: 8;
+    margin-end: 8;
+    margin-top: 8;
+
+    DropDown mode_dropdown {
+      halign: start;
+      valign: center;
+      width-request: 132;
+
+      styles [
+        "command-palette-mode",
+      ]
+    }
+
+    SearchEntry search_entry {
+      hexpand: true;
+    }
+  }
+
+  ScrolledWindow results_scroll {
+    max-content-height: 400;
+    propagate-natural-height: true;
+    vscrollbar-policy: automatic;
+    hscrollbar-policy: never;
+    margin-top: 4;
+    margin-bottom: 4;
+
+    child: ListView results_view {
+      single-click-activate: false;
+    };
+  }
+
+  Label no_results_label {
+    label: _("No results");
+    visible: false;
+    margin-top: 12;
+    margin-bottom: 12;
+
+    styles [
+      "dim-label",
+    ]
+  }
+}

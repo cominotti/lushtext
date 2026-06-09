@@ -1,0 +1,189 @@
+using Gtk 4.0;
+
+template $LushtextSearchPanel: Box {
+  orientation: vertical;
+
+  styles [
+    "search-panel",
+  ]
+
+  Separator {
+    orientation: horizontal;
+  }
+
+  Box header_box {
+    orientation: horizontal;
+    spacing: 6;
+    margin-start: 6;
+    margin-end: 6;
+    margin-top: 6;
+    margin-bottom: 6;
+
+    SearchEntry search_entry {
+      hexpand: true;
+      placeholder-text: _("Search in files…");
+    }
+
+    Box toggles_box {
+      orientation: horizontal;
+
+      styles [
+        "linked",
+      ]
+
+      ToggleButton case_toggle {
+        label: "Aa";
+        tooltip-text: _("Case Sensitive");
+      }
+
+      ToggleButton regex_toggle {
+        label: ".*";
+        tooltip-text: _("Regular Expression");
+      }
+
+      ToggleButton word_toggle {
+        label: "W";
+        tooltip-text: _("Whole Word");
+      }
+    }
+
+    ToggleButton more_toggle {
+      icon-name: "emblem-system-symbolic";
+      tooltip-text: _("More Options");
+    }
+
+    Button save_button {
+      icon-name: "bookmark-new-symbolic";
+      tooltip-text: _("Save Search");
+      visible: false;
+
+      styles [
+        "flat",
+      ]
+    }
+
+    Button close_button {
+      icon-name: "window-close-symbolic";
+      tooltip-text: _("Close Search Panel");
+      focus-on-click: false;
+
+      styles [
+        "flat",
+        "circular",
+      ]
+    }
+  }
+
+  Label error_label {
+    visible: false;
+    xalign: 0.0;
+    wrap: true;
+    margin-start: 6;
+    margin-end: 6;
+    margin-bottom: 6;
+
+    styles [
+      "caption",
+    ]
+  }
+
+  Revealer options_revealer {
+    transition-type: slide_down;
+    transition-duration: 150;
+    reveal-child: false;
+
+    Box options_box {
+      orientation: vertical;
+      spacing: 6;
+      margin-start: 6;
+      margin-end: 6;
+      margin-top: 0;
+      margin-bottom: 6;
+
+      Box filter_row {
+        orientation: horizontal;
+        spacing: 6;
+
+        ToggleButton gitignore_toggle {
+          label: ".gitignore";
+          tooltip-text: "Respect .gitignore patterns";
+          active: true;
+        }
+
+        Entry glob_entry {
+          hexpand: true;
+          placeholder-text: "File filter (e.g., *.rs, *.toml)";
+        }
+      }
+
+      Box replace_row {
+        orientation: horizontal;
+        spacing: 6;
+
+        Entry replace_entry {
+          hexpand: true;
+          placeholder-text: _("Replace with");
+        }
+
+        Button replace_all_button {
+          label: _("Replace All");
+          sensitive: false;
+        }
+
+        Button undo_button {
+          label: _("Undo");
+          visible: false;
+        }
+      }
+    }
+  }
+
+  Revealer results_feedback_revealer {
+    transition-type: slide_up;
+    transition-duration: 250;
+    reveal-child: false;
+
+    Box results_feedback_box {
+      orientation: vertical;
+
+      Separator results_header_separator {
+        orientation: horizontal;
+      }
+
+      Revealer results_body_revealer {
+        transition-type: slide_up;
+        transition-duration: 250;
+        reveal-child: false;
+
+        Box results_body_box {
+          orientation: vertical;
+
+          ScrolledWindow results_scroll {
+            propagate-natural-height: true;
+            min-content-height: 100;
+
+            ListView results_list {}
+          }
+
+          Separator results_footer_separator {
+            orientation: horizontal;
+          }
+        }
+      }
+
+      Box footer_box {
+        orientation: horizontal;
+        spacing: 6;
+        margin-start: 6;
+        margin-end: 6;
+        margin-top: 6;
+        margin-bottom: 6;
+
+        Label count_label {
+          hexpand: true;
+          xalign: 0.0;
+        }
+      }
+    }
+  }
+}

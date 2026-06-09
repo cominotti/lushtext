@@ -102,6 +102,32 @@ def validate_args(args: argparse.Namespace) -> None:
         raise RuntimeError("Missing /usr/bin/python3. Run make dev-tools inside the Toolbx/container.")
 
 
+def cleanup_runtime_root(runtime_root: Path, artifact_dir: Path) -> str:
+    errors: list[str] = []
+    for attempt in range(1, 6):
+        try:
+            shutil.rmtree(runtime_root)
+        except FileNotFoundError:
+            return "removed"
+        except Exception as exc:
+            errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
+        if not runtime_root.exists():
+            return "removed"
+        time.sleep(0.2)
+
+    remaining: list[str] = []
+    for path in runtime_root.rglob("*"):
+        try:
+            remaining.append(str(path.relative_to(runtime_root)))
+        except ValueError:
+            remaining.append(str(path))
+    (artifact_dir / "runtime-dir-cleanup-errors.txt").write_text(
+        "\n".join([*errors, "remaining:", *sorted(remaining)]) + "\n",
+        encoding="utf-8",
+    )
+    return "remove_failed"
+
+
 def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
     cli = [
         f"--{mode}",
@@ -168,9 +194,19 @@ def outer_run(args: argparse.Namespace) -> int:
         artifact_dir = args.capture_artifact_dir.resolve()
         artifact_dir.mkdir(parents=True, exist_ok=True)
         remove_artifacts_after_run = False
-    for name in ("data", "config", "cache", "runtime"):
+    for name in ("data", "config", "cache"):
         (artifact_dir / name).mkdir(exist_ok=True)
-    os.chmod(artifact_dir / "runtime", 0o700)
+    # PipeWire uses Unix sockets, so keep XDG_RUNTIME_DIR short even when
+    # callers preserve artifacts under a deeply nested checkout path.
+    runtime_root = Path(tempfile.mkdtemp(prefix="lt-rt-"))
+    runtime_dir = runtime_root / "runtime"
+    runtime_dir.mkdir()
+    os.chmod(runtime_dir, 0o700)
+    (artifact_dir / "runtime-dir.txt").write_text(str(runtime_dir) + "\n", encoding="utf-8")
+    (artifact_dir / "runtime-dir-status.txt").write_text(
+        f"path={runtime_dir}\nstatus=active\ncleanup=pending\n",
+        encoding="utf-8",
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
@@ -182,7 +218,7 @@ def outer_run(args: argparse.Namespace) -> int:
             "XDG_CACHE_HOME": str(artifact_dir / "cache"),
             "XDG_CONFIG_HOME": str(artifact_dir / "config"),
             "XDG_DATA_HOME": str(artifact_dir / "data"),
-            "XDG_RUNTIME_DIR": str(artifact_dir / "runtime"),
+            "XDG_RUNTIME_DIR": str(runtime_dir),
         }
     )
 
@@ -198,6 +234,11 @@ def outer_run(args: argparse.Namespace) -> int:
         result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
 
     if result.returncode == 0:
+        cleanup_status = cleanup_runtime_root(runtime_root, artifact_dir)
+        (artifact_dir / "runtime-dir-status.txt").write_text(
+            f"path={runtime_dir}\nstatus=success\ncleanup={cleanup_status}\n",
+            encoding="utf-8",
+        )
         print_interesting_log_lines(log_path)
         if shutil.which("file") is not None:
             subprocess.run(["file", str(args.output)], check=False)
@@ -208,7 +249,12 @@ def outer_run(args: argparse.Namespace) -> int:
             shutil.rmtree(artifact_dir, ignore_errors=True)
         return 0
 
+    (artifact_dir / "runtime-dir-status.txt").write_text(
+        f"path={runtime_dir}\nstatus=failed\ncleanup=retained\n",
+        encoding="utf-8",
+    )
     print(f"Headless Mutter capture failed. Artifacts kept in {artifact_dir}", file=sys.stderr)
+    print(f"Runtime diagnostics kept in {runtime_dir}", file=sys.stderr)
     print("Last session log lines:", file=sys.stderr)
     tail_log(log_path, line_count=100, stream=sys.stderr)
     return result.returncode

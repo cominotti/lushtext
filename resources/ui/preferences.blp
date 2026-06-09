@@ -1,0 +1,205 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $LushtextPreferences: Adw.PreferencesDialog {
+  title: _("Preferences");
+
+  Adw.PreferencesPage {
+    title: _("Editor");
+    icon-name: "document-edit-symbolic";
+
+    Adw.PreferencesGroup {
+      title: _("Appearance");
+
+      Adw.ComboRow style_scheme_row {
+        title: _("Color Scheme");
+      }
+
+      Adw.SwitchRow use_system_font_row {
+        title: _("Use System Monospace Font");
+        active: true;
+      }
+
+      Adw.ActionRow custom_font_row {
+        title: _("Custom Font");
+        sensitive: false;
+
+        [suffix]
+        FontDialogButton font_button {
+          valign: center;
+        }
+      }
+
+      Adw.ActionRow transparency_row {
+        title: _("Transparency");
+        subtitle: _("Adjust the opacity of editor and Markdown preview backgrounds");
+        activatable-widget: transparency_button;
+
+        [suffix]
+        MenuButton transparency_button {
+          styles [
+            "flat",
+          ]
+
+          valign: center;
+
+          Box {
+            spacing: 6;
+
+            Label transparency_label {
+              width-chars: 6;
+              max-width-chars: 6;
+              attributes: "0 -1 font-features \"'tnum'\"";
+            }
+
+            Image {
+              icon-name: "pan-down-symbolic";
+            }
+          }
+
+          popover: Popover {
+            Scale transparency_scale {
+              width-request: 200;
+
+              adjustment: Adjustment transparency_adjustment {
+                lower: 0;
+                upper: 1;
+                value: 1.0;
+                step-increment: 0.05;
+                page-increment: 0.25;
+              };
+
+              marks [
+                mark (0.25),
+                mark (0.5),
+                mark (0.75),
+              ]
+            }
+          };
+        }
+      }
+    }
+
+    Adw.PreferencesGroup {
+      title: _("Focus Mode");
+
+      Adw.SpinRow focus_mode_target_columns_row {
+        title: _("Column Width");
+        subtitle: _("Target readable column width while focused");
+
+        adjustment: Adjustment {
+          lower: 60;
+          upper: 120;
+          value: 80;
+          step-increment: 5;
+          page-increment: 10;
+        };
+      }
+
+      Adw.SwitchRow focus_mode_typewriter_scrolling_row {
+        title: _("Typewriter Scrolling");
+        subtitle: _("Keep the cursor near the center while editing in Focus Mode");
+        active: false;
+      }
+    }
+
+    Adw.PreferencesGroup minimap_group {
+      title: _("Minimap");
+
+      Adw.SwitchRow show_minimap_row {
+        title: _("Show Minimap");
+        subtitle: _("Display a document overview on supported editor pages");
+        active: false;
+      }
+
+      Adw.SwitchRow minimap_long_line_markers_row {
+        title: _("Show Long-Line Markers");
+        subtitle: _("Opt in to marking lines over the minimap warning threshold");
+        active: false;
+      }
+    }
+
+    Adw.PreferencesGroup {
+      title: _("Behavior");
+
+      Adw.SwitchRow editorconfig_row {
+        title: _("Use EditorConfig");
+        subtitle: _("Apply .editorconfig files for per-file formatting");
+        active: true;
+      }
+
+      Adw.SwitchRow word_wrap_row {
+        title: _("Word Wrap");
+        active: true;
+      }
+
+      Adw.SpinRow tab_width_row {
+        title: _("Tab Width");
+
+        adjustment: Adjustment {
+          lower: 1;
+          upper: 12;
+          value: 4;
+          step-increment: 1;
+        };
+      }
+
+      Adw.SwitchRow insert_spaces_row {
+        title: _("Insert Spaces Instead of Tabs");
+        active: true;
+      }
+
+      Adw.SwitchRow show_line_numbers_row {
+        title: _("Show Line Numbers");
+        active: true;
+      }
+
+      Adw.SwitchRow highlight_line_row {
+        title: _("Highlight Current Line");
+        active: true;
+      }
+
+      Adw.SwitchRow bookmark_gutter_row {
+        title: _("Show Bookmark Gutter");
+        subtitle: _("Display bookmark indicators in the editor gutter");
+        active: true;
+      }
+    }
+  }
+
+  Adw.PreferencesPage {
+    title: _("Workspace");
+    icon-name: "folder-open-symbolic";
+
+    Adw.PreferencesGroup {
+      title: _("Sidebar");
+
+      Adw.ComboRow workspace_sidebar_width_row {
+        title: _("Sidebar Width");
+        subtitle: _("Choose how wide the workspace sidebar feels on desktop windows");
+      }
+    }
+
+    Adw.PreferencesGroup {
+      title: _("Navigation");
+
+      Adw.SwitchRow workspace_auto_collapse_row {
+        title: _("Auto-Collapse Workspaces");
+        subtitle: _("Collapse other workspaces when focusing a folder");
+        active: true;
+      }
+
+      Adw.SpinRow workspace_empty_folder_lookahead_cap_row {
+        title: _("Empty Folder Lookahead Cap");
+        subtitle: _("Maximum subdirectories to check for emptiness per scan");
+
+        adjustment: Adjustment {
+          lower: 100;
+          upper: 10000;
+          value: 1000;
+          step-increment: 100;
+        };
+      }
+    }
+  }
+}

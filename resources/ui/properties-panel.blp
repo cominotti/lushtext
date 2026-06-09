@@ -1,0 +1,71 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $LushtextPropertiesPanel: Box {
+  orientation: vertical;
+  width-request: 280;
+
+  ScrolledWindow {
+    vexpand: true;
+    hscrollbar-policy: never;
+    propagate-natural-height: true;
+    min-content-height: 260;
+    max-content-height: 420;
+
+    child: Box {
+      orientation: vertical;
+      margin-top: 15;
+      margin-bottom: 12;
+      margin-start: 12;
+      margin-end: 12;
+      spacing: 12;
+
+      Adw.PreferencesGroup {
+        title: _("Document");
+
+        Adw.ActionRow location_row {
+          title: _("Location");
+          subtitle: _("No document selected");
+          subtitle-lines: 3;
+        }
+
+        Adw.ActionRow file_size_row {
+          title: _("File Size");
+          subtitle: _("Not available");
+        }
+
+        Adw.ActionRow statistics_row {
+          title: _("Statistics");
+          subtitle: _("Open a document to inspect statistics");
+        }
+
+        Adw.ActionRow formatting_source_row {
+          title: _("Formatting Source");
+          subtitle: _("Not available");
+          subtitle-lines: 2;
+        }
+      }
+
+      Adw.PreferencesGroup health_group {
+        title: _("Health");
+
+        Adw.ActionRow health_summary_row {
+          title: _("File Health");
+          subtitle: _("Open a document to inspect file health");
+          subtitle-lines: 3;
+
+          [suffix]
+          Button health_review_button {
+            label: _("Review…");
+            action-name: "win.show-file-health";
+            visible: false;
+
+            styles [
+              "flat",
+            ]
+          }
+        }
+      }
+    };
+  }
+}

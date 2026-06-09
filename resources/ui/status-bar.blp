@@ -1,0 +1,113 @@
+using Gtk 4.0;
+
+template $LushtextStatusBar: Box {
+  orientation: horizontal;
+  spacing: 0;
+
+  styles [
+    "status-bar",
+  ]
+
+  ToggleButton sidebar_toggle_button {
+    icon-name: "sidebar-show-symbolic";
+    tooltip-text: _("Toggle Sidebar");
+    action-name: "win.toggle-sidebar";
+    margin-start: 4;
+    margin-top: 2;
+    margin-bottom: 2;
+    valign: center;
+
+    styles [
+      "flat",
+      "sidebar-toggle",
+    ]
+  }
+
+  Box message_area_box {
+    orientation: horizontal;
+    hexpand: true;
+    margin-start: 6;
+
+    styles [
+      "status-message-area",
+    ]
+
+    Label message_label {
+      hexpand: true;
+      xalign: 0.0;
+      ellipsize: end;
+      margin-start: 12;
+      margin-top: 4;
+      margin-bottom: 4;
+
+      styles [
+        "caption",
+        "status-message-label",
+      ]
+    }
+  }
+
+  Box metadata_box {
+    orientation: horizontal;
+    spacing: 0;
+
+    Label editorconfig_label {
+      label: "EditorConfig";
+      visible: false;
+      margin-start: 12;
+      margin-end: 8;
+      margin-top: 4;
+      margin-bottom: 4;
+
+      styles [
+        "caption",
+        "dim-label",
+      ]
+    }
+
+    Separator editorconfig_separator {
+      orientation: vertical;
+      margin-top: 6;
+      margin-bottom: 6;
+      visible: false;
+    }
+
+    Button line_ending_button {
+      label: "LF";
+      action-name: "win.show-line-ending-controls";
+      tooltip-text: _("Line Endings");
+      margin-start: 10;
+      margin-end: 4;
+      margin-top: 4;
+      margin-bottom: 4;
+
+      styles [
+        "flat",
+        "caption",
+        "dim-label",
+      ]
+    }
+
+    Separator {
+      orientation: vertical;
+      margin-top: 6;
+      margin-bottom: 6;
+    }
+
+    Button encoding_button {
+      label: "UTF-8";
+      action-name: "win.show-encoding-controls";
+      tooltip-text: _("Text Encoding");
+      margin-start: 10;
+      margin-end: 12;
+      margin-top: 4;
+      margin-bottom: 4;
+
+      styles [
+        "flat",
+        "caption",
+        "dim-label",
+      ]
+    }
+  }
+}

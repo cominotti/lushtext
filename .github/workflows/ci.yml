@@ -38,6 +38,7 @@ jobs:
             gtk4-devel \
             libadwaita-devel \
             gtksourceview5-devel \
+            blueprint-compiler \
             gcc \
             gettext \
             git
@@ -59,6 +60,9 @@ jobs:
 
       - name: Filesystem boundary policy
         run: make check-filesystem-boundary
+
+      - name: Blueprint template drift and contract
+        run: make check-blueprint
 
       - name: Rustdoc lint gate
         run: |

@@ -29,6 +29,9 @@
 #   make mutants-diff  - Mutation test current changes against origin/main
 #   make mutants-full  - Mutation test the configured deterministic scope
 #   make check       - fmt + all-feature clippy + fast policy audits
+#   make blueprint-generate - Regenerate generated GtkBuilder .ui files from Blueprint .blp sources
+#   make check-blueprint - Validate Blueprint drift and generated UI template contract
+#   make lint-blueprint - Advisory grouped lint triage for Blueprint templates
 #   make check-agent-docs - validate agent rules/skills guidance
 #   make lint-advisory - grouped advisory lint discovery for Rust policy reviews
 #   make pre-commit  - repo pre-commit gate (fmt + all-feature clippy + policy audits)
@@ -47,7 +50,8 @@
 #   make help        - Show available targets
 
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check-filesystem-boundary check-policy lint-advisory check check-agent-docs pre-commit dev-tools install-git-hooks clean help \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-policy lint-advisory check check-agent-docs pre-commit dev-tools install-git-hooks clean help \
+       blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
        cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
@@ -311,8 +315,29 @@ check-filesystem-boundary:
 	@echo "Checking filesystem boundary policy..."
 	./scripts/check-filesystem-boundary.sh
 
+# Regenerate generated GtkBuilder resources from Blueprint sources.
+blueprint-generate:
+	@echo "Generating GtkBuilder templates from Blueprint sources..."
+	./scripts/blueprint-templates.sh generate
+
+# Drift and contract check for Blueprint-authored UI templates.
+check-blueprint:
+	@echo "Checking Blueprint template drift and generated UI contract..."
+	./scripts/blueprint-templates.sh check
+
+# Structural contract audit without running the compiler drift check.
+check-ui-template-contract:
+	@echo "Checking generated UI template contract..."
+	./scripts/blueprint-templates.sh audit
+
+# Advisory lint triage for Blueprint templates. This groups current diagnostics
+# and fails only when a rule is unclassified or escalates to an error.
+lint-blueprint:
+	@echo "Running advisory Blueprint lint triage..."
+	./scripts/blueprint-templates.sh lint
+
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary
+check-policy: check-filesystem-boundary check-blueprint
 
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
@@ -530,7 +555,10 @@ help:
 	@echo "  mutants-full Configured deterministic mutation scope"
 	@echo "  mutants-list List configured mutants without running tests"
 	@echo "  pre-commit   Repo pre-commit gate (fmt + all-feature clippy + policy audits)"
-	@echo "  check-policy Fast policy audits, including the filesystem boundary"
+	@echo "  check-policy Fast policy audits, including filesystem and Blueprint checks"
+	@echo "  blueprint-generate Regenerate GtkBuilder .ui files from Blueprint sources"
+	@echo "  check-blueprint Validate Blueprint drift and UI template contract"
+	@echo "  lint-blueprint Advisory grouped Blueprint lint triage"
 	@echo "  lint-advisory Grouped advisory Rust lint discovery"
 	@echo "  install-git-hooks Configure this repo to use .githooks/"
 	@echo ""

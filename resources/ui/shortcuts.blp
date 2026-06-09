@@ -1,0 +1,131 @@
+using Gtk 4.0;
+
+ShortcutsWindow help_overlay {
+  modal: true;
+
+  ShortcutsSection {
+    section-name: "shortcuts";
+
+    ShortcutsGroup {
+      title: _("General");
+
+      ShortcutsShortcut {
+        title: _("New File");
+        accelerator: "<Control>n";
+      }
+
+      ShortcutsShortcut {
+        title: _("Open File");
+        accelerator: "<Control>o";
+      }
+
+      ShortcutsShortcut {
+        title: _("Save");
+        accelerator: "<Control>s";
+      }
+
+      ShortcutsShortcut {
+        title: _("Save As");
+        accelerator: "<Control><Shift>s";
+      }
+
+      ShortcutsShortcut {
+        title: _("Local History");
+        accelerator: "<Control><Alt>l";
+      }
+
+      ShortcutsShortcut {
+        title: _("Close Tab");
+        accelerator: "<Control>w";
+      }
+
+      ShortcutsShortcut {
+        title: _("Print");
+        accelerator: "<Control>p";
+      }
+
+      ShortcutsShortcut {
+        title: _("Command Palette");
+        accelerator: "<Control><Shift>p";
+      }
+
+      ShortcutsShortcut {
+        title: _("Toggle Minimap");
+        accelerator: "<Control><Shift>m";
+      }
+
+      ShortcutsShortcut {
+        title: _("Document Properties");
+        accelerator: "F9";
+      }
+
+      ShortcutsShortcut {
+        title: _("Fullscreen");
+        accelerator: "F11";
+      }
+
+      ShortcutsShortcut {
+        title: _("Focus Mode");
+        accelerator: "<Control><Shift>F11";
+      }
+    }
+
+    ShortcutsGroup {
+      title: _("Search");
+
+      ShortcutsShortcut {
+        title: _("Find");
+        accelerator: "<Control>f";
+      }
+
+      ShortcutsShortcut {
+        title: _("Find and Replace");
+        accelerator: "<Control>h";
+      }
+
+      ShortcutsShortcut {
+        title: _("Next Match");
+        accelerator: "<Control>g";
+      }
+
+      ShortcutsShortcut {
+        title: _("Previous Match");
+        accelerator: "<Control><Shift>g";
+      }
+    }
+
+    ShortcutsGroup {
+      title: _("Notes");
+
+      ShortcutsShortcut {
+        title: _("Toggle Bookmark");
+        accelerator: "<Control>F2";
+      }
+
+      ShortcutsShortcut {
+        title: _("Edit Bookmark Label");
+        accelerator: "<Control><Shift>F2";
+      }
+
+      ShortcutsShortcut {
+        title: _("Next Bookmark");
+        accelerator: "F2";
+      }
+
+      ShortcutsShortcut {
+        title: _("Previous Bookmark");
+        accelerator: "<Shift>F2";
+      }
+
+      ShortcutsShortcut {
+        title: _("Browse Bookmarks");
+        accelerator: "<Control><Alt>b";
+      }
+
+      ShortcutsShortcut {
+        title: _("Browse Notes");
+        accelerator: "<Control><Alt>a";
+      }
+    }
+  }
+}

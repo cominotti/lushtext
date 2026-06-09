@@ -1,0 +1,37 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $LushtextMarkdownPreview: Box {
+  orientation: vertical;
+
+  ScrolledWindow scrolled_window {
+    vexpand: true;
+    hexpand: true;
+
+    TextView text_view {
+      editable: false;
+      cursor-visible: false;
+      wrap-mode: word;
+      left-margin: 16;
+      right-margin: 16;
+      top-margin: 12;
+      bottom-margin: 12;
+
+      styles [
+        "tab-content-preview-surface",
+      ]
+    }
+  }
+
+  Adw.StatusPage placeholder {
+    visible: false;
+    vexpand: true;
+    icon-name: "document-page-setup-symbolic";
+    title: _("Markdown Preview");
+    description: _("Open a Markdown file to see a rendered preview");
+
+    styles [
+      "preview-placeholder-opaque",
+    ]
+  }
+}
