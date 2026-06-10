@@ -49,23 +49,38 @@ static TRANSPARENCY_STYLE_SCHEME_GENERATIONS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// Coalesced end-of-document overscroll updates for one editor tab.
+///
+/// `LushtextEditorPage` is a `GtkBox` subclass, and GTK4 never invokes the
+/// `size_allocate` vfunc on widgets whose class installs a layout manager, so
+/// allocation hooks on the page itself are silently dead. Viewport geometry is
+/// observed through the text view's scroll adjustments instead: their page
+/// size tracks the editor viewport on every allocation, including each frame
+/// of the sidebar show/hide animation.
 #[derive(Default)]
 pub struct OverscrollState {
     /// Generation counter used to collapse bursts of GTK allocations into one
     /// idle overscroll recomputation after the layout settles.
     pub update_generation: Cell<u32>,
-    /// Last editor-page allocation width observed by `size_allocate`.
+    /// Last observed horizontal adjustment page size (editor viewport width).
     ///
     /// Width-only changes can reflow wrapped text without changing the visible
     /// height, so the editor uses this to refresh minimap geometry and preserve
     /// left-edge scroll anchoring after passive shell resizes.
-    pub last_allocated_width: Cell<i32>,
-    /// Last editor-page allocation height observed by `size_allocate`.
+    pub h_viewport_size: Cell<f64>,
+    /// Last observed vertical adjustment page size (editor viewport height).
     ///
     /// Height changes from adaptive bottom sheets can make GTK preserve a stale
     /// vertical adjustment. Tracking the previous value lets the editor keep the
     /// top edge anchored only when the user was already at the top.
-    pub last_allocated_height: Cell<i32>,
+    pub v_viewport_size: Cell<f64>,
+    /// Whether the editor rested at its left edge before the current reflow.
+    ///
+    /// Updated from user-visible scroll changes outside reflow bursts so that
+    /// GTK-preserved stale offsets during reallocation cannot masquerade as
+    /// intentional horizontal scrolling.
+    pub h_rest_at_left: Cell<bool>,
+    /// Whether the editor rested at its top edge before the current reflow.
+    pub v_rest_at_top: Cell<bool>,
 }
 
 /// Signal handlers connected to application-global preference/theme objects.
@@ -270,6 +285,17 @@ pub struct MinimapState {
     pub refresh_generation: Cell<u32>,
     /// Whether a debounced minimap refresh callback is still waiting to run.
     pub refresh_pending: Cell<bool>,
+    /// Frozen last-good minimap pixels shown while a width-reflow burst settles.
+    ///
+    /// Sidebar show/hide animates the editor width across many frames, and the
+    /// native `GtkSourceMap` viewport slider repaints from transient wrapped
+    /// layout estimates on each of them. Holding the pre-burst pixels keeps the
+    /// rendered highlight visually still until one settled repair runs.
+    pub reflow_freeze_picture: RefCell<Option<gtk4::Picture>>,
+    /// Generation counter for the width-reflow settle debounce.
+    pub reflow_settle_generation: Cell<u32>,
+    /// Whether a width-reflow settle repair is still waiting for a stable width.
+    pub reflow_settle_pending: Cell<bool>,
     /// Prevents programmatic loads and evictions from being recorded as user edits.
     pub tracking_suspended: Cell<bool>,
     /// Tracks which lines already own a modified marker for O(1) de-duplication.
@@ -524,6 +550,7 @@ impl ObjectImpl for LushtextEditorPage {
         }
         self.minimap.source_map.borrow_mut().take();
         self.minimap.marker_strip.borrow_mut().take();
+        self.minimap.reflow_freeze_picture.borrow_mut().take();
         self.focus_mode.text_origin_guide.borrow_mut().take();
         self.minimap.modified_marks.borrow_mut().clear();
         self.minimap.modified_lines_cache.borrow_mut().clear();
@@ -768,46 +795,19 @@ impl ObjectImpl for LushtextEditorPage {
         }
 
         self.obj().setup_minimap();
+        self.obj().setup_allocation_reflow_observers();
         self.obj().setup_focus_mode_text_origin_guide();
         self.obj().setup_focus_mode_presentation();
         self.obj().apply_invisible_characters_mode();
     }
 }
 
-impl WidgetImpl for LushtextEditorPage {
-    fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
-        let previous_width = self.overscroll.last_allocated_width.replace(width);
-        let previous_height = self.overscroll.last_allocated_height.replace(height);
-        let width_changed = previous_width > 0 && previous_width != width;
-        let height_changed = previous_height > 0 && previous_height != height;
-        let hadjustment_was_at_left = self
-            .source_view
-            .hadjustment()
-            .is_none_or(|adjustment| (adjustment.value() - adjustment.lower()).abs() <= 0.5);
-        let vadjustment_was_at_top = self
-            .source_view
-            .vadjustment()
-            .is_none_or(|adjustment| (adjustment.value() - adjustment.lower()).abs() <= 0.5);
-
-        self.parent_size_allocate(width, height, baseline);
-
-        // Recompute the EOF overscroll after GTK has allocated the text view so
-        // `visible_rect()` reflects the real viewport height for this frame.
-        self.obj().schedule_dynamic_overscroll_update();
-        if width_changed {
-            self.obj()
-                .schedule_minimap_projection_refresh_after_reflow(vadjustment_was_at_top);
-            if hadjustment_was_at_left {
-                self.obj().schedule_left_edge_horizontal_scroll_clamp();
-            }
-        }
-        if height_changed && vadjustment_was_at_top {
-            self.obj().schedule_top_edge_vertical_scroll_clamp();
-        }
-        self.obj().refresh_focus_mode_readable_column();
-        self.obj().queue_focus_mode_text_origin_guide_draw();
-    }
-}
+// No `size_allocate` override here on purpose: GTK4 skips that vfunc for
+// widgets whose class installs a layout manager, and `GtkBox` uses
+// `GtkBoxLayout`, so such an override would be silently dead code. Passive
+// viewport geometry changes are observed through the text view's scroll
+// adjustments in `overscroll.rs` instead.
+impl WidgetImpl for LushtextEditorPage {}
 impl BoxImpl for LushtextEditorPage {}
 
 // Disconnect signal handlers from application-global objects (Settings,

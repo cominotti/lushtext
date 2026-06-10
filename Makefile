@@ -368,6 +368,7 @@ check-end-user-smoke-workflow:
 check-visual-proof-policy:
 	@echo "Checking visual geometry proof policy..."
 	./scripts/check-visual-proof-policy.py --self-test
+	./scripts/check-visual-proof-policy.py
 
 # Validate the reusable agent/developer client without needing a live D-Bus app.
 automation-client-self-test:

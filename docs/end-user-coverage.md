@@ -16,10 +16,10 @@ in the cheapest lane that can prove it honestly.
 | Fuzz smoke | `make fuzz-smoke` | Coverage-guided discovery for hostile byte and operation-script surfaces | No, scheduled or manual |
 | Widget tests | `make test-widget-headless` | Real GTK widget state, signal wiring, focus, action, and allocation contracts under Mutter | Yes |
 | Automation docs drift | `make check-automation-docs` | User/developer reference drift for exported actions, D-Bus members, snapshot JSON, readiness predicates/blockers, helper flags, and stable AT-SPI anchors | Yes, through `make check-policy` |
-| Visual proof policy | `make check-visual-proof-policy` | Local worktree guard that requires a passed, unfiltered visual geometry summary matching the current visual-sensitive diff | Yes, through `make check-policy` |
+| Visual proof policy | `make check-visual-proof-policy` | Local worktree guard that requires a passed, unfiltered visual geometry summary matching the current visual-sensitive diff and required invariant IDs | Yes, through `make check-policy` |
 | Automation client self-test | `make automation-client-self-test` | Reusable D-Bus client parser, typed action-parameter rendering, result envelope, exit statuses, and smoke artifact summary reader without a live app | Yes, through `make check-policy` |
 | Automation smoke | `make automation-smoke` | Real-process D-Bus introspection, action catalog, snapshots, reusable client commands, action-state sync, readiness waits, warning scans, and parameterized action activation under isolated Mutter | No, local, scheduled, or release validation |
-| Visual geometry smoke | `make visual-geometry-smoke` | Same-session before/after screenshot invariants, protected-region zero-difference comparisons, bounded geometry snapshots, and warning scans | No, local, scheduled, or release validation |
+| Visual geometry smoke | `make visual-geometry-smoke` | Same-session before/after screenshot invariants, protected-region zero-difference comparisons, screenshot-derived pixel anchors, bounded geometry snapshots, and warning scans | No, local, scheduled, or release validation |
 | Visual smoke | `make visual-smoke` | Rendered desktop screenshots, coarse pixel sanity, compositor behavior, and visual artifacts | No, local, scheduled, or release validation |
 | Crash recovery smoke | `make crash-recovery-smoke` | Real-process draft/session recovery across `SIGKILL` and relaunch, with recovery metadata and runtime artifacts | No, local, scheduled, or release validation |
 | Portal and sandbox smoke | `make portal-sandbox-smoke` | Confined Flatpak/Snap state, full-filesystem permission posture, portal/sandbox runtime diagnostics, and host support reporting | No, local, scheduled, or release validation |
@@ -58,17 +58,25 @@ they are not default PR gates:
   `visual-geometry-settled`, captures bounded `visual_geometry` snapshots and
   screenshots from one app process, compares protected regions exactly except
   for declared masks, asserts allowed-changing-region geometry relationships,
-  scans runtime warnings, and writes per-case manifests plus a root
-  `summary.json`. It skips clearly when host compositor, PipeWire, D-Bus,
-  GSettings, or screenshot capture tooling is unavailable; skipped cases do not
-  count as verified coverage.
+  verifies declared screenshot-derived pixel anchors and relative pixel-anchor
+  deltas, verifies rendered anchors across each capture step's warmup and final
+  frame, scans runtime warnings, and writes per-case manifests plus a root
+  `summary.json` with `verified_invariant_ids` and
+  `pixel_verified_invariant_ids`. Automation geometry can bound crops and aid
+  diagnosis, but it cannot satisfy rendered-effect coverage on its own. It
+  skips clearly when host compositor, PipeWire, D-Bus, GSettings, or screenshot
+  capture tooling is unavailable; skipped cases do not count as verified
+  coverage.
 - `make check-visual-proof-policy` is a fast local policy gate for agents and
   contributors. If UI Rust, widget tests, Blueprint/UI templates, or CSS files
   are locally changed, it requires a passing, unfiltered
   `build/smoke/visual-geometry/summary.json` whose visual-sensitive diff
-  fingerprint still matches the current worktree. The check does not rerun the
-  compositor lane itself; it verifies that the proof artifact exists, is current,
-  and does not count skipped visual geometry coverage as verification.
+  fingerprint still matches the current worktree and whose
+  `pixel_verified_invariant_ids` cover any named pixel invariants required by
+  the changed files. The check does not rerun the compositor lane itself; it
+  verifies that the proof artifact exists, is current, includes required
+  invariant coverage, and does not count skipped visual geometry coverage as
+  verification.
 - `make automation-smoke` launches the real debug binary under an isolated
   D-Bus session and headless Mutter, introspects the app-owned automation
   object, reads catalog/snapshot state, checks stateful action state against
@@ -151,7 +159,8 @@ Use widget tests for GTK state and allocation contracts whenever possible.
 Reach for automation, visual geometry, visual, portal/sandbox, accessibility,
 or performance smoke only when the existing widget and integration harnesses
 cannot prove the end-user risk. Use visual geometry smoke when a change claims
-that unaffected pixels stay unchanged across one same-session layout action; use
+that unaffected pixels stay unchanged across one same-session layout action, or
+when a rendered effect such as a minimap highlight needs pixel-anchor proof; use
 visual smoke for standalone rendered state coverage.
 
 When a smoke lane needs automation support, prefer stable actions, accessible

@@ -400,6 +400,9 @@ impl LushtextWindow {
     /// Persist the user's explicit workspace-sidebar preference, then let the
     /// adaptive shell decide how that preference is rendered right now.
     fn set_workspace_sidebar_requested_visible(&self, visible: bool) {
+        if visible != self.rendered_workspace_sidebar_visible() {
+            self.protect_active_minimap_for_shell_width_transition();
+        }
         let state = &self.imp().secondary_surfaces;
         state.workspace_requested_visible.set(visible);
         if self.document_properties_uses_bottom_sheet() {
@@ -421,6 +424,9 @@ impl LushtextWindow {
     /// Persist the user's explicit document-properties preference, then let the
     /// adaptive shell render it as a side pane or bottom sheet as needed.
     fn set_document_properties_requested_visible(&self, visible: bool) {
+        if visible != self.rendered_document_properties_visible() {
+            self.protect_active_minimap_for_shell_width_transition();
+        }
         let state = &self.imp().secondary_surfaces;
         state.properties_requested_visible.set(visible);
         if self.document_properties_uses_bottom_sheet() {
@@ -438,6 +444,22 @@ impl LushtextWindow {
             .settings
             .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, visible);
         self.sync_secondary_surface_layout();
+    }
+
+    /// Prime the active minimap before a shell transition starts consuming width.
+    ///
+    /// Adjustment page-size changes are the passive reflow signal once the
+    /// animation is already moving, but the first adjustment callback can only
+    /// snapshot the source map after GTK has advanced its width. Shell actions
+    /// know the transition is about to start, so they capture the settled
+    /// native map pixels one callback earlier and let the adjustment observers
+    /// extend the same settle burst through the animation.
+    fn protect_active_minimap_for_shell_width_transition(&self) {
+        if let Some(editor) = self.active_editor()
+            && editor.is_minimap_visible()
+        {
+            editor.schedule_minimap_reflow_settle();
+        }
     }
 
     /// Update the rendered on/off state that powers both toggle buttons and

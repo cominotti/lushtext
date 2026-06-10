@@ -14,15 +14,17 @@ use crate::model::automation::{
     AUTOMATION_WORKFLOW_MINIMAP_REFRESH, AUTOMATION_WORKFLOW_REPLACE_PREVIEW,
     AUTOMATION_WORKFLOW_SAVE, AUTOMATION_WORKFLOW_SEARCH, AUTOMATION_WORKFLOW_SESSION_RESTORE,
     AUTOMATION_WORKFLOW_WORKSPACE_REFRESH, AutomationCommandPaletteSnapshot,
-    AutomationContentSearchSnapshot, AutomationLocalHistorySnapshot, AutomationNotesSnapshot,
+    AutomationContentSearchSnapshot, AutomationLocalHistorySnapshot,
+    AutomationNativeMinimapDiagnosticSnapshot, AutomationNotesSnapshot,
     AutomationNotificationSnapshot, AutomationReadinessPredicate, AutomationReadinessResult,
     AutomationReadinessStatus, AutomationSearchSnapshot, AutomationSnapshot,
-    AutomationSurfaceSnapshot, AutomationTabSnapshot, AutomationVisualGeometrySnapshot,
-    AutomationVisualRect, AutomationVisualScrollAnchorSnapshot, AutomationVisualSize,
-    AutomationVisualSurfaceSnapshot, AutomationWindowSnapshot, AutomationWorkflowEventsSnapshot,
-    AutomationWorkflowObservation, AutomationWorkspaceSnapshot, READINESS_BLOCKER_APP_STARTUP,
-    READINESS_BLOCKER_CLOSE_SAFETY, READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
-    READINESS_BLOCKER_DRAFT_AUTOSAVE, READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD,
+    AutomationSurfaceSnapshot, AutomationTabSnapshot, AutomationVisualAdjustmentSnapshot,
+    AutomationVisualGeometrySnapshot, AutomationVisualPixelAnchorSnapshot, AutomationVisualRect,
+    AutomationVisualScrollAnchorSnapshot, AutomationVisualSize, AutomationVisualSurfaceSnapshot,
+    AutomationWindowSnapshot, AutomationWorkflowEventsSnapshot, AutomationWorkflowObservation,
+    AutomationWorkspaceSnapshot, READINESS_BLOCKER_APP_STARTUP, READINESS_BLOCKER_CLOSE_SAFETY,
+    READINESS_BLOCKER_COMMAND_PALETTE_INDEX, READINESS_BLOCKER_DRAFT_AUTOSAVE,
+    READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_MINIMAP_REFRESH, READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE, READINESS_BLOCKER_SESSION_RESTORE,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION, READINESS_BLOCKER_WORKSPACE_PERSIST,
@@ -33,7 +35,10 @@ use crate::model::workspace::WorkspaceScope;
 use crate::services::action_catalog;
 use crate::services::local_history_service::LocalHistoryAvailability;
 use crate::services::notifications::NotificationSeverity;
-use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use crate::ui::editor_page::{
+    EditorLoadState, LushtextEditorPage, MinimapAdjustmentDiagnostics,
+    MinimapNativeSliderDiagnostics, MinimapProjectedBounds, MinimapTextViewRect,
+};
 use crate::ui::window::LushtextWindow;
 use gio::prelude::*;
 use glib::prelude::ToVariant;
@@ -74,6 +79,11 @@ const WAIT_FOR_READY_FAST_WINDOW: Duration = Duration::from_secs(1);
 const WAIT_FOR_READY_FAST_POLL: Duration = Duration::from_millis(16);
 /// Backoff interval for long waits so leaked clients do not wake GTK at 60 Hz.
 const WAIT_FOR_READY_SLOW_POLL: Duration = Duration::from_millis(100);
+/// Diagnostic surface name for GTK's native source-map viewport slider.
+///
+/// The name intentionally says `native` instead of `overlay` so visual smoke
+/// artifacts do not suggest that LushText owns a replacement highlight.
+const MINIMAP_NATIVE_VIEWPORT_SURFACE: &str = "minimap-native-viewport";
 
 /// Static D-Bus introspection contract exported beside the dispatcher.
 ///
@@ -581,7 +591,7 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
             .search_bar()
             .search_context()
             .is_some_and(|context| context.occurrences_count() < 0);
-        minimap_refresh_active |= editor.imp().minimap.refresh_pending.get();
+        minimap_refresh_active |= editor.minimap_refresh_blocks_readiness();
     }
 
     let workspace_refresh_blocker = window_readiness_blocker(
@@ -720,7 +730,6 @@ fn window_readiness_blocker(
     ) {
         return Some(blocker);
     }
-
     for index in 0..imp.tab_view.n_pages() {
         let page = imp.tab_view.nth_page(index);
         let Ok(editor) = page.child().downcast::<LushtextEditorPage>() else {
@@ -750,7 +759,7 @@ fn window_readiness_blocker(
         }
         if let Some(blocker) = included_blocker(
             predicate,
-            editor.imp().minimap.refresh_pending.get(),
+            editor.minimap_refresh_blocks_readiness(),
             READINESS_BLOCKER_MINIMAP_REFRESH,
         ) {
             return Some(blocker);
@@ -982,6 +991,8 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
     let imp = window.imp();
     let root: &gtk4::Widget = window.upcast_ref();
     let mut surfaces = Vec::new();
+    let mut pixel_anchors = Vec::new();
+    let native_minimap: AutomationNativeMinimapDiagnosticSnapshot;
     let mut scroll_anchors = Vec::new();
 
     push_widget_surface(&mut surfaces, "header-bar", &*imp.header_bar, root);
@@ -1011,15 +1022,82 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
             &*editor.imp().minimap_overlay,
             root,
         );
+        if let Some(freeze) = editor
+            .imp()
+            .minimap
+            .reflow_freeze_picture
+            .borrow()
+            .as_ref()
+            .cloned()
+        {
+            push_widget_surface(&mut surfaces, "minimap-reflow-freeze", &freeze, root);
+        } else {
+            surfaces.push(absent_visual_surface(
+                "minimap-reflow-freeze",
+                "not-created",
+            ));
+        }
         if let Some(source_map) = editor.imp().minimap.source_map.borrow().as_ref().cloned() {
             push_widget_surface(&mut surfaces, "minimap-source-map", &source_map, root);
-            surfaces.push(minimap_viewport_surface(&editor, &source_map, root));
+            // These anchors describe GTK's native `GtkSourceMap` slider pixels
+            // for screenshot inspection. They must not imply or create an
+            // app-owned replacement highlight.
+            // Automation snapshots may be polled by external agents. Cache the
+            // projected minimap geometry once so pixel anchors do not repeat
+            // the same GTK layout-coordinate queries for one snapshot.
+            let native_diagnostics = editor.minimap_native_slider_diagnostics_relative_to(root);
+            let viewport_bounds = native_diagnostics
+                .as_ref()
+                .map(|diagnostics| diagnostics.native_slider_estimate);
+            let first_content_bounds = native_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.first_content_row)
+                .or_else(|| editor.minimap_first_content_row_relative_to(root));
+            native_minimap = native_diagnostics.as_ref().map_or_else(
+                || absent_native_minimap_diagnostic(minimap_availability_absence_reason(&editor)),
+                native_minimap_diagnostic_snapshot,
+            );
+            surfaces.push(minimap_viewport_surface(&editor, viewport_bounds));
+            pixel_anchors.push(minimap_viewport_top_edge_anchor(&editor, viewport_bounds));
+            pixel_anchors.push(minimap_viewport_fill_anchor(&editor, viewport_bounds));
+            pixel_anchors.push(minimap_viewport_bottom_edge_anchor(
+                &editor,
+                viewport_bounds,
+            ));
+            pixel_anchors.push(minimap_first_content_row_anchor(
+                &editor,
+                first_content_bounds,
+            ));
         } else {
             surfaces.push(absent_visual_surface("minimap-source-map", "not-created"));
             surfaces.push(absent_visual_surface(
-                "minimap-viewport-overlay",
+                MINIMAP_NATIVE_VIEWPORT_SURFACE,
                 "not-created",
             ));
+            // Preserve stable absent anchors even when the native source map has
+            // not been created, so visual runners can distinguish "skipped by
+            // app state" from "missing from the snapshot schema."
+            pixel_anchors.push(absent_pixel_anchor(
+                "minimap-viewport-top-edge",
+                MINIMAP_NATIVE_VIEWPORT_SURFACE,
+                "not-created",
+            ));
+            pixel_anchors.push(absent_pixel_anchor(
+                "minimap-viewport-fill",
+                MINIMAP_NATIVE_VIEWPORT_SURFACE,
+                "not-created",
+            ));
+            pixel_anchors.push(absent_pixel_anchor(
+                "minimap-viewport-bottom-edge",
+                MINIMAP_NATIVE_VIEWPORT_SURFACE,
+                "not-created",
+            ));
+            pixel_anchors.push(absent_pixel_anchor(
+                "minimap-first-content-row",
+                "minimap-source-map",
+                "not-created",
+            ));
+            native_minimap = absent_native_minimap_diagnostic("not-created");
         }
         if let Some(marker_strip) = editor.imp().minimap.marker_strip.borrow().as_ref().cloned() {
             push_widget_surface(&mut surfaces, "minimap-marker-strip", &marker_strip, root);
@@ -1050,13 +1128,41 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
             "no-active-editor",
         ));
         surfaces.push(absent_visual_surface(
-            "minimap-viewport-overlay",
+            "minimap-reflow-freeze",
+            "no-active-editor",
+        ));
+        surfaces.push(absent_visual_surface(
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
             "no-active-editor",
         ));
         surfaces.push(absent_visual_surface(
             "minimap-marker-strip",
             "no-active-editor",
         ));
+        // Keep the same anchor names in no-editor snapshots; proof policy uses
+        // absence reasons to fail or skip deliberately instead of silently
+        // treating omitted anchors as unverified.
+        pixel_anchors.push(absent_pixel_anchor(
+            "minimap-viewport-top-edge",
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
+            "no-active-editor",
+        ));
+        pixel_anchors.push(absent_pixel_anchor(
+            "minimap-viewport-fill",
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
+            "no-active-editor",
+        ));
+        pixel_anchors.push(absent_pixel_anchor(
+            "minimap-viewport-bottom-edge",
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
+            "no-active-editor",
+        ));
+        pixel_anchors.push(absent_pixel_anchor(
+            "minimap-first-content-row",
+            "minimap-source-map",
+            "no-active-editor",
+        ));
+        native_minimap = absent_native_minimap_diagnostic("no-active-editor");
         surfaces.push(absent_visual_surface("active-transient", "none-active"));
     }
 
@@ -1070,6 +1176,8 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
         ready: blocker.is_none(),
         blocker,
         surfaces,
+        pixel_anchors,
+        native_minimap,
         scroll_anchors,
     }
 }
@@ -1145,6 +1253,122 @@ fn absent_visual_surface(
     computed_visual_surface(name, None, absence_reason)
 }
 
+/// Build one stable pixel-anchor record and mirror visibility into absence.
+///
+/// External visual runners use the rect plus stable absence text to decide
+/// whether a screenshot crop is required or intentionally skipped.
+fn pixel_anchor(
+    name: &str,
+    surface: &str,
+    rect: Option<AutomationVisualRect>,
+    absence_reason: &'static str,
+) -> AutomationVisualPixelAnchorSnapshot {
+    AutomationVisualPixelAnchorSnapshot {
+        name: name.to_string(),
+        surface: surface.to_string(),
+        visible: rect.is_some(),
+        rect,
+        absence_reason: rect.is_none().then(|| absence_reason.to_string()),
+    }
+}
+
+fn absent_pixel_anchor(
+    name: &str,
+    surface: &str,
+    absence_reason: &'static str,
+) -> AutomationVisualPixelAnchorSnapshot {
+    pixel_anchor(name, surface, None, absence_reason)
+}
+
+/// Convert editor-page native minimap diagnostics into the Automation1 shape.
+///
+/// Raw GTK geometry stays bounded to non-content rectangles while preserving
+/// enough data for screenshot artifacts to explain native slider drift.
+fn native_minimap_diagnostic_snapshot(
+    diagnostics: &MinimapNativeSliderDiagnostics,
+) -> AutomationNativeMinimapDiagnosticSnapshot {
+    let source_map_rect = visual_rect_from_projected_bounds(diagnostics.source_map_bounds);
+    AutomationNativeMinimapDiagnosticSnapshot {
+        visible: true,
+        absence_reason: None,
+        projection_source: Some(diagnostics.projection_source.as_str().to_string()),
+        source_map_allocation: source_map_rect.map(|rect| AutomationVisualSize {
+            width: rect.width,
+            height: rect.height,
+        }),
+        source_map_rect,
+        editor_visible_rect: Some(text_view_rect_snapshot(diagnostics.editor_visible_rect)),
+        source_map_visible_rect: Some(text_view_rect_snapshot(diagnostics.source_map_visible_rect)),
+        source_view_vadjustment: diagnostics
+            .source_view_vadjustment
+            .map(adjustment_diagnostic_snapshot),
+        source_map_vadjustment: diagnostics
+            .source_map_vadjustment
+            .map(adjustment_diagnostic_snapshot),
+        editor_document_height: Some(diagnostics.editor_document_height),
+        source_map_document_height: Some(diagnostics.source_map_document_height),
+        border_left: Some(diagnostics.border_left),
+        border_right: Some(diagnostics.border_right),
+        native_slider_estimate: visual_rect_from_projected_bounds(
+            diagnostics.native_slider_estimate,
+        ),
+        line_projection_rect: diagnostics
+            .line_projection
+            .and_then(visual_rect_from_projected_bounds),
+        first_content_row_rect: diagnostics
+            .first_content_row
+            .and_then(visual_rect_from_projected_bounds),
+    }
+}
+
+/// Build the full native-minimap shape for skipped or unavailable states.
+///
+/// Returning every optional field as `None` keeps the schema stable when no
+/// active editor, source map, or renderable minimap exists.
+fn absent_native_minimap_diagnostic(
+    absence_reason: &'static str,
+) -> AutomationNativeMinimapDiagnosticSnapshot {
+    AutomationNativeMinimapDiagnosticSnapshot {
+        visible: false,
+        absence_reason: Some(absence_reason.to_string()),
+        projection_source: None,
+        source_map_allocation: None,
+        source_map_rect: None,
+        editor_visible_rect: None,
+        source_map_visible_rect: None,
+        source_view_vadjustment: None,
+        source_map_vadjustment: None,
+        editor_document_height: None,
+        source_map_document_height: None,
+        border_left: None,
+        border_right: None,
+        native_slider_estimate: None,
+        line_projection_rect: None,
+        first_content_row_rect: None,
+    }
+}
+
+fn text_view_rect_snapshot(rect: MinimapTextViewRect) -> AutomationVisualRect {
+    AutomationVisualRect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
+fn adjustment_diagnostic_snapshot(
+    diagnostics: MinimapAdjustmentDiagnostics,
+) -> AutomationVisualAdjustmentSnapshot {
+    AutomationVisualAdjustmentSnapshot {
+        at_lower: diagnostics.at_lower,
+        value_milli: diagnostics.value_milli,
+        lower_milli: diagnostics.lower_milli,
+        upper_milli: diagnostics.upper_milli,
+        page_size_milli: diagnostics.page_size_milli,
+    }
+}
+
 fn positive_allocation(widget: &gtk4::Widget) -> Option<AutomationVisualSize> {
     let width = widget.width();
     let height = widget.height();
@@ -1163,65 +1387,271 @@ fn widget_absence_reason(widget: &gtk4::Widget) -> &'static str {
     }
 }
 
+/// Expose the native minimap viewport slider bounds as a computed visual surface.
+///
+/// The surface is read-only diagnostic geometry: it does not create or mutate a
+/// widget, and absence reasons tell smoke tools whether the minimap was hidden
+/// or whether GTK could not provide stable bounds yet.
 fn minimap_viewport_surface(
     editor: &LushtextEditorPage,
-    source_map: &sourceview5::Map,
-    root: &gtk4::Widget,
+    bounds: Option<MinimapProjectedBounds>,
 ) -> AutomationVisualSurfaceSnapshot {
     if !editor.is_minimap_visible() {
         return absent_visual_surface(
-            "minimap-viewport-overlay",
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
             minimap_availability_absence_reason(editor),
         );
     }
 
-    let Some(map_bounds) = source_map
-        .compute_bounds(root)
-        .and_then(visual_rect_from_bounds)
-    else {
-        return absent_visual_surface("minimap-viewport-overlay", "bounds-unavailable");
+    let Some(rect) = bounds.and_then(visual_rect_from_projected_bounds) else {
+        return absent_visual_surface(MINIMAP_NATIVE_VIEWPORT_SURFACE, "bounds-unavailable");
     };
-    let visible_rect = editor.source_view().visible_rect();
-    if visible_rect.width() <= 0 || visible_rect.height() <= 0 {
-        return absent_visual_surface("minimap-viewport-overlay", "source-view-zero-allocation");
-    }
 
-    let (_, start_buffer_y) = editor.source_view().window_to_buffer_coords(
-        gtk4::TextWindowType::Widget,
-        visible_rect.x(),
-        visible_rect.y(),
-    );
-    let (_, end_buffer_y) = editor.source_view().window_to_buffer_coords(
-        gtk4::TextWindowType::Widget,
-        visible_rect.x(),
-        visible_rect.y().saturating_add(visible_rect.height()),
-    );
-    let (_, start_widget_y) =
-        source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, start_buffer_y);
-    let (_, end_widget_y) =
-        source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, end_buffer_y);
-
-    let top = map_bounds
-        .y
-        .saturating_add(start_widget_y)
-        .max(map_bounds.y);
-    let bottom = map_bounds
-        .y
-        .saturating_add(end_widget_y)
-        .min(map_bounds.y.saturating_add(map_bounds.height));
-    let height = bottom.saturating_sub(top).max(1);
     computed_visual_surface(
-        "minimap-viewport-overlay",
-        Some(AutomationVisualRect {
-            x: map_bounds.x,
-            y: top,
-            width: map_bounds.width,
-            height,
-        }),
+        MINIMAP_NATIVE_VIEWPORT_SURFACE,
+        Some(rect),
         "bounds-unavailable",
     )
 }
 
+/// Pixel anchor for the top edge of the native minimap viewport slider.
+fn minimap_viewport_top_edge_anchor(
+    editor: &LushtextEditorPage,
+    bounds: Option<MinimapProjectedBounds>,
+) -> AutomationVisualPixelAnchorSnapshot {
+    if !editor.is_minimap_visible() {
+        return absent_pixel_anchor(
+            "minimap-viewport-top-edge",
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
+            minimap_availability_absence_reason(editor),
+        );
+    }
+
+    let Some(rect) = bounds.and_then(|bounds| edge_anchor_rect(bounds.x, bounds.y, bounds.width))
+    else {
+        return absent_pixel_anchor(
+            "minimap-viewport-top-edge",
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
+            "bounds-unavailable",
+        );
+    };
+
+    pixel_anchor(
+        "minimap-viewport-top-edge",
+        MINIMAP_NATIVE_VIEWPORT_SURFACE,
+        Some(rect),
+        "bounds-unavailable",
+    )
+}
+
+/// Pixel anchor for the filled body of the native minimap viewport highlight.
+fn minimap_viewport_fill_anchor(
+    editor: &LushtextEditorPage,
+    bounds: Option<MinimapProjectedBounds>,
+) -> AutomationVisualPixelAnchorSnapshot {
+    if !editor.is_minimap_visible() {
+        return absent_pixel_anchor(
+            "minimap-viewport-fill",
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
+            minimap_availability_absence_reason(editor),
+        );
+    }
+
+    let Some(rect) =
+        bounds.and_then(|bounds| fill_anchor_rect(bounds.x, bounds.y, bounds.width, bounds.height))
+    else {
+        return absent_pixel_anchor(
+            "minimap-viewport-fill",
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
+            "bounds-unavailable",
+        );
+    };
+
+    pixel_anchor(
+        "minimap-viewport-fill",
+        MINIMAP_NATIVE_VIEWPORT_SURFACE,
+        Some(rect),
+        "bounds-unavailable",
+    )
+}
+
+/// Pixel anchor for the bottom edge of the native minimap viewport slider.
+fn minimap_viewport_bottom_edge_anchor(
+    editor: &LushtextEditorPage,
+    bounds: Option<MinimapProjectedBounds>,
+) -> AutomationVisualPixelAnchorSnapshot {
+    if !editor.is_minimap_visible() {
+        return absent_pixel_anchor(
+            "minimap-viewport-bottom-edge",
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
+            minimap_availability_absence_reason(editor),
+        );
+    }
+
+    let Some(rect) =
+        bounds.and_then(|bounds| bottom_edge_anchor_rect(bounds.x, bounds.bottom(), bounds.width))
+    else {
+        return absent_pixel_anchor(
+            "minimap-viewport-bottom-edge",
+            MINIMAP_NATIVE_VIEWPORT_SURFACE,
+            "bounds-unavailable",
+        );
+    };
+
+    pixel_anchor(
+        "minimap-viewport-bottom-edge",
+        MINIMAP_NATIVE_VIEWPORT_SURFACE,
+        Some(rect),
+        "bounds-unavailable",
+    )
+}
+
+/// Pixel anchor for the first rendered minimap text row.
+fn minimap_first_content_row_anchor(
+    editor: &LushtextEditorPage,
+    bounds: Option<MinimapProjectedBounds>,
+) -> AutomationVisualPixelAnchorSnapshot {
+    if !editor.is_minimap_visible() {
+        return absent_pixel_anchor(
+            "minimap-first-content-row",
+            "minimap-source-map",
+            minimap_availability_absence_reason(editor),
+        );
+    }
+
+    let Some(rect) =
+        bounds.and_then(|bounds| content_anchor_rect(bounds.x, bounds.y, bounds.width))
+    else {
+        return absent_pixel_anchor(
+            "minimap-first-content-row",
+            "minimap-source-map",
+            "bounds-unavailable",
+        );
+    };
+
+    pixel_anchor(
+        "minimap-first-content-row",
+        "minimap-source-map",
+        Some(rect),
+        "bounds-unavailable",
+    )
+}
+
+/// Return a narrow crop around a rounded horizontal slider edge.
+fn edge_anchor_rect(x: f64, y: f64, width: f64) -> Option<AutomationVisualRect> {
+    if !x.is_finite() || !y.is_finite() || !width.is_finite() || width <= 0.0 {
+        return None;
+    }
+
+    let x = gtk_f64_floor_to_i32(x);
+    // Include one pixel above and below the rounded edge so fractional GTK
+    // allocation and antialiasing still land inside the detector crop.
+    let y = gtk_f64_round_to_i32(y).saturating_sub(1);
+    let width = gtk_f64_ceil_to_i32(width).max(1);
+    Some(AutomationVisualRect {
+        x,
+        y,
+        width,
+        height: 3,
+    })
+}
+
+/// Return a crop that catches the native slider's lower border after GTK rounding.
+fn bottom_edge_anchor_rect(x: f64, y: f64, width: f64) -> Option<AutomationVisualRect> {
+    if !x.is_finite() || !y.is_finite() || !width.is_finite() || width <= 0.0 {
+        return None;
+    }
+
+    let x = gtk_f64_floor_to_i32(x);
+    // The bottom stroke can sit above the projected bottom after line-height
+    // rounding, so use a taller upward crop around the native border.
+    let y = gtk_f64_round_to_i32(y).saturating_sub(7);
+    let width = gtk_f64_ceil_to_i32(width).max(1);
+    Some(AutomationVisualRect {
+        x,
+        y,
+        width,
+        height: 10,
+    })
+}
+
+/// Return a small crop inside the viewport body, away from the crisp edge strokes.
+fn fill_anchor_rect(x: f64, y: f64, width: f64, height: f64) -> Option<AutomationVisualRect> {
+    if !x.is_finite()
+        || !y.is_finite()
+        || !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+    {
+        return None;
+    }
+
+    // Only inset when the viewport is tall enough to leave a real body sample;
+    // cap the crop so detectors inspect the fill, not unrelated minimap text.
+    let inset = if height > 4.0 { 2.0 } else { 0.0 };
+    let x = gtk_f64_floor_to_i32(x);
+    let y = gtk_f64_round_to_i32(y + inset);
+    let width = gtk_f64_ceil_to_i32(width).max(1);
+    let height = gtk_f64_ceil_to_i32((height - inset).clamp(1.0, 10.0));
+    Some(AutomationVisualRect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+/// Return a crop around the first visible minimap content row.
+fn content_anchor_rect(x: f64, y: f64, width: f64) -> Option<AutomationVisualRect> {
+    if !x.is_finite() || !y.is_finite() || !width.is_finite() || width <= 0.0 {
+        return None;
+    }
+
+    let x = gtk_f64_floor_to_i32(x);
+    // Include a small upward allowance for font ascent and theme rounding so
+    // the detector samples actual minimap glyph pixels.
+    let y = gtk_f64_round_to_i32(y).saturating_sub(2);
+    let width = gtk_f64_ceil_to_i32(width).max(1);
+    Some(AutomationVisualRect {
+        x,
+        y,
+        width,
+        height: 18,
+    })
+}
+
+/// Convert finite projected bounds into outward-rounded logical pixels.
+///
+/// Outward rounding preserves thin native slider edges for screenshot crops
+/// while rejecting non-finite or empty geometry before serialization.
+fn visual_rect_from_projected_bounds(
+    bounds: crate::ui::editor_page::MinimapProjectedBounds,
+) -> Option<AutomationVisualRect> {
+    if !bounds.x.is_finite()
+        || !bounds.y.is_finite()
+        || !bounds.width.is_finite()
+        || !bounds.height.is_finite()
+        || bounds.width <= 0.0
+        || bounds.height <= 0.0
+    {
+        return None;
+    }
+
+    // Round outward so diagnostic crops include the full native slider even
+    // when GtkSourceView reports fractional logical coordinates.
+    Some(AutomationVisualRect {
+        x: gtk_f64_floor_to_i32(bounds.x),
+        y: gtk_f64_floor_to_i32(bounds.y),
+        width: gtk_f64_ceil_to_i32(bounds.width).max(1),
+        height: gtk_f64_ceil_to_i32(bounds.height).max(1),
+    })
+}
+
+/// Translate minimap availability into stable Automation1 absence reasons.
+///
+/// Visible-but-unprojectable state reports `bounds-unavailable`, because these
+/// strings are smoke-test policy as much as user-interface state.
 fn minimap_availability_absence_reason(editor: &LushtextEditorPage) -> &'static str {
     match editor.minimap_availability() {
         crate::ui::editor_page::MinimapAvailability::Disabled => "minimap-disabled",
@@ -1272,6 +1702,30 @@ fn visual_rect_from_bounds(bounds: gtk4::graphene::Rect) -> Option<AutomationVis
 )]
 fn gtk_coord_to_i32(value: f32) -> i32 {
     value.round() as i32
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "GTK projected coordinates are bounded to practical window-sized logical pixels"
+)]
+fn gtk_f64_floor_to_i32(value: f64) -> i32 {
+    value.floor() as i32
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "GTK projected coordinates are bounded to practical window-sized logical pixels"
+)]
+fn gtk_f64_round_to_i32(value: f64) -> i32 {
+    value.round() as i32
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "GTK projected dimensions are bounded to practical window-sized logical pixels"
+)]
+fn gtk_f64_ceil_to_i32(value: f64) -> i32 {
+    value.ceil() as i32
 }
 
 #[expect(

@@ -51,6 +51,28 @@ class Rect:
         }
 
 
+@dataclass(frozen=True)
+class PixelAnchorDetection:
+    name: str
+    detector: str
+    status: str
+    row_y: int | None
+    rect: Rect
+    matched_pixels: int
+    required_pixels: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "detector": self.detector,
+            "status": self.status,
+            "row_y": self.row_y,
+            "rect": self.rect.to_dict(),
+            "matched_pixels": self.matched_pixels,
+            "required_pixels": self.required_pixels,
+        }
+
+
 def read_chunks(data: bytes) -> tuple[dict[str, int], bytes]:
     if not data.startswith(PNG_SIGNATURE):
         raise ValueError("not a PNG file")
@@ -207,6 +229,214 @@ def crop_rows(image: PngImage, rect: Rect) -> list[bytes]:
     start = rect.x * image.bpp
     end = (rect.x + rect.width) * image.bpp
     return [row[start:end] for row in image.rows[rect.y : rect.y + rect.height]]
+
+
+def pixel_rgba(image: PngImage, x: int, y: int) -> tuple[int, int, int, int]:
+    validate_rect(image, Rect(x, y, 1, 1))
+    start = x * image.bpp
+    values = image.rows[y][start : start + image.bpp]
+    if image.color_type == 6:
+        return values[0], values[1], values[2], values[3]
+    if image.color_type == 2:
+        return values[0], values[1], values[2], 255
+    if image.color_type == 4:
+        return values[0], values[0], values[0], values[1]
+    if image.color_type == 0:
+        return values[0], values[0], values[0], 255
+    raise ValueError(f"unsupported PNG color type {image.color_type}")
+
+
+def color_distance(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> int:
+    return max(abs(first[index] - second[index]) for index in range(4))
+
+
+def is_neutral(pixel: tuple[int, int, int, int], tolerance: int = 18) -> bool:
+    red, green, blue, alpha = pixel
+    return alpha > 0 and max(red, green, blue) - min(red, green, blue) <= tolerance
+
+
+def is_minimap_content_pixel(pixel: tuple[int, int, int, int]) -> bool:
+    red, green, blue, alpha = pixel
+    if alpha == 0:
+        return False
+    high = max(red, green, blue)
+    low = min(red, green, blue)
+    average = (red + green + blue) // 3
+    chroma = high - low
+    # Minimap glyph rows can be saturated syntax colors or neutral plain-text
+    # strokes. Slider chrome is also neutral, so `minimap_content_count` rejects
+    # long contiguous chrome runs before this broad per-pixel predicate is used.
+    return (high >= 120 and chroma >= 24) or average <= 252
+
+
+def is_viewport_highlight_fill_pixel(pixel: tuple[int, int, int, int]) -> bool:
+    red, green, blue, alpha = pixel
+    if alpha == 0:
+        return False
+    high = max(red, green, blue)
+    low = min(red, green, blue)
+    average = (red + green + blue) // 3
+    # The native viewport fill is neutral and semi-transparent, so use a broad
+    # luminance band instead of a theme-specific RGB value.
+    return high - low <= 24 and 45 <= average <= 230
+
+
+def is_native_minimap_viewport_edge_pixel(pixel: tuple[int, int, int, int]) -> bool:
+    red, green, blue, alpha = pixel
+    if alpha == 0 or not is_neutral(pixel, tolerance=16):
+        return False
+    average = (red + green + blue) // 3
+    # The native slider border is the bright/dark neutral stroke, not the
+    # darker fill strip or the minimap background. The broad range covers both
+    # light and dark Adwaita themes while rejecting the observed fill color.
+    return 72 <= average <= 210
+
+
+def is_minimap_search_marker_pixel(pixel: tuple[int, int, int, int]) -> bool:
+    red, green, blue, alpha = pixel
+    if alpha == 0:
+        return False
+    # Search markers are orange in both Adwaita variants; require red dominance
+    # so ordinary syntax-highlighted minimap text does not count as a marker.
+    return red >= 180 and 70 <= green <= 190 and blue <= 100 and red > green > blue
+
+
+def detect_pixel_anchor(
+    image: PngImage,
+    name: str,
+    rect: Rect,
+    detector: str,
+    min_pixels: int,
+) -> PixelAnchorDetection:
+    """Find the first crop row that satisfies a screenshot detector.
+
+    The best failed row is retained for diagnostics so artifact summaries can
+    show near misses without treating geometry-only evidence as a pass.
+    """
+
+    validate_rect(image, rect)
+    best_row_y: int | None = None
+    best_count = 0
+    # Return the first row that meets the manifest threshold so `row_y` stays
+    # tied to the topmost visible anchor; keep the strongest row for failures.
+    for y in range(rect.y, rect.y + rect.height):
+        if detector == "horizontal-neutral-edge-row":
+            count = horizontal_edge_count(image, rect, y)
+        elif detector == "native-minimap-viewport-top-edge-row":
+            count = native_minimap_viewport_edge_count(image, rect, y)
+        elif detector == "minimap-content-row":
+            count = minimap_content_count(image, rect, y, min_pixels)
+        elif detector == "minimap-search-marker-row":
+            count = row_pixel_count(image, rect, y, is_minimap_search_marker_pixel)
+        elif detector == "viewport-highlight-fill-row":
+            count = row_pixel_count(image, rect, y, is_viewport_highlight_fill_pixel)
+        elif detector == "non-background-row":
+            count = non_background_count(image, rect, y)
+        else:
+            raise ValueError(f"unsupported pixel anchor detector: {detector}")
+        if count > best_count:
+            best_count = count
+            best_row_y = y
+        if count >= min_pixels:
+            return PixelAnchorDetection(
+                name=name,
+                detector=detector,
+                status="passed",
+                row_y=y,
+                rect=rect,
+                matched_pixels=count,
+                required_pixels=min_pixels,
+            )
+    return PixelAnchorDetection(
+        name=name,
+        detector=detector,
+        status="failed",
+        row_y=best_row_y,
+        rect=rect,
+        matched_pixels=best_count,
+        required_pixels=min_pixels,
+    )
+
+
+def native_minimap_viewport_edge_count(image: PngImage, rect: Rect, y: int) -> int:
+    return longest_row_run_count(image, rect, y, is_native_minimap_viewport_edge_pixel)
+
+
+def minimap_content_count(image: PngImage, rect: Rect, y: int, min_pixels: int) -> int:
+    chrome_run_threshold = 8
+    if native_minimap_viewport_edge_count(image, rect, y) >= chrome_run_threshold:
+        return 0
+
+    pixels = [pixel_rgba(image, x, y) for x in range(rect.x, rect.x + rect.width)]
+    if not pixels:
+        return 0
+    saturated_count = sum(
+        1
+        for pixel in pixels
+        if pixel[3] > 0
+        and max(pixel[0], pixel[1], pixel[2]) >= 120
+        and max(pixel[0], pixel[1], pixel[2]) - min(pixel[0], pixel[1], pixel[2]) >= 24
+    )
+    if saturated_count >= min_pixels:
+        return saturated_count
+    background = max(set(pixels), key=pixels.count)
+    # Count visible glyph strokes, not the row's dominant background. This lets
+    # plain neutral minimap text pass while uniform light/dark map backgrounds
+    # and slider fill rows remain rejected.
+    count = sum(
+        1
+        for pixel in pixels
+        if color_distance(pixel, background) >= 4 and is_minimap_content_pixel(pixel)
+    )
+    fill_run = longest_row_run_count(image, rect, y, is_viewport_highlight_fill_pixel)
+    if fill_run >= chrome_run_threshold and count < max(20, min_pixels * 2):
+        return 0
+    return count
+
+
+def longest_row_run_count(image: PngImage, rect: Rect, y: int, predicate) -> int:
+    longest = 0
+    current = 0
+    for x in range(rect.x, rect.x + rect.width):
+        if predicate(pixel_rgba(image, x, y)):
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
+
+
+def horizontal_edge_count(image: PngImage, rect: Rect, y: int) -> int:
+    above_y = y - 1 if y - 1 >= 0 else None
+    below_y = y + 1 if y + 1 < image.height else None
+    if above_y is None or below_y is None:
+        return 0
+    count = 0
+    for x in range(rect.x, rect.x + rect.width):
+        pixel = pixel_rgba(image, x, y)
+        contrasts = []
+        for compare_y in (above_y, below_y):
+            if compare_y is None:
+                continue
+            other = pixel_rgba(image, x, compare_y)
+            contrasts.append(
+                (is_neutral(pixel) or is_neutral(other)) and color_distance(pixel, other) >= 6
+            )
+        if contrasts and all(contrasts):
+            count += 1
+    return count
+
+
+def row_pixel_count(image: PngImage, rect: Rect, y: int, predicate) -> int:
+    return sum(1 for x in range(rect.x, rect.x + rect.width) if predicate(pixel_rgba(image, x, y)))
+
+
+def non_background_count(image: PngImage, rect: Rect, y: int) -> int:
+    pixels = [pixel_rgba(image, x, y) for x in range(rect.x, rect.x + rect.width)]
+    if not pixels:
+        return 0
+    background = max(set(pixels), key=pixels.count)
+    return sum(1 for pixel in pixels if color_distance(pixel, background) >= 4)
 
 
 def pixel_masked(x: int, y: int, masks: list[Rect]) -> bool:

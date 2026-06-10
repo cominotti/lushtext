@@ -34,7 +34,7 @@ assertable through the read-only automation snapshot.
 
 ## Overlay Widgets and CSS
 
-Widgets rendered via `GtkOverlay` must use opaque backgrounds. Adwaita's `@card_bg_color` is 80% transparent — use `@window_bg_color` for overlay containers like the search bar.
+Widgets rendered via `GtkOverlay` must use opaque backgrounds. Adwaita's `@card_bg_color` is 80% transparent — use `@window_bg_color` for overlay containers like the search bar. If a freeze or snapshot overlay sits above a live native widget while that widget repaints underneath, give the cover an opaque background matching the captured surface; otherwise transparent pixels can leak the live widget's stale rendered state through the snapshot.
 
 ## Tab-Dependent UI Updates
 
@@ -44,13 +44,15 @@ Any UI element that displays per-tab state (status bar metadata, title bar subti
 
 If a structural tab operation selects an editable document, it must also clear window-level projections that can hide or replace the editor surface, such as Markdown preview-only mode. These projections can outlive the previous selected tab, so reset their action state and visible pane before scheduling editor focus restoration.
 
-## Size-Dependent Constraints (size_allocate vs notify)
+## Size-Dependent Constraints (allocation signals vs notify)
 
-When a widget's behavior depends on its parent's size (e.g., sidebar ≤ 1/3 window width), use `WidgetImpl::size_allocate()` — NOT property notifications:
+When a widget's behavior depends on its parent's size (e.g., sidebar ≤ 1/3
+window width), prefer the closest live allocation signal over property
+notifications, and prove that signal actually fires in the relevant widget:
 
 - **`notify::default-width` / `notify::maximized`** fire *before* the new allocation is applied. Reading `window.width()` in these handlers returns the **old** stale value. This causes constraints to silently fail during maximize/unmaximize transitions.
-- **`size_allocate(width, height, baseline)`** receives the **actual allocated dimensions as parameters**. No timing issues.
-- **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes (e.g., user drags a `GtkPaned` divider), also connect `notify::position` on the child.
+- **`size_allocate(width, height, baseline)`** receives the **actual allocated dimensions as parameters** when GTK calls the vfunc for that subclass. Prove it fires before wiring repair logic to it. GTK4 can skip a subclass override on widgets whose class installs a layout manager; `LushtextEditorPage` inherits the `GtkBoxLayout` path, so editor viewport reflow must be observed through the source view's scroll-adjustment page sizes instead.
+- **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes (e.g., user drags a `GtkPaned` divider), also connect `notify::position` on the child. For `GtkTextView`/`GtkSourceView` viewport width or height changes, the horizontal and vertical adjustments' `page-size` values are a reliable allocation-derived signal.
 - `size_allocate` fires on every layout pass. Keep the handler cheap (comparison + maybe one `set_position`). Guard GSettings writes with a value-change check to avoid D-Bus overhead.
 - If allocation-derived geometry updates an `AdwBreakpoint` condition, cache the derived condition or threshold and call `set_condition()` only when it actually changes. Reparsing or reinstalling breakpoint conditions on every animation frame adds main-thread layout churn.
 - If `notify::position` also persists state, suppress that persistence while a programmatic paned animation is in flight. Clamp can stay live every frame; debounced settings writes should run once from the animation completion path.
@@ -61,6 +63,15 @@ When a widget's behavior depends on its parent's size (e.g., sidebar ≤ 1/3 win
   exact except for declared masks, and allowed-changing regions must have
   geometry-anchor assertions such as scroll anchors, visibility, and allocation
   bounds.
+- When the visual effect itself is rendered from code, CSS, or native toolkit
+  styling, verify the rendered pixels with screenshot-derived `pixel_anchors`
+  instead of comparing only an inferred rectangle. Automation1 may expose broad
+  crop bounds, readiness, scale, and diagnostic anchors, but those app-owned
+  rectangles are not a substitute for the screenshot detector. For example, a
+  minimap viewport highlight needs geometry assertions plus a mandatory
+  pixel-anchor assertion for its native top edge; nearby content-row anchors can
+  be added by scenarios that need them, but the rendered highlight must not rely
+  on rectangle-only checks.
 
 **Known Flatpak animation regression:** sidebar and document-properties open/close animations looked like they were running below the monitor refresh rate even though no obvious blocking I/O was present. The root cause was allocation-frame churn: `size_allocate()` repeatedly synchronized split-view widths, the properties fraction notify path rewrote GSettings, and the adaptive properties breakpoint was reparsed/reinstalled for each animated frame. The durable fix pattern is:
 
@@ -174,6 +185,17 @@ directly. If the bug is about pixels staying identical while another surface
 changes, pair the widget test with the visual geometry lane so the proof captures
 both screenshots in one process and compares protected regions after
 `visual-geometry-settled`.
+If the bug is about a rendered edge, highlight, marker, overlay, or other
+effect staying aligned, add widget tests for the app-owned allocation/projection
+and add visual geometry `pixel_anchors` that detect the actual screenshot
+pixels. The root visual geometry summary must list the matching
+`pixel_verified_invariant_ids` when the changed files require a named pixel
+invariant, and the case rows must include screenshot-derived pixel evidence plus
+final-frame rendered-anchor stability plus final sidebar/editor/minimap
+geometry. For live-only regressions, capture the current Automation1 state with
+`scripts/lushtext-automation.py
+visual-geometry-capture ...` and replay the generated headless scenario before
+accepting the fix.
 
 **Test the preconditions, not just the wiring:** When a feature depends on a GTK widget property (like `single-click-activate=true`), write a test that asserts the property value directly. This catches template regressions even when end-to-end click simulation isn't possible in headless tests.
 

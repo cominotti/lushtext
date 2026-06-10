@@ -2111,9 +2111,17 @@ struct MinimapGeometrySnapshot {
     vertical_value: f64,
     vertical_page_size: f64,
     vertical_upper: f64,
+    /// Source-map adjustment lower bound, proving native map top anchoring.
+    source_map_vertical_lower: f64,
+    /// Source-map adjustment value, tracked because it can drift independently.
+    source_map_vertical_value: f64,
     visible_start_line: i32,
 }
 
+/// Capture editor, source-map, and marker-strip geometry after GTK settles.
+///
+/// Tests compare editor scroll anchoring with `GtkSourceMap`'s own adjustment,
+/// which can drift independently during width-only reflow.
 fn minimap_geometry_snapshot(editor: &LushtextEditorPage) -> MinimapGeometrySnapshot {
     let source_view = editor.source_view();
     let source_map = minimap_source_map(editor);
@@ -2128,6 +2136,9 @@ fn minimap_geometry_snapshot(editor: &LushtextEditorPage) -> MinimapGeometrySnap
         .iter_at_location(0, buffer_y)
         .map_or(0, |iter| iter.line());
     let vadjustment = source_view.vadjustment().expect("source view vadjustment");
+    let source_map_vadjustment = source_map
+        .vadjustment()
+        .expect("source map should expose a vertical adjustment");
     let map_bounds = source_map
         .compute_bounds(&*editor.imp().minimap_overlay)
         .expect("source map should have overlay-relative bounds");
@@ -2150,6 +2161,8 @@ fn minimap_geometry_snapshot(editor: &LushtextEditorPage) -> MinimapGeometrySnap
         vertical_value: vadjustment.value(),
         vertical_page_size: vadjustment.page_size(),
         vertical_upper: vadjustment.upper(),
+        source_map_vertical_lower: source_map_vadjustment.lower(),
+        source_map_vertical_value: source_map_vadjustment.value(),
         visible_start_line,
     }
 }
@@ -2188,8 +2201,9 @@ fn assert_top_minimap_reflow_invariants(
 ) {
     assert_eq!(geometry.editor_wrap_mode, expected_wrap_mode);
     assert_eq!(
-        geometry.source_map_wrap_mode, expected_wrap_mode,
-        "minimap source map should mirror editor wrap mode after reflow: {geometry:?}"
+        geometry.source_map_wrap_mode,
+        gtk4::WrapMode::None,
+        "minimap source map should stay unwrapped after reflow: {geometry:?}"
     );
     assert!(
         geometry.source_map_width > 0
@@ -2199,8 +2213,8 @@ fn assert_top_minimap_reflow_invariants(
         "editor, source map, and marker strip should all have positive settled allocation: {geometry:?}"
     );
     assert!(
-        geometry.source_map_top_margin >= 6,
-        "minimap needs an explicit top content inset, got {geometry:?}"
+        geometry.source_map_top_margin == 5,
+        "minimap uses a fixed native-map top content inset, got {geometry:?}"
     );
     assert_eq!(
         geometry.visible_start_line, 0,
@@ -2209,6 +2223,12 @@ fn assert_top_minimap_reflow_invariants(
     assert!(
         (geometry.vertical_value - geometry.vertical_lower).abs() <= 0.5,
         "top-anchored reflow should keep the vertical adjustment at its lower bound: {geometry:?}"
+    );
+    // GtkSourceMap subtracts its own visible-rect y while drawing the native
+    // slider, so its adjustment must stay anchored independently of the editor.
+    assert!(
+        (geometry.source_map_vertical_value - geometry.source_map_vertical_lower).abs() <= 0.5,
+        "top-anchored reflow should keep the source-map adjustment at its lower bound: {geometry:?}"
     );
     assert!(
         geometry.vertical_upper > geometry.vertical_page_size,
@@ -3413,6 +3433,13 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
             .search_context()
             .is_some_and(|context| context.occurrences_count() == 2)
     });
+    // Realization opens a width-reflow burst whose debounced settle repair
+    // legitimately blocks the idle predicate, so drain queued minimap work
+    // before asserting that the snapshot reports an idle window.
+    wait_until(Duration::from_secs(5), || {
+        let minimap = &editor.imp().minimap;
+        !minimap.reflow_settle_pending.get() && !minimap.refresh_pending.get()
+    });
 
     let app = window
         .application()
@@ -3595,6 +3622,93 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     assert!(!ok);
     assert_eq!(detail, "replace-preview");
     wait_until(Duration::from_secs(2), || current_idle_blocker(&app).is_none());
+}
+
+#[test]
+fn test_hidden_minimap_refresh_does_not_block_visual_readiness() {
+    ensure_gtk_init();
+    let window = test_window();
+    window
+        .imp()
+        .settings
+        .set_boolean(keys::SHOW_MINIMAP, false)
+        .expect("disable minimap");
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    wait_until(Duration::from_secs(2), || !editor.is_minimap_visible());
+
+    editor.mark_minimap_refresh_pending_for_test();
+
+    let app = window
+        .application()
+        .expect("window should have an application")
+        // GTK stores the application behind the base `gtk::Application` type;
+        // downcast it so the automation readiness helpers can read app state.
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("test app should be LushtextApplication");
+    assert_eq!(current_idle_blocker(&app), None);
+
+    let snapshot = app_snapshot(&app);
+    assert!(snapshot.idle);
+    let geometry = snapshot
+        .window
+        .expect("active window snapshot")
+        .visual_geometry;
+    assert!(geometry.ready);
+    assert_eq!(geometry.blocker, None);
+
+    let visual_ready = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app.clone(),
+        AutomationReadinessPredicate::VisualGeometrySettled,
+        1,
+    ));
+    assert!(visual_ready.ok);
+    let idle_ready = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app,
+        AutomationReadinessPredicate::Idle,
+        1,
+    ));
+    assert!(idle_ready.ok);
+}
+
+#[test]
+fn test_focus_suppressed_minimap_refresh_does_not_block_visual_readiness() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || active_editor(&window).is_minimap_visible());
+
+    activate_action(&window, "toggle-focus-mode");
+    let editor = active_editor(&window);
+    wait_until(Duration::from_secs(2), || {
+        editor.minimap_availability() == MinimapAvailability::Disabled
+    });
+    assert!(settings.boolean(keys::SHOW_MINIMAP));
+
+    editor.mark_minimap_refresh_pending_for_test();
+
+    let app = window
+        .application()
+        .expect("window should have an application")
+        // GTK stores the application behind the base `gtk::Application` type;
+        // downcast it so the automation readiness helpers can read app state.
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("test app should be LushtextApplication");
+    assert_eq!(current_idle_blocker(&app), None);
+
+    let visual_ready = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app,
+        AutomationReadinessPredicate::VisualGeometrySettled,
+        1,
+    ));
+    assert!(visual_ready.ok);
 }
 
 #[test]
@@ -4753,13 +4867,19 @@ fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
         workspace_sidebar_visible(&window)
             && minimap_geometry_snapshot(&editor).editor_width < before.editor_width
     });
-    flush_after_delay(Duration::from_millis(150));
+    // Wait out the debounced width-reflow settle repair instead of guessing a
+    // fixed delay so the snapshot below reads settled minimap geometry.
+    wait_until(Duration::from_secs(5), || {
+        let minimap = &editor.imp().minimap;
+        !minimap.reflow_settle_pending.get() && !minimap.refresh_pending.get()
+    });
     let after = minimap_geometry_snapshot(&editor);
 
     assert_eq!(after.editor_wrap_mode, gtk4::WrapMode::Word);
     assert_eq!(
-        after.source_map_wrap_mode, after.editor_wrap_mode,
-        "the minimap source map must use the same wrap policy as the editor after sidebar reflow"
+        after.source_map_wrap_mode,
+        gtk4::WrapMode::None,
+        "the minimap source map must stay unwrapped after sidebar reflow"
     );
     assert!(
         after.source_map_width > 0 && after.editor_visible_height > 0,
@@ -4805,17 +4925,28 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
     } else {
         gtk4::WrapMode::None
     };
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(5), || {
+        let minimap = &editor.imp().minimap;
         let geometry = minimap_geometry_snapshot(&editor);
-        geometry.visible_start_line == 0
+        !minimap.reflow_settle_pending.get()
+            && !minimap.refresh_pending.get()
+            && geometry.visible_start_line == 0
             && (geometry.vertical_value - geometry.vertical_lower).abs() <= 0.5
-            && geometry.source_map_wrap_mode == expected_wrap_mode
+            && geometry.source_map_wrap_mode == gtk4::WrapMode::None
             && geometry.minimap_first_line_top >= 1.0
     });
     let before = minimap_geometry_snapshot(&editor);
     assert_top_minimap_reflow_invariants(&editor, before, expected_wrap_mode);
 
     activate_action(&window, "toggle-sidebar");
+    // The first width-changed allocation must open a reflow burst so margin
+    // and scroll repair are pinned until the width settles. The pixel freeze
+    // itself is best-effort and needs a rendered frame, which this harness
+    // does not produce, so rendered-freeze coverage lives in the visual
+    // geometry smoke lane instead.
+    wait_until(Duration::from_secs(2), || {
+        editor.imp().minimap.reflow_settle_pending.get()
+    });
     let expected_sidebar_visible = !initially_visible;
     wait_until(Duration::from_secs(2), || {
         let geometry = minimap_geometry_snapshot(&editor);
@@ -4826,19 +4957,51 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
                 geometry.editor_width > before.editor_width
             }
     });
+    // The settle repair is debounced behind the animation; wait for it and the
+    // follow-up marker refresh to drain so the assertions below see the settled
+    // post-repair state instead of mid-burst pinned geometry.
+    wait_until(Duration::from_secs(5), || {
+        let minimap = &editor.imp().minimap;
+        !minimap.reflow_settle_pending.get() && !minimap.refresh_pending.get()
+    });
     wait_until(Duration::from_secs(2), || {
         let geometry = minimap_geometry_snapshot(&editor);
         geometry.visible_start_line == 0
             && (geometry.vertical_value - geometry.vertical_lower).abs() <= 0.5
-            && geometry.source_map_wrap_mode == expected_wrap_mode
+            && geometry.source_map_wrap_mode == gtk4::WrapMode::None
             && geometry.minimap_first_line_top >= 1.0
             && !editor
                 .minimap_marker_bounds(MinimapMarkerKind::Bookmark)
                 .is_empty()
     });
 
+    let freeze_picture = editor
+        .imp()
+        .minimap
+        .reflow_freeze_picture
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("reflow freeze picture should exist");
+    assert!(
+        !freeze_picture.property::<bool>("visible"),
+        "the settle repair must reveal the live native map again after reflow"
+    );
+
+    let map_adjustment = minimap_source_map(&editor)
+        .vadjustment()
+        .expect("source map vadjustment");
+    assert!(
+        (map_adjustment.value() - map_adjustment.lower()).abs() <= 0.5,
+        "top-anchored reflow must clear stale source-map scroll so the native slider stays anchored"
+    );
+
     let after = minimap_geometry_snapshot(&editor);
     assert_top_minimap_reflow_invariants(&editor, after, expected_wrap_mode);
+    assert!(
+        (after.minimap_first_line_top - before.minimap_first_line_top).abs() <= 1.0,
+        "sidebar toggle moved the first rendered minimap row beyond margin rounding; before={before:?}, after={after:?}"
+    );
 
     window.destroy();
     flush_after_delay(Duration::from_millis(50));

@@ -1,44 +1,46 @@
 {
   "schema_version": 1,
-  "scenario_id": "minimap-sidebar-top",
+  "scenario_id": "minimap-sidebar-live-threshold",
   "scenario_type": "minimap-sidebar",
   "invariant_id": "native-minimap-highlight-anchors",
-  "description": "Same-session sidebar toggle invariant for the native minimap viewport highlight at the top of a minimap-enabled document.",
+  "animation_sampling": {
+    "enabled": true,
+    "capture_mode": "stream",
+    "invariant_id": "native-minimap-animation-highlight-anchors",
+    "stream_frame_count": 48,
+    "stream_timeout_ms": 1400,
+    "sample_interval_ms": 16,
+    "max_sample_skew_ms": 80,
+    "max_screen_y_delta": 0,
+    "require_intermediate_geometry": true,
+    "required_anchors": [
+      "minimap-native-viewport-top-edge"
+    ]
+  },
+  "description": "Reproduced intermediate-size minimap/sidebar threshold: light theme, word wrap enabled, long plain lines, top-of-file viewport, 1822x1272. This exact live-sized case is the bounded coverage point; passing 720p, 1080p, 1440p, or 1600x1000 does not cover it.",
   "matrix": {
     "sizes": [
       {
-        "id": "constrained",
-        "width": 1260,
-        "height": 900
-      },
-      {
-        "id": "maximized-like",
-        "width": 1600,
-        "height": 1000
-      },
-      {
-        "id": "short-wide",
-        "width": 1738,
-        "height": 342
+        "id": "live-1822x1272",
+        "width": 1822,
+        "height": 1272
       }
     ],
     "color_schemes": [
-      "force-light",
-      "force-dark"
+      "force-light"
     ],
     "word_wrap": [
-      true,
-      false
+      true
     ],
     "directions": [
       "hide",
       "show"
     ],
-    "exclude": [
-      {
-        "size": "short-wide",
-        "word_wrap": true
-      }
+    "viewport_positions": [
+      "top"
+    ],
+    "fixture_kinds": [
+      "plain-lines"
     ]
   },
   "protected_regions": [
@@ -90,6 +92,7 @@
   ],
   "readiness_predicates": [
     "file-open-complete",
-    "visual-geometry-settled"
+    "visual-geometry-settled",
+    "final-sidebar-geometry"
   ]
 }

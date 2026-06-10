@@ -32,8 +32,9 @@ EXPECTED_HELPER_FLAG_MARKER = (
     "--enable-atspi --window-action --window-string-action --wait-predicate --wait-window-action --wait-atspi-text "
     "--color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts "
     "run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test "
-    "lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary self-test "
-    "--bus-name --object-path --interface --window-path --timeout-ms --json --field --string --bool --uint32 --variant-json -->"
+        "lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary visual-geometry-capture self-test "
+        "--bus-name --object-path --interface --window-path --timeout-ms --json --field --string --bool --uint32 --variant-json "
+        "--scenario-id --size-id --direction --color-scheme --word-wrap --fixture-kind --viewport-position -->"
 )
 
 

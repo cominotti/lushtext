@@ -121,9 +121,20 @@ This is the preferred workflow over broad speculative code changes. For geometry
 - For automated visual inspection, prefer the headless Mutter helper before live-desktop portal screenshots and before Xvfb. Mutter matches the CI compositor path and avoids stealing the human's focus.
 - For pixel invariants, prefer `make visual-geometry-smoke` or
   `scripts/visual-geometry-smoke.py --case-filter ...` so before/after
-  screenshots come from the same process, wait on `visual-geometry-settled`,
-  compare protected regions exactly, and preserve bounded geometry snapshots
-  beside the PNGs.
+  screenshots come from the same process, wait on `visual-geometry-settled` plus
+  any scenario-specific final allocation predicate, compare protected regions
+  exactly, verify declared pixel anchors and relative anchor deltas, and preserve
+  bounded geometry snapshots beside the PNGs. If the user can reproduce a
+  geometry bug in a live window, first run `scripts/lushtext-automation.py
+  visual-geometry-capture ...` with explicit overrides for unknown theme,
+  word-wrap, fixture, direction, or viewport fields, then replay the generated
+  scenario in headless visual geometry. If a rendered effect is the subject of
+  the bug, make sure the artifact summary lists the relevant
+  `pixel_verified_invariant_ids`, per-case pixel evidence, and final-frame
+  rendered-anchor stability instead of relying on a rectangle-only comparison
+  or a name-only invariant pass. If the symptom happens during an animation,
+  require stream-frame evidence with mapped intermediate frames; a final quiet
+  screenshot can miss the bug entirely.
 - For visual UI work, inspect the state matrix through actual screenshots when
   widget assertions cannot prove legibility: empty/no-context, representative
   populated, dense/many-item, and constrained-size states. Open the PNG and
@@ -188,12 +199,19 @@ This is the preferred workflow over broad speculative code changes. For geometry
   - Runs same-session visual invariant scenarios under isolated headless Mutter.
   - Captures before/after screenshots and bounded Automation1
     `visual_geometry` snapshots from one process, waits for
-    `visual-geometry-settled`, and compares protected regions with explicit
-    masks.
+    `visual-geometry-settled` plus scenario-specific final geometry predicates,
+    compares protected regions with explicit masks, and verifies declared pixel
+    anchors for rendered code, CSS, or native toolkit effects.
   - Writes per-case manifests, comparison reports, warning scans, and a root
     summary under the requested artifact directory. Keep generated artifacts
     under ignored `build/` paths unless the human explicitly asks to check them
     in.
+- `scripts/lushtext-automation.py visual-geometry-capture`
+  - Captures the current live Automation1 visual-geometry state into bounded
+    artifacts, writes a generated replay scenario, and records the exact
+    `scripts/visual-geometry-smoke.py --scenario-dir ...` command. Treat any
+    portal screenshot as context-only; proof comes from the generated headless
+    replay and screenshot-derived pixel anchors.
 - `scripts/capture-lushtext-xvfb.sh`
   - Fallback isolated display when headless Mutter or PipeWire capture is unavailable.
   - Launches a debug-owned LushText process in an isolated `dbus-run-session` + Xvfb display with temporary XDG state.

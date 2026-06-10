@@ -277,11 +277,13 @@
   border-radius: 999px;
 }
 
-/* Minimap: slim overview map with a dedicated semantic marker edge */
+/* Minimap: slim overview map with a dedicated semantic marker edge.
+   The 13px side gutters live on the map widget's margins (set in Rust),
+   not as CSS padding here: the reflow freeze overlay must span the full
+   shell content box, and negative widget margins over CSS padding would
+   trip GTK adjusted-size warnings. */
 .minimap-shell {
   border-left: 1px solid alpha(@borders, 0.3);
-  padding-left: 13px;
-  padding-right: 13px;
 }
 
 .minimap-shell textview.GtkSourceMap,
@@ -291,6 +293,10 @@
   line-height: 5px;
   margin: 0;
   padding: 0;
+}
+
+.minimap-reflow-freeze {
+  background-color: @view_bg_color;
 }
 
 .minimap-shell textview.GtkSourceMap slider,
@@ -303,6 +309,12 @@
   margin-right: -13px;
   padding-left: 13px;
   padding-right: 13px;
+}
+
+.minimap-shell textview.GtkSourceMap.minimap-wide-editor-slider-offset slider,
+.minimap-view.minimap-wide-editor-slider-offset slider {
+  margin-top: 1px;
+  margin-bottom: -1px;
 }
 
 .minimap-marker-strip {

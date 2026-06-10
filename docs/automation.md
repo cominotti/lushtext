@@ -36,8 +36,15 @@ workspace scope and persistence state, command-palette mode and counters,
 notes/bookmark availability, local-history availability, content-search and
 Replace All counters, notification/progress summaries, and named visual
 geometry anchors for screenshot invariant tooling. Geometry anchors include
-surface rectangles, allocation sizes, absence reasons, scale factor, and scroll
-anchor state; they do not include rendered text. It intentionally
+surface rectangles, allocation sizes, absence reasons, scale factor, scroll
+anchor state, native minimap slider diagnostics, and app-computed pixel-anchor
+crop hints for rendered effects such as the minimap viewport edges and fill;
+they do not include rendered text. Native minimap diagnostics include bounded
+visible-rect, adjustment, document-height, and estimate rows so failures can
+explain source-map frame drift. Those snapshot hints are diagnostic and
+crop-bounding data: visual pass/fail for rendered-only effects comes from
+screenshot-derived detectors in the visual geometry lane, not from Automation1
+rectangles alone. It intentionally
 avoids dumping document text, draft identifiers, note bodies, bookmark labels,
 sidecar contents, local-history contents, command-palette result bodies, or
 search result bodies. File-backed tabs can expose their path because paths are
@@ -225,19 +232,50 @@ make visual-geometry-smoke
 ```
 
 The visual geometry lane launches each scenario in one isolated headless Mutter
-session, waits for `visual-geometry-settled`, captures before/after screenshots
-and bounded `visual_geometry` snapshots from the same app process, compares
+session, waits for `visual-geometry-settled`, then also waits for scenario
+specific final allocation predicates such as fully shown or hidden workspace
+sidebar geometry before capturing screenshots. It captures before/after
+screenshots and bounded `visual_geometry` snapshots from the same app process,
+including native minimap visible-rect and adjustment diagnostics, compares
 protected regions with exact PNG crops and declared masks, asserts
-allowed-changing region relationships through geometry anchors, scans runtime
+allowed-changing region relationships through geometry anchors, verifies
+declared pixel anchors and relative anchor deltas, verifies those pixel anchors
+again across the warmup and final frame for each capture step, scans runtime
 warnings, and writes per-case manifests plus comparison reports under
-`build/smoke/visual-geometry`. It skips with an explicit host-tooling reason
-when the compositor, PipeWire, D-Bus, GSettings, or screenshot path is
-unavailable; skipped invariant coverage is not counted as verified.
+`build/smoke/visual-geometry`. Reports include final sidebar/editor/minimap
+geometry, screenshot-derived pixel rows, small crop paths, and app-vs-rendered
+diagnostics when Automation1 anchors stay stable but rendered rows move.
+Per-step `*-rendered-anchor-stability.json` files record warmup-vs-final row
+stability so stale native frames fail before the before/after comparison. The
+root summary records `verified_invariant_ids` plus
+`pixel_verified_invariant_ids`; relevant pixel-sensitive visual diffs are not
+considered covered unless the required invariant id is present in the
+pixel-verified list and backed by per-case pixel evidence. It skips with an
+explicit host-tooling reason when the compositor, PipeWire, D-Bus, GSettings, or
+screenshot path is unavailable; skipped invariant coverage is not counted as
+verified.
+
+When a geometry bug only reproduces in a live user window, first capture the
+bounded live state:
+
+```sh
+scripts/lushtext-automation.py visual-geometry-capture build/smoke/live-visual-geometry \
+  --color-scheme force-light --word-wrap true --fixture-kind plain-lines
+```
+
+The command writes `live-snapshot.json`, `capture-manifest.json`, and a generated
+scenario under `generated-scenarios/`, then records the exact
+`scripts/visual-geometry-smoke.py --scenario-dir ...` replay command. If theme,
+word wrap, fixture kind, direction, or viewport position cannot be inferred, it
+exits with `missing-field` and asks for explicit overrides. Optional portal
+screenshots are context-only; invariant proof is the Automation1 snapshot plus
+the generated headless visual-geometry replay.
 `make check-visual-proof-policy` is the fast companion gate: when local
 visual-sensitive files have changed, it requires a passing
 unfiltered `build/smoke/visual-geometry/summary.json` whose recorded
-visual-sensitive diff fingerprint still matches the current worktree before
-`make check-policy` can pass.
+visual-sensitive diff fingerprint still matches the current worktree and whose
+`pixel_verified_invariant_ids` cover any named pixel invariants required by the
+changed files before `make check-policy` can pass.
 
 The crash-recovery lane also uses Automation1 after relaunch: it waits for
 `recovery-restore-complete`, writes `relaunch-automation-snapshot.json`, and

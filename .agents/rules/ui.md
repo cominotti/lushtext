@@ -112,6 +112,28 @@ Acceptance for these states:
   zero-difference regions and explicit allowed-changing regions. A green action
   test is not enough when the question is "can a human actually see and read
   it?"
+- Pixel-visible effects must have screenshot-derived anchors whenever GTK's
+  native rendering, CSS, or app drawing could drift independently of our
+  computed rectangles. App-owned geometry may bound safe crops, readiness, and
+  diagnostics, but it must not be the only proof for a rendered edge,
+  highlight, marker, or overlay. Add named visual geometry `pixel_anchors` and,
+  when two visible rows/edges must stay aligned, a `relative_pixel_anchors`
+  invariant so sidebar, properties, or overlay changes cannot move the effect by
+  a few pixels without failing smoke. If the issue only appears at a user's live
+  window size, run `scripts/lushtext-automation.py visual-geometry-capture ...`
+  with explicit overrides for unknown theme/wrap/fixture fields, then replay the
+  generated scenario; generic 720p, 1080p, 1440p, or "maximized-like" passes do
+  not cover an intermediate threshold unless that exact class is in the matrix.
+- Native `GtkSourceMap` minimap drift is an animation-frame invariant, not only
+  a final-settle invariant. If sidebar/properties/editor-width work can reflow
+  the active editor while the minimap is visible, capture stream frames with
+  native viewport pixel anchors. A product fix may
+  temporarily freeze already-rendered native minimap pixels during a detected
+  width burst, but it must not draw, recolor, or restyle a replacement
+  highlight. The freeze cover must be opaque if the live source map is allowed
+  to repaint underneath, or transparent snapshot pixels can leak a stale native
+  slider frame. It must reveal the live native map after the settle repair and
+  quiet repaint window.
 
 ## Adaptive Dialog Navigation
 

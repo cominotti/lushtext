@@ -39,7 +39,7 @@ The testing approach is pragmatic:
 | Automation docs drift | Exported action, D-Bus, snapshot, readiness, automation-client, and helper-flag documentation contract | `docs/automation.md`, `docs/automation-reference.md`, `scripts/check-automation-docs.py` | No | `make check-automation-docs` |
 | Automation client self-test | Reusable D-Bus helper parser, typed action parameters, statuses, and artifact summaries | `scripts/lushtext-automation.py` | No | `make automation-client-self-test` |
 | Visual smoke | Rendered desktop screenshots and compositor/session artifacts | `scripts/run-visual-smoke.sh` | Yes | `make visual-smoke` |
-| Visual geometry smoke | Same-process before/after screenshots with protected-region pixel comparisons and bounded geometry snapshots | `scripts/visual-geometry-smoke.py` | Yes | `make visual-geometry-smoke` |
+| Visual geometry smoke | Same-process before/after screenshots with protected-region pixel comparisons, pixel anchors, and bounded geometry snapshots | `scripts/visual-geometry-smoke.py` | Yes | `make visual-geometry-smoke` |
 | Portal/sandbox smoke | Confined Flatpak/Snap runtime diagnostics and skip-aware package checks | `scripts/run-portal-sandbox-smoke.sh` | Host-dependent | `make portal-sandbox-smoke` |
 | Accessibility smoke | AT-SPI-enabled focus and accessible metadata checks outside the accessibility-disabled widget harness | `scripts/run-accessibility-smoke.sh` | Yes | `make accessibility-smoke` |
 | Performance smoke | Lightweight user-visible latency and throughput sanity checks | `scripts/run-performance-smoke.sh` | No | `make performance-smoke` |
@@ -111,10 +111,10 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 10. When refactoring a large widget or window into sibling modules without changing behavior, still run the widget target for that surface and its adjacent orchestration surface. Visibility and wiring regressions often show up only from the external `crates/lushtext` test crate, not from `lushtext-core` alone.
 11. For rendered pixels, first decide whether the proof needs a same-session
    before/after invariant. If yes, use `make visual-geometry-smoke` and inspect
-   the protected-region comparison artifacts; if the state is a standalone
-   visual coverage point, use `make visual-smoke`. For portals, installed
-   package confinement, AT-SPI, or coarse user-visible latency, use the matching
-   smoke lane and keep its artifacts.
+   the protected-region and pixel-anchor comparison artifacts; if the state is
+   a standalone visual coverage point, use `make visual-smoke`. For portals,
+   installed package confinement, AT-SPI, or coarse user-visible latency, use
+   the matching smoke lane and keep its artifacts.
 
 ## Headless GTK Runs
 
@@ -168,6 +168,24 @@ This applies to load-amplified flakes too: heavy local load exposing a 2s async 
   should protect unaffected chrome with exact pixel comparisons and describe
   every allowed-changing region. Do not count two unrelated screenshots from
   separate launches as proof that an unaffected element had zero pixel variance.
+- For rendered effects such as highlights, edge lines, minimap markers, or
+  overlay chrome, widget tests should assert the app-owned allocation/projection
+  and `make visual-geometry-smoke` should assert named screenshot-derived
+  `pixel_anchors` for the actual pixels. If the proof policy requires a named
+  pixel invariant, the root summary must include it in
+  `pixel_verified_invariant_ids`, and the relevant case rows must include
+  screenshot-derived pixel row evidence plus final sidebar/editor/minimap
+  geometry and final-frame rendered-anchor stability; `verified_invariant_ids`
+  alone is not enough. If the rendered effect can drift during an animation,
+  require stream-frame evidence with at least one mapped intermediate frame;
+  a final settled frame is not proof for that class.
+- For user-reported visual oddities that only reproduce at a live desktop size,
+  run `scripts/lushtext-automation.py visual-geometry-capture ...` while the
+  window is in the reproduced state, provide explicit overrides for unknown
+  theme, word-wrap, fixture, direction, or viewport fields, and replay the
+  generated scenario with `scripts/visual-geometry-smoke.py --scenario-dir ...`.
+  Do not substitute nearby 720p, 1080p, 1440p, or generic maximized-like passes
+  for the captured threshold class.
 - Test behavior, not GTK implementation details. Avoid pixel assertions, CSS rendering expectations, or proving that GTK's own containers work.
 - Keep widget tests narrowly scoped. A real window is fine; an enormous end-to-end script is usually not.
 - If a failure only reproduces in a live desktop session with compositor or portal behavior, switch to `gtk-agentic-debugging`.

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import json
 import re
 import shutil
@@ -33,6 +34,7 @@ CLIENT_COMMANDS = (
     "wait",
     "action",
     "artifact-summary",
+    "visual-geometry-capture",
     "self-test",
 )
 CLIENT_STATUSES = (
@@ -48,8 +50,10 @@ CLIENT_STATUSES = (
     "parameter-mismatch",
     "predicate-timeout",
     "visual-comparison-failed",
+    "pixel-anchor-failed",
     "state-mismatch",
     "warning-scan-failed",
+    "missing-field",
     "workflow-failure",
     "artifact-error",
     "artifact-skipped",
@@ -61,6 +65,7 @@ EXIT_CODES = {
     "artifact-skipped": 0,
     "predicate-timeout": 1,
     "visual-comparison-failed": 1,
+    "pixel-anchor-failed": 1,
     "state-mismatch": 1,
     "warning-scan-failed": 1,
     "workflow-failure": 1,
@@ -71,6 +76,7 @@ EXIT_CODES = {
     "unknown-action": 2,
     "unsupported-action": 2,
     "parameter-mismatch": 2,
+    "missing-field": 2,
     "automation-unavailable": 3,
     "unsupported-host-tooling": 4,
 }
@@ -82,6 +88,7 @@ ARTIFACT_SUMMARY_FIELDS = (
     "failure_status",
     "failure_reason",
     "skip_reason",
+    "invariant_id",
     "manifest",
     "source_manifest",
     "summary",
@@ -92,9 +99,22 @@ ARTIFACT_SUMMARY_FIELDS = (
     "geometry_snapshots",
     "screenshots",
     "protected_regions",
+    "pixel_anchors",
+    "relative_pixel_anchors",
+    "pixel_anchor_assertion_count",
+    "pixel_anchor_evidence",
+    "final_geometry",
+    "app_vs_rendered_disagreements",
+    "rendered_anchor_stability",
+    "animation_sampling",
+    "animation_frame_evidence",
+    "animation_frame_sample_count",
     "allowed_changing_regions",
     "comparison_report",
     "visual_geometry_cases",
+    "verified_invariant_ids",
+    "pixel_verified_invariant_ids",
+    "animation_verified_invariant_ids",
     "dbus_artifacts",
     "state_assertions",
     "waits",
@@ -112,7 +132,19 @@ CLIENT_FLAGS = (
     "--bool",
     "--uint32",
     "--variant-json",
+    "--scenario-id",
+    "--size-id",
+    "--direction",
+    "--color-scheme",
+    "--word-wrap",
+    "--fixture-kind",
+    "--viewport-position",
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+VISUAL_GEOMETRY_RUNNER = REPO_ROOT / "scripts/visual-geometry-smoke.py"
+NATIVE_MINIMAP_HIGHLIGHT_INVARIANT = "native-minimap-highlight-anchors"
+NATIVE_MINIMAP_ANIMATION_INVARIANT = "native-minimap-animation-highlight-anchors"
 
 
 @dataclass(frozen=True)
@@ -515,6 +547,7 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
         "failure_status": manifest.get("failure_status"),
         "failure_reason": manifest.get("failure_reason"),
         "skip_reason": manifest.get("skip_reason"),
+        "invariant_id": manifest.get("invariant_id"),
         "manifest": str(manifest_path),
         "source_manifest": manifest.get("source_manifest"),
         "summary": artifact_json(summary_path),
@@ -525,6 +558,16 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
         "geometry_snapshots": manifest.get("geometry_snapshots", []),
         "screenshots": manifest.get("screenshots", []),
         "protected_regions": manifest.get("protected_regions", []),
+        "pixel_anchors": manifest.get("pixel_anchors", []),
+        "relative_pixel_anchors": manifest.get("relative_pixel_anchors", []),
+        "pixel_anchor_assertion_count": manifest.get("pixel_anchor_assertion_count", 0),
+        "pixel_anchor_evidence": manifest.get("pixel_anchor_evidence", []),
+        "final_geometry": manifest.get("final_geometry"),
+        "app_vs_rendered_disagreements": manifest.get("app_vs_rendered_disagreements", []),
+        "rendered_anchor_stability": manifest.get("rendered_anchor_stability", []),
+        "animation_sampling": manifest.get("animation_sampling"),
+        "animation_frame_evidence": manifest.get("animation_frame_evidence"),
+        "animation_frame_sample_count": manifest.get("animation_frame_sample_count", 0),
         "allowed_changing_regions": manifest.get("allowed_changing_regions", []),
         "comparison_report": artifact_json(visual_comparison_path),
         "visual_geometry_cases": [],
@@ -553,6 +596,384 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
 
 def command_artifact_summary(args: argparse.Namespace) -> ClientResult:
     return summarize_artifacts(args.artifact_dir.resolve())
+
+
+def command_visual_geometry_capture(args: argparse.Namespace) -> ClientResult:
+    snapshot = command_snapshot(args)
+    if not snapshot.ok:
+        return snapshot
+    return write_live_visual_geometry_capture(args, snapshot.data)
+
+
+def write_live_visual_geometry_capture(args: argparse.Namespace, snapshot: dict[str, Any]) -> ClientResult:
+    artifact_dir = args.artifact_dir.resolve()
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = artifact_dir / "live-snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    missing, live_state = live_visual_geometry_state(snapshot, args)
+    scenario_path: Path | None = None
+    replay_command: list[str] = []
+    scenario: dict[str, Any] | None = None
+    if not missing:
+        scenario = generated_visual_geometry_scenario(live_state, args)
+        scenario_dir = artifact_dir / "generated-scenarios"
+        scenario_dir.mkdir(exist_ok=True)
+        scenario_path = scenario_dir / f"{scenario['scenario_id']}.json"
+        scenario_path.write_text(json.dumps(scenario, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        validation_error = validate_generated_visual_geometry_scenario(scenario_dir)
+        if validation_error:
+            missing.append({"field": "generated_scenario", "reason": validation_error})
+            scenario_path = None
+            scenario = None
+        else:
+            replay_command = [
+                str(VISUAL_GEOMETRY_RUNNER.relative_to(REPO_ROOT)),
+                "--artifact-dir",
+                str((artifact_dir / "replay").relative_to(REPO_ROOT))
+                if (artifact_dir / "replay").is_relative_to(REPO_ROOT)
+                else str(artifact_dir / "replay"),
+                "--scenario-dir",
+                str(scenario_dir.relative_to(REPO_ROOT))
+                if scenario_dir.is_relative_to(REPO_ROOT)
+                else str(scenario_dir),
+                "--case-filter",
+                str(scenario["scenario_id"]),
+            ]
+
+    status = "failed" if missing else "passed"
+    manifest = {
+        "schema_version": 1,
+        "scenario_id": args.scenario_id,
+        "capture_kind": "live-visual-geometry",
+        "status": status,
+        "failure_status": "missing-field" if missing else None,
+        "failure_reason": "required live visual geometry fields are missing" if missing else None,
+        "live_snapshot": snapshot_path.name,
+        "generated_scenario": f"generated-scenarios/{scenario_path.name}" if scenario_path else None,
+        "replay_command": " ".join(replay_command) if replay_command else None,
+        "replay_command_argv": replay_command,
+        "live_state": live_state,
+        "missing_fields": missing,
+        "context_screenshot": {
+            "status": "not-run",
+            "proof_role": "context-only",
+            "detail": "portal screenshots are optional context and never count as visual invariant proof",
+        },
+        "proof_source": {
+            "live_capture": "Automation1 bounded snapshot",
+            "invariant_replay": "generated headless visual-geometry scenario",
+        },
+    }
+    manifest_path = artifact_dir / "capture-manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    data = {
+        "artifact_dir": str(artifact_dir),
+        "manifest": str(manifest_path),
+        "live_snapshot": str(snapshot_path),
+        "generated_scenario": str(scenario_path) if scenario_path else None,
+        "replay_command": manifest["replay_command"],
+        "live_state": live_state,
+        "missing_fields": missing,
+    }
+    if missing:
+        return failure(
+            "visual-geometry-capture",
+            "missing-field",
+            "required live visual geometry fields need explicit overrides",
+            data,
+        )
+    return success("visual-geometry-capture", "live visual geometry scenario captured", data)
+
+
+def live_visual_geometry_state(snapshot: dict[str, Any], args: argparse.Namespace) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    missing: list[dict[str, str]] = []
+    window = snapshot.get("window")
+    if not isinstance(window, dict):
+        return ([{"field": "window", "reason": "Automation1 snapshot has no active window"}], {})
+    geometry = window.get("visual_geometry")
+    if not isinstance(geometry, dict):
+        return ([{"field": "visual_geometry", "reason": "Automation1 snapshot has no visual_geometry"}], {})
+
+    surfaces = window.get("surfaces") if isinstance(window.get("surfaces"), dict) else {}
+    active_tab = active_tab_snapshot(window)
+    size = infer_live_window_size(geometry)
+    if size is None:
+        missing.append({"field": "window_size", "reason": "could not infer live window size from visible surfaces"})
+
+    minimap_visible = visual_surface_visible(geometry, "minimap-shell") and visual_surface_visible(
+        geometry,
+        "minimap-source-map",
+    )
+    if not minimap_visible:
+        missing.append({"field": "minimap", "reason": "minimap-shell and minimap-source-map must be visible"})
+
+    direction = args.direction or infer_sidebar_direction(surfaces)
+    if direction is None:
+        missing.append({"field": "direction", "reason": "sidebar state is unavailable; pass --direction"})
+
+    color_scheme = args.color_scheme or infer_text_token(active_tab, ("force-light", "force-dark", "default"))
+    if color_scheme is None:
+        missing.append({"field": "color_scheme", "reason": "theme is not exposed by snapshot; pass --color-scheme"})
+
+    word_wrap = args.word_wrap
+    if word_wrap is None:
+        word_wrap = infer_word_wrap(active_tab)
+    if word_wrap is None:
+        missing.append({"field": "word_wrap", "reason": "word wrap is not exposed by snapshot; pass --word-wrap"})
+
+    fixture_kind = args.fixture_kind or infer_fixture_kind(active_tab)
+    if fixture_kind is None:
+        missing.append({"field": "fixture_kind", "reason": "active fixture kind is ambiguous; pass --fixture-kind"})
+
+    viewport_position = args.viewport_position or infer_viewport_position(geometry)
+    if viewport_position is None:
+        missing.append(
+            {"field": "viewport_position", "reason": "source-view scroll anchor is unavailable; pass --viewport-position"}
+        )
+
+    size_id = args.size_id
+    if size and size_id is None:
+        size_id = f"live-{size['width']}x{size['height']}"
+
+    return missing, {
+        "window_size": size,
+        "size_id": size_id,
+        "scale_factor": geometry.get("scale_factor"),
+        "coordinate_space": geometry.get("coordinate_space"),
+        "workspace_sidebar_visible": surfaces.get("workspace_sidebar_visible"),
+        "workspace_sidebar_requested": surfaces.get("workspace_sidebar_requested"),
+        "minimap_requested": surfaces.get("minimap_requested"),
+        "minimap_visible": minimap_visible,
+        "direction": direction,
+        "color_scheme": color_scheme,
+        "word_wrap": word_wrap,
+        "fixture_kind": fixture_kind,
+        "viewport_position": viewport_position,
+        "active_tab": bounded_active_tab(active_tab),
+        "overrides": {
+            "direction": args.direction is not None,
+            "color_scheme": args.color_scheme is not None,
+            "word_wrap": args.word_wrap is not None,
+            "fixture_kind": args.fixture_kind is not None,
+            "viewport_position": args.viewport_position is not None,
+        },
+    }
+
+
+def generated_visual_geometry_scenario(live_state: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    size = live_state["window_size"]
+    return {
+        "schema_version": 1,
+        "scenario_id": args.scenario_id,
+        "scenario_type": "minimap-sidebar",
+        "invariant_id": NATIVE_MINIMAP_HIGHLIGHT_INVARIANT,
+        "animation_sampling": default_minimap_animation_sampling(),
+        "description": "Generated from a live Automation1 visual-geometry capture.",
+        "matrix": {
+            "sizes": [
+                {
+                    "id": live_state["size_id"],
+                    "width": int(size["width"]),
+                    "height": int(size["height"]),
+                }
+            ],
+            "color_schemes": [live_state["color_scheme"]],
+            "word_wrap": [bool(live_state["word_wrap"])],
+            "directions": [live_state["direction"]],
+            "viewport_positions": [live_state["viewport_position"]],
+            "fixture_kinds": [live_state["fixture_kind"]],
+        },
+        "protected_regions": default_minimap_protected_regions(),
+        "pixel_anchors": default_minimap_pixel_anchors(),
+        "relative_pixel_anchors": default_minimap_relative_pixel_anchors(),
+        "allowed_changing_regions": default_minimap_allowed_changing_regions(),
+        "readiness_predicates": [
+            "file-open-complete",
+            "visual-geometry-settled",
+            "final-sidebar-geometry",
+        ],
+    }
+
+
+def default_minimap_protected_regions() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "header-bar",
+            "surface": "header-bar",
+            "comparison": "exact-equality",
+            "require_same_rect": True,
+            "mask_rects": [],
+        },
+        {
+            "name": "status-bar-stable-chrome",
+            "surface": "status-bar",
+            "comparison": "exact-equality",
+            "require_same_rect": True,
+            "mask_rects": [{"x": 0, "y": 0, "width": 80, "height": 80}],
+        },
+    ]
+
+
+def default_minimap_pixel_anchors() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "minimap-native-viewport-top-edge",
+            "crop_surface": "minimap-shell",
+            "detector": "native-minimap-viewport-top-edge-row",
+            "min_pixels": 12,
+            "max_screen_y_delta": 0,
+        },
+    ]
+
+
+def default_minimap_relative_pixel_anchors() -> list[dict[str, Any]]:
+    return []
+
+
+def default_minimap_animation_sampling() -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "capture_mode": "stream",
+        "invariant_id": NATIVE_MINIMAP_ANIMATION_INVARIANT,
+        "stream_frame_count": 48,
+        "stream_timeout_ms": 1400,
+        "sample_interval_ms": 16,
+        "max_sample_skew_ms": 80,
+        "max_screen_y_delta": 0,
+        "require_intermediate_geometry": True,
+        "required_anchors": ["minimap-native-viewport-top-edge"],
+    }
+
+
+def default_minimap_allowed_changing_regions() -> list[dict[str, str]]:
+    return [
+        {
+            "surface": "workspace-sidebar",
+            "relationship": "visibility toggles according to direction",
+        },
+        {
+            "surface": "editor-viewport",
+            "relationship": "width changes while top-left scroll anchor remains true",
+        },
+        {
+            "surface": "minimap-shell",
+            "relationship": "position may move with the editor body but remains visible and allocated",
+        },
+    ]
+
+
+def validate_generated_visual_geometry_scenario(scenario_dir: Path) -> str | None:
+    try:
+        spec = importlib.util.spec_from_file_location("visual_geometry_smoke", VISUAL_GEOMETRY_RUNNER)
+        if spec is None or spec.loader is None:
+            return f"could not load {VISUAL_GEOMETRY_RUNNER}"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.load_manifests(scenario_dir)
+    except Exception as exc:  # pragma: no cover - surfaced through command status.
+        return bounded_text(exc)
+    return None
+
+
+def active_tab_snapshot(window: dict[str, Any]) -> dict[str, Any] | None:
+    tabs = window.get("tabs")
+    if not isinstance(tabs, list):
+        return None
+    active_index = window.get("active_tab_index")
+    for tab in tabs:
+        if isinstance(tab, dict) and tab.get("active") is True:
+            return tab
+    for tab in tabs:
+        if isinstance(tab, dict) and tab.get("index") == active_index:
+            return tab
+    return None
+
+
+def bounded_active_tab(tab: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not tab:
+        return None
+    return {
+        "index": tab.get("index"),
+        "title": tab.get("title"),
+        "document_kind": tab.get("document_kind"),
+        "path": tab.get("path"),
+        "load_state": tab.get("load_state"),
+    }
+
+
+def infer_live_window_size(geometry: dict[str, Any]) -> dict[str, int] | None:
+    max_x = 0
+    max_y = 0
+    found = False
+    for row in geometry.get("surfaces", []):
+        if not isinstance(row, dict) or not row.get("visible") or not isinstance(row.get("rect"), dict):
+            continue
+        rect = row["rect"]
+        max_x = max(max_x, int(rect.get("x", 0)) + int(rect.get("width", 0)))
+        max_y = max(max_y, int(rect.get("y", 0)) + int(rect.get("height", 0)))
+        found = True
+    if not found or max_x <= 0 or max_y <= 0:
+        return None
+    return {"width": max_x, "height": max_y}
+
+
+def visual_surface_visible(geometry: dict[str, Any], name: str) -> bool:
+    for row in geometry.get("surfaces", []):
+        if isinstance(row, dict) and row.get("name") == name:
+            return row.get("visible") is True and isinstance(row.get("rect"), dict)
+    return False
+
+
+def infer_sidebar_direction(surfaces: dict[str, Any]) -> str | None:
+    if "workspace_sidebar_visible" not in surfaces:
+        return None
+    return "hide" if surfaces.get("workspace_sidebar_visible") is True else "show"
+
+
+def infer_text_token(tab: dict[str, Any] | None, tokens: tuple[str, ...]) -> str | None:
+    text = " ".join(
+        str(value)
+        for value in ((tab or {}).get("title"), (tab or {}).get("path"))
+        if value is not None
+    )
+    for token in tokens:
+        if token in text:
+            return token
+    return None
+
+
+def infer_word_wrap(tab: dict[str, Any] | None) -> bool | None:
+    token = infer_text_token(tab, ("wrap-true", "wrap-false"))
+    if token == "wrap-true":
+        return True
+    if token == "wrap-false":
+        return False
+    return None
+
+
+def infer_fixture_kind(tab: dict[str, Any] | None) -> str | None:
+    text = " ".join(
+        str(value)
+        for value in ((tab or {}).get("title"), (tab or {}).get("path"))
+        if value is not None
+    )
+    if "markdown-dense" in text or text.endswith(".md"):
+        return "markdown-dense"
+    if "plain-lines" in text or text.endswith(".txt"):
+        return "plain-lines"
+    return None
+
+
+def infer_viewport_position(geometry: dict[str, Any]) -> str | None:
+    for row in geometry.get("scroll_anchors", []):
+        if isinstance(row, dict) and row.get("name") == "source-view":
+            if row.get("at_top") is True:
+                return "top"
+            if row.get("at_top") is False:
+                return "mid"
+    return None
 
 
 def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
@@ -609,6 +1030,7 @@ def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
         "failure_status": None,
         "failure_reason": None,
         "skip_reason": summary_payload.get("skip_reason") if isinstance(summary_payload, dict) else None,
+        "invariant_id": None,
         "manifest": [row["artifact"] for row in manifest_rows],
         "source_manifest": None,
         "summary": summary_payload,
@@ -622,9 +1044,34 @@ def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
         "geometry_snapshots": [],
         "screenshots": [],
         "protected_regions": [],
+        "pixel_anchors": [],
+        "relative_pixel_anchors": [],
+        "pixel_anchor_assertion_count": summary_payload.get("pixel_anchor_assertion_count", 0)
+        if isinstance(summary_payload, dict)
+        else 0,
+        "pixel_anchor_evidence": [],
+        "final_geometry": None,
+        "app_vs_rendered_disagreements": [],
+        "rendered_anchor_stability": [],
+        "animation_sampling": None,
+        "animation_frame_evidence": None,
+        "animation_frame_sample_count": summary_payload.get("animation_frame_sample_count", 0)
+        if isinstance(summary_payload, dict)
+        else 0,
         "allowed_changing_regions": [],
         "comparison_report": None,
         "visual_geometry_cases": visual_cases,
+        "verified_invariant_ids": summary_payload.get("verified_invariant_ids", [])
+        if isinstance(summary_payload, dict)
+        else [],
+        "pixel_verified_invariant_ids": summary_payload.get("pixel_verified_invariant_ids", [])
+        if isinstance(summary_payload, dict)
+        else [],
+        "animation_verified_invariant_ids": summary_payload.get(
+            "animation_verified_invariant_ids", []
+        )
+        if isinstance(summary_payload, dict)
+        else [],
         "dbus_artifacts": sorted(
             path.relative_to(artifact_dir).as_posix()
             for path in (artifact_dir / "assertions").glob("*")
@@ -678,7 +1125,30 @@ def visual_geometry_case_rows(artifact_dir: Path, summary_payload: Any) -> list[
                 row.update(
                     {
                         "scenario_type": manifest.get("scenario_type"),
+                        "invariant_id": manifest.get("invariant_id"),
                         "protected_region_count": len(manifest.get("protected_regions", [])),
+                        "pixel_anchor_assertion_count": manifest.get(
+                            "pixel_anchor_assertion_count", 0
+                        ),
+                        "pixel_verified_invariant_ids": manifest.get(
+                            "pixel_verified_invariant_ids", []
+                        ),
+                        "pixel_anchor_evidence": manifest.get("pixel_anchor_evidence", []),
+                        "final_geometry": manifest.get("final_geometry"),
+                        "app_vs_rendered_disagreements": manifest.get(
+                            "app_vs_rendered_disagreements", []
+                        ),
+                        "rendered_anchor_stability": manifest.get(
+                            "rendered_anchor_stability", []
+                        ),
+                        "animation_sampling": manifest.get("animation_sampling"),
+                        "animation_verified_invariant_ids": manifest.get(
+                            "animation_verified_invariant_ids", []
+                        ),
+                        "animation_frame_evidence": manifest.get("animation_frame_evidence"),
+                        "animation_frame_sample_count": manifest.get(
+                            "animation_frame_sample_count", 0
+                        ),
                         "allowed_changing_region_count": len(
                             manifest.get("allowed_changing_regions", [])
                         ),
@@ -823,7 +1293,21 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
                 encoding="utf-8",
             )
             (case_dir / "comparisons/comparison-report.json").write_text(
-                '{"status":"passed","regions":[{"name":"header","status":"passed"}]}\n',
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "invariant_id": "native-minimap-highlight-anchors",
+                        "regions": [{"name": "header", "status": "passed"}],
+                        "pixel_anchors": {
+                            "status": "passed",
+                            "anchors": [
+                                {"name": "minimap-native-viewport-top-edge"},
+                            ],
+                            "relationships": [],
+                        },
+                    }
+                )
+                + "\n",
                 encoding="utf-8",
             )
             (case_dir / "scenario-manifest.json").write_text(
@@ -832,6 +1316,7 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
                         "schema_version": 1,
                         "scenario_id": "visual-self-test",
                         "scenario_type": "minimap-sidebar",
+                        "invariant_id": "native-minimap-highlight-anchors",
                         "status": "passed",
                         "failure_status": None,
                         "failure_reason": None,
@@ -843,6 +1328,56 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
                             {"name": "before", "artifact": "before-geometry-snapshot.json"}
                         ],
                         "protected_regions": [{"name": "header", "surface": "header-bar"}],
+                        "pixel_anchors": [
+                            {"name": "minimap-native-viewport-top-edge"},
+                        ],
+                        "relative_pixel_anchors": [],
+                        "pixel_anchor_assertion_count": 1,
+                        "rendered_anchor_stability": [
+                            {
+                                "name": "before",
+                                "artifact": "before-rendered-anchor-stability.json",
+                                "status": "passed",
+                            }
+                        ],
+                        "animation_sampling": {
+                            "enabled": True,
+                            "invariant_id": "native-minimap-animation-highlight-anchors",
+                        },
+                        "animation_verified_invariant_ids": [
+                            "native-minimap-animation-highlight-anchors"
+                        ],
+                        "animation_frame_evidence": {
+                            "status": "passed",
+                            "capture_mode": "stream",
+                            "invariant_id": "native-minimap-animation-highlight-anchors",
+                            "sampled_frame_count": 2,
+                            "geometry_sample_count": 2,
+                            "intermediate_geometry_sample_count": 1,
+                            "mapped_intermediate_frame_count": 1,
+                            "max_sample_skew_ms": 80,
+                            "max_sample_skew_observed_ms": 8,
+                            "phase_sequence": ["shown", "intermediate", "shown"],
+                            "max_row_drift": 0,
+                            "frames": [
+                                {
+                                    "frame_index": 0,
+                                    "status": "passed",
+                                    "mapped_sample_elapsed_ms": 48,
+                                    "sample_skew_ms": 8,
+                                    "sidebar_phase": "intermediate",
+                                    "anchors": [
+                                        {
+                                            "name": "minimap-native-viewport-top-edge",
+                                            "status": "passed",
+                                            "baseline_row_y": 10,
+                                            "frame_row_y": 10,
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                        "animation_frame_sample_count": 2,
                         "allowed_changing_regions": [
                             {"surface": "editor-viewport", "relationship": "width changes"}
                         ],
@@ -856,7 +1391,10 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
             visual_summary = summarize_artifacts(case_dir)
             assert visual_summary.ok
             assert visual_summary.data["scenario_type"] == "minimap-sidebar"
+            assert visual_summary.data["invariant_id"] == "native-minimap-highlight-anchors"
+            assert visual_summary.data["pixel_anchor_assertion_count"] == 1
             assert visual_summary.data["comparison_report"]["status"] == "passed"
+            assert visual_summary.data["comparison_report"]["pixel_anchors"]["status"] == "passed"
             assert "SECRET" not in json.dumps(visual_summary.data)
 
             (root / "summary.json").write_text(
@@ -864,11 +1402,20 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
                     {
                         "schema_version": 1,
                         "status": "passed",
+                        "verified_invariant_ids": ["native-minimap-highlight-anchors"],
+                        "pixel_verified_invariant_ids": ["native-minimap-highlight-anchors"],
+                        "animation_verified_invariant_ids": [
+                            "native-minimap-animation-highlight-anchors"
+                        ],
+                        "animation_frame_sample_count": 2,
+                        "pixel_anchor_assertion_count": 1,
                         "case_count": 1,
                         "cases": [
                             {
                                 "case_id": "visual-self-test",
                                 "status": "passed",
+                                "invariant_id": "native-minimap-highlight-anchors",
+                                "pixel_anchor_assertion_count": 1,
                                 "artifact_dir": "visual-case",
                                 "manifest": "scenario-manifest.json",
                             }
@@ -879,7 +1426,21 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
             )
             root_summary = summarize_artifacts(root)
             assert root_summary.ok
+            assert root_summary.data["verified_invariant_ids"] == [
+                "native-minimap-highlight-anchors"
+            ]
+            assert root_summary.data["pixel_verified_invariant_ids"] == [
+                "native-minimap-highlight-anchors"
+            ]
+            assert root_summary.data["animation_verified_invariant_ids"] == [
+                "native-minimap-animation-highlight-anchors"
+            ]
             assert root_summary.data["visual_geometry_cases"][0]["protected_region_count"] == 1
+            assert root_summary.data["visual_geometry_cases"][0]["pixel_anchor_assertion_count"] == 1
+            assert (
+                root_summary.data["visual_geometry_cases"][0]["animation_frame_sample_count"]
+                == 2
+            )
 
             failed_dir = root / "failed-case"
             failed_dir.mkdir()
@@ -899,6 +1460,25 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
             failed_summary = summarize_artifacts(failed_dir)
             assert not failed_summary.ok
             assert failed_summary.status == "visual-comparison-failed"
+
+            pixel_failed_dir = root / "pixel-failed-case"
+            pixel_failed_dir.mkdir()
+            (pixel_failed_dir / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "scenario_id": "visual-pixel-failed",
+                        "scenario_type": "minimap-sidebar",
+                        "status": "failed",
+                        "failure_status": "pixel-anchor-failed",
+                        "failure_reason": "pixel anchor assertion failed",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pixel_failed_summary = summarize_artifacts(pixel_failed_dir)
+            assert not pixel_failed_summary.ok
+            assert pixel_failed_summary.status == "pixel-anchor-failed"
 
             skipped_dir = root / "skipped-case"
             skipped_dir.mkdir()
@@ -923,9 +1503,131 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
             (malformed_dir / "scenario-manifest.json").write_text("{not json", encoding="utf-8")
             malformed_summary = summarize_artifacts(malformed_dir)
             assert malformed_summary.status == "artifact-error"
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture_args = argparse.Namespace(
+                artifact_dir=root / "capture",
+                scenario_id="live-self-test",
+                size_id=None,
+                direction=None,
+                color_scheme="force-light",
+                word_wrap=True,
+                fixture_kind=None,
+                viewport_position=None,
+            )
+            capture = write_live_visual_geometry_capture(capture_args, self_test_visual_snapshot())
+            assert capture.ok
+            assert capture.data["generated_scenario"].endswith("live-self-test.json")
+            manifest = json.loads((root / "capture/capture-manifest.json").read_text(encoding="utf-8"))
+            assert manifest["status"] == "passed"
+            assert manifest["context_screenshot"]["proof_role"] == "context-only"
+            assert "--scenario-dir" in manifest["replay_command"]
+            generated = json.loads(
+                (root / "capture/generated-scenarios/live-self-test.json").read_text(encoding="utf-8")
+            )
+            assert generated["matrix"]["sizes"][0]["width"] == 1822
+            assert generated["matrix"]["word_wrap"] == [True]
+            assert generated["matrix"]["fixture_kinds"] == ["plain-lines"]
+            assert (
+                generated["animation_sampling"]["invariant_id"]
+                == "native-minimap-animation-highlight-anchors"
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing_args = argparse.Namespace(
+                artifact_dir=root / "capture-missing",
+                scenario_id="live-missing-self-test",
+                size_id=None,
+                direction=None,
+                color_scheme=None,
+                word_wrap=None,
+                fixture_kind=None,
+                viewport_position=None,
+            )
+            missing = write_live_visual_geometry_capture(
+                missing_args,
+                self_test_visual_snapshot(path="/tmp/live-unknown"),
+            )
+            assert not missing.ok
+            assert missing.status == "missing-field"
+            missing_manifest = json.loads(
+                (root / "capture-missing/capture-manifest.json").read_text(encoding="utf-8")
+            )
+            missing_fields = {row["field"] for row in missing_manifest["missing_fields"]}
+            assert {"color_scheme", "word_wrap", "fixture_kind"} <= missing_fields
     except Exception as exc:  # pragma: no cover - deliberately catches assertion details for CLI users.
         return failure("self-test", "workflow-failure", f"self-test failed: {exc}")
     return success("self-test", "lushtext automation client self-test passed")
+
+
+def self_test_visual_snapshot(path: str = "/tmp/live-wrap-true-plain-lines.txt") -> dict[str, Any]:
+    return {
+        "window": {
+            "active_tab_index": 0,
+            "tabs": [
+                {
+                    "index": 0,
+                    "active": True,
+                    "title": Path(path).name,
+                    "document_kind": "file",
+                    "path": path,
+                    "load_state": "loaded",
+                }
+            ],
+            "surfaces": {
+                "workspace_sidebar_visible": True,
+                "workspace_sidebar_requested": True,
+                "minimap_requested": True,
+            },
+            "visual_geometry": {
+                "scale_factor": 1,
+                "coordinate_space": "window-logical-pixels",
+                "surfaces": [
+                    {
+                        "name": "header-bar",
+                        "visible": True,
+                        "rect": {"x": 0, "y": 0, "width": 1822, "height": 46},
+                    },
+                    {
+                        "name": "workspace-sidebar",
+                        "visible": True,
+                        "rect": {"x": 0, "y": 96, "width": 360, "height": 1128},
+                    },
+                    {
+                        "name": "editor-viewport",
+                        "visible": True,
+                        "rect": {"x": 360, "y": 96, "width": 1341, "height": 1128},
+                    },
+                    {
+                        "name": "minimap-shell",
+                        "visible": True,
+                        "rect": {"x": 1701, "y": 96, "width": 121, "height": 1128},
+                    },
+                    {
+                        "name": "minimap-source-map",
+                        "visible": True,
+                        "rect": {"x": 1701, "y": 96, "width": 110, "height": 1128},
+                    },
+                    {
+                        "name": "status-bar",
+                        "visible": True,
+                        "rect": {"x": 0, "y": 1224, "width": 1822, "height": 48},
+                    },
+                ],
+                "scroll_anchors": [
+                    {
+                        "name": "source-view",
+                        "at_top": True,
+                        "at_left": True,
+                        "x_value_milli": 0,
+                        "y_value_milli": 0,
+                    }
+                ],
+            },
+        }
+    }
 
 
 def add_common_flags(parser: argparse.ArgumentParser) -> None:
@@ -969,6 +1671,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     artifact_parser = subparsers.add_parser("artifact-summary", parents=[common])
     artifact_parser.add_argument("artifact_dir", type=Path)
 
+    capture_parser = subparsers.add_parser("visual-geometry-capture", parents=[common])
+    capture_parser.add_argument("artifact_dir", type=Path)
+    capture_parser.add_argument("--scenario-id", default="live-minimap-sidebar")
+    capture_parser.add_argument("--size-id")
+    capture_parser.add_argument("--direction", choices=("hide", "show"))
+    capture_parser.add_argument("--color-scheme", choices=("default", "force-light", "force-dark"))
+    capture_parser.add_argument("--word-wrap", type=parse_bool)
+    capture_parser.add_argument("--fixture-kind", choices=("plain-lines", "markdown-dense"))
+    capture_parser.add_argument("--viewport-position", choices=("top", "mid"))
+
     subparsers.add_parser("self-test", parents=[common])
     return parser.parse_args(argv)
 
@@ -993,6 +1705,8 @@ def dispatch(args: argparse.Namespace) -> ClientResult:
             return command_action(args)
         case "artifact-summary":
             return command_artifact_summary(args)
+        case "visual-geometry-capture":
+            return command_visual_geometry_capture(args)
         case "self-test":
             return command_self_test(args)
         case _:

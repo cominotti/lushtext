@@ -19,7 +19,7 @@ terms, scenario-helper flag entries, and scenario manifest field anchors in
 this file, every reusable automation-client command/status/result/artifact
 anchor, plus every stable AT-SPI anchor used by the accessibility smoke helper.
 
-<!-- automation-helper-flags: run-automation-smoke --artifact-dir --binary run-crash-recovery-smoke --artifact-dir --binary run-accessibility-smoke --artifact-dir --binary run-visual-smoke --artifact-dir --binary visual-geometry-smoke --artifact-dir --binary --scenario-dir --case-filter capture-lushtext-mutter --file --output --search --expected-search-matches --enable-minimap --enable-atspi --window-action --window-string-action --wait-predicate --wait-window-action --wait-atspi-text --color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary self-test --bus-name --object-path --interface --window-path --timeout-ms --json --field --string --bool --uint32 --variant-json -->
+<!-- automation-helper-flags: run-automation-smoke --artifact-dir --binary run-crash-recovery-smoke --artifact-dir --binary run-accessibility-smoke --artifact-dir --binary run-visual-smoke --artifact-dir --binary visual-geometry-smoke --artifact-dir --binary --scenario-dir --case-filter capture-lushtext-mutter --file --output --search --expected-search-matches --enable-minimap --enable-atspi --window-action --window-string-action --wait-predicate --wait-window-action --wait-atspi-text --color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary visual-geometry-capture self-test --bus-name --object-path --interface --window-path --timeout-ms --json --field --string --bool --uint32 --variant-json --scenario-id --size-id --direction --color-scheme --word-wrap --fixture-kind --viewport-position -->
 
 ## Stability Policy
 
@@ -101,6 +101,10 @@ Common flags:
 - `--json` prints the stable result envelope instead of human output.
 - `--field` selects a dotted field from JSON-like command data.
 - `--string`, `--bool`, `--uint32`, and `--variant-json` provide typed action parameters.
+- `visual-geometry-capture` also accepts `--scenario-id`, `--size-id`,
+  `--direction`, `--color-scheme`, `--word-wrap`, `--fixture-kind`, and
+  `--viewport-position` so ambiguous live state is overridden explicitly instead
+  of guessed.
 
 | Anchor | Command | Meaning |
 | --- | --- | --- |
@@ -112,6 +116,7 @@ Common flags:
 | <span id="automation-client-command-wait"></span>`automation-client-command-wait` | `wait [predicate]` | Calls `WaitForReady`; `legacy-idle` calls `WaitForIdle` for compatibility. |
 | <span id="automation-client-command-action"></span>`automation-client-command-action` | `action ACTION` | Activates a cataloged exported `app.` or `win.` action through `org.gtk.Actions.Activate`. |
 | <span id="automation-client-command-artifact-summary"></span>`automation-client-command-artifact-summary` | `artifact-summary DIR` | Summarizes a smoke `scenario-manifest.json`, summary JSON, warning scan, waits, actions, and D-Bus artifacts. |
+| <span id="automation-client-command-visual-geometry-capture"></span>`automation-client-command-visual-geometry-capture` | `visual-geometry-capture DIR` | Captures the current live Automation1 visual-geometry snapshot, writes bounded capture artifacts, and emits a runnable visual-geometry scenario for headless replay. |
 | <span id="automation-client-command-self-test"></span>`automation-client-command-self-test` | `self-test` | Runs local parser, parameter, result, and artifact-summary checks without a live app. |
 
 ### Client Result Envelope
@@ -144,8 +149,10 @@ status vocabulary.
 | <span id="automation-client-status-parameter-mismatch"></span><span id="automation-client-exit-parameter-mismatch"></span>`parameter-mismatch` | `parameter-mismatch` | `2` | Supplied action parameter type does not match the cataloged parameter type. |
 | <span id="automation-client-status-predicate-timeout"></span><span id="automation-client-exit-predicate-timeout"></span>`predicate-timeout` | `predicate-timeout` | `1` | A readiness wait returned `ok=false` before the requested predicate settled. |
 | <span id="automation-client-status-visual-comparison-failed"></span><span id="automation-client-exit-visual-comparison-failed"></span>`visual-comparison-failed` | `visual-comparison-failed` | `1` | `artifact-summary` found a protected-region pixel difference in a visual geometry scenario. |
+| <span id="automation-client-status-pixel-anchor-failed"></span><span id="automation-client-exit-pixel-anchor-failed"></span>`pixel-anchor-failed` | `pixel-anchor-failed` | `1` | `artifact-summary` found a declared pixel anchor or relative pixel-anchor delta failure in a visual geometry scenario. |
 | <span id="automation-client-status-state-mismatch"></span><span id="automation-client-exit-state-mismatch"></span>`state-mismatch` | `state-mismatch` | `1` | `artifact-summary` found a geometry-anchor relationship mismatch in a visual geometry scenario. |
 | <span id="automation-client-status-warning-scan-failed"></span><span id="automation-client-exit-warning-scan-failed"></span>`warning-scan-failed` | `warning-scan-failed` | `1` | `artifact-summary` found unexpected GTK, GDK, Adwaita, AT-SPI, or assertion warnings. |
+| <span id="automation-client-status-missing-field"></span><span id="automation-client-exit-missing-field"></span>`missing-field` | `missing-field` | `2` | `visual-geometry-capture` could not infer a required replay field and needs an explicit override. |
 | <span id="automation-client-status-workflow-failure"></span><span id="automation-client-exit-workflow-failure"></span>`workflow-failure` | `workflow-failure` | `1` | Automation1 or the client self-test reported a failed workflow/invariant. |
 | <span id="automation-client-status-artifact-error"></span><span id="automation-client-exit-artifact-error"></span>`artifact-error` | `artifact-error` | `1` | `artifact-summary` found missing, malformed, failed, or unrecognized artifact evidence. |
 | <span id="automation-client-status-artifact-skipped"></span><span id="automation-client-exit-artifact-skipped"></span>`artifact-skipped` | `artifact-skipped` | `0` | `artifact-summary` found a skipped lane and reports it distinctly without claiming coverage passed. |
@@ -161,6 +168,7 @@ status vocabulary.
 | <span id="automation-client-artifact-field-failure-status"></span>`automation-client-artifact-field-failure-status` | `failure_status` | Stable machine-readable failure status for visual geometry artifacts. |
 | <span id="automation-client-artifact-field-failure-reason"></span>`automation-client-artifact-field-failure-reason` | `failure_reason` | Bounded failure reason when the scenario failed. |
 | <span id="automation-client-artifact-field-skip-reason"></span>`automation-client-artifact-field-skip-reason` | `skip_reason` | Bounded host or tooling reason when the scenario skipped. |
+| <span id="automation-client-artifact-field-invariant-id"></span>`automation-client-artifact-field-invariant-id` | `invariant_id` | Named visual invariant verified by the case, when the scenario declares one. |
 | <span id="automation-client-artifact-field-manifest"></span>`automation-client-artifact-field-manifest` | `manifest` | Absolute path to `scenario-manifest.json`. |
 | <span id="automation-client-artifact-field-source-manifest"></span>`automation-client-artifact-field-source-manifest` | `source_manifest` | Source scenario manifest that generated a visual geometry case. |
 | <span id="automation-client-artifact-field-summary"></span>`automation-client-artifact-field-summary` | `summary` | Parsed `summary.json` payload when present. |
@@ -171,9 +179,22 @@ status vocabulary.
 | <span id="automation-client-artifact-field-geometry-snapshots"></span>`automation-client-artifact-field-geometry-snapshots` | `geometry_snapshots` | Visual geometry snapshot artifact rows by capture step, without embedding document contents. |
 | <span id="automation-client-artifact-field-screenshots"></span>`automation-client-artifact-field-screenshots` | `screenshots` | Screenshot artifact rows by capture step. |
 | <span id="automation-client-artifact-field-protected-regions"></span>`automation-client-artifact-field-protected-regions` | `protected_regions` | Manifest regions that must remain pixel-identical except for declared masks. |
+| <span id="automation-client-artifact-field-pixel-anchors"></span>`automation-client-artifact-field-pixel-anchors` | `pixel_anchors` | Manifest pixel anchors that must be detected in before/after screenshots. |
+| <span id="automation-client-artifact-field-relative-pixel-anchors"></span>`automation-client-artifact-field-relative-pixel-anchors` | `relative_pixel_anchors` | Manifest relationships between detected pixel anchors, such as bounded vertical deltas. |
+| <span id="automation-client-artifact-field-pixel-anchor-assertion-count"></span>`automation-client-artifact-field-pixel-anchor-assertion-count` | `pixel_anchor_assertion_count` | Number of pixel anchors declared for the case or root summary. |
+| <span id="automation-client-artifact-field-pixel-anchor-evidence"></span>`automation-client-artifact-field-pixel-anchor-evidence` | `pixel_anchor_evidence` | Bounded per-anchor row positions, row deltas, crop artifact paths, and app-geometry diagnostics. |
+| <span id="automation-client-artifact-field-final-geometry"></span>`automation-client-artifact-field-final-geometry` | `final_geometry` | Selected before/after sidebar, editor, and minimap geometry rows captured after final allocation settling. |
+| <span id="automation-client-artifact-field-app-vs-rendered-disagreements"></span>`automation-client-artifact-field-app-vs-rendered-disagreements` | `app_vs_rendered_disagreements` | Diagnostic rows where Automation1 anchors stayed stable but screenshot-derived rendered rows moved. |
+| <span id="automation-client-artifact-field-rendered-anchor-stability"></span>`automation-client-artifact-field-rendered-anchor-stability` | `rendered_anchor_stability` | Per-step warmup-vs-final screenshot row stability for declared rendered pixel anchors. |
 | <span id="automation-client-artifact-field-allowed-changing-regions"></span>`automation-client-artifact-field-allowed-changing-regions` | `allowed_changing_regions` | Manifest regions that may change only under explicit geometry-anchor assertions. |
 | <span id="automation-client-artifact-field-comparison-report"></span>`automation-client-artifact-field-comparison-report` | `comparison_report` | Parsed protected-region comparison result when present. |
 | <span id="automation-client-artifact-field-visual-geometry-cases"></span>`automation-client-artifact-field-visual-geometry-cases` | `visual_geometry_cases` | Root-lane case rows with pass, fail, skip, protected-region, and manifest summaries. |
+| <span id="automation-client-artifact-field-verified-invariant-ids"></span>`automation-client-artifact-field-verified-invariant-ids` | `verified_invariant_ids` | Root visual-geometry summary invariant ids verified by passing unfiltered cases. |
+| <span id="automation-client-artifact-field-pixel-verified-invariant-ids"></span>`automation-client-artifact-field-pixel-verified-invariant-ids` | `pixel_verified_invariant_ids` | Root visual-geometry summary invariant ids verified by passing unfiltered cases with declared pixel anchors. |
+| <span id="automation-client-artifact-field-animation-sampling"></span>`automation-client-artifact-field-animation-sampling` | `animation_sampling` | Scenario animation sampling contract, including invariant id, frame count, skew, and required anchors. |
+| <span id="automation-client-artifact-field-animation-frame-evidence"></span>`automation-client-artifact-field-animation-frame-evidence` | `animation_frame_evidence` | Bounded animation-frame report with sampled frames, mapped geometry samples, phase evidence, anchor rows, and failure details. |
+| <span id="automation-client-artifact-field-animation-frame-sample-count"></span>`automation-client-artifact-field-animation-frame-sample-count` | `animation_frame_sample_count` | Count of screenshot frames evaluated for animation-frame proof. |
+| <span id="automation-client-artifact-field-animation-verified-invariant-ids"></span>`automation-client-artifact-field-animation-verified-invariant-ids` | `animation_verified_invariant_ids` | Root visual-geometry invariant ids verified by passing timestamp-correlated animation-frame evidence. |
 | <span id="automation-client-artifact-field-dbus-artifacts"></span>`automation-client-artifact-field-dbus-artifacts` | `dbus_artifacts` | Relative paths for D-Bus, catalog, snapshot, workflow, and introspection artifacts. |
 | <span id="automation-client-artifact-field-state-assertions"></span>`automation-client-artifact-field-state-assertions` | `state_assertions` | Manifest state-proof rows. |
 | <span id="automation-client-artifact-field-waits"></span>`automation-client-artifact-field-waits` | `waits` | Manifest readiness waits. |
@@ -191,7 +212,7 @@ status vocabulary.
 | `scripts/run-accessibility-smoke.sh` | `--binary PATH` | Runs the given LushText binary instead of `target/debug/lushtext`. |
 | `scripts/run-visual-smoke.sh` | `--artifact-dir DIR` | Writes screenshot, Automation1 snapshot, surface/search/workspace/notes/bookmarks/command-palette assertions, per-capture `*-manifest.json`, warning-scan, capture-session, environment, and summary artifacts to `DIR`. |
 | `scripts/run-visual-smoke.sh` | `--binary PATH` | Runs the given LushText binary instead of `target/debug/lushtext`. |
-| `scripts/visual-geometry-smoke.py` | `--artifact-dir DIR` | Writes same-session before/after screenshots, bounded geometry snapshots, protected-region comparison reports, warning scans, per-case manifests, and root summary artifacts to `DIR`. |
+| `scripts/visual-geometry-smoke.py` | `--artifact-dir DIR` | Writes same-session before/after screenshots, bounded geometry snapshots, protected-region and pixel-anchor comparison reports, warning scans, per-case manifests, and root summary artifacts to `DIR`. |
 | `scripts/visual-geometry-smoke.py` | `--binary PATH` | Runs the given LushText binary instead of `target/debug/lushtext`. |
 | `scripts/visual-geometry-smoke.py` | `--scenario-dir DIR` | Loads visual invariant scenario manifests from `DIR`. |
 | `scripts/visual-geometry-smoke.py` | `--case-filter TEXT` | Runs only visual geometry cases whose generated id contains `TEXT`. |
@@ -225,6 +246,7 @@ status vocabulary.
 | `scripts/lushtext-automation.py` | `wait` | Waits for a readiness predicate or legacy idle. |
 | `scripts/lushtext-automation.py` | `action` | Activates a cataloged exported app/window action with an optional typed parameter. |
 | `scripts/lushtext-automation.py` | `artifact-summary` | Summarizes a smoke scenario manifest and sibling artifacts. |
+| `scripts/lushtext-automation.py` | `visual-geometry-capture` | Writes `live-snapshot.json`, `capture-manifest.json`, and a generated visual-geometry scenario from the current live window state. |
 | `scripts/lushtext-automation.py` | `self-test` | Runs client parser and artifact-summary self-tests. |
 | `scripts/lushtext-automation.py` | `--bus-name NAME` | Overrides the session-bus destination, defaulting to `dev.cominotti.lushtext`. |
 | `scripts/lushtext-automation.py` | `--object-path PATH` | Overrides the Automation1 object path. |
@@ -237,6 +259,13 @@ status vocabulary.
 | `scripts/lushtext-automation.py` | `--bool BOOL` | Supplies a boolean parameter for `action`. |
 | `scripts/lushtext-automation.py` | `--uint32 N` | Supplies an unsigned 32-bit integer parameter for `action`. |
 | `scripts/lushtext-automation.py` | `--variant-json JSON` | Supplies a future variant-map parameter with string, bool, and u32 values. |
+| `scripts/lushtext-automation.py` | `--scenario-id ID` | Overrides the generated live visual-geometry scenario id. |
+| `scripts/lushtext-automation.py` | `--size-id ID` | Overrides the generated live visual-geometry matrix size id. |
+| `scripts/lushtext-automation.py` | `--direction hide\|show` | Overrides the sidebar action direction for live visual-geometry capture. |
+| `scripts/lushtext-automation.py` | `--color-scheme MODE` | Supplies `default`, `force-light`, or `force-dark` when live theme cannot be inferred safely. |
+| `scripts/lushtext-automation.py` | `--word-wrap BOOL` | Supplies the live word-wrap state when it cannot be inferred safely. |
+| `scripts/lushtext-automation.py` | `--fixture-kind KIND` | Supplies `plain-lines` or `markdown-dense` when the active fixture kind is ambiguous. |
+| `scripts/lushtext-automation.py` | `--viewport-position POS` | Supplies `top` or `mid` when the source-view scroll anchor is ambiguous. |
 
 ## Stable AT-SPI Smoke Anchors
 
@@ -280,8 +309,9 @@ assertion artifacts, while `scripts/run-visual-smoke.sh` writes one bounded
 runner writes one case-level `scenario-manifest.json` per generated matrix case
 and a root `summary.json`; those case manifests extend the same bounded review
 index idea with `scenario_type`, `protected_regions`,
-`allowed_changing_regions`, `geometry_snapshots`, and `comparison_report`
-fields summarized by `scripts/lushtext-automation.py artifact-summary`. These
+`allowed_changing_regions`, `geometry_snapshots`, `pixel_anchors`,
+`relative_pixel_anchors`, `invariant_id`, and `comparison_report` fields
+summarized by `scripts/lushtext-automation.py artifact-summary`. These
 manifests are the review indexes for their scenarios: rich payloads stay in
 sibling files, while each manifest records paths, compact status rows, selected
 environment details, and failure or skip reasons. The canonical shared field
@@ -300,6 +330,7 @@ or renaming a shared field requires updating this table and rerunning
 | <span id="scenario-manifest-field-finished-at"></span>`scenario-manifest-field-finished-at` | `finished_at` | UTC timestamp when the scenario reached a terminal status, or `null` while running. |
 | <span id="scenario-manifest-field-failure-reason"></span>`scenario-manifest-field-failure-reason` | `failure_reason` | Bounded failure detail when the scenario fails. |
 | <span id="scenario-manifest-field-skip-reason"></span>`scenario-manifest-field-skip-reason` | `skip_reason` | Bounded host/tooling skip detail when the scenario is skipped. |
+| <span id="scenario-manifest-field-invariant-id"></span>`scenario-manifest-field-invariant-id` | `invariant_id` | Named visual invariant verified by this visual geometry case, when declared. |
 | <span id="scenario-manifest-field-launch-mode"></span>`scenario-manifest-field-launch-mode` | `launch_mode` | Scenario launch topology, such as `dbus-run-session+headless-mutter`. |
 | <span id="scenario-manifest-field-helper-arguments"></span>`scenario-manifest-field-helper-arguments` | `helper_arguments` | Structured helper arguments, currently artifact directory and binary path. |
 | <span id="scenario-manifest-field-fixture-setup"></span>`scenario-manifest-field-fixture-setup` | `fixture_setup` | Fixture rows with name, kind, relative artifact path, and bounded detail. |
@@ -310,6 +341,9 @@ or renaming a shared field requires updating this table and rerunning
 | <span id="scenario-manifest-field-at-spi-assertions"></span>`scenario-manifest-field-at-spi-assertions` | `at_spi_assertions` | AT-SPI assertion rows or explicit `not-run` diagnostics when a lane disables AT-SPI. |
 | <span id="scenario-manifest-field-dbus-summaries"></span>`scenario-manifest-field-dbus-summaries` | `dbus_summaries` | D-Bus method/property summary rows with member name, kind, status, bounded detail, and artifact. |
 | <span id="scenario-manifest-field-warnings"></span>`scenario-manifest-field-warnings` | `warnings` | Runtime warning scan status, unexpected count, bounded detail, and scan artifact path. |
+| <span id="scenario-manifest-field-pixel-anchors"></span>`scenario-manifest-field-pixel-anchors` | `pixel_anchors` | Visual geometry pixel anchors that must be detected from before/after screenshot pixels. |
+| <span id="scenario-manifest-field-relative-pixel-anchors"></span>`scenario-manifest-field-relative-pixel-anchors` | `relative_pixel_anchors` | Bounded relationships between detected pixel anchors, such as minimap edge-to-content-row deltas. |
+| <span id="scenario-manifest-field-pixel-anchor-assertion-count"></span>`scenario-manifest-field-pixel-anchor-assertion-count` | `pixel_anchor_assertion_count` | Number of pixel anchors declared for the visual geometry case. |
 | <span id="scenario-manifest-field-environment"></span>`scenario-manifest-field-environment` | `environment` | Selected non-secret runtime context such as app id, object path, binary, virtual monitor, GSettings, renderer, portal flag, and isolated XDG paths. |
 | <span id="scenario-manifest-field-bounded-artifact-policy"></span>`scenario-manifest-field-bounded-artifact-policy` | `bounded_artifact_policy` | Embedded text cap and rule that large payloads stay in bounded sibling artifacts. |
 | <span id="scenario-manifest-field-steps"></span>`scenario-manifest-field-steps` | `steps` | Ordered command, wait, D-Bus, launch, warning-scan, and state-assertion step rows with timing, status, bounded detail, and artifacts. |
@@ -408,14 +442,36 @@ receive a ` [truncated]` suffix when shortened.
 | <span id="snapshot-field-coordinate-space"></span>`snapshot-field-coordinate-space` | `visual_geometry.coordinate_space` | `string` | Coordinate space shared by all rectangles, currently window logical pixels. |
 | <span id="snapshot-field-ready"></span>`snapshot-field-ready` | `visual_geometry.ready` | `bool` | Whether `visual-geometry-settled` is currently satisfied. |
 | <span id="snapshot-field-blocker"></span>`snapshot-field-blocker` | `visual_geometry.blocker` | `string?` | First visual readiness blocker, if any. |
-| <span id="snapshot-field-name"></span>`snapshot-field-name` | `visual_geometry.surfaces[].name`, `visual_geometry.scroll_anchors[].name` | `string` | Stable visual surface or scroll-anchor name. |
-| <span id="snapshot-field-rect"></span>`snapshot-field-rect` | `visual_geometry.surfaces[].rect` | `object?` | Rectangle for a visible surface in the snapshot coordinate space. |
+| <span id="snapshot-field-name"></span>`snapshot-field-name` | `visual_geometry.surfaces[].name`, `visual_geometry.pixel_anchors[].name`, `visual_geometry.scroll_anchors[].name` | `string` | Stable visual surface, pixel-anchor, or scroll-anchor name. |
+| <span id="snapshot-field-rect"></span>`snapshot-field-rect` | `visual_geometry.surfaces[].rect`, `visual_geometry.pixel_anchors[].rect` | `object?` | Rectangle for a visible surface or pixel anchor in the snapshot coordinate space. |
 | <span id="snapshot-field-allocation"></span>`snapshot-field-allocation` | `visual_geometry.surfaces[].allocation` | `object?` | Allocated surface size when a widget or computed region exists. |
-| <span id="snapshot-field-absence-reason"></span>`snapshot-field-absence-reason` | `visual_geometry.surfaces[].absence_reason` | `string?` | Stable reason a surface is hidden, unavailable, zero-sized, or absent. |
-| <span id="snapshot-field-x"></span>`snapshot-field-x` | `visual_geometry.surfaces[].rect.x` | `i32` | Left coordinate in the snapshot coordinate space. |
-| <span id="snapshot-field-y"></span>`snapshot-field-y` | `visual_geometry.surfaces[].rect.y` | `i32` | Top coordinate in the snapshot coordinate space. |
-| <span id="snapshot-field-width"></span>`snapshot-field-width` | `visual_geometry.surfaces[].rect.width`, `visual_geometry.surfaces[].allocation.width` | `i32` | Surface width in logical GTK pixels. |
-| <span id="snapshot-field-height"></span>`snapshot-field-height` | `visual_geometry.surfaces[].rect.height`, `visual_geometry.surfaces[].allocation.height` | `i32` | Surface height in logical GTK pixels. |
+| <span id="snapshot-field-absence-reason"></span>`snapshot-field-absence-reason` | `visual_geometry.surfaces[].absence_reason`, `visual_geometry.pixel_anchors[].absence_reason` | `string?` | Stable reason a surface or pixel anchor is hidden, unavailable, zero-sized, or absent. |
+| <span id="snapshot-field-x"></span>`snapshot-field-x` | `visual_geometry.surfaces[].rect.x`, `visual_geometry.pixel_anchors[].rect.x` | `i32` | Left coordinate in the snapshot coordinate space. |
+| <span id="snapshot-field-y"></span>`snapshot-field-y` | `visual_geometry.surfaces[].rect.y`, `visual_geometry.pixel_anchors[].rect.y` | `i32` | Top coordinate in the snapshot coordinate space. |
+| <span id="snapshot-field-width"></span>`snapshot-field-width` | `visual_geometry.surfaces[].rect.width`, `visual_geometry.surfaces[].allocation.width`, `visual_geometry.pixel_anchors[].rect.width` | `i32` | Surface or pixel-anchor width in logical GTK pixels. |
+| <span id="snapshot-field-height"></span>`snapshot-field-height` | `visual_geometry.surfaces[].rect.height`, `visual_geometry.surfaces[].allocation.height`, `visual_geometry.pixel_anchors[].rect.height` | `i32` | Surface or pixel-anchor height in logical GTK pixels. |
+| <span id="snapshot-field-pixel-anchors"></span>`snapshot-field-pixel-anchors` | `visual_geometry.pixel_anchors` | `array` | App-computed crop and diagnostic anchors for screenshot assertions, such as minimap viewport top edge, viewport fill, bottom edge, and first content row. These are not the rendered-effect pass/fail oracle by themselves. |
+| <span id="snapshot-field-surface"></span>`snapshot-field-surface` | `visual_geometry.pixel_anchors[].surface` | `string` | Visual surface that owns the pixel anchor. |
+| <span id="snapshot-field-native-minimap"></span>`snapshot-field-native-minimap` | `visual_geometry.native_minimap` | `object` | Bounded native `GtkSourceMap` slider diagnostics for rendered-effect proof; diagnostic only, not the pass/fail oracle. |
+| <span id="snapshot-field-projection-source"></span>`snapshot-field-projection-source` | `visual_geometry.native_minimap.projection_source` | `string?` | Stable source label for the native slider estimate, such as `upstream-visible-rect-estimate`. |
+| <span id="snapshot-field-source-map-allocation"></span>`snapshot-field-source-map-allocation` | `visual_geometry.native_minimap.source_map_allocation` | `object?` | Source-map widget allocation used by native minimap diagnostics. |
+| <span id="snapshot-field-source-map-rect"></span>`snapshot-field-source-map-rect` | `visual_geometry.native_minimap.source_map_rect` | `object?` | Source-map widget rectangle in the visual snapshot coordinate space. |
+| <span id="snapshot-field-editor-visible-rect"></span>`snapshot-field-editor-visible-rect` | `visual_geometry.native_minimap.editor_visible_rect` | `object?` | Editor visible rect in editor buffer coordinates, without document text. |
+| <span id="snapshot-field-source-map-visible-rect"></span>`snapshot-field-source-map-visible-rect` | `visual_geometry.native_minimap.source_map_visible_rect` | `object?` | Source-map visible rect in source-map buffer coordinates, without rendered text. |
+| <span id="snapshot-field-source-view-vadjustment"></span>`snapshot-field-source-view-vadjustment` | `visual_geometry.native_minimap.source_view_vadjustment` | `object?` | Source-view vertical adjustment summary used to explain top anchoring. |
+| <span id="snapshot-field-source-map-vadjustment"></span>`snapshot-field-source-map-vadjustment` | `visual_geometry.native_minimap.source_map_vadjustment` | `object?` | Source-map vertical adjustment summary used to detect stale map scroll. |
+| <span id="snapshot-field-editor-document-height"></span>`snapshot-field-editor-document-height` | `visual_geometry.native_minimap.editor_document_height` | `i32?` | Bounded editor document height used by the native slider estimate. |
+| <span id="snapshot-field-source-map-document-height"></span>`snapshot-field-source-map-document-height` | `visual_geometry.native_minimap.source_map_document_height` | `i32?` | Bounded source-map document height used by the native slider estimate. |
+| <span id="snapshot-field-border-left"></span>`snapshot-field-border-left` | `visual_geometry.native_minimap.border_left` | `i32?` | Source-map left CSS border input used by the native slider width estimate. |
+| <span id="snapshot-field-border-right"></span>`snapshot-field-border-right` | `visual_geometry.native_minimap.border_right` | `i32?` | Source-map right CSS border input used by the native slider width estimate. |
+| <span id="snapshot-field-native-slider-estimate"></span>`snapshot-field-native-slider-estimate` | `visual_geometry.native_minimap.native_slider_estimate` | `object?` | Upstream-informed estimate of the native slider rectangle in snapshot coordinates. |
+| <span id="snapshot-field-line-projection-rect"></span>`snapshot-field-line-projection-rect` | `visual_geometry.native_minimap.line_projection_rect` | `object?` | Older line-projection viewport estimate retained as diagnostic contrast. |
+| <span id="snapshot-field-first-content-row-rect"></span>`snapshot-field-first-content-row-rect` | `visual_geometry.native_minimap.first_content_row_rect` | `object?` | First rendered minimap content-row estimate in snapshot coordinates. |
+| <span id="snapshot-field-at-lower"></span>`snapshot-field-at-lower` | `visual_geometry.native_minimap.*_vadjustment.at_lower` | `bool?` | Whether the adjustment is at its lower bound. |
+| <span id="snapshot-field-value-milli"></span>`snapshot-field-value-milli` | `visual_geometry.native_minimap.*_vadjustment.value_milli` | `i64?` | Vertical adjustment value multiplied by 1000 for bounded diagnostics. |
+| <span id="snapshot-field-lower-milli"></span>`snapshot-field-lower-milli` | `visual_geometry.native_minimap.*_vadjustment.lower_milli` | `i64?` | Vertical adjustment lower bound multiplied by 1000 for bounded diagnostics. |
+| <span id="snapshot-field-upper-milli"></span>`snapshot-field-upper-milli` | `visual_geometry.native_minimap.*_vadjustment.upper_milli` | `i64?` | Vertical adjustment upper bound multiplied by 1000 for bounded diagnostics. |
+| <span id="snapshot-field-page-size-milli"></span>`snapshot-field-page-size-milli` | `visual_geometry.native_minimap.*_vadjustment.page_size_milli` | `i64?` | Vertical adjustment page size multiplied by 1000 for bounded diagnostics. |
 | <span id="snapshot-field-scroll-anchors"></span>`snapshot-field-scroll-anchors` | `visual_geometry.scroll_anchors` | `array` | Scroll anchors for editor-like surfaces that explain top and left stability. |
 | <span id="snapshot-field-at-left"></span>`snapshot-field-at-left` | `visual_geometry.scroll_anchors[].at_left` | `bool?` | Whether the horizontal adjustment is at the lower content edge, allowing the widget's own margin tolerance. |
 | <span id="snapshot-field-at-top"></span>`snapshot-field-at-top` | `visual_geometry.scroll_anchors[].at_top` | `bool?` | Whether the vertical adjustment is at the lower content edge, allowing the widget's own margin tolerance. |
@@ -490,7 +546,7 @@ a scenario truly needs all tracked app-owned work to settle.
 | <span id="readiness-predicate-workspace-refresh-complete"></span>`readiness-predicate-workspace-refresh-complete` | `workspace-refresh-complete` | stable | `app-startup`, `workspace-persist`, `workspace-filter-animation`, `command-palette-index` | Workspace persistence, scope filter animation, and command-palette index debounce are settled. |
 | <span id="readiness-predicate-session-restore-complete"></span>`readiness-predicate-session-restore-complete` | `session-restore-complete` | stable | `app-startup`, `session-restore`, `file-load`, `draft-autosave` | Session restore and immediate file/draft follow-up work are settled. |
 | <span id="readiness-predicate-recovery-restore-complete"></span>`readiness-predicate-recovery-restore-complete` | `recovery-restore-complete` | stable | `app-startup`, `session-restore`, `file-load`, `draft-autosave`, `workspace-persist`, `command-palette-index` | Startup recovery restore and immediate post-restore indexing or persistence work are settled. |
-| <span id="readiness-predicate-visual-geometry-settled"></span>`readiness-predicate-visual-geometry-settled` | `visual-geometry-settled` | stable | `app-startup`, `session-restore`, `file-load`, `draft-autosave`, `preview-animation`, `workspace-persist`, `workspace-filter-animation`, `command-palette-index`, `workspace-search`, `editor-search`, `replace-preview`, `minimap-refresh` | GTK layout, adaptive shell state, minimap projection, and visual scenario blockers are settled for screenshot capture. |
+| <span id="readiness-predicate-visual-geometry-settled"></span>`readiness-predicate-visual-geometry-settled` | `visual-geometry-settled` | stable | `app-startup`, `session-restore`, `file-load`, `draft-autosave`, `preview-animation`, `workspace-persist`, `workspace-filter-animation`, `command-palette-index`, `workspace-search`, `editor-search`, `replace-preview`, `minimap-refresh` | GTK layout, adaptive shell state, minimap projection, and visual scenario blockers are settled. Sidebar animation scenarios must still prove final workspace-sidebar/editor allocation relationships before screenshot proof is accepted. |
 | <span id="readiness-predicate-idle"></span>`readiness-predicate-idle` | `idle` | stable | all readiness blockers | Every tracked app-owned readiness blocker is settled. |
 
 ## Readiness Blockers

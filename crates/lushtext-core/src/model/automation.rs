@@ -420,6 +420,107 @@ mod tests {
                     absence_reason: Some("minimap-disabled".to_string()),
                 },
             ],
+            pixel_anchors: vec![
+                AutomationVisualPixelAnchorSnapshot {
+                    name: "minimap-viewport-top-edge".to_string(),
+                    surface: "minimap-native-viewport".to_string(),
+                    visible: true,
+                    rect: Some(AutomationVisualRect {
+                        x: 1180,
+                        y: 64,
+                        width: 96,
+                        height: 3,
+                    }),
+                    absence_reason: None,
+                },
+                AutomationVisualPixelAnchorSnapshot {
+                    name: "minimap-viewport-fill".to_string(),
+                    surface: "minimap-native-viewport".to_string(),
+                    visible: true,
+                    rect: Some(AutomationVisualRect {
+                        x: 1180,
+                        y: 66,
+                        width: 96,
+                        height: 10,
+                    }),
+                    absence_reason: None,
+                },
+                AutomationVisualPixelAnchorSnapshot {
+                    name: "minimap-viewport-bottom-edge".to_string(),
+                    surface: "minimap-native-viewport".to_string(),
+                    visible: true,
+                    rect: Some(AutomationVisualRect {
+                        x: 1180,
+                        y: 280,
+                        width: 96,
+                        height: 10,
+                    }),
+                    absence_reason: None,
+                },
+            ],
+            native_minimap: AutomationNativeMinimapDiagnosticSnapshot {
+                visible: true,
+                absence_reason: None,
+                projection_source: Some("upstream-visible-rect-estimate".to_string()),
+                source_map_allocation: Some(AutomationVisualSize {
+                    width: 94,
+                    height: 660,
+                }),
+                source_map_rect: Some(AutomationVisualRect {
+                    x: 1180,
+                    y: 48,
+                    width: 94,
+                    height: 660,
+                }),
+                editor_visible_rect: Some(AutomationVisualRect {
+                    x: 0,
+                    y: 0,
+                    width: 1024,
+                    height: 660,
+                }),
+                source_map_visible_rect: Some(AutomationVisualRect {
+                    x: 0,
+                    y: 2,
+                    width: 94,
+                    height: 660,
+                }),
+                source_view_vadjustment: Some(AutomationVisualAdjustmentSnapshot {
+                    at_lower: true,
+                    value_milli: 0,
+                    lower_milli: 0,
+                    upper_milli: 980_000,
+                    page_size_milli: 660_000,
+                }),
+                source_map_vadjustment: Some(AutomationVisualAdjustmentSnapshot {
+                    at_lower: false,
+                    value_milli: 2_000,
+                    lower_milli: 0,
+                    upper_milli: 662_000,
+                    page_size_milli: 660_000,
+                }),
+                editor_document_height: Some(980),
+                source_map_document_height: Some(480),
+                border_left: Some(0),
+                border_right: Some(0),
+                native_slider_estimate: Some(AutomationVisualRect {
+                    x: 1167,
+                    y: 46,
+                    width: 120,
+                    height: 323,
+                }),
+                line_projection_rect: Some(AutomationVisualRect {
+                    x: 1167,
+                    y: 48,
+                    width: 120,
+                    height: 323,
+                }),
+                first_content_row_rect: Some(AutomationVisualRect {
+                    x: 1180,
+                    y: 50,
+                    width: 94,
+                    height: 1,
+                }),
+            },
             scroll_anchors: vec![AutomationVisualScrollAnchorSnapshot {
                 name: "source-view".to_string(),
                 at_left: Some(true),
@@ -444,6 +545,32 @@ mod tests {
         assert_eq!(value["surfaces"][0]["name"], "header-bar");
         assert_eq!(value["surfaces"][0]["rect"]["width"], 1280);
         assert_eq!(value["surfaces"][1]["absence_reason"], "minimap-disabled");
+        assert_eq!(
+            value["pixel_anchors"][0]["name"],
+            "minimap-viewport-top-edge"
+        );
+        assert_eq!(
+            value["pixel_anchors"][0]["surface"],
+            "minimap-native-viewport"
+        );
+        assert_eq!(value["pixel_anchors"][0]["rect"]["height"], 3);
+        assert_eq!(value["pixel_anchors"][1]["name"], "minimap-viewport-fill");
+        assert_eq!(value["pixel_anchors"][1]["rect"]["height"], 10);
+        assert_eq!(
+            value["pixel_anchors"][2]["name"],
+            "minimap-viewport-bottom-edge"
+        );
+        assert_eq!(value["pixel_anchors"][2]["rect"]["height"], 10);
+        assert_eq!(
+            value["native_minimap"]["projection_source"],
+            "upstream-visible-rect-estimate"
+        );
+        assert_eq!(value["native_minimap"]["source_map_visible_rect"]["y"], 2);
+        assert_eq!(
+            value["native_minimap"]["source_map_vadjustment"]["at_lower"],
+            false
+        );
+        assert_eq!(value["native_minimap"]["native_slider_estimate"]["y"], 46);
         assert_eq!(value["scroll_anchors"][0]["at_top"], true);
         assert!(!fields.contains_key("document_text"));
         assert!(!fields.contains_key("minimap_text"));
@@ -911,6 +1038,10 @@ pub struct AutomationVisualGeometrySnapshot {
     pub blocker: Option<String>,
     /// Named surface rectangles and absence reasons.
     pub surfaces: Vec<AutomationVisualSurfaceSnapshot>,
+    /// Named pixel-level anchors that screenshot smoke must verify when present.
+    pub pixel_anchors: Vec<AutomationVisualPixelAnchorSnapshot>,
+    /// Native source-map slider diagnostics for rendered-effect proof.
+    pub native_minimap: AutomationNativeMinimapDiagnosticSnapshot,
     /// Scroll anchors that explain whether editor-like surfaces are at top/left.
     pub scroll_anchors: Vec<AutomationVisualScrollAnchorSnapshot>,
 }
@@ -950,6 +1081,80 @@ pub struct AutomationVisualSurfaceSnapshot {
     pub allocation: Option<AutomationVisualSize>,
     /// Stable absence reason when the surface is hidden or unavailable.
     pub absence_reason: Option<String>,
+}
+
+/// One named pixel-level crop hint for screenshot-derived assertions.
+///
+/// App geometry may choose the crop and explain absence, but live visual smoke
+/// must still detect the rendered pixels independently inside that crop.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AutomationVisualPixelAnchorSnapshot {
+    /// Stable anchor name, such as `minimap-viewport-top-edge`.
+    pub name: String,
+    /// Surface that owns the anchor's visual invariant.
+    pub surface: String,
+    /// Whether the anchor is rendered and eligible for pixel assertions.
+    pub visible: bool,
+    /// Rectangle in the window coordinate space when visible.
+    pub rect: Option<AutomationVisualRect>,
+    /// Stable absence reason when the anchor is hidden or unavailable.
+    pub absence_reason: Option<String>,
+}
+
+/// Bounded native minimap geometry used to explain screenshot proof.
+///
+/// These fields mirror public `GtkSourceMap` inputs for debugging, but they are
+/// not the pass/fail oracle; pixel anchors still verify the rendered slider in
+/// screenshots.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AutomationNativeMinimapDiagnosticSnapshot {
+    /// Whether native minimap diagnostics are available.
+    pub visible: bool,
+    /// Stable absence reason when the minimap is hidden or diagnostics are unavailable.
+    pub absence_reason: Option<String>,
+    /// Stable projection source label for the native slider estimate.
+    pub projection_source: Option<String>,
+    /// Source-map widget allocation when the widget exists.
+    pub source_map_allocation: Option<AutomationVisualSize>,
+    /// Source-map widget rectangle in the visual snapshot coordinate space.
+    pub source_map_rect: Option<AutomationVisualRect>,
+    /// Editor visible rect in editor buffer coordinates, never text content.
+    pub editor_visible_rect: Option<AutomationVisualRect>,
+    /// Source-map visible rect in source-map buffer coordinates, never text content.
+    pub source_map_visible_rect: Option<AutomationVisualRect>,
+    /// Source-view vertical adjustment summary.
+    pub source_view_vadjustment: Option<AutomationVisualAdjustmentSnapshot>,
+    /// Source-map vertical adjustment summary.
+    pub source_map_vadjustment: Option<AutomationVisualAdjustmentSnapshot>,
+    /// Editor document height used for the native slider ratio.
+    pub editor_document_height: Option<i32>,
+    /// Source-map document height used for the native slider ratio.
+    pub source_map_document_height: Option<i32>,
+    /// Source-map left CSS border used by the native slider width estimate.
+    pub border_left: Option<i32>,
+    /// Source-map right CSS border used by the native slider width estimate.
+    pub border_right: Option<i32>,
+    /// Upstream-informed native slider rectangle estimate in snapshot coordinates.
+    pub native_slider_estimate: Option<AutomationVisualRect>,
+    /// Existing line-projection viewport estimate retained as explanatory contrast.
+    pub line_projection_rect: Option<AutomationVisualRect>,
+    /// First rendered minimap content row estimate in snapshot coordinates.
+    pub first_content_row_rect: Option<AutomationVisualRect>,
+}
+
+/// Bounded scroll adjustment values for visual diagnostics.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AutomationVisualAdjustmentSnapshot {
+    /// Whether the adjustment is at its lower bound.
+    pub at_lower: bool,
+    /// Current value multiplied by 1000.
+    pub value_milli: i64,
+    /// Lower bound multiplied by 1000.
+    pub lower_milli: i64,
+    /// Upper bound multiplied by 1000.
+    pub upper_milli: i64,
+    /// Page size multiplied by 1000.
+    pub page_size_milli: i64,
 }
 
 /// Scroll state for one visual surface, stored as bounded milli-pixel values.

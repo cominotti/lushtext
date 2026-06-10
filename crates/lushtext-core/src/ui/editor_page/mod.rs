@@ -8,6 +8,9 @@
 
 mod bookmarks;
 mod focus_mode;
+// Private implementation module. GTK's GObject bindings split custom widgets
+// into an `imp` struct for instance data/lifecycle hooks and this public wrapper
+// module for the type-safe API.
 mod imp;
 mod invisibles;
 mod load_save;
@@ -34,9 +37,22 @@ pub use bookmarks::{
 };
 pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
 pub use imp::{EditorLoadState, PendingWarningAction};
-pub use minimap::{MinimapAvailability, MinimapMarkerBounds, MinimapMarkerKind};
+pub(crate) use minimap::{
+    MinimapAdjustmentDiagnostics, MinimapNativeSliderDiagnostics, MinimapTextViewRect,
+};
+pub use minimap::{
+    MinimapAvailability, MinimapMarkerBounds, MinimapMarkerKind, MinimapProjectedBounds,
+};
 
 glib::wrapper! {
+    // Generate the public GObject wrapper for `LushtextEditorPage`.
+    // `ObjectSubclass` links to the private implementation, `@extends` declares
+    // the GTK class chain, and `@implements` lists the GTK interfaces.
+    /// Public GTK widget for one editor tab.
+    ///
+    /// The wrapper exposes the type-safe facade around the private GObject
+    /// implementation so window workflows can reach editor, search, minimap,
+    /// file, draft, and bookmark state without depending on template internals.
     pub struct LushtextEditorPage(ObjectSubclass<imp::LushtextEditorPage>)
         @extends gtk4::Box, gtk4::Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;

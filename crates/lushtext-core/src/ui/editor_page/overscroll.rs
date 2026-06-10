@@ -25,6 +25,19 @@ const MIN_EDITOR_BOTTOM_MARGIN: i32 = 6;
 /// without making the document feel detached from the viewport.
 const EOF_OVERSCROLL_FACTOR: f64 = 0.75;
 
+/// Scroll axis observed by the viewport reflow detectors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ViewportAxis {
+    /// The horizontal adjustment, whose page size is the viewport width.
+    Horizontal,
+    /// The vertical adjustment, whose page size is the viewport height.
+    Vertical,
+}
+
+fn adjustment_rests_at_lower(adjustment: &gtk4::Adjustment) -> bool {
+    (adjustment.value() - adjustment.lower()).abs() <= 0.5
+}
+
 fn overscroll_margin_from_visible_height(visible_height: i32) -> i32 {
     #[expect(
         clippy::cast_possible_truncation,
@@ -35,6 +48,108 @@ fn overscroll_margin_from_visible_height(visible_height: i32) -> i32 {
 }
 
 impl LushtextEditorPage {
+    /// Observe the editor viewport through its scroll adjustments.
+    ///
+    /// `LushtextEditorPage` is a `GtkBox` subclass, and GTK4 never calls the
+    /// `size_allocate` vfunc on widgets whose class installs a layout manager,
+    /// so an allocation override on the page is silently dead code. The text
+    /// view's adjustments are the reliable public signal: GtkTextView updates
+    /// their page size on every allocation, including each frame of the
+    /// sidebar show/hide animation, so width and height reflow can be detected
+    /// without touching private GTK layout machinery.
+    pub(crate) fn setup_allocation_reflow_observers(&self) {
+        let source_view = self.source_view();
+        let Some(hadjustment) = source_view.hadjustment() else {
+            return;
+        };
+        let Some(vadjustment) = source_view.vadjustment() else {
+            return;
+        };
+
+        let overscroll = &self.imp().overscroll;
+        overscroll.h_viewport_size.set(hadjustment.page_size());
+        overscroll.v_viewport_size.set(vadjustment.page_size());
+        overscroll
+            .h_rest_at_left
+            .set(adjustment_rests_at_lower(&hadjustment));
+        overscroll
+            .v_rest_at_top
+            .set(adjustment_rests_at_lower(&vadjustment));
+
+        for (adjustment, axis) in [
+            (hadjustment, ViewportAxis::Horizontal),
+            (vadjustment, ViewportAxis::Vertical),
+        ] {
+            let editor_weak = self.downgrade();
+            adjustment.connect_changed(move |adjustment| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.on_viewport_bounds_changed(adjustment, axis);
+                }
+            });
+            let editor_weak = self.downgrade();
+            adjustment.connect_value_changed(move |adjustment| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.record_viewport_rest_state(adjustment, axis);
+                }
+            });
+        }
+    }
+
+    /// Track whether the user-visible scroll position rests at the start edge.
+    ///
+    /// Reflow bursts are excluded because GTK can transiently preserve or
+    /// clamp adjustment values while reallocating; only changes outside a
+    /// burst represent intentional scrolling. The rest state is what the
+    /// settle repair consults to decide whether edge anchors may be restored.
+    fn record_viewport_rest_state(&self, adjustment: &gtk4::Adjustment, axis: ViewportAxis) {
+        if self.imp().minimap.reflow_settle_pending.get() {
+            return;
+        }
+        let at_lower = adjustment_rests_at_lower(adjustment);
+        let overscroll = &self.imp().overscroll;
+        match axis {
+            ViewportAxis::Horizontal => overscroll.h_rest_at_left.set(at_lower),
+            ViewportAxis::Vertical => overscroll.v_rest_at_top.set(at_lower),
+        }
+    }
+
+    /// React to a viewport size change reported by a scroll adjustment.
+    ///
+    /// This is the working replacement for the page-level allocation hook:
+    /// width changes open or extend a minimap reflow burst and re-anchor the
+    /// left edge, height changes re-anchor the top edge, and either kind
+    /// refreshes the EOF overscroll and Focus Mode width-derived chrome.
+    fn on_viewport_bounds_changed(&self, adjustment: &gtk4::Adjustment, axis: ViewportAxis) {
+        let overscroll = &self.imp().overscroll;
+        let page_size = adjustment.page_size();
+        let cell = match axis {
+            ViewportAxis::Horizontal => &overscroll.h_viewport_size,
+            ViewportAxis::Vertical => &overscroll.v_viewport_size,
+        };
+        if (cell.get() - page_size).abs() <= 0.5 {
+            return;
+        }
+        cell.set(page_size);
+
+        self.schedule_dynamic_overscroll_update();
+        match axis {
+            ViewportAxis::Horizontal => {
+                self.schedule_minimap_reflow_settle();
+                if overscroll.h_rest_at_left.get() {
+                    self.schedule_left_edge_horizontal_scroll_clamp();
+                }
+            }
+            ViewportAxis::Vertical => {
+                self.note_minimap_height_reflow();
+                if overscroll.v_rest_at_top.get() {
+                    self.schedule_top_edge_vertical_scroll_clamp();
+                }
+            }
+        }
+        self.refresh_focus_mode_readable_column();
+        self.queue_focus_mode_text_origin_guide_draw();
+    }
+
     /// Restore the left text edge after passive width-only layout changes.
     ///
     /// GTK may preserve the previous horizontal adjustment while the editor is
@@ -77,32 +192,6 @@ impl LushtextEditorPage {
                 adjustment.set_value(lower);
                 editor.schedule_minimap_refresh();
             }
-        });
-    }
-
-    /// Refresh minimap projection after width-only layout changes.
-    ///
-    /// Width reflow can change wrapped visual-line heights even when GTK leaves
-    /// the editor's visible height untouched. If the user was already at the
-    /// top edge, preserve that anchor and then refresh the minimap's source-map
-    /// geometry and marker projection from the settled allocation.
-    pub(crate) fn schedule_minimap_projection_refresh_after_reflow(&self, preserve_top: bool) {
-        let editor_weak = self.downgrade();
-        glib::idle_add_local_once(move || {
-            let Some(editor) = editor_weak.upgrade() else {
-                return;
-            };
-
-            if preserve_top && let Some(adjustment) = editor.source_view().vadjustment() {
-                let lower = adjustment.lower();
-                if (adjustment.value() - lower).abs() > 0.5 {
-                    adjustment.set_value(lower);
-                }
-            }
-
-            editor.sync_minimap_view_geometry();
-            editor.schedule_minimap_refresh();
-            editor.queue_minimap_draw();
         });
     }
 

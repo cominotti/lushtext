@@ -40,6 +40,13 @@ Use this skill when the real question is "what contract is GTK, Libadwaita, or G
 - Distinguish the widget named in a warning from the widget that caused the invariant to fail. Containers often surface child problems.
 - Trace both directions through the widget tree. Parents distribute constraints downward; children push minimums upward.
 - Account for CSS margin, border, padding, and wrapper style classes. They participate in measurement even when visible content seems unchanged.
+- When the symptom is a few pixels of rendered effect drift, identify whether
+  the visible pixels are toolkit-owned (for example a private CSS node) or
+  app-owned drawing. If tests need a stable invariant, preserve the native or
+  app-rendered effect and verify it with screenshot-derived pixel anchors from a
+  broad crop. Automation1 geometry may choose the crop and explain diagnostics;
+  do not prove only a computed rectangle while the visible pixels come from a
+  separate toolkit or CSS path.
 - For collection, browser, picker, and status-page surfaces, reason through the
   measurement contract at both ends of the data shape: zero children or empty
   model, representative content, many rows, long labels, and constrained
@@ -52,6 +59,7 @@ Use this skill when the real question is "what contract is GTK, Libadwaita, or G
 ## Rust Framing
 
 - In Rust, the semantic contract matches the C docs and source exactly: custom widget `measure`, `size_allocate`, `snapshot`, buildable child types, action or focus behavior, and GtkSourceView editor projections are toolkit rules, not binding-specific inventions.
+- A `WidgetImpl::size_allocate` override compiling does not prove GTK will call it for the path you need. If a subclass inherits or installs a layout manager (for example a `GtkBox`/`GtkBoxLayout` path), verify the vfunc empirically before hanging repair logic on it; for text-view viewport reflow, scroll-adjustment `page-size` changes can be the live allocation signal.
 - When subclassing, never re-enter the measurement wrapper on `self` from your own `measure` implementation. Measuring child widgets via the wrapper is correct.
 - Keep GTK objects on the main thread. Background threads may compute data, parse files, or search the filesystem, but they must hand plain data back to the UI thread.
 - Use weak references or equivalent patterns for long-lived closures so disposal can complete and widgets can actually die.

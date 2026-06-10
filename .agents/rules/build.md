@@ -64,11 +64,23 @@ status, exit, result-field, and artifact-summary contracts. If
 `make automation-client-self-test`; `make check-policy` includes both checks.
 Screenshot-reported or geometry-sensitive UI fixes should also run
 `make visual-geometry-smoke` when the intended invariant is same-session pixel
-stability across a layout action. `make check-visual-proof-policy` is part of
-`make check-policy` and fails local visual-sensitive worktree changes until a
-passing, unfiltered visual geometry summary under `build/smoke/visual-geometry`
-matches the current visual-sensitive diff; skipped or stale visual geometry runs
-do not count as proof.
+stability across a layout action. Pixel-visible effects that have a named
+invariant must also appear in the root summary's
+`pixel_verified_invariant_ids`; a rectangle-only visual geometry pass or a
+name-only invariant pass is not sufficient for those files.
+`make check-visual-proof-policy` is part of `make check-policy` and fails local
+visual-sensitive worktree changes until a passing, unfiltered visual geometry
+summary under `build/smoke/visual-geometry` matches the current
+visual-sensitive diff, pixel-verifies all required invariant ids, and includes
+per-case pixel rows, final-frame rendered-anchor stability, and final geometry
+evidence; skipped, filtered, name-only, rectangle-only, or stale visual geometry
+runs do not count as proof. If the bug was first seen in a live window, capture
+its bounded Automation1 state with
+`scripts/lushtext-automation.py visual-geometry-capture ...` and replay the
+generated scenario under headless visual geometry before claiming coverage.
+Visual geometry runners must start from a clean artifact root; stale case
+directories from a previous run can make the root summary report failures or
+evidence that the current binary did not produce.
 
 Portal and headless smoke scripts must keep their temporary runtime directories
 short (for example directly under `$XDG_RUNTIME_DIR` or `/tmp`) rather than

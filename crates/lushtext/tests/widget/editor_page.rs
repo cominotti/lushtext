@@ -2,7 +2,10 @@
 
 //! Tests for the LushtextEditorPage widget.
 
-use crate::common::{ensure_gtk_init, fixture, fs_read, present_window, test_application, wait_until};
+use crate::common::{
+    ensure_gtk_init, fixture, flush_after_delay, fs_read, present_window, test_application,
+    wait_until,
+};
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -101,12 +104,12 @@ fn baseline_source_map_for_view(view: &sourceview5::View) -> sourceview5::Map {
     map.set_editable(false);
     map.set_cursor_visible(false);
     map.set_can_focus(false);
-    map.set_wrap_mode(view.wrap_mode());
+    map.set_wrap_mode(gtk4::WrapMode::None);
     map.set_show_line_numbers(false);
     map.set_show_line_marks(false);
     map.set_highlight_current_line(false);
     map.set_monospace(true);
-    map.set_top_margin(view.top_margin().max(6));
+    map.set_top_margin(5);
     map.set_bottom_margin(view.bottom_margin());
     map.set_left_margin(0);
     map.set_right_margin(0);
@@ -311,6 +314,7 @@ fn wait_for_minimap_ready(page: &LushtextEditorPage) {
             && source_map.is_mapped()
             && marker_strip.is_mapped()
             && marker_strip.height() > 0
+            && source_map.height() > 0
             && source_map.bottom_margin() > 6
     });
 }
@@ -931,6 +935,7 @@ fn test_minimap_source_map_matches_upstream_geometry_contract() {
         .expect("source map should be created during construction");
     let baseline_map = baseline_source_map_for_view(page.source_view());
 
+    assert_eq!(source_map.wrap_mode(), baseline_map.wrap_mode());
     assert_eq!(source_map.top_margin(), baseline_map.top_margin());
     assert_eq!(source_map.bottom_margin(), baseline_map.bottom_margin());
     assert_eq!(source_map.left_margin(), baseline_map.left_margin());
@@ -940,7 +945,7 @@ fn test_minimap_source_map_matches_upstream_geometry_contract() {
 }
 
 #[test]
-fn test_minimap_source_map_tracks_editor_wrap_mode_changes() {
+fn test_minimap_source_map_stays_unwrapped_across_editor_wrap_mode_changes() {
     ensure_gtk_init();
     let settings = gio::Settings::new(APP_ID);
     settings
@@ -950,7 +955,7 @@ fn test_minimap_source_map_tracks_editor_wrap_mode_changes() {
     let source_map = minimap_source_map(&page);
 
     assert_eq!(page.source_view().wrap_mode(), gtk4::WrapMode::Word);
-    assert_eq!(source_map.wrap_mode(), page.source_view().wrap_mode());
+    assert_eq!(source_map.wrap_mode(), gtk4::WrapMode::None);
 
     settings
         .set_boolean(keys::WORD_WRAP, false)
@@ -965,7 +970,7 @@ fn test_minimap_source_map_tracks_editor_wrap_mode_changes() {
         .expect("re-enable word wrap");
     wait_until(std::time::Duration::from_secs(2), || {
         page.source_view().wrap_mode() == gtk4::WrapMode::Word
-            && source_map.wrap_mode() == gtk4::WrapMode::Word
+            && source_map.wrap_mode() == gtk4::WrapMode::None
     });
 }
 
@@ -1014,7 +1019,7 @@ fn test_minimap_source_map_keeps_native_navigation_controller_set() {
 }
 
 #[test]
-fn test_minimap_slider_css_uses_neutral_rectangular_viewport() {
+fn test_minimap_slider_css_preserves_native_viewport_effect() {
     let css = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../resources/style/style.css"
@@ -1028,16 +1033,149 @@ fn test_minimap_slider_css_uses_neutral_rectangular_viewport() {
         .expect("minimap slider rule should be closed");
 
     assert!(
-        rule_body.contains("@view_fg_color"),
-        "minimap viewport indicator should use neutral editor-chrome color tokens"
+        rule_body.contains("background-color: alpha(@view_fg_color, 0.14);"),
+        "native GtkSourceMap slider should keep the original viewport fill"
+    );
+    assert!(
+        rule_body.contains("border: 1px solid alpha(@view_fg_color, 0.46);"),
+        "native GtkSourceMap slider should keep the original viewport border"
     );
     assert!(
         !rule_body.contains("@accent_color") && !rule_body.contains("@accent_bg_color"),
-        "minimap viewport indicator should not use accent color tokens"
+        "native GtkSourceMap slider should not adopt semantic marker colors"
     );
     assert!(
         rule_body.contains("border-radius: 0;"),
-        "minimap viewport indicator should be a square-cornered rectangle"
+        "native slider should remain a square-cornered geometry shell"
+    );
+}
+
+#[test]
+fn test_minimap_native_viewport_effect_projects_inside_source_map() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, false)
+        .expect("disable word wrap");
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&minimap_test_document(120, &[], &[]));
+    let _window = present_editor_page_with_size(&page, 1000, 700);
+    wait_for_minimap_ready(&page);
+
+    let source_map = minimap_source_map(&page);
+    let map_width = f64::from(source_map.width());
+    let map_height = f64::from(source_map.height());
+    // GtkSourceMap draws its native slider from a private CSS node that can
+    // extend a little beyond the text projection; keep the assertion about the
+    // native effect's historical geometry, not an app-owned replacement.
+    let native_slider_outset = 13.0;
+    let viewport_bounds = page
+        .minimap_viewport_bounds_for_test()
+        .expect("visible minimap should project native viewport bounds");
+
+    assert!(
+        viewport_bounds.width > 0.0 && viewport_bounds.height > 0.0,
+        "native viewport bounds should be positive: {viewport_bounds:?}"
+    );
+    assert!(
+        viewport_bounds.x >= -native_slider_outset - 0.5,
+        "native viewport should not start left of the source map: {viewport_bounds:?}, map_width={map_width}"
+    );
+    assert!(
+        viewport_bounds.x + viewport_bounds.width <= map_width + native_slider_outset + 0.5,
+        "native viewport should not extend right of the source map: {viewport_bounds:?}, map_width={map_width}"
+    );
+    assert!(
+        viewport_bounds.y >= -0.5,
+        "native viewport should not start above the source map: {viewport_bounds:?}, map_height={map_height}"
+    );
+    // Use a loose upper bound: the regression made the viewport nearly
+    // full-height, while valid GTK font/theme differences stay well below this.
+    assert!(
+        viewport_bounds.height < map_height * 0.75,
+        "long-document native viewport should not cover almost the whole minimap: {viewport_bounds:?}, map_height={map_height}"
+    );
+}
+
+#[test]
+fn test_minimap_viewport_top_delta_to_first_content_row_survives_width_changes() {
+    fn projected_top_delta(width: i32) -> f64 {
+        let settings = enable_minimap_for_tests(false);
+        settings
+            .set_boolean(keys::WORD_WRAP, false)
+            .expect("disable word wrap");
+        let page = LushtextEditorPage::new();
+        page.buffer().set_text(&minimap_test_document(140, &[], &[]));
+        let _window = present_editor_page_with_size(&page, width, 700);
+        wait_for_minimap_ready(&page);
+
+        let viewport = page
+            .minimap_viewport_bounds_for_test()
+            .expect("visible minimap should project viewport bounds");
+        let content = page
+            .minimap_first_content_row_bounds_for_test()
+            .expect("visible minimap should project first content row");
+        viewport.y - content.y
+    }
+
+    ensure_gtk_init();
+    let narrow_delta = projected_top_delta(900);
+    let wide_delta = projected_top_delta(1300);
+
+    // Allow half a logical pixel for GTK's fractional allocation and rounding.
+    assert!(
+        (narrow_delta - wide_delta).abs() <= 0.5,
+        "viewport top should keep the same content-row anchor delta across widths: narrow={narrow_delta}, wide={wide_delta}"
+    );
+}
+
+#[test]
+fn test_minimap_native_viewport_effect_reprojects_after_mid_file_scroll() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, false)
+        .expect("disable word wrap");
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&minimap_test_document(260, &[], &[]));
+    let _window = present_editor_page_with_size(&page, 1000, 700);
+    wait_for_minimap_ready(&page);
+
+    let top_bounds = page
+        .minimap_viewport_bounds_for_test()
+        .expect("top-of-file viewport should project");
+    let buffer = page.buffer();
+    let mid_iter = buffer
+        .iter_at_line(180)
+        .expect("mid-file line should exist in the minimap fixture");
+    buffer.place_cursor(&mid_iter);
+    page.source_view()
+        .scroll_to_mark(&buffer.get_insert(), 0.0, true, 0.0, 0.0);
+    // `scroll_to_mark` updates adjustments asynchronously through the GTK main
+    // loop; give it a short frame budget before polling projected minimap bounds.
+    flush_after_delay(std::time::Duration::from_millis(100));
+    wait_until(std::time::Duration::from_secs(3), || {
+        page.source_view().visible_rect().y() > 0
+            && page
+                .minimap_viewport_bounds_for_test()
+                .is_some_and(|bounds| bounds.y > top_bounds.y + 1.0)
+    });
+
+    let source_map = minimap_source_map(&page);
+    let map_height = f64::from(source_map.height());
+    let scrolled_bounds = page
+        .minimap_viewport_bounds_for_test()
+        .expect("mid-file viewport should project");
+
+    assert!(
+        scrolled_bounds.y >= -0.5 && scrolled_bounds.bottom() <= map_height + 0.5,
+        "mid-file native viewport should remain inside source-map bounds: {scrolled_bounds:?}, map_height={map_height}"
+    );
+    // Use the same loose anti-regression bound as the top-of-file projection:
+    // this catches full-height projection failures without overfitting pixels.
+    assert!(
+        scrolled_bounds.height < map_height * 0.75,
+        "mid-file native viewport should remain a visible-window slice, not the full minimap: {scrolled_bounds:?}, map_height={map_height}"
     );
 }
 
@@ -1076,8 +1214,12 @@ fn test_minimap_source_map_inherits_dynamic_eof_tail_geometry() {
         .cloned()
         .expect("source map should be created during construction");
 
-    wait_until(std::time::Duration::from_secs(2), || {
-        source_map.bottom_margin() > 6
+    // Width-reflow bursts pin minimap geometry sync until the viewport
+    // settles, so wait for the map to actually mirror the editor's dynamic
+    // EOF margin instead of accepting the first margin above the baseline.
+    wait_until(std::time::Duration::from_secs(5), || {
+        let editor_margin = page.source_view().bottom_margin();
+        editor_margin > 6 && source_map.bottom_margin() == editor_margin
     });
 
     let baseline_map = baseline_source_map_for_view(page.source_view());

@@ -1,20 +1,15 @@
 {
   "schema_version": 1,
-  "scenario_id": "minimap-sidebar-top",
+  "scenario_id": "minimap-sidebar-mid",
   "scenario_type": "minimap-sidebar",
   "invariant_id": "native-minimap-highlight-anchors",
-  "description": "Same-session sidebar toggle invariant for the native minimap viewport highlight at the top of a minimap-enabled document.",
+  "description": "Same-session sidebar toggle invariant for the native minimap viewport highlight after scrolling to a middle document line.",
   "matrix": {
     "sizes": [
       {
         "id": "constrained",
         "width": 1260,
         "height": 900
-      },
-      {
-        "id": "maximized-like",
-        "width": 1600,
-        "height": 1000
       },
       {
         "id": "short-wide",
@@ -27,18 +22,14 @@
       "force-dark"
     ],
     "word_wrap": [
-      true,
       false
     ],
     "directions": [
       "hide",
       "show"
     ],
-    "exclude": [
-      {
-        "size": "short-wide",
-        "word_wrap": true
-      }
+    "viewport_positions": [
+      "mid"
     ]
   },
   "protected_regions": [
@@ -70,10 +61,25 @@
       "crop_surface": "minimap-shell",
       "detector": "native-minimap-viewport-top-edge-row",
       "min_pixels": 12,
-      "max_screen_y_delta": 0
+      "min_row_offset": 8
+    },
+    {
+      "name": "minimap-search-marker-row",
+      "crop_surface": "minimap-shell",
+      "detector": "minimap-search-marker-row",
+      "min_pixels": 1,
+      "min_row_offset": 24
     }
   ],
-  "relative_pixel_anchors": [],
+  "relative_pixel_anchors": [
+    {
+      "from": "minimap-native-viewport-top-edge",
+      "to": "minimap-search-marker-row",
+      "min_delta": -280,
+      "max_delta": -20,
+      "max_delta_change": 0
+    }
+  ],
   "allowed_changing_regions": [
     {
       "surface": "workspace-sidebar",
@@ -81,7 +87,7 @@
     },
     {
       "surface": "editor-viewport",
-      "relationship": "width changes while top-left scroll anchor remains true"
+      "relationship": "width changes while vertical scroll remains away from top"
     },
     {
       "surface": "minimap-shell",
@@ -90,6 +96,7 @@
   ],
   "readiness_predicates": [
     "file-open-complete",
+    "search-complete",
     "visual-geometry-settled"
   ]
 }

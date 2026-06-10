@@ -31,7 +31,16 @@ const MINIMAP_MARKER_STRIP_WIDTH: i32 = 8;
 /// `GtkSourceMap` paints with a tiny font and sits inside a shell that owns its
 /// own border/padding. Keeping a real text margin here prevents the first map
 /// line from painting flush against a clipped top edge after width-only reflow.
-const MINIMAP_TOP_CONTENT_MARGIN: i32 = 6;
+const MINIMAP_TOP_CONTENT_MARGIN: i32 = 5;
+/// Source-map/editor document-height ratio that identifies the wide editor state.
+///
+/// In that state the editor has stopped wrapping the fixture's long lines, so
+/// GtkSourceMap's private slider rasterizes its top edge one row above the
+/// sidebar-visible wrapped state unless we mirror GNOME Text Editor's fixed map
+/// geometry and add a small slider-only correction.
+const MINIMAP_WIDE_EDITOR_RATIO_THRESHOLD: f64 = 0.20;
+/// CSS class for the wide-editor native slider top-edge correction.
+const MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS: &str = "minimap-wide-editor-slider-offset";
 /// Debounce for minimap marker refresh work.
 ///
 /// This coalesces bursts from buffer edits, search updates, and resize-driven
@@ -66,6 +75,36 @@ const MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET: usize = 8_000;
 /// this height is clamped to the rendered document content so it cannot leak
 /// into the blank EOF overscroll tail.
 const MINIMAP_MARKER_MIN_HEIGHT: f64 = 2.0;
+/// Minimum height for the viewport highlight when the projected visible area is tiny.
+///
+/// Two logical pixels keeps edge anchors detectable on very short documents
+/// without making the native slider look thicker than GTK's own effect.
+const MINIMAP_VIEWPORT_MIN_HEIGHT: f64 = 2.0;
+/// Horizontal CSS outset used by the native `GtkSourceMap` viewport slider.
+///
+/// This mirrors `.minimap-view slider { margin-left/right: -13px; }`. The same
+/// value provides the shell's side gutters as map widget margins, so the
+/// slider's outset paints inside the overlay content box and the reflow freeze
+/// snapshot can cover the full rendered effect users actually see.
+const MINIMAP_VIEWPORT_HORIZONTAL_OUTSET: i32 = 13;
+/// Debounce that detects the end of a width-reflow burst.
+///
+/// Sidebar show/hide animates the editor width on every frame for roughly
+/// 250ms. Wrapped document heights are asynchronous estimates while that
+/// happens, so any minimap margin or scroll repair performed mid-burst reads
+/// transient values and paints the native slider a few pixels off. The settle
+/// delay must exceed the gap between animation frames (16-33ms) by a wide
+/// margin while staying short enough that the post-reflow repair feels
+/// immediate once the width stops changing.
+const MINIMAP_REFLOW_SETTLE_DEBOUNCE: Duration = Duration::from_millis(150);
+/// Delay before revealing the live map after a settled repair.
+///
+/// The margin/class writes queue GTK rendering work, and the native map's
+/// private slider can take several quiet frames to repaint from the rested
+/// document-height estimates after the sidebar stops consuming width. Keeping
+/// the frozen native pixels over the live map during that quiet window prevents
+/// a single stale native frame from leaking when the cover is removed.
+const MINIMAP_REFLOW_REVEAL_DELAY: Duration = Duration::from_millis(800);
 /// Hidden source-mark category used to keep modified lines attached to buffer edits.
 const MINIMAP_MODIFIED_MARK_CATEGORY: &str = "lushtext-minimap-modified";
 
@@ -126,6 +165,106 @@ impl MinimapMarkerBounds {
     }
 }
 
+/// Current projected bounds for a minimap visual rectangle.
+///
+/// Coordinates are relative to the caller-provided target widget and may
+/// describe native-slider estimates, content-row anchors, or marker projection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MinimapProjectedBounds {
+    /// Left edge in target widget coordinates.
+    pub x: f64,
+    /// Top edge in target widget coordinates.
+    pub y: f64,
+    /// Width in target widget coordinates.
+    pub width: f64,
+    /// Height in target widget coordinates.
+    pub height: f64,
+}
+
+impl MinimapProjectedBounds {
+    /// Bottom edge in target widget coordinates.
+    #[must_use]
+    pub fn bottom(&self) -> f64 {
+        self.y + self.height
+    }
+}
+
+/// Source of the native viewport diagnostic estimate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MinimapNativeProjectionSource {
+    /// Estimate derived from public `GtkTextView` geometry matching `GtkSourceMap`.
+    UpstreamVisibleRectEstimate,
+}
+
+impl MinimapNativeProjectionSource {
+    /// Stable serialized label for Automation1 diagnostics.
+    #[must_use]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::UpstreamVisibleRectEstimate => "upstream-visible-rect-estimate",
+        }
+    }
+}
+
+/// Bounded text-view rectangle used by native minimap diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MinimapTextViewRect {
+    /// Left coordinate in the text view's own coordinate space.
+    pub x: i32,
+    /// Top coordinate in the text view's own coordinate space.
+    pub y: i32,
+    /// Rectangle width in logical pixels.
+    pub width: i32,
+    /// Rectangle height in logical pixels.
+    pub height: i32,
+}
+
+/// Bounded scroll adjustment summary for native minimap diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MinimapAdjustmentDiagnostics {
+    /// Whether the adjustment is at its lower bound.
+    pub at_lower: bool,
+    /// Current adjustment value multiplied by 1000.
+    pub value_milli: i64,
+    /// Lower bound multiplied by 1000.
+    pub lower_milli: i64,
+    /// Upper bound multiplied by 1000.
+    pub upper_milli: i64,
+    /// Page size multiplied by 1000.
+    pub page_size_milli: i64,
+}
+
+/// Native source-map slider diagnostics exposed through Automation1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MinimapNativeSliderDiagnostics {
+    /// Stable source classification for the diagnostic estimate.
+    pub projection_source: MinimapNativeProjectionSource,
+    /// Source map allocation in the requested target coordinate space.
+    pub source_map_bounds: MinimapProjectedBounds,
+    /// Editor visible rect in editor buffer coordinates.
+    pub editor_visible_rect: MinimapTextViewRect,
+    /// Source-map visible rect in source-map buffer coordinates.
+    pub source_map_visible_rect: MinimapTextViewRect,
+    /// Editor document height used by the native slider ratio.
+    pub editor_document_height: i32,
+    /// Source-map document height used by the native slider ratio.
+    pub source_map_document_height: i32,
+    /// Horizontal CSS border on the source map.
+    pub border_left: i32,
+    /// Horizontal CSS border on the source map.
+    pub border_right: i32,
+    /// Source-view vertical adjustment at snapshot time.
+    pub source_view_vadjustment: Option<MinimapAdjustmentDiagnostics>,
+    /// Source-map vertical adjustment at snapshot time.
+    pub source_map_vadjustment: Option<MinimapAdjustmentDiagnostics>,
+    /// Upstream-informed estimate of the native slider rectangle.
+    pub native_slider_estimate: MinimapProjectedBounds,
+    /// Older line-projection estimate retained as explanatory contrast.
+    pub line_projection: Option<MinimapProjectedBounds>,
+    /// First rendered minimap content row, when projectable.
+    pub first_content_row: Option<MinimapProjectedBounds>,
+}
+
 impl LushtextEditorPage {
     /// Report the current minimap availability for this editor page.
     #[must_use]
@@ -137,6 +276,34 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn is_minimap_visible(&self) -> bool {
         self.minimap_availability() == MinimapAvailability::Visible
+    }
+
+    /// Main-thread readiness query for queued minimap work.
+    ///
+    /// This reads GTK/GSettings state only; it returns false for hidden or
+    /// unavailable minimap refreshes so invisible source-map work does not block
+    /// Automation1 idle or visual-geometry waits.
+    pub(crate) fn minimap_refresh_blocks_readiness(&self) -> bool {
+        let imp = self.imp();
+        if !self.minimap_work_pending() {
+            return false;
+        }
+
+        self.is_minimap_visible()
+            || (imp.settings.boolean(keys::SHOW_MINIMAP)
+                && !self.focus_mode_suppresses_minimap()
+                && !self.is_evicted()
+                && self.size_check().syntax_enabled())
+    }
+
+    /// Report whether queued minimap work is still pending.
+    ///
+    /// This covers both the debounced marker refresh and a pending width-reflow
+    /// settle repair, so visual proof captures cannot race a frozen or
+    /// not-yet-repaired native slider.
+    pub(crate) fn minimap_work_pending(&self) -> bool {
+        let minimap = &self.imp().minimap;
+        minimap.refresh_pending.get() || minimap.reflow_settle_pending.get()
     }
 
     /// Count the currently rendered markers for one semantic category.
@@ -182,26 +349,74 @@ impl LushtextEditorPage {
             .collect()
     }
 
+    /// Return the native source-map viewport-highlight bounds relative to `target`.
+    ///
+    /// Main-thread only: this queries GTK allocation and `GtkSourceMap` line
+    /// geometry. Returns `None` until the map is mounted/mapped or the
+    /// projection cannot produce finite positive bounds; screenshot smoke uses
+    /// this only as a crop and diagnostic hint.
+    #[cfg(feature = "test-utils")]
+    pub(crate) fn minimap_viewport_bounds_relative_to(
+        &self,
+        target: &gtk4::Widget,
+    ) -> Option<MinimapProjectedBounds> {
+        self.minimap_native_slider_diagnostics_relative_to(target)
+            .map(|diagnostics| diagnostics.native_slider_estimate)
+    }
+
+    /// Return the first rendered map content row relative to `target`.
+    ///
+    /// Main-thread only: this mirrors `GtkSourceMap` line geometry for
+    /// diagnostics, returning `None` until GTK has a mapped, positive allocation
+    /// or no rendered content row can be projected.
+    pub(crate) fn minimap_first_content_row_relative_to(
+        &self,
+        target: &gtk4::Widget,
+    ) -> Option<MinimapProjectedBounds> {
+        let source_map = self.imp().minimap.source_map.borrow().as_ref().cloned()?;
+        minimap_first_content_row_bounds(&source_map, target, target.height())
+    }
+
+    /// Return native `GtkSourceMap` slider diagnostics relative to `target`.
+    ///
+    /// Main-thread only: this reads public `GtkTextView` geometry from the editor
+    /// and bound source map. The returned estimate mirrors upstream slider inputs
+    /// but remains diagnostic; screenshot pixels remain the rendered-effect oracle.
+    pub(crate) fn minimap_native_slider_diagnostics_relative_to(
+        &self,
+        target: &gtk4::Widget,
+    ) -> Option<MinimapNativeSliderDiagnostics> {
+        let source_map = self.imp().minimap.source_map.borrow().as_ref().cloned()?;
+        minimap_native_slider_diagnostics(self, &source_map, target, target.height())
+    }
+
+    /// Test seam for the viewport-highlight projection used by pixel anchors.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn minimap_viewport_bounds_for_test(&self) -> Option<MinimapProjectedBounds> {
+        let source_map = self.imp().minimap.source_map.borrow().as_ref().cloned()?;
+        self.minimap_viewport_bounds_relative_to(source_map.upcast_ref())
+    }
+
+    /// Test seam for the first rendered minimap content row used by pixel anchors.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn minimap_first_content_row_bounds_for_test(&self) -> Option<MinimapProjectedBounds> {
+        let source_map = self.imp().minimap.source_map.borrow().as_ref().cloned()?;
+        self.minimap_first_content_row_relative_to(source_map.upcast_ref())
+    }
+
+    /// Test seam for readiness coverage that needs a pending minimap refresh.
+    #[cfg(feature = "test-utils")]
+    pub fn mark_minimap_refresh_pending_for_test(&self) {
+        self.imp().minimap.refresh_pending.set(true);
+    }
+
     /// Install the per-tab minimap widgets and signal glue.
     pub(crate) fn setup_minimap(&self) {
         let imp = self.imp();
 
-        let source_map = sourceview5::Map::new();
-        source_map.set_view(self.source_view());
-        source_map.set_editable(false);
-        source_map.set_cursor_visible(false);
-        source_map.set_can_focus(false);
-        source_map.set_wrap_mode(self.source_view().wrap_mode());
-        source_map.set_show_line_numbers(false);
-        source_map.set_show_line_marks(false);
-        source_map.set_highlight_current_line(false);
-        source_map.set_monospace(true);
-        source_map.set_overflow(gtk4::Overflow::Visible);
-        source_map.add_css_class("monospace");
-        source_map.add_css_class("minimap-view");
-        source_map.set_hexpand(true);
-        source_map.set_vexpand(true);
-        sync_source_map_geometry(&source_map, self.source_view());
+        let source_map = self.create_native_source_map();
 
         let marker_strip = gtk4::DrawingArea::new();
         marker_strip.set_width_request(MINIMAP_MARKER_STRIP_WIDTH);
@@ -209,6 +424,9 @@ impl LushtextEditorPage {
         marker_strip.set_valign(gtk4::Align::Fill);
         marker_strip.set_vexpand(true);
         marker_strip.set_can_target(false);
+        // Keep the strip over the map's right edge now that the shell gutter
+        // is a map margin instead of CSS padding on the overlay.
+        marker_strip.set_margin_end(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET);
         marker_strip.add_css_class("minimap-marker-strip");
 
         {
@@ -222,9 +440,26 @@ impl LushtextEditorPage {
 
         imp.minimap_overlay.add_css_class("minimap-shell");
         imp.minimap_overlay.set_child(Some(&source_map));
+        // Hidden freeze layer for width-reflow bursts. It sits between the map
+        // and the marker strip so frozen pixels replace the native slider while
+        // live semantic markers stay on top. Filling the overlay content box
+        // covers the map plus both gutters where the slider's CSS outset
+        // paints, and the capture viewport is sized from the same map margins
+        // so `ContentFit::Fill` renders the held pixels exactly 1:1.
+        let reflow_freeze_picture = gtk4::Picture::new();
+        reflow_freeze_picture.set_visible(false);
+        reflow_freeze_picture.set_can_target(false);
+        reflow_freeze_picture.set_content_fit(gtk4::ContentFit::Fill);
+        reflow_freeze_picture.set_halign(gtk4::Align::Fill);
+        reflow_freeze_picture.set_valign(gtk4::Align::Fill);
+        reflow_freeze_picture.add_css_class("minimap-reflow-freeze");
+        imp.minimap_overlay.add_overlay(&reflow_freeze_picture);
+        imp.minimap_overlay
+            .set_measure_overlay(&reflow_freeze_picture, false);
         imp.minimap_overlay.add_overlay(&marker_strip);
 
         *imp.minimap.source_map.borrow_mut() = Some(source_map);
+        *imp.minimap.reflow_freeze_picture.borrow_mut() = Some(reflow_freeze_picture);
         *imp.minimap.marker_strip.borrow_mut() = Some(marker_strip);
         self.apply_minimap_width_from_settings();
 
@@ -317,6 +552,36 @@ impl LushtextEditorPage {
         self.schedule_minimap_refresh();
     }
 
+    /// Build a native `GtkSourceMap` with LushText's stable minimap presentation.
+    ///
+    /// The map owns the visible viewport highlight. Keeping creation in one
+    /// helper lets reflow recovery rebuild the same native widget configuration
+    /// instead of restyling or drawing over the upstream effect.
+    fn create_native_source_map(&self) -> sourceview5::Map {
+        let source_map = sourceview5::Map::new();
+        source_map.set_view(self.source_view());
+        source_map.set_editable(false);
+        source_map.set_cursor_visible(false);
+        source_map.set_can_focus(false);
+        source_map.set_wrap_mode(gtk4::WrapMode::None);
+        source_map.set_show_line_numbers(false);
+        source_map.set_show_line_marks(false);
+        source_map.set_highlight_current_line(false);
+        source_map.set_monospace(true);
+        source_map.set_overflow(gtk4::Overflow::Visible);
+        source_map.add_css_class("monospace");
+        source_map.add_css_class("minimap-view");
+        source_map.set_hexpand(true);
+        source_map.set_vexpand(true);
+        // The shell's side gutters are widget margins rather than CSS padding
+        // so the reflow freeze picture can span the full shell content box
+        // (map plus the native slider's CSS outset) without negative margins.
+        source_map.set_margin_start(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET);
+        source_map.set_margin_end(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET);
+        sync_source_map_geometry(&source_map, self.source_view());
+        source_map
+    }
+
     /// Keep the source map's wrapping and text insets aligned with the editor.
     ///
     /// The minimap viewport is a visual promise about the editor, so width
@@ -325,6 +590,13 @@ impl LushtextEditorPage {
     /// because the minimap shell has its own border/padding and a flush first
     /// line is easy to clip by one pixel after adaptive shell reallocation.
     pub(crate) fn sync_minimap_view_geometry(&self) {
+        if self.imp().minimap.reflow_settle_pending.get() {
+            // A width-reflow burst is still in flight, so wrapped document
+            // heights are transient estimates. Any margin derived from them
+            // would move the native slider by whole pixels mid-animation. The
+            // settle repair re-runs this sync once the width stops changing.
+            return;
+        }
         let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
             return;
         };
@@ -334,6 +606,215 @@ impl LushtextEditorPage {
     /// Compatibility helper for callers whose trigger is specifically wrap policy.
     pub(crate) fn sync_minimap_wrap_mode(&self) {
         self.sync_minimap_view_geometry();
+    }
+
+    /// Coalesce a width-reflow burst into one settled minimap repair.
+    ///
+    /// `AdwOverlaySplitView` sidebar animation allocates a new editor width on
+    /// every frame, and GtkTextView revalidates wrapped line heights
+    /// asynchronously while that happens. Repair work scheduled per allocation
+    /// always lands at least one frame late and reads mid-validation estimates,
+    /// so instead of chasing frames this freezes the rendered map once, waits
+    /// for the width to stop changing, and repairs once from rested geometry.
+    pub(crate) fn schedule_minimap_reflow_settle(&self) {
+        let minimap = &self.imp().minimap;
+        if !minimap.reflow_settle_pending.get() {
+            minimap.reflow_settle_pending.set(true);
+            self.freeze_native_minimap_for_reflow();
+        }
+
+        let generation = minimap.reflow_settle_generation.get().wrapping_add(1);
+        minimap.reflow_settle_generation.set(generation);
+        let editor_weak = self.downgrade();
+        glib::timeout_add_local_once(MINIMAP_REFLOW_SETTLE_DEBOUNCE, move || {
+            let Some(editor) = editor_weak.upgrade() else {
+                return;
+            };
+            if editor.imp().minimap.reflow_settle_generation.get() != generation {
+                return;
+            }
+            editor.finish_minimap_reflow_settle();
+        });
+    }
+
+    /// Run the one-shot post-reflow repair after the editor width stops moving.
+    ///
+    /// The repair restores user scroll anchors, reapplies the fixed native-map
+    /// geometry from settled document heights, clears any stale source-map scroll,
+    /// then lets the live map repaint underneath the frozen cover before that
+    /// cover is removed. The user sees the last native-rendered pixels until the
+    /// live native slider has had real frame-clock time to settle.
+    fn finish_minimap_reflow_settle(&self) {
+        // Clear the pin first so the geometry sync below applies the settled margin.
+        self.imp().minimap.reflow_settle_pending.set(false);
+
+        // The rest flag was recorded from user scrolling outside the burst, so
+        // a stale GTK-preserved offset during reallocation cannot suppress the
+        // top anchor the user actually had before the reflow started.
+        if self.imp().overscroll.v_rest_at_top.get()
+            && let Some(adjustment) = self.source_view().vadjustment()
+        {
+            let lower = adjustment.lower();
+            if (adjustment.value() - lower).abs() > 0.5 {
+                adjustment.set_value(lower);
+            }
+        }
+
+        self.sync_minimap_view_geometry();
+        self.clamp_native_minimap_to_top_if_editor_at_top();
+        self.schedule_minimap_refresh();
+        self.queue_minimap_draw();
+        self.warm_live_minimap_under_reflow_freeze();
+        self.imp().minimap.reflow_settle_pending.set(true);
+        let generation = self.imp().minimap.reflow_settle_generation.get();
+        let editor_weak = self.downgrade();
+        glib::timeout_add_local_once(MINIMAP_REFLOW_REVEAL_DELAY, move || {
+            let Some(editor) = editor_weak.upgrade() else {
+                return;
+            };
+            if editor.imp().minimap.reflow_settle_generation.get() != generation {
+                return;
+            }
+            editor.imp().minimap.reflow_settle_pending.set(false);
+            editor.drop_minimap_reflow_freeze();
+        });
+    }
+
+    /// Cover the native map with its last rendered pixels while reflow settles.
+    ///
+    /// Shell actions arm the snapshot before the consuming width transition, and
+    /// adjustment observers can still arm it on the first allocation-derived
+    /// signal for other reflow paths. The capture spans the overlay content box,
+    /// including the native slider's CSS outset, so the frozen picture contains
+    /// the full rendered effect.
+    fn freeze_native_minimap_for_reflow(&self) {
+        if !self.is_minimap_visible() {
+            return;
+        }
+        let Some(picture) = self
+            .imp()
+            .minimap
+            .reflow_freeze_picture
+            .borrow()
+            .as_ref()
+            .cloned()
+        else {
+            return;
+        };
+        if picture.is_visible() {
+            return;
+        }
+        let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
+            return;
+        };
+        let minimap_overlay = &*self.imp().minimap_overlay;
+        if !source_map.is_mapped() || !minimap_overlay.is_mapped() {
+            return;
+        }
+        let width = minimap_overlay.width();
+        let height = minimap_overlay.height();
+        if width <= 0 || height <= 0 {
+            return;
+        }
+
+        let Some(renderer) = source_map.native().and_then(|native| native.renderer()) else {
+            return;
+        };
+
+        let snapshot = gtk4::Snapshot::new();
+        minimap_overlay.snapshot_child(&source_map, &snapshot);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "GTK widget sizes are small logical-pixel values that fit f32 exactly"
+        )]
+        let viewport = gtk4::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
+        let node = snapshot.to_node();
+
+        let Some(node) = node else {
+            return;
+        };
+        let texture = renderer.render_texture(&node, Some(&viewport));
+        picture.set_paintable(Some(&texture));
+        picture.set_visible(true);
+        source_map.set_opacity(0.0);
+    }
+
+    /// Let the real source map repaint while frozen pixels still cover it.
+    ///
+    /// `GtkSourceMap` can still paint its first visible frame from stale private
+    /// slider state when it becomes visible again. Restoring opacity before the
+    /// cover is removed gives GTK a few real frames to update the native map
+    /// while the temporary picture keeps the user-visible effect unchanged.
+    fn warm_live_minimap_under_reflow_freeze(&self) {
+        let Some(picture) = self
+            .imp()
+            .minimap
+            .reflow_freeze_picture
+            .borrow()
+            .as_ref()
+            .cloned()
+        else {
+            return;
+        };
+        if !picture.is_visible() {
+            return;
+        }
+        let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
+            return;
+        };
+        source_map.set_opacity(1.0);
+        source_map.queue_draw();
+    }
+
+    /// Keep the freeze active when the viewport height changes mid-burst.
+    ///
+    /// Width reflow can briefly perturb the vertical page size too. Revealing
+    /// the live native map at that point leaks exactly the stale private slider
+    /// frame this freeze is meant to hide, so the settled repair owns the final
+    /// geometry and reveal timing.
+    pub(crate) fn note_minimap_height_reflow(&self) {
+        self.queue_minimap_draw();
+    }
+
+    /// Remove the frozen overlay and show the live native map again.
+    fn drop_minimap_reflow_freeze(&self) {
+        if let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref() {
+            source_map.set_opacity(1.0);
+        }
+        if let Some(picture) = self.imp().minimap.reflow_freeze_picture.borrow().as_ref() {
+            picture.set_visible(false);
+            picture.set_paintable(None::<&gtk4::gdk::Paintable>);
+        }
+    }
+
+    /// Restore the bound source map's own vertical adjustment to the top edge.
+    ///
+    /// Upstream derives the native slider from the editor scroll position and
+    /// then subtracts the source map's visible rect. If GTK preserves a stale
+    /// source-map adjustment across width-only reflow, the outer allocation can
+    /// be stable while the rendered slider and first map row drift by a few
+    /// pixels. Returns whether a stale adjustment was actually cleared.
+    fn clamp_native_minimap_to_top_if_editor_at_top(&self) -> bool {
+        let Some(source_adjustment) = self.source_view().vadjustment() else {
+            return false;
+        };
+        if (source_adjustment.value() - source_adjustment.lower()).abs() > 0.5 {
+            return false;
+        }
+
+        let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let Some(map_adjustment) = source_map.vadjustment() else {
+            return false;
+        };
+
+        let lower = map_adjustment.lower();
+        if (map_adjustment.value() - lower).abs() <= 0.5 {
+            return false;
+        }
+        map_adjustment.set_value(lower);
+        true
     }
 
     /// Refresh minimap visibility, markers, and any one-shot availability feedback.
@@ -349,6 +830,7 @@ impl LushtextEditorPage {
         overlay.set_visible(availability == MinimapAvailability::Visible);
 
         if availability != MinimapAvailability::Visible {
+            self.drop_minimap_reflow_freeze();
             self.imp().minimap.markers.borrow_mut().clear();
             self.queue_minimap_draw();
             self.publish_minimap_unavailable_feedback_if_needed(availability);
@@ -368,6 +850,9 @@ impl LushtextEditorPage {
         self.imp().minimap.refresh_pending.set(true);
 
         let editor_weak = self.downgrade();
+        // Schedule the debounced refresh on GTK's main loop. The `_local`
+        // variant is required because this closure upgrades and touches GTK
+        // objects, which are main-thread-only and not `Send`.
         glib::timeout_add_local_once(MINIMAP_REFRESH_DEBOUNCE, move || {
             let Some(editor) = editor_weak.upgrade() else {
                 return;
@@ -468,12 +953,11 @@ impl LushtextEditorPage {
 }
 
 fn sync_source_map_geometry(source_map: &sourceview5::Map, source_view: &sourceview5::View) {
-    let wrap_mode = source_view.wrap_mode();
-    if source_map.wrap_mode() != wrap_mode {
-        source_map.set_wrap_mode(wrap_mode);
+    if source_map.wrap_mode() != gtk4::WrapMode::None {
+        source_map.set_wrap_mode(gtk4::WrapMode::None);
     }
 
-    let top_margin = source_view.top_margin().max(MINIMAP_TOP_CONTENT_MARGIN);
+    let top_margin = MINIMAP_TOP_CONTENT_MARGIN;
     if source_map.top_margin() != top_margin {
         source_map.set_top_margin(top_margin);
     }
@@ -489,6 +973,251 @@ fn sync_source_map_geometry(source_map: &sourceview5::Map, source_view: &sourcev
     if source_map.right_margin() != 0 {
         source_map.set_right_margin(0);
     }
+
+    force_source_map_top_layout(source_map);
+    sync_wide_editor_slider_offset(source_map, source_view);
+}
+
+fn sync_wide_editor_slider_offset(source_map: &sourceview5::Map, source_view: &sourceview5::View) {
+    let wide_editor = source_map_editor_height_ratio(source_map, source_view)
+        .is_some_and(|ratio| ratio > MINIMAP_WIDE_EDITOR_RATIO_THRESHOLD);
+    if wide_editor {
+        source_map.add_css_class(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS);
+    } else {
+        source_map.remove_css_class(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS);
+    }
+}
+
+fn source_map_editor_height_ratio(
+    source_map: &sourceview5::Map,
+    source_view: &sourceview5::View,
+) -> Option<f64> {
+    let buffer = source_map.buffer();
+    let end_iter = buffer.end_iter();
+    let editor_document_height =
+        document_height_from_iter_rect(source_view.iter_location(&end_iter))?;
+    let source_map_document_height =
+        document_height_from_iter_rect(source_map.iter_location(&end_iter))?;
+    if editor_document_height <= 0 || source_map_document_height <= 0 {
+        return None;
+    }
+
+    Some(f64::from(source_map_document_height) / f64::from(editor_document_height))
+}
+
+/// Nudge GTK into validating the source map's first and last line geometry.
+///
+/// Margin and wrap writes only queue invalidation; asking for the start and end
+/// iter locations makes the next margin computation read current values instead
+/// of stale pre-reflow line geometry.
+fn force_source_map_top_layout(source_map: &sourceview5::Map) {
+    let buffer = source_map.buffer();
+    let start_iter = buffer.start_iter();
+    let end_iter = buffer.end_iter();
+    let _ = source_map.line_yrange(&start_iter);
+    let _ = source_map.iter_location(&end_iter);
+}
+
+/// Collect non-content geometry used to estimate GTK's native source-map slider.
+///
+/// This runs on the GTK thread and exposes only rectangles, adjustments, and
+/// ratios so screenshot artifacts can explain rendered slider drift without
+/// leaking document text.
+fn minimap_native_slider_diagnostics(
+    editor: &LushtextEditorPage,
+    source_map: &sourceview5::Map,
+    target: &gtk4::Widget,
+    target_height: i32,
+) -> Option<MinimapNativeSliderDiagnostics> {
+    if target_height <= 0 || !source_map.is_mapped() || !target.is_mapped() {
+        return None;
+    }
+
+    let source_map_bounds = source_map_bounds_relative_to(source_map, target)?;
+    let editor_visible_rect = text_view_rect(editor.source_view().visible_rect());
+    let source_map_visible_rect = text_view_rect(source_map.visible_rect());
+    if editor_visible_rect.height <= 0 || source_map_visible_rect.height <= 0 {
+        return None;
+    }
+
+    let buffer = source_map.buffer();
+    let end_iter = buffer.end_iter();
+    let source_map_end = source_map.iter_location(&end_iter);
+    let editor_end = editor.source_view().iter_location(&end_iter);
+    let source_map_document_height = document_height_from_iter_rect(source_map_end)?;
+    let editor_document_height = document_height_from_iter_rect(editor_end)?;
+    let border = source_map_border(source_map);
+
+    let native_slider_estimate = native_slider_estimate_from_inputs(NativeSliderEstimateInput {
+        map_x: source_map_bounds.x,
+        map_y: source_map_bounds.y,
+        map_width: source_map_bounds.width,
+        editor_visible_y: editor_visible_rect.y,
+        editor_visible_height: editor_visible_rect.height,
+        editor_document_height,
+        source_map_visible_y: source_map_visible_rect.y,
+        source_map_document_height,
+        border_left: i32::from(border.left()),
+        border_right: i32::from(border.right()),
+    })?;
+
+    Some(MinimapNativeSliderDiagnostics {
+        projection_source: MinimapNativeProjectionSource::UpstreamVisibleRectEstimate,
+        source_map_bounds,
+        editor_visible_rect,
+        source_map_visible_rect,
+        editor_document_height,
+        source_map_document_height,
+        border_left: i32::from(border.left()),
+        border_right: i32::from(border.right()),
+        source_view_vadjustment: editor
+            .source_view()
+            .vadjustment()
+            .as_ref()
+            .map(adjustment_diagnostics),
+        source_map_vadjustment: source_map
+            .vadjustment()
+            .as_ref()
+            .map(adjustment_diagnostics),
+        native_slider_estimate,
+        line_projection: minimap_viewport_bounds(editor, source_map, target, target_height),
+        first_content_row: minimap_first_content_row_bounds(source_map, target, target_height),
+    })
+}
+
+#[expect(
+    deprecated,
+    reason = "GtkSourceMap's native slider still reads CSS border from StyleContext; diagnostics mirror that upstream input"
+)]
+fn source_map_border(source_map: &sourceview5::Map) -> gtk4::Border {
+    source_map.style_context().border()
+}
+
+fn source_map_bounds_relative_to(
+    source_map: &sourceview5::Map,
+    target: &gtk4::Widget,
+) -> Option<MinimapProjectedBounds> {
+    let map_bounds = source_map.compute_bounds(target)?;
+    let x = f64::from(map_bounds.x());
+    let y = f64::from(map_bounds.y());
+    let width = f64::from(map_bounds.width());
+    let height = f64::from(map_bounds.height());
+    if !x.is_finite() || !y.is_finite() || !width.is_finite() || !height.is_finite() {
+        return None;
+    }
+    (width > 0.0 && height > 0.0).then_some(MinimapProjectedBounds {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+fn text_view_rect(rect: gtk4::gdk::Rectangle) -> MinimapTextViewRect {
+    MinimapTextViewRect {
+        x: rect.x(),
+        y: rect.y(),
+        width: rect.width(),
+        height: rect.height(),
+    }
+}
+
+fn document_height_from_iter_rect(rect: gtk4::gdk::Rectangle) -> Option<i32> {
+    let height = rect.y().saturating_add(rect.height().max(0));
+    (height > 0).then_some(height)
+}
+
+fn adjustment_diagnostics(adjustment: &gtk4::Adjustment) -> MinimapAdjustmentDiagnostics {
+    let value = adjustment.value();
+    let lower = adjustment.lower();
+    MinimapAdjustmentDiagnostics {
+        at_lower: (value - lower).abs() <= 0.5,
+        value_milli: gtk_f64_to_milli(value),
+        lower_milli: gtk_f64_to_milli(lower),
+        upper_milli: gtk_f64_to_milli(adjustment.upper()),
+        page_size_milli: gtk_f64_to_milli(adjustment.page_size()),
+    }
+}
+
+fn gtk_f64_to_milli(value: f64) -> i64 {
+    if !value.is_finite() {
+        return 0;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "GTK adjustment values are bounded logical coordinates serialized as coarse diagnostics"
+    )]
+    {
+        (value * 1000.0).round() as i64
+    }
+}
+
+/// Public-geometry inputs used to mirror `GtkSourceMap`'s native slider formula.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NativeSliderEstimateInput {
+    /// Source-map left edge in target coordinates.
+    map_x: f64,
+    /// Source-map top edge in target coordinates.
+    map_y: f64,
+    /// Source-map allocation width before CSS slider outset.
+    map_width: f64,
+    /// Editor visible rect y, including GTK's negative top-margin value at line one.
+    editor_visible_y: i32,
+    /// Editor visible rect height.
+    editor_visible_height: i32,
+    /// Editor document height used by the native slider ratio.
+    editor_document_height: i32,
+    /// Source-map visible rect y that GTK subtracts while drawing the slider.
+    source_map_visible_y: i32,
+    /// Source-map document height used by the native slider ratio.
+    source_map_document_height: i32,
+    /// Left CSS border removed from the usable slider width.
+    border_left: i32,
+    /// Right CSS border removed from the usable slider width.
+    border_right: i32,
+}
+
+/// Mirror GtkSourceMap's private slider math with public geometry only.
+///
+/// This estimate explains where GTK should draw the native slider after
+/// applying source-map scroll offset and CSS outset. It is diagnostic;
+/// screenshot pixel anchors remain the authority for rendered correctness.
+fn native_slider_estimate_from_inputs(
+    input: NativeSliderEstimateInput,
+) -> Option<MinimapProjectedBounds> {
+    if !input.map_x.is_finite()
+        || !input.map_y.is_finite()
+        || !input.map_width.is_finite()
+        || input.map_width <= 0.0
+        || input.editor_visible_height <= 0
+        || input.editor_document_height <= 0
+        || input.source_map_document_height <= 0
+    {
+        return None;
+    }
+
+    let editor_document_height = f64::from(input.editor_document_height);
+    let source_map_document_height = f64::from(input.source_map_document_height);
+    let editor_visible_top = f64::from(input.editor_visible_y);
+    let editor_visible_bottom = editor_visible_top + f64::from(input.editor_visible_height.max(1));
+    let top_in_map = (editor_visible_top / editor_document_height * source_map_document_height)
+        - f64::from(input.source_map_visible_y);
+    let bottom_in_map = (editor_visible_bottom / editor_document_height
+        * source_map_document_height)
+        - f64::from(input.source_map_visible_y);
+    let height = (bottom_in_map - top_in_map).max(MINIMAP_VIEWPORT_MIN_HEIGHT);
+    let usable_width = (input.map_width
+        - f64::from(input.border_left.max(0))
+        - f64::from(input.border_right.max(0)))
+    .max(1.0);
+
+    Some(MinimapProjectedBounds {
+        x: input.map_x + f64::from(input.border_left.max(0))
+            - f64::from(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET),
+        y: input.map_y + top_in_map,
+        width: usable_width + (f64::from(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET) * 2.0),
+        height,
+    })
 }
 
 fn current_availability(editor: &LushtextEditorPage) -> MinimapAvailability {
@@ -561,10 +1290,17 @@ fn wrapped_minimap_layout_exceeds_budget(editor: &LushtextEditorPage) -> bool {
         return true;
     }
 
-    let exceeds = wrapped_layout_budget_exceeded(
-        estimated_size,
-        buffer_has_line_exceeding_char_budget(&buffer, MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET),
-    );
+    if estimated_size <= MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET {
+        editor
+            .imp()
+            .minimap
+            .wrapped_layout_too_large
+            .set(Some(false));
+        return false;
+    }
+
+    let exceeds =
+        buffer_has_line_exceeding_char_budget(&buffer, MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET);
     editor
         .imp()
         .minimap
@@ -573,6 +1309,7 @@ fn wrapped_minimap_layout_exceeds_budget(editor: &LushtextEditorPage) -> bool {
     exceeds
 }
 
+#[cfg(test)]
 fn wrapped_layout_budget_exceeded(estimated_size: u64, has_extreme_line: bool) -> bool {
     estimated_size > MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET && has_extreme_line
 }
@@ -791,6 +1528,87 @@ fn draw_marker_strip(
     }
 }
 
+/// Project the editor viewport's visible line range through `GtkSourceMap`.
+///
+/// This is the older line-projection estimate kept as diagnostic contrast for
+/// markers and tests. It is not the native rendered slider oracle; the native
+/// estimate above mirrors GTK's visible-rect math, and screenshots decide the
+/// actual rendered effect.
+fn minimap_viewport_bounds(
+    editor: &LushtextEditorPage,
+    source_map: &sourceview5::Map,
+    target: &gtk4::Widget,
+    target_height: i32,
+) -> Option<MinimapProjectedBounds> {
+    let space = minimap_projection_space(source_map, target, target_height)?;
+
+    let (visible_start, visible_end) = visible_editor_line_iters(editor)?;
+    let raw_top = line_top_in_target(source_map, space.map_y, &visible_start);
+    let raw_bottom = line_bottom_in_target(source_map, space.map_y, &visible_end);
+
+    // The native viewport slider should stay visible at document edges, so
+    // clamp off-content projections back onto the rendered minimap content.
+    fit_projected_bounds(
+        space.map_x - f64::from(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET),
+        space.map_width + (f64::from(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET) * 2.0),
+        raw_top,
+        raw_bottom,
+        space,
+        MINIMAP_VIEWPORT_MIN_HEIGHT,
+        ProjectedBoundsFit::ClampOutside,
+    )
+}
+
+/// Convert the editor viewport's visible y-range into text iters before map projection.
+fn visible_editor_line_iters(
+    editor: &LushtextEditorPage,
+) -> Option<(gtk4::TextIter, gtk4::TextIter)> {
+    let source_view = editor.source_view();
+    let visible_rect = source_view.visible_rect();
+    if visible_rect.height() <= 0 {
+        return None;
+    }
+
+    let top_y = visible_rect.y().max(0);
+    // Use the last visible pixel, not the first pixel below the viewport, so an
+    // exact bottom alignment does not project the following line.
+    let bottom_y = top_y.saturating_add(visible_rect.height().max(1).saturating_sub(1));
+
+    // `visible_rect` is expressed in the editor view's buffer coordinates, not
+    // in the source map's scaled layout. Convert those editor y-positions to
+    // visible text lines first, then project the same lines through `GtkSourceMap`.
+    let (start_iter, _) = source_view.line_at_y(top_y);
+    let (end_iter, _) = source_view.line_at_y(bottom_y);
+
+    Some((start_iter, end_iter))
+}
+
+/// Project the first rendered minimap text row for screenshot pixel anchors.
+fn minimap_first_content_row_bounds(
+    source_map: &sourceview5::Map,
+    target: &gtk4::Widget,
+    target_height: i32,
+) -> Option<MinimapProjectedBounds> {
+    let space = minimap_projection_space(source_map, target, target_height)?;
+
+    let buffer = source_map.buffer();
+    let start_iter = buffer.start_iter();
+    let raw_top = line_top_in_target(source_map, space.map_y, &start_iter);
+    let raw_bottom = line_bottom_in_target(source_map, space.map_y, &start_iter);
+
+    // Content-row anchors prove a real rendered row exists; reject outside
+    // geometry instead of clamping so tests cannot pass on a synthetic edge.
+    fit_projected_bounds(
+        space.map_x,
+        space.map_width,
+        raw_top,
+        raw_bottom,
+        space,
+        1.0,
+        ProjectedBoundsFit::RejectOutside,
+    )
+}
+
 fn projected_minimap_marker_bounds(
     editor: &LushtextEditorPage,
     source_map: &sourceview5::Map,
@@ -811,6 +1629,28 @@ fn projected_minimap_marker_bounds(
         .collect()
 }
 
+/// Shared coordinate-space contract for minimap projections.
+///
+/// `GtkSourceMap` reports line positions in its own buffer/widget coordinates,
+/// while Automation1 crops need a caller-supplied target widget coordinate
+/// space. This struct keeps those spaces explicit and bounds every projection
+/// to the text that the minimap actually renders, excluding the dynamic EOF tail.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MinimapProjectionSpace {
+    /// Height of the target widget in the same coordinates as returned bounds.
+    target_height: f64,
+    /// Source-map left edge in target widget coordinates.
+    map_x: f64,
+    /// Source-map top edge in target widget coordinates.
+    map_y: f64,
+    /// Source-map width before any native-slider CSS outset is applied.
+    map_width: f64,
+    /// Top of the first rendered minimap line in target widget coordinates.
+    content_top: f64,
+    /// Bottom of the last rendered minimap line in target widget coordinates.
+    content_bottom: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct MarkerProjectionSpace {
     strip_height: f64,
@@ -820,34 +1660,72 @@ struct MarkerProjectionSpace {
     min_height: f64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectedBoundsFit {
+    /// Reject projections that land outside rendered minimap text.
+    RejectOutside,
+    /// Clamp projections back to rendered minimap text when the visual effect remains visible.
+    ClampOutside,
+}
+
 fn marker_projection_space(
     source_map: &sourceview5::Map,
     marker_strip: &gtk4::DrawingArea,
     strip_height: i32,
 ) -> Option<MarkerProjectionSpace> {
-    if strip_height <= 0 || !source_map.is_mapped() || !marker_strip.is_mapped() {
+    let target = minimap_projection_space(source_map, marker_strip.upcast_ref(), strip_height)?;
+    Some(MarkerProjectionSpace {
+        strip_height: target.target_height,
+        content_top: target.content_top,
+        content_bottom: target.content_bottom,
+        map_y_in_strip: target.map_y,
+        min_height: MINIMAP_MARKER_MIN_HEIGHT,
+    })
+}
+
+/// Build target-relative minimap geometry shared by markers and pixel anchors.
+///
+/// Unmapped widgets and empty allocations are rejected because GTK cannot
+/// provide stable coordinates for them. `content_top` and `content_bottom`
+/// intentionally come from source-map line geometry so marker and viewport
+/// projections cannot drift into blank EOF overscroll.
+fn minimap_projection_space(
+    source_map: &sourceview5::Map,
+    target: &gtk4::Widget,
+    target_height: i32,
+) -> Option<MinimapProjectionSpace> {
+    if target_height <= 0 || !source_map.is_mapped() || !target.is_mapped() {
         return None;
     }
 
-    let map_bounds = source_map.compute_bounds(marker_strip)?;
-    let map_y_in_strip = f64::from(map_bounds.y());
+    let map_bounds = source_map.compute_bounds(target)?;
+    let map_x = f64::from(map_bounds.x());
+    let map_y = f64::from(map_bounds.y());
+    let map_width = f64::from(map_bounds.width().max(1.0));
     let buffer = source_map.buffer();
     let start_iter = buffer.start_iter();
     let end_line = u32::try_from(buffer.end_iter().line()).unwrap_or_default();
     let end_iter = text_iter_at_line_or_last(&buffer, end_line);
-    let content_top = line_top_in_strip(source_map, map_y_in_strip, &start_iter);
-    let content_bottom = line_bottom_in_strip(source_map, map_y_in_strip, &end_iter);
+    let content_top = line_top_in_target(source_map, map_y, &start_iter);
+    let content_bottom = line_bottom_in_target(source_map, map_y, &end_iter);
 
-    if !content_top.is_finite() || !content_bottom.is_finite() || content_bottom <= content_top {
+    if !map_x.is_finite()
+        || !map_y.is_finite()
+        || !map_width.is_finite()
+        || !content_top.is_finite()
+        || !content_bottom.is_finite()
+        || content_bottom <= content_top
+    {
         return None;
     }
 
-    Some(MarkerProjectionSpace {
-        strip_height: f64::from(strip_height),
+    Some(MinimapProjectionSpace {
+        target_height: f64::from(target_height),
+        map_x,
+        map_y,
+        map_width,
         content_top,
         content_bottom,
-        map_y_in_strip,
-        min_height: MINIMAP_MARKER_MIN_HEIGHT,
     })
 }
 
@@ -859,8 +1737,8 @@ fn project_marker_bounds(
     let buffer = source_map.buffer();
     let start_iter = text_iter_at_line_or_last(&buffer, marker.start_line);
     let end_iter = text_iter_at_line_or_last(&buffer, marker.end_line);
-    let raw_top = line_top_in_strip(source_map, space.map_y_in_strip, &start_iter);
-    let raw_bottom = line_bottom_in_strip(source_map, space.map_y_in_strip, &end_iter);
+    let raw_top = line_top_in_target(source_map, space.map_y_in_strip, &start_iter);
+    let raw_bottom = line_bottom_in_target(source_map, space.map_y_in_strip, &end_iter);
 
     fit_marker_bounds(marker.kind, raw_top, raw_bottom, space)
 }
@@ -876,32 +1754,38 @@ fn text_iter_at_line_or_last(buffer: &gtk4::TextBuffer, line: u32) -> gtk4::Text
         .unwrap_or(end_iter)
 }
 
-fn line_top_in_strip(
+fn line_top_in_target(
     source_map: &sourceview5::Map,
-    map_y_in_strip: f64,
+    map_y_in_target: f64,
     iter: &gtk4::TextIter,
 ) -> f64 {
     let (line_y, _) = source_map.line_yrange(iter);
-    buffer_y_to_strip_y(source_map, map_y_in_strip, line_y)
+    map_buffer_y_to_target_y(source_map, map_y_in_target, line_y)
 }
 
-fn line_bottom_in_strip(
+fn line_bottom_in_target(
     source_map: &sourceview5::Map,
-    map_y_in_strip: f64,
+    map_y_in_target: f64,
     iter: &gtk4::TextIter,
 ) -> f64 {
     let (line_y, line_height) = source_map.line_yrange(iter);
-    buffer_y_to_strip_y(
+    map_buffer_y_to_target_y(
         source_map,
-        map_y_in_strip,
+        map_y_in_target,
         line_y.saturating_add(line_height.max(0)),
     )
 }
 
-fn buffer_y_to_strip_y(source_map: &sourceview5::Map, map_y_in_strip: f64, buffer_y: i32) -> f64 {
+fn map_buffer_y_to_target_y(
+    source_map: &sourceview5::Map,
+    map_y_in_target: f64,
+    buffer_y: i32,
+) -> f64 {
+    // `buffer_to_window_coords` returns y relative to the source-map widget;
+    // add the map's target-relative top edge to produce crop/anchor coordinates.
     let (_, widget_y) =
         source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
-    map_y_in_strip + f64::from(widget_y)
+    map_y_in_target + f64::from(widget_y)
 }
 
 fn fit_marker_bounds(
@@ -964,6 +1848,84 @@ fn fit_marker_bounds(
     (bottom > top).then_some(MinimapMarkerBounds { kind, top, bottom })
 }
 
+/// Fit a projected minimap rectangle into rendered content bounds.
+///
+/// Viewport diagnostics use `ClampOutside` because GTK keeps the native slider
+/// visible at document edges. Content-row diagnostics use `RejectOutside`
+/// because fabricating a row would let screenshots pass without rendered text.
+/// Small projections expand around their center to remain pixel-detectable.
+fn fit_projected_bounds(
+    x: f64,
+    width: f64,
+    raw_top: f64,
+    raw_bottom: f64,
+    space: MinimapProjectionSpace,
+    min_height: f64,
+    fit: ProjectedBoundsFit,
+) -> Option<MinimapProjectedBounds> {
+    if !x.is_finite()
+        || !width.is_finite()
+        || !raw_top.is_finite()
+        || !raw_bottom.is_finite()
+        || !space.target_height.is_finite()
+        || !space.content_top.is_finite()
+        || !space.content_bottom.is_finite()
+        || width <= 0.0
+        || space.target_height <= 0.0
+    {
+        return None;
+    }
+
+    let lower = space.content_top.max(0.0);
+    let upper = space.content_bottom.min(space.target_height);
+    if upper <= lower {
+        return None;
+    }
+
+    let (raw_top, raw_bottom) = if raw_top <= raw_bottom {
+        (raw_top, raw_bottom)
+    } else {
+        (raw_bottom, raw_top)
+    };
+    if fit == ProjectedBoundsFit::RejectOutside && (raw_bottom < lower || raw_top > upper) {
+        return None;
+    }
+
+    let mut top = raw_top.clamp(lower, upper);
+    let mut bottom = raw_bottom.clamp(lower, upper);
+    if bottom < top {
+        bottom = top;
+    }
+
+    let target_height = min_height.max(0.0).min(upper - lower);
+    if bottom - top < target_height {
+        // Use midpoint rather than `(top + bottom) / 2.0` so extreme GTK
+        // coordinates cannot overflow before the final clamp.
+        let center = f64::midpoint(top, bottom).clamp(lower, upper);
+        top = center - (target_height / 2.0);
+        bottom = center + (target_height / 2.0);
+
+        if top < lower {
+            bottom += lower - top;
+            top = lower;
+        }
+        if bottom > upper {
+            top -= bottom - upper;
+            bottom = upper;
+        }
+
+        top = top.max(lower);
+        bottom = bottom.min(upper);
+    }
+
+    (bottom > top).then_some(MinimapProjectedBounds {
+        x,
+        y: top,
+        width,
+        height: bottom - top,
+    })
+}
+
 fn marker_lane_width(kind: MinimapMarkerKind, total_width: f64) -> f64 {
     let ratio = match kind {
         MinimapMarkerKind::Bookmark => 1.0,
@@ -1011,6 +1973,11 @@ mod tests {
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET, 2_097_152);
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET, 8_000);
         assert_eq!(MINIMAP_MARKER_MIN_HEIGHT, 2.0);
+        assert_eq!(MINIMAP_TOP_CONTENT_MARGIN, 5);
+        assert_eq!(MINIMAP_WIDE_EDITOR_RATIO_THRESHOLD, 0.20);
+        assert_eq!(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET, 13);
+        assert_eq!(MINIMAP_REFLOW_SETTLE_DEBOUNCE, Duration::from_millis(150));
+        assert_eq!(MINIMAP_REFLOW_REVEAL_DELAY, Duration::from_millis(800));
         assert_eq!(MINIMAP_MODIFIED_MARK_CATEGORY, "lushtext-minimap-modified");
     }
 
@@ -1023,6 +1990,35 @@ mod tests {
         };
 
         assert_eq!(bounds.height(), 8.5);
+    }
+
+    #[test]
+    fn test_native_slider_estimate_subtracts_source_map_visible_offset() {
+        let input = NativeSliderEstimateInput {
+            map_x: 100.0,
+            map_y: 52.0,
+            map_width: 94.0,
+            editor_visible_y: 0,
+            editor_visible_height: 660,
+            editor_document_height: 1320,
+            source_map_visible_y: 0,
+            source_map_document_height: 640,
+            border_left: 0,
+            border_right: 0,
+        };
+        let settled = native_slider_estimate_from_inputs(input)
+            .expect("settled top-of-file native slider should estimate");
+        let stale_map_scroll = native_slider_estimate_from_inputs(NativeSliderEstimateInput {
+            source_map_visible_y: 2,
+            ..input
+        })
+        .expect("stale source-map visible rect should still estimate");
+
+        assert_eq!(settled.y, 52.0);
+        assert_eq!(stale_map_scroll.y, 50.0);
+        assert_eq!(settled.height, stale_map_scroll.height);
+        assert_eq!(settled.x, 87.0);
+        assert_eq!(settled.width, 120.0);
     }
 
     #[test]
@@ -1436,6 +2432,69 @@ mod tests {
             )
             .is_none(),
             "empty rendered content should not synthesize marker bounds"
+        );
+    }
+
+    #[test]
+    fn test_fit_projected_bounds_clamps_viewport_to_content_edges() {
+        let space = MinimapProjectionSpace {
+            target_height: 100.0,
+            map_x: 0.0,
+            map_y: 0.0,
+            map_width: 80.0,
+            content_top: 10.0,
+            content_bottom: 70.0,
+        };
+
+        let above = fit_projected_bounds(
+            2.0,
+            40.0,
+            -20.0,
+            -10.0,
+            space,
+            4.0,
+            ProjectedBoundsFit::ClampOutside,
+        )
+        .expect("viewport above rendered content should clamp to the top edge");
+        assert_eq!(above.y, 10.0);
+        assert_eq!(above.height, 4.0);
+
+        let below = fit_projected_bounds(
+            2.0,
+            40.0,
+            90.0,
+            95.0,
+            space,
+            4.0,
+            ProjectedBoundsFit::ClampOutside,
+        )
+        .expect("viewport below rendered content should clamp to the bottom edge");
+        assert_eq!(below.y, 66.0);
+        assert_eq!(below.height, 4.0);
+    }
+
+    #[test]
+    fn test_fit_projected_bounds_can_reject_outside_content() {
+        let space = MinimapProjectionSpace {
+            target_height: 100.0,
+            map_x: 0.0,
+            map_y: 0.0,
+            map_width: 80.0,
+            content_top: 10.0,
+            content_bottom: 70.0,
+        };
+
+        assert!(
+            fit_projected_bounds(
+                2.0,
+                40.0,
+                90.0,
+                95.0,
+                space,
+                4.0,
+                ProjectedBoundsFit::RejectOutside,
+            )
+            .is_none()
         );
     }
 

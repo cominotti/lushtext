@@ -1,21 +1,11 @@
 {
   "schema_version": 1,
-  "scenario_id": "minimap-sidebar-top",
+  "scenario_id": "minimap-sidebar-dense-markdown-top",
   "scenario_type": "minimap-sidebar",
   "invariant_id": "native-minimap-highlight-anchors",
-  "description": "Same-session sidebar toggle invariant for the native minimap viewport highlight at the top of a minimap-enabled document.",
+  "description": "Same-session sidebar toggle invariant for the native minimap viewport highlight over a dense syntax-highlighted Markdown minimap.",
   "matrix": {
     "sizes": [
-      {
-        "id": "constrained",
-        "width": 1260,
-        "height": 900
-      },
-      {
-        "id": "maximized-like",
-        "width": 1600,
-        "height": 1000
-      },
       {
         "id": "short-wide",
         "width": 1738,
@@ -34,11 +24,8 @@
       "hide",
       "show"
     ],
-    "exclude": [
-      {
-        "size": "short-wide",
-        "word_wrap": true
-      }
+    "fixture_kinds": [
+      "markdown-dense"
     ]
   },
   "protected_regions": [
@@ -69,7 +56,7 @@
       "name": "minimap-native-viewport-top-edge",
       "crop_surface": "minimap-shell",
       "detector": "native-minimap-viewport-top-edge-row",
-      "min_pixels": 12,
+      "min_pixels": 8,
       "max_screen_y_delta": 0
     }
   ],
