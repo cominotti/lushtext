@@ -1125,6 +1125,27 @@ fn find_navigation_split_view(widget: &gtk4::Widget) -> Option<libadwaita::Navig
     None
 }
 
+/// Exercise the collapsed-state binding that shows adaptive browser back buttons.
+///
+/// The false -> true -> false sequence proves initial sync and continued
+/// updates through GTK's property notifications, not only the static role.
+fn assert_back_button_follows_split_collapsed(widget: &gtk4::Widget, tooltip: &str) {
+    let split_view = find_navigation_split_view(widget).expect("navigation split view");
+    let back_button = find_button_by_tooltip(widget, tooltip).expect("back button");
+
+    split_view.set_collapsed(false);
+    flush_events();
+    wait_until(Duration::from_secs(2), || !back_button.is_visible());
+
+    split_view.set_collapsed(true);
+    flush_events();
+    wait_until(Duration::from_secs(2), || back_button.is_visible());
+
+    split_view.set_collapsed(false);
+    flush_events();
+    wait_until(Duration::from_secs(2), || !back_button.is_visible());
+}
+
 fn find_adw_sidebar(widget: &gtk4::Widget) -> Option<libadwaita::Sidebar> {
     if let Ok(sidebar) = widget.clone().downcast::<libadwaita::Sidebar>() {
         return Some(sidebar);
@@ -2817,6 +2838,26 @@ fn test_help_overlay_action_is_registered_and_visible_commands_resolve() {
 }
 
 #[test]
+fn test_fullscreen_actions_follow_fullscreened_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+
+    assert!(action_enabled(&window, "fullscreen"));
+    assert!(!action_enabled(&window, "unfullscreen"));
+
+    window.fullscreen();
+    wait_until(Duration::from_secs(2), || {
+        !action_enabled(&window, "fullscreen") && action_enabled(&window, "unfullscreen")
+    });
+
+    window.unfullscreen();
+    wait_until(Duration::from_secs(2), || {
+        action_enabled(&window, "fullscreen") && !action_enabled(&window, "unfullscreen")
+    });
+}
+
+#[test]
 fn test_help_overlay_action_presents_shortcuts_window_without_context() {
     ensure_gtk_init();
     let window = test_window();
@@ -2988,6 +3029,7 @@ fn test_local_history_browser_controls_expose_accessibility_roles() {
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog");
     let child = dialog.child().expect("local-history browser child");
     let sidebar = find_adw_sidebar(&child).expect("local-history sidebar");
+    assert_back_button_follows_split_collapsed(&child, "Back to Snapshots");
     assert_eq!(sidebar.accessible_role(), gtk4::AccessibleRole::List);
     assert_eq!(
         find_button_by_label(&child, "Restore")
@@ -3033,6 +3075,7 @@ fn test_notes_browser_controls_expose_accessibility_roles() {
     let child = dialog.child().expect("notes browser child");
     let search_entry = find_search_entry(&child).expect("notes browser search entry");
     let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    assert_back_button_follows_split_collapsed(&child, "Back to Notes");
     assert_eq!(search_entry.accessible_role(), gtk4::AccessibleRole::SearchBox);
     assert_eq!(sidebar.accessible_role(), gtk4::AccessibleRole::List);
     assert_eq!(

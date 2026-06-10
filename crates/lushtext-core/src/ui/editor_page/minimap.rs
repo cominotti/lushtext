@@ -470,7 +470,6 @@ impl LushtextEditorPage {
         *imp.minimap.source_map.borrow_mut() = Some(source_map);
         *imp.minimap.reflow_freeze_picture.borrow_mut() = Some(reflow_freeze_picture);
         *imp.minimap.marker_strip.borrow_mut() = Some(marker_strip);
-        self.apply_minimap_width_from_settings();
 
         let buffer = self.buffer();
         {
@@ -951,7 +950,6 @@ impl LushtextEditorPage {
             return;
         }
 
-        self.apply_minimap_width_from_settings();
         self.sync_minimap_view_geometry();
         *self.imp().minimap.markers.borrow_mut() = collect_markers(self);
         self.queue_minimap_draw();
@@ -976,12 +974,6 @@ impl LushtextEditorPage {
             }
             editor.refresh_minimap();
         });
-    }
-
-    /// Apply the persisted minimap width to this editor page.
-    pub(crate) fn apply_minimap_width_from_settings(&self) {
-        let width = self.imp().settings.int(keys::MINIMAP_WIDTH).clamp(64, 160);
-        self.imp().minimap_overlay.set_width_request(width);
     }
 
     /// Queue a redraw of the semantic marker strip when it exists.

@@ -1946,6 +1946,45 @@ fn test_settings_word_wrap_default_enabled() {
 }
 
 #[test]
+fn test_settings_minimap_width_bounds_overlay_width_request() {
+    ensure_gtk_init();
+    let settings = gio::Settings::new(APP_ID);
+    let original_width = settings.int(keys::MINIMAP_WIDTH);
+    settings
+        .set_int(keys::MINIMAP_WIDTH, 88)
+        .expect("set minimap width");
+
+    // Setting before construction proves `Settings::bind(...).sync_create()`
+    // initializes the overlay width from persisted state.
+    let page = LushtextEditorPage::new();
+    assert_eq!(
+        page.imp().minimap_overlay.width_request(),
+        88,
+        "new editor pages should initialize minimap width from GSettings"
+    );
+
+    // Later setting changes prove the live binding updates the existing page
+    // without the old imperative width setter.
+    settings
+        .set_int(keys::MINIMAP_WIDTH, 160)
+        .expect("set maximum minimap width");
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.imp().minimap_overlay.width_request() == 160
+    });
+
+    settings
+        .set_int(keys::MINIMAP_WIDTH, 64)
+        .expect("set minimum minimap width");
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.imp().minimap_overlay.width_request() == 64
+    });
+
+    settings
+        .set_int(keys::MINIMAP_WIDTH, original_width)
+        .expect("restore minimap width");
+}
+
+#[test]
 fn test_settings_show_line_numbers_default() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();

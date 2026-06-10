@@ -459,14 +459,14 @@ impl LushtextWindow {
                 }
             }
         });
-        state.split_view.connect_collapsed_notify({
-            let state = Rc::downgrade(&state);
-            move |split| {
-                if let Some(state) = state.upgrade() {
-                    state.back_button.set_visible(split.is_collapsed());
-                }
-            }
-        });
+        // Collapsed adaptive navigation owns back-button visibility. The
+        // binding seeds the initial dialog layout and stays live as breakpoints
+        // change without storing a signal handler ID.
+        state
+            .split_view
+            .bind_property("collapsed", &state.back_button, "visible")
+            .sync_create()
+            .build();
         state.copy_button.connect_clicked({
             let state = Rc::downgrade(&state);
             move |_| {

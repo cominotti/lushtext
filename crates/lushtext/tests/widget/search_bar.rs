@@ -3,6 +3,7 @@
 //! Tests for the LushtextSearchBar widget.
 
 use crate::common::ensure_gtk_init;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::ui::search_bar::LushtextSearchBar;
 use std::cell::Cell;
@@ -146,16 +147,26 @@ fn test_replace_mode_toggle_shows_replace_row() {
     // Replace row starts collapsed (revealers not revealed).
     assert!(!bar.replace_mode_button().is_active());
     assert!(!bar.is_replace_revealed());
+    assert_replace_revealer_state(&bar, false);
 
     // Activate the toggle — replace row reveals.
     bar.set_replace_mode(true);
     assert!(bar.replace_mode_button().is_active());
     assert!(bar.is_replace_revealed());
+    assert_replace_revealer_state(&bar, true);
 
     // Deactivate — replace row collapses again.
     bar.set_replace_mode(false);
     assert!(!bar.replace_mode_button().is_active());
     assert!(!bar.is_replace_revealed());
+    assert_replace_revealer_state(&bar, false);
+}
+
+fn assert_replace_revealer_state(bar: &LushtextSearchBar, expected: bool) {
+    let imp = bar.imp();
+    assert_eq!(imp.replace_entry_revealer.reveals_child(), expected);
+    assert_eq!(imp.replace_button_revealer.reveals_child(), expected);
+    assert_eq!(imp.replace_all_revealer.reveals_child(), expected);
 }
 
 // --- Navigation state ---

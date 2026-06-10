@@ -18,6 +18,7 @@ use crate::services::{
 };
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
+use glib::value::ToValue;
 use gtk4::gio;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
@@ -643,13 +644,19 @@ impl ObjectImpl for LushtextEditorPage {
             handler_field.replace(Some(id));
         }
 
-        // Manual mapping: bool → WrapMode requires connect_changed instead of bind().
-        // Store the handler ID so we can disconnect in Drop.
-        apply_word_wrap(&self.source_view, settings);
-        let view = self.source_view.clone();
+        // Keep this one-way from settings to the view. `mapping` converts the
+        // stored boolean Variant into the GtkWrapMode property value; the
+        // separate handler below only refreshes minimap geometry.
+        settings
+            .bind(keys::WORD_WRAP, &*self.source_view, "wrap-mode")
+            .get_only()
+            .mapping(|variant, _| {
+                let enabled = variant.get::<bool>()?;
+                Some(word_wrap_mode(enabled).to_value())
+            })
+            .build();
         let editor_weak: glib::WeakRef<super::LushtextEditorPage> = self.obj().downgrade();
-        let id = settings.connect_changed(Some(keys::WORD_WRAP), move |s, _| {
-            apply_word_wrap(&view, s);
+        let id = settings.connect_changed(Some(keys::WORD_WRAP), move |_, _| {
             if let Some(editor) = editor_weak.upgrade() {
                 editor.sync_minimap_wrap_mode();
                 editor.schedule_minimap_refresh();
@@ -723,10 +730,20 @@ impl ObjectImpl for LushtextEditorPage {
                 .replace(Some(id));
         }
         {
+            // Keep the overlay width one-way from settings. The mapping clamps
+            // the stored integer for `width-request`; the handler below only
+            // schedules marker and geometry redraw work.
+            settings
+                .bind(keys::MINIMAP_WIDTH, &*self.minimap_overlay, "width-request")
+                .get_only()
+                .mapping(|variant, _| {
+                    let width = variant.get::<i32>()?.clamp(64, 160);
+                    Some(width.to_value())
+                })
+                .build();
             let editor_weak = self.obj().downgrade();
             let id = settings.connect_changed(Some(keys::MINIMAP_WIDTH), move |_, _| {
                 if let Some(editor) = editor_weak.upgrade() {
-                    editor.apply_minimap_width_from_settings();
                     editor.schedule_minimap_refresh();
                 }
             });
@@ -897,13 +914,12 @@ pub(super) fn apply_formatting_settings(
     view.set_indent_width(indent_width);
 }
 
-fn apply_word_wrap(view: &sourceview5::View, settings: &gio::Settings) {
-    let mode = if settings.boolean(keys::WORD_WRAP) {
+fn word_wrap_mode(enabled: bool) -> gtk4::WrapMode {
+    if enabled {
         gtk4::WrapMode::Word
     } else {
         gtk4::WrapMode::None
-    };
-    view.set_wrap_mode(mode);
+    }
 }
 
 fn apply_color_scheme_to_editor(editor: &super::LushtextEditorPage) {

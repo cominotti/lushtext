@@ -272,8 +272,9 @@ Dialogs, popovers, and browsers that use `GtkStack`, `GtkStackSwitcher`, or anot
 
 Editor preferences use GSettings (`dev.cominotti.lushtext` schema) with `gio::Settings::bind()`:
 
-- **Direct bindings** for properties with matching types: `show-line-numbers`, `highlight-current-line`, `tab-width`, `insert-spaces-instead-of-tabs`. Preferences dialog uses two-way (`DEFAULT`), editor pages use one-way (`GET`).
-- **Manual mapping** for `word-wrap` (bool → `GtkWrapMode`): use `connect_changed()` to convert.
+- **Direct bindings** for properties with matching types: `show-line-numbers`, `show-line-marks`, and `highlight-current-line`. Preferences dialog uses two-way (`DEFAULT`), editor pages use one-way (`GET`).
+- **Mapped bindings** for pure setting projections whose property type differs, such as `word-wrap` (bool -> `GtkWrapMode`) and `minimap-width` (integer -> clamped `width-request`). Keep separate `connect_changed()` handlers only for side effects such as minimap geometry or marker refresh.
+- **Manual formatting handlers** for editor-page `tab-width`, `insert-spaces`, and `indent-width` because EditorConfig overrides can take priority over the GSettings fallback.
 - **Color scheme**: stored as base ID string, dark variant appended automatically. Combo row uses manual wiring (position ↔ string ID).
 - **Font customization**: display-wide CSS provider in `load_css()` targeting `.monospace` widgets. Updated reactively via `connect_changed()` on `use-system-font` and `custom-font` keys.
 - **Word wrap default**: enabled (`true`). Maps to `WrapMode::Word`.

@@ -1,38 +1,60 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! Private implementation for the in-editor search bar widget.
+//!
+//! This GTK adapter owns template children, search option actions, replace-row
+//! projection, and attach/detach state for one active `GtkSourceView`.
+
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
 
+/// Private GTK implementation for `LushtextSearchBar`.
+///
+/// Holds the composite-template children and per-attachment search state used
+/// by the public wrapper's editor search workflow.
 #[derive(Default, CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/search-bar.ui")]
 pub struct LushtextSearchBar {
     // --- Template children ---
+    /// Search entry that owns the query typed by the user.
     #[template_child]
     pub search_entry: TemplateChild<gtk4::SearchEntry>,
+    /// Replacement text entry shown only while replace mode is active.
     #[template_child]
     pub replace_entry: TemplateChild<gtk4::Entry>,
+    /// Label showing the current match index and total count.
     #[template_child]
     pub match_label: TemplateChild<gtk4::Label>,
+    /// Button that moves to the previous search match.
     #[template_child]
     pub prev_button: TemplateChild<gtk4::Button>,
+    /// Button that moves to the next search match.
     #[template_child]
     pub next_button: TemplateChild<gtk4::Button>,
+    /// Button that dismisses the search bar and returns focus to the editor.
     #[template_child]
     pub close_button: TemplateChild<gtk4::Button>,
+    /// Button that replaces the current search match.
     #[template_child]
     pub replace_button: TemplateChild<gtk4::Button>,
+    /// Button that replaces all matches through the editor search workflow.
     #[template_child]
     pub replace_all_button: TemplateChild<gtk4::Button>,
+    /// Toggle that reveals the replace controls while find-only search stays compact.
     #[template_child]
     pub replace_mode_button: TemplateChild<gtk4::ToggleButton>,
+    /// Menu button that exposes regex, case, and whole-word search options.
     #[template_child]
     pub options_button: TemplateChild<gtk4::MenuButton>,
+    /// Revealer for the replacement entry, bound to `replace_mode_button.active`.
     #[template_child]
     pub replace_entry_revealer: TemplateChild<gtk4::Revealer>,
+    /// Revealer for the Replace button, bound with the entry so the row moves as one unit.
     #[template_child]
     pub replace_button_revealer: TemplateChild<gtk4::Revealer>,
+    /// Revealer for the Replace All button, bound with the rest of replace mode.
     #[template_child]
     pub replace_all_revealer: TemplateChild<gtk4::Revealer>,
 
@@ -89,18 +111,19 @@ impl ObjectImpl for LushtextSearchBar {
     fn constructed(&self) {
         self.parent_constructed();
 
-        // Replace mode toggle: reveal/hide row-1 via GtkRevealers.
-        // Revealers (not set_visible) keep the children's natural widths in the
-        // grid column calculation, preventing the entry column from shifting.
-        let entry_rev = self.replace_entry_revealer.clone();
-        let btn_rev = self.replace_button_revealer.clone();
-        let all_rev = self.replace_all_revealer.clone();
-        self.replace_mode_button.connect_toggled(move |button| {
-            let reveal = button.is_active();
-            entry_rev.set_reveal_child(reveal);
-            btn_rev.set_reveal_child(reveal);
-            all_rev.set_reveal_child(reveal);
-        });
+        // Use revealers instead of visibility so the hidden replace row still
+        // contributes natural width and the entry column does not shift.
+        // `sync_create()` applies the initial collapsed state immediately.
+        for revealer in [
+            &*self.replace_entry_revealer,
+            &*self.replace_button_revealer,
+            &*self.replace_all_revealer,
+        ] {
+            self.replace_mode_button
+                .bind_property("active", revealer, "reveal-child")
+                .sync_create()
+                .build();
+        }
 
         // Build the options popover menu with checkbox items for search
         // settings (regex, case-sensitive, whole word). The actions are

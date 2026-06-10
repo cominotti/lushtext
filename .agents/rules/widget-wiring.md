@@ -16,6 +16,21 @@ Actions that depend on app state (e.g., `save`, `toggle-search`, `close-tab` req
 
 **Initialization order matters:** `add_action_entries()` creates actions with `enabled = true`. If initial state should be disabled, call the state-sync method (e.g., `update_content_stack()`) _after_ `setup_actions()` in the constructor.
 
+## Declarative Projection Bindings
+
+Use GTK-native bindings for pure state-to-view projections when the source and
+target are already GObjects and the binding can express the existing behavior
+without changing workflow order. Prefer `gio::Settings::bind` for direct
+settings-to-widget projections and `ObjectExt::bind_property` for direct
+object-to-object projections. Keep transforms pure and small.
+
+Keep imperative handlers when the code performs persistence, async work,
+debounce/search, model or factory recycling, focus restoration, notification
+lifecycle, readiness/layout orchestration, or any ordered side effect. If a
+binding replaces only the projection part of a handler, keep the side-effect
+handler explicit and document the split in the local audit or test when the
+ordering is easy to misread.
+
 ## Action Catalog And Automation Docs
 
 Every user operation exposed through an app action, window action, command

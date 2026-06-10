@@ -10,6 +10,7 @@
 
 use crate::config::keys;
 use crate::ui::sidebar::WorkspaceSidebarWidthPreset;
+use glib::value::ToValue;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
@@ -31,8 +32,10 @@ pub struct LushtextPreferences {
     pub transparency_row: TemplateChild<libadwaita::ActionRow>,
     #[template_child]
     pub transparency_button: TemplateChild<gtk4::MenuButton>,
+    /// Percentage suffix for the tab-content opacity slider.
     #[template_child]
     pub transparency_label: TemplateChild<gtk4::Label>,
+    /// Slider adjustment for the persisted opacity value and visible percentage projection.
     #[template_child]
     pub transparency_adjustment: TemplateChild<gtk4::Adjustment>,
     #[template_child]
@@ -306,16 +309,17 @@ impl LushtextPreferences {
     /// Mirror the Fedora-style transparency control with a percentage label
     /// while keeping the slider value persisted through GSettings.
     fn setup_transparency_row(&self) {
-        update_transparency_label(
-            &self.transparency_label,
-            self.settings.double(keys::TAB_CONTENT_OPACITY),
-        );
-
-        let label = self.transparency_label.clone();
+        // This is one-way UI projection: the adjustment value formats into the
+        // label text, and `sync_create()` replaces the old explicit initial
+        // label update.
         self.transparency_adjustment
-            .connect_value_changed(move |adjustment| {
-                update_transparency_label(&label, adjustment.value());
-            });
+            .bind_property("value", &*self.transparency_label, "label")
+            .transform_to(|_: &glib::Binding, value: &glib::Value| {
+                let opacity = value.get::<f64>().ok()?;
+                Some(transparency_label_text(opacity).to_value())
+            })
+            .sync_create()
+            .build();
     }
 }
 
@@ -324,9 +328,6 @@ impl AdwDialogImpl for LushtextPreferences {}
 impl PreferencesDialogImpl for LushtextPreferences {}
 
 /// Format one stored opacity value as a whole-percent label for the row suffix.
-fn update_transparency_label(label: &gtk4::Label, opacity: f64) {
-    label.set_label(&format!(
-        "{:>3.0}%",
-        (opacity.clamp(0.0, 1.0) * 100.0).floor()
-    ));
+fn transparency_label_text(opacity: f64) -> String {
+    format!("{:>3.0}%", (opacity.clamp(0.0, 1.0) * 100.0).floor())
 }

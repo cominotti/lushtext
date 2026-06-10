@@ -3,6 +3,7 @@
 //! Window action and shortcut wiring.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use glib::value::ToValue;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 
@@ -626,13 +627,20 @@ impl LushtextWindow {
             })
             .build()]);
 
-        let fs_action = fullscreen_action;
-        let unfs_action = unfullscreen_action;
-        self.connect_notify_local(Some("fullscreened"), move |window, _| {
-            let is_fs = window.is_fullscreen();
-            fs_action.set_enabled(!is_fs);
-            unfs_action.set_enabled(is_fs);
-        });
+        // Action enabled state follows the window's fullscreen property:
+        // Fullscreen uses the inverse transform, Unfullscreen mirrors it
+        // directly, and `sync_create()` seeds the initial action state. GLib
+        // releases each binding when either bound object is finalized.
+        self.bind_property("fullscreened", &fullscreen_action, "enabled")
+            .transform_to(|_: &glib::Binding, fullscreened: &glib::Value| {
+                let fullscreened = fullscreened.get::<bool>().ok()?;
+                Some((!fullscreened).to_value())
+            })
+            .sync_create()
+            .build();
+        self.bind_property("fullscreened", &unfullscreen_action, "enabled")
+            .sync_create()
+            .build();
     }
 
     /// Open the in-editor find or replace bar, closing the workspace panel first if needed.
