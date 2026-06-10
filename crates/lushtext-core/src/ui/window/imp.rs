@@ -60,6 +60,18 @@ const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: i32 = 860;
 const PROPERTIES_LAYOUT_PANE: &str = "pane";
 /// Compact document-properties presentation in the multi-layout view.
 const PROPERTIES_LAYOUT_SHEET: &str = "sheet";
+/// Normal preview presentation: editor content with optional end preview pane.
+pub(super) const PREVIEW_LAYOUT_EDITOR: &str = "editor";
+/// Focused preview presentation: Markdown preview fills the editor content area.
+pub(super) const PREVIEW_LAYOUT_PREVIEW: &str = "preview";
+/// Tiny non-zero floor used only before the first real preview-width sync.
+pub(super) const PREVIEW_MIN_WIDTH_SP: f64 = 1.0;
+/// Fallback side-by-side preview width for invalid legacy settings.
+pub(super) const PREVIEW_DEFAULT_WIDTH_SP: i32 = 300;
+/// Maximum share of the editor content that side-by-side preview may consume.
+pub(super) const PREVIEW_MAX_WIDTH_FRACTION: f64 = 1.0 / 3.0;
+/// Short delay for Adwaita layout and embedded preview children to settle.
+pub(super) const PREVIEW_SETTLE_DELAY_MS: u64 = 16;
 
 /// Secondary surfaces that can compete for the compact-width slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -305,7 +317,9 @@ pub struct LushtextWindow {
     #[template_child]
     pub primary_menu_button: TemplateChild<gtk4::MenuButton>,
     #[template_child]
-    pub preview_paned: TemplateChild<gtk4::Paned>,
+    pub preview_layout_view: TemplateChild<libadwaita::MultiLayoutView>,
+    #[template_child]
+    pub preview_split_view: TemplateChild<libadwaita::OverlaySplitView>,
     #[template_child]
     pub editor_box: TemplateChild<gtk4::Box>,
     #[template_child]
@@ -325,20 +339,14 @@ pub struct LushtextWindow {
     pub preview_visible: Cell<bool>,
     /// Whether the preview-only mode (Alt+P) is active (editor hidden, preview full-width).
     pub preview_mode: Cell<bool>,
-    /// Preview pane position saved before hide animation, restored on show.
-    pub saved_preview_pos: Cell<i32>,
-    /// Currently running preview show/hide animation, if any.
-    pub preview_animation: RefCell<Option<libadwaita::TimedAnimation>>,
-    /// True while a programmatic preview animation is moving the paned divider.
-    pub preview_animation_active: Cell<bool>,
+    /// Legacy preferred side-by-side preview width from `preview-pane-position`.
+    pub preferred_preview_width: Cell<i32>,
+    /// True while preview layout switching or embedded widget repair is settling.
+    pub preview_transition_active: Cell<bool>,
+    /// Generation counter for coalescing preview layout-settle repairs.
+    pub preview_transition_generation: Cell<u32>,
     /// Generation counter for debouncing preview renders (300ms).
     pub preview_render_generation: Cell<u32>,
-    /// Last preview pane position persisted to GSettings.
-    pub last_preview_pos: Cell<i32>,
-    /// Preview pane position pending GSettings persistence.
-    pub pending_preview_pos: Cell<i32>,
-    /// Generation counter for debouncing preview position GSettings writes (200ms).
-    pub preview_persist_generation: Cell<u32>,
     /// Generation counter for debouncing file index rebuilds (300ms).
     pub index_rebuild_generation: Cell<u32>,
     /// Focus widget saved before the command palette steals focus.
@@ -415,7 +423,8 @@ impl Default for LushtextWindow {
             leave_focus_mode_button: TemplateChild::default(),
             notes_menu_button: TemplateChild::default(),
             primary_menu_button: TemplateChild::default(),
-            preview_paned: TemplateChild::default(),
+            preview_layout_view: TemplateChild::default(),
+            preview_split_view: TemplateChild::default(),
             editor_box: TemplateChild::default(),
             markdown_preview: TemplateChild::default(),
             content_box: TemplateChild::default(),
@@ -425,13 +434,10 @@ impl Default for LushtextWindow {
             secondary_surfaces: SecondarySurfaceState::default(),
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
-            saved_preview_pos: Cell::new(0),
-            preview_animation: RefCell::new(None),
-            preview_animation_active: Cell::new(false),
+            preferred_preview_width: Cell::new(PREVIEW_DEFAULT_WIDTH_SP),
+            preview_transition_active: Cell::new(false),
+            preview_transition_generation: Cell::new(0),
             preview_render_generation: Cell::new(0),
-            last_preview_pos: Cell::new(-1),
-            pending_preview_pos: Cell::new(-1),
-            preview_persist_generation: Cell::new(0),
             index_rebuild_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
             transient_child_escape_handled: Cell::new(false),
@@ -506,18 +512,21 @@ impl ObjectImpl for LushtextWindow {
             &self.properties_layout_view,
             &self.properties_split_view,
             &self.properties_bottom_sheet,
+            &self.preview_layout_view,
+            &self.preview_split_view,
         );
         migrate_split_view_settings(settings, w);
         install_split_view_breakpoints(&obj);
         restore_workspace_split_view(&obj);
         restore_properties_split_view(&obj);
 
-        // Restore preview pane position even though the pane starts hidden so
-        // the first reveal animation still targets the user's preferred width.
-        let saved_preview_pos = settings.int(keys::PREVIEW_PANE_POSITION);
-        self.saved_preview_pos.set(saved_preview_pos);
-        self.last_preview_pos.set(saved_preview_pos);
-        self.pending_preview_pos.set(saved_preview_pos);
+        // The legacy preview-pane-position key now stores a preferred
+        // side-by-side preview width. Preview still starts hidden; target-state
+        // actions apply this width when the pane is explicitly requested.
+        let preferred_preview_width = settings.int(keys::PREVIEW_PANE_POSITION);
+        self.preferred_preview_width.set(preferred_preview_width);
+        obj.sync_preview_width_constraints(w);
+        obj.apply_preview_shell_state();
 
         {
             let settings = settings.clone();
@@ -549,23 +558,25 @@ impl ObjectImpl for LushtextWindow {
 
         {
             let window_weak = obj.downgrade();
-            self.preview_paned
-                .connect_notify_local(Some("position"), move |_paned, _| {
-                    if let Some(window) = window_weak.upgrade() {
-                        if window.imp().preview_animation_active.get() {
-                            return;
-                        }
-                        window.clamp_preview_position(window.width());
-                    }
-                });
-        }
-
-        {
-            let window_weak = obj.downgrade();
             settings.connect_changed(Some(keys::USE_EDITORCONFIG), move |s, _| {
                 if let Some(window) = window_weak.upgrade() {
                     window.on_use_editorconfig_changed(s.boolean(keys::USE_EDITORCONFIG));
                 }
+            });
+        }
+
+        {
+            let window_weak = obj.downgrade();
+            settings.connect_changed(Some(keys::PREVIEW_PANE_POSITION), move |s, _| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                window
+                    .imp()
+                    .preferred_preview_width
+                    .set(s.int(keys::PREVIEW_PANE_POSITION));
+                window.sync_preview_width_constraints(current_window_width(&window));
+                window.queue_preview_layout_settle();
             });
         }
 
@@ -931,11 +942,11 @@ impl LushtextWindow {
 
 impl WidgetImpl for LushtextWindow {
     fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
-        self.obj().clamp_preview_position(width);
         if height > 0 {
             self.search_panel.clamp_results_height(height / 3);
         }
         self.parent_size_allocate(width, height, baseline);
+        self.obj().sync_preview_width_constraints(width);
         if width > 0 {
             let palette_width = width * 6 / 10;
             if self.command_palette.width_request() != palette_width {
@@ -1029,6 +1040,8 @@ fn configure_split_views(
     properties_layout_view: &libadwaita::MultiLayoutView,
     properties_split_view: &libadwaita::OverlaySplitView,
     properties_bottom_sheet: &libadwaita::BottomSheet,
+    preview_layout_view: &libadwaita::MultiLayoutView,
+    preview_split_view: &libadwaita::OverlaySplitView,
 ) {
     workspace_split_view.set_sidebar_position(gtk4::PackType::Start);
     workspace_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
@@ -1046,6 +1059,16 @@ fn configure_split_views(
     properties_split_view.set_pin_sidebar(true);
     properties_split_view.set_enable_show_gesture(false);
     properties_split_view.set_enable_hide_gesture(false);
+
+    preview_layout_view.set_layout_name(PREVIEW_LAYOUT_EDITOR);
+    preview_split_view.set_sidebar_position(gtk4::PackType::End);
+    preview_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
+    preview_split_view.set_min_sidebar_width(PREVIEW_MIN_WIDTH_SP);
+    preview_split_view.set_max_sidebar_width(PREVIEW_MIN_WIDTH_SP);
+    preview_split_view.set_pin_sidebar(true);
+    preview_split_view.set_enable_show_gesture(false);
+    preview_split_view.set_enable_hide_gesture(false);
+    preview_split_view.set_show_sidebar(false);
 
     // The compact presentation is driven only by the same window action that
     // owns the wide pane. Disabling swipe open/close keeps that requested
@@ -1518,6 +1541,7 @@ fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
     }
     sync_properties_breakpoint(window);
     sync_properties_split_view(window, window_width);
+    window.sync_preview_width_constraints(window_width);
     sync_secondary_surfaces(window);
 
     window.imp().split_width_synced_for_width.set(window_width);

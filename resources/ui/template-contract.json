@@ -5263,8 +5263,28 @@
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/4:property/0:object:GtkBox#editor_box/1:child",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/2:child",
           "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/3:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/4:child",
+          "type": "editor"
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/4:child/0:object:GtkBox#editor_box/1:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/5:child",
+          "type": "preview"
         },
         {
           "internal-child": "",
@@ -5889,24 +5909,54 @@
           "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage"
         },
         {
-          "class": "GtkPaned",
-          "id": "preview_paned",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned"
+          "class": "AdwMultiLayoutView",
+          "id": "preview_layout_view",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view"
+        },
+        {
+          "class": "AdwLayout",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/2:child/0:object:AdwLayout"
+        },
+        {
+          "class": "AdwOverlaySplitView",
+          "id": "preview_split_view",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/2:child/0:object:AdwLayout/1:property/0:object:AdwOverlaySplitView#preview_split_view"
+        },
+        {
+          "class": "AdwLayoutSlot",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/2:child/0:object:AdwLayout/1:property/0:object:AdwOverlaySplitView#preview_split_view/2:property/0:object:AdwLayoutSlot"
+        },
+        {
+          "class": "AdwLayoutSlot",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/2:child/0:object:AdwLayout/1:property/0:object:AdwOverlaySplitView#preview_split_view/3:property/0:object:AdwLayoutSlot"
+        },
+        {
+          "class": "AdwLayout",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/3:child/0:object:AdwLayout"
+        },
+        {
+          "class": "AdwLayoutSlot",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/3:child/0:object:AdwLayout/1:property/0:object:AdwLayoutSlot"
         },
         {
           "class": "GtkBox",
           "id": "editor_box",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/4:property/0:object:GtkBox#editor_box"
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/4:child/0:object:GtkBox#editor_box"
         },
         {
           "class": "AdwTabView",
           "id": "tab_view",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/4:property/0:object:GtkBox#editor_box/1:child/0:object:AdwTabView#tab_view"
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/4:child/0:object:GtkBox#editor_box/1:child/0:object:AdwTabView#tab_view"
         },
         {
           "class": "LushtextMarkdownPreview",
           "id": "markdown_preview",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/5:property/0:object:LushtextMarkdownPreview#markdown_preview"
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/5:child/0:object:LushtextMarkdownPreview#markdown_preview"
         },
         {
           "class": "GtkStackPage",
@@ -6190,49 +6240,49 @@
         {
           "context": "",
           "name": "vexpand",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/0:property",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/0:property",
           "translatable": "",
           "value": "true"
         },
         {
           "context": "",
-          "name": "shrink-start-child",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/1:property",
+          "name": "hexpand",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/1:property",
           "translatable": "",
-          "value": "false"
+          "value": "true"
         },
         {
           "context": "",
-          "name": "shrink-end-child",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/2:property",
+          "name": "vexpand",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/2:child/0:object:AdwLayout/1:property/0:object:AdwOverlaySplitView#preview_split_view/0:property",
           "translatable": "",
-          "value": "false"
+          "value": "true"
         },
         {
           "context": "",
-          "name": "resize-end-child",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/3:property",
+          "name": "hexpand",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/2:child/0:object:AdwLayout/1:property/0:object:AdwOverlaySplitView#preview_split_view/1:property",
           "translatable": "",
-          "value": "false"
+          "value": "true"
         },
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/4:property/0:object:GtkBox#editor_box/0:property",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/4:child/0:object:GtkBox#editor_box/0:property",
           "translatable": "",
           "value": "1"
         },
         {
           "context": "",
           "name": "vexpand",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/4:property/0:object:GtkBox#editor_box/1:child/0:object:AdwTabView#tab_view/0:property",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/4:child/0:object:GtkBox#editor_box/1:child/0:object:AdwTabView#tab_view/0:property",
           "translatable": "",
           "value": "true"
         },
         {
           "context": "",
           "name": "visible",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkPaned#preview_paned/5:property/0:object:LushtextMarkdownPreview#markdown_preview/0:property",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:LushtextShrinkableBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/2:child/0:object:GtkStackPage/1:property/0:object:AdwMultiLayoutView#preview_layout_view/5:child/0:object:LushtextMarkdownPreview#markdown_preview/0:property",
           "translatable": "",
           "value": "false"
         },

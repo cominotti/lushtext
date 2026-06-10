@@ -29,12 +29,15 @@ EXPECTED_HELPER_FLAG_MARKER = (
     "visual-geometry-smoke --artifact-dir --binary --scenario-dir --case-filter "
     "capture-lushtext-mutter "
     "--file --output --search --expected-search-matches --enable-minimap "
-    "--enable-atspi --window-action --window-string-action --wait-predicate --wait-window-action --wait-atspi-text "
+    "--enable-atspi --window-action --window-string-action --window-bool-action --wait-predicate --wait-window-action --wait-atspi-text "
     "--color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts "
     "run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test "
         "lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary visual-geometry-capture self-test "
         "--bus-name --object-path --interface --window-path --timeout-ms --json --field --string --bool --uint32 --variant-json "
         "--scenario-id --size-id --direction --color-scheme --word-wrap --fixture-kind --viewport-position -->"
+)
+REQUIRED_HELPER_TABLE_ROWS = (
+    "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--window-bool-action ACTION=true\\|false` | Activates a window-scoped `org.gtk.Actions` action with one boolean parameter before capture; may be repeated. |",
 )
 
 
@@ -522,6 +525,12 @@ def run_checks(
             sorted(term for term in helper_terms if term not in reference),
         )
     )
+    checks.append(
+        CheckResult(
+            "helper table rows",
+            sorted(row for row in REQUIRED_HELPER_TABLE_ROWS if row not in reference),
+        )
+    )
     return checks
 
 
@@ -580,6 +589,15 @@ def run_self_tests() -> None:
     failures = {result.label: result.missing for result in run_checks(reference_text=reference)}
     if not failures.get("helper flag marker"):
         raise AssertionError("self-test did not detect missing helper flag marker")
+
+    reference = REFERENCE_DOC.read_text(encoding="utf-8").replace(
+        REQUIRED_HELPER_TABLE_ROWS[0],
+        "",
+        1,
+    )
+    failures = {result.label: result.missing for result in run_checks(reference_text=reference)}
+    if not failures.get("helper table rows"):
+        raise AssertionError("self-test did not detect missing helper table row")
 
 
 def main() -> int:

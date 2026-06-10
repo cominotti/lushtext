@@ -34,9 +34,13 @@ LushtextWindow (AdwApplicationWindow)
 │   │       └── [content] AdwMultiLayoutView [properties_layout_view]
 │   │           ├── [slot: primary] GtkBox [content_box] (vertical)
 │   │           │   ├── GtkStack [content_stack] (vexpand)
-│   │           │   │   ├── "tabs": GtkPaned [preview_paned]
-│   │           │   │   │   ├── [start] GtkBox [editor_box] → AdwTabView → LushtextEditorPage per tab
-│   │           │   │   │   └── [end] LushtextMarkdownPreview (starts hidden)
+│   │           │   │   ├── "tabs": AdwMultiLayoutView [preview_layout_view]
+│   │           │   │   │   ├── [slot: editor] GtkBox [editor_box] → AdwTabView → LushtextEditorPage per tab
+│   │           │   │   │   ├── [slot: preview] LushtextMarkdownPreview (starts hidden)
+│   │           │   │   │   ├── [layout: editor] AdwOverlaySplitView [preview_split_view]
+│   │           │   │   │   │   ├── [content] AdwLayoutSlot "editor"
+│   │           │   │   │   │   └── [sidebar/end] AdwLayoutSlot "preview"
+│   │           │   │   │   └── [layout: preview] AdwLayoutSlot "preview"
 │   │           │   │   └── "empty": AdwStatusPage
 │   │           │   └── GtkRevealer [search_panel_revealer] (slide-up, 250ms)
 │   │           │       └── LushtextSearchPanel (Ctrl+Shift+F workspace search)
@@ -66,6 +70,7 @@ LushtextWindow (AdwApplicationWindow)
 - `AdwAboutDialog` for the about dialog
 - `AdwWindowTitle` for header title/subtitle
 - `AdwMultiLayoutView` + `AdwLayoutSlot` for adaptive secondary surfaces that need the same child in multiple presentations
+- `AdwOverlaySplitView` for explicit secondary surfaces such as workspace, document-properties, and side-by-side Markdown preview panes
 - `AdwBottomSheet` for compact utility surfaces such as document properties on narrow windows
 
 ## State Extremes And Visibility Matrix (CRITICAL)
@@ -260,7 +265,7 @@ Dialogs, popovers, and browsers that use `GtkStack`, `GtkStackSwitcher`, or anot
 
 - Refresh after render, on the preview widget's `size_allocate()`, after readable-column margin changes, and when the text view is mapped or reports a width change.
 - Queue one idle refresh after immediate refreshes so code rendered before the preview is mapped can catch the final allocation.
-- When the preview lives inside a shell that starts hidden or animates through `GtkPaned`, refresh anchored block widths again after the shell transition settles. Standalone preview-widget tests are primitive coverage; acceptance for hidden-to-visible bugs belongs in window-level tests that assert final allocation and horizontal adjustment state.
+- When the preview lives inside a shell that starts hidden or moves through an Adwaita layout/split-view transition, refresh anchored block widths again after the shell transition settles. Standalone preview-widget tests are primitive coverage; acceptance for hidden-to-visible bugs belongs in window-level tests that assert final allocation and horizontal adjustment state.
 - Keep horizontal scrolling inside the embedded block only for real content overflow; do not let the block's natural width create narrow boxes or false scrollbars.
 
 ## GSettings Bindings

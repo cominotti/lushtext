@@ -139,24 +139,48 @@ template $LushtextWindow: Adw.ApplicationWindow {
                 StackPage {
                   name: "tabs";
 
-                  child: Paned preview_paned {
+                  child: Adw.MultiLayoutView preview_layout_view {
                     vexpand: true;
-                    shrink-start-child: false;
-                    shrink-end-child: false;
-                    resize-end-child: false;
-                    // Left: editor tab view.
-                    start-child: Box editor_box {
+                    hexpand: true;
+
+                    Adw.Layout {
+                      name: "editor";
+
+                      content: Adw.OverlaySplitView preview_split_view {
+                        vexpand: true;
+                        hexpand: true;
+
+                        content: Adw.LayoutSlot {
+                          id: "editor";
+                        };
+
+                        sidebar: Adw.LayoutSlot {
+                          id: "preview";
+                        };
+                      };
+                    }
+
+                    Adw.Layout {
+                      name: "preview";
+
+                      content: Adw.LayoutSlot {
+                        id: "preview";
+                      };
+                    }
+
+                    [editor]
+                    Box editor_box {
                       orientation: vertical;
 
                       Adw.TabView tab_view {
                         vexpand: true;
                       }
-                    };
+                    }
 
-                    // Right: Markdown preview, initially hidden.
-                    end-child: $LushtextMarkdownPreview markdown_preview {
+                    [preview]
+                    $LushtextMarkdownPreview markdown_preview {
                       visible: "false";
-                    };
+                    }
                   };
                 }
 

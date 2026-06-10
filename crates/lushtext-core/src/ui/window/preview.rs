@@ -1,27 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Markdown preview pane: side-by-side and preview-only (Alt+P) toggle modes.
+//! Markdown preview presentation: editor-only, side-by-side, and preview-only.
 //!
-//! The preview pane lives as the end-child of `preview_paned` inside the "tabs"
-//! stack page. Three states are managed via the same GtkPaned:
-//!
-//! - **Editor only** (default): preview hidden, all space to editor
-//! - **Side-by-side**: preview visible on right, clamped to max 1/3 window width
-//! - **Preview only** (Alt+P): editor hidden, preview takes full width
-//!
-//! Animation follows the sidebar pattern: `AdwTimedAnimation` + `EaseOutCubic`,
-//! 250ms, 1px minimum target (pixman-safe), `shrink-*-child` toggled during
-//! animation, `connect_done` snaps visibility.
+//! The preview shell is Adwaita-native: a `MultiLayoutView` swaps the same
+//! Markdown preview widget between an end-position `OverlaySplitView` sidebar
+//! and a full-content preview-only layout. The public actions keep their
+//! existing meanings while the implementation avoids app-owned paned animation.
 
 use crate::config::keys;
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::MarkdownPreviewRenderContext;
-use gtk4::prelude::*;
-use libadwaita::prelude::AnimationExt;
+use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::{glib, prelude::*};
 use sourceview5::prelude::*;
 
 use super::LushtextWindow;
+use super::imp::{
+    PREVIEW_DEFAULT_WIDTH_SP, PREVIEW_LAYOUT_EDITOR, PREVIEW_LAYOUT_PREVIEW,
+    PREVIEW_MAX_WIDTH_FRACTION, PREVIEW_MIN_WIDTH_SP, PREVIEW_SETTLE_DELAY_MS,
+};
 
 /// Register the preview-related actions on the window.
 ///
@@ -44,17 +42,17 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
             let Some(new_visible) = state.get::<bool>() else {
                 return;
             };
-            action.set_state(state);
             if let Some(window) = window_weak.upgrade() {
                 if window.is_focus_mode_active() {
                     window.mark_focus_mode_preview_changed();
                     return;
                 }
+                action.set_state(state);
                 if new_visible && window.imp().preview_mode.get() {
                     window.exit_preview_only_mode_now();
                 }
                 window.imp().preview_visible.set(new_visible);
-                window.animate_preview_pane(new_visible);
+                window.apply_preview_shell_state();
                 let _ = window
                     .imp()
                     .settings
@@ -88,7 +86,7 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
                 }
                 action.set_state(state);
                 window.imp().preview_mode.set(new_mode);
-                window.animate_preview_mode(new_mode);
+                window.apply_preview_shell_state();
                 window.refresh_focus_mode_preview_column();
                 if new_mode {
                     window.refresh_preview();
@@ -123,141 +121,108 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
 }
 
 impl LushtextWindow {
-    fn queue_preview_position_persist(&self, preview_width: i32) {
+    /// Apply the requested preview state to the Adwaita presentation widgets.
+    ///
+    /// The editor layout owns both editor-only and side-by-side modes through
+    /// `preview_split_view.show-sidebar`. Preview-only switches the slot layout
+    /// so the same Markdown preview widget fills the content area.
+    pub(super) fn apply_preview_shell_state(&self) {
         let imp = self.imp();
-        imp.pending_preview_pos.set(preview_width);
+        let preview_only = imp.preview_mode.get();
+        let side_by_side = imp.preview_visible.get();
+        let preview_active = preview_only || side_by_side;
 
-        if imp.last_preview_pos.get() == preview_width {
+        self.sync_preview_width_constraints(self.width());
+
+        if imp.editor_box.is_visible() == preview_only {
+            imp.editor_box.set_visible(!preview_only);
+        }
+        if imp.markdown_preview.is_visible() != preview_active {
+            imp.markdown_preview.set_visible(preview_active);
+        }
+
+        if preview_only {
+            if imp.preview_split_view.shows_sidebar() {
+                imp.preview_split_view.set_show_sidebar(false);
+            }
+            if imp.preview_layout_view.layout_name().as_deref() != Some(PREVIEW_LAYOUT_PREVIEW) {
+                imp.preview_layout_view
+                    .set_layout_name(PREVIEW_LAYOUT_PREVIEW);
+            }
+        } else {
+            if imp.preview_layout_view.layout_name().as_deref() != Some(PREVIEW_LAYOUT_EDITOR) {
+                imp.preview_layout_view
+                    .set_layout_name(PREVIEW_LAYOUT_EDITOR);
+            }
+            if imp.preview_split_view.shows_sidebar() != side_by_side {
+                imp.preview_split_view.set_show_sidebar(side_by_side);
+            }
+        }
+
+        self.queue_preview_layout_settle();
+    }
+
+    /// Clamp and apply the side-by-side preview width as split-view constraints.
+    ///
+    /// `preview-pane-position` is intentionally kept as a legacy key, but its
+    /// value is now interpreted as the preferred preview width from the right
+    /// edge rather than a `GtkPaned` divider coordinate.
+    pub(super) fn sync_preview_width_constraints(&self, window_width: i32) {
+        let imp = self.imp();
+        let available_width = effective_preview_available_width(self, window_width);
+        let preferred_width = preferred_preview_width(imp.preferred_preview_width.get());
+        let preview_width = clamped_preview_width(preferred_width, available_width);
+        let changed = set_preview_split_fixed_width(&imp.preview_split_view, preview_width);
+
+        if changed && (imp.preview_visible.get() || imp.preview_mode.get()) {
+            self.queue_preview_layout_settle();
+        }
+    }
+
+    /// Mark preview presentation work as pending until layout and code blocks settle.
+    ///
+    /// Automation still exposes the compatibility `preview-animation` blocker,
+    /// but the latch now tracks shell-neutral layout switching and embedded
+    /// widget repair rather than a custom paned animation.
+    pub(super) fn queue_preview_layout_settle(&self) {
+        let imp = self.imp();
+        if !imp.preview_visible.get() && !imp.preview_mode.get() {
+            imp.preview_transition_active.set(false);
             return;
         }
 
-        let generation = imp.preview_persist_generation.get().wrapping_add(1);
-        imp.preview_persist_generation.set(generation);
+        let generation = imp.preview_transition_generation.get().wrapping_add(1);
+        imp.preview_transition_generation.set(generation);
+        imp.preview_transition_active.set(true);
 
         let window_weak = self.downgrade();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            let imp = window.imp();
-            if imp.preview_persist_generation.get() != generation {
-                return;
-            }
-            let preview_width = imp.pending_preview_pos.get();
-            if imp.last_preview_pos.get() == preview_width {
-                return;
-            }
-            if imp
-                .settings
-                .set_int(keys::PREVIEW_PANE_POSITION, preview_width)
-                .is_ok()
-            {
-                imp.last_preview_pos.set(preview_width);
-            }
-        });
-    }
-
-    fn persist_preview_position_preference(&self) {
-        let imp = self.imp();
-        let preview_width = if imp.preview_visible.get() {
-            imp.preview_paned
-                .width()
-                .saturating_sub(imp.preview_paned.position())
-        } else {
-            imp.saved_preview_pos.get()
-        };
-        self.queue_preview_position_persist(preview_width.max(0));
-    }
-
-    /// Animate the side-by-side preview pane show/hide.
-    ///
-    /// Mirrors the sidebar animation pattern from `animate_sidebar()`:
-    /// `shrink-end-child` is temporarily `true`, target is 1px (not 0) on hide,
-    /// `connect_done` calls `set_visible(false)` and restores shrink.
-    fn animate_preview_pane(&self, show: bool) {
-        let imp = self.imp();
-
-        // Cancel any running preview animation.
-        if let Some(anim) = imp.preview_animation.take() {
-            anim.pause();
-        }
-        imp.preview_animation_active.set(false);
-
-        let paned = &imp.preview_paned;
-        let preview = &imp.markdown_preview;
-
-        let paned_width = paned.width();
-        if paned_width <= 0 {
-            // Widget not yet realized — skip animation, just toggle visibility.
-            if show {
-                preview.set_visible(true);
-            } else {
-                preview.set_visible(false);
-            }
-            imp.preview_visible.set(show);
-            return;
-        }
-
-        paned.set_shrink_end_child(true);
-
-        let (from, to) = if show {
-            let target_pos = paned_width - imp.saved_preview_pos.get();
-            preview.set_visible(true);
-            (f64::from(paned.position()), f64::from(target_pos.max(1)))
-        } else {
-            imp.saved_preview_pos.set(paned_width - paned.position());
-            // Animate to full width minus 1px (preview shrinks to nothing).
-            (
-                f64::from(paned.position()),
-                f64::from((paned_width - 1).max(1)),
-            )
-        };
-
-        let paned_weak = paned.downgrade();
-        let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
-            if let Some(p) = paned_weak.upgrade() {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "Preview pane animation endpoints stay within i32 paned coordinates"
-                )]
-                p.set_position(value as i32);
-            }
-        });
-
-        let animation = libadwaita::TimedAnimation::new(
-            paned.upcast_ref::<gtk4::Widget>(),
-            from,
-            to,
-            250,
-            anim_target,
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(PREVIEW_SETTLE_DELAY_MS),
+            move || {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                let imp = window.imp();
+                if imp.preview_transition_generation.get() != generation {
+                    return;
+                }
+                if imp.preview_visible.get() || imp.preview_mode.get() {
+                    let window_weak = window.downgrade();
+                    imp.markdown_preview
+                        .queue_code_block_width_refresh_after(move || {
+                            let Some(window) = window_weak.upgrade() else {
+                                return;
+                            };
+                            let imp = window.imp();
+                            if imp.preview_transition_generation.get() == generation {
+                                imp.preview_transition_active.set(false);
+                            }
+                        });
+                } else {
+                    imp.preview_transition_active.set(false);
+                }
+            },
         );
-        animation.set_easing(libadwaita::Easing::EaseOutCubic);
-
-        let preview_weak = if show {
-            None
-        } else {
-            Some(preview.downgrade())
-        };
-        let done_window_weak = self.downgrade();
-        animation.connect_done(move |_| {
-            let Some(window) = done_window_weak.upgrade() else {
-                return;
-            };
-            let imp = window.imp();
-            if let Some(preview) = preview_weak.as_ref().and_then(glib::WeakRef::upgrade) {
-                preview.set_visible(false);
-            }
-            imp.preview_paned.set_shrink_end_child(false);
-            imp.preview_animation_active.set(false);
-            if imp.preview_visible.get() {
-                imp.markdown_preview.refresh_embedded_code_block_layouts();
-            }
-            window.persist_preview_position_preference();
-        });
-
-        imp.preview_animation_active.set(true);
-        animation.play();
-        imp.preview_animation.replace(Some(animation));
     }
 
     /// Show or hide side-by-side preview as a temporary Focus Mode effect.
@@ -274,7 +239,7 @@ impl LushtextWindow {
         }
         imp.preview_visible.set(show);
         self.set_preview_action_state("toggle-preview-pane", show);
-        self.animate_preview_pane(show);
+        self.apply_preview_shell_state();
         if show {
             self.refresh_preview();
         }
@@ -291,7 +256,7 @@ impl LushtextWindow {
         }
         imp.preview_mode.set(enabled);
         self.set_preview_action_state("toggle-preview-mode", enabled);
-        self.animate_preview_mode(enabled);
+        self.apply_preview_shell_state();
         self.refresh_focus_mode_preview_column();
         if enabled {
             self.refresh_preview();
@@ -301,8 +266,8 @@ impl LushtextWindow {
     /// Request a preview state through the normal GAction path.
     ///
     /// Target-state automation remains a thin request layer; Focus Mode
-    /// bookkeeping, GSettings writes, refreshes, and animations stay on the
-    /// existing preview action workflow.
+    /// bookkeeping, GSettings writes, refreshes, and layout switching stay on
+    /// the existing preview action workflow.
     pub(super) fn change_preview_action_state(&self, action_name: &str, enabled: bool) {
         let Some(action) = self.lookup_action(action_name) else {
             return;
@@ -319,7 +284,7 @@ impl LushtextWindow {
 
     /// Apply preview-only target state without creating a second preview policy path.
     ///
-    /// Side-by-side and preview-only modes share one paned shell, so a request
+    /// Side-by-side and preview-only remain mutually exclusive, so a request
     /// for preview-only first exits side-by-side through the same action system.
     fn set_preview_mode_target(&self, enabled: bool) {
         if enabled && self.imp().preview_visible.get() {
@@ -340,10 +305,10 @@ impl LushtextWindow {
 
     /// Leave preview-only mode immediately and restore the source-editor shell.
     ///
-    /// New-document creation and side-by-side preview transitions need a synchronous
-    /// reset because the delayed focus handoff can run before a preview exit
-    /// animation finishes. Keeping this in the preview workflow prevents action
-    /// state, animation state, and widget visibility from drifting apart.
+    /// New-document creation and side-by-side preview transitions need a
+    /// synchronous reset because delayed focus handoff can run before the next
+    /// layout-settle tick. Keeping this in the preview workflow prevents action
+    /// state, layout state, and widget visibility from drifting apart.
     pub(super) fn exit_preview_only_mode_now(&self) {
         let imp = self.imp();
         if !imp.preview_mode.get() {
@@ -352,101 +317,8 @@ impl LushtextWindow {
 
         imp.preview_mode.set(false);
         self.set_preview_action_state("toggle-preview-mode", false);
-        if let Some(anim) = imp.preview_animation.take() {
-            anim.pause();
-        }
-        imp.preview_animation_active.set(false);
-        imp.editor_box.set_visible(true);
-        imp.markdown_preview.set_visible(imp.preview_visible.get());
-        imp.preview_paned.set_shrink_start_child(false);
-
-        let paned_width = imp.preview_paned.width();
-        if paned_width > 0 && !imp.preview_visible.get() {
-            imp.preview_paned.set_position(paned_width);
-        }
+        self.apply_preview_shell_state();
         self.refresh_focus_mode_preview_column();
-    }
-
-    /// Animate the preview-only mode (Alt+P): editor hidden, preview full-width.
-    ///
-    /// Enter: show preview, animate paned position to 1px (editor shrinks),
-    /// then hide editor_box. Exit: show editor_box, animate back to full width.
-    fn animate_preview_mode(&self, enter: bool) {
-        let imp = self.imp();
-
-        if let Some(anim) = imp.preview_animation.take() {
-            anim.pause();
-        }
-        imp.preview_animation_active.set(false);
-
-        let paned = &imp.preview_paned;
-        paned.set_shrink_start_child(true);
-
-        let paned_width = paned.width().max(1);
-
-        let (from, to) = if enter {
-            imp.markdown_preview.set_visible(true);
-            (f64::from(paned_width), 1.0)
-        } else {
-            imp.editor_box.set_visible(true);
-            (f64::from(paned.position()), f64::from(paned_width))
-        };
-
-        let paned_weak = paned.downgrade();
-        let anim_target = libadwaita::CallbackAnimationTarget::new(move |value| {
-            if let Some(p) = paned_weak.upgrade() {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "Preview pane animation endpoints stay within i32 paned coordinates"
-                )]
-                p.set_position(value as i32);
-            }
-        });
-
-        let animation = libadwaita::TimedAnimation::new(
-            paned.upcast_ref::<gtk4::Widget>(),
-            from,
-            to,
-            250,
-            anim_target,
-        );
-        animation.set_easing(libadwaita::Easing::EaseOutCubic);
-
-        let editor_box_weak = if enter {
-            Some(imp.editor_box.downgrade())
-        } else {
-            None
-        };
-        let preview_weak = if enter {
-            None
-        } else {
-            Some(imp.markdown_preview.downgrade())
-        };
-        let done_window_weak = self.downgrade();
-        animation.connect_done(move |_| {
-            let Some(window) = done_window_weak.upgrade() else {
-                return;
-            };
-            let imp = window.imp();
-            // After entering preview-only: hide the editor box.
-            if let Some(editor_box) = editor_box_weak.as_ref().and_then(glib::WeakRef::upgrade) {
-                editor_box.set_visible(false);
-            }
-            // After exiting preview-only: hide the preview widget.
-            if let Some(preview) = preview_weak.as_ref().and_then(glib::WeakRef::upgrade) {
-                preview.set_visible(false);
-            }
-            imp.preview_paned.set_shrink_start_child(false);
-            imp.preview_animation_active.set(false);
-            if imp.preview_mode.get() {
-                imp.markdown_preview.refresh_embedded_code_block_layouts();
-            }
-            window.persist_preview_position_preference();
-        });
-
-        imp.preview_animation_active.set(true);
-        animation.play();
-        imp.preview_animation.replace(Some(animation));
     }
 
     /// Refresh the preview content for the active tab.
@@ -508,39 +380,6 @@ impl LushtextWindow {
         });
     }
 
-    /// Clamp the preview pane position to at most 1/3 of the paned width
-    /// (measured from the right edge). Mirrors `clamp_sidebar_position`
-    /// for the right-side pane. Includes debounced GSettings persistence.
-    pub(super) fn clamp_preview_position(&self, window_width: i32) {
-        let imp = self.imp();
-        if window_width <= 0 || !imp.preview_visible.get() {
-            return;
-        }
-
-        let paned = &imp.preview_paned;
-        let paned_width = paned.width();
-        if paned_width <= 0 {
-            return;
-        }
-
-        // Preview width = paned_width - position. Cap at 1/3.
-        let max_preview_width = paned_width / 3;
-        let min_position = paned_width - max_preview_width;
-        let current = paned.position();
-        let clamped = current.max(min_position).max(0);
-
-        if clamped != current {
-            paned.set_position(clamped);
-        }
-
-        if imp.preview_animation_active.get() {
-            return;
-        }
-        let final_pos = paned.position();
-        let preview_width = paned_width - final_pos;
-        self.queue_preview_position_persist(preview_width);
-    }
-
     /// Get the active editor for preview purposes.
     fn active_editor_for_preview(&self) -> Option<LushtextEditorPage> {
         self.imp()
@@ -548,6 +387,58 @@ impl LushtextWindow {
             .selected_page()
             .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok())
     }
+}
+
+fn effective_preview_available_width(window: &LushtextWindow, window_width: i32) -> i32 {
+    let content_width = window.imp().content_box.width();
+    if content_width > 0 {
+        content_width
+    } else if window_width > 0 {
+        window_width
+    } else {
+        window.width().max(1)
+    }
+}
+
+fn preferred_preview_width(width: i32) -> i32 {
+    if width > 0 {
+        width
+    } else {
+        PREVIEW_DEFAULT_WIDTH_SP
+    }
+}
+
+fn clamped_preview_width(preferred_width: i32, available_width: i32) -> f64 {
+    let max_width = (f64::from(available_width.max(1)) * PREVIEW_MAX_WIDTH_FRACTION)
+        .floor()
+        .max(PREVIEW_MIN_WIDTH_SP);
+    f64::from(preferred_width)
+        .max(PREVIEW_MIN_WIDTH_SP)
+        .min(max_width)
+}
+
+fn set_preview_split_fixed_width(
+    split_view: &libadwaita::OverlaySplitView,
+    preview_width: f64,
+) -> bool {
+    let mut changed = false;
+    let current_min = split_view.min_sidebar_width();
+    let current_max = split_view.max_sidebar_width();
+
+    if preview_width > current_max && (current_max - preview_width).abs() > f64::EPSILON {
+        split_view.set_max_sidebar_width(preview_width);
+        changed = true;
+    }
+    if (current_min - preview_width).abs() > f64::EPSILON {
+        split_view.set_min_sidebar_width(preview_width);
+        changed = true;
+    }
+    if preview_width <= current_max && (current_max - preview_width).abs() > f64::EPSILON {
+        split_view.set_max_sidebar_width(preview_width);
+        changed = true;
+    }
+
+    changed
 }
 
 /// Check whether an editor page contains a Markdown file by querying
@@ -558,6 +449,3 @@ fn is_markdown(editor: &LushtextEditorPage) -> bool {
         .language()
         .is_some_and(|lang: sourceview5::Language| lang.id() == "markdown")
 }
-
-use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::glib;

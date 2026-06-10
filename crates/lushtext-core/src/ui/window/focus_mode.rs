@@ -92,6 +92,9 @@ impl LushtextWindow {
         self.imp()
             .markdown_preview
             .set_focus_mode_readable_column(active, target);
+        if self.imp().preview_mode.get() {
+            self.queue_preview_layout_settle();
+        }
     }
 
     /// Route the requested state change to the Focus Mode transition helpers.

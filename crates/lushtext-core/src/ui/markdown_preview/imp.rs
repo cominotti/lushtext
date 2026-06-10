@@ -100,6 +100,8 @@ pub(super) const BLOCKQUOTE_RAIL: &str = "\u{2502}";
 /// Stored override used by widget tests to observe link activation without
 /// launching an external desktop handler.
 type LinkActivationCallback = Box<dyn Fn(String)>;
+/// One-shot callback fired after the latest deferred code-block width repair.
+pub(super) type CodeBlockRefreshCompletionCallback = Box<dyn Fn()>;
 
 /// Tag names used in the TextBuffer. Keep in sync with `create_or_update_tags()`.
 pub(super) const TAG_BOLD: &str = "bold";
@@ -238,6 +240,12 @@ pub struct LushtextMarkdownPreview {
     /// The timed pass catches preview shell allocations that settle just after
     /// idle callbacks while still letting newer refresh requests replace it.
     pub(super) code_block_timeout_source_id: RefCell<Option<glib::SourceId>>,
+    /// One-shot callbacks waiting for the current deferred repair sequence.
+    ///
+    /// Window-level visual readiness uses this to avoid reporting ready before
+    /// the preview's own idle and timed child-anchor repairs have run.
+    pub(super) code_block_refresh_completion_callbacks:
+        RefCell<Vec<CodeBlockRefreshCompletionCallback>>,
 }
 
 #[glib::object_subclass]
@@ -320,6 +328,9 @@ impl ObjectImpl for LushtextMarkdownPreview {
         if let Some(source_id) = self.code_block_timeout_source_id.take() {
             source_id.remove();
         }
+        self.code_block_refresh_completion_callbacks
+            .borrow_mut()
+            .clear();
     }
 }
 

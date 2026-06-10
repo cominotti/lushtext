@@ -149,12 +149,41 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                   <object class="GtkStackPage">
                                     <property name="name">tabs</property>
                                     <property name="child">
-                                      <object class="GtkPaned" id="preview_paned">
+                                      <object class="AdwMultiLayoutView" id="preview_layout_view">
                                         <property name="vexpand">true</property>
-                                        <property name="shrink-start-child">false</property>
-                                        <property name="shrink-end-child">false</property>
-                                        <property name="resize-end-child">false</property>
-                                        <property name="start-child">
+                                        <property name="hexpand">true</property>
+                                        <child>
+                                          <object class="AdwLayout">
+                                            <property name="name">editor</property>
+                                            <property name="content">
+                                              <object class="AdwOverlaySplitView" id="preview_split_view">
+                                                <property name="vexpand">true</property>
+                                                <property name="hexpand">true</property>
+                                                <property name="content">
+                                                  <object class="AdwLayoutSlot">
+                                                    <property name="id">editor</property>
+                                                  </object>
+                                                </property>
+                                                <property name="sidebar">
+                                                  <object class="AdwLayoutSlot">
+                                                    <property name="id">preview</property>
+                                                  </object>
+                                                </property>
+                                              </object>
+                                            </property>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="AdwLayout">
+                                            <property name="name">preview</property>
+                                            <property name="content">
+                                              <object class="AdwLayoutSlot">
+                                                <property name="id">preview</property>
+                                              </object>
+                                            </property>
+                                          </object>
+                                        </child>
+                                        <child type="editor">
                                           <object class="GtkBox" id="editor_box">
                                             <property name="orientation">1</property>
                                             <child>
@@ -163,12 +192,12 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                               </object>
                                             </child>
                                           </object>
-                                        </property>
-                                        <property name="end-child">
+                                        </child>
+                                        <child type="preview">
                                           <object class="LushtextMarkdownPreview" id="markdown_preview">
                                             <property name="visible">false</property>
                                           </object>
-                                        </property>
+                                        </child>
                                       </object>
                                     </property>
                                   </object>

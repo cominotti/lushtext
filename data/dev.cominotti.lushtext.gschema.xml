@@ -148,8 +148,8 @@
     </key>
     <key name="preview-pane-position" type="i">
       <default>300</default>
-      <summary>Preview Pane Position</summary>
-      <description>Markdown preview pane divider position in pixels from the right</description>
+      <summary>Legacy preview pane width</summary>
+      <description>Preferred side-by-side Markdown preview width in pixels, retained from the former GtkPaned preview shell.</description>
     </key>
     <key name="preview-pane-visible" type="b">
       <default>false</default>

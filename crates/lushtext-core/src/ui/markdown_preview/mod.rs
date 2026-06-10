@@ -1704,6 +1704,15 @@ impl LushtextMarkdownPreview {
         self.replace_deferred_code_block_width_refresh(generation);
     }
 
+    /// Refresh code-block widths and run `callback` after the final deferred pass.
+    pub(crate) fn queue_code_block_width_refresh_after<F: Fn() + 'static>(&self, callback: F) {
+        self.imp()
+            .code_block_refresh_completion_callbacks
+            .borrow_mut()
+            .push(Box::new(callback));
+        self.queue_code_block_width_refresh();
+    }
+
     /// Replace any queued deferred refresh with the latest layout generation.
     fn replace_deferred_code_block_width_refresh(&self, generation: u32) {
         if let Some(source_id) = self.imp().code_block_idle_source_id.take() {
@@ -1743,6 +1752,10 @@ impl LushtextMarkdownPreview {
                 let _ = preview.imp().code_block_timeout_source_id.take();
                 if preview.imp().code_block_refresh_generation.get() == generation {
                     preview.refresh_code_block_widths();
+                    let callbacks = preview.imp().code_block_refresh_completion_callbacks.take();
+                    for callback in callbacks {
+                        callback();
+                    }
                 }
             });
         let _ = self
@@ -1753,10 +1766,10 @@ impl LushtextMarkdownPreview {
 
     /// Recheck embedded code-block widths after an outer preview-shell transition.
     ///
-    /// The main window can reveal the preview from a hidden `GtkPaned` child or
-    /// move the pane through an animation after Markdown has already rendered.
-    /// Calling this at shell boundaries keeps child-anchor code blocks tied to
-    /// the final text column rather than to an intermediate allocation.
+    /// The main window can reveal the preview from a hidden Adwaita slot or move
+    /// it into a different layout after Markdown has already rendered. Calling
+    /// this at shell boundaries keeps child-anchor code blocks tied to the final
+    /// text column rather than to an intermediate allocation.
     pub(crate) fn refresh_embedded_code_block_layouts(&self) {
         self.queue_code_block_width_refresh();
     }

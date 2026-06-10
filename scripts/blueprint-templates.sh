@@ -326,7 +326,7 @@ accepted_policy = {
         ),
         "resources/ui/window.blp": (
             1,
-            "classified: editor_box participates in preview-mode visibility and paned animation",
+            "classified: editor_box participates in Adwaita preview-mode layout visibility",
         ),
     },
 }

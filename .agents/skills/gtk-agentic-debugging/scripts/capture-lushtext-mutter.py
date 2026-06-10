@@ -78,6 +78,13 @@ def parse_args() -> argparse.Namespace:
         help="Window action with one string parameter to activate before capture; may be repeated.",
     )
     parser.add_argument(
+        "--window-bool-action",
+        action="append",
+        default=[],
+        metavar="ACTION=true|false",
+        help="Window action with one boolean parameter to activate before capture; may be repeated.",
+    )
+    parser.add_argument(
         "--wait-predicate",
         action="append",
         default=[],
@@ -145,6 +152,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise RuntimeError("Missing /usr/bin/python3. Run make dev-tools inside the Toolbx/container.")
     if args.expected_search_matches is not None and args.search is None:
         raise RuntimeError("--expected-search-matches requires --search.")
+    for action_spec in args.window_bool_action:
+        action_name, separator, value = action_spec.partition("=")
+        if not separator or not action_name:
+            raise RuntimeError("--window-bool-action requires ACTION=true|false.")
+        parse_bool_parameter(value)
 
 
 def cleanup_runtime_root(runtime_root: Path, artifact_dir: Path) -> str:
@@ -203,6 +215,8 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
         cli.extend(["--window-action", action])
     for action in args.window_string_action:
         cli.extend(["--window-string-action", action])
+    for action in args.window_bool_action:
+        cli.extend(["--window-bool-action", action])
     for predicate in args.wait_predicate:
         cli.extend(["--wait-predicate", predicate])
     for action in args.wait_window_action:
@@ -620,12 +634,28 @@ def write_automation_snapshot(bus, artifact_dir: Path) -> dict:
     return snapshot
 
 
-def activate_window_action(bus, action_name: str, string_parameter: str | None = None) -> None:
+def parse_bool_parameter(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"Expected boolean parameter, got {value!r}.")
+
+
+def activate_window_action(
+    bus,
+    action_name: str,
+    string_parameter: str | None = None,
+    bool_parameter: bool | None = None,
+) -> None:
     from gi.repository import GLib
 
     parameters = []
     if string_parameter is not None:
         parameters.append(GLib.Variant("s", string_parameter))
+    if bool_parameter is not None:
+        parameters.append(GLib.Variant("b", bool_parameter))
     bus_call(
         bus,
         APP_ID,
@@ -920,6 +950,14 @@ def mutter_child(args: argparse.Namespace) -> int:
                 raise RuntimeError("--window-string-action requires ACTION=TEXT.")
             activate_window_action(bus, action_name, value)
             print(f"Activated window action: {action_name}({value!r})", flush=True)
+            wait_for_ready(bus, artifact_dir, "idle", 5000)
+        for action_spec in args.window_bool_action:
+            action_name, separator, value = action_spec.partition("=")
+            if not separator or not action_name:
+                raise RuntimeError("--window-bool-action requires ACTION=true|false.")
+            bool_value = parse_bool_parameter(value)
+            activate_window_action(bus, action_name, bool_parameter=bool_value)
+            print(f"Activated window action: {action_name}({bool_value})", flush=True)
             wait_for_ready(bus, artifact_dir, "idle", 5000)
         for predicate in args.wait_predicate:
             wait_for_ready(bus, artifact_dir, predicate, 5000)

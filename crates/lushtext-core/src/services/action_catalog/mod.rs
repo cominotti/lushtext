@@ -1102,7 +1102,11 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
         ExternalActivationSafety::DiagnosticOnly,
         ActionExposure::Exported,
         "action-win-toggle-preview-pane",
-        &[ActionCoverageLane::Unit],
+        &[
+            ActionCoverageLane::Unit,
+            ActionCoverageLane::Widget,
+            ActionCoverageLane::VisualSmoke,
+        ],
     ),
     ActionCatalogEntry::new(
         ActionScope::Window,
@@ -1116,7 +1120,11 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
         ExternalActivationSafety::DiagnosticOnly,
         ActionExposure::Exported,
         "action-win-set-preview-pane-visible",
-        &[ActionCoverageLane::Unit, ActionCoverageLane::Widget],
+        &[
+            ActionCoverageLane::Unit,
+            ActionCoverageLane::Widget,
+            ActionCoverageLane::VisualSmoke,
+        ],
     ),
     ActionCatalogEntry::new(
         ActionScope::Window,
@@ -1134,7 +1142,11 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
         ExternalActivationSafety::StableUserCommand,
         ActionExposure::Exported,
         "action-win-toggle-preview-mode",
-        &[ActionCoverageLane::Unit, ActionCoverageLane::Widget],
+        &[
+            ActionCoverageLane::Unit,
+            ActionCoverageLane::Widget,
+            ActionCoverageLane::VisualSmoke,
+        ],
     ),
     ActionCatalogEntry::new(
         ActionScope::Window,
@@ -1148,7 +1160,11 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
         ExternalActivationSafety::StableUserCommand,
         ActionExposure::Exported,
         "action-win-set-preview-mode",
-        &[ActionCoverageLane::Unit, ActionCoverageLane::Widget],
+        &[
+            ActionCoverageLane::Unit,
+            ActionCoverageLane::Widget,
+            ActionCoverageLane::VisualSmoke,
+        ],
     ),
     ActionCatalogEntry::new(
         ActionScope::Window,

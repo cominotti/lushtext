@@ -613,20 +613,27 @@ assert_surface_capture_artifacts() {
     local capture_dir="$2"
     local expected_properties="$3"
     local expected_preview_mode="$4"
+    local expected_preview_pane="$5"
     local snapshot_path="$capture_dir/automation-snapshot.json"
     local summary_path="$ARTIFACT_DIR/assertions/${name}-surface-snapshot.txt"
 
     [[ -s "$snapshot_path" ]] || smoke_fail "visual smoke '${name}' did not write automation-snapshot.json"
-    /usr/bin/python3 - "$snapshot_path" "$expected_properties" "$expected_preview_mode" >"$summary_path" <<'PY'
+    /usr/bin/python3 - "$snapshot_path" "$expected_properties" "$expected_preview_mode" "$expected_preview_pane" >"$summary_path" <<'PY'
 import json
 import sys
 
-snapshot_path, expected_properties, expected_preview_mode = sys.argv[1:]
+snapshot_path, expected_properties, expected_preview_mode, expected_preview_pane = sys.argv[1:]
 
 def parse_expected(value):
     if value == "any":
         return None
     return value == "true"
+
+def surface_by_name(snapshot, name):
+    for surface in snapshot["window"]["visual_geometry"]["surfaces"]:
+        if surface["name"] == name:
+            return surface
+    raise AssertionError(f"missing visual surface {name!r}")
 
 with open(snapshot_path, encoding="utf-8") as handle:
     snapshot = json.load(handle)
@@ -638,14 +645,27 @@ assert window is not None, snapshot
 surfaces = window["surfaces"]
 properties = parse_expected(expected_properties)
 preview_mode = parse_expected(expected_preview_mode)
+preview_pane = parse_expected(expected_preview_pane)
 if properties is not None:
     assert surfaces["document_properties_visible"] is properties, surfaces
     assert surfaces["document_properties_requested"] is properties, surfaces
 if preview_mode is not None:
     assert surfaces["preview_mode"] is preview_mode, surfaces
+if preview_pane is not None:
+    assert surfaces["preview_pane_visible"] is preview_pane, surfaces
+expected_preview_visible = (preview_mode is True) or (preview_pane is True)
+if expected_preview_visible:
+    preview_surface = surface_by_name(snapshot, "preview")
+    assert preview_surface["visible"] is True, preview_surface
+    rect = preview_surface["rect"]
+    assert rect and rect["width"] > 0 and rect["height"] > 0, preview_surface
+elif preview_mode is False and preview_pane is False:
+    assert surface_by_name(snapshot, "preview")["visible"] is False, surfaces
 print(f"document_properties_visible={surfaces['document_properties_visible']}")
 print(f"document_properties_requested={surfaces['document_properties_requested']}")
 print(f"preview_mode={surfaces['preview_mode']}")
+print(f"preview_pane_visible={surfaces['preview_pane_visible']}")
+print(f"preview_visual_visible={surface_by_name(snapshot, 'preview')['visible']}")
 print(f"compact_surface={surfaces['compact_surface']}")
 print(f"snapshot={snapshot_path}")
 PY
@@ -935,7 +955,11 @@ run_capture() {
         esac
     fi
     for action in "${actions[@]}"; do
-        capture_args+=(--window-action "$action")
+        if [[ "$action" =~ =(true|false)$ ]]; then
+            capture_args+=(--window-bool-action "$action")
+        else
+            capture_args+=(--window-action "$action")
+        fi
     done
 
     if ! /usr/bin/python3 "${capture_args[@]}" >"$session_log" 2>&1; then
@@ -967,10 +991,13 @@ run_capture() {
     fi
     case "$name" in
         normal-properties|compact-properties|constrained-properties)
-            assert_surface_capture_artifacts "$name" "$capture_dir" "true" "false"
+            assert_surface_capture_artifacts "$name" "$capture_dir" "true" "false" "false"
             ;;
         markdown-preview|constrained-preview)
-            assert_surface_capture_artifacts "$name" "$capture_dir" "false" "true"
+            assert_surface_capture_artifacts "$name" "$capture_dir" "false" "true" "false"
+            ;;
+        markdown-preview-side-by-side|constrained-preview-side-by-side)
+            assert_surface_capture_artifacts "$name" "$capture_dir" "false" "false" "true"
             ;;
     esac
     case "$name" in
@@ -1040,6 +1067,8 @@ run_capture "constrained-properties" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/
 run_capture "short-layout" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/short-layout.png" "1200" "420" "" "0" "default"
 run_capture "markdown-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview.png" "1280" "860" "" "0" "default" "toggle-preview-mode"
 run_capture "constrained-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview.png" "760" "520" "" "0" "default" "toggle-preview-mode"
+run_capture "markdown-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview-side-by-side.png" "1280" "860" "" "0" "default" "set-preview-pane-visible=true"
+run_capture "constrained-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview-side-by-side.png" "760" "520" "" "0" "default" "set-preview-pane-visible=true"
 run_capture "workspace-empty" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-empty.png" "1280" "860" "" "0" "default"
 run_capture "workspace-representative" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-representative.png" "1280" "860" "" "0" "default"
 run_capture "workspace-dense-awkward" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-dense-awkward.png" "1280" "860" "" "0" "default"

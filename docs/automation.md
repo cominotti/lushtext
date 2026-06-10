@@ -219,8 +219,9 @@ warnings. Each capture also writes a bounded manifest that indexes its
 screenshot, state assertions, AT-SPI excerpts, D-Bus summaries, warning scan,
 environment file, and skip/failure reason. Current captures cover
 search/minimap, normal document properties,
-compact document properties, constrained document properties, normal Markdown
-preview, constrained Markdown preview, zero-folder workspace, representative
+compact document properties, constrained document properties, preview-only
+Markdown preview, constrained preview-only Markdown preview, side-by-side
+Markdown preview, constrained side-by-side Markdown preview, zero-folder workspace, representative
 workspace, dense/awkward workspace names and folders, constrained workspace,
 workspace-refresh readiness, no-notes browser, few notes/bookmarks,
 dense notes/bookmarks, constrained notes/bookmarks, command palette files,
@@ -372,8 +373,8 @@ If `WaitForReady` returns `ok=false`, read its status and detail string. If
 `WaitForIdle` returns `false`, read the detail string and the snapshot's
 `idle_blocker`. Common blockers include app startup, file loading, save work,
 draft autosave, workspace persistence, workspace filter animation, workspace
-search, preview animation, editor search indexing, session restore,
-command-palette index debounce, Replace All preview generation, and
+search, preview layout/code-block repair, editor search indexing, session
+restore, command-palette index debounce, Replace All preview generation, and
 close-safety work.
 
 Headless GTK sessions may still print portal, AT-SPI, or compositor cleanup

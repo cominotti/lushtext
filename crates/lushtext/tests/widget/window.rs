@@ -15,8 +15,8 @@ use glib::prelude::{Cast, IsA, ObjectExt, ToValue, ToVariant};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{
-    ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt, AnimationExt,
-    AlertDialogExtManual, ComboRowExt, PreferencesRowExt, SidebarItemExt,
+    ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt, AlertDialogExtManual,
+    ComboRowExt, PreferencesRowExt, SidebarItemExt,
 };
 use lushtext_core::config::keys;
 use lushtext_core::model::action_catalog::{ActionScope, ActionValueType, ObservedAction};
@@ -756,8 +756,8 @@ fn save_changes_check_button_for_title(
 }
 
 // Keep hidden-to-visible preview-shell regressions in this suite: a directly
-// mounted `LushtextMarkdownPreview` can pass while the real `GtkPaned` shell
-// leaves child-anchor code blocks with stale allocations.
+// mounted `LushtextMarkdownPreview` can pass while the real Adwaita slot/split
+// shell leaves child-anchor code blocks with stale allocations.
 fn prepare_markdown_preview_window(
     markdown: &str,
     width: i32,
@@ -865,7 +865,7 @@ fn wait_for_markdown_preview_shell(window: &LushtextWindow) {
         };
         let expected_width = expected_code_block_width(preview, &block);
 
-        !window.imp().preview_animation_active.get()
+        !window.imp().preview_transition_active.get()
             && preview.is_showing_content()
             && preview.text_view().width() > 0
             && !source_views(preview).is_empty()
@@ -2257,14 +2257,12 @@ fn tab_content_opacity_setting() -> f64 {
     gio::Settings::new(lushtext_core::config::APP_ID).double(keys::TAB_CONTENT_OPACITY)
 }
 
-fn preview_animation(window: &LushtextWindow) -> libadwaita::TimedAnimation {
+fn preview_layout_name(window: &LushtextWindow) -> Option<String> {
     window
         .imp()
-        .preview_animation
-        .borrow()
-        .as_ref()
-        .cloned()
-        .expect("preview animation should be active")
+        .preview_layout_view
+        .layout_name()
+        .map(|name| name.to_string())
 }
 
 fn seed_peek_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -3508,8 +3506,8 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     );
 
     // Predicate-specific waits must ignore unrelated blockers: preview
-    // animation blocks broad idle readiness, not search completion.
-    window.imp().preview_animation_active.set(true);
+    // layout settle blocks broad idle readiness, not search completion.
+    window.imp().preview_transition_active.set(true);
     assert_eq!(
         current_idle_blocker(&app).as_deref(),
         Some("preview-animation")
@@ -3521,7 +3519,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     ));
     assert!(
         search_ready.ok,
-        "preview animation should not block search readiness"
+        "preview layout settle should not block search readiness"
     );
     let idle_result = glib::MainContext::default().block_on(wait_for_ready_for_test(
         app.clone(),
@@ -3538,7 +3536,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 1));
     assert!(!ok);
     assert_eq!(detail, "preview-animation");
-    window.imp().preview_animation_active.set(false);
+    window.imp().preview_transition_active.set(false);
     let (ok, detail) =
         glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 100));
     assert!(ok);
@@ -3610,7 +3608,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         AutomationReadinessStatus::PredicateTimeout.as_str()
     );
     assert_eq!(search_result.blocker.as_deref(), Some("replace-preview"));
-    window.imp().preview_animation_active.set(true);
+    window.imp().preview_transition_active.set(true);
     let search_result = glib::MainContext::default().block_on(wait_for_ready_for_test(
         app.clone(),
         AutomationReadinessPredicate::SearchComplete,
@@ -3618,7 +3616,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     ));
     assert!(!search_result.ok);
     assert_eq!(search_result.blocker.as_deref(), Some("replace-preview"));
-    window.imp().preview_animation_active.set(false);
+    window.imp().preview_transition_active.set(false);
     let (ok, detail) =
         glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 1));
     assert!(!ok);
@@ -11586,38 +11584,40 @@ fn test_startup_restore_keeps_untitled_draft_behavior() {
 }
 
 #[test]
-fn test_preview_pane_toggle_starts_nontrivial_animation() {
+fn test_preview_pane_toggle_uses_adwaita_side_by_side_shell() {
     ensure_gtk_init();
     let window = test_window();
+    window.set_default_size(1200, 720);
     window.new_tab();
     present_window(&window);
 
+    assert_eq!(preview_layout_name(&window).as_deref(), Some("editor"));
+    assert!(!window.imp().preview_split_view.shows_sidebar());
+    assert!(!window.imp().markdown_preview.property::<bool>("visible"));
+
     activate_action(&window, "toggle-preview-pane");
 
-    let animation = preview_animation(&window);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "The Adw animation exposes f64 endpoints, but preview pane positions stay within i32 paned coordinates"
-    )]
-    let from = animation.value_from() as i32;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "The preview pane target position is always an i32 paned coordinate"
-    )]
-    let to = animation.value_to() as i32;
-    assert_ne!(
-        from, to,
-        "preview pane toggle should start a real paned animation, not jump directly to the endpoint",
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_visible.get()
+            && window.imp().preview_split_view.shows_sidebar()
+            && preview_layout_name(&window).as_deref() == Some("editor")
+            && window.imp().markdown_preview.property::<bool>("visible")
+            && window.imp().editor_box.property::<bool>("visible")
+            && !window.imp().preview_transition_active.get()
+    });
+    assert!(!window.imp().preview_mode.get());
+    assert!(action_state_bool(&window, "toggle-preview-pane"));
+    assert_eq!(
+        window.imp().preview_split_view.sidebar_position(),
+        gtk4::PackType::End
     );
-    assert_eq!(animation.state(), libadwaita::AnimationState::Playing);
-    assert!(
-        window.imp().markdown_preview.property::<bool>("visible"),
-        "preview widget should stay visible while the side-by-side animation is in flight",
-    );
+    assert!(window.imp().preview_split_view.is_pin_sidebar());
+    assert!(!window.imp().preview_split_view.enables_show_gesture());
+    assert!(!window.imp().preview_split_view.enables_hide_gesture());
 }
 
 #[test]
-fn test_preview_mode_toggle_starts_nontrivial_animation() {
+fn test_preview_mode_toggle_uses_full_content_layout() {
     ensure_gtk_init();
     let window = test_window();
     window.new_tab();
@@ -11625,68 +11625,90 @@ fn test_preview_mode_toggle_starts_nontrivial_animation() {
 
     activate_action(&window, "toggle-preview-mode");
 
-    let animation = preview_animation(&window);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "The Adw animation exposes f64 endpoints, but preview pane positions stay within i32 paned coordinates"
-    )]
-    let from = animation.value_from() as i32;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "The preview pane target position is always an i32 paned coordinate"
-    )]
-    let to = animation.value_to() as i32;
-    assert_ne!(
-        from, to,
-        "preview-only mode should animate the paned instead of snapping immediately",
-    );
-    assert_eq!(animation.state(), libadwaita::AnimationState::Playing);
-    assert!(
-        window.imp().editor_box.property::<bool>("visible"),
-        "editor box should remain visible until the preview-only animation completes",
-    );
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get()
+            && preview_layout_name(&window).as_deref() == Some("preview")
+            && window.imp().markdown_preview.property::<bool>("visible")
+            && !window.imp().editor_box.property::<bool>("visible")
+            && !window.imp().preview_split_view.shows_sidebar()
+            && !window.imp().preview_transition_active.get()
+    });
+    assert!(!window.imp().preview_visible.get());
+    assert!(action_state_bool(&window, "toggle-preview-mode"));
+    assert!(!action_state_bool(&window, "toggle-preview-pane"));
 }
 
 #[test]
-fn test_preview_pane_animation_does_not_enqueue_position_persistence_per_tick() {
+fn test_side_by_side_preview_width_clamps_legacy_preference_without_rewriting_it() {
     ensure_gtk_init();
+    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    settings
+        .set_int(keys::PREVIEW_PANE_POSITION, 520)
+        .expect("set legacy preview width preference");
     let window = test_window();
+    window.set_default_size(1400, 720);
     window.new_tab();
     present_window(&window);
-    let generation_before = window.imp().preview_persist_generation.get();
+    activate_action(&window, "toggle-properties");
+    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&window));
 
     activate_action(&window, "toggle-preview-pane");
 
-    assert!(window.imp().preview_animation_active.get());
-    assert_eq!(
-        window.imp().preview_persist_generation.get(),
-        generation_before,
-        "programmatic preview animation should not enqueue debounced settings writes on every tick",
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_split_view.shows_sidebar()
+            && !window.imp().preview_transition_active.get()
+    });
+    let split = &window.imp().preview_split_view;
+    let preview_width = split.max_sidebar_width();
+    let available_width = window.imp().content_box.width().max(1);
+    assert!(
+        available_width < window.width(),
+        "test must prove content-width clamping with secondary chrome visible"
+    );
+    assert!(
+        preview_width <= (f64::from(available_width) / 3.0).floor() + f64::EPSILON,
+        "side-by-side preview should stay within one third of the content width: {preview_width} / {available_width}",
+    );
+    assert!(
+        (split.min_sidebar_width() - split.max_sidebar_width()).abs() <= f64::EPSILON,
+        "preview split width should be fixed through Adwaita constraints",
     );
     assert_eq!(
-        preview_animation(&window).state(),
-        libadwaita::AnimationState::Playing
+        settings.int(keys::PREVIEW_PANE_POSITION),
+        520,
+        "layout clamping must not rewrite the user's wider preferred width",
     );
 }
 
 #[test]
-fn test_preview_mode_animation_does_not_enqueue_position_persistence_per_tick() {
+fn test_preview_target_actions_keep_adwaita_shell_modes_mutually_exclusive() {
     ensure_gtk_init();
     let window = test_window();
     window.new_tab();
     present_window(&window);
-    let generation_before = window.imp().preview_persist_generation.get();
 
-    activate_action(&window, "toggle-preview-mode");
+    activate_boolean_action(&window, "set-preview-pane-visible", true);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_visible.get()
+            && window.imp().preview_split_view.shows_sidebar()
+            && preview_layout_name(&window).as_deref() == Some("editor")
+    });
 
-    assert!(window.imp().preview_animation_active.get());
-    assert_eq!(
-        window.imp().preview_persist_generation.get(),
-        generation_before,
-        "preview-only animation should not enqueue debounced settings writes on every tick",
-    );
-    assert_eq!(
-        preview_animation(&window).state(),
-        libadwaita::AnimationState::Playing
-    );
+    activate_boolean_action(&window, "set-preview-mode", true);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get()
+            && !window.imp().preview_visible.get()
+            && preview_layout_name(&window).as_deref() == Some("preview")
+            && !window.imp().preview_split_view.shows_sidebar()
+            && !action_state_bool(&window, "toggle-preview-pane")
+            && action_state_bool(&window, "toggle-preview-mode")
+    });
+
+    activate_boolean_action(&window, "set-preview-mode", false);
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().preview_mode.get()
+            && preview_layout_name(&window).as_deref() == Some("editor")
+            && !window.imp().markdown_preview.property::<bool>("visible")
+            && window.imp().editor_box.property::<bool>("visible")
+    });
 }

@@ -42,7 +42,27 @@ Any UI element that displays per-tab state (status bar metadata, title bar subti
 
 **Pair every structural tab operation** (`new_tab`, `open_document`, `close-tab`) with explicit refresh calls for all tab-dependent UI. Do not rely solely on GTK property notifications — signal ordering during `close_page()` is not guaranteed, and `selected-page` may not fire when closing a non-selected tab.
 
-If a structural tab operation selects an editable document, it must also clear window-level projections that can hide or replace the editor surface, such as Markdown preview-only mode. These projections can outlive the previous selected tab, so reset their action state and visible pane before scheduling editor focus restoration.
+If a structural tab operation selects an editable document, it must also clear window-level projections that can hide or replace the editor surface, such as Markdown preview-only mode. These projections can outlive the previous selected tab, so reset their action state and visible surface before scheduling editor focus restoration.
+
+## Markdown Preview Presentation
+
+Markdown preview uses an Adwaita-owned shell: `AdwMultiLayoutView` switches the
+single preview widget between the full-content preview layout and the
+end-position `AdwOverlaySplitView` sidebar in the editor layout. Do not
+reintroduce a preview-specific `GtkPaned`, timed paned animation, or
+`shrink-start-child`/`shrink-end-child` choreography for preview transitions.
+
+Preview actions must keep these states mutually exclusive:
+
+- editor-only: `preview_layout_view=editor`, `preview_split_view.show-sidebar=false`;
+- side-by-side: `preview_layout_view=editor`, `preview_split_view.show-sidebar=true`;
+- preview-only: `preview_layout_view=preview`, `preview_split_view.show-sidebar=false`.
+
+After switching preview visibility, preview layout, fixed preview width, or
+Focus Mode readable-column margins, queue the preview layout-settle path so
+embedded Markdown code blocks repair their width after allocation. Automation
+may still report the compatibility blocker `preview-animation`, but it means
+preview layout/code-block repair is pending, not that a custom animation exists.
 
 ## Size-Dependent Constraints (allocation signals vs notify)
 
