@@ -296,6 +296,12 @@ pub struct MinimapState {
     pub reflow_settle_generation: Cell<u32>,
     /// Whether a width-reflow settle repair is still waiting for a stable width.
     pub reflow_settle_pending: Cell<bool>,
+    /// Whether repaired live map pixels are warming underneath the frozen cover.
+    ///
+    /// This is separate from `reflow_settle_pending` so user scrolling can reveal
+    /// the already-repaired live map without pretending the width burst itself is
+    /// still unresolved.
+    pub reflow_reveal_pending: Cell<bool>,
     /// Prevents programmatic loads and evictions from being recorded as user edits.
     pub tracking_suspended: Cell<bool>,
     /// Tracks which lines already own a modified marker for O(1) de-duplication.

@@ -458,7 +458,7 @@ impl LushtextWindow {
         if let Some(editor) = self.active_editor()
             && editor.is_minimap_visible()
         {
-            editor.schedule_minimap_reflow_settle();
+            editor.schedule_minimap_reflow_settle_with_freeze();
         }
     }
 

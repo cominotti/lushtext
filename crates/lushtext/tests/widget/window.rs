@@ -3433,12 +3433,14 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
             .search_context()
             .is_some_and(|context| context.occurrences_count() == 2)
     });
-    // Realization opens a width-reflow burst whose debounced settle repair
+    // Realization opens a width-reflow burst whose settle/reveal repair
     // legitimately blocks the idle predicate, so drain queued minimap work
     // before asserting that the snapshot reports an idle window.
     wait_until(Duration::from_secs(5), || {
         let minimap = &editor.imp().minimap;
-        !minimap.reflow_settle_pending.get() && !minimap.refresh_pending.get()
+        !minimap.reflow_settle_pending.get()
+            && !minimap.reflow_reveal_pending.get()
+            && !minimap.refresh_pending.get()
     });
 
     let app = window
@@ -4867,11 +4869,13 @@ fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
         workspace_sidebar_visible(&window)
             && minimap_geometry_snapshot(&editor).editor_width < before.editor_width
     });
-    // Wait out the debounced width-reflow settle repair instead of guessing a
-    // fixed delay so the snapshot below reads settled minimap geometry.
+    // Wait out the debounced width-reflow settle and reveal window instead of
+    // guessing a fixed delay so the snapshot below reads settled minimap geometry.
     wait_until(Duration::from_secs(5), || {
         let minimap = &editor.imp().minimap;
-        !minimap.reflow_settle_pending.get() && !minimap.refresh_pending.get()
+        !minimap.reflow_settle_pending.get()
+            && !minimap.reflow_reveal_pending.get()
+            && !minimap.refresh_pending.get()
     });
     let after = minimap_geometry_snapshot(&editor);
 
@@ -4929,6 +4933,7 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
         let minimap = &editor.imp().minimap;
         let geometry = minimap_geometry_snapshot(&editor);
         !minimap.reflow_settle_pending.get()
+            && !minimap.reflow_reveal_pending.get()
             && !minimap.refresh_pending.get()
             && geometry.visible_start_line == 0
             && (geometry.vertical_value - geometry.vertical_lower).abs() <= 0.5
@@ -4957,12 +4962,14 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
                 geometry.editor_width > before.editor_width
             }
     });
-    // The settle repair is debounced behind the animation; wait for it and the
-    // follow-up marker refresh to drain so the assertions below see the settled
-    // post-repair state instead of mid-burst pinned geometry.
+    // The settle repair is debounced behind the animation; wait for it, the
+    // reveal window, and the follow-up marker refresh to drain so the assertions
+    // below see the settled post-repair state instead of mid-burst pinned geometry.
     wait_until(Duration::from_secs(5), || {
         let minimap = &editor.imp().minimap;
-        !minimap.reflow_settle_pending.get() && !minimap.refresh_pending.get()
+        !minimap.reflow_settle_pending.get()
+            && !minimap.reflow_reveal_pending.get()
+            && !minimap.refresh_pending.get()
     });
     wait_until(Duration::from_secs(2), || {
         let geometry = minimap_geometry_snapshot(&editor);

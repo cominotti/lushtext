@@ -80,6 +80,8 @@ impl LushtextEditorPage {
             (hadjustment, ViewportAxis::Horizontal),
             (vadjustment, ViewportAxis::Vertical),
         ] {
+            // Adjustment signals are GObject observer callbacks; weak refs keep
+            // them from retaining an editor after its tab has been closed.
             let editor_weak = self.downgrade();
             adjustment.connect_changed(move |adjustment| {
                 if let Some(editor) = editor_weak.upgrade() {
@@ -89,6 +91,9 @@ impl LushtextEditorPage {
             let editor_weak = self.downgrade();
             adjustment.connect_value_changed(move |adjustment| {
                 if let Some(editor) = editor_weak.upgrade() {
+                    // During settle this is a no-op; during reveal warmup it
+                    // drops the cover before recording the new rest state.
+                    editor.reveal_minimap_reflow_freeze_for_user_scroll();
                     editor.record_viewport_rest_state(adjustment, axis);
                 }
             });

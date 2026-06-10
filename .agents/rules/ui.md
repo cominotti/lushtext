@@ -133,7 +133,10 @@ Acceptance for these states:
   highlight. The freeze cover must be opaque if the live source map is allowed
   to repaint underneath, or transparent snapshot pixels can leak a stale native
   slider frame. It must reveal the live native map after the settle repair and
-  quiet repaint window.
+  quiet repaint window. Capture the freeze from the user action that is about
+  to start the shell transition; passive scroll-adjustment or allocation
+  observers should only schedule the settled repair, because they can fire after
+  GTK has already invalidated or partially realized the native map.
 
 ## Adaptive Dialog Navigation
 

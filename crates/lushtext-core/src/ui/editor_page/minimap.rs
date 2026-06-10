@@ -37,7 +37,9 @@ const MINIMAP_TOP_CONTENT_MARGIN: i32 = 5;
 /// In that state the editor has stopped wrapping the fixture's long lines, so
 /// GtkSourceMap's private slider rasterizes its top edge one row above the
 /// sidebar-visible wrapped state unless we mirror GNOME Text Editor's fixed map
-/// geometry and add a small slider-only correction.
+/// geometry and add a small slider-only correction. This is intentionally a
+/// binary one-pixel correction: if future visual fixtures flap at this boundary,
+/// use hysteresis or a stepped offset ladder rather than nudging the threshold.
 const MINIMAP_WIDE_EDITOR_RATIO_THRESHOLD: f64 = 0.20;
 /// CSS class for the wide-editor native slider top-edge correction.
 const MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS: &str = "minimap-wide-editor-slider-offset";
@@ -103,7 +105,10 @@ const MINIMAP_REFLOW_SETTLE_DEBOUNCE: Duration = Duration::from_millis(150);
 /// private slider can take several quiet frames to repaint from the rested
 /// document-height estimates after the sidebar stops consuming width. Keeping
 /// the frozen native pixels over the live map during that quiet window prevents
-/// a single stale native frame from leaking when the cover is removed.
+/// a single stale native frame from leaking when the cover is removed. The
+/// 800ms window is intentionally conservative; tune it down only with stream
+/// frame proof because longer delays keep the minimap frozen for immediate
+/// scrolls until the early-reveal path runs.
 const MINIMAP_REFLOW_REVEAL_DELAY: Duration = Duration::from_millis(800);
 /// Hidden source-mark category used to keep modified lines attached to buffer edits.
 const MINIMAP_MODIFIED_MARK_CATEGORY: &str = "lushtext-minimap-modified";
@@ -301,11 +306,13 @@ impl LushtextEditorPage {
     /// Report whether queued minimap work is still pending.
     ///
     /// This covers both the debounced marker refresh and a pending width-reflow
-    /// settle repair, so visual proof captures cannot race a frozen or
+    /// settle/reveal repair, so visual proof captures cannot race a frozen or
     /// not-yet-repaired native slider.
     pub(crate) fn minimap_work_pending(&self) -> bool {
         let minimap = &self.imp().minimap;
-        minimap.refresh_pending.get() || minimap.reflow_settle_pending.get()
+        minimap.refresh_pending.get()
+            || minimap.reflow_settle_pending.get()
+            || minimap.reflow_reveal_pending.get()
     }
 
     /// Count the currently rendered markers for one semantic category.
@@ -610,23 +617,48 @@ impl LushtextEditorPage {
         self.sync_minimap_view_geometry();
     }
 
+    /// Coalesce a passive width-reflow burst into one settled minimap repair.
+    ///
+    /// This main-thread GTK path updates the settle generation and readiness
+    /// state, but it never captures a freeze because passive signals can arrive
+    /// after the native map has already been invalidated.
+    pub(crate) fn schedule_minimap_reflow_settle(&self) {
+        self.schedule_minimap_reflow_settle_impl(false);
+    }
+
+    /// Coalesce a shell-triggered width transition and freeze the rendered map first.
+    ///
+    /// Shell actions call this on the GTK main thread before the split-view
+    /// transition starts, so the captured cover still contains the exact
+    /// previously rendered native minimap pixels.
+    pub(crate) fn schedule_minimap_reflow_settle_with_freeze(&self) {
+        self.schedule_minimap_reflow_settle_impl(true);
+    }
+
     /// Coalesce a width-reflow burst into one settled minimap repair.
     ///
     /// `AdwOverlaySplitView` sidebar animation allocates a new editor width on
     /// every frame, and GtkTextView revalidates wrapped line heights
     /// asynchronously while that happens. Repair work scheduled per allocation
-    /// always lands at least one frame late and reads mid-validation estimates,
-    /// so instead of chasing frames this freezes the rendered map once, waits
-    /// for the width to stop changing, and repairs once from rested geometry.
-    pub(crate) fn schedule_minimap_reflow_settle(&self) {
+    /// always lands at least one frame late and reads mid-validation estimates.
+    /// Action-owned shell transitions can freeze the rendered map before the
+    /// first allocation frame; passive allocation observers only schedule the
+    /// later repair so they never capture an unpainted or partially realized map.
+    fn schedule_minimap_reflow_settle_impl(&self, freeze_rendered_map: bool) {
         let minimap = &self.imp().minimap;
         if !minimap.reflow_settle_pending.get() {
             minimap.reflow_settle_pending.set(true);
+            minimap.reflow_reveal_pending.set(false);
+        }
+        if freeze_rendered_map {
             self.freeze_native_minimap_for_reflow();
         }
 
         let generation = minimap.reflow_settle_generation.get().wrapping_add(1);
         minimap.reflow_settle_generation.set(generation);
+        // `_local` timers run on GTK's main loop. A weak editor reference avoids
+        // keeping a closed tab alive, and the generation check discards stale
+        // callbacks from superseded width bursts.
         let editor_weak = self.downgrade();
         glib::timeout_add_local_once(MINIMAP_REFLOW_SETTLE_DEBOUNCE, move || {
             let Some(editor) = editor_weak.upgrade() else {
@@ -642,10 +674,10 @@ impl LushtextEditorPage {
     /// Run the one-shot post-reflow repair after the editor width stops moving.
     ///
     /// The repair restores user scroll anchors, reapplies the fixed native-map
-    /// geometry from settled document heights, clears any stale source-map scroll,
-    /// then lets the live map repaint underneath the frozen cover before that
-    /// cover is removed. The user sees the last native-rendered pixels until the
-    /// live native slider has had real frame-clock time to settle.
+    /// geometry from settled document heights, and clears any stale source-map
+    /// scroll. If a shell action captured a cover, the live map repaints under
+    /// that cover before reveal; passive bursts have no cover and become ready
+    /// as soon as the settled repair finishes.
     fn finish_minimap_reflow_settle(&self) {
         // Clear the pin first so the geometry sync below applies the settled margin.
         self.imp().minimap.reflow_settle_pending.set(false);
@@ -666,8 +698,16 @@ impl LushtextEditorPage {
         self.clamp_native_minimap_to_top_if_editor_at_top();
         self.schedule_minimap_refresh();
         self.queue_minimap_draw();
-        self.warm_live_minimap_under_reflow_freeze();
-        self.imp().minimap.reflow_settle_pending.set(true);
+        if self.minimap_reflow_freeze_visible() {
+            self.warm_live_minimap_under_reflow_freeze();
+            self.imp().minimap.reflow_reveal_pending.set(true);
+        } else {
+            // Passive adjustment-driven bursts never captured a cover, so there
+            // is no reveal window to protect after the settled repair runs.
+            self.imp().minimap.reflow_reveal_pending.set(false);
+            self.drop_minimap_reflow_freeze();
+            return;
+        }
         let generation = self.imp().minimap.reflow_settle_generation.get();
         let editor_weak = self.downgrade();
         glib::timeout_add_local_once(MINIMAP_REFLOW_REVEAL_DELAY, move || {
@@ -677,18 +717,32 @@ impl LushtextEditorPage {
             if editor.imp().minimap.reflow_settle_generation.get() != generation {
                 return;
             }
-            editor.imp().minimap.reflow_settle_pending.set(false);
+            editor.imp().minimap.reflow_reveal_pending.set(false);
             editor.drop_minimap_reflow_freeze();
         });
     }
 
+    /// Gate the post-repair reveal window on an actually visible frozen cover.
+    ///
+    /// Passive repairs skip capture; this helper keeps those repairs from
+    /// blocking visual-readiness on a reveal delay that has nothing to reveal.
+    fn minimap_reflow_freeze_visible(&self) -> bool {
+        self.imp()
+            .minimap
+            .reflow_freeze_picture
+            .borrow()
+            .as_ref()
+            .is_some_and(gtk4::prelude::WidgetExt::is_visible)
+    }
+
     /// Cover the native map with its last rendered pixels while reflow settles.
     ///
-    /// Shell actions arm the snapshot before the consuming width transition, and
-    /// adjustment observers can still arm it on the first allocation-derived
-    /// signal for other reflow paths. The capture spans the overlay content box,
-    /// including the native slider's CSS outset, so the frozen picture contains
-    /// the full rendered effect.
+    /// Shell actions arm the snapshot before the consuming width transition.
+    /// Passive allocation-derived observers only schedule the settled repair,
+    /// because by the time they fire GTK may already have invalidated or
+    /// partially realized the native map. The capture spans the overlay content
+    /// box, including the native slider's CSS outset, so the frozen picture
+    /// contains the full rendered effect.
     fn freeze_native_minimap_for_reflow(&self) {
         if !self.is_minimap_visible() {
             return;
@@ -703,14 +757,31 @@ impl LushtextEditorPage {
         else {
             return;
         };
-        if picture.is_visible() {
-            return;
-        }
         let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
             return;
         };
+        // If a previous freeze is already hiding the live map, keep its original
+        // pre-burst pixels; recapturing now would snapshot a transparent map.
+        if picture.is_visible() && source_map.opacity() < 0.99 {
+            return;
+        }
         let minimap_overlay = &*self.imp().minimap_overlay;
-        if !source_map.is_mapped() || !minimap_overlay.is_mapped() {
+        // The action path uses `snapshot_child()` outside the normal widget
+        // snapshot vfunc, so require realized, drawable, non-empty geometry
+        // before asking GTK for render nodes.
+        if !source_map.is_mapped()
+            || !minimap_overlay.is_mapped()
+            || !source_map.is_drawable()
+            || !minimap_overlay.is_drawable()
+            || source_map.width() <= 0
+            || source_map.height() <= 0
+        {
+            return;
+        }
+        let Some(source_map_bounds) = source_map.compute_bounds(minimap_overlay) else {
+            return;
+        };
+        if source_map_bounds.width() <= 0.0 || source_map_bounds.height() <= 0.0 {
             return;
         }
         let width = minimap_overlay.width();
@@ -724,6 +795,11 @@ impl LushtextEditorPage {
         };
 
         let snapshot = gtk4::Snapshot::new();
+        // GTK documents `snapshot_child()` as the helper a widget normally uses
+        // from its own `snapshot` vfunc. This action-primed capture is deliberate:
+        // it preserves the exact native slider pixels already rendered before the
+        // shell starts consuming width, while passive allocation observers only
+        // schedule the later settle repair.
         minimap_overlay.snapshot_child(&source_map, &snapshot);
         #[expect(
             clippy::cast_precision_loss,
@@ -735,10 +811,14 @@ impl LushtextEditorPage {
         let Some(node) = node else {
             return;
         };
+        // `GtkPicture` needs a paintable, so render the captured snapshot node
+        // into a texture whose viewport matches the overlay pixels users see.
         let texture = renderer.render_texture(&node, Some(&viewport));
         picture.set_paintable(Some(&texture));
         picture.set_visible(true);
         source_map.set_opacity(0.0);
+        debug_assert!(picture.is_visible());
+        debug_assert!(source_map.opacity() <= 0.01);
     }
 
     /// Let the real source map repaint while frozen pixels still cover it.
@@ -766,6 +846,23 @@ impl LushtextEditorPage {
         };
         source_map.set_opacity(1.0);
         source_map.queue_draw();
+        debug_assert!(source_map.opacity() >= 0.99);
+    }
+
+    /// Reveal the repaired live minimap early when the user scrolls during warmup.
+    ///
+    /// The initial settle window keeps the cover in place because the native map
+    /// is still reading transient geometry. After opacity is restored under the
+    /// cover, the live map is ready underneath it, so user-driven scroll
+    /// should trade the conservative delay for immediate responsiveness.
+    pub(crate) fn reveal_minimap_reflow_freeze_for_user_scroll(&self) {
+        let minimap = &self.imp().minimap;
+        if minimap.reflow_settle_pending.get() || !minimap.reflow_reveal_pending.get() {
+            return;
+        }
+
+        minimap.reflow_reveal_pending.set(false);
+        self.drop_minimap_reflow_freeze();
     }
 
     /// Keep the freeze active when the viewport height changes mid-burst.
@@ -779,13 +876,18 @@ impl LushtextEditorPage {
     }
 
     /// Remove the frozen overlay and show the live native map again.
+    ///
+    /// Every exit path must restore source-map opacity before hiding and clearing
+    /// the picture, or the next live minimap frame can remain invisible.
     fn drop_minimap_reflow_freeze(&self) {
         if let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref() {
             source_map.set_opacity(1.0);
+            debug_assert!(source_map.opacity() >= 0.99);
         }
         if let Some(picture) = self.imp().minimap.reflow_freeze_picture.borrow().as_ref() {
             picture.set_visible(false);
             picture.set_paintable(None::<&gtk4::gdk::Paintable>);
+            debug_assert!(!picture.is_visible());
         }
     }
 
@@ -832,6 +934,16 @@ impl LushtextEditorPage {
         overlay.set_visible(availability == MinimapAvailability::Visible);
 
         if availability != MinimapAvailability::Visible {
+            // Hidden source maps can keep stale EOF/top margins from the last
+            // visible layout. Cancel pending timers first, then sync once so
+            // the next visible frame cannot inherit old geometry.
+            let minimap = &self.imp().minimap;
+            minimap
+                .reflow_settle_generation
+                .set(minimap.reflow_settle_generation.get().wrapping_add(1));
+            minimap.reflow_settle_pending.set(false);
+            minimap.reflow_reveal_pending.set(false);
+            self.sync_minimap_view_geometry();
             self.drop_minimap_reflow_freeze();
             self.imp().minimap.markers.borrow_mut().clear();
             self.queue_minimap_draw();
@@ -980,16 +1092,18 @@ fn sync_source_map_geometry(source_map: &sourceview5::Map, source_view: &sourcev
     sync_wide_editor_slider_offset(source_map, source_view);
 }
 
+/// Apply the pure-tested wide-editor threshold to the native slider correction class.
 fn sync_wide_editor_slider_offset(source_map: &sourceview5::Map, source_view: &sourceview5::View) {
-    let wide_editor = source_map_editor_height_ratio(source_map, source_view)
-        .is_some_and(|ratio| ratio > MINIMAP_WIDE_EDITOR_RATIO_THRESHOLD);
-    if wide_editor {
+    if wide_editor_slider_offset_class(source_map_editor_height_ratio(source_map, source_view))
+        .is_some()
+    {
         source_map.add_css_class(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS);
     } else {
         source_map.remove_css_class(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS);
     }
 }
 
+/// Read live GTK document heights and project them into the tested ratio helper.
 fn source_map_editor_height_ratio(
     source_map: &sourceview5::Map,
     source_view: &sourceview5::View,
@@ -1000,11 +1114,25 @@ fn source_map_editor_height_ratio(
         document_height_from_iter_rect(source_view.iter_location(&end_iter))?;
     let source_map_document_height =
         document_height_from_iter_rect(source_map.iter_location(&end_iter))?;
+    source_map_editor_height_ratio_from_heights(editor_document_height, source_map_document_height)
+}
+
+/// Compute the source-map/editor ratio, returning `None` for unusable geometry.
+fn source_map_editor_height_ratio_from_heights(
+    editor_document_height: i32,
+    source_map_document_height: i32,
+) -> Option<f64> {
     if editor_document_height <= 0 || source_map_document_height <= 0 {
         return None;
     }
-
     Some(f64::from(source_map_document_height) / f64::from(editor_document_height))
+}
+
+/// Choose the CSS class that compensates the native slider at the wide-editor threshold.
+fn wide_editor_slider_offset_class(ratio: Option<f64>) -> Option<&'static str> {
+    ratio
+        .is_some_and(|ratio| ratio.is_finite() && ratio > MINIMAP_WIDE_EDITOR_RATIO_THRESHOLD)
+        .then_some(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS)
 }
 
 /// Nudge GTK into validating the source map's first and last line geometry.
@@ -2041,6 +2169,43 @@ mod tests {
         assert_eq!(MINIMAP_REFLOW_SETTLE_DEBOUNCE, Duration::from_millis(150));
         assert_eq!(MINIMAP_REFLOW_REVEAL_DELAY, Duration::from_millis(800));
         assert_eq!(MINIMAP_MODIFIED_MARK_CATEGORY, "lushtext-minimap-modified");
+    }
+
+    #[test]
+    fn test_source_map_editor_height_ratio_from_heights_tracks_ratio() {
+        assert_eq!(
+            source_map_editor_height_ratio_from_heights(1_000, 200),
+            Some(0.2)
+        );
+        assert_eq!(
+            source_map_editor_height_ratio_from_heights(6_000, 1_800),
+            Some(0.3)
+        );
+    }
+
+    #[test]
+    fn test_source_map_editor_height_ratio_from_heights_rejects_unusable_geometry() {
+        assert_eq!(source_map_editor_height_ratio_from_heights(0, 200), None);
+        assert_eq!(source_map_editor_height_ratio_from_heights(1_000, 0), None);
+        assert_eq!(source_map_editor_height_ratio_from_heights(-1, 200), None);
+        assert_eq!(source_map_editor_height_ratio_from_heights(1_000, -1), None);
+    }
+
+    #[test]
+    fn test_wide_editor_slider_offset_class_uses_strict_threshold() {
+        assert_eq!(wide_editor_slider_offset_class(Some(0.199_999)), None);
+        assert_eq!(wide_editor_slider_offset_class(Some(0.20)), None);
+        assert_eq!(
+            wide_editor_slider_offset_class(Some(0.200_001)),
+            Some(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS)
+        );
+    }
+
+    #[test]
+    fn test_wide_editor_slider_offset_class_rejects_missing_or_nonfinite_ratio() {
+        assert_eq!(wide_editor_slider_offset_class(None), None);
+        assert_eq!(wide_editor_slider_offset_class(Some(f64::NAN)), None);
+        assert_eq!(wide_editor_slider_offset_class(Some(f64::INFINITY)), None);
     }
 
     #[test]
