@@ -1048,7 +1048,7 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
             let native_diagnostics = editor.minimap_native_slider_diagnostics_relative_to(root);
             let viewport_bounds = native_diagnostics
                 .as_ref()
-                .map(|diagnostics| diagnostics.native_slider_estimate);
+                .map(|diagnostics| diagnostics.native_slider_visible_bounds);
             let first_content_bounds = native_diagnostics
                 .as_ref()
                 .and_then(|diagnostics| diagnostics.first_content_row)
@@ -1312,6 +1312,9 @@ fn native_minimap_diagnostic_snapshot(
         native_slider_estimate: visual_rect_from_projected_bounds(
             diagnostics.native_slider_estimate,
         ),
+        native_slider_visible_bounds: visual_rect_from_projected_bounds(
+            diagnostics.native_slider_visible_bounds,
+        ),
         line_projection_rect: diagnostics
             .line_projection
             .and_then(visual_rect_from_projected_bounds),
@@ -1343,6 +1346,7 @@ fn absent_native_minimap_diagnostic(
         border_left: None,
         border_right: None,
         native_slider_estimate: None,
+        native_slider_visible_bounds: None,
         line_projection_rect: None,
         first_content_row_rect: None,
     }

@@ -72,6 +72,11 @@ notifications, and prove that signal actually fires in the relevant widget:
   pixel-anchor assertion for its native top edge; nearby content-row anchors can
   be added by scenarios that need them, but the rendered highlight must not rely
   on rectangle-only checks.
+- If Automation exposes a raw toolkit-derived geometry estimate, keep it
+  separate from the crop-safe geometry consumed by visual surfaces and pixel
+  anchors. Raw estimates are useful diagnostics, but crop/search rectangles must
+  be fitted to the visible allocation they describe so off-surface algebra cannot
+  make widget tests fail or make screenshot searches miss the rendered pixels.
 
 **Known Flatpak animation regression:** sidebar and document-properties open/close animations looked like they were running below the monitor refresh rate even though no obvious blocking I/O was present. The root cause was allocation-frame churn: `size_allocate()` repeatedly synchronized split-view widths, the properties fraction notify path rewrote GSettings, and the adaptive properties breakpoint was reparsed/reinstalled for each animated frame. The durable fix pattern is:
 

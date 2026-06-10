@@ -508,6 +508,12 @@ mod tests {
                     width: 120,
                     height: 323,
                 }),
+                native_slider_visible_bounds: Some(AutomationVisualRect {
+                    x: 1167,
+                    y: 48,
+                    width: 120,
+                    height: 321,
+                }),
                 line_projection_rect: Some(AutomationVisualRect {
                     x: 1167,
                     y: 48,
@@ -571,6 +577,10 @@ mod tests {
             false
         );
         assert_eq!(value["native_minimap"]["native_slider_estimate"]["y"], 46);
+        assert_eq!(
+            value["native_minimap"]["native_slider_visible_bounds"]["y"],
+            48
+        );
         assert_eq!(value["scroll_anchors"][0]["at_top"], true);
         assert!(!fields.contains_key("document_text"));
         assert!(!fields.contains_key("minimap_text"));
@@ -1136,6 +1146,8 @@ pub struct AutomationNativeMinimapDiagnosticSnapshot {
     pub border_right: Option<i32>,
     /// Upstream-informed native slider rectangle estimate in snapshot coordinates.
     pub native_slider_estimate: Option<AutomationVisualRect>,
+    /// Native slider rectangle vertically fitted to the visible source-map allocation.
+    pub native_slider_visible_bounds: Option<AutomationVisualRect>,
     /// Existing line-projection viewport estimate retained as explanatory contrast.
     pub line_projection_rect: Option<AutomationVisualRect>,
     /// First rendered minimap content row estimate in snapshot coordinates.

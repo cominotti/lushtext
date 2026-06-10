@@ -40,11 +40,13 @@ surface rectangles, allocation sizes, absence reasons, scale factor, scroll
 anchor state, native minimap slider diagnostics, and app-computed pixel-anchor
 crop hints for rendered effects such as the minimap viewport edges and fill;
 they do not include rendered text. Native minimap diagnostics include bounded
-visible-rect, adjustment, document-height, and estimate rows so failures can
-explain source-map frame drift. Those snapshot hints are diagnostic and
-crop-bounding data: visual pass/fail for rendered-only effects comes from
-screenshot-derived detectors in the visual geometry lane, not from Automation1
-rectangles alone. It intentionally
+visible-rect, adjustment, document-height, the raw upstream-style slider
+estimate, and a vertically source-map-fitted visible slider bounds row that
+preserves the native horizontal CSS outset, so failures can explain source-map
+frame drift without handing screenshot tools an off-surface crop. Those
+snapshot hints are diagnostic and crop-bounding data: visual
+pass/fail for rendered-only effects comes from screenshot-derived detectors in
+the visual geometry lane, not from Automation1 rectangles alone. It intentionally
 avoids dumping document text, draft identifiers, note bodies, bookmark labels,
 sidecar contents, local-history contents, command-palette result bodies, or
 search result bodies. File-backed tabs can expose their path because paths are

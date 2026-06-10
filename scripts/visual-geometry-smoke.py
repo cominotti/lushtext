@@ -1550,6 +1550,7 @@ def final_geometry_signature(snapshot: dict[str, Any]) -> tuple[Any, ...]:
             bool(native_minimap.get("visible")),
             rect_tuple(native_minimap.get("source_map_visible_rect")),
             rect_tuple(native_minimap.get("native_slider_estimate")),
+            rect_tuple(native_minimap.get("native_slider_visible_bounds")),
             rect_tuple(native_minimap.get("line_projection_rect")),
             rect_tuple(native_minimap.get("first_content_row_rect")),
             adjustment_tuple(native_minimap.get("source_map_vadjustment")),

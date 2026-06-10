@@ -259,6 +259,8 @@ pub(crate) struct MinimapNativeSliderDiagnostics {
     pub source_map_vadjustment: Option<MinimapAdjustmentDiagnostics>,
     /// Upstream-informed estimate of the native slider rectangle.
     pub native_slider_estimate: MinimapProjectedBounds,
+    /// Native slider rectangle vertically fitted to the visible source-map allocation.
+    pub native_slider_visible_bounds: MinimapProjectedBounds,
     /// Older line-projection estimate retained as explanatory contrast.
     pub line_projection: Option<MinimapProjectedBounds>,
     /// First rendered minimap content row, when projectable.
@@ -361,7 +363,7 @@ impl LushtextEditorPage {
         target: &gtk4::Widget,
     ) -> Option<MinimapProjectedBounds> {
         self.minimap_native_slider_diagnostics_relative_to(target)
-            .map(|diagnostics| diagnostics.native_slider_estimate)
+            .map(|diagnostics| diagnostics.native_slider_visible_bounds)
     }
 
     /// Return the first rendered map content row relative to `target`.
@@ -1060,6 +1062,8 @@ fn minimap_native_slider_diagnostics(
         border_left: i32::from(border.left()),
         border_right: i32::from(border.right()),
     })?;
+    let native_slider_visible_bounds =
+        fit_native_slider_to_source_map_bounds(native_slider_estimate, source_map_bounds)?;
 
     Some(MinimapNativeSliderDiagnostics {
         projection_source: MinimapNativeProjectionSource::UpstreamVisibleRectEstimate,
@@ -1080,6 +1084,7 @@ fn minimap_native_slider_diagnostics(
             .as_ref()
             .map(adjustment_diagnostics),
         native_slider_estimate,
+        native_slider_visible_bounds,
         line_projection: minimap_viewport_bounds(editor, source_map, target, target_height),
         first_content_row: minimap_first_content_row_bounds(source_map, target, target_height),
     })
@@ -1217,6 +1222,63 @@ fn native_slider_estimate_from_inputs(
         y: input.map_y + top_in_map,
         width: usable_width + (f64::from(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET) * 2.0),
         height,
+    })
+}
+
+/// Fit the raw native slider estimate vertically into the source-map allocation.
+///
+/// The raw estimate intentionally mirrors `GtkSourceMap`'s private ratio math,
+/// which can point outside the map when the tiny source-map document is taller
+/// than the visible widget. Screenshot crops and widget tests need the visible
+/// vertical part of that effect, while diagnostics keep the raw estimate
+/// separately. The horizontal CSS outset is preserved because it is part of the
+/// native slider effect and intentionally paints outside the map text column.
+fn fit_native_slider_to_source_map_bounds(
+    raw: MinimapProjectedBounds,
+    source_map_bounds: MinimapProjectedBounds,
+) -> Option<MinimapProjectedBounds> {
+    if !raw.x.is_finite()
+        || !raw.y.is_finite()
+        || !raw.width.is_finite()
+        || !raw.height.is_finite()
+        || !source_map_bounds.y.is_finite()
+        || !source_map_bounds.height.is_finite()
+        || raw.width <= 0.0
+        || raw.height <= 0.0
+        || source_map_bounds.height <= 0.0
+    {
+        return None;
+    }
+
+    let lower = source_map_bounds.y;
+    let upper = source_map_bounds.y + source_map_bounds.height;
+    if !upper.is_finite() || upper <= lower {
+        return None;
+    }
+
+    let height = raw
+        .height
+        .max(MINIMAP_VIEWPORT_MIN_HEIGHT)
+        .min(source_map_bounds.height);
+    let mut top = raw.y;
+    let mut bottom = top + height;
+
+    if top < lower {
+        bottom += lower - top;
+        top = lower;
+    }
+    if bottom > upper {
+        top -= bottom - upper;
+        bottom = upper;
+    }
+
+    top = top.max(lower);
+    bottom = bottom.min(upper);
+    (bottom > top).then_some(MinimapProjectedBounds {
+        x: raw.x,
+        y: top,
+        width: raw.width,
+        height: bottom - top,
     })
 }
 
@@ -2019,6 +2081,31 @@ mod tests {
         assert_eq!(settled.height, stale_map_scroll.height);
         assert_eq!(settled.x, 87.0);
         assert_eq!(settled.width, 120.0);
+    }
+
+    #[test]
+    fn test_native_slider_visible_bounds_fit_offscreen_estimate_to_map_edge() {
+        let raw = MinimapProjectedBounds {
+            x: -13.0,
+            y: 779.085,
+            width: 120.0,
+            height: 184.161,
+        };
+        let source_map_bounds = MinimapProjectedBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 94.0,
+            height: 664.0,
+        };
+
+        let fitted = fit_native_slider_to_source_map_bounds(raw, source_map_bounds)
+            .expect("offscreen native estimate should fit to the visible map edge");
+
+        assert_eq!(fitted.x, raw.x);
+        assert_eq!(fitted.width, raw.width);
+        assert!((fitted.height - raw.height).abs() <= f64::EPSILON * 512.0);
+        assert_eq!(fitted.bottom(), source_map_bounds.bottom());
+        assert!(fitted.y >= source_map_bounds.y);
     }
 
     #[test]
