@@ -239,6 +239,11 @@ timing/skew metadata, warning scans, and bounded failure artifacts are present.
 - **THEN** the client reports the scenario id, invariant id, capture mode, frame count, geometry sample count, intermediate sample count, mapped intermediate frame count, maximum row drift, maximum sample skew, final-settle status, and representative artifact paths
 - **AND** it exits successfully through the documented result envelope
 
+#### Scenario: Native minimap animation proof is summarized
+- **WHEN** the client summarizes a visual geometry artifact with native minimap animation coverage
+- **THEN** it reports the scenario id, status, animation invariant ids, sampled frame count, maximum row drift, failing frame details when present, and representative frame/crop artifact paths
+- **AND** it preserves final-settle pixel evidence as a separate field when present
+
 #### Scenario: Failing animation proof points to frame evidence
 - **WHEN** an animation-frame visual geometry artifact records native minimap anchor drift, missing anchors, stale frame/sample pairing, missing intermediate frames, readiness timeout, or warning-scan failure
 - **THEN** artifact-summary exits nonzero with a stable status
@@ -248,6 +253,12 @@ timing/skew metadata, warning scans, and bounded failure artifacts are present.
 - **WHEN** an artifact directory contains both animation-frame evidence and final-settle evidence
 - **THEN** the client reports both lanes separately
 - **AND** a passing final-settle lane does not mask a failing or missing animation-frame lane
+
+#### Scenario: Missing animation proof reports missing coverage
+- **WHEN** a visual-sensitive minimap change requires animation-frame coverage
+- **AND** the artifact summary only contains final-settle minimap evidence
+- **THEN** the client reports that animation coverage is missing
+- **AND** it does not mark the animation invariant as verified
 
 ### Requirement: Automation client generates replayable animation scenarios from live captures
 The automation client SHALL support generating or preserving replayable visual
@@ -266,6 +277,11 @@ required anchors, tolerances, and final-settle follow-up requirements.
 - **THEN** the client reports a stable incomplete-capture status
 - **AND** it does not generate a scenario that could be mistaken for verified animation proof
 
+#### Scenario: Replay command is recorded
+- **WHEN** the client writes a generated animation replay scenario
+- **THEN** it records the exact visual geometry smoke command needed to run that scenario under headless capture
+- **AND** the generated artifact summary explains that live screenshots are context while replayed screenshot-derived anchors are proof
+
 ### Requirement: Automation client enforces animation proof policy for sensitive changes
 The automation client and proof-policy checks SHALL reject sensitive visual
 changes unless the artifact set contains valid animation-frame evidence for the
@@ -281,3 +297,67 @@ declared invariant.
 - **WHEN** proof policy evaluates an animation artifact with no mapped intermediate PNG, stale frame/sample pairings, missing required anchors, or missing per-frame pass/fail rows
 - **THEN** the policy fails even if final-settle evidence passes
 - **AND** the failure summary points to the incomplete evidence fields
+
+### Requirement: Client captures and summarizes native minimap rendered-proof scenarios
+The automation client SHALL help agents capture, replay, summarize, and policy-check native minimap rendered-proof scenarios. The client MUST surface whether the required screenshot-derived native minimap invariant was verified, skipped, or failed, and it MUST NOT count geometry-only evidence as a pass.
+
+#### Scenario: Live capture emits native minimap rendered-proof fields
+- **WHEN** the client generates a live visual-geometry scenario from a visible minimap/sidebar state
+- **THEN** the generated manifest includes native minimap pixel anchors, final sidebar geometry requirements, source window size, sidebar direction, theme or requested color scheme, word-wrap state, fixture kind, and native minimap invariant id
+- **AND** unknown fields are reported as missing-field or require explicit caller overrides rather than being guessed silently
+
+#### Scenario: Artifact summary exposes native minimap pixel status
+- **WHEN** the client summarizes a visual geometry artifact containing native minimap highlight coverage
+- **THEN** the summary reports scenario id, status, pixel-verified invariant ids, native minimap anchor rows, row deltas, relationship deltas, crop paths, app-vs-rendered diagnostics, and final geometry
+- **AND** a rendered-anchor failure exits with a stable nonzero status
+
+#### Scenario: Proof policy rejects geometry-only native minimap evidence
+- **WHEN** files that can affect native minimap rendering, source-map geometry, sidebar/editor allocation, or visual proof tooling change
+- **THEN** proof-policy checks require a passing native minimap rendered-proof artifact for the reproduced intermediate-size invariant
+- **AND** artifacts without screenshot-derived pixel anchors or without the required invariant id do not satisfy the policy
+
+#### Scenario: Filtered runs do not overclaim coverage
+- **WHEN** a developer runs a filtered visual geometry case that excludes the reproduced native minimap threshold scenario
+- **THEN** the client summary reports the filtered result accurately
+- **AND** it does not mark the full native minimap rendered invariant as verified unless the required scenario actually ran and passed
+
+### Requirement: Automation client captures live visual geometry repros
+The automation client SHALL provide a supported live visual-geometry capture command or helper for same-user developers and agents. The command MUST collect bounded live Automation1 state, write reviewable artifacts, and generate a visual-geometry scenario that can be replayed by the headless visual-geometry smoke runner.
+
+#### Scenario: Live capture writes bounded artifacts
+- **WHEN** LushText is running and a developer invokes the live visual-geometry capture command
+- **THEN** the command writes a bounded live snapshot, capture manifest, generated scenario file, command metadata, and skip or failure reason when applicable
+- **AND** it does not embed document text, note bodies, draft bodies, local-history contents, complete search result text, or private persistence identifiers
+
+#### Scenario: Generated scenario is runnable
+- **WHEN** the live capture command succeeds
+- **THEN** it prints or records the exact `scripts/visual-geometry-smoke.py --scenario-dir ...` command needed to replay the generated case
+- **AND** the generated scenario validates against the visual-geometry scenario loader before success is reported
+
+#### Scenario: Overrides handle unknown live fields
+- **WHEN** live state does not expose a required scenario value such as fixture kind, color scheme, word-wrap mode, or intended direction
+- **THEN** the command accepts explicit override flags or records an actionable missing-field error
+- **AND** it exits with a stable status instead of silently guessing
+
+#### Scenario: Live capture distinguishes screenshot context from proof
+- **WHEN** the command optionally captures a desktop screenshot for context
+- **THEN** the result marks it as contextual evidence only
+- **AND** the success status depends on Automation1 state and generated scenario validity, not on the screenshot containing the focused LushText window
+
+### Requirement: Automation client summarizes visual geometry pixel evidence
+The automation client SHALL summarize visual geometry artifacts with enough per-case pixel evidence to make rendered-effect regressions obvious to agents.
+
+#### Scenario: Pixel anchor failure summary is actionable
+- **WHEN** artifact summary reads a failed visual-geometry case with pixel-anchor failures
+- **THEN** it reports the scenario id, invariant id, failure status, before and after detected row positions, screen Y delta, relevant final geometry rows, and crop artifact paths
+- **AND** it exits nonzero through the documented result envelope
+
+#### Scenario: App-vs-rendered disagreement is reported
+- **WHEN** a visual-geometry comparison records different outcomes for Automation1 geometry anchors and screenshot-derived pixel anchors
+- **THEN** artifact summary reports the disagreement as a diagnostic detail
+- **AND** it does not collapse the result into a generic visual-comparison failure without the row evidence
+
+#### Scenario: Passing summary proves pixel verification
+- **WHEN** artifact summary reads a passing visual-geometry run
+- **THEN** it lists the pixel-verified invariant ids from the root summary and per-case summaries
+- **AND** missing pixel verification is distinct from a passing rectangle-only invariant

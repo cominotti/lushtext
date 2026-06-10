@@ -707,10 +707,13 @@ opening a real editor tab.
 
 ## Architecture
 
-Two-crate Cargo workspace:
+Cargo workspace:
 
+- **`crates/lushtext-build-support`** -- build-script helper crate for the build-only filesystem boundary
 - **`crates/lushtext-core`** -- all application logic: domain models, services, GTK widgets
 - **`crates/lushtext`** -- thin binary entry point + integration tests
+- **`crates/gtk-lush/`** -- governed `0.0.0` placeholder crates for extracting reusable GTK4/Libadwaita patterns; real APIs are reserved for follow-up OpenSpec changes
+- **`workspace-hack`** -- generated cargo-hakari crate for unified dependency features
 
 ### Module layout
 
@@ -787,6 +790,26 @@ commands/statuses, or scenario-helper flags must update those docs and pass
 Automation and portal/sandbox work must also keep the Flatpak's intentional
 full-filesystem posture documented and guarded by `make check-flatpak-permissions`.
 
+### GTK Lush family
+
+`crates/gtk-lush/` is the in-tree staging area for extracting LushText's
+hardened GTK4/Libadwaita patterns into small Rust crates. The foundation phase
+contains only `0.0.0` placeholder crates, `gtk-lush-signals` and
+`gtk-lush-settle`; they intentionally expose no public API until the
+`extract-gtk-lush-signals-and-settle` follow-up designs the first real helpers.
+Governance lives in [`crates/gtk-lush/GOVERNANCE.md`](crates/gtk-lush/GOVERNANCE.md),
+with the umbrella vision in [`docs/next/gtk-lush.md`](docs/next/gtk-lush.md).
+
+Use the family-specific checks when touching that area:
+
+```sh
+make check-gtk-lush-policy
+make gtk-lush-doctests
+make gtk-lush-examples
+make gtk-lush-msrv
+make gtk-lush-api-advisory
+```
+
 ## Testing
 
 ```sh
@@ -804,6 +827,11 @@ make performance-smoke # Lightweight Criterion performance smoke
 make check-automation-docs # Automation documentation drift check
 make automation-client-self-test # Reusable D-Bus automation client self-test
 make check-flatpak-permissions # Flatpak full-filesystem permission guard
+make check-gtk-lush-policy # GTK Lush family scaffolding/dependency guard
+make gtk-lush-doctests # GTK Lush family doctests
+make gtk-lush-examples # GTK Lush standalone adoption examples
+make gtk-lush-msrv # GTK Lush family MSRV check
+make gtk-lush-api-advisory # Advisory semver/public-API checks
 ```
 
 Widget tests require a display server. `make test`, `make test-widget`, and

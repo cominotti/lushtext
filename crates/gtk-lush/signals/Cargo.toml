@@ -1,0 +1,26 @@
+[package]
+name = "gtk-lush-signals"
+version = "0.0.0"
+edition = "2024"
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Placeholder reservation for GTK Lush signal lifetime helpers"
+readme = "README.md"
+repository = "https://github.com/cominotti/lushtext"
+keywords = ["gtk", "gtk4", "signals", "rust"]
+categories = ["gui", "development-tools"]
+include = [
+    "Cargo.toml",
+    "CHANGELOG.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md",
+    "examples/**",
+    "src/**",
+]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+gtk4 = { workspace = true }

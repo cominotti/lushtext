@@ -92,6 +92,7 @@ failures, but it MUST NOT satisfy the invariant when rendered pixels drift.
 #### Scenario: Per-frame pixel anchors gate the invariant
 - **WHEN** an animation-frame scenario declares required pixel anchors such as the native minimap viewport top edge
 - **THEN** every evaluated frame that maps to a protected phase runs those detectors
+- **AND** native minimap/sidebar animation frames record detected native viewport top-edge and first-content-row pixel anchors when visible
 - **AND** any required anchor missing or drifting outside the declared tolerance fails the scenario
 - **AND** the failure records the frame index, timestamp, mapped sample timestamp, anchor rows, row deltas, crop paths, and failure reason
 
@@ -128,3 +129,166 @@ timing/skew metadata, or bounded failure artifacts.
 - **WHEN** the host cannot provide compositor, screenshot, stream capture, image decoding, or Automation1 timing support required for animation proof
 - **THEN** the scenario reports a distinct unsupported status with the missing capability
 - **AND** skipped animation coverage is not counted as verified for sensitive visual changes
+
+### Requirement: Rendered effects use screenshot-derived anchors as the oracle
+The visual invariant system SHALL use screenshot-derived pixel anchors as the pass/fail oracle for native toolkit-rendered, CSS-rendered, or compositor-rendered visual effects. App-owned geometry MAY define safe bounded crops, readiness metadata, and diagnostics, but it MUST NOT by itself satisfy an invariant for a visible rendered effect.
+
+#### Scenario: Geometry-stable rendered drift fails
+- **WHEN** app-owned geometry reports a stable anchor before and after a visual change
+- **AND** screenshot-derived pixels for the protected rendered effect move outside the manifest tolerance
+- **THEN** the visual comparison fails
+- **AND** the report identifies the app-vs-rendered disagreement with both app-owned anchor rows and screenshot-derived rows
+
+#### Scenario: Pixel and app geometry agreement is visible
+- **WHEN** app-owned geometry anchors and screenshot-derived pixel anchors both remain within the manifest threshold
+- **THEN** the comparison report records the matching row positions and marks the rendered invariant as verified
+- **AND** the root summary includes the invariant id in `pixel_verified_invariant_ids`
+
+#### Scenario: Missing pixel anchor fails rendered-effect coverage
+- **WHEN** a manifest declares coverage for a rendered visual effect such as the native minimap viewport highlight
+- **AND** the runner cannot detect the required screenshot-derived anchor in before or after captures
+- **THEN** the scenario fails or skips with an explicit unsupported reason
+- **AND** skipped coverage is not counted as verified
+
+#### Scenario: Crop geometry cannot replace pixel proof
+- **WHEN** Automation1 exposes a bounded crop for a native rendered effect
+- **THEN** the runner uses that crop only to limit screenshot inspection
+- **AND** it still evaluates the declared pixel detector and row relationship before marking the invariant passed
+
+#### Scenario: Native minimap detector rejects the reported bad state
+- **WHEN** the visual PNG detector is run against the reported good minimap screenshot and the reported bad minimap screenshot
+- **THEN** the good screenshot passes the native viewport highlight/content-row anchor relationship check
+- **AND** the bad screenshot fails because the native viewport top edge is missing or shifted relative to the first minimap content row
+
+#### Scenario: Live visual scenario compares screenshot-derived anchors
+- **WHEN** a same-session visual scenario captures the minimap with the workspace sidebar shown and hidden
+- **THEN** the scenario detects the first minimap content row from screenshot pixels
+- **AND** it detects the native viewport highlight top edge from screenshot pixels
+- **AND** it compares the vertical delta between those anchors across captures instead of accepting app-computed viewport geometry as proof
+
+#### Scenario: Geometry-only evidence cannot satisfy rendered-effect coverage
+- **WHEN** a visual-sensitive change touches minimap viewport rendering, minimap CSS, visual-geometry detector logic, or native-highlight scenario manifests
+- **THEN** proof policy requires a root visual-geometry summary that lists the native minimap highlight invariant as verified by pixel-anchor assertions
+- **AND** a run that reports only bounded rectangles, allocation relationships, or nonblank crops fails the proof-policy check for that invariant
+
+### Requirement: Native minimap threshold coverage is mandatory for visual-sensitive minimap work
+The visual invariant system SHALL include targeted native-minimap rendered-highlight scenarios for the reproduced intermediate-size threshold and SHALL require those scenarios for visual-sensitive changes that can affect minimap rendering, source-map geometry, sidebar allocation, editor width reflow, or visual proof tooling.
+
+#### Scenario: Reproduced intermediate case is verified
+- **WHEN** the visual geometry smoke lane runs native minimap highlight coverage
+- **THEN** it includes the reproduced intermediate-size case around `1822x1272`
+- **AND** it verifies sidebar hide and sidebar show directions with screenshot-derived native-highlight anchors
+
+#### Scenario: Passing other sizes does not verify the threshold
+- **WHEN** conventional size cases pass
+- **AND** the reproduced intermediate-size case is missing, skipped, or filtered out
+- **THEN** the native minimap highlight invariant is not counted as verified
+- **AND** proof-policy checks fail for changes that require that invariant
+
+#### Scenario: Final rendered frames are stable before comparison
+- **WHEN** a sidebar/minimap visual scenario captures before or after screenshots
+- **THEN** workflow readiness, final allocation geometry, and native rendered-effect anchor rows have remained stable across the required final samples
+- **AND** a mid-animation or stale-frame capture fails with preserved geometry samples and crop artifacts
+
+### Requirement: Visual reports expose rendered-anchor evidence
+Visual geometry artifact summaries SHALL expose bounded rendered-anchor evidence for native rendered effects. Reports MUST include scenario id, final geometry, detected anchor rows, row deltas, relationship deltas, app-vs-rendered diagnostics, crop paths, verified invariant ids, and skip or failure reasons.
+
+#### Scenario: Agent can see why native minimap failed
+- **WHEN** a native minimap highlight comparison fails
+- **THEN** the summary includes before and after screenshot row detections for the native viewport top edge and first minimap content row
+- **AND** it includes final sidebar/editor/minimap geometry and app-vs-rendered disagreement details when available
+
+#### Scenario: Passing report proves pixel verification
+- **WHEN** a native minimap highlight comparison passes
+- **THEN** the summary lists the native minimap invariant id as pixel-verified
+- **AND** it records the crop artifacts and detected row relationship used for the pass
+
+#### Scenario: Anchor failures preserve bounded evidence
+- **WHEN** a rendered-effect pixel anchor is missing, shifted beyond tolerance, or confused with fill/background pixels
+- **THEN** the visual-geometry runner writes bounded before/after crops, detector reports, anchor coordinates, relative-delta results, and failure reasons
+- **AND** the artifacts do not expose document text, note bodies, draft bodies, local-history contents, or private persistence identifiers
+
+### Requirement: Animation-frame reports expose bounded evidence
+Animation-frame visual reports SHALL expose bounded evidence that explains
+rendered minimap movement without embedding unbounded screenshots or document
+content. Reports MUST include scenario id, sampled frame count, elapsed frame
+times, sidebar/editor/minimap geometry, native minimap diagnostics, detected row
+positions, row deltas, crop paths or frame paths, status, and skip/failure
+reason when applicable.
+
+#### Scenario: Passing animation report shows stable rows
+- **WHEN** a native minimap animation scenario passes
+- **THEN** its summary includes the sampled frame count and maximum rendered row drift for each declared anchor
+- **AND** it lists the native minimap animation invariant as pixel-verified for animation coverage
+
+#### Scenario: Failing animation report points to the drifting frame
+- **WHEN** a sampled animation frame shows native minimap anchor drift outside tolerance
+- **THEN** the report identifies the failing frame index, elapsed time, detected row positions, app geometry, and crop or frame artifact
+- **AND** it distinguishes app-vs-rendered disagreement from app geometry that moved with the rendered pixels
+
+#### Scenario: Unsupported animation capture skips explicitly
+- **WHEN** the host cannot capture animation frames with the required compositor, screenshot, D-Bus, PipeWire, or image tooling
+- **THEN** the animation scenario reports a stable unsupported-host reason
+- **AND** skipped animation coverage is not counted as verified
+
+### Requirement: Live visual geometry state can be captured as a reproducible scenario
+The visual invariant system SHALL provide an agent-facing workflow that records the current live LushText visual-geometry state and emits a runnable visual-geometry scenario plus bounded evidence artifacts. The captured scenario MUST include enough state to reproduce the visible geometry class in headless Mutter without relying on portal screenshots as the proof source.
+
+#### Scenario: Live minimap state emits a runnable scenario
+- **WHEN** LushText is running with the minimap visible and the workspace sidebar in a live user-reproduced state
+- **THEN** the capture workflow writes a scenario manifest that records the live window size, scale factor, sidebar requested and visible state, minimap requested state, color-scheme mode when known, word-wrap mode when known, active fixture identity when safely available, and intended sidebar action direction
+- **AND** the generated scenario can be passed to the visual-geometry smoke runner with `--scenario-dir`
+
+#### Scenario: Ambiguous live state is explicit
+- **WHEN** the capture workflow cannot infer a required scenario field such as theme, fixture kind, word-wrap mode, or intended action direction
+- **THEN** it records that field as unknown or requires an explicit caller override
+- **AND** it does not claim a faithful reproduction scenario was generated from guessed state
+
+#### Scenario: Portal screenshot is not required for proof
+- **WHEN** a live capture is performed on a user's desktop session
+- **THEN** the required proof artifacts come from Automation1 snapshots and the generated headless visual-geometry scenario
+- **AND** any portal screenshot captured for context is marked optional and is not counted as invariant proof
+
+### Requirement: Sidebar visual captures wait for final animated allocations
+The visual invariant system SHALL wait for final sidebar and editor allocations before capturing before/after screenshots for workspace-sidebar visibility scenarios. The runner MUST require final geometry to remain stable across multiple samples before comparing rendered pixels.
+
+#### Scenario: Hide waits for fully hidden sidebar
+- **WHEN** a minimap/sidebar scenario hides the workspace sidebar
+- **THEN** the after capture is not taken until the workspace sidebar allocation has `x == -width`, the editor viewport has `x == 0`, and the relevant editor and minimap rectangles remain stable across multiple visual-geometry snapshots
+- **AND** timing out before that state fails the case with bounded sampled geometry evidence
+
+#### Scenario: Show waits for fully visible sidebar
+- **WHEN** a minimap/sidebar scenario shows the workspace sidebar
+- **THEN** the after capture is not taken until the workspace sidebar allocation has `x == 0`, the editor viewport starts at the sidebar width, and the relevant editor and minimap rectangles remain stable across multiple visual-geometry snapshots
+- **AND** timing out before that state fails the case with bounded sampled geometry evidence
+
+#### Scenario: Mid-animation readiness is rejected
+- **WHEN** `visual-geometry-settled` reports ready while the workspace sidebar is still between its final hidden and final visible allocations
+- **THEN** the visual-geometry runner continues waiting for the final allocation predicate or fails with a state mismatch
+- **AND** it does not capture a passing comparison from the intermediate geometry
+
+### Requirement: Minimap sidebar invariants cover intermediate wrapped long-line geometry
+The visual invariant system SHALL include minimap/sidebar scenarios that exercise intermediate desktop-sized windows where wrapped long-line minimap projection can cross rendering thresholds. Coverage MUST include the reproduced light-theme, word-wrap-enabled, long plain-line, top-of-file case around `1822x1272`.
+
+#### Scenario: Live-size wrapped long-line regression is covered
+- **WHEN** the visual-geometry smoke lane runs the minimap/sidebar top-of-file scenario matrix
+- **THEN** it includes a light-theme, word-wrap-enabled, long plain-line fixture at or around `1822x1272`
+- **AND** the scenario verifies the native minimap viewport top edge and first content row through screenshot-derived pixel anchors
+
+#### Scenario: Threshold class does not pass by named resolution coverage alone
+- **WHEN** 720p, 1080p, 1440p, or `1600x1000` cases pass
+- **THEN** the visual-geometry lane still runs the intermediate wrapped long-line case before claiming the minimap/sidebar top invariant is covered
+- **AND** skipped or filtered runs report that this threshold class was not verified
+
+### Requirement: Visual geometry summaries expose actionable per-case evidence
+The visual invariant system SHALL make per-case evidence visible in summaries so agents can diagnose failures without manually reconstructing artifact structure. Summaries MUST include invariant ids, pixel verification status, final geometry rows, row deltas, and paths to bounded crop artifacts when available.
+
+#### Scenario: Per-case summary names pixel invariants
+- **WHEN** a visual-geometry case verifies screenshot-derived pixel anchors
+- **THEN** the case summary records the relevant invariant id in a pixel-verification field
+- **AND** the root summary aggregates only invariants that were actually pixel-verified in passing cases
+
+#### Scenario: Failed minimap case points to crops
+- **WHEN** a minimap pixel-anchor comparison fails
+- **THEN** the failure summary includes before and after row positions, screen Y delta, final sidebar/editor geometry, and relative paths to the minimap top-edge and first-content-row crop artifacts
+- **AND** the summary avoids embedding unbounded image or document data

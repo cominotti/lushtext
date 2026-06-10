@@ -13,6 +13,10 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_DENY_VERSION: "0.19.8"
   CARGO_NEXTEST_VERSION: "0.9.137"
+  CARGO_PUBLIC_API_VERSION: "0.52.0"
+  CARGO_SEMVER_CHECKS_VERSION: "0.48.0"
+  GTK_LUSH_MSRV: "1.96.0"
+  GTK_LUSH_PUBLIC_API_TOOLCHAIN: "nightly-2026-06-01"
 
 # Pull-request CI stays deterministic and bounded: no installed package,
 # portal, AT-SPI, screenshot, or full benchmark timing requirements here.
@@ -64,6 +68,9 @@ jobs:
       - name: Blueprint template drift and contract
         run: make check-blueprint
 
+      - name: GTK Lush family policy
+        run: make check-gtk-lush-policy
+
       - name: Rustdoc lint gate
         run: |
           RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" \
@@ -102,6 +109,79 @@ jobs:
 
       - name: Run non-widget tests
         run: cargo nextest run --workspace
+
+      - name: Run GTK Lush doctests
+        run: make gtk-lush-doctests
+
+      - name: Compile GTK Lush standalone examples
+        run: make gtk-lush-examples
+
+  gtk-lush-msrv:
+    name: GTK Lush MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            gtk4-devel \
+            gcc \
+            git
+
+      - name: Install Rust MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-gtk-lush-msrv
+
+      - name: Check GTK Lush family at MSRV
+        run: make gtk-lush-msrv GTK_LUSH_MSRV="${GTK_LUSH_MSRV}"
+
+  gtk-lush-api-advisory:
+    name: GTK Lush API Advisory
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            gtk4-devel \
+            gcc \
+            git \
+            openssl-devel
+
+      - name: Install pinned public API toolchain
+        uses: dtolnay/rust-toolchain@nightly-2026-06-01
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-gtk-lush-api
+
+      - name: Install advisory API tools
+        run: |
+          cargo install --locked cargo-semver-checks --version "${CARGO_SEMVER_CHECKS_VERSION}"
+          cargo install --locked cargo-public-api --version "${CARGO_PUBLIC_API_VERSION}"
+
+      - name: Run advisory GTK Lush API checks
+        run: make gtk-lush-api-advisory GTK_LUSH_PUBLIC_API_TOOLCHAIN="${GTK_LUSH_PUBLIC_API_TOOLCHAIN}"
+
+      - name: Upload GTK Lush public API snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gtk-lush-public-api
+          path: target/gtk-lush-public-api
 
   property-tests:
     name: Property Tests

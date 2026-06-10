@@ -37,6 +37,11 @@
 #   make check-flatpak-permissions - Ensure Flatpak keeps full filesystem access
 #   make check-end-user-smoke-workflow - Ensure scheduled smoke lanes match docs
 #   make check-visual-proof-policy - Require visual geometry proof for local visual-sensitive changes
+#   make check-gtk-lush-policy - Verify GTK Lush family scaffolding and constitution rails
+#   make gtk-lush-doctests - Run doctests for GTK Lush family crates
+#   make gtk-lush-examples - Compile standalone GTK Lush adoption examples
+#   make gtk-lush-msrv - Check GTK Lush family crates with the declared MSRV
+#   make gtk-lush-api-advisory - Run advisory semver/public-API checks for GTK Lush crates
 #   make automation-client-self-test - Validate the reusable D-Bus automation CLI helper
 #   make check-agent-docs - validate agent rules/skills guidance
 #   make lint-advisory - grouped advisory lint discovery for Rust policy reviews
@@ -56,7 +61,7 @@
 #   make help        - Show available targets
 
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless automation-smoke visual-smoke visual-geometry-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -84,6 +89,12 @@ CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 
 CARGO_TEST_PROP           = cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
 CARGO_TEST_FUZZ_CORPUS_REPLAY = cargo test -p lushtext-core --features fuzzing --test fuzz_corpus_replay
 PROPTEST_DEEP_CASES ?= 512
+
+GTK_LUSH_PACKAGES := -p gtk-lush-signals -p gtk-lush-settle
+GTK_LUSH_CRATES := crates/gtk-lush/signals crates/gtk-lush/settle
+GTK_LUSH_MSRV ?= 1.96.0
+GTK_LUSH_PUBLIC_API_TOOLCHAIN ?= nightly-2026-06-01
+GTK_LUSH_PUBLIC_API_OUT_DIR ?= target/gtk-lush-public-api
 
 CARGO_FUZZ ?= cargo +nightly fuzz
 FUZZ_TARGETS ?= editor_bytes markdown_preprocess operation_script
@@ -375,8 +386,59 @@ automation-client-self-test:
 	@echo "Checking automation CLI helper..."
 	./scripts/lushtext-automation.py self-test
 
+check-gtk-lush-policy:
+	@echo "Checking GTK Lush family policy..."
+	./scripts/check-gtk-lush-policy.py
+
+gtk-lush-doctests:
+	@echo "Running GTK Lush doctests..."
+	cargo test $(GTK_LUSH_PACKAGES) --doc
+
+gtk-lush-examples:
+	@echo "Compiling GTK Lush standalone examples..."
+	cargo check $(GTK_LUSH_PACKAGES) --examples
+
+gtk-lush-msrv:
+	@echo "Checking GTK Lush family MSRV ($(GTK_LUSH_MSRV))..."
+	cargo +$(GTK_LUSH_MSRV) check $(GTK_LUSH_PACKAGES) --all-targets
+
+gtk-lush-semver-advisory:
+	@echo "Running advisory GTK Lush semver checks..."
+	@command -v cargo-semver-checks >/dev/null || { \
+		echo "cargo-semver-checks is required for GTK Lush advisory checks."; \
+		exit 1; \
+	}; \
+	status=0; \
+	for crate in $(GTK_LUSH_CRATES); do \
+		echo "Checking semver for $$crate..."; \
+		(cd "$$crate" && cargo semver-checks) || status=1; \
+	done; \
+	if [ "$$status" -ne 0 ]; then \
+		echo "Advisory only: cargo-semver-checks reported issues or missing baselines."; \
+	fi
+
+gtk-lush-public-api-advisory:
+	@echo "Generating advisory GTK Lush public API snapshots..."
+	@command -v cargo-public-api >/dev/null || { \
+		echo "cargo-public-api is required for GTK Lush public API snapshots."; \
+		exit 1; \
+	}; \
+	mkdir -p "$(GTK_LUSH_PUBLIC_API_OUT_DIR)"; \
+	for crate in $(GTK_LUSH_CRATES); do \
+		package=$$(basename "$$crate"); \
+		output="$(GTK_LUSH_PUBLIC_API_OUT_DIR)/$$package.txt"; \
+		echo "Generating public API for $$crate..."; \
+		cargo +$(GTK_LUSH_PUBLIC_API_TOOLCHAIN) public-api --manifest-path "$$crate/Cargo.toml" >"$$output"; \
+		test -s "$$output" || { \
+			echo "GTK Lush public API snapshot is missing or empty: $$output"; \
+			exit 1; \
+		}; \
+	done
+
+gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
+
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy automation-client-self-test
+check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy automation-client-self-test
 
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
@@ -584,6 +646,11 @@ help:
 	@echo "  automation-smoke Real-process D-Bus automation smoke under headless Mutter"
 	@echo "  check-end-user-smoke-workflow Verify scheduled/manual smoke matrix lanes"
 	@echo "  check-visual-proof-policy Require visual geometry proof for local visual-sensitive changes"
+	@echo "  check-gtk-lush-policy Verify GTK Lush family scaffolding and dependency direction"
+	@echo "  gtk-lush-doctests Run GTK Lush family doctests"
+	@echo "  gtk-lush-examples Compile GTK Lush standalone examples"
+	@echo "  gtk-lush-msrv Check GTK Lush family crates with GTK_LUSH_MSRV"
+	@echo "  gtk-lush-api-advisory Run advisory semver/public-API checks"
 	@echo "  automation-client-self-test Validate the reusable D-Bus automation CLI helper"
 	@echo "  visual-smoke Real-session screenshot smoke under headless Mutter"
 	@echo "  visual-geometry-smoke Same-session visual invariant screenshot smoke"
@@ -606,6 +673,7 @@ help:
 	@echo "  mutants-list List configured mutants without running tests"
 	@echo "  pre-commit   Repo pre-commit gate (fmt + all-feature clippy + policy audits)"
 	@echo "  check-policy Fast policy audits, including filesystem and Blueprint checks"
+	@echo "  check-gtk-lush-policy Verify GTK Lush family scaffolding and dependency direction"
 	@echo "  blueprint-generate Regenerate GtkBuilder .ui files from Blueprint sources"
 	@echo "  check-blueprint Validate Blueprint drift and UI template contract"
 	@echo "  check-flatpak-permissions Verify Flatpak keeps intentional full filesystem access"
@@ -649,6 +717,10 @@ help:
 	@echo "Other targets:"
 	@echo "  check-fmt    rustfmt --check"
 	@echo "  check-clippy clippy -D warnings"
+	@echo "  gtk-lush-doctests Run GTK Lush family doctests"
+	@echo "  gtk-lush-examples Compile GTK Lush standalone examples"
+	@echo "  gtk-lush-msrv Check GTK Lush family crates with GTK_LUSH_MSRV"
+	@echo "  gtk-lush-api-advisory Run advisory semver/public-API checks"
 	@echo "  check        Clippy + format check"
 	@echo "  dev-tools    Flatpak deps + GTK debug input/screenshot helpers"
 	@echo "  clean        Remove build artifacts"

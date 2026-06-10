@@ -286,10 +286,20 @@ private persistence identifiers.
 - **AND** it identifies the workspace sidebar, editor viewport, source view, minimap shell, source map, marker strip, and status bar rectangles when present
 - **AND** it identifies whether the transition phase is settled, showing, hiding, or intermediate by documented fields
 
+#### Scenario: Snapshot reports sidebar animation geometry
+- **WHEN** an automation snapshot is requested while the workspace sidebar is animating
+- **THEN** the visual geometry payload includes bounded workspace-sidebar, editor viewport, minimap shell, source-map, and native minimap diagnostic geometry for the current frame
+- **AND** it reports enough state to distinguish fully shown, fully hidden, and intermediate sidebar positions
+
 #### Scenario: Minimap diagnostics explain rendered anchors without text
 - **WHEN** the native minimap is visible during an animation sample
 - **THEN** Automation1 reports bounded minimap diagnostics such as allocation, top inset policy, adjustment values, anchor state, refresh blockers, and detector crop bounds
 - **AND** it does not report minimap-rendered text or document body content
+
+#### Scenario: Snapshot reports native minimap frame inputs
+- **WHEN** an automation snapshot is requested while the minimap is visible during sidebar animation
+- **THEN** the native minimap diagnostics include bounded source-map visible state, source-map adjustment state, editor visible state, document-height ratio inputs, compensation margin or equivalent top-inset diagnostic, and estimated native slider rect when available
+- **AND** absent or unprojectable diagnostics use stable absence reasons
 
 #### Scenario: Readiness distinguishes animation sampling from final settle
 - **WHEN** a smoke helper starts animation-frame capture
@@ -301,3 +311,77 @@ private persistence identifiers.
 - **AND** the running app does not expose those fields
 - **THEN** the smoke helper reports a distinct contract failure
 - **AND** it does not silently downgrade to fixed sleeps or final-settle-only proof
+
+### Requirement: Automation exposes bounded native minimap render diagnostics
+The Automation1 visual geometry snapshot SHALL expose bounded diagnostics for the native minimap rendering path when the minimap is visible. The diagnostics MUST be sufficient to compare app-estimated native slider geometry with rendered screenshot anchors, while preserving the automation privacy boundary.
+
+#### Scenario: Snapshot reports native minimap diagnostic fields
+- **WHEN** a snapshot is requested while the active editor has a visible minimap
+- **THEN** the visual geometry payload includes bounded native minimap diagnostic fields such as source-map allocation, editor visible-rect summary, source-map visible-rect or adjustment summary, estimated native slider rect, first-content-row rect, and projection source classification
+- **AND** the payload does not include document text, note bodies, draft bodies, local-history contents, complete search result text, or private persistence identifiers
+
+#### Scenario: Hidden or unavailable minimap reports explicit absence
+- **WHEN** the active editor has no visible native minimap
+- **THEN** the visual geometry payload reports stable absent native-minimap diagnostic rows with a bounded absence reason
+- **AND** visual tooling can distinguish unavailable state from a missing snapshot schema
+
+### Requirement: Visual geometry readiness includes native minimap frame work
+Automation readiness for visual geometry SHALL account for native minimap refresh, source-map allocation, and post-frame invalidation work that can affect rendered minimap anchors. The `visual-geometry-settled` predicate MUST NOT return ready for native minimap rendered-effect scenarios while known app-owned minimap work or required post-frame native-map sampling is still pending.
+
+#### Scenario: Minimap frame work blocks readiness
+- **WHEN** a sidebar or editor width transition schedules minimap projection refresh, source-map redraw or resize, dynamic overscroll refresh, or final native minimap frame sampling
+- **THEN** `visual-geometry-settled` reports a bounded minimap-related blocker until that work has settled
+- **AND** the application remains responsive while readiness is pending
+
+#### Scenario: Readiness still uses screenshots for rendered truth
+- **WHEN** `visual-geometry-settled` reports ready for a native minimap scenario
+- **THEN** visual tooling may capture screenshots
+- **AND** the final pass/fail result still depends on screenshot-derived pixel anchors rather than the readiness predicate alone
+
+### Requirement: Visual readiness distinguishes settled state from animation capture
+Automation readiness SHALL keep the existing `visual-geometry-settled` predicate
+for final-state proof while allowing animation-frame capture to observe
+intermediate geometry intentionally. Animation capture MUST NOT wait for final
+sidebar geometry before sampling frames, but it MUST still wait for the initial
+document, minimap, and action state needed to start from a known baseline.
+
+#### Scenario: Animation capture starts from ready baseline
+- **WHEN** a visual runner prepares a native minimap animation scenario
+- **THEN** Automation1 readiness confirms the file is loaded, the minimap is visible, the editor starts at the requested scroll position, and the sidebar starts in the requested shown or hidden state
+- **AND** frame sampling starts immediately after the sidebar action rather than after final sidebar geometry settles
+
+#### Scenario: Final readiness remains available after animation capture
+- **WHEN** animation-frame sampling finishes
+- **THEN** visual tooling can still wait for `visual-geometry-settled`
+- **AND** final settled before/after assertions continue to use the existing readiness and geometry predicates
+
+### Requirement: Visual geometry readiness covers final animated allocations
+The automation readiness contract SHALL expose or support deterministic visual-geometry waits that remain blocked until animated shell allocations relevant to the requested workflow have reached their final stable state. For workspace-sidebar transitions, readiness MUST not be considered sufficient for visual proof while the sidebar or editor viewport is still between final allocations.
+
+#### Scenario: Sidebar hide readiness waits for final allocation
+- **WHEN** an automation client hides the workspace sidebar and then waits for visual geometry readiness intended for visual proof
+- **THEN** readiness remains blocked until the sidebar allocation is fully hidden, the editor viewport has expanded to its final left edge, and relevant visual geometry rows have remained stable across multiple samples
+- **AND** the readiness result or snapshot evidence distinguishes final geometry from an intermediate animation frame
+
+#### Scenario: Sidebar show readiness waits for final allocation
+- **WHEN** an automation client shows the workspace sidebar and then waits for visual geometry readiness intended for visual proof
+- **THEN** readiness remains blocked until the sidebar allocation is fully visible, the editor viewport starts after the sidebar, and relevant visual geometry rows have remained stable across multiple samples
+- **AND** a mid-animation sidebar allocation such as a negative `x` while requested visible is not reported as final visual readiness
+
+#### Scenario: Visual readiness timeout exposes blocker detail
+- **WHEN** final animated allocations do not settle before the timeout
+- **THEN** the readiness wait reports a timeout with bounded blocker detail naming the unsettled surface or relationship
+- **AND** it does not return a generic ready status that would allow visual proof to capture stale or transitional geometry
+
+### Requirement: Visual geometry snapshots expose enough state for final-geometry assertions
+Automation snapshots SHALL expose bounded visual-geometry state needed by smoke helpers to assert final sidebar/editor/minimap relationships without private widget access or coordinate guesses.
+
+#### Scenario: Snapshot supports sidebar final-state checks
+- **WHEN** a visual geometry snapshot is requested during or after a workspace sidebar transition
+- **THEN** it includes surface names, visibility, absence reason when any, screen-space rectangles, allocations, scale factor, and requested/visible shell state needed to determine whether the sidebar is fully hidden, fully visible, or transitional
+- **AND** it does not require clients to inspect private GTK widgets
+
+#### Scenario: Snapshot supports rendered anchor diagnostics
+- **WHEN** the minimap is visible
+- **THEN** the snapshot includes bounded app-owned minimap surfaces and pixel-anchor rectangles for the minimap viewport top edge, viewport fill, viewport bottom edge, and first content row when available
+- **AND** screenshot-derived pixel comparison remains responsible for proving rendered-pixel stability

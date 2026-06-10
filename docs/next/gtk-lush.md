@@ -244,8 +244,9 @@ Exit criteria: zero hand-animated paneds; one debounce idiom; rules updated.
 4. Licensing: family crates are dual `MIT OR Apache-2.0` (Rust-ecosystem
    default; compatible with the GPL-3.0-or-later application). REUSE-style
    SPDX headers throughout.
-5. Reserve crate names on crates.io with `0.0.0` placeholders (squat
-   protection only; real publishing is gated by Phase 5).
+5. Prepare `0.0.0` placeholder packages for optional crates.io reservation
+   (squat protection only; publication requires explicit maintainer approval,
+   and real functional publishing is gated by Phase 5).
 6. CI: extend existing container lanes to build/test/doc the family; add an
    MSRV verification job and a `cargo-semver-checks` job (advisory until the
    first real publish).

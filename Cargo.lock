@@ -846,6 +846,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gtk-lush-settle"
+version = "0.0.0"
+dependencies = [
+ "gtk4",
+]
+
+[[package]]
+name = "gtk-lush-signals"
+version = "0.0.0"
+dependencies = [
+ "gtk4",
+]
+
+[[package]]
 name = "gtk4"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2422,6 +2436,8 @@ dependencies = [
  "gobject-sys",
  "log",
  "num-traits",
+ "pango",
+ "pango-sys",
  "serde",
  "serde_core",
  "smallvec",

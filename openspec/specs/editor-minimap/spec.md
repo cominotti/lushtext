@@ -44,19 +44,25 @@ The system SHALL render the minimap from the same active editor buffer and SHALL
 - **AND** the user cannot place a text cursor or type into the minimap itself
 
 ### Requirement: The minimap shows a clear viewport overlay
-The system SHALL render a rectangular semi-transparent viewport overlay inside the minimap that clearly indicates which portion of the document is currently visible in the main editor. That overlay SHALL remain visible whenever the minimap itself is visible. The overlay MUST use a neutral editor-chrome treatment instead of the system accent color, and it MUST remain visually subordinate to semantic markers such as bookmarks, search matches, modified lines, and long-line warnings.
+The system SHALL render the native `GtkSourceMap` rectangular semi-transparent viewport highlight inside the minimap so users can see which portion of the document is currently visible in the main editor. The highlight SHALL preserve the existing neutral editor-chrome fill, border, sizing, and interaction behavior. LushText MUST NOT replace the visible native highlight with an app-owned duplicate or restyled substitute for this behavior. The highlight SHALL remain visible whenever the minimap itself is visible, MUST NOT use system accent color styling, and MUST remain visually subordinate to semantic markers such as bookmarks, search matches, modified lines, and long-line warnings.
 
 #### Scenario: Viewport overlay tracks the visible region during scrolling
 - **WHEN** the user scrolls the active editor page while the minimap is visible
-- **THEN** the minimap updates the viewport overlay position to the corresponding document region
-- **AND** the overlay remains visually distinct from semantic markers behind it
-- **AND** the overlay does not use system accent color styling
+- **THEN** the minimap updates the native viewport highlight position to the corresponding document region
+- **AND** the highlight remains visually distinct from semantic markers behind it
+- **AND** the highlight does not use system accent color styling
 
 #### Scenario: Viewport overlay fills the minimap when the full document is visible
 - **WHEN** the active document fits entirely within the editor viewport and the minimap is enabled
 - **THEN** the minimap remains visible
-- **AND** the viewport overlay expands to indicate that the full document is currently visible
-- **AND** the expanded overlay remains neutral and visually calm rather than appearing as an accent-colored block
+- **AND** the native viewport highlight expands to indicate that the full document is currently visible
+- **AND** the expanded highlight remains neutral and visually calm rather than appearing as an accent-colored block
+
+#### Scenario: Native viewport effect is not replaced
+- **WHEN** the minimap is visible for a supported document
+- **THEN** users see the existing native `GtkSourceMap` viewport highlight effect
+- **AND** no second visible viewport overlay duplicates or hides that native effect
+- **AND** minimap click and drag navigation continue to use the normal source-map interaction path
 
 ### Requirement: Users can navigate from the minimap
 The system SHALL let users navigate the active document from the minimap by clicking or dragging inside it. Minimap navigation SHALL move the main editor viewport to the corresponding document position and SHALL keep editor focus behavior consistent with normal document interaction.
@@ -254,6 +260,7 @@ introduces a new highlight appearance.
 - **AND** the active editor is scrolled to the top of the document
 - **AND** word wrap and the current window width make the workspace-sidebar show animation change editor width
 - **THEN** every sampled animation frame keeps the native minimap viewport top edge within the declared row tolerance
+- **AND** sampled frames keep the first rendered minimap content row within the declared tolerance
 - **AND** the final settled frame still satisfies the existing minimap top-content and viewport-overlay requirements
 
 #### Scenario: Sidebar hide preserves native highlight rows during animation
@@ -261,6 +268,7 @@ introduces a new highlight appearance.
 - **AND** the active editor is scrolled to the top of the document
 - **AND** word wrap and the current window width make the workspace-sidebar hide animation change editor width
 - **THEN** every sampled animation frame keeps the native minimap viewport top edge within the declared row tolerance
+- **AND** sampled frames keep the first rendered minimap content row within the declared tolerance
 - **AND** the final settled frame still satisfies the existing minimap top-content and viewport-overlay requirements
 
 #### Scenario: App geometry cannot excuse rendered native drift
@@ -274,3 +282,101 @@ introduces a new highlight appearance.
 - **THEN** the minimap continues to use the native `GtkSourceMap` viewport highlight for visible presentation
 - **AND** any temporary freeze during width reflow is a copy of the native rendered map pixels rather than a replacement drawing
 - **AND** minimap navigation, read-only behavior, marker layering, focus behavior, and final settled appearance remain unchanged from the existing native effect
+
+#### Scenario: Animation stability does not depend on marker recomputation
+- **WHEN** semantic minimap markers are present while the workspace sidebar animates
+- **THEN** lightweight native source-map geometry stays synchronized for the rendered viewport highlight during sampled frames
+- **AND** expensive semantic marker recomputation MAY remain debounced if markers settle correctly and do not obscure or contradict the native highlight contract
+
+### Requirement: Native minimap highlight remains rendered-pixel stable after width reflow
+The minimap SHALL preserve the existing native `GtkSourceMap` viewport highlight effect after sidebar visibility changes, width-only editor reallocations, word-wrap reflow, dynamic overscroll refreshes, and top-of-document anchoring. The system MUST keep the native highlight's rendered top edge, fill, border, neutral styling, interaction behavior, and marker layering; it MUST NOT satisfy this requirement by replacing the native highlight with an app-owned visible overlay. After layout and native source-map frame work settle, screenshot-derived native-highlight anchors SHALL remain stable according to the visual invariant manifest.
+
+#### Scenario: Sidebar hide preserves rendered top anchors at reproduced size
+- **WHEN** the minimap is enabled for a supported document at the top of the file
+- **AND** word wrap is enabled
+- **AND** the window uses the reproduced intermediate geometry around `1822x1272`
+- **AND** the workspace sidebar is hidden from its fully shown state
+- **THEN** after final sidebar, editor, and minimap allocation settles, the screenshot-derived native viewport top edge remains at the same window-relative y position
+- **AND** the screenshot-derived first rendered minimap content row remains at the same window-relative y position
+- **AND** app-computed minimap geometry alone cannot satisfy the scenario if the rendered pixels drift
+
+#### Scenario: Sidebar show preserves rendered top anchors at reproduced size
+- **WHEN** the minimap is enabled for a supported document at the top of the file
+- **AND** word wrap is enabled
+- **AND** the window uses the reproduced intermediate geometry around `1822x1272`
+- **AND** the workspace sidebar is shown from its fully hidden state
+- **THEN** after final sidebar, editor, and minimap allocation settles, the screenshot-derived native viewport top edge remains at the same window-relative y position
+- **AND** the screenshot-derived first rendered minimap content row remains at the same window-relative y position
+- **AND** the native highlight remains the same neutral `GtkSourceMap` effect rather than a replacement overlay
+
+#### Scenario: Conventional sizes remain controls, not substitutes
+- **WHEN** the minimap/sidebar visual matrix runs at conventional sizes such as 720p, 1080p, 1440p, or `1600x1000`
+- **THEN** those cases verify the same native rendered-highlight behavior for their geometry
+- **AND** passing those sizes does not remove the requirement to run the reproduced intermediate-size case
+
+#### Scenario: Wrap and theme controls preserve the native effect
+- **WHEN** the minimap is visible and the sidebar is shown or hidden after layout settles
+- **AND** the scenario uses dark theme, light theme, word-wrap enabled, or word-wrap disabled controls
+- **THEN** the native viewport highlight remains rendered-pixel stable for that state
+- **AND** semantic minimap markers remain visible above or beside the native highlight according to their existing layering contract
+
+### Requirement: Native minimap diagnostics explain rendered slider position
+The minimap SHALL expose bounded diagnostic geometry that can explain the native `GtkSourceMap` slider position without becoming the pass/fail oracle for rendered pixels. Diagnostics SHALL include an upstream-informed native-slider estimate derived from public text-view geometry, the map's own visible rect or adjustment state, final allocation, and app-vs-rendered comparison results when screenshot anchors are available.
+
+#### Scenario: Diagnostic estimate includes map visible state
+- **WHEN** Automation1 visual geometry is requested while the minimap is visible
+- **THEN** the minimap diagnostics include bounded source-map allocation, editor visible-rect summary, map visible-rect or adjustment summary, native-slider estimate, and existing line-projection anchors
+- **AND** the diagnostics do not expose document text or minimap-rendered text
+
+#### Scenario: Rendered disagreement is diagnostic failure evidence
+- **WHEN** app-computed native-slider diagnostics report a stable y position
+- **AND** screenshot-derived native-highlight pixels move outside the declared tolerance
+- **THEN** the visual artifact records an app-vs-rendered disagreement
+- **AND** the product invariant fails until the rendered pixels are stable
+
+### Requirement: Native minimap animation sync stays responsive
+The minimap SHALL keep animation-frame source-map synchronization lightweight
+enough that sidebar animation and editor interaction remain responsive. Any work
+performed on the frame path MUST avoid full document scans, unbounded text
+snapshots, synchronous filesystem work, or repeated marker rebuilds.
+
+#### Scenario: Frame-path sync avoids expensive document work
+- **WHEN** a sidebar animation produces repeated editor width allocations
+- **THEN** the minimap frame path synchronizes only bounded native source-map geometry and adjustment state
+- **AND** long-line scans, search marker collection, bookmark marker rebuilds, and modified-line marker rebuilds remain debounced or otherwise bounded
+
+#### Scenario: Rapid sidebar toggles do not accumulate stale frame callbacks
+- **WHEN** the user toggles the workspace sidebar repeatedly before a previous animation fully settles
+- **THEN** stale minimap animation-frame callbacks are ignored by generation or visibility checks
+- **AND** the final native highlight and editor scroll state remain correct
+
+### Requirement: Native minimap viewport edge keeps its rendered content anchor
+The minimap SHALL keep the rendered top edge of the native `GtkSourceMap` viewport highlight stable relative to the first rendered minimap content row when the active editor is anchored at the top of the document. Sidebar show/hide, width-only reflow, word-wrap changes, style changes, and dynamic overscroll refreshes MUST NOT remove, clip, or shift that native top-edge treatment by more than the declared pixel tolerance for the current visual scenario.
+
+#### Scenario: Sidebar show preserves native viewport edge
+- **WHEN** the minimap is enabled for a supported document
+- **AND** the active editor is scrolled to the top of the document
+- **AND** the workspace sidebar is shown at a width where the editor allocation changes
+- **THEN** the native minimap viewport highlight top edge remains rendered
+- **AND** the first minimap content row remains rendered
+- **AND** the vertical delta between those rendered screenshot anchors remains within the declared tolerance
+
+#### Scenario: Sidebar hide preserves native viewport edge
+- **WHEN** the minimap is enabled for a supported document
+- **AND** the active editor is scrolled to the top of the document
+- **AND** the workspace sidebar is hidden at a width where the editor allocation changes
+- **THEN** the native minimap viewport highlight top edge remains rendered
+- **AND** the first minimap content row remains rendered
+- **AND** the vertical delta between those rendered screenshot anchors remains within the declared tolerance
+
+#### Scenario: Theme and wrap controls preserve native edge identity
+- **WHEN** the minimap is visible at the top of the document
+- **AND** the visual scenario runs in light and dark style preferences with word wrap enabled and disabled
+- **THEN** each run finds the native viewport top-edge anchor using the style-appropriate screenshot detector
+- **AND** no run accepts viewport fill pixels, minimap background pixels, or semantic marker pixels as a replacement for the top-edge anchor
+
+#### Scenario: Mid-file native highlight remains synchronized
+- **WHEN** the minimap is visible and the editor is scrolled to a representative middle document range
+- **AND** shell reflow changes the editor width
+- **THEN** the native viewport highlight remains synchronized with the settled visible editor range
+- **AND** the highlight bounds remain projectable through the same source-map geometry as semantic minimap markers

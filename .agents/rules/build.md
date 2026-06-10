@@ -31,6 +31,11 @@ make check-filesystem-boundary # no disallowed raw filesystem calls/examples
 make check-policy # fast policy audits beside rustfmt and Clippy
 make check-automation-docs # automation docs drift check against action/D-Bus contracts
 make check-visual-proof-policy # require visual geometry proof for local visual-sensitive changes
+make check-gtk-lush-policy # validate GTK Lush family scaffolding/dependency direction
+make gtk-lush-doctests # run doctests for GTK Lush family crates
+make gtk-lush-examples # compile standalone GTK Lush adoption examples
+make gtk-lush-msrv # check GTK Lush family crates with the declared MSRV
+make gtk-lush-api-advisory # advisory semver/public-API checks for GTK Lush crates
 make automation-client-self-test # reusable D-Bus automation client/parser self-test
 make blueprint-generate # regenerate generated .ui files from Blueprint sources
 make check-blueprint # validate Blueprint drift and UI template contract
@@ -115,7 +120,7 @@ These patterns are replicated from invowk-rust and must be maintained:
 2. **rust-lld** — default linker on x86_64-linux since Rust 1.90 (~10x faster than BFD, zero config). No manual linker override needed.
 3. **cargo-hakari** — run `cargo hakari generate` after any dependency change.
 4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here.
-5. **`rust-version`** — keep `rust-version = "1.96.0"` in `[workspace.package]` and inherited by every package so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` pins the local toolchain to the same version.
+5. **`rust-version`** — keep `rust-version = "1.96.0"` in `[workspace.package]` and inherited by every package so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` pins the local toolchain to the same version. GTK Lush crates also have the dedicated `make gtk-lush-msrv` lane so their independently adoptable surface cannot drift ahead of the workspace floor.
 
 ## Adding Dependencies
 
@@ -124,6 +129,41 @@ These patterns are replicated from invowk-rust and must be maintained:
 3. Run `cargo hakari generate` to update workspace-hack.
 4. Verify gtk-rs version alignment if adding any gtk/glib/gio/pango crate.
 5. Run `make cargo-sources` to regenerate `build-aux/cargo-sources.json` for Flatpak.
+
+Adding a new internal workspace crate still requires `cargo hakari generate`
+and `Cargo.lock` review. Run `make cargo-sources` whenever the lockfile or
+external dependency set changes in a way that affects Flatpak vendoring; if
+the generated `build-aux/cargo-sources.json` stays byte-identical, note that
+in the verification summary.
+
+## GTK Lush Family Foundation
+
+GTK Lush family crates live under `crates/gtk-lush/<member>` and must stay
+independently adoptable leaf crates. Use the family-specific lanes while
+working on `establish-gtk-lush-program` or any follow-up GTK Lush phase:
+
+```
+make check-gtk-lush-policy
+make gtk-lush-doctests
+make gtk-lush-examples
+make gtk-lush-msrv
+make gtk-lush-api-advisory
+```
+
+`make check-gtk-lush-policy` is part of `make check-policy` and fails on
+missing family scaffolding, missing MIT/Apache license metadata, missing SPDX
+headers, LushText crate dependencies, or runtime dependencies between GTK Lush
+family crates. `gtk-lush-doctests` and `gtk-lush-examples` cover the
+documentation and standalone adoption example surface that `nextest` does not
+exercise.
+
+`gtk-lush-api-advisory` runs `cargo-semver-checks` and `cargo-public-api`
+snapshots in advisory mode until the first real `0.1.0` publication. A missing
+published baseline may produce advisory output, but missing tools, command
+rot, or missing/empty public API snapshots are infrastructure failures. The
+lane must still upload or leave inspectable public API snapshots. Once a crate
+publishes functionally, its semver/public-API job must become blocking for
+that crate.
 
 ## Property Testing
 
@@ -423,8 +463,10 @@ All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but thi
 Rust validation helpers installed in CI must be version-pinned in workflow
 `env` blocks or an equally obvious central location. Current pins are
 `CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.137`,
-`CARGO_FUZZ_VERSION=0.13.1`, and `CARGO_MUTANTS_VERSION=27.0.0`. Update the pin
-and rerun the affected local validation command when intentionally refreshing a
-tool.
+`CARGO_FUZZ_VERSION=0.13.1`, `CARGO_MUTANTS_VERSION=27.0.0`,
+`CARGO_SEMVER_CHECKS_VERSION=0.48.0`, `CARGO_PUBLIC_API_VERSION=0.52.0`,
+`GTK_LUSH_MSRV=1.96.0`, and
+`GTK_LUSH_PUBLIC_API_TOOLCHAIN=nightly-2026-06-01`. Update the pin and rerun
+the affected local validation command when intentionally refreshing a tool.
 
 **When bumping gtk-rs version:** update the Fedora version in ci.yml and release-benchmark.yml, and the GNOME tag in flatpak.yml and the Flatpak manifest, to match the new minimum GTK requirement.

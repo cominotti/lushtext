@@ -1,5 +1,11 @@
-## ADDED Requirements
+# gtk-lush-workspace Specification
 
+## Purpose
+Specify how GTK Lush family crates live inside the LushText workspace before
+graduation, including crate layout, scaffolding, CI lanes, name reservation, and
+the governance document that keeps the family independently adoptable.
+
+## Requirements
 ### Requirement: Family workspace layout
 The repository SHALL host the family under `crates/gtk-lush/<member>` with
 package names `gtk-lush-<member>`, wired into the root Cargo workspace,
@@ -51,13 +57,13 @@ versions MUST be pinned alongside the existing tool pins.
 - **THEN** the semver job fails in blocking mode
 
 ### Requirement: Name reservation
-Crates.io reservations of `gtk-lush-*` names SHALL be limited to `0.0.x`
-placeholders until the publishing gates pass. Placeholder releases SHALL
+Crates.io reservations of `gtk-lush-*` names SHALL be limited to initial
+`0.0.0` placeholders until the publishing gates pass. Placeholder releases SHALL
 contain no functional code, SHALL document their placeholder status, and
 SHALL point at the umbrella vision.
 
 #### Scenario: Placeholder content audit
-- **WHEN** a `0.0.x` placeholder is prepared
+- **WHEN** a `0.0.0` placeholder is prepared
 - **THEN** the release contains only metadata, a README referencing
   `docs/next/gtk-lush.md`, and no public API items
 

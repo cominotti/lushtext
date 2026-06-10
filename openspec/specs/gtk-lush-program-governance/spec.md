@@ -1,5 +1,11 @@
-## ADDED Requirements
+# gtk-lush-program-governance Specification
 
+## Purpose
+Define the governance, adoption, maintenance, licensing, publishing, and
+roadmap constraints for the GTK Lush crate family so the project remains a set
+of small, stock gtk-rs-compatible helper crates rather than a framework.
+
+## Requirements
 ### Requirement: Anti-framework constitution
 Every GTK Lush crate, API, and follow-up change SHALL satisfy the program
 constitution: no ownership of GTK control flow (main loop, widget lifecycle,
@@ -88,8 +94,8 @@ hold: at least two real consumers exist (LushText plus one application that is
 not a contrived example), the afternoon-adoption test has passed and is
 journaled, semver and public-API tooling are green, and documentation is
 complete per the engineering bar. Pre-gate crates MAY reserve names on
-crates.io only as `0.0.x` placeholders whose README points at the vision
-document.
+crates.io only as initial `0.0.0` placeholders whose README points at the
+vision document and declares that no public API is available yet.
 
 #### Scenario: Premature publish attempt
 - **WHEN** a release is prepared for a crate with only LushText as a consumer
@@ -102,6 +108,7 @@ declare conformance to this governance capability, and MUST keep LushText's
 full existing gate set green at its phase boundary, including visual-geometry
 proof whenever visual-sensitive files change. The reserved phases are
 `migrate-preview-pane-to-adwaita`, `normalize-declarative-bindings`,
+`extract-gtk-lush-signals-and-settle`,
 `extract-gtk-lush-runtime-geometry`, `extract-gtk-lush-proof-toolchain`,
 `graduate-and-publish-gtk-lush`, and `gtk-lush-upstreaming-round-one`, as
 named in the umbrella vision.
@@ -116,6 +123,25 @@ named in the umbrella vision.
   visual-sensitive LushText code
 - **THEN** the phase passes widget suites plus a visual-geometry run that
   pixel-verifies the affected invariants before it can archive
+
+### Requirement: Maintenance honesty and archiving
+Each family crate SHALL document a bus-factor plan, maintainer handoff path,
+and archiving policy. If a crate or the family can no longer meet its
+treadmill SLAs or becomes unmaintained, maintainers MUST stop functional
+publishing and archive deliberately with migration notes rather than leaving
+stale guidance or unsupported packages behind.
+
+#### Scenario: Governance records maintenance plan
+- **WHEN** `crates/gtk-lush/GOVERNANCE.md` is created or updated
+- **THEN** it records the family bus-factor plan, maintainer handoff path,
+  archiving policy, and the conditions that stop functional releases
+
+#### Scenario: Treadmill failure stops publishing
+- **WHEN** a crate cannot meet its gtk-rs, GNOME SDK, MSRV, or maintainer
+  coverage commitments
+- **THEN** the release checklist blocks functional publication until
+  GOVERNANCE.md records a recovery plan or an archive/deprecation decision
+  with migration notes
 
 ### Requirement: Vision document consistency
 `docs/next/gtk-lush.md` SHALL remain the umbrella narrative for the program.
