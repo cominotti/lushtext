@@ -2719,8 +2719,7 @@ fn test_empty_workspace_manual_refresh_noops_without_feedback_or_watchers() {
     section.imp().refresh_button.emit_clicked();
 
     wait_until(Duration::from_secs(2), || {
-        section.imp().refresh_runtime.generation.get() > 0
-            && !section.imp().refresh_runtime.pending_full_reload.get()
+        !section.imp().refresh_runtime.pending_full_reload.get()
     });
 
     assert!(messages.borrow().is_empty());

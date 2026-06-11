@@ -17,6 +17,7 @@ pub mod preferences;
 pub mod properties_panel;
 pub mod search_bar;
 pub mod search_panel;
+pub(crate) mod settle;
 pub mod shrinkable_bin;
 pub mod sidebar;
 pub mod status_bar;

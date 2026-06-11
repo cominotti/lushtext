@@ -438,25 +438,22 @@ impl LushtextWindow {
     pub(crate) fn prepare_search_progress_tracking(&self) {
         self.finish_search_progress_tracking();
         let imp = self.imp();
-        let generation = imp.search_progress.generation.get().wrapping_add(1);
-        imp.search_progress.generation.set(generation);
         imp.search_progress.visible.set(false);
         self.start_search_progress_heartbeat();
 
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(500), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            let imp = window.imp();
-            if imp.search_progress.generation.get() != generation
-                || !imp.search_panel.imp().runtime.searching.get()
-                || !imp.search_panel_revealer.reveals_child()
-            {
-                return;
-            }
-            imp.search_progress.visible.set(true);
-        });
+        imp.search_progress.visibility_timer.arm(
+            self,
+            Duration::from_millis(500),
+            move |window, _| {
+                let imp = window.imp();
+                if !imp.search_panel.imp().runtime.searching.get()
+                    || !imp.search_panel_revealer.reveals_child()
+                {
+                    return;
+                }
+                imp.search_progress.visible.set(true);
+            },
+        );
     }
 
     /// Publish an informational search-progress update through the notification bus.
@@ -498,6 +495,7 @@ impl LushtextWindow {
 
     pub(crate) fn finish_search_progress_tracking(&self) {
         self.imp().search_progress.visible.set(false);
+        self.imp().search_progress.visibility_timer.invalidate();
         self.stop_search_progress_heartbeat();
         if self
             .imp()

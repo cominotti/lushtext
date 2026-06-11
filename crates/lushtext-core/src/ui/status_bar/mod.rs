@@ -83,29 +83,20 @@ impl LushtextStatusBar {
         imp.pulse_alt.set(!imp.pulse_alt.get());
         area.add_css_class(alt_class);
 
-        let generation = imp.pulse_generation.get().wrapping_add(1);
-        imp.pulse_generation.set(generation);
-        let bar_weak = self.downgrade();
-        // CSS animation timing is visual, but cleanup is widget state. The weak
-        // ref keeps the GTK main-loop timeout from owning the widget, while the
-        // generation guard lets a later pulse keep its classes if this older
-        // timeout fires after rapid repeated notifications.
-        glib::timeout_add_local_once(STATUS_MESSAGE_PULSE_DURATION, move || {
-            let Some(bar) = bar_weak.upgrade() else {
-                return;
-            };
-            let imp = bar.imp();
-            if imp.pulse_generation.get() == generation {
+        // CSS animation timing is visual, but cleanup is widget state. The
+        // superseding timer lets a later pulse keep its classes if an older
+        // cleanup would fire after rapid repeated notifications.
+        imp.pulse_cleanup_timer
+            .arm(self, STATUS_MESSAGE_PULSE_DURATION, move |bar, _| {
+                let imp = bar.imp();
                 clear_message_area_pulse_classes(&imp.message_area_box);
-            }
-        });
+            });
     }
 
     /// Remove any in-flight message-area pulse and invalidate pending cleanup.
     pub fn clear_message_area_pulse(&self) {
         let imp = self.imp();
-        imp.pulse_generation
-            .set(imp.pulse_generation.get().wrapping_add(1));
+        imp.pulse_cleanup_timer.invalidate();
         clear_message_area_pulse_classes(&imp.message_area_box);
     }
 

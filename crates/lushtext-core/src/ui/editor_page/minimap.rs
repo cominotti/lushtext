@@ -16,6 +16,7 @@ use sourceview5::prelude::*;
 
 use crate::config::keys;
 use crate::ui::buffer_snapshot;
+use crate::ui::settle::SettleHandle;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
 
@@ -311,7 +312,7 @@ impl LushtextEditorPage {
     pub(crate) fn minimap_work_pending(&self) -> bool {
         let minimap = &self.imp().minimap;
         minimap.refresh_pending.get()
-            || minimap.reflow_settle_pending.get()
+            || minimap.reflow_settle.pending()
             || minimap.reflow_reveal_pending.get()
     }
 
@@ -419,6 +420,20 @@ impl LushtextEditorPage {
     #[cfg(feature = "test-utils")]
     pub fn mark_minimap_refresh_pending_for_test(&self) {
         self.imp().minimap.refresh_pending.set(true);
+    }
+
+    /// Test seam for readiness assertions that need the settle-burst state.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn minimap_reflow_settle_pending_for_test(&self) -> bool {
+        self.imp().minimap.reflow_settle.pending()
+    }
+
+    /// Test seam for readiness assertions that need all minimap pending work.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn minimap_work_pending_for_test(&self) -> bool {
+        self.minimap_work_pending()
     }
 
     /// Install the per-tab minimap widgets and signal glue.
@@ -598,7 +613,7 @@ impl LushtextEditorPage {
     /// because the minimap shell has its own border/padding and a flush first
     /// line is easy to clip by one pixel after adaptive shell reallocation.
     pub(crate) fn sync_minimap_view_geometry(&self) {
-        if self.imp().minimap.reflow_settle_pending.get() {
+        if self.imp().minimap.reflow_settle.pending() {
             // A width-reflow burst is still in flight, so wrapped document
             // heights are transient estimates. Any margin derived from them
             // would move the native slider by whole pixels mid-animation. The
@@ -645,29 +660,20 @@ impl LushtextEditorPage {
     /// later repair so they never capture an unpainted or partially realized map.
     fn schedule_minimap_reflow_settle_impl(&self, freeze_rendered_map: bool) {
         let minimap = &self.imp().minimap;
-        if !minimap.reflow_settle_pending.get() {
-            minimap.reflow_settle_pending.set(true);
+        if !minimap.reflow_settle.pending() {
             minimap.reflow_reveal_pending.set(false);
         }
         if freeze_rendered_map {
             self.freeze_native_minimap_for_reflow();
         }
 
-        let generation = minimap.reflow_settle_generation.get().wrapping_add(1);
-        minimap.reflow_settle_generation.set(generation);
-        // `_local` timers run on GTK's main loop. A weak editor reference avoids
-        // keeping a closed tab alive, and the generation check discards stale
-        // callbacks from superseded width bursts.
-        let editor_weak = self.downgrade();
-        glib::timeout_add_local_once(MINIMAP_REFLOW_SETTLE_DEBOUNCE, move || {
-            let Some(editor) = editor_weak.upgrade() else {
-                return;
-            };
-            if editor.imp().minimap.reflow_settle_generation.get() != generation {
-                return;
-            }
-            editor.finish_minimap_reflow_settle();
-        });
+        minimap.reflow_settle.schedule(
+            self,
+            MINIMAP_REFLOW_SETTLE_DEBOUNCE,
+            move |editor, handle| {
+                editor.finish_minimap_reflow_settle(&handle);
+            },
+        );
     }
 
     /// Run the one-shot post-reflow repair after the editor width stops moving.
@@ -677,9 +683,9 @@ impl LushtextEditorPage {
     /// scroll. If a shell action captured a cover, the live map repaints under
     /// that cover before reveal; passive bursts have no cover and become ready
     /// as soon as the settled repair finishes.
-    fn finish_minimap_reflow_settle(&self) {
+    fn finish_minimap_reflow_settle(&self, handle: &SettleHandle) {
         // Clear the pin first so the geometry sync below applies the settled margin.
-        self.imp().minimap.reflow_settle_pending.set(false);
+        handle.finish_if_current();
 
         // The rest flag was recorded from user scrolling outside the burst, so
         // a stale GTK-preserved offset during reallocation cannot suppress the
@@ -707,16 +713,10 @@ impl LushtextEditorPage {
             self.drop_minimap_reflow_freeze();
             return;
         }
-        let generation = self.imp().minimap.reflow_settle_generation.get();
-        let editor_weak = self.downgrade();
-        glib::timeout_add_local_once(MINIMAP_REFLOW_REVEAL_DELAY, move || {
-            let Some(editor) = editor_weak.upgrade() else {
-                return;
-            };
-            if editor.imp().minimap.reflow_settle_generation.get() != generation {
+        handle.schedule_follow_up(self, MINIMAP_REFLOW_REVEAL_DELAY, move |editor| {
+            if !editor.imp().minimap.reflow_reveal_pending.replace(false) {
                 return;
             }
-            editor.imp().minimap.reflow_reveal_pending.set(false);
             editor.drop_minimap_reflow_freeze();
         });
     }
@@ -856,7 +856,7 @@ impl LushtextEditorPage {
     /// should trade the conservative delay for immediate responsiveness.
     pub(crate) fn reveal_minimap_reflow_freeze_for_user_scroll(&self) {
         let minimap = &self.imp().minimap;
-        if minimap.reflow_settle_pending.get() || !minimap.reflow_reveal_pending.get() {
+        if minimap.reflow_settle.pending() || !minimap.reflow_reveal_pending.get() {
             return;
         }
 
@@ -937,10 +937,7 @@ impl LushtextEditorPage {
             // visible layout. Cancel pending timers first, then sync once so
             // the next visible frame cannot inherit old geometry.
             let minimap = &self.imp().minimap;
-            minimap
-                .reflow_settle_generation
-                .set(minimap.reflow_settle_generation.get().wrapping_add(1));
-            minimap.reflow_settle_pending.set(false);
+            minimap.reflow_settle.clear();
             minimap.reflow_reveal_pending.set(false);
             self.sync_minimap_view_geometry();
             self.drop_minimap_reflow_freeze();
@@ -957,23 +954,15 @@ impl LushtextEditorPage {
 
     /// Debounce marker recomputation after search, edits, or viewport changes.
     pub(crate) fn schedule_minimap_refresh(&self) {
-        let generation = self.imp().minimap.refresh_generation.get().wrapping_add(1);
-        self.imp().minimap.refresh_generation.set(generation);
         self.imp().minimap.refresh_pending.set(true);
 
-        let editor_weak = self.downgrade();
-        // Schedule the debounced refresh on GTK's main loop. The `_local`
-        // variant is required because this closure upgrades and touches GTK
-        // objects, which are main-thread-only and not `Send`.
-        glib::timeout_add_local_once(MINIMAP_REFRESH_DEBOUNCE, move || {
-            let Some(editor) = editor_weak.upgrade() else {
-                return;
-            };
-            if editor.imp().minimap.refresh_generation.get() != generation {
-                return;
-            }
-            editor.refresh_minimap();
-        });
+        self.imp().minimap.refresh_debounce.schedule(
+            self,
+            MINIMAP_REFRESH_DEBOUNCE,
+            move |editor, _| {
+                editor.refresh_minimap();
+            },
+        );
     }
 
     /// Queue a redraw of the semantic marker strip when it exists.

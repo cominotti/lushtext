@@ -151,6 +151,7 @@ impl LushtextWindow {
         let should_leave_fullscreen = !imp.focus_mode.was_fullscreen_on_entry.get();
 
         imp.focus_mode.active.set(false);
+        imp.focus_mode.affordance_timer.invalidate();
         imp.focus_mode_revealer.set_reveal_child(false);
         self.set_preview_mode_for_focus_mode(false);
         if restore_preview {
@@ -243,23 +244,17 @@ impl LushtextWindow {
             return;
         }
         imp.focus_mode_revealer.set_reveal_child(true);
-        let generation = imp.focus_mode.affordance_generation.get().wrapping_add(1);
-        imp.focus_mode.affordance_generation.set(generation);
 
-        let window_weak = self.downgrade();
-        // Schedule delayed hide on GTK's main loop. `_local` is correct here
-        // because the closure upgrades a weak window and touches GTK widgets.
-        glib::timeout_add_local_once(std::time::Duration::from_millis(1800), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            let imp = window.imp();
-            if imp.focus_mode.affordance_generation.get() == generation
-                && !imp.focus_mode_affordance.has_focus()
-            {
-                imp.focus_mode_revealer.set_reveal_child(false);
-            }
-        });
+        imp.focus_mode.affordance_timer.arm(
+            self,
+            std::time::Duration::from_millis(1800),
+            move |window, _| {
+                let imp = window.imp();
+                if !imp.focus_mode_affordance.has_focus() {
+                    imp.focus_mode_revealer.set_reveal_child(false);
+                }
+            },
+        );
     }
 
     /// Keep active Focus Mode presentation synchronized with preference changes.

@@ -670,21 +670,12 @@ impl LushtextSidebar {
             return;
         }
 
-        let generation = imp.persist_generation.get().wrapping_add(1);
-        imp.persist_generation.set(generation);
-
-        let sidebar_weak = self.downgrade();
-        glib::timeout_add_local_once(
+        imp.persist_debounce.schedule(
+            self,
             Duration::from_millis(super::PERSIST_DEBOUNCE_MS),
-            move || {
-                let Some(sidebar) = sidebar_weak.upgrade() else {
-                    return;
-                };
+            move |sidebar, _| {
                 let imp = sidebar.imp();
-                if imp.persist_inflight.get()
-                    || imp.persist_generation.get() != generation
-                    || !imp.persist_dirty.get()
-                {
+                if imp.persist_inflight.get() || !imp.persist_dirty.get() {
                     return;
                 }
 

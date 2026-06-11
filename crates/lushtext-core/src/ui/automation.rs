@@ -690,7 +690,7 @@ fn window_readiness_blocker(
     }
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.preview_transition_active.get(),
+        imp.preview_transition_settle.pending(),
         READINESS_BLOCKER_PREVIEW_ANIMATION,
     ) {
         return Some(blocker);

@@ -72,40 +72,35 @@ impl super::LushtextWindow {
         if self.imp().session.restoring.get() {
             return;
         }
-        let generation = self.imp().session.save_generation.get().wrapping_add(1);
-        self.imp().session.save_generation.set(generation);
 
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(500), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            if window.imp().session.save_generation.get() != generation {
-                return;
-            }
-            let session = window.collect_session();
-            let data_dir = json_store::data_dir();
-            let ordered_generation = u64::from(generation);
-            async_task::spawn_blocking_then(
-                window,
-                move || session_service::save_ordered(&data_dir, &session, ordered_generation),
-                move |window, result| match result {
-                    Ok(true) => window.clear_session_save_failure(generation),
-                    Ok(false) => {}
-                    Err(error) => {
-                        tracing::error!("Failed to save session: {error}");
-                        let detail = error.to_string();
-                        window.record_session_save_failure(generation, &detail, true);
-                    }
-                },
-            );
-        });
+        self.imp().session.save_debounce.schedule(
+            self,
+            Duration::from_millis(500),
+            move |window, token| {
+                let generation = token.value();
+                let session = window.collect_session();
+                let data_dir = json_store::data_dir();
+                let ordered_generation = u64::from(generation);
+                async_task::spawn_blocking_then(
+                    window,
+                    move || session_service::save_ordered(&data_dir, &session, ordered_generation),
+                    move |window, result| match result {
+                        Ok(true) => window.clear_session_save_failure(generation),
+                        Ok(false) => {}
+                        Err(error) => {
+                            tracing::error!("Failed to save session: {error}");
+                            let detail = error.to_string();
+                            window.record_session_save_failure(generation, &detail, true);
+                        }
+                    },
+                );
+            },
+        );
     }
 
     /// Synchronous session save for the close-request path.
     pub fn save_session_sync(&self) {
-        let generation = self.imp().session.save_generation.get().wrapping_add(1);
-        self.imp().session.save_generation.set(generation);
+        let generation = self.imp().session.save_debounce.advance().value();
         let session = self.collect_session();
         let data_dir = json_store::data_dir();
         match session_service::save_ordered(&data_dir, &session, u64::from(generation)) {
@@ -121,8 +116,7 @@ impl super::LushtextWindow {
 
     /// Save session for close on a background worker, then continue the close flow.
     pub fn save_session_for_close_async<F: FnOnce() + 'static>(&self, on_done: F) {
-        let generation = self.imp().session.save_generation.get().wrapping_add(1);
-        self.imp().session.save_generation.set(generation);
+        let generation = self.imp().session.save_debounce.advance().value();
         let session = self.collect_session();
         let data_dir = json_store::data_dir();
         async_task::spawn_blocking_then(

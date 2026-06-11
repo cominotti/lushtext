@@ -7,6 +7,7 @@
 
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
+use crate::ui::settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
@@ -75,8 +76,8 @@ pub struct LushtextSidebar {
     pub workspace_structure_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
     /// Callback notifying the window that the shared workspace scope changed.
     pub workspace_scope_changed_callback: RefCell<Option<WorkspaceScopeCallback>>,
-    /// Generation counter for debouncing workspace persistence (150ms).
-    pub persist_generation: Cell<u32>,
+    /// Debounce for workspace persistence (150ms).
+    pub persist_debounce: Debounce,
     /// Guard preventing overlapping persistence writes to disk.
     pub persist_inflight: Cell<bool>,
     /// Dirty flag set when a mutation occurs while persistence is in-flight.
@@ -112,7 +113,7 @@ impl Default for LushtextSidebar {
             folder_note_for_folder_callback: RefCell::default(),
             workspace_structure_changed_callback: RefCell::default(),
             workspace_scope_changed_callback: RefCell::default(),
-            persist_generation: Cell::default(),
+            persist_debounce: Debounce::default(),
             persist_inflight: Cell::default(),
             persist_dirty: Cell::default(),
             settings: gio::Settings::new(crate::config::APP_ID),

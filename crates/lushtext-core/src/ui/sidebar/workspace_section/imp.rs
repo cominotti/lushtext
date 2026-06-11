@@ -14,6 +14,7 @@ use crate::model::workspace::{
 use crate::services::file_peek::PeekRequestToken;
 use crate::services::notifications::NotificationSeverity;
 use crate::services::workspace_watch::WorkspaceWatcher;
+use crate::ui::settle::Debounce;
 use gtk4::gio;
 use gtk4::gio::prelude::ListModelExt;
 use gtk4::prelude::*;
@@ -83,8 +84,8 @@ pub struct PeekSessionState {
 /// Debounced refresh state for one workspace section.
 #[derive(Default)]
 pub struct RefreshRuntimeState {
-    /// Generation counter used to drop stale debounce callbacks.
-    pub generation: Cell<u32>,
+    /// Debounce used to drop stale refresh callbacks.
+    pub debounce: Debounce,
     /// Paths accumulated since the last refresh run.
     pub pending_paths: RefCell<HashSet<PathBuf>>,
     /// Whether the next refresh must rebuild the whole current section view.

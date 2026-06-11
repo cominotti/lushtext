@@ -214,21 +214,18 @@ fn test_warning_and_error_pulses_choose_severity_classes() {
 }
 
 #[test]
-fn test_repeated_pulse_restarts_with_new_generation_and_alternating_class() {
+fn test_repeated_pulse_restarts_with_alternating_class() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
 
     bar.pulse_message_area(MessageKind::Info);
-    let first_generation = bar.imp().pulse_generation.get();
     let first_used_a = bar.imp().message_area_box.has_css_class("status-pulse-a");
     let first_used_b = bar.imp().message_area_box.has_css_class("status-pulse-b");
 
     bar.pulse_message_area(MessageKind::Info);
-    let second_generation = bar.imp().pulse_generation.get();
     let second_used_a = bar.imp().message_area_box.has_css_class("status-pulse-a");
     let second_used_b = bar.imp().message_area_box.has_css_class("status-pulse-b");
 
-    assert!(second_generation > first_generation);
     assert_ne!(first_used_a, second_used_a);
     assert_ne!(first_used_b, second_used_b);
     assert!(bar.imp().message_area_box.has_css_class("status-pulse-info"));

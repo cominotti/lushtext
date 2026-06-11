@@ -70,24 +70,16 @@ impl LushtextWorkspaceSection {
         }
         runtime.pending_paths.borrow_mut().extend(changed_paths);
 
-        let generation = runtime.generation.get().wrapping_add(1);
-        runtime.generation.set(generation);
-
         let delay = if full_reload {
             MANUAL_REFRESH_DEBOUNCE_MS
         } else {
             AUTO_REFRESH_DEBOUNCE_MS
         };
-        let section_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
-            let Some(section) = section_weak.upgrade() else {
-                return;
-            };
-            if section.imp().refresh_runtime.generation.get() != generation {
-                return;
-            }
-            section.apply_queued_refresh();
-        });
+        runtime
+            .debounce
+            .schedule(self, Duration::from_millis(delay), move |section, _| {
+                section.apply_queued_refresh();
+            });
     }
 
     fn apply_queued_refresh(&self) {

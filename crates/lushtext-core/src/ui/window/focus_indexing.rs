@@ -310,39 +310,33 @@ impl LushtextWindow {
 
     /// Build the file index from all workspace folders on a background thread.
     pub fn rebuild_file_index(&self) {
-        let generation = self.imp().index_rebuild_generation.get().wrapping_add(1);
-        self.imp().index_rebuild_generation.set(generation);
-
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            if window.imp().index_rebuild_generation.get() != generation {
-                return;
-            }
-            let prev_count = window.imp().command_palette.file_index_len();
-            let folders = window.current_workspace_folder_paths();
-            let window_weak = window.downgrade();
-            async_task::spawn_blocking_then(
-                (),
-                move || {
-                    if prev_count == 0 {
-                        FileIndex::rebuild(&folders)
-                    } else {
-                        FileIndex::rebuild_with_hint(&folders, prev_count)
-                    }
-                },
-                move |(), index| {
-                    if let Some(window) = window_weak.upgrade() {
-                        if window.imp().index_rebuild_generation.get() != generation {
-                            return;
+        self.imp().index_rebuild_debounce.schedule(
+            self,
+            std::time::Duration::from_millis(300),
+            move |window, token| {
+                let prev_count = window.imp().command_palette.file_index_len();
+                let folders = window.current_workspace_folder_paths();
+                let window_weak = window.downgrade();
+                async_task::spawn_blocking_then(
+                    (),
+                    move || {
+                        if prev_count == 0 {
+                            FileIndex::rebuild(&folders)
+                        } else {
+                            FileIndex::rebuild_with_hint(&folders, prev_count)
                         }
-                        window.imp().command_palette.set_file_index(index);
-                    }
-                },
-            );
-        });
+                    },
+                    move |(), index| {
+                        if let Some(window) = window_weak.upgrade() {
+                            if !window.imp().index_rebuild_debounce.is_current(token) {
+                                return;
+                            }
+                            window.imp().command_palette.set_file_index(index);
+                        }
+                    },
+                );
+            },
+        );
     }
 
     /// Refresh command-palette source metadata owned by the window shell.

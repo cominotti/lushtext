@@ -7,6 +7,7 @@
 
 use std::cell::Cell;
 
+use crate::ui::settle::SupersedingTimer;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
@@ -50,11 +51,8 @@ pub struct LushtextStatusBar {
     /// Encoding entry point for the active document.
     #[template_child]
     pub encoding_button: TemplateChild<gtk4::Button>,
-    /// Generation guard for delayed pulse cleanup callbacks.
-    ///
-    /// GObject methods only receive `&self`, so the widget uses interior
-    /// mutability to let each new pulse invalidate older timeout callbacks.
-    pub pulse_generation: Cell<u32>,
+    /// Superseding cleanup timer for delayed pulse-class removal.
+    pub pulse_cleanup_timer: SupersedingTimer,
     /// Alternates otherwise equivalent pulse classes so rapid repeated messages
     /// restart GTK's CSS animation even when severity and text are unchanged.
     pub pulse_alt: Cell<bool>,

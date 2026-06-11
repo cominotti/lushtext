@@ -107,7 +107,7 @@ impl LushtextEditorPage {
     /// burst represent intentional scrolling. The rest state is what the
     /// settle repair consults to decide whether edge anchors may be restored.
     fn record_viewport_rest_state(&self, adjustment: &gtk4::Adjustment, axis: ViewportAxis) {
-        if self.imp().minimap.reflow_settle_pending.get() {
+        if self.imp().minimap.reflow_settle.pending() {
             return;
         }
         let at_lower = adjustment_rests_at_lower(adjustment);

@@ -16,6 +16,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
 use crate::ui::properties_panel::LushtextPropertiesPanel;
 use crate::ui::search_panel::LushtextSearchPanel;
+use crate::ui::settle::{Debounce, SettleBurst, SupersedingTimer};
 use crate::ui::shrinkable_bin::LushtextShrinkableBin;
 use crate::ui::sidebar::{LushtextSidebar, WorkspaceSidebarWidthPreset};
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
@@ -172,8 +173,8 @@ pub struct EditorMemoryState {
 pub struct SearchProgressState {
     /// Periodic lease renewal for active search progress notifications.
     pub heartbeat_source_id: RefCell<Option<glib::SourceId>>,
-    /// Generation counter for delayed search-progress display.
-    pub generation: Cell<u32>,
+    /// Superseding delay before progress is allowed to appear in the status bar.
+    pub visibility_timer: SupersedingTimer,
     /// Whether search progress is allowed to render after the initial delay.
     pub visible: Cell<bool>,
 }
@@ -181,8 +182,8 @@ pub struct SearchProgressState {
 /// Session-persistence state for the main window shell.
 #[derive(Default)]
 pub struct SessionState {
-    /// Generation counter for debouncing session saves (500ms).
-    pub save_generation: Cell<u32>,
+    /// Debounce for session saves (500ms) and ordered-save freshness.
+    pub save_debounce: Debounce,
     /// Guard flag while restoring session state from disk.
     pub restoring: Cell<bool>,
     /// Whether the newest attempted session save failed and still needs retry.
@@ -208,8 +209,8 @@ pub struct FocusModeState {
     pub restore_side_by_side_preview: Cell<bool>,
     /// Whether the user changed preview state while focused.
     pub preview_changed_while_focused: Cell<bool>,
-    /// Generation counter for delayed affordance hiding.
-    pub affordance_generation: Cell<u32>,
+    /// Superseding timer for delayed affordance hiding.
+    pub affordance_timer: SupersedingTimer,
 }
 
 /// Draft lifecycle state owned by the main window shell.
@@ -217,8 +218,8 @@ pub struct FocusModeState {
 pub struct DraftState {
     /// Source ID for the global autosave timer. Removed on dispose.
     pub autosave_source_id: RefCell<Option<glib::SourceId>>,
-    /// Short debounce source for the first dirty draft after a clean cycle.
-    pub first_dirty_autosave_source_id: RefCell<Option<glib::SourceId>>,
+    /// Superseding one-shot for the first dirty draft after a clean cycle.
+    pub first_dirty_autosave_timer: SupersedingTimer,
     /// In-memory draft manifest kept in sync with disk.
     pub manifest: RefCell<DraftManifest>,
     /// Draft restore outcomes preloaded during session restore and consumed once.
@@ -341,14 +342,12 @@ pub struct LushtextWindow {
     pub preview_mode: Cell<bool>,
     /// Legacy preferred side-by-side preview width from `preview-pane-position`.
     pub preferred_preview_width: Cell<i32>,
-    /// True while preview layout switching or embedded widget repair is settling.
-    pub preview_transition_active: Cell<bool>,
-    /// Generation counter for coalescing preview layout-settle repairs.
-    pub preview_transition_generation: Cell<u32>,
-    /// Generation counter for debouncing preview renders (300ms).
-    pub preview_render_generation: Cell<u32>,
-    /// Generation counter for debouncing file index rebuilds (300ms).
-    pub index_rebuild_generation: Cell<u32>,
+    /// Settle burst while preview layout switching or embedded widget repair is pending.
+    pub preview_transition_settle: SettleBurst,
+    /// Debounce for preview renders (300ms).
+    pub preview_render_debounce: Debounce,
+    /// Debounce for command-palette file index rebuilds (300ms).
+    pub index_rebuild_debounce: Debounce,
     /// Focus widget saved before the command palette steals focus.
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     /// One-tick latch for Escape already handled by a child command-palette entry.
@@ -435,10 +434,9 @@ impl Default for LushtextWindow {
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
             preferred_preview_width: Cell::new(PREVIEW_DEFAULT_WIDTH_SP),
-            preview_transition_active: Cell::new(false),
-            preview_transition_generation: Cell::new(0),
-            preview_render_generation: Cell::new(0),
-            index_rebuild_generation: Cell::new(0),
+            preview_transition_settle: SettleBurst::default(),
+            preview_render_debounce: Debounce::default(),
+            index_rebuild_debounce: Debounce::default(),
             saved_focus: RefCell::new(None),
             transient_child_escape_handled: Cell::new(false),
             open_paths: RefCell::new(HashSet::new()),
@@ -888,9 +886,6 @@ impl ObjectImpl for LushtextWindow {
 
     fn dispose(&self) {
         if let Some(source_id) = self.drafts.autosave_source_id.take() {
-            source_id.remove();
-        }
-        if let Some(source_id) = self.drafts.first_dirty_autosave_source_id.take() {
             source_id.remove();
         }
         if let Some(source_id) = self.notification_sweep_source_id.take() {

@@ -5,7 +5,7 @@ Code examples for making the command palette's fuzzy search and file indexing sc
 ## Table of Contents
 
 1. [Debounced Search Input](#1-debounced-search)
-2. [Generation Counter for Stale Results](#2-generation-counter)
+2. [Debounce Token for Stale Results](#2-generation-counter)
 3. [Bounded Heap for Top-N](#3-bounded-heap)
 4. [Incremental Index Updates](#4-incremental-index)
 5. [SIMD Fuzzy Search](#5-nucleo)
@@ -15,13 +15,13 @@ Code examples for making the command palette's fuzzy search and file indexing sc
 
 ## 1. Debounced Search Input {#1-debounced-search}
 
-**Status: IMPLEMENTED** — `setup_search` in `command_palette/imp.rs` uses a 150ms generation-counter debounce. Empty queries rebuild immediately (instant clear UX); non-empty queries are debounced via `timeout_add_local_once(150ms)` with a `Cell<u32>` generation counter that stale-checks on timer fire.
+**Status: IMPLEMENTED** — `setup_search` in `command_palette/imp.rs` uses a 150ms `crate::ui::settle::Debounce`. Empty queries rebuild immediately (instant clear UX); non-empty queries are scheduled through the helper, and superseded timers no-op before rebuilding.
 
 ---
 
-## 2. Generation Counter for Stale Results {#2-generation-counter}
+## 2. Debounce Token for Stale Results {#2-generation-counter}
 
-**Status: IMPLEMENTED** — `search_generation: Cell<u32>` on the imp struct. `rebuild_results` increments and captures the generation; on completion, checks if it's still current before updating the `ListStore`. This prevents stale results from flashing when the user types faster than the debounce interval.
+**Status: IMPLEMENTED** — `search_debounce: Debounce` on the imp struct. `rebuild_results` advances and captures the helper token; on completion, it checks whether the token is still current before updating the `ListStore`. This prevents stale results from flashing when the user types faster than the debounce interval.
 
 ---
 
@@ -47,4 +47,4 @@ Code examples for making the command palette's fuzzy search and file indexing sc
 
 ## 6. Index Rebuild Coalescing {#6-rebuild-coalescing}
 
-**Status: IMPLEMENTED** — `rebuild_file_index` in `window/mod.rs` uses a 300ms generation-counter debounce (`index_rebuild_generation: Cell<u32>`). Each call increments the counter and schedules a `timeout_add_local_once(300ms)`. The timer callback checks the generation — if it's still current, it spawns a background `FileIndex::rebuild` via `spawn_blocking_then`. This coalesces rapid workspace mutations (add/remove folders) into a single rebuild.
+**Status: IMPLEMENTED** — `rebuild_file_index` in `window/focus_indexing.rs` uses a 300ms `Debounce` (`index_rebuild_debounce`). If the scheduled token is still current, it spawns a background `FileIndex::rebuild` via `spawn_blocking_then`; async completion checks the same token before installing results. This coalesces rapid workspace mutations (add/remove folders) into a single rebuild.

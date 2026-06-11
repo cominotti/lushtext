@@ -11,6 +11,7 @@ use super::item::SearchResultItem;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 use crate::model::content_search::{Replacement, SavedSearch, SearchHistoryEntry, SearchMatch};
 use crate::services::content_search::ReplaceUndoBackup;
+use crate::ui::settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
@@ -52,10 +53,10 @@ pub struct SearchRuntimeState {
     pub search_matches: RefCell<Vec<SearchMatch>>,
     /// Cancel token for the currently running worker thread, if any.
     pub cancel_token: RefCell<Option<Arc<AtomicBool>>>,
-    /// Generation counter for debouncing search-entry input.
-    pub search_generation: Cell<u32>,
-    /// Generation counter for debouncing the glob entry separately from the main query.
-    pub glob_generation: Cell<u32>,
+    /// Debounce for search-entry input.
+    pub search_debounce: Debounce,
+    /// Debounce for glob-entry input, separate from the main query.
+    pub glob_debounce: Debounce,
     /// Workspace folders to search. Updated by the window when workspaces change.
     pub workspace_folders: RefCell<Vec<PathBuf>>,
     /// Running total of matches in the current search.
@@ -77,8 +78,8 @@ impl Default for SearchRuntimeState {
             file_groups: RefCell::new(HashMap::new()),
             search_matches: RefCell::new(Vec::new()),
             cancel_token: RefCell::new(None),
-            search_generation: Cell::new(0),
-            glob_generation: Cell::new(0),
+            search_debounce: Debounce::default(),
+            glob_debounce: Debounce::default(),
             workspace_folders: RefCell::new(Vec::new()),
             total_matches: Cell::new(0),
             total_files: Cell::new(0),
@@ -497,7 +498,7 @@ impl LushtextSearchPanel {
             panel.update_replace_button_sensitivity();
         });
 
-        // 8. Glob entry: 300ms generation-counter debounce.
+        // 8. Glob entry: 300ms debounce.
         let panel_weak = self.obj().downgrade();
         self.glob_entry.connect_changed(move |_| {
             let Some(panel) = panel_weak.upgrade() else {
@@ -507,14 +508,11 @@ impl LushtextSearchPanel {
             if imp.history.restoring_history.get() {
                 return; // History restore — skip debounce.
             }
-            let current_gen = imp.runtime.glob_generation.get().wrapping_add(1);
-            imp.runtime.glob_generation.set(current_gen);
 
-            schedule_panel_debounce(
+            imp.runtime.glob_debounce.schedule(
                 &panel,
-                current_gen,
-                |panel| panel.imp().runtime.glob_generation.get(),
-                move |panel| {
+                Duration::from_millis(SEARCH_INPUT_DEBOUNCE_MS),
+                move |panel, _| {
                     let spec = panel.current_query_spec();
                     if !spec.query.is_empty() {
                         panel.start_search(&spec);
@@ -584,21 +582,17 @@ impl LushtextSearchPanel {
                 return;
             }
 
-            // Generation-counter debounce: 300ms.
-            let generation = imp.runtime.search_generation.get().wrapping_add(1);
-            imp.runtime.search_generation.set(generation);
-
             let spec = panel.current_query_spec();
             if spec.query.is_empty() {
+                imp.runtime.search_debounce.invalidate();
                 panel.start_search(&spec);
                 return;
             }
 
-            schedule_panel_debounce(
+            imp.runtime.search_debounce.schedule(
                 &panel,
-                generation,
-                |panel| panel.imp().runtime.search_generation.get(),
-                move |panel| {
+                Duration::from_millis(SEARCH_INPUT_DEBOUNCE_MS),
+                move |panel, _| {
                     let spec = panel.current_query_spec();
                     panel.start_search(&spec);
                 },
@@ -711,29 +705,6 @@ pub fn make_display_path(path: &Path, workspace_folders: &[PathBuf]) -> String {
         }
     }
     path.display().to_string()
-}
-
-fn schedule_panel_debounce<F>(
-    panel: &super::LushtextSearchPanel,
-    generation: u32,
-    current_generation: fn(&super::LushtextSearchPanel) -> u32,
-    callback: F,
-) where
-    F: FnOnce(super::LushtextSearchPanel) + 'static,
-{
-    let panel_weak = panel.downgrade();
-    let callback = RefCell::new(Some(callback));
-    glib::timeout_add_local_once(Duration::from_millis(SEARCH_INPUT_DEBOUNCE_MS), move || {
-        let Some(panel) = panel_weak.upgrade() else {
-            return;
-        };
-        if current_generation(&panel) != generation {
-            return;
-        }
-        if let Some(callback) = callback.borrow_mut().take() {
-            callback(panel);
-        }
-    });
 }
 
 #[cfg(test)]

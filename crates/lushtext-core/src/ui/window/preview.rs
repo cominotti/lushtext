@@ -187,25 +187,15 @@ impl LushtextWindow {
     pub(super) fn queue_preview_layout_settle(&self) {
         let imp = self.imp();
         if !imp.preview_visible.get() && !imp.preview_mode.get() {
-            imp.preview_transition_active.set(false);
+            imp.preview_transition_settle.clear();
             return;
         }
 
-        let generation = imp.preview_transition_generation.get().wrapping_add(1);
-        imp.preview_transition_generation.set(generation);
-        imp.preview_transition_active.set(true);
-
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(
+        imp.preview_transition_settle.schedule(
+            self,
             std::time::Duration::from_millis(PREVIEW_SETTLE_DELAY_MS),
-            move || {
-                let Some(window) = window_weak.upgrade() else {
-                    return;
-                };
+            move |window, handle| {
                 let imp = window.imp();
-                if imp.preview_transition_generation.get() != generation {
-                    return;
-                }
                 if imp.preview_visible.get() || imp.preview_mode.get() {
                     let window_weak = window.downgrade();
                     imp.markdown_preview
@@ -213,16 +203,36 @@ impl LushtextWindow {
                             let Some(window) = window_weak.upgrade() else {
                                 return;
                             };
-                            let imp = window.imp();
-                            if imp.preview_transition_generation.get() == generation {
-                                imp.preview_transition_active.set(false);
+                            if window.imp().preview_transition_settle.pending() {
+                                handle.finish_if_current();
                             }
                         });
                 } else {
-                    imp.preview_transition_active.set(false);
+                    handle.finish_if_current();
                 }
             },
         );
+    }
+
+    /// Test seam for readiness coverage that needs a pending preview settle.
+    #[cfg(feature = "test-utils")]
+    pub fn set_preview_transition_pending_for_test(&self, pending: bool) {
+        if pending {
+            self.imp().preview_transition_settle.schedule(
+                self,
+                std::time::Duration::from_secs(60),
+                move |_, handle| handle.finish_if_current(),
+            );
+        } else {
+            self.imp().preview_transition_settle.clear();
+        }
+    }
+
+    /// Test seam exposing the helper-backed preview settle state.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn preview_transition_pending_for_test(&self) -> bool {
+        self.imp().preview_transition_settle.pending()
     }
 
     /// Show or hide side-by-side preview as a temporary Focus Mode effect.
@@ -362,22 +372,16 @@ impl LushtextWindow {
     }
 
     /// Debounced version of `refresh_preview` for buffer change events.
-    /// Uses a 300ms generation counter to coalesce rapid edits.
+    /// Uses a 300ms debounce to coalesce rapid edits.
     pub(super) fn refresh_preview_debounced(&self) {
         let imp = self.imp();
-        let generation = imp.preview_render_generation.get().wrapping_add(1);
-        imp.preview_render_generation.set(generation);
-
-        let window_weak = self.downgrade();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            if window.imp().preview_render_generation.get() != generation {
-                return;
-            }
-            window.refresh_preview();
-        });
+        imp.preview_render_debounce.schedule(
+            self,
+            std::time::Duration::from_millis(300),
+            move |window, _| {
+                window.refresh_preview();
+            },
+        );
     }
 
     /// Get the active editor for preview purposes.

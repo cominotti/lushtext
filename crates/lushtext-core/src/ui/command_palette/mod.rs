@@ -215,39 +215,34 @@ impl LushtextCommandPalette {
 
     fn schedule_index_update_flush(&self) {
         let imp = self.imp();
-        let generation = imp.index_update_generation.get().wrapping_add(1);
-        imp.index_update_generation.set(generation);
+        imp.index_update_debounce.schedule(
+            self,
+            Duration::from_millis(INDEX_UPDATE_DEBOUNCE_MS),
+            move |palette, _| {
+                let imp = palette.imp();
+                if imp.pending_index_updates.borrow().is_empty() {
+                    return;
+                }
 
-        let palette_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(INDEX_UPDATE_DEBOUNCE_MS), move || {
-            let Some(palette) = palette_weak.upgrade() else {
-                return;
-            };
-            let imp = palette.imp();
-            if imp.index_update_generation.get() != generation
-                || imp.pending_index_updates.borrow().is_empty()
-            {
-                return;
-            }
+                // Apply mutations in place on the main thread. The incremental
+                // operations (add/remove/rename) are O(n) linear scans with no I/O,
+                // so they're cheaper than the clone that would be needed to send the
+                // index to a background thread. Arc::make_mut avoids cloning when no
+                // concurrent search holds a reference (the common case).
+                let updates = std::mem::take(&mut *imp.pending_index_updates.borrow_mut());
+                let mut file_index = imp.file_index.borrow_mut();
+                let index = Arc::make_mut(&mut file_index);
+                for update in updates {
+                    update.apply(index);
+                }
+                drop(file_index);
 
-            // Apply mutations in place on the main thread. The incremental
-            // operations (add/remove/rename) are O(n) linear scans with no I/O,
-            // so they're cheaper than the clone that would be needed to send the
-            // index to a background thread. Arc::make_mut avoids cloning when no
-            // concurrent search holds a reference (the common case).
-            let updates = std::mem::take(&mut *imp.pending_index_updates.borrow_mut());
-            let mut file_index = imp.file_index.borrow_mut();
-            let index = Arc::make_mut(&mut file_index);
-            for update in updates {
-                update.apply(index);
-            }
-            drop(file_index);
-
-            if palette.is_visible() {
-                let query = imp.search_entry.text();
-                imp.rebuild_results(&query);
-            }
-        });
+                if palette.is_visible() {
+                    let query = imp.search_entry.text();
+                    imp.rebuild_results(&query);
+                }
+            },
+        );
     }
 }
 

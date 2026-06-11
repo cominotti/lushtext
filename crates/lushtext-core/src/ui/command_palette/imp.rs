@@ -6,6 +6,7 @@
 use crate::model::palette::{PaletteFileEntry, SearchMode, SearchResultItem};
 use crate::services::palette::{self, FileIndex};
 use crate::ui::command_palette::item::PaletteItem;
+use crate::ui::settle::Debounce;
 use glib::prelude::*;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -95,8 +96,8 @@ type CloseCallback = Box<dyn Fn()>;
 // the matching `id` attribute in the XML.
 //
 // GObject methods always take &self because multiple widgets can hold
-// references at once. Cell<T> for Copy types (SearchMode, generation counters),
-// RefCell<T> for complex types (Arc<FileIndex>, callbacks).
+// references at once. Cell<T> for Copy types, RefCell<T> for complex types
+// (Arc<FileIndex>, callbacks), and Debounce for superseding main-loop work.
 /// Implementation object for the template-backed command palette widget.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/command-palette.ui")]
@@ -134,13 +135,12 @@ pub struct LushtextCommandPalette {
     pub activate_callback: RefCell<Option<ActivateCallback>>,
     /// Callback invoked when the palette should close (Escape key).
     pub close_callback: RefCell<Option<CloseCallback>>,
-    /// Generation counter for debouncing search queries (150ms). Incremented on
-    /// each keystroke; stale timer callbacks compare to detect superseded searches.
-    pub search_generation: Cell<u32>,
+    /// Debounce for search queries (150ms) and async search-result freshness.
+    pub search_debounce: Debounce,
     /// Queue of incremental index mutations waiting to be flushed.
     pub(super) pending_index_updates: RefCell<Vec<super::FileIndexUpdate>>,
-    /// Generation counter for debouncing index update flushes (75ms).
-    pub(super) index_update_generation: Cell<u32>,
+    /// Debounce for coalescing index update flushes (75ms).
+    pub(super) index_update_debounce: Debounce,
 }
 
 impl Default for LushtextCommandPalette {
@@ -158,9 +158,9 @@ impl Default for LushtextCommandPalette {
             syncing_mode_selector: Cell::new(false),
             activate_callback: RefCell::default(),
             close_callback: RefCell::default(),
-            search_generation: Cell::new(0),
+            search_debounce: Debounce::default(),
             pending_index_updates: RefCell::default(),
-            index_update_generation: Cell::new(0),
+            index_update_debounce: Debounce::default(),
         }
     }
 }
@@ -350,9 +350,6 @@ impl LushtextCommandPalette {
                 return;
             };
             let imp = obj.imp();
-            let generation = imp.search_generation.get().wrapping_add(1);
-            imp.search_generation.set(generation);
-
             let query = entry.text().to_string();
 
             // Empty queries bypass debounce so default results update
@@ -362,19 +359,13 @@ impl LushtextCommandPalette {
                 return;
             }
 
-            let obj_weak = obj.downgrade();
-            // Schedule debounce work on GTK's main loop. The `_local` variant
-            // is safe for this non-Send closure because it runs on the main
-            // thread after the delay.
-            glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
-                let Some(obj) = obj_weak.upgrade() else {
-                    return;
-                };
-                if obj.imp().search_generation.get() != generation {
-                    return; // superseded by newer keystroke
-                }
-                obj.imp().rebuild_results_owned(query);
-            });
+            imp.search_debounce.schedule(
+                &obj,
+                std::time::Duration::from_millis(150),
+                move |obj, _| {
+                    obj.imp().rebuild_results_owned(query);
+                },
+            );
         });
     }
 
@@ -446,9 +437,9 @@ impl LushtextCommandPalette {
     /// thread under the 16ms frame budget, even at 100k indexed files.
     /// Uses `splice` to emit a single `items-changed` signal for the batch.
     ///
-    /// Increments `search_generation` to supersede any pending debounced
-    /// search from `setup_search`. Direct callers (e.g., `set_file_index`,
-    /// `open`, Tab mode-switch) rely on this to cancel stale timers.
+    /// Advances `search_debounce` to supersede any pending debounced search from
+    /// `setup_search`. Direct callers (e.g., `set_file_index`, `open`, Tab
+    /// mode-switch) rely on this to cancel stale timers.
     pub fn rebuild_results(&self, query: &str) {
         self.rebuild_results_owned(query.to_string());
     }
@@ -458,8 +449,7 @@ impl LushtextCommandPalette {
     /// Fuzzy matching runs on a background thread, then the main-thread
     /// completion applies results only if its generation is still current.
     pub fn rebuild_results_owned(&self, query: String) {
-        let generation = self.search_generation.get().wrapping_add(1);
-        self.search_generation.set(generation);
+        let generation = self.search_debounce.advance();
 
         let mode = self.mode.get();
         let index = Arc::clone(&self.file_index.borrow());
@@ -481,7 +471,7 @@ impl LushtextCommandPalette {
             },
             move |obj, (hits, query)| {
                 let imp = obj.imp();
-                if imp.search_generation.get() != generation {
+                if !imp.search_debounce.is_current(generation) {
                     return; // superseded by a newer search
                 }
 

@@ -174,15 +174,29 @@ Shell-owned transient surfaces must share a single topmost dismissal order inste
 - Command-palette click-away belongs at the window shell boundary. Primary presses outside the palette bounds must call `close_command_palette()` so the existing saved-focus restoration and cleanup path runs. Presses inside palette controls, result rows, scrollbars, and child popup/dropdown roots must not dismiss it.
 - When click-away dismisses the palette, claim or otherwise consume that pointer sequence so the same press does not also activate an underlying shell control.
 
-## Auto-Dismiss Timers (Generation Counter)
+## Superseding Timers And Settle Helpers
 
-For timed UI operations (e.g., status bar message auto-dismiss), use a **generation counter** (`Cell<u32>`) instead of storing/cancelling `glib::SourceId` handles:
+For timed UI operations where only the newest request should run, use the
+private `crate::ui::settle` helpers instead of hand-rolled generation counters:
 
-1. Each operation increments the counter.
-2. The timer closure captures the counter value at scheduling time.
-3. When the timer fires, it compares against the current counter — if different, the operation was superseded and the timer no-ops.
+- `Debounce` for trailing input or persistence work after a quiet window
+  (search entries, index rebuilds, workspace/session persistence, refreshes).
+- `SupersedingTimer` for one delayed action that is re-armed by newer state
+  (status pulses, Focus Mode affordance hide, first-dirty draft autosave).
+- `SettleBurst` for layout or repair work that must expose queryable pending
+  state to readiness (preview layout settle, minimap reflow settle).
 
-This avoids all `SourceId` lifecycle bugs (double-remove panics, stale handle references) and requires no cancellation logic.
+Keep recurring pollers, heartbeats, explicit lifecycle sources, idle/chunked
+population loops, worker-result freshness tokens, and pure domain/model
+generations explicit. Those are not settle helpers unless a later OpenSpec
+change adds a dedicated primitive and proves the timing unchanged. Markdown
+code-block repair currently remains explicit because it pairs idle and timeout
+sources with `SourceId` cancellation and completion callbacks.
+
+The helper is LushText-private Phase 0 source material for the future
+`gtk-lush-settle` crate. Do not expose public API, add family-crate
+dependencies, or treat it as a stable crate contract before
+`extract-gtk-lush-signals-and-settle`.
 
 ## GTK4 Signal Delivery Pitfalls
 

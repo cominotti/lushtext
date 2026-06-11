@@ -9,7 +9,6 @@
 use std::time::Duration;
 
 use gtk4::gio;
-use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
@@ -47,46 +46,38 @@ impl LushtextEditorPage {
                 return;
             };
 
-            let generation = editor
-                .imp()
-                .monitor
-                .monitor_generation
-                .get()
-                .wrapping_add(1);
-            editor.imp().monitor.monitor_generation.set(generation);
-
-            let editor_weak = editor.downgrade();
-            glib::timeout_add_local_once(Duration::from_millis(500), move || {
-                let Some(editor) = editor_weak.upgrade() else {
-                    return;
-                };
-                if editor.imp().monitor.monitor_generation.get() != generation {
-                    return;
-                }
-                let Some(ref path) = *editor.imp().file_path.borrow() else {
-                    return;
-                };
-                let last_known = editor.imp().monitor.last_known_mtime.get();
-                if last_known.is_none() {
-                    return;
-                }
-                let path = path.clone();
-                async_task::spawn_blocking_then(
-                    editor.clone(),
-                    move || editor_io::mtime_secs(&path),
-                    move |editor, current_mtime| {
-                        if current_mtime != last_known {
-                            editor.emit_inline_notification(InlineActionNotification {
-                                style: InlineNotificationStyle::Warning,
-                                title: "File Has Changed on Disk".to_string(),
-                                body: "The file was modified by another program.".to_string(),
-                                primary_button: Some("_Discard Changes and Reload".to_string()),
-                                secondary_button: None,
-                            });
-                        }
-                    },
-                );
-            });
+            editor.imp().monitor.monitor_debounce.schedule(
+                &editor,
+                Duration::from_millis(500),
+                move |editor, token| {
+                    let Some(ref path) = *editor.imp().file_path.borrow() else {
+                        return;
+                    };
+                    let last_known = editor.imp().monitor.last_known_mtime.get();
+                    if last_known.is_none() {
+                        return;
+                    }
+                    let path = path.clone();
+                    async_task::spawn_blocking_then(
+                        editor.clone(),
+                        move || editor_io::mtime_secs(&path),
+                        move |editor, current_mtime| {
+                            if !editor.imp().monitor.monitor_debounce.is_current(token) {
+                                return;
+                            }
+                            if current_mtime != last_known {
+                                editor.emit_inline_notification(InlineActionNotification {
+                                    style: InlineNotificationStyle::Warning,
+                                    title: "File Has Changed on Disk".to_string(),
+                                    body: "The file was modified by another program.".to_string(),
+                                    primary_button: Some("_Discard Changes and Reload".to_string()),
+                                    secondary_button: None,
+                                });
+                            }
+                        },
+                    );
+                },
+            );
         });
 
         *self.imp().monitor.file_monitor.borrow_mut() = Some(monitor);

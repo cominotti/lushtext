@@ -66,7 +66,7 @@ and the code they fence:
 | Pattern | Today (LushText) | Rule/skill that documents it |
 | --- | --- | --- |
 | Signal/binding handler lifetimes | ~10 `RefCell<Option<SignalHandlerId>>` fields per `imp.rs` + manual `dispose`/`Drop` choreography | `rust.md` (GObject subclassing), `widget-wiring.md` |
-| Generation-counter debounce / settle bursts | Hand-rolled in 8+ modules (minimap settle, status-bar auto-dismiss, tree loading, drafts, search) | `widget-wiring.md` (Auto-Dismiss Timers), `ui.md` (minimap reflow burst) |
+| Private debounce / settle helper | `crates/lushtext-core/src/ui/settle.rs` plus converted debounce, superseding-timer, and readiness-settle call sites | `widget-wiring.md` (Superseding Timers And Settle Helpers), `ui.md` (minimap reflow burst) |
 | Main-thread-safe background tasks | `services::async_task::spawn_blocking_then` + per-site generation stamping | `rust.md` (Background I/O, snapshot boundaries) |
 | Viewport observation without dead vfuncs | `editor_page/overscroll.rs` adjustment observers + rest-state tracking | `widget-wiring.md` (size_allocate vs layout managers) |
 | Zero-min clipping bin | `LushtextShrinkableBin` | `ui.md` (Split-View Rules) |
@@ -114,9 +114,10 @@ as one audited primitive.
 - **Rust features:** generic over the captured target via `glib::WeakRef`,
   `Cell`-based state, no interior panics; pure decision logic split out for
   unit and property tests.
-- **Replaces in LushText:** the 8+ hand-rolled generation counters, including
-  the minimap reflow settle, status-bar message dismiss, tree loading, draft
-  autosave debounce, and search scheduling.
+- **Replaces in LushText:** the private `crate::ui::settle` prototype and its
+  converted minimap reflow settle, status-bar message dismiss, draft autosave,
+  workspace persistence, file-monitor, preview, search, and indexing
+  scheduling call sites.
 - **Acceptance:** migrated sites are line-for-line simpler; property tests for
   the pure generation logic run under `make test-prop`; readiness predicates
   (`minimap_work_pending` etc.) read `pending()` without behavior change.
@@ -224,12 +225,19 @@ Goal: shrink and normalize the extraction surface before any API freezes.
    `bind`, GObject property bindings, derived properties) where a handler does
    nothing but copy values.
 3. Normalize the remaining debounce/timer call sites onto one in-tree helper
-   shape (the future `gtk-lush-settle` API, prototyped privately).
+   shape in `normalize-settle-timer-helpers` (the future
+   `gtk-lush-settle` API, prototyped privately).
 4. Re-run the complete proof set; update rules in the same changes.
 
 Exit criteria: zero hand-animated paneds; one debounce idiom; rules updated.
 (Follow-up change names: `migrate-preview-pane-to-adwaita`,
-`normalize-declarative-bindings`.)
+`normalize-declarative-bindings`, `normalize-settle-timer-helpers`.)
+
+`normalize-settle-timer-helpers` is a Phase 0.3 proving ground only: it may
+rename or reshape the private helper while LushText learns from real call sites,
+but it must not publish a public `gtk-lush-settle` API or add family-crate
+dependencies. Public settle APIs remain deferred to
+`extract-gtk-lush-signals-and-settle`.
 
 ### Phase 1 — Workspace foundation and governance (this change)
 

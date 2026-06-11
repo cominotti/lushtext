@@ -35,6 +35,7 @@ use crate::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
 };
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
+use crate::ui::settle::Debounce;
 use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
@@ -230,8 +231,8 @@ struct NotesBrowserState {
     all_entries: Vec<NotesBrowserEntry>,
     /// Entry indexes currently shown in the sidebar's grouped visual order.
     filtered_indices: RefCell<Vec<usize>>,
-    /// Generation counter used to debounce search rebuilds without stale work.
-    search_generation: Cell<u32>,
+    /// Debounce used to rebuild browser search rows after typing settles.
+    search_debounce: Debounce,
     /// Generation counter used to ignore stale closed-file bookmark preview loads.
     preview_generation: Cell<u32>,
 }
@@ -1424,39 +1425,21 @@ impl LushtextWindow {
 
     /// Debounce bookmark persistence so one burst of edits produces one sidecar write.
     fn save_bookmarks_debounced(&self, editor: &LushtextEditorPage) {
-        let generation = editor
-            .imp()
-            .bookmarks
-            .persistence
-            .save_generation
-            .get()
-            .wrapping_add(1);
-        editor
-            .imp()
-            .bookmarks
-            .persistence
-            .save_generation
-            .set(generation);
-
-        let editor_weak = editor.downgrade();
         let window_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(NOTES_SAVE_DEBOUNCE_MS), move || {
-            let Some(editor) = editor_weak.upgrade() else {
-                return;
-            };
-            if editor.imp().bookmarks.persistence.save_generation.get() != generation {
-                return;
-            }
+        editor.imp().bookmarks.persistence.save_debounce.schedule(
+            editor,
+            Duration::from_millis(NOTES_SAVE_DEBOUNCE_MS),
+            move |editor, _| {
+                if editor.imp().bookmarks.persistence.save_inflight.get() {
+                    editor.imp().bookmarks.persistence.save_dirty.set(true);
+                    return;
+                }
 
-            if editor.imp().bookmarks.persistence.save_inflight.get() {
-                editor.imp().bookmarks.persistence.save_dirty.set(true);
-                return;
-            }
-
-            if let Some(window) = window_weak.upgrade() {
-                window.persist_bookmarks_now(&editor);
-            }
-        });
+                if let Some(window) = window_weak.upgrade() {
+                    window.persist_bookmarks_now(&editor);
+                }
+            },
+        );
     }
 
     /// Write the current bookmark snapshot to disk.
@@ -1719,12 +1702,11 @@ impl LushtextWindow {
         let dialog_weak = dialog.downgrade();
         let rows_box_weak = rows_box.downgrade();
         let bookmarks_for_search = bookmarks;
-        let search_generation = Rc::new(Cell::new(0u32));
+        let search_debounce = Debounce::default();
         search_entry.connect_search_changed(move |entry| {
-            let generation = search_generation.get().wrapping_add(1);
-            search_generation.set(generation);
             let query = entry.text().to_string();
             if query.is_empty() {
+                search_debounce.invalidate();
                 if let (Some(window), Some(dialog), Some(rows_box)) = (
                     window_weak.upgrade(),
                     dialog_weak.upgrade(),
@@ -1738,11 +1720,7 @@ impl LushtextWindow {
             let dialog_weak = dialog_weak.clone();
             let rows_box_weak = rows_box_weak.clone();
             let bookmarks_for_search = bookmarks_for_search.clone();
-            let search_generation = search_generation.clone();
-            glib::timeout_add_local_once(Duration::from_millis(150), move || {
-                if search_generation.get() != generation {
-                    return;
-                }
+            search_debounce.schedule(entry, Duration::from_millis(150), move |_, _| {
                 let (Some(window), Some(dialog), Some(rows_box)) = (
                     window_weak.upgrade(),
                     dialog_weak.upgrade(),
@@ -1897,7 +1875,7 @@ impl LushtextWindow {
             open_button,
             back_button,
             filtered_indices: RefCell::new(Vec::new()),
-            search_generation: Cell::new(0),
+            search_debounce: Debounce::default(),
             preview_generation: Cell::new(0),
             all_entries: entries,
         });
@@ -3001,22 +2979,22 @@ fn delay_bookmark_excerpt_preview_for_test() {
 
 /// Debounce browser search so large note sets do not rebuild on every keystroke.
 fn schedule_notes_browser_search(state: &Rc<NotesBrowserState>, query: String) {
-    let generation = state.search_generation.get().wrapping_add(1);
-    state.search_generation.set(generation);
     if query.is_empty() {
+        state.search_debounce.invalidate();
         rebuild_notes_browser_sidebar(state, "");
         return;
     }
-    let state = Rc::downgrade(state);
-    glib::timeout_add_local_once(Duration::from_millis(150), move || {
-        let Some(state) = state.upgrade() else {
-            return;
-        };
-        if state.search_generation.get() != generation {
-            return;
-        }
-        rebuild_notes_browser_sidebar(&state, &query);
-    });
+    let state_weak = Rc::downgrade(state);
+    state.search_debounce.schedule(
+        &state.search_entry,
+        Duration::from_millis(150),
+        move |_, _| {
+            let Some(state) = state_weak.upgrade() else {
+                return;
+            };
+            rebuild_notes_browser_sidebar(&state, &query);
+        },
+    );
 }
 
 /// Rebuild the sectioned sidebar items shown by the unified notes browser.

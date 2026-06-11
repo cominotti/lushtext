@@ -18,6 +18,7 @@ use crate::services::{
 };
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
+use crate::ui::settle::{Debounce, SettleBurst};
 use glib::value::ToValue;
 use gtk4::gio;
 use gtk4::subclass::prelude::*;
@@ -118,8 +119,8 @@ pub struct MonitorState {
     /// File monitor for detecting external modifications. Created on file load,
     /// cancelled on tab close.
     pub file_monitor: RefCell<Option<gio::FileMonitor>>,
-    /// Generation counter for debouncing file monitor events (500ms).
-    pub monitor_generation: Cell<u32>,
+    /// Debounce for file monitor events (500ms).
+    pub monitor_debounce: Debounce,
     /// File mtime (seconds since epoch) at last load or save.
     pub last_known_mtime: Cell<Option<u64>>,
 }
@@ -230,8 +231,8 @@ pub struct RestoreState {
 /// Debounced persistence state shared by note-sidecar projections.
 #[derive(Default)]
 pub struct NotesPersistenceState {
-    /// Generation counter used to debounce background sidecar saves.
-    pub save_generation: Cell<u32>,
+    /// Debounce used to schedule background sidecar saves.
+    pub save_debounce: Debounce,
     /// Guard preventing overlapping saves for the same note projection.
     pub save_inflight: Cell<bool>,
     /// Dirty flag set while a save is already in flight.
@@ -282,8 +283,8 @@ pub struct MinimapState {
     /// Estimating long-line wrapping can scan the buffer once after edits. Caching
     /// keeps resize-driven refreshes from repeatedly walking large documents.
     pub wrapped_layout_too_large: Cell<Option<bool>>,
-    /// Generation counter for coalescing expensive marker refresh work.
-    pub refresh_generation: Cell<u32>,
+    /// Debounce for coalescing expensive marker refresh work.
+    pub refresh_debounce: Debounce,
     /// Whether a debounced minimap refresh callback is still waiting to run.
     pub refresh_pending: Cell<bool>,
     /// Frozen last-good minimap pixels shown while a width-reflow burst settles.
@@ -293,13 +294,11 @@ pub struct MinimapState {
     /// layout estimates on each of them. Holding the pre-burst pixels keeps the
     /// rendered highlight visually still until one settled repair runs.
     pub reflow_freeze_picture: RefCell<Option<gtk4::Picture>>,
-    /// Generation counter for the width-reflow settle debounce.
-    pub reflow_settle_generation: Cell<u32>,
-    /// Whether a width-reflow settle repair is still waiting for a stable width.
-    pub reflow_settle_pending: Cell<bool>,
+    /// Settle burst while a width-reflow repair waits for a stable width.
+    pub reflow_settle: SettleBurst,
     /// Whether repaired live map pixels are warming underneath the frozen cover.
     ///
-    /// This is separate from `reflow_settle_pending` so user scrolling can reveal
+    /// This is separate from `reflow_settle` so user scrolling can reveal
     /// the already-repaired live map without pretending the width burst itself is
     /// still unresolved.
     pub reflow_reveal_pending: Cell<bool>,

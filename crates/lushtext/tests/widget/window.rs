@@ -128,10 +128,6 @@ fn status_message_area_has_any_pulse(window: &LushtextWindow) -> bool {
         || area.has_css_class("status-pulse-b")
 }
 
-fn status_message_area_generation(window: &LushtextWindow) -> u32 {
-    window.imp().status_bar.imp().pulse_generation.get()
-}
-
 fn seed_restored_window_size(width: i32, height: i32) {
     ensure_gtk_init();
     let settings = gio::Settings::new(lushtext_core::config::APP_ID);
@@ -865,7 +861,7 @@ fn wait_for_markdown_preview_shell(window: &LushtextWindow) {
         };
         let expected_width = expected_code_block_width(preview, &block);
 
-        !window.imp().preview_transition_active.get()
+        !window.preview_transition_pending_for_test()
             && preview.is_showing_content()
             && preview.text_view().width() > 0
             && !source_views(preview).is_empty()
@@ -3478,10 +3474,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     // legitimately blocks the idle predicate, so drain queued minimap work
     // before asserting that the snapshot reports an idle window.
     wait_until(Duration::from_secs(5), || {
-        let minimap = &editor.imp().minimap;
-        !minimap.reflow_settle_pending.get()
-            && !minimap.reflow_reveal_pending.get()
-            && !minimap.refresh_pending.get()
+        !editor.minimap_work_pending_for_test()
     });
 
     let app = window
@@ -3550,7 +3543,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
 
     // Predicate-specific waits must ignore unrelated blockers: preview
     // layout settle blocks broad idle readiness, not search completion.
-    window.imp().preview_transition_active.set(true);
+    window.set_preview_transition_pending_for_test(true);
     assert_eq!(
         current_idle_blocker(&app).as_deref(),
         Some("preview-animation")
@@ -3579,7 +3572,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 1));
     assert!(!ok);
     assert_eq!(detail, "preview-animation");
-    window.imp().preview_transition_active.set(false);
+    window.set_preview_transition_pending_for_test(false);
     let (ok, detail) =
         glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 100));
     assert!(ok);
@@ -3651,7 +3644,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         AutomationReadinessStatus::PredicateTimeout.as_str()
     );
     assert_eq!(search_result.blocker.as_deref(), Some("replace-preview"));
-    window.imp().preview_transition_active.set(true);
+    window.set_preview_transition_pending_for_test(true);
     let search_result = glib::MainContext::default().block_on(wait_for_ready_for_test(
         app.clone(),
         AutomationReadinessPredicate::SearchComplete,
@@ -3659,7 +3652,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     ));
     assert!(!search_result.ok);
     assert_eq!(search_result.blocker.as_deref(), Some("replace-preview"));
-    window.imp().preview_transition_active.set(false);
+    window.set_preview_transition_pending_for_test(false);
     let (ok, detail) =
         glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 1));
     assert!(!ok);
@@ -4287,7 +4280,6 @@ fn test_repeated_transient_status_message_restarts_pulse_without_text_counter() 
     let window = test_window();
 
     window.publish_status_message("File saved", NotificationSeverity::Info);
-    let first_generation = status_message_area_generation(&window);
     let first_used_a = window
         .imp()
         .status_bar
@@ -4299,7 +4291,6 @@ fn test_repeated_transient_status_message_restarts_pulse_without_text_counter() 
     let status_bar = window.imp().status_bar.imp();
 
     assert_eq!(status_bar.message_label.label().as_str(), "File saved");
-    assert!(status_message_area_generation(&window) > first_generation);
     assert_ne!(
         first_used_a,
         status_bar.message_area_box.has_css_class("status-pulse-a")
@@ -4331,7 +4322,6 @@ fn test_hidden_search_progress_update_does_not_pulse_over_transient() {
 
     window.publish_status_message("File saved", NotificationSeverity::Info);
     window.imp().status_bar.clear_message_area_pulse();
-    let generation_before_hidden_update = status_message_area_generation(&window);
 
     window.update_search_progress_message_for_test(
         "Searching 10 files\u{2026}",
@@ -4341,10 +4331,6 @@ fn test_hidden_search_progress_update_does_not_pulse_over_transient() {
     let status_bar = window.imp().status_bar.imp();
     assert_eq!(status_bar.message_label.label().as_str(), "File saved");
     assert!(!status_message_area_has_any_pulse(&window));
-    assert_eq!(
-        status_message_area_generation(&window),
-        generation_before_hidden_update
-    );
 }
 
 #[test]
@@ -4913,10 +4899,7 @@ fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
     // Wait out the debounced width-reflow settle and reveal window instead of
     // guessing a fixed delay so the snapshot below reads settled minimap geometry.
     wait_until(Duration::from_secs(5), || {
-        let minimap = &editor.imp().minimap;
-        !minimap.reflow_settle_pending.get()
-            && !minimap.reflow_reveal_pending.get()
-            && !minimap.refresh_pending.get()
+        !editor.minimap_work_pending_for_test()
     });
     let after = minimap_geometry_snapshot(&editor);
 
@@ -4971,11 +4954,8 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
         gtk4::WrapMode::None
     };
     wait_until(Duration::from_secs(5), || {
-        let minimap = &editor.imp().minimap;
         let geometry = minimap_geometry_snapshot(&editor);
-        !minimap.reflow_settle_pending.get()
-            && !minimap.reflow_reveal_pending.get()
-            && !minimap.refresh_pending.get()
+        !editor.minimap_work_pending_for_test()
             && geometry.visible_start_line == 0
             && (geometry.vertical_value - geometry.vertical_lower).abs() <= 0.5
             && geometry.source_map_wrap_mode == gtk4::WrapMode::None
@@ -4991,7 +4971,7 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
     // does not produce, so rendered-freeze coverage lives in the visual
     // geometry smoke lane instead.
     wait_until(Duration::from_secs(2), || {
-        editor.imp().minimap.reflow_settle_pending.get()
+        editor.minimap_reflow_settle_pending_for_test()
     });
     let expected_sidebar_visible = !initially_visible;
     wait_until(Duration::from_secs(2), || {
@@ -5007,10 +4987,7 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
     // reveal window, and the follow-up marker refresh to drain so the assertions
     // below see the settled post-repair state instead of mid-burst pinned geometry.
     wait_until(Duration::from_secs(5), || {
-        let minimap = &editor.imp().minimap;
-        !minimap.reflow_settle_pending.get()
-            && !minimap.reflow_reveal_pending.get()
-            && !minimap.refresh_pending.get()
+        !editor.minimap_work_pending_for_test()
     });
     wait_until(Duration::from_secs(2), || {
         let geometry = minimap_geometry_snapshot(&editor);
@@ -11646,7 +11623,7 @@ fn test_preview_pane_toggle_uses_adwaita_side_by_side_shell() {
             && preview_layout_name(&window).as_deref() == Some("editor")
             && window.imp().markdown_preview.property::<bool>("visible")
             && window.imp().editor_box.property::<bool>("visible")
-            && !window.imp().preview_transition_active.get()
+            && !window.preview_transition_pending_for_test()
     });
     assert!(!window.imp().preview_mode.get());
     assert!(action_state_bool(&window, "toggle-preview-pane"));
@@ -11674,7 +11651,7 @@ fn test_preview_mode_toggle_uses_full_content_layout() {
             && window.imp().markdown_preview.property::<bool>("visible")
             && !window.imp().editor_box.property::<bool>("visible")
             && !window.imp().preview_split_view.shows_sidebar()
-            && !window.imp().preview_transition_active.get()
+            && !window.preview_transition_pending_for_test()
     });
     assert!(!window.imp().preview_visible.get());
     assert!(action_state_bool(&window, "toggle-preview-mode"));
@@ -11699,7 +11676,7 @@ fn test_side_by_side_preview_width_clamps_legacy_preference_without_rewriting_it
 
     wait_until(Duration::from_secs(2), || {
         window.imp().preview_split_view.shows_sidebar()
-            && !window.imp().preview_transition_active.get()
+            && !window.preview_transition_pending_for_test()
     });
     let split = &window.imp().preview_split_view;
     let preview_width = split.max_sidebar_width();

@@ -401,39 +401,17 @@ impl super::LushtextWindow {
             self.imp().drafts.autosave_pending.set(true);
             return;
         }
-        self.cancel_first_dirty_draft_autosave();
-        let window_weak = self.downgrade();
-        // This local one-shot timer debounces the first dirty edit while keeping
-        // GTK-only window state on the main thread.
-        let source_id = glib::timeout_add_local_once(first_dirty_autosave_debounce(), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            window
-                .imp()
-                .drafts
-                .first_dirty_autosave_source_id
-                .borrow_mut()
-                .take();
-            window.autosave_tick();
-        });
-        *self
-            .imp()
-            .drafts
-            .first_dirty_autosave_source_id
-            .borrow_mut() = Some(source_id);
+        self.imp().drafts.first_dirty_autosave_timer.arm(
+            self,
+            first_dirty_autosave_debounce(),
+            move |window, _| {
+                window.autosave_tick();
+            },
+        );
     }
 
     fn cancel_first_dirty_draft_autosave(&self) {
-        if let Some(source_id) = self
-            .imp()
-            .drafts
-            .first_dirty_autosave_source_id
-            .borrow_mut()
-            .take()
-        {
-            source_id.remove();
-        }
+        self.imp().drafts.first_dirty_autosave_timer.invalidate();
     }
 
     fn collect_dirty_draft_candidates(&self) -> Vec<DirtyDraftCandidate> {
