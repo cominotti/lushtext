@@ -9,4 +9,7 @@ and this crate follows SemVer after functional publication.
 
 ### Added
 
-- Placeholder reservation package with no public API.
+- First functional in-tree API with `Debounce`, `SettleBurst`, and
+  `SupersedingTimer`.
+- Generation-token tests, settle pending-state tests, property tests, doctests,
+  and standalone gtk-rs adoption example.

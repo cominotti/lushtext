@@ -114,8 +114,8 @@ impl LushtextEditorPage {
             });
             self.imp()
                 .focus_mode
-                .mark_set_handler_id
-                .replace(Some(handler_id));
+                .buffer_signals
+                .track(&buffer, handler_id);
         }
         {
             let editor_weak = self.downgrade();
@@ -126,8 +126,8 @@ impl LushtextEditorPage {
             });
             self.imp()
                 .focus_mode
-                .changed_handler_id
-                .replace(Some(handler_id));
+                .buffer_signals
+                .track(&buffer, handler_id);
         }
     }
 

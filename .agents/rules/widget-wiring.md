@@ -31,6 +31,25 @@ binding replaces only the projection part of a handler, keep the side-effect
 handler explicit and document the split in the local audit or test when the
 ordering is easy to misread.
 
+## Signal And Binding Lifetimes
+
+Use `gtk_lush_signals` for GTK registration ownership that has an explicit
+teardown or recycling lifecycle:
+
+- `SignalBag` for signal handlers connected to settings, style managers,
+  buffers, search contexts, tree rows, or other GObjects that can outlive the
+  widget/workflow closure they call.
+- `BindingBag` for row-local or workflow-local `glib::Binding` values that must
+  be unbound when a factory row is recycled or a projection is rebound.
+- `RegistrationBag` for controller-like cleanup callbacks that are not
+  represented by a signal id or binding.
+
+Keep ordinary untracked `connect_*` calls when the source and target share the
+same widget/action lifetime and no later disconnect is needed. Keep
+event-controller ownership explicit when the controller itself is the lifetime
+owner. Remaining row-data uses should be scalar state, not hidden signal or
+binding ownership.
+
 ## Action Catalog And Automation Docs
 
 Every user operation exposed through an app action, window action, command
@@ -177,7 +196,7 @@ Shell-owned transient surfaces must share a single topmost dismissal order inste
 ## Superseding Timers And Settle Helpers
 
 For timed UI operations where only the newest request should run, use the
-private `crate::ui::settle` helpers instead of hand-rolled generation counters:
+`gtk_lush_settle` helpers instead of hand-rolled generation counters:
 
 - `Debounce` for trailing input or persistence work after a quiet window
   (search entries, index rebuilds, workspace/session persistence, refreshes).
@@ -193,10 +212,10 @@ change adds a dedicated primitive and proves the timing unchanged. Markdown
 code-block repair currently remains explicit because it pairs idle and timeout
 sources with `SourceId` cancellation and completion callbacks.
 
-The helper is LushText-private Phase 0 source material for the future
-`gtk-lush-settle` crate. Do not expose public API, add family-crate
-dependencies, or treat it as a stable crate contract before
-`extract-gtk-lush-signals-and-settle`.
+`gtk-lush-settle` is a functional in-tree Phase 2 crate, not a Phase 5
+publication-ready external dependency. LushText may consume it through the
+workspace path dependency; external stability still waits for the publishing
+gates in `crates/gtk-lush/GOVERNANCE.md`.
 
 ## GTK4 Signal Delivery Pitfalls
 

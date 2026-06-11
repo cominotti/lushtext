@@ -16,9 +16,9 @@ use sourceview5::prelude::*;
 
 use crate::config::keys;
 use crate::ui::buffer_snapshot;
-use crate::ui::settle::SettleHandle;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
+use gtk_lush_settle::SettleHandle;
 
 use super::LushtextEditorPage;
 
@@ -489,8 +489,6 @@ impl LushtextEditorPage {
         let buffer = self.buffer();
         {
             let editor_weak = self.downgrade();
-            // GtkSourceBuffer emits GObject signals for edits; store handler ids
-            // so minimap observers can be disconnected when tab wiring is torn down.
             let handler_id = buffer.connect_insert_text(move |_, iter, text| {
                 let Some(editor) = editor_weak.upgrade() else {
                     return;
@@ -504,7 +502,7 @@ impl LushtextEditorPage {
                 editor.record_modified_lines(start_line, start_line.saturating_add(inserted_lines));
                 editor.schedule_minimap_refresh();
             });
-            imp.minimap.insert_text_handler_id.replace(Some(handler_id));
+            imp.minimap.buffer_signals.track(&buffer, handler_id);
         }
         {
             let editor_weak = self.downgrade();
@@ -520,9 +518,7 @@ impl LushtextEditorPage {
                 editor.record_modified_lines(start_line, end_line);
                 editor.schedule_minimap_refresh();
             });
-            imp.minimap
-                .delete_range_handler_id
-                .replace(Some(handler_id));
+            imp.minimap.buffer_signals.track(&buffer, handler_id);
         }
         {
             let editor_weak = self.downgrade();
@@ -535,9 +531,7 @@ impl LushtextEditorPage {
                 }
                 editor.schedule_minimap_refresh();
             });
-            imp.minimap
-                .modified_changed_handler_id
-                .replace(Some(handler_id));
+            imp.minimap.buffer_signals.track(&buffer, handler_id);
         }
         {
             let editor_weak = self.downgrade();
@@ -551,7 +545,7 @@ impl LushtextEditorPage {
                 }
                 editor.schedule_minimap_refresh();
             });
-            imp.minimap.changed_handler_id.replace(Some(handler_id));
+            imp.minimap.buffer_signals.track(&buffer, handler_id);
         }
 
         {
@@ -937,7 +931,7 @@ impl LushtextEditorPage {
             // visible layout. Cancel pending timers first, then sync once so
             // the next visible frame cannot inherit old geometry.
             let minimap = &self.imp().minimap;
-            minimap.reflow_settle.clear();
+            let _ = minimap.reflow_settle.clear();
             minimap.reflow_reveal_pending.set(false);
             self.sync_minimap_view_geometry();
             self.drop_minimap_reflow_freeze();

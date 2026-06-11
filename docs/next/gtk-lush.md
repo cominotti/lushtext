@@ -1,7 +1,8 @@
 # GTK Lush — Umbrella Vision
 
-Status: proposed (umbrella vision for the `establish-gtk-lush-program` OpenSpec
-change and its follow-up changes)
+Status: active umbrella vision. Phase 1 foundation is complete, and Phase 2
+functional in-tree APIs for `gtk-lush-signals` and `gtk-lush-settle` are current
+under `extract-gtk-lush-signals-and-settle`.
 
 GTK Lush is the extraction of LushText's hardened GTK4/Libadwaita patterns into
 a small family of independently adoptable Rust crates, plus a reusable headless
@@ -65,8 +66,8 @@ and the code they fence:
 
 | Pattern | Today (LushText) | Rule/skill that documents it |
 | --- | --- | --- |
-| Signal/binding handler lifetimes | ~10 `RefCell<Option<SignalHandlerId>>` fields per `imp.rs` + manual `dispose`/`Drop` choreography | `rust.md` (GObject subclassing), `widget-wiring.md` |
-| Private debounce / settle helper | `crates/lushtext-core/src/ui/settle.rs` plus converted debounce, superseding-timer, and readiness-settle call sites | `widget-wiring.md` (Superseding Timers And Settle Helpers), `ui.md` (minimap reflow burst) |
+| Signal/binding handler lifetimes | `gtk-lush-signals` owns fitting signal, binding, and row-registration lifetimes; retained explicit sites are documented in the Phase 2 audit | `rust.md` (GObject subclassing), `widget-wiring.md` |
+| Debounce / settle helpers | `gtk-lush-settle` replaces the former private `crates/lushtext-core/src/ui/settle.rs` helper for fitting debounce, superseding-timer, and readiness-settle call sites | `widget-wiring.md` (Superseding Timers And Settle Helpers), `ui.md` (minimap reflow burst) |
 | Main-thread-safe background tasks | `services::async_task::spawn_blocking_then` + per-site generation stamping | `rust.md` (Background I/O, snapshot boundaries) |
 | Viewport observation without dead vfuncs | `editor_page/overscroll.rs` adjustment observers + rest-state tracking | `widget-wiring.md` (size_allocate vs layout managers) |
 | Zero-min clipping bin | `LushtextShrinkableBin` | `ui.md` (Split-View Rules) |
@@ -88,39 +89,41 @@ Workspace layout: `crates/gtk-lush/<member>` with package names
 RAII lifetime management for GObject signal handlers, property bindings, and
 controller registrations.
 
-- **API sketch:** `SignalBag` / `BindingBag` value types stored on an `imp`
-  struct; `bag.connect(&obj, obj.connect_changed(...))` records the pair;
-  `Drop` (or explicit `clear()`) disconnects everything. Typed helpers for the
-  common connect-and-track call shapes; `WeakBag` variants for handlers on
-  objects that outlive the widget (Settings, StyleManager).
+- **API:** `SignalBag`, `BindingBag`, and `RegistrationBag` value types stored
+  on an `imp` struct or row lifecycle owner. Callers use ordinary gtk-rs
+  `connect_*` / `bind_property` APIs, then record the returned handler or
+  binding with the appropriate bag. Signal sources are held weakly, so bags can
+  outlive already-finalized widgets or shared settings objects.
 - **Rust features:** RAII/`Drop`, ownership to encode "handler must not
   outlive widget", zero unsafe.
-- **Replaces in LushText:** every hand-tracked handler-id field plus the
-  matching `dispose`/`Drop` blocks in `editor_page/imp.rs`, `window/imp.rs`,
-  sidebar, and preferences bindings.
-- **Acceptance:** all existing widget tests pass after migration; a doctest
-  demonstrates leak-free disconnect on drop; a standalone example uses the
-  crate with a plain `gtk::Label` and no other family crate.
+- **Replaces in LushText:** hand-tracked handler-id fields, row-data
+  `SignalHandlerId` storage, and explicit row binding unbind paths where the
+  lifecycle fits the crate contract.
+- **Acceptance:** unit tests, doctests, and a standalone gtk-rs example prove
+  disconnect-on-clear/drop, dead-source tolerance, binding unbind, rebinding,
+  and single-crate adoption.
 
 ### 4.2 `gtk-lush-settle`
 
 Generation-counter scheduling: debounce, settle-bursts, and superseding timers
 as one audited primitive.
 
-- **API sketch:** `Debounce::new(duration)` with `.schedule(weak_target, f)`
-  (generation bump + `timeout_add_local_once`); `SettleBurst` with
-  `open()/extend()/on_settle(f)` semantics and a queryable `pending()` state
-  for readiness integration; `SupersedingTimer` for auto-dismiss flows.
+- **API:** `Debounce` schedules trailing latest-generation work on GLib's main
+  loop with weak target cancellation; `SettleBurst` exposes readiness-visible
+  `pending()` state and generation-bound repair handles; `SupersedingTimer`
+  owns delayed one-shot cleanup/reveal work where each arm replaces the
+  previous arm.
 - **Rust features:** generic over the captured target via `glib::WeakRef`,
   `Cell`-based state, no interior panics; pure decision logic split out for
   unit and property tests.
-- **Replaces in LushText:** the private `crate::ui::settle` prototype and its
-  converted minimap reflow settle, status-bar message dismiss, draft autosave,
-  workspace persistence, file-monitor, preview, search, and indexing
+- **Replaces in LushText:** the deleted private `crate::ui::settle` prototype
+  and its converted minimap reflow settle, status-bar message dismiss, draft
+  autosave, workspace persistence, file-monitor, preview, search, and indexing
   scheduling call sites.
-- **Acceptance:** migrated sites are line-for-line simpler; property tests for
-  the pure generation logic run under `make test-prop`; readiness predicates
-  (`minimap_work_pending` etc.) read `pending()` without behavior change.
+- **Acceptance:** unit tests, property tests, doctests, and migrated LushText
+  tests prove generation advancement, stale-token rejection, invalidation,
+  wrapping, weak-target cancellation, pending-state repair, and re-arm
+  semantics.
 
 ### 4.3 `gtk-lush-tasks`
 
@@ -225,18 +228,18 @@ Goal: shrink and normalize the extraction surface before any API freezes.
    `bind`, GObject property bindings, derived properties) where a handler does
    nothing but copy values.
 3. Normalize the remaining debounce/timer call sites onto one in-tree helper
-   shape in `normalize-settle-timer-helpers` (the future
-   `gtk-lush-settle` API, prototyped privately).
+   shape in `normalize-settle-timer-helpers` (the future Phase 2
+   `gtk-lush-settle` API, prototyped privately at the time).
 4. Re-run the complete proof set; update rules in the same changes.
 
 Exit criteria: zero hand-animated paneds; one debounce idiom; rules updated.
 (Follow-up change names: `migrate-preview-pane-to-adwaita`,
 `normalize-declarative-bindings`, `normalize-settle-timer-helpers`.)
 
-`normalize-settle-timer-helpers` is a Phase 0.3 proving ground only: it may
-rename or reshape the private helper while LushText learns from real call sites,
-but it must not publish a public `gtk-lush-settle` API or add family-crate
-dependencies. Public settle APIs remain deferred to
+`normalize-settle-timer-helpers` was a Phase 0.3 proving ground only: it could
+rename or reshape the private helper while LushText learned from real call
+sites, but it could not publish a public `gtk-lush-settle` API or add
+family-crate dependencies. Public settle APIs moved to
 `extract-gtk-lush-signals-and-settle`.
 
 ### Phase 1 — Workspace foundation and governance (this change)
@@ -261,14 +264,17 @@ dependencies. Public settle APIs remain deferred to
 
 ### Phase 2 — First extractions: `gtk-lush-signals`, `gtk-lush-settle`
 
+Status: current/completed in-tree functional API phase. These crates remain
+`0.0.0` and are not Phase 5 publication-ready.
+
 1. Design each API against its rule section; write the README first
-   (rule-rewritten-as-docs), then the API, then doctests.
-2. Implement with the full bar from Section 6.
-3. Migrate LushText mechanically, one module at a time, full gates after each
-   module; handler-id fields and hand-rolled counters are deleted, not
-   wrapped.
+   (rule-rewritten-as-docs), then the API, then doctests. Complete.
+2. Implement with the full bar from Section 6. Complete for in-tree Phase 2.
+3. Migrate LushText mechanically; handler-id fields and the private settle
+   helper are deleted for fitting sites. Complete for Phase 2 scope.
 4. Rewrite the corresponding rule sections to point at crate docs, keeping
-   only the LushText-specific judgment calls in the rules.
+   only the LushText-specific judgment calls in the rules. Complete for Phase 2
+   scope.
    (Follow-up change name: `extract-gtk-lush-signals-and-settle`.)
 
 ### Phase 3 — Geometry and tasking: `gtk-lush-tasks`, `gtk-lush-viewport`, `gtk-lush-widgets`
@@ -330,7 +336,7 @@ dependencies. Public settle APIs remain deferred to
   dedicated review entry in GOVERNANCE.md).
 - `#![deny(missing_docs)]`; every public item documented with a runnable
   doctest where behavior is observable.
-- `examples/standalone.rs` proving single-crate adoption on stock gtk-rs.
+- `examples/*.rs` proving single-crate adoption on stock gtk-rs.
 - Workspace lint table inherited from LushText's curated set.
 - Tests: unit + doctests always; headless widget tests via the harness for
   anything that touches widgets; property tests for pure decision logic;
@@ -358,6 +364,8 @@ dependencies. Public settle APIs remain deferred to
 - **Publishing gates:** no `0.1.0` before (a) two real consumers, (b) the
   timed afternoon-adoption test passes, (c) semver tooling green, (d) docs
   complete. Placeholder `0.0.0` reservations carry a README pointing here.
+  Functional in-tree `0.0.0` APIs may exist before Phase 5, but they must
+  continue to state that external publication stability is not promised yet.
 - **Maintenance honesty:** each crate lists its bus-factor plan; if the
   family ever becomes unmaintained, the constitution requires archiving with
   migration notes rather than silent rot.

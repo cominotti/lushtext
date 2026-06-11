@@ -15,7 +15,7 @@ Code examples for making the command palette's fuzzy search and file indexing sc
 
 ## 1. Debounced Search Input {#1-debounced-search}
 
-**Status: IMPLEMENTED** — `setup_search` in `command_palette/imp.rs` uses a 150ms `crate::ui::settle::Debounce`. Empty queries rebuild immediately (instant clear UX); non-empty queries are scheduled through the helper, and superseded timers no-op before rebuilding.
+**Status: IMPLEMENTED** — `setup_search` in `command_palette/imp.rs` uses a 150ms `gtk_lush_settle::Debounce`. Empty queries rebuild immediately (instant clear UX); non-empty queries are scheduled through the helper, and superseded timers no-op before rebuilding.
 
 ---
 

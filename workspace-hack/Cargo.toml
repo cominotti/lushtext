@@ -24,12 +24,14 @@ glib-sys = { version = "0.22", default-features = false, features = ["v2_88"] }
 gobject-sys = { version = "0.22", default-features = false, features = ["v2_76", "v2_86"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 num-traits = { version = "0.2" }
+once_cell = { version = "1" }
 pango = { version = "0.22", default-features = false, features = ["v1_57"] }
 pango-sys = { version = "0.22", default-features = false, features = ["v1_57"] }
 serde = { version = "1", features = ["alloc", "derive"] }
 serde_core = { version = "1", default-features = false, features = ["alloc", "result", "std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "union"] }
 tracing-core = { version = "0.1" }
+zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 
 [build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
@@ -43,6 +45,7 @@ glib-sys = { version = "0.22", default-features = false, features = ["v2_88"] }
 gobject-sys = { version = "0.22", default-features = false, features = ["v2_76", "v2_86"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 num-traits = { version = "0.2" }
+once_cell = { version = "1" }
 pango = { version = "0.22", default-features = false, features = ["v1_57"] }
 pango-sys = { version = "0.22", default-features = false, features = ["v1_57"] }
 serde = { version = "1", features = ["alloc", "derive"] }
@@ -53,5 +56,6 @@ toml_datetime = { version = "1" }
 toml_parser = { version = "1" }
 tracing-core = { version = "0.1" }
 winnow = { version = "1" }
+zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 
 ### END HAKARI SECTION

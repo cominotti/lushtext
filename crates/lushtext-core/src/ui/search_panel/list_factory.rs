@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 use glib::subclass::prelude::ObjectSubclassExt;
+use gtk_lush_signals::BindingBag;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{self, gio, glib};
@@ -161,10 +162,12 @@ impl imp::LushtextSearchPanel {
                         })
                         .sync_create()
                         .build();
-                    // SAFETY: the binding is removed in connect_unbind below
-                    // using the same storage key on the recycled ListItem.
+                    let bindings = BindingBag::new();
+                    bindings.track(binding);
+                    // SAFETY: the binding bag is removed in connect_unbind
+                    // below using the same storage key on the recycled ListItem.
                     unsafe {
-                        list_item.set_data("count-binding", binding);
+                        list_item.set_data("count-bindings", bindings);
                     }
                 }
                 if let Some(ref label) = line_num_label {
@@ -284,10 +287,10 @@ impl imp::LushtextSearchPanel {
             let list_item = list_item
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("ListItem");
-            // SAFETY: mirrors set_data("count-binding") in connect_bind above.
+            // SAFETY: mirrors set_data("count-bindings") in connect_bind above.
             unsafe {
-                if let Some(binding) = list_item.steal_data::<glib::Binding>("count-binding") {
-                    binding.unbind();
+                if let Some(bindings) = list_item.steal_data::<BindingBag>("count-bindings") {
+                    bindings.clear();
                 }
             }
         });

@@ -9,4 +9,7 @@ and this crate follows SemVer after functional publication.
 
 ### Added
 
-- Placeholder reservation package with no public API.
+- First functional in-tree API with `SignalBag`, `BindingBag`, and
+  `RegistrationBag`.
+- Weak-source signal cleanup, idempotent clear/drop behavior, doctests, and
+  standalone gtk-rs adoption example.

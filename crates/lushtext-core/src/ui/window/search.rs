@@ -495,7 +495,7 @@ impl LushtextWindow {
 
     pub(crate) fn finish_search_progress_tracking(&self) {
         self.imp().search_progress.visible.set(false);
-        self.imp().search_progress.visibility_timer.invalidate();
+        let _ = self.imp().search_progress.visibility_timer.invalidate();
         self.stop_search_progress_heartbeat();
         if self
             .imp()

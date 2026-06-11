@@ -14,7 +14,8 @@ use crate::model::workspace::{
 use crate::services::file_peek::PeekRequestToken;
 use crate::services::notifications::NotificationSeverity;
 use crate::services::workspace_watch::WorkspaceWatcher;
-use crate::ui::settle::Debounce;
+use gtk_lush_settle::Debounce;
+use gtk_lush_signals::SignalBag;
 use gtk4::gio;
 use gtk4::gio::prelude::ListModelExt;
 use gtk4::prelude::*;
@@ -614,7 +615,7 @@ impl LushtextWorkspaceSection {
                         // expansion handler id and is cleared in unbind.
                         unsafe {
                             tree_row
-                                .data::<glib::SignalHandlerId>("workspace-watch-expanded-hook")
+                                .data::<SignalBag>("workspace-watch-expanded-hook")
                         }
                             .is_some();
                     if !has_expanded_hook {
@@ -631,10 +632,12 @@ impl LushtextWorkspaceSection {
                                     }
                                 });
                             });
-                        // SAFETY: this private handler id is disconnected and
+                        let signals = SignalBag::new();
+                        signals.track(&tree_row, handler_id);
+                        // SAFETY: this private signal bag is cleared and
                         // cleared in unbind; no external code reads it.
                         unsafe {
-                            tree_row.set_data("workspace-watch-expanded-hook", handler_id);
+                            tree_row.set_data("workspace-watch-expanded-hook", signals);
                         }
                     }
                     section
@@ -752,13 +755,13 @@ impl LushtextWorkspaceSection {
             };
 
             // SAFETY: mirrors set_data("workspace-watch-expanded-hook") in
-            // connect_bind above. Disconnecting on unbind keeps recycled rows
-            // from retaining section callbacks beyond their visible binding.
+            // connect_bind above. Clearing on unbind keeps recycled rows from
+            // retaining section callbacks beyond their visible binding.
             unsafe {
-                if let Some(handler_id) =
-                    tree_row.steal_data::<glib::SignalHandlerId>("workspace-watch-expanded-hook")
+                if let Some(signals) =
+                    tree_row.steal_data::<SignalBag>("workspace-watch-expanded-hook")
                 {
-                    tree_row.disconnect(handler_id);
+                    signals.clear();
                 }
             }
 

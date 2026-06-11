@@ -138,6 +138,20 @@ fn test_connect_close_fires_on_button_click() {
     assert!(closed.get());
 }
 
+#[test]
+fn test_attach_detach_clears_occurrence_signal_owner() {
+    ensure_gtk_init();
+    let bar = LushtextSearchBar::new();
+    let buffer = sourceview5::Buffer::new(None);
+    let view = sourceview5::View::with_buffer(&buffer);
+
+    bar.attach(&buffer, &view);
+    assert_eq!(bar.imp().occurrences_signals.len(), 1);
+
+    bar.detach();
+    assert!(bar.imp().occurrences_signals.is_empty());
+}
+
 // --- Replace mode toggle ---
 
 #[test]

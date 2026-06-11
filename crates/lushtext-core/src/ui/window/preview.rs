@@ -187,7 +187,7 @@ impl LushtextWindow {
     pub(super) fn queue_preview_layout_settle(&self) {
         let imp = self.imp();
         if !imp.preview_visible.get() && !imp.preview_mode.get() {
-            imp.preview_transition_settle.clear();
+            let _ = imp.preview_transition_settle.clear();
             return;
         }
 
@@ -224,7 +224,7 @@ impl LushtextWindow {
                 move |_, handle| handle.finish_if_current(),
             );
         } else {
-            self.imp().preview_transition_settle.clear();
+            let _ = self.imp().preview_transition_settle.clear();
         }
     }
 

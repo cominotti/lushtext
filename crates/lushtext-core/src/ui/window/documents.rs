@@ -369,12 +369,10 @@ impl LushtextWindow {
     /// and header bar.
     fn wire_modified_indicator(&self, page: &libadwaita::TabPage, editor: &LushtextEditorPage) {
         let buffer = editor.buffer();
-        if let Some(previous) = editor.imp().modified_handler_id.borrow_mut().take() {
-            buffer.disconnect(previous);
-        }
-        // Buffer signals stay connected until the editor is rewired or dropped;
-        // storing handler IDs lets us disconnect stale closures before attaching
-        // new tab-title and draft-dirty listeners to the same buffer.
+        // Buffer signals stay connected until the editor is rewired or dropped.
+        // Clearing the group disconnects stale closures before attaching new
+        // tab-title and draft-dirty listeners to the same buffer.
+        editor.imp().document_buffer_signals.clear();
         let page_weak = page.downgrade();
         let window_weak = self.downgrade();
         let handler_id = buffer.connect_modified_changed(move |buf| {
@@ -400,7 +398,10 @@ impl LushtextWindow {
                 window.update_discard_action();
             }
         });
-        editor.imp().modified_handler_id.replace(Some(handler_id));
+        editor
+            .imp()
+            .document_buffer_signals
+            .track(&buffer, handler_id);
 
         let window_weak = self.downgrade();
         let page_weak = page.downgrade();
@@ -427,8 +428,8 @@ impl LushtextWindow {
         });
         editor
             .imp()
-            .buffer_changed_handler_id
-            .replace(Some(changed_handler_id));
+            .document_buffer_signals
+            .track(&buffer, changed_handler_id);
     }
 
     /// Wire inline alert button callbacks for a newly created editor page.

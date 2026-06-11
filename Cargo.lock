@@ -849,13 +849,17 @@ dependencies = [
 name = "gtk-lush-settle"
 version = "0.0.0"
 dependencies = [
+ "glib",
  "gtk4",
+ "proptest",
 ]
 
 [[package]]
 name = "gtk-lush-signals"
 version = "0.0.0"
 dependencies = [
+ "gio",
+ "glib",
  "gtk4",
 ]
 
@@ -1176,6 +1180,8 @@ dependencies = [
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
+ "gtk-lush-settle",
+ "gtk-lush-signals",
  "gtk4",
  "ignore",
  "libadwaita",
@@ -2436,6 +2442,7 @@ dependencies = [
  "gobject-sys",
  "log",
  "num-traits",
+ "once_cell",
  "pango",
  "pango-sys",
  "serde",
@@ -2446,6 +2453,7 @@ dependencies = [
  "toml_parser",
  "tracing-core",
  "winnow",
+ "zerocopy",
 ]
 
 [[package]]

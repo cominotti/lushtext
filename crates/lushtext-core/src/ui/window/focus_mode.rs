@@ -151,7 +151,7 @@ impl LushtextWindow {
         let should_leave_fullscreen = !imp.focus_mode.was_fullscreen_on_entry.get();
 
         imp.focus_mode.active.set(false);
-        imp.focus_mode.affordance_timer.invalidate();
+        let _ = imp.focus_mode.affordance_timer.invalidate();
         imp.focus_mode_revealer.set_reveal_child(false);
         self.set_preview_mode_for_focus_mode(false);
         if restore_preview {

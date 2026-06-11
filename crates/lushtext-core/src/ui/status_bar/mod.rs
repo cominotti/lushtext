@@ -96,7 +96,7 @@ impl LushtextStatusBar {
     /// Remove any in-flight message-area pulse and invalidate pending cleanup.
     pub fn clear_message_area_pulse(&self) {
         let imp = self.imp();
-        imp.pulse_cleanup_timer.invalidate();
+        let _ = imp.pulse_cleanup_timer.invalidate();
         clear_message_area_pulse_classes(&imp.message_area_box);
     }
 

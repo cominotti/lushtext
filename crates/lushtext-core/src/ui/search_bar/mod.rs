@@ -152,10 +152,10 @@ impl LushtextSearchBar {
         weak_view.set(Some(view));
 
         let imp = self.imp();
+        imp.occurrences_signals.track(&context, handler_id);
         imp.search_context.replace(Some(context));
         imp.search_settings.replace(Some(settings));
         imp.view_ref.replace(Some(weak_view));
-        imp.occurrences_handler_id.replace(Some(handler_id));
         imp.navigated.set(false);
         self.emit_search_state_changed();
     }
@@ -165,11 +165,8 @@ impl LushtextSearchBar {
         let imp = self.imp();
 
         // Disconnect the occurrences-count handler to break the ref cycle.
-        if let (Some(handler_id), Some(context)) = (
-            imp.occurrences_handler_id.take(),
-            imp.search_context.borrow().as_ref().cloned(),
-        ) {
-            context.disconnect(handler_id);
+        imp.occurrences_signals.clear();
+        if let Some(context) = imp.search_context.borrow().as_ref().cloned() {
             context.set_highlight(false);
         }
 

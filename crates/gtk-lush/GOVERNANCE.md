@@ -135,3 +135,32 @@ Exceptions: none.
 Publication posture: only explicit maintainer approval may publish the `0.0.0`
 reservations, and no functional `0.1.0` release may proceed until the
 publishing gates above are satisfied and this log records the release audit.
+
+### 2026-06-11 — Phase 2 Functional API Audit (`extract-gtk-lush-signals-and-settle`)
+
+Scope: first functional in-tree `0.0.0` APIs for `gtk-lush-signals` and
+`gtk-lush-settle`, plus LushText migration from fitting manual signal,
+binding, and private settle-helper ownership.
+
+- [x] No ownership of GTK control flow. The crates store registrations and
+      schedule callbacks on GLib's existing main loop; GTK still owns widget
+      lifecycle, rendering, and dispatch.
+- [x] No view DSL. The APIs use ordinary gtk-rs `connect_*`,
+      `bind_property`, and GLib timer calls; no macros or custom UI syntax were
+      added.
+- [x] No state, message, or component system. The crates expose RAII
+      registration owners and generation counters only.
+- [x] Leaf crates only. `gtk-lush-signals` and `gtk-lush-settle` have no
+      runtime dependency on LushText or any other GTK Lush crate.
+- [x] Adwaita remains authoritative. No adaptive behavior, split view,
+      breakpoint, sheet, or animation API is reimplemented.
+- [x] Pixels and contracts over claims. The phase proof includes crate unit
+      tests, property tests, doctests, standalone example compilation, LushText
+      migration tests, policy checks, widget verification, and visual proof
+      where affected.
+
+Exceptions: none.
+
+Publication posture: these are functional in-tree `0.0.0` APIs for LushText
+and future adoption testing only. They are not Phase 5 publication-ready, and
+no `0.1.0` release may proceed until the publishing gates above are satisfied.

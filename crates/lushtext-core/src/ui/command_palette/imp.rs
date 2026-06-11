@@ -6,8 +6,8 @@
 use crate::model::palette::{PaletteFileEntry, SearchMode, SearchResultItem};
 use crate::services::palette::{self, FileIndex};
 use crate::ui::command_palette::item::PaletteItem;
-use crate::ui::settle::Debounce;
 use glib::prelude::*;
+use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};

@@ -53,11 +53,11 @@ code that reads `buffer.text(&start, &end, ...)`, check whether it should use
 - After the owned text is captured, CPU-heavy work such as lossy encoding
   analysis or Replace preview generation belongs in `spawn_blocking_then`.
 - Every async result that changes UI state needs a freshness token plus an
-  editor/window lifetime check. Prefer the repo's private
-  `crate::ui::settle::Debounce` token when it already owns the scheduling; use
-  raw generation counters only for worker-result freshness that is not a UI
-  timer. For path-sensitive work, also verify the editor still owns the same
-  path and is still mounted in the tab view.
+  editor/window lifetime check. Prefer `gtk_lush_settle::Debounce` when it
+  already owns the UI timer scheduling; use raw generation counters only for
+  worker-result freshness that is not a UI timer. For path-sensitive work, also
+  verify the editor still owns the same path and is still mounted in the tab
+  view.
 - Optional surfaces such as Markdown preview and minimap long-line markers may
   skip large-buffer work; the active editor must stay responsive.
 
@@ -244,7 +244,7 @@ While reviewing, also check for genuine memory leaks: strong reference cycles th
 
 Review criteria:
 - Debounce on rapid input: search entries, filter inputs, and similar rapid-fire text inputs should debounce (typically 150ms) to avoid redundant work. Empty queries should bypass debounce for instant clear.
-- Settle helper pattern: for UI debounce, superseding one-shots, and readiness-linked settle bursts, prefer `crate::ui::settle::{Debounce, SupersedingTimer, SettleBurst}` over hand-rolled `Cell<u32>` timer gates. Worker-result freshness may still use explicit generation counters when no UI timer owns the token.
+- Settle helper pattern: for UI debounce, superseding one-shots, and readiness-linked settle bursts, prefer `gtk_lush_settle::{Debounce, SupersedingTimer, SettleBurst}` over hand-rolled `Cell<u32>` timer gates. Worker-result freshness may still use explicit generation counters when no UI timer owns the token.
 - SourceId lifecycle: if using Rc<Cell<Option<glib::SourceId>>> for debounce, ensure:
   - Previous SourceId is removed before scheduling a new one
   - SourceId is set to None after the callback fires
@@ -256,7 +256,7 @@ Anti-patterns to flag:
 - [FLAG] Timer closure with strong reference to widget — keeps widget alive after destruction, memory leak
 - [RECOMMEND] Missing debounce on search/filter input — every keystroke triggers full processing
 - [RECOMMEND] SourceId stored without cancellation logic — stale timers fire unexpectedly
-- [CONSIDER] Helper vs SourceId/raw counter — the private settle helpers avoid SourceId lifecycle bugs and keep timer semantics consistent; prefer them for new UI timer code
+- [CONSIDER] Helper vs SourceId/raw counter — `gtk_lush_settle` avoids SourceId lifecycle bugs and keeps timer semantics consistent; prefer it for fitting new UI timer code
 
 Output format — return findings as:
 **[SEVERITY] Title** — file:line

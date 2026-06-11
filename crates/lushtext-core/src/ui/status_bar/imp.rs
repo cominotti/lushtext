@@ -7,7 +7,7 @@
 
 use std::cell::Cell;
 
-use crate::ui::settle::SupersedingTimer;
+use gtk_lush_settle::SupersedingTimer;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};

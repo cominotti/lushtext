@@ -30,7 +30,6 @@ REQUIRED_FILES = (
     "LICENSE-MIT",
     "LICENSE-APACHE",
     "src/lib.rs",
-    "examples/standalone.rs",
 )
 SPDX_HEADER = "// SPDX-License-Identifier: MIT OR Apache-2.0"
 PUBLIC_API_PATTERN = re.compile(
@@ -98,7 +97,7 @@ def check_crate(crate_root: Path, member: str, package_name: str, errors: list[s
     if package.get("name") != package_name:
         errors.append(f"{crate_root / 'Cargo.toml'} package.name must be {package_name!r}")
     if package.get("version") != "0.0.0":
-        errors.append(f"{package_name} placeholder package must remain version 0.0.0")
+        errors.append(f"{package_name} must remain version 0.0.0 before Phase 5 publication")
     if package.get("license") != "MIT OR Apache-2.0":
         errors.append(f"{package_name} license must be exactly 'MIT OR Apache-2.0'")
     rust_version = package.get("rust-version")
@@ -110,8 +109,9 @@ def check_crate(crate_root: Path, member: str, package_name: str, errors: list[s
 
     check_dependency_direction(crate_root, package_name, manifest, errors)
     check_spdx_headers(crate_root, errors)
-    check_lib_contract(crate_root, package_name, errors)
-    check_readme(crate_root, member, errors)
+    readme_text = check_readme(crate_root, member, errors)
+    check_lib_contract(crate_root, package_name, readme_text, errors)
+    check_examples(crate_root, errors)
 
 
 def check_dependency_direction(
@@ -215,7 +215,12 @@ def check_spdx_headers(crate_root: Path, errors: list[str]) -> None:
             errors.append(f"{path.relative_to(REPO_ROOT)} missing SPDX header {SPDX_HEADER!r}")
 
 
-def check_lib_contract(crate_root: Path, package_name: str, errors: list[str]) -> None:
+def check_lib_contract(
+    crate_root: Path,
+    package_name: str,
+    readme_text: str,
+    errors: list[str],
+) -> None:
     lib_path = crate_root / "src" / "lib.rs"
     if not lib_path.is_file():
         return
@@ -227,27 +232,50 @@ def check_lib_contract(crate_root: Path, package_name: str, errors: list[str]) -
         errors.append(f"{package_name} src/lib.rs must forbid unsafe code")
     if "#![deny(missing_docs)]" not in text:
         errors.append(f"{package_name} src/lib.rs must deny missing docs")
-    if PUBLIC_API_PATTERN.search(text) or MACRO_EXPORT_PATTERN.search(text):
+    exposes_public_api = bool(PUBLIC_API_PATTERN.search(text) or MACRO_EXPORT_PATTERN.search(text))
+    if exposes_public_api and not is_functional_in_tree_readme(readme_text):
         errors.append(f"{package_name} 0.0.0 placeholder must not expose public API items")
 
 
-def check_readme(crate_root: Path, member: str, errors: list[str]) -> None:
+def check_readme(crate_root: Path, member: str, errors: list[str]) -> str:
     readme_path = crate_root / "README.md"
     if not readme_path.is_file():
-        return
+        return ""
 
     text = readme_path.read_text(encoding="utf-8")
     expected_name = f"gtk-lush-{member}"
-    required_phrases = (
+    base_required_phrases = (
         expected_name,
         "0.0.0",
         "docs/next/gtk-lush.md",
-        "no public API",
-        "Placeholder",
     )
-    for phrase in required_phrases:
+    for phrase in base_required_phrases:
         if phrase not in text:
             errors.append(f"{readme_path.relative_to(REPO_ROOT)} must mention {phrase!r}")
+    if is_functional_in_tree_readme(text):
+        for phrase in ("Pre-Publication Status", "not a Phase 5 publication-ready"):
+            if phrase not in text:
+                errors.append(f"{readme_path.relative_to(REPO_ROOT)} must mention {phrase!r}")
+    else:
+        for phrase in ("no public API", "Placeholder"):
+            if phrase not in text:
+                errors.append(f"{readme_path.relative_to(REPO_ROOT)} must mention {phrase!r}")
+
+    return text
+
+
+def is_functional_in_tree_readme(text: str) -> bool:
+    return "Pre-Publication Status" in text and "first functional in-tree" in text
+
+
+def check_examples(crate_root: Path, errors: list[str]) -> None:
+    examples_dir = crate_root / "examples"
+    if not examples_dir.is_dir():
+        errors.append(f"{crate_root.relative_to(REPO_ROOT)} missing examples directory")
+        return
+
+    if not any(examples_dir.glob("*.rs")):
+        errors.append(f"{examples_dir.relative_to(REPO_ROOT)} must contain at least one Rust example")
 
 
 def load_toml(path: Path, errors: list[str]) -> dict[str, Any] | None:

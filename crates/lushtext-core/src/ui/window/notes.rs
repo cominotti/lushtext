@@ -35,8 +35,8 @@ use crate::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
 };
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
-use crate::ui::settle::Debounce;
 use crate::ui::status_bar::MessageKind;
+use gtk_lush_settle::Debounce;
 
 use super::LushtextWindow;
 
@@ -1706,7 +1706,7 @@ impl LushtextWindow {
         search_entry.connect_search_changed(move |entry| {
             let query = entry.text().to_string();
             if query.is_empty() {
-                search_debounce.invalidate();
+                let _ = search_debounce.invalidate();
                 if let (Some(window), Some(dialog), Some(rows_box)) = (
                     window_weak.upgrade(),
                     dialog_weak.upgrade(),
@@ -2980,7 +2980,7 @@ fn delay_bookmark_excerpt_preview_for_test() {
 /// Debounce browser search so large note sets do not rebuild on every keystroke.
 fn schedule_notes_browser_search(state: &Rc<NotesBrowserState>, query: String) {
     if query.is_empty() {
-        state.search_debounce.invalidate();
+        let _ = state.search_debounce.invalidate();
         rebuild_notes_browser_sidebar(state, "");
         return;
     }

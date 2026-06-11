@@ -76,8 +76,8 @@ impl LushtextEditorPage {
         });
         self.imp()
             .local_history
-            .modified_changed_handler_id
-            .replace(Some(handler_id));
+            .buffer_signals
+            .track(&buffer, handler_id);
     }
 
     /// Return the large-file-aware local-history mode for this editor.

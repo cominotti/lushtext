@@ -411,7 +411,7 @@ impl super::LushtextWindow {
     }
 
     fn cancel_first_dirty_draft_autosave(&self) {
-        self.imp().drafts.first_dirty_autosave_timer.invalidate();
+        let _ = self.imp().drafts.first_dirty_autosave_timer.invalidate();
     }
 
     fn collect_dirty_draft_candidates(&self) -> Vec<DirtyDraftCandidate> {

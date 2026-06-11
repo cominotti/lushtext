@@ -10,6 +10,10 @@ globs: "**/*.rs"
 - All dependencies declared in the repository-root `[workspace.dependencies]`, consumed with `{ workspace = true }`.
 - Every crate depends on `workspace-hack` for cargo-hakari.
 - License header `// SPDX-License-Identifier: GPL-3.0-or-later` on every `.rs` file.
+- LushText may consume in-tree GTK Lush crates (`gtk-lush-signals`,
+  `gtk-lush-settle`) through workspace path dependencies. GTK Lush family
+  crates must remain leaf crates and must not depend on LushText or on each
+  other at runtime.
 
 ## GTK/GLib Imports
 
@@ -43,6 +47,8 @@ Every custom widget: `mod.rs` (public wrapper + `glib::wrapper!`) + `imp.rs` (pr
 GtkSourceView has its own theming separate from GTK CSS. Always:
 1. Query `libadwaita::StyleManager::is_dark()` to pick `"Adwaita"` vs `"Adwaita-dark"`.
 2. Connect to `connect_dark_notify()` for runtime changes.
+3. Store long-lived settings/style-manager handler registrations in
+   `gtk_lush_signals::SignalBag` so editor tabs disconnect them on teardown.
 
 ## Background I/O
 
@@ -52,6 +58,13 @@ Use `services::async_task::spawn_blocking_then(state, work, then)` for any I/O t
 - `then`: runs on main thread with result, does NOT need to be `Send`
 
 Never pass GTK objects directly across threads — they are not `Send`/`Sync`. Use `glib::thread_guard::ThreadGuard` or `glib::SendWeakRef`.
+
+## GTK Main-Loop Timing
+
+Use `gtk_lush_settle::{Debounce, SettleBurst, SupersedingTimer}` for GTK
+main-loop timers where latest-generation semantics are the whole contract.
+Keep domain generations and worker freshness tokens explicit when they protect
+durable writes, undo journals, file loads, or cross-thread result ownership.
 
 ## GTK Main-Thread Snapshot Boundaries
 

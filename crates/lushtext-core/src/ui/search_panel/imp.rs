@@ -11,7 +11,7 @@ use super::item::SearchResultItem;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 use crate::model::content_search::{Replacement, SavedSearch, SearchHistoryEntry, SearchMatch};
 use crate::services::content_search::ReplaceUndoBackup;
-use crate::ui::settle::Debounce;
+use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
@@ -584,7 +584,7 @@ impl LushtextSearchPanel {
 
             let spec = panel.current_query_spec();
             if spec.query.is_empty() {
-                imp.runtime.search_debounce.invalidate();
+                let _ = imp.runtime.search_debounce.invalidate();
                 panel.start_search(&spec);
                 return;
             }

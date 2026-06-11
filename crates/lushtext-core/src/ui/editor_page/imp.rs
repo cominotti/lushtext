@@ -18,8 +18,9 @@ use crate::services::{
 };
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
-use crate::ui::settle::{Debounce, SettleBurst};
 use glib::value::ToValue;
+use gtk_lush_settle::{Debounce, SettleBurst};
+use gtk_lush_signals::SignalBag;
 use gtk4::gio;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
@@ -88,29 +89,11 @@ pub struct OverscrollState {
 /// Signal handlers connected to application-global preference/theme objects.
 #[derive(Default)]
 pub struct PreferenceBindingState {
-    /// Handler ID for `StyleManager::connect_dark_notify`. Disconnected in `Drop`
-    /// to prevent stale closures keeping the buffer alive after tab close.
-    pub dark_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `word-wrap` change. Disconnected in `Drop`.
-    pub word_wrap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `style-scheme` change. Disconnected in `Drop`.
-    pub style_scheme_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `tab-content-opacity` change. Disconnected in `Drop`.
-    pub tab_content_opacity_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `tab-width` change. Disconnected in `Drop`.
-    pub tab_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `insert-spaces` change. Disconnected in `Drop`.
-    pub insert_spaces_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `show-minimap`. Disconnected in `Drop`.
-    pub show_minimap_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `minimap-long-line-markers-visible`. Disconnected in `Drop`.
-    pub minimap_long_line_markers_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `minimap-width`. Disconnected in `Drop`.
-    pub minimap_width_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `focus-mode-target-columns`. Disconnected in `Drop`.
-    pub focus_mode_columns_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for GSettings `focus-mode-typewriter-scrolling`. Disconnected in `Drop`.
-    pub focus_mode_typewriter_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Grouped global signal lifetimes for Settings and StyleManager.
+    ///
+    /// These sources outlive an editor tab, so they must be disconnected when
+    /// the page is disposed to avoid stale closures retaining editor state.
+    pub signals: SignalBag,
 }
 
 /// File-monitor state for external change detection.
@@ -309,13 +292,7 @@ pub struct MinimapState {
     /// One-shot guard so the "too large for minimap" message does not spam on each edit.
     pub too_large_feedback_shown: Cell<bool>,
     /// Handler ID for the buffer's `insert-text` signal. Disconnected in dispose.
-    pub insert_text_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for the buffer's `delete-range` signal. Disconnected in dispose.
-    pub delete_range_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for the buffer's `modified-changed` signal used by minimap state. Disconnected in dispose.
-    pub modified_changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for the buffer's `changed` signal used by minimap refresh. Disconnected in dispose.
-    pub changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    pub buffer_signals: SignalBag,
 }
 
 /// Temporary editor presentation state while the window is in Focus Mode.
@@ -333,10 +310,8 @@ pub struct FocusModeEditorState {
     pub typewriter_scrolling: Cell<bool>,
     /// Gentle overlay line that marks the source editor's column-zero text origin while focused.
     pub text_origin_guide: RefCell<Option<gtk4::DrawingArea>>,
-    /// Handler ID for cursor movement through the insert mark.
-    pub mark_set_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for inserted/deleted text changes.
-    pub changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Buffer signal lifetimes that drive typewriter scrolling and cursor centering.
+    pub buffer_signals: SignalBag,
 }
 
 /// Automatic local-history capture state scoped to one editor tab.
@@ -350,8 +325,8 @@ pub struct LocalHistoryState {
     pub automatic_capture_suppressed: Cell<bool>,
     /// One-shot text used by the browser's immediate undo-restore action.
     pub restore_undo_text: RefCell<Option<String>>,
-    /// Handler ID for the buffer's `modified-changed` signal used by local history. Disconnected in dispose.
-    pub modified_changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Buffer signal lifetimes that drive automatic local-history capture.
+    pub buffer_signals: SignalBag,
 }
 
 // CompositeTemplate loads the UI layout from a compiled XML file (bundled
@@ -415,12 +390,10 @@ pub struct LushtextEditorPage {
     /// Per-file formatting overrides from EditorConfig. Empty for untitled tabs
     /// or files without a matching `.editorconfig`.
     pub formatting_overrides: Cell<FormattingOverrides>,
-    /// Handler ID for the buffer's `modified-changed` signal. Disconnected in dispose.
-    pub modified_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for the buffer's `changed` signal (preview refresh). Disconnected in dispose.
-    pub buffer_changed_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-    /// Handler ID for the buffer's `end-user-action` signal. Disconnected in dispose.
-    pub end_user_action_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// Buffer signals wired by the owning window for tab title, draft, and preview state.
+    pub document_buffer_signals: SignalBag,
+    /// Editor-local buffer signals for user edit actions.
+    pub editing_buffer_signals: SignalBag,
     /// Callback invoked when estimated buffer memory changes (load, save, evict).
     pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
     /// Callback invoked when the editor needs to surface an inline notification.
@@ -472,9 +445,8 @@ impl Default for LushtextEditorPage {
             settings: gio::Settings::new(crate::config::APP_ID),
             preference_bindings: PreferenceBindingState::default(),
             formatting_overrides: Cell::new(FormattingOverrides::default()),
-            modified_handler_id: RefCell::new(None),
-            buffer_changed_handler_id: RefCell::new(None),
-            end_user_action_handler_id: RefCell::new(None),
+            document_buffer_signals: SignalBag::new(),
+            editing_buffer_signals: SignalBag::new(),
             memory_changed_callback: RefCell::default(),
             notification_callback: RefCell::default(),
             monitor: MonitorState::default(),
@@ -519,41 +491,12 @@ impl ObjectImpl for LushtextEditorPage {
     // children — accessing `self.source_view` in Drop panics because the
     // TemplateChild's OnceCell is already empty.
     fn dispose(&self) {
-        let buffer = self
-            .source_view
-            .buffer()
-            .downcast::<sourceview5::Buffer>()
-            .expect("GtkSourceView buffer");
-        if let Some(handler_id) = self.modified_handler_id.take() {
-            buffer.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.buffer_changed_handler_id.take() {
-            buffer.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.end_user_action_handler_id.take() {
-            buffer.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.local_history.modified_changed_handler_id.take() {
-            buffer.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.minimap.insert_text_handler_id.take() {
-            buffer.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.minimap.delete_range_handler_id.take() {
-            buffer.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.minimap.modified_changed_handler_id.take() {
-            buffer.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.minimap.changed_handler_id.take() {
-            buffer.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.focus_mode.mark_set_handler_id.take() {
-            buffer.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.focus_mode.changed_handler_id.take() {
-            buffer.disconnect(handler_id);
-        }
+        self.preference_bindings.signals.clear();
+        self.document_buffer_signals.clear();
+        self.editing_buffer_signals.clear();
+        self.local_history.buffer_signals.clear();
+        self.minimap.buffer_signals.clear();
+        self.focus_mode.buffer_signals.clear();
         self.minimap.source_map.borrow_mut().take();
         self.minimap.marker_strip.borrow_mut().take();
         self.minimap.reflow_freeze_picture.borrow_mut().take();
@@ -619,16 +562,7 @@ impl ObjectImpl for LushtextEditorPage {
         // overrides can take priority. The handler reads the current overrides
         // and only falls back to GSettings when no override is active.
         apply_formatting_settings(&self.source_view, settings, FormattingOverrides::default());
-        for (key, handler_field) in [
-            (
-                keys::TAB_WIDTH,
-                &self.preference_bindings.tab_width_handler_id,
-            ),
-            (
-                keys::INSERT_SPACES,
-                &self.preference_bindings.insert_spaces_handler_id,
-            ),
-        ] {
+        for key in [keys::TAB_WIDTH, keys::INSERT_SPACES] {
             let editor_weak = self.obj().downgrade();
             let id = settings.connect_changed(Some(key), move |_, _| {
                 if let Some(editor) = editor_weak.upgrade() {
@@ -640,7 +574,7 @@ impl ObjectImpl for LushtextEditorPage {
                     );
                 }
             });
-            handler_field.replace(Some(id));
+            self.preference_bindings.signals.track(settings, id);
         }
 
         // Keep this one-way from settings to the view. `mapping` converts the
@@ -661,9 +595,7 @@ impl ObjectImpl for LushtextEditorPage {
                 editor.schedule_minimap_refresh();
             }
         });
-        self.preference_bindings
-            .word_wrap_handler_id
-            .replace(Some(id));
+        self.preference_bindings.signals.track(settings, id);
 
         apply_color_scheme_to_editor(&self.obj());
         self.document_surface_opacity
@@ -675,9 +607,7 @@ impl ObjectImpl for LushtextEditorPage {
                     apply_color_scheme_to_editor(&editor);
                 }
             });
-            self.preference_bindings
-                .style_scheme_handler_id
-                .replace(Some(id));
+            self.preference_bindings.signals.track(settings, id);
         }
         {
             let editor_weak = self.obj().downgrade();
@@ -686,9 +616,7 @@ impl ObjectImpl for LushtextEditorPage {
                     apply_color_scheme_to_editor(&editor);
                 }
             });
-            self.preference_bindings
-                .tab_content_opacity_handler_id
-                .replace(Some(id));
+            self.preference_bindings.signals.track(settings, id);
         }
         {
             let editor_weak = self.obj().downgrade();
@@ -699,8 +627,8 @@ impl ObjectImpl for LushtextEditorPage {
                 }
             });
             self.preference_bindings
-                .dark_handler_id
-                .replace(Some(handler_id));
+                .signals
+                .track(&style_manager, handler_id);
         }
 
         {
@@ -710,9 +638,7 @@ impl ObjectImpl for LushtextEditorPage {
                     editor.schedule_minimap_refresh();
                 }
             });
-            self.preference_bindings
-                .show_minimap_handler_id
-                .replace(Some(id));
+            self.preference_bindings.signals.track(settings, id);
         }
         {
             let editor_weak = self.obj().downgrade();
@@ -724,9 +650,7 @@ impl ObjectImpl for LushtextEditorPage {
                     }
                 },
             );
-            self.preference_bindings
-                .minimap_long_line_markers_handler_id
-                .replace(Some(id));
+            self.preference_bindings.signals.track(settings, id);
         }
         {
             // Keep the overlay width one-way from settings. The mapping clamps
@@ -746,9 +670,7 @@ impl ObjectImpl for LushtextEditorPage {
                     editor.schedule_minimap_refresh();
                 }
             });
-            self.preference_bindings
-                .minimap_width_handler_id
-                .replace(Some(id));
+            self.preference_bindings.signals.track(settings, id);
         }
         {
             let editor_weak = self.obj().downgrade();
@@ -759,9 +681,7 @@ impl ObjectImpl for LushtextEditorPage {
                             .set_focus_mode_target_columns(s.uint(keys::FOCUS_MODE_TARGET_COLUMNS));
                     }
                 });
-            self.preference_bindings
-                .focus_mode_columns_handler_id
-                .replace(Some(id));
+            self.preference_bindings.signals.track(settings, id);
         }
         {
             let editor_weak = self.obj().downgrade();
@@ -775,9 +695,7 @@ impl ObjectImpl for LushtextEditorPage {
                     }
                 },
             );
-            self.preference_bindings
-                .focus_mode_typewriter_handler_id
-                .replace(Some(id));
+            self.preference_bindings.signals.track(settings, id);
         }
 
         self.obj().setup_bookmark_projection();
@@ -794,7 +712,7 @@ impl ObjectImpl for LushtextEditorPage {
                     editor.schedule_minimap_refresh();
                 }
             });
-            self.end_user_action_handler_id.replace(Some(handler_id));
+            self.editing_buffer_signals.track(&buffer, handler_id);
         }
 
         // Search bar close: hide_search restores cursor and detaches the
@@ -831,63 +749,6 @@ impl ObjectImpl for LushtextEditorPage {
 // adjustments in `overscroll.rs` instead.
 impl WidgetImpl for LushtextEditorPage {}
 impl BoxImpl for LushtextEditorPage {}
-
-// Disconnect signal handlers from application-global objects (Settings,
-// StyleManager) that outlive individual EditorPage instances. These don't
-// access template children, so Rust's Drop is safe for them.
-impl Drop for LushtextEditorPage {
-    fn drop(&mut self) {
-        if let Some(handler_id) = self.preference_bindings.dark_handler_id.take() {
-            libadwaita::StyleManager::default().disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.preference_bindings.word_wrap_handler_id.take() {
-            self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.preference_bindings.style_scheme_handler_id.take() {
-            self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self
-            .preference_bindings
-            .tab_content_opacity_handler_id
-            .take()
-        {
-            self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.preference_bindings.tab_width_handler_id.take() {
-            self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.preference_bindings.insert_spaces_handler_id.take() {
-            self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.preference_bindings.show_minimap_handler_id.take() {
-            self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self
-            .preference_bindings
-            .minimap_long_line_markers_handler_id
-            .take()
-        {
-            self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self.preference_bindings.minimap_width_handler_id.take() {
-            self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self
-            .preference_bindings
-            .focus_mode_columns_handler_id
-            .take()
-        {
-            self.settings.disconnect(handler_id);
-        }
-        if let Some(handler_id) = self
-            .preference_bindings
-            .focus_mode_typewriter_handler_id
-            .take()
-        {
-            self.settings.disconnect(handler_id);
-        }
-    }
-}
 
 /// Apply formatting settings to the source view, resolving EditorConfig
 /// overrides against GSettings fallbacks. Called on initial construction,

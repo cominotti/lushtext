@@ -5,6 +5,7 @@
 //! This GTK adapter owns template children, search option actions, replace-row
 //! projection, and attach/detach state for one active `GtkSourceView`.
 
+use gtk_lush_signals::SignalBag;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use sourceview5::prelude::*;
@@ -67,9 +68,8 @@ pub struct LushtextSearchBar {
     pub search_settings: RefCell<Option<sourceview5::SearchSettings>>,
     /// Weak reference to the source view for scroll_mark_onscreen after match navigation.
     pub view_ref: RefCell<Option<glib::WeakRef<sourceview5::View>>>,
-    /// Signal handler for SearchContext::connect_occurrences_count_notify.
-    /// Disconnected during detach() to break the reference cycle.
-    pub occurrences_handler_id: RefCell<Option<glib::SignalHandlerId>>,
+    /// SearchContext signal lifetimes for the current attachment.
+    pub occurrences_signals: SignalBag,
 
     // --- Navigation state ---
     /// Whether the user navigated to a match (next/prev). When true, Escape

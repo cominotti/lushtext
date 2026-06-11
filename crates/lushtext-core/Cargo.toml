@@ -12,6 +12,8 @@ property-tests = []
 test-utils = []
 
 [dependencies]
+gtk-lush-settle = { workspace = true }
+gtk-lush-signals = { workspace = true }
 gtk4        = { workspace = true }
 libadwaita  = { workspace = true }
 sourceview5 = { workspace = true }
