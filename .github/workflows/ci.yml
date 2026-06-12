@@ -171,9 +171,11 @@ jobs:
             openssl-devel
 
       # Dated nightly toolchains are not published as dtolnay/rust-toolchain
-      # action refs; the dated pin must flow through the toolchain input.
+      # action refs; the dated pin must flow through the toolchain input. The
+      # action itself is pinned to an immutable commit SHA because its branch
+      # refs are mutable.
       - name: Install pinned public API toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master as of 2026-03-27
         with:
           toolchain: ${{ env.GTK_LUSH_PUBLIC_API_TOOLCHAIN }}
 
