@@ -80,7 +80,7 @@ template $LushtextWindow: Adw.ApplicationWindow {
       height-request: 0;
       overflow: hidden;
       // Base layer: nested split views around the existing content host.
-      child: $LushtextShrinkableBin window_content_clipper {
+      child: $GtkLushClipBin window_content_clipper {
         vexpand: "true";
         height-request: "0";
 

@@ -10,6 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -20,8 +21,7 @@ use crate::model::migration_ledger::MigrationKind;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{
-    async_task, filesystem::metadata as fs_metadata, json_store, local_history_service,
-    migration_ledger,
+    filesystem::metadata as fs_metadata, json_store, local_history_service, migration_ledger,
 };
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::{LushtextEditorPage, PendingWarningAction};
@@ -144,7 +144,7 @@ impl LushtextWindow {
     /// Open local history for an explicit saved file path, selecting or opening its tab first.
     pub(super) fn show_local_history_for_path(&self, path: &Path) {
         let path = path.to_path_buf();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || {
                 let availability = fs_metadata::file_facts(&path).ok().map_or(
@@ -205,7 +205,7 @@ impl LushtextWindow {
 
     /// Load snapshot metadata for an already-open eligible editor.
     fn load_local_history_for_editor(&self, editor: LushtextEditorPage, path: PathBuf) {
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (self.clone(), editor, path.clone()),
             move || {
                 let data_dir = json_store::data_dir();
@@ -260,7 +260,7 @@ impl LushtextWindow {
         let old_for_move = old_path.clone();
         let new_for_move = new_path.clone();
         let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || {
                 let data_dir = json_store::data_dir();
@@ -569,7 +569,7 @@ impl LushtextWindow {
         let restore_text = snapshot.text;
         let run_restore = move |undo_text: String| {
             let path = browser.path.clone();
-            async_task::spawn_blocking_then(
+            spawn_blocking_then(
                 RestoreWorkState {
                     browser,
                     undo_text: undo_text.clone(),
@@ -668,7 +668,7 @@ impl LocalHistoryBrowserState {
 
         let generation = self.preview_generation.get().wrapping_add(1);
         self.preview_generation.set(generation);
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             Rc::clone(self),
             {
                 let path = self.path.clone();

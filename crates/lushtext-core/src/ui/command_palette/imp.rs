@@ -456,7 +456,7 @@ impl LushtextCommandPalette {
         let open_tabs = self.open_tabs.borrow().clone();
         let workspace_group_label = self.workspace_group_label.borrow().clone();
 
-        crate::services::async_task::spawn_blocking_then(
+        gtk_lush_tasks::spawn_blocking_then(
             self.obj().clone(),
             move || {
                 let hits = grouped_hits(

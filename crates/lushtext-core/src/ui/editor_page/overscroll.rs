@@ -9,6 +9,7 @@
 //! template wiring or minimap marker logic.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_viewport::{ViewportAxis, ViewportObserver};
 use gtk4::prelude::*;
 
 use super::LushtextEditorPage;
@@ -24,19 +25,6 @@ const MIN_EDITOR_BOTTOM_MARGIN: i32 = 6;
 /// blank space for the last lines and minimap slider to keep traveling near EOF
 /// without making the document feel detached from the viewport.
 const EOF_OVERSCROLL_FACTOR: f64 = 0.75;
-
-/// Scroll axis observed by the viewport reflow detectors.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ViewportAxis {
-    /// The horizontal adjustment, whose page size is the viewport width.
-    Horizontal,
-    /// The vertical adjustment, whose page size is the viewport height.
-    Vertical,
-}
-
-fn adjustment_rests_at_lower(adjustment: &gtk4::Adjustment) -> bool {
-    (adjustment.value() - adjustment.lower()).abs() <= 0.5
-}
 
 fn overscroll_margin_from_visible_height(visible_height: i32) -> i32 {
     #[expect(
@@ -67,37 +55,35 @@ impl LushtextEditorPage {
         };
 
         let overscroll = &self.imp().overscroll;
-        overscroll.h_viewport_size.set(hadjustment.page_size());
-        overscroll.v_viewport_size.set(vadjustment.page_size());
-        overscroll
-            .h_rest_at_left
-            .set(adjustment_rests_at_lower(&hadjustment));
-        overscroll
-            .v_rest_at_top
-            .set(adjustment_rests_at_lower(&vadjustment));
+        let _ = overscroll
+            .rest_state
+            .record_adjustment(ViewportAxis::Horizontal, &hadjustment);
+        let _ = overscroll
+            .rest_state
+            .record_adjustment(ViewportAxis::Vertical, &vadjustment);
 
-        for (adjustment, axis) in [
-            (hadjustment, ViewportAxis::Horizontal),
-            (vadjustment, ViewportAxis::Vertical),
-        ] {
-            // Adjustment signals are GObject observer callbacks; weak refs keep
-            // them from retaining an editor after its tab has been closed.
-            let editor_weak = self.downgrade();
-            adjustment.connect_changed(move |adjustment| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    editor.on_viewport_bounds_changed(adjustment, axis);
+        // Adjustment signals are GObject observer callbacks; weak refs keep
+        // them from retaining an editor after its tab has been closed.
+        let editor_weak = self.downgrade();
+        let bounds_editor_weak = editor_weak.clone();
+        let observer = ViewportObserver::new(
+            &hadjustment,
+            &vadjustment,
+            move |change| {
+                if let Some(editor) = bounds_editor_weak.upgrade() {
+                    editor.on_viewport_bounds_changed(change.axis());
                 }
-            });
-            let editor_weak = self.downgrade();
-            adjustment.connect_value_changed(move |adjustment| {
+            },
+            move |change| {
                 if let Some(editor) = editor_weak.upgrade() {
                     // During settle this is a no-op; during reveal warmup it
                     // drops the cover before recording the new rest state.
                     editor.reveal_minimap_reflow_freeze_for_user_scroll();
-                    editor.record_viewport_rest_state(adjustment, axis);
+                    editor.record_viewport_rest_state(change.axis(), change.adjustment());
                 }
-            });
-        }
+            },
+        );
+        *overscroll.observer.borrow_mut() = Some(observer);
     }
 
     /// Track whether the user-visible scroll position rests at the start edge.
@@ -106,16 +92,12 @@ impl LushtextEditorPage {
     /// clamp adjustment values while reallocating; only changes outside a
     /// burst represent intentional scrolling. The rest state is what the
     /// settle repair consults to decide whether edge anchors may be restored.
-    fn record_viewport_rest_state(&self, adjustment: &gtk4::Adjustment, axis: ViewportAxis) {
-        if self.imp().minimap.reflow_settle.pending() {
-            return;
-        }
-        let at_lower = adjustment_rests_at_lower(adjustment);
-        let overscroll = &self.imp().overscroll;
-        match axis {
-            ViewportAxis::Horizontal => overscroll.h_rest_at_left.set(at_lower),
-            ViewportAxis::Vertical => overscroll.v_rest_at_top.set(at_lower),
-        }
+    fn record_viewport_rest_state(&self, axis: ViewportAxis, adjustment: &gtk4::Adjustment) {
+        let _ = self
+            .imp()
+            .overscroll
+            .rest_state
+            .record_adjustment(axis, adjustment);
     }
 
     /// React to a viewport size change reported by a scroll adjustment.
@@ -124,29 +106,20 @@ impl LushtextEditorPage {
     /// width changes open or extend a minimap reflow burst and re-anchor the
     /// left edge, height changes re-anchor the top edge, and either kind
     /// refreshes the EOF overscroll and Focus Mode width-derived chrome.
-    fn on_viewport_bounds_changed(&self, adjustment: &gtk4::Adjustment, axis: ViewportAxis) {
+    fn on_viewport_bounds_changed(&self, axis: ViewportAxis) {
         let overscroll = &self.imp().overscroll;
-        let page_size = adjustment.page_size();
-        let cell = match axis {
-            ViewportAxis::Horizontal => &overscroll.h_viewport_size,
-            ViewportAxis::Vertical => &overscroll.v_viewport_size,
-        };
-        if (cell.get() - page_size).abs() <= 0.5 {
-            return;
-        }
-        cell.set(page_size);
 
         self.schedule_dynamic_overscroll_update();
         match axis {
             ViewportAxis::Horizontal => {
                 self.schedule_minimap_reflow_settle();
-                if overscroll.h_rest_at_left.get() {
+                if overscroll.rest_state.at_lower(ViewportAxis::Horizontal) {
                     self.schedule_left_edge_horizontal_scroll_clamp();
                 }
             }
             ViewportAxis::Vertical => {
                 self.note_minimap_height_reflow();
-                if overscroll.v_rest_at_top.get() {
+                if overscroll.rest_state.at_lower(ViewportAxis::Vertical) {
                     self.schedule_top_edge_vertical_scroll_clamp();
                 }
             }

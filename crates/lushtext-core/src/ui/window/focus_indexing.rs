@@ -5,11 +5,11 @@
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
 use gtk4::prelude::*;
 
 use crate::model::palette::{PaletteFileEntry, SearchMode};
-use crate::services::async_task;
 use crate::services::palette::FileIndex;
 use crate::ui::editor_page::LushtextEditorPage;
 
@@ -317,7 +317,7 @@ impl LushtextWindow {
                 let prev_count = window.imp().command_palette.file_index_len();
                 let folders = window.current_workspace_folder_paths();
                 let window_weak = window.downgrade();
-                async_task::spawn_blocking_then(
+                spawn_blocking_then(
                     (),
                     move || {
                         if prev_count == 0 {

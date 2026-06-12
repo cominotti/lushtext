@@ -1,26 +1,38 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Private implementation for the shrinkable main-content wrapper.
+//! Private GObject implementation for [`super::ClipBin`].
+//!
+//! The public wrapper in `mod.rs` gives Rust callers a normal GTK widget type.
+//! This implementation owns the GTK lifecycle details: one optional child,
+//! explicit property notification, parent/unparent pairing, zero-minimum
+//! measurement, and clipped snapshots.
+
+use std::cell::RefCell;
+use std::sync::LazyLock;
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{glib, graphene};
-use std::cell::RefCell;
-use std::sync::LazyLock;
 
+/// Private widget state for `GtkLushClipBin`.
 #[derive(Default)]
-pub struct LushtextShrinkableBin {
+pub struct ClipBin {
+    /// The single child parented by this bin.
+    ///
+    /// GTK calls widget vfuncs with `&self`, so interior mutability is the
+    /// standard gtk-rs shape for replacing or clearing a template/buildable
+    /// child while still letting measurement and snapshot borrow it briefly.
     pub child: RefCell<Option<gtk4::Widget>>,
 }
 
 #[glib::object_subclass]
-impl ObjectSubclass for LushtextShrinkableBin {
-    const NAME: &'static str = "LushtextShrinkableBin";
-    type Type = super::LushtextShrinkableBin;
+impl ObjectSubclass for ClipBin {
+    const NAME: &'static str = "GtkLushClipBin";
+    type Type = super::ClipBin;
     type ParentType = gtk4::Widget;
 }
 
-impl ObjectImpl for LushtextShrinkableBin {
+impl ObjectImpl for ClipBin {
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
@@ -58,7 +70,7 @@ impl ObjectImpl for LushtextShrinkableBin {
     }
 }
 
-impl WidgetImpl for LushtextShrinkableBin {
+impl WidgetImpl for ClipBin {
     fn measure(&self, orientation: gtk4::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
         let Some(child) = self.child.borrow().as_ref().cloned() else {
             return (0, 0, -1, -1);
@@ -67,8 +79,27 @@ impl WidgetImpl for LushtextShrinkableBin {
             return (0, 0, -1, -1);
         }
 
-        let (_, natural, _, natural_baseline) = child.measure(orientation, for_size);
-        (0, natural, -1, natural_baseline)
+        // ClipBin may be measured at an opposite-axis size below the child's
+        // legal minimum because it advertises zero minimum size to protect
+        // persistent chrome. Clamp only the size passed into the child query so
+        // GTK does not warn about impossible measurement requests; keep our own
+        // reported minimum at zero.
+        let child_for_size = if for_size >= 0 {
+            let opposite = match orientation {
+                gtk4::Orientation::Horizontal => gtk4::Orientation::Vertical,
+                gtk4::Orientation::Vertical => gtk4::Orientation::Horizontal,
+                _ => orientation,
+            };
+            let (opposite_minimum, _, _, _) = child.measure(opposite, -1);
+            for_size.max(opposite_minimum)
+        } else {
+            for_size
+        };
+        let (_, natural, _, _) = child.measure(orientation, child_for_size);
+        // Baselines are intentionally suppressed. Returning a child natural
+        // baseline beside a forced `-1` minimum baseline is internally
+        // inconsistent and can trip GTK size-request warnings for labels.
+        (0, natural, -1, -1)
     }
 
     fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
@@ -84,22 +115,23 @@ impl WidgetImpl for LushtextShrinkableBin {
         let Some(child) = self.child.borrow().as_ref().cloned() else {
             return;
         };
-        if child.should_layout() {
-            let bounds = graphene::Rect::new(
-                0.0,
-                0.0,
-                self.obj().width() as f32,
-                self.obj().height() as f32,
-            );
-            snapshot.push_clip(&bounds);
-            self.obj().snapshot_child(&child, snapshot);
-            snapshot.pop();
+        if !child.should_layout() {
+            return;
         }
+        let bounds = graphene::Rect::new(
+            0.0,
+            0.0,
+            self.obj().width() as f32,
+            self.obj().height() as f32,
+        );
+        snapshot.push_clip(&bounds);
+        self.obj().snapshot_child(&child, snapshot);
+        snapshot.pop();
     }
 }
 
-impl LushtextShrinkableBin {
-    fn set_child(&self, child: Option<&gtk4::Widget>) {
+impl ClipBin {
+    pub(super) fn set_child(&self, child: Option<&gtk4::Widget>) {
         {
             let current = self.child.borrow();
             match (current.as_ref(), child) {

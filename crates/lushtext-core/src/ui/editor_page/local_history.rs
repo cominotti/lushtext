@@ -9,12 +9,13 @@
 
 use std::time::Duration;
 
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use crate::model::local_history::LocalHistorySnapshotOrigin;
-use crate::services::{async_task, json_store, local_history_service};
+use crate::services::{json_store, local_history_service};
 
 use super::LushtextEditorPage;
 
@@ -216,7 +217,7 @@ impl LushtextEditorPage {
             return;
         };
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || {
                 let data_dir = json_store::data_dir();
@@ -284,7 +285,7 @@ impl LushtextEditorPage {
             return;
         };
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || {
                 let data_dir = json_store::data_dir();

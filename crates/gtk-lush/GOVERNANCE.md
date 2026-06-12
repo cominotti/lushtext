@@ -164,3 +164,32 @@ Exceptions: none.
 Publication posture: these are functional in-tree `0.0.0` APIs for LushText
 and future adoption testing only. They are not Phase 5 publication-ready, and
 no `0.1.0` release may proceed until the publishing gates above are satisfied.
+
+### 2026-06-11 — Phase 3 Runtime Geometry Audit (`extract-gtk-lush-runtime-geometry`)
+
+Scope: functional in-tree `0.0.0` APIs for `gtk-lush-tasks`,
+`gtk-lush-viewport`, and `gtk-lush-widgets`, plus LushText migration from the
+app-local background dispatcher, viewport adjustment bookkeeping, shrinkable
+content bin, and minimap render-hold mechanics.
+
+- [x] No ownership of GTK control flow. The task crate uses GLib main-loop
+      dispatch, viewport observation reacts to GTK adjustments, and widgets
+      stay ordinary GTK objects.
+- [x] No view DSL. Templates remain Blueprint/GtkBuilder XML, and widget
+      adoption uses normal gtk-rs type registration.
+- [x] No state, message, or component system. Freshness tokens, rest-state
+      helpers, `ClipBin`, and `RenderHoldOverlay` do not introduce app state
+      ownership or message routing.
+- [x] Leaf crates only. The Phase 3 crates have no runtime dependency on
+      LushText or any other GTK Lush crate.
+- [x] Adwaita remains authoritative. Split views, breakpoints, sheets, and
+      adaptive behavior stay in Libadwaita and LushText shell code.
+- [x] Pixels and contracts over claims. The phase proof includes crate tests,
+      doctests/examples, LushText compile checks, policy checks, widget proof,
+      and visual-geometry proof for minimap/sidebar render invariants.
+
+Exceptions: none.
+
+Publication posture: these are functional in-tree `0.0.0` APIs for LushText
+and future adoption testing only. They are not Phase 5 publication-ready, and
+no `0.1.0` release may proceed until the publishing gates above are satisfied.

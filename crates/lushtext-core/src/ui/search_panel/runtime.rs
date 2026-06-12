@@ -342,7 +342,7 @@ fn persist_search_history(panel: &LushtextSearchPanel, query_spec: &SearchQueryS
     drop(entries);
 
     let data_dir = json_store::data_dir();
-    crate::services::async_task::spawn_blocking_then(
+    gtk_lush_tasks::spawn_blocking_then(
         panel.clone(),
         move || search_history::save(&data_dir, &entries_clone),
         |_panel, result| {

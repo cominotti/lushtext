@@ -10,13 +10,11 @@ use crate::config::keys;
 use crate::model::encoding::{
     DocumentEncoding, FileHealthFindingKind, InvisibleCharactersMode, LineEnding,
 };
-use crate::services::{
-    async_task,
-    editor_io::{self, LossyEncodingPreview},
-};
+use crate::services::editor_io::{self, LossyEncodingPreview};
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
@@ -373,7 +371,7 @@ impl super::LushtextWindow {
         let window = self.clone();
         let run_analysis = move |text: String| {
             let editor_weak = editor_weak.clone();
-            async_task::spawn_blocking_then(
+            spawn_blocking_then(
                 window,
                 move || {
                     delay_lossy_encoding_analysis_for_test();

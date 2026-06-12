@@ -864,6 +864,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "gtk-lush-tasks"
+version = "0.0.0"
+dependencies = [
+ "glib",
+ "gtk4",
+]
+
+[[package]]
+name = "gtk-lush-viewport"
+version = "0.0.0"
+dependencies = [
+ "glib",
+ "gtk4",
+]
+
+[[package]]
+name = "gtk-lush-widgets"
+version = "0.0.0"
+dependencies = [
+ "gtk4",
+]
+
+[[package]]
 name = "gtk4"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1182,6 +1205,9 @@ dependencies = [
  "grep-searcher",
  "gtk-lush-settle",
  "gtk-lush-signals",
+ "gtk-lush-tasks",
+ "gtk-lush-viewport",
+ "gtk-lush-widgets",
  "gtk4",
  "ignore",
  "libadwaita",

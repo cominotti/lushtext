@@ -3,6 +3,9 @@ resolver = "2"
 members = [
     "crates/gtk-lush/settle",
     "crates/gtk-lush/signals",
+    "crates/gtk-lush/tasks",
+    "crates/gtk-lush/viewport",
+    "crates/gtk-lush/widgets",
     "crates/lushtext-build-support",
     "crates/lushtext-core",
     "crates/lushtext",
@@ -22,6 +25,9 @@ rust-version = "1.96.0"
 # Internal crates
 gtk-lush-settle = { path = "crates/gtk-lush/settle" }
 gtk-lush-signals = { path = "crates/gtk-lush/signals" }
+gtk-lush-tasks = { path = "crates/gtk-lush/tasks" }
+gtk-lush-viewport = { path = "crates/gtk-lush/viewport" }
+gtk-lush-widgets = { path = "crates/gtk-lush/widgets" }
 lushtext-build-support = { path = "crates/lushtext-build-support" }
 lushtext-core = { path = "crates/lushtext-core" }
 

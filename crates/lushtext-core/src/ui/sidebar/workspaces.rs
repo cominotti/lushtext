@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::glib;
 use gtk4::prelude::*;
 
@@ -18,7 +19,7 @@ use crate::model::workspace::{
     WorkspacesFile,
 };
 use crate::services::notifications::NotificationSeverity;
-use crate::services::{async_task, json_store, workspace_manager};
+use crate::services::{json_store, workspace_manager};
 use workspace_manager::{
     WorkspaceFolderAddError, WorkspaceFolderRemoveError, WorkspaceFolderReorderError,
 };
@@ -29,7 +30,7 @@ impl LushtextSidebar {
     /// Load workspaces from disk and build sections.
     pub fn load_workspaces(&self) {
         let data_dir = json_store::data_dir();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || workspace_manager::load_recovering(&data_dir),
             |sidebar, load| {
@@ -278,7 +279,7 @@ impl LushtextSidebar {
             return;
         };
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             {
                 move || {
@@ -684,7 +685,7 @@ impl LushtextSidebar {
                 imp.persist_inflight.set(true);
                 imp.persist_dirty.set(false);
 
-                async_task::spawn_blocking_then(
+                spawn_blocking_then(
                     sidebar.clone(),
                     move || workspace_manager::save(&data_dir, &workspaces_file),
                     |sidebar, result| {

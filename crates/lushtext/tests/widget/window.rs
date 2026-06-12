@@ -1105,6 +1105,12 @@ fn find_entry_row_by_title(widget: &gtk4::Widget, title: &str) -> Option<libadwa
     None
 }
 
+fn set_entry_row_text_and_flush(row: &libadwaita::EntryRow, text: &str) {
+    row.set_text(text);
+    wait_until(Duration::from_secs(2), || row.text().as_str() == text);
+    flush_events();
+}
+
 fn find_navigation_split_view(widget: &gtk4::Widget) -> Option<libadwaita::NavigationSplitView> {
     if let Ok(split_view) = widget.clone().downcast::<libadwaita::NavigationSplitView>() {
         return Some(split_view);
@@ -2399,7 +2405,7 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
     let save_button = find_button_by_label(&child, "Save").expect("save button");
     assert_eq!(line_row.text(), "1");
 
-    line_row.set_text("99");
+    set_entry_row_text_and_flush(&line_row, "99");
     save_button.emit_clicked();
     wait_until(Duration::from_secs(20), || {
         visible_sheet_dialog(&window)
@@ -2410,7 +2416,7 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
             })
     });
 
-    line_row.set_text("3");
+    set_entry_row_text_and_flush(&line_row, "3");
     save_button.emit_clicked();
     wait_until(Duration::from_secs(20), || {
         visible_sheet_dialog(&window)
@@ -2420,8 +2426,8 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
             })
     });
 
-    label_row.set_text("Moved bookmark");
-    line_row.set_text("4");
+    set_entry_row_text_and_flush(&label_row, "Moved bookmark");
+    set_entry_row_text_and_flush(&line_row, "4");
     save_button.emit_clicked();
     wait_until(Duration::from_secs(20), || {
         visible_sheet_dialog(&window).is_none()
@@ -5003,11 +5009,11 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
     let freeze_picture = editor
         .imp()
         .minimap
-        .reflow_freeze_picture
+        .render_hold
         .borrow()
         .as_ref()
-        .cloned()
-        .expect("reflow freeze picture should exist");
+        .map(|hold| hold.cover().clone())
+        .expect("reflow freeze cover should exist");
     assert!(
         !freeze_picture.property::<bool>("visible"),
         "the settle repair must reveal the live native map again after reflow"

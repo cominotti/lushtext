@@ -7,11 +7,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
 use gtk4::prelude::*;
 
 use crate::config::keys;
-use crate::services::async_task;
 use crate::services::editorconfig;
 use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::notifications::InlineActionNotification;
@@ -636,7 +636,7 @@ impl LushtextWindow {
         }
         let path = path.to_path_buf();
         let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             editor.clone(),
             move || editorconfig::resolve_for_path(&path),
             move |editor, overrides| {
@@ -743,7 +743,7 @@ impl LushtextWindow {
         let updated_for_probe = updated.to_path_buf();
         let updated_for_apply = updated.to_path_buf();
         let editor_weak = editor.downgrade();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || {
                 delay_canonical_refresh_for_test();

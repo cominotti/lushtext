@@ -12,7 +12,6 @@ use crate::model::encoding::{DocumentEncodingState, FileHealthFinding, Invisible
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::notifications::InlineActionNotification;
 use crate::services::{
-    async_task,
     file_limits::FileSizeCheck,
     filesystem::{WriteLabel, read as fs_read, write as fs_write},
 };
@@ -21,6 +20,9 @@ use crate::ui::search_bar::LushtextSearchBar;
 use glib::value::ToValue;
 use gtk_lush_settle::{Debounce, SettleBurst};
 use gtk_lush_signals::SignalBag;
+use gtk_lush_tasks::spawn_blocking_then;
+use gtk_lush_viewport::{RestPause, RestState, ViewportObserver};
+use gtk_lush_widgets::RenderHoldOverlay;
 use gtk4::gio;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
@@ -64,26 +66,12 @@ pub struct OverscrollState {
     /// Generation counter used to collapse bursts of GTK allocations into one
     /// idle overscroll recomputation after the layout settles.
     pub update_generation: Cell<u32>,
-    /// Last observed horizontal adjustment page size (editor viewport width).
-    ///
-    /// Width-only changes can reflow wrapped text without changing the visible
-    /// height, so the editor uses this to refresh minimap geometry and preserve
-    /// left-edge scroll anchoring after passive shell resizes.
-    pub h_viewport_size: Cell<f64>,
-    /// Last observed vertical adjustment page size (editor viewport height).
-    ///
-    /// Height changes from adaptive bottom sheets can make GTK preserve a stale
-    /// vertical adjustment. Tracking the previous value lets the editor keep the
-    /// top edge anchored only when the user was already at the top.
-    pub v_viewport_size: Cell<f64>,
-    /// Whether the editor rested at its left edge before the current reflow.
-    ///
-    /// Updated from user-visible scroll changes outside reflow bursts so that
-    /// GTK-preserved stale offsets during reallocation cannot masquerade as
-    /// intentional horizontal scrolling.
-    pub h_rest_at_left: Cell<bool>,
-    /// Whether the editor rested at its top edge before the current reflow.
-    pub v_rest_at_top: Cell<bool>,
+    /// Drop-owned adjustment observers for viewport page-size and value changes.
+    pub observer: RefCell<Option<ViewportObserver>>,
+    /// Shared lower-edge rest state for horizontal and vertical editor axes.
+    pub rest_state: RestState,
+    /// Active pause that excludes transient adjustment values during reflow repair.
+    pub reflow_pause: RefCell<Option<RestPause>>,
 }
 
 /// Signal handlers connected to application-global preference/theme objects.
@@ -270,13 +258,8 @@ pub struct MinimapState {
     pub refresh_debounce: Debounce,
     /// Whether a debounced minimap refresh callback is still waiting to run.
     pub refresh_pending: Cell<bool>,
-    /// Frozen last-good minimap pixels shown while a width-reflow burst settles.
-    ///
-    /// Sidebar show/hide animates the editor width across many frames, and the
-    /// native `GtkSourceMap` viewport slider repaints from transient wrapped
-    /// layout estimates on each of them. Holding the pre-burst pixels keeps the
-    /// rendered highlight visually still until one settled repair runs.
-    pub reflow_freeze_picture: RefCell<Option<gtk4::Picture>>,
+    /// Reusable render-hold owner for frozen minimap pixels during width reflow.
+    pub render_hold: RefCell<Option<RenderHoldOverlay>>,
     /// Settle burst while a width-reflow repair waits for a stable width.
     pub reflow_settle: SettleBurst,
     /// Whether repaired live map pixels are warming underneath the frozen cover.
@@ -497,9 +480,11 @@ impl ObjectImpl for LushtextEditorPage {
         self.local_history.buffer_signals.clear();
         self.minimap.buffer_signals.clear();
         self.focus_mode.buffer_signals.clear();
+        self.overscroll.observer.borrow_mut().take();
+        self.overscroll.reflow_pause.borrow_mut().take();
         self.minimap.source_map.borrow_mut().take();
         self.minimap.marker_strip.borrow_mut().take();
-        self.minimap.reflow_freeze_picture.borrow_mut().take();
+        self.minimap.render_hold.borrow_mut().take();
         self.focus_mode.text_origin_guide.borrow_mut().take();
         self.minimap.modified_marks.borrow_mut().clear();
         self.minimap.modified_lines_cache.borrow_mut().clear();
@@ -944,7 +929,7 @@ fn schedule_transparency_style_scheme_generation(
     }
 
     let editor_weak = editor.downgrade();
-    async_task::spawn_blocking_then(
+    spawn_blocking_then(
         editor_weak,
         move || {
             let result = write_transparency_style_scheme_if_needed(

@@ -50,7 +50,7 @@ pub fn save_file_async(&self) -> bool {
     let was_modified = buffer.is_modified();
     self.set_saving(true); // Keeps the view read-only while the snapshot is written.
 
-    async_task::spawn_blocking_then(
+    gtk_lush_tasks::spawn_blocking_then(
         self.clone(),
         move || -> Result<u64, String> {
             let bytes = content.as_bytes();

@@ -14,11 +14,12 @@ use std::time::Duration;
 
 use crate::model::draft::{DraftEntry, FileDraftRestoreResolution, PreloadedDraftRestore};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use crate::services::{async_task, draft_service, editor_io, json_store};
+use crate::services::{draft_service, editor_io, json_store};
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
 use anyhow::Result;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 
 /// First-dirty draft autosave delay after a clean edit cycle.
@@ -202,7 +203,7 @@ impl super::LushtextWindow {
         let draft_id = draft_id.to_string();
         let editor_weak = editor.downgrade();
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || draft_service::read_draft(&data_dir, &draft_id),
             move |(), result| {
@@ -322,7 +323,7 @@ impl super::LushtextWindow {
                 .map(|entry| entry.draft_id.clone())
                 .collect();
 
-            async_task::spawn_blocking_then(
+            spawn_blocking_then(
                 window,
                 move || {
                     let mut manifest = manifest;
@@ -512,7 +513,7 @@ impl super::LushtextWindow {
         let data_dir = json_store::data_dir();
         let window_weak = self.downgrade();
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || {
                 let now = editor_io::now_epoch_secs();
@@ -622,7 +623,7 @@ impl super::LushtextWindow {
         let data_dir = json_store::data_dir();
         let window_weak = self.downgrade();
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || {
                 let now = editor_io::now_epoch_secs();
@@ -758,7 +759,7 @@ impl super::LushtextWindow {
         let editor_weak = editor.downgrade();
         let window_weak = self.downgrade();
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || draft_service::resolve_file_draft_restore(&data_dir, &entry),
             move |(), result| {
@@ -841,7 +842,7 @@ impl super::LushtextWindow {
         let data_dir = json_store::data_dir();
         let draft_id = draft_id.to_string();
         let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || {
                 if let Err(e) = draft_service::delete_draft_file(&data_dir, &draft_id) {

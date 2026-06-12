@@ -19,7 +19,7 @@ LushtextWindow (AdwApplicationWindow)
 │   └── GtkToggleButton [document_properties_toggle_button] — toggle properties (action: win.toggle-properties)
 ├── AdwTabBar → bound to AdwTabView
 ├── GtkOverlay [window_overlay]
-│   ├── LushtextShrinkableBin [window_content_clipper] (min-height 0, clips flexible center content)
+│   ├── GtkLushClipBin [window_content_clipper] (min-height 0, clips flexible center content)
 │   │   └── AdwOverlaySplitView [workspace_split_view]
 │   │       ├── [sidebar/start] LushtextSidebar
 │   │       │   ├── GtkBox ["New Workspace" label + button]
@@ -133,15 +133,16 @@ Acceptance for these states:
   a final-settle invariant. If sidebar/properties/editor-width work can reflow
   the active editor while the minimap is visible, capture stream frames with
   native viewport pixel anchors. A product fix may
-  temporarily freeze already-rendered native minimap pixels during a detected
-  width burst, but it must not draw, recolor, or restyle a replacement
-  highlight. The freeze cover must be opaque if the live source map is allowed
-  to repaint underneath, or transparent snapshot pixels can leak a stale native
-  slider frame. It must reveal the live native map after the settle repair and
-  quiet repaint window. Capture the freeze from the user action that is about
-  to start the shell transition; passive scroll-adjustment or allocation
-  observers should only schedule the settled repair, because they can fire after
-  GTK has already invalidated or partially realized the native map.
+  temporarily freeze already-rendered native minimap pixels with
+  `gtk_lush_widgets::RenderHoldOverlay` during a detected width burst, but it
+  must not draw, recolor, or restyle a replacement highlight. The freeze cover
+  must be opaque if the live source map is allowed to repaint underneath, or
+  transparent snapshot pixels can leak a stale native slider frame. It must
+  reveal the live native map after the settle repair and quiet repaint window.
+  Capture the freeze from the user action that is about to start the shell
+  transition; passive scroll-adjustment or allocation observers should only
+  schedule the settled repair, because they can fire after GTK has already
+  invalidated or partially realized the native map.
 
 ## Adaptive Dialog Navigation
 
@@ -226,7 +227,7 @@ Acceptance for these states:
 
 - Per-window, below the split-view shell, always visible regardless of tab count.
 - The left workspace toggle stays at the far left. The document-properties toggle lives in the header bar with the `win.toggle-properties` action and `F9` accelerator.
-- The flexible center shell must yield before this bar at tiny heights; keep the editor/sidebar surface inside `LushtextShrinkableBin` so the root window can allocate the status bar inside the visible height.
+- The flexible center shell must yield before this bar at tiny heights; keep the editor/sidebar surface inside `gtk_lush_widgets::ClipBin` (`GtkLushClipBin` in templates) so the root window can allocate the status bar inside the visible height.
 - `metadata_box` (EditorConfig + line ending + encoding) is hidden via `set_visible(false)` when no tabs are open; the message area and workspace toggle remain available.
 - Messages use Adwaita semantic color tokens: `@accent_color` (Info), `@warning_color` (Warning), `@error_color` (Error). These adapt to light/dark mode automatically — no Rust-side dark mode handling needed.
 - Repeated visible notification updates briefly pulse the full `message_area_box`, not just the label text. The message area keeps a small non-flashing start margin after the workspace toggle, and pulse selectors must stay scoped to `.status-message-area` so the workspace toggle and metadata controls do not flash.
@@ -299,7 +300,7 @@ Window geometry and split-view state are persisted via GSettings (not JSON sessi
 - Breakpoints switch `properties_layout_view.layout-name` to the compact sheet before collapsing the workspace pane so medium-width windows keep the file tree visible longer.
 - The properties-pane breakpoint should be tuned from the workspace pane's effective visible width when the workspace pane consumes width so the center editor width stays protected for restored-document inline alerts and other editor chrome.
 - Compact `AdwBottomSheet` presentations that host a `GtkScrolledWindow` must let the scroller advertise a bounded natural height (`propagate-natural-height=true` plus explicit min/max content heights). Without that contract, the sheet can collapse into a thin bottom strip or consume the persistent editor/status-bar budget at short window heights.
-- The flexible editor/sidebar/content region must sit behind `LushtextShrinkableBin`, which reports a zero minimum height and clips its child. Do not replace it with a stock bin, scroller, or overlay that propagates the editor/sidebar minimum height into the root window; otherwise the status bar can be allocated below the visible window when vertical space is smaller than the normal-mode floor.
+- The flexible editor/sidebar/content region must sit behind `gtk_lush_widgets::ClipBin`, which reports a zero minimum height and clips its child. Do not replace it with a stock bin, scroller, or overlay that propagates the editor/sidebar minimum height into the root window; otherwise the status bar can be allocated below the visible window when vertical space is smaller than the normal-mode floor.
 - Allocation-time split-view sync is for live geometry only. `size_allocate()` can clamp the current fractions and update a cached properties breakpoint threshold, but it must not write `workspace-sidebar-width-fraction` / `properties-sidebar-width-fraction` to GSettings or call `AdwBreakpoint::set_condition()` with a newly parsed condition on every animation frame. Persist only explicit user intent or settled animation state, and cache derived thresholds so opening/closing sidebars stays monitor-refresh smooth in the installed Flatpak too.
 - When a utility pane closes, return focus to the active editor rather than leaving focus stranded on a toggle button.
 

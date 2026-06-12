@@ -143,7 +143,7 @@ pub(super) fn populate_child_store(
         as usize;
     // Move only the store handle, path, and cancel token across the worker
     // boundary; the callback revalidates the token before touching visible GTK state.
-    services::async_task::spawn_blocking_then(
+    gtk_lush_tasks::spawn_blocking_then(
         (store, path.clone(), Arc::clone(&cancel)),
         move || {
             services::file_tree::scan_directory_bounded(

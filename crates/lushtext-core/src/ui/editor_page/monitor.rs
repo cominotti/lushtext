@@ -8,12 +8,13 @@
 
 use std::time::Duration;
 
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
+use crate::services::editor_io;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use crate::services::{async_task, editor_io};
 
 use super::LushtextEditorPage;
 
@@ -58,7 +59,7 @@ impl LushtextEditorPage {
                         return;
                     }
                     let path = path.clone();
-                    async_task::spawn_blocking_then(
+                    spawn_blocking_then(
                         editor.clone(),
                         move || editor_io::mtime_secs(&path),
                         move |editor, current_mtime| {

@@ -12,13 +12,13 @@ use crate::services::notifications::{
     NotificationOwner, NotificationSeverity, NotificationSurface, StatusMessage,
 };
 use crate::services::{
-    async_task, content_search, filesystem::metadata as fs_metadata, json_store, saved_searches,
-    search_history,
+    content_search, filesystem::metadata as fs_metadata, json_store, saved_searches, search_history,
 };
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_panel::SearchProgressUpdate;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use gtk4::{self, glib};
 use std::collections::HashSet;
@@ -172,7 +172,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
 
         let cancel = AtomicBool::new(false);
         let data_dir = json_store::data_dir();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             window.clone(),
             move || {
                 content_search::apply_replacements(
@@ -236,7 +236,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
             return;
         };
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             window,
             move || content_search::undo_replacements(&backup),
             move |window, outcome| {
@@ -289,7 +289,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     // --- Load search history from disk (AC #7, #8) ---
     let data_dir = json_store::data_dir();
     let data_dir_saved = data_dir.clone();
-    async_task::spawn_blocking_then(
+    spawn_blocking_then(
         window.clone(),
         move || search_history::load_recovering(&data_dir),
         |window, load| {
@@ -301,7 +301,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     );
 
     // --- Load saved searches from disk (parallel to history) ---
-    async_task::spawn_blocking_then(
+    spawn_blocking_then(
         window.clone(),
         move || saved_searches::load_recovering(&data_dir_saved),
         |window, load| {
@@ -584,7 +584,7 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
         {
             let editor_weak = editor.downgrade();
             let path_for_facts = path.clone();
-            async_task::spawn_blocking_then(
+            spawn_blocking_then(
                 path,
                 move || {
                     fs_metadata::file_facts(&path_for_facts)

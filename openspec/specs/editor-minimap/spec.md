@@ -250,10 +250,12 @@ MUST preserve the existing native `GtkSourceMap` highlight effect, styling,
 interaction behavior, marker layering, and final settled geometry. The
 implementation MUST NOT replace the highlight with an app-owned drawing, restyle
 or recolor the highlight, or treat final settled correctness as sufficient when
-sampled animation frames show drift. A temporary freeze layer MAY show a
-snapshot of the last already-rendered native map pixels during a detected
-width-reflow burst, provided it is removed after the settle repair and never
-introduces a new highlight appearance.
+sampled animation frames show drift. During a detected width-reflow burst,
+LushText MAY use `gtk-lush-widgets::RenderHoldOverlay` or a documented
+compatibility adapter to show a snapshot of the last already rendered native map
+pixels, provided the hold is removed after the settle repair or early user
+reveal, restores the live source map on every exit path, and never introduces a
+new highlight appearance.
 
 #### Scenario: Sidebar show preserves native highlight rows during animation
 - **WHEN** the minimap is enabled for a supported document
@@ -287,6 +289,21 @@ introduces a new highlight appearance.
 - **WHEN** semantic minimap markers are present while the workspace sidebar animates
 - **THEN** lightweight native source-map geometry stays synchronized for the rendered viewport highlight during sampled frames
 - **AND** expensive semantic marker recomputation MAY remain debounced if markers settle correctly and do not obscure or contradict the native highlight contract
+
+#### Scenario: Render hold restores the live source map
+- **WHEN** a native minimap render hold is captured, warmed, revealed,
+  superseded, cancelled, or dropped because the editor tab closes
+- **THEN** the live source map opacity and visibility are restored
+- **AND** no stale captured cover remains visible over the minimap
+- **AND** automation-visible minimap state can distinguish an intentional
+  in-progress hold from a stuck invisible source map
+
+#### Scenario: User scroll reveals held minimap promptly
+- **WHEN** the user scrolls, drags, or clicks the minimap or editor while a
+  render hold is waiting for the post-settle reveal
+- **THEN** the hold is revealed or cleared promptly
+- **AND** the live `GtkSourceMap` handles navigation and viewport updates
+  through its normal path
 
 ### Requirement: Native minimap highlight remains rendered-pixel stable after width reflow
 The minimap SHALL preserve the existing native `GtkSourceMap` viewport highlight effect after sidebar visibility changes, width-only editor reallocations, word-wrap reflow, dynamic overscroll refreshes, and top-of-document anchoring. The system MUST keep the native highlight's rendered top edge, fill, border, neutral styling, interaction behavior, and marker layering; it MUST NOT satisfy this requirement by replacing the native highlight with an app-owned visible overlay. After layout and native source-map frame work settle, screenshot-derived native-highlight anchors SHALL remain stable according to the visual invariant manifest.

@@ -1,0 +1,26 @@
+[package]
+name = "gtk-lush-widgets"
+version = "0.0.0"
+edition = "2024"
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Small reusable GTK widgets and render-hold helpers for gtk-rs"
+readme = "README.md"
+repository = "https://github.com/cominotti/lushtext"
+keywords = ["gtk", "gtk4", "widgets", "rust"]
+categories = ["gui", "development-tools"]
+include = [
+    "Cargo.toml",
+    "CHANGELOG.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md",
+    "examples/**",
+    "src/**",
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+gtk4 = { workspace = true }

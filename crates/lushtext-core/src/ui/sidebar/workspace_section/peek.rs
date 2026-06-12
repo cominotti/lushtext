@@ -332,7 +332,7 @@ impl LushtextWorkspaceSection {
 
         let path = target.absolute_path.clone();
         let display_path = target.display_path;
-        crate::services::async_task::spawn_blocking_then(
+        gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || file_peek::load_snapshot(&path, display_path),
             move |section, snapshot| {

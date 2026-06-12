@@ -8,8 +8,9 @@
 
 use crate::model::content_search::generate_replacement_preview;
 use crate::services::content_search::ReplaceUndoBackup;
-use crate::services::{async_task, json_store, search_backup};
+use crate::services::{json_store, search_backup};
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::AtomicU64;
@@ -59,7 +60,7 @@ impl LushtextSearchPanel {
             .undo_backup_generation
             .load(Ordering::Acquire);
         let generation_counter = self.imp().preview.undo_backup_generation.clone();
-        crate::services::async_task::spawn_blocking_then(
+        gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || {
                 let _disk_guard = undo_backup_disk_lock()
@@ -106,7 +107,7 @@ impl LushtextSearchPanel {
     fn save_undo_backup_on_disk(&self, backup: ReplaceUndoBackup, generation: u32) {
         let data_dir = json_store::data_dir();
         let generation_counter = self.imp().preview.undo_backup_generation.clone();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || {
                 delay_undo_backup_disk_for_test();
@@ -129,7 +130,7 @@ impl LushtextSearchPanel {
     fn delete_undo_backup_on_disk(&self, generation: u32) {
         let data_dir = json_store::data_dir();
         let generation_counter = self.imp().preview.undo_backup_generation.clone();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || {
                 delay_undo_backup_disk_for_test();
@@ -182,7 +183,7 @@ impl LushtextSearchPanel {
         }
 
         let replacement_text = replacement_text.to_string();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || {
                 delay_replace_preview_for_test();

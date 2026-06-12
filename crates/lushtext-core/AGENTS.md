@@ -6,7 +6,9 @@ This crate owns the application's real behavior: domain types, services, and GTK
 
 - Keep dependency direction `ui/ -> services/ -> model/`.
 - Keep `model/` framework-free: no GTK, GLib, gio, or service/UI imports.
-- Keep `services/` GTK-free except for explicit infrastructure glue such as `async_task.rs`.
+- Keep `services/` GTK-free. Background work should use `gtk_lush_tasks`
+  from callers that own the relevant GTK-thread state and freshness policy,
+  rather than recreating GLib task glue in application services.
 - Keep GTK collections and widget-facing models in `ui/`; services should return plain Rust data.
 - Keep automation contract data split by layer: `model/` owns serializable
   value objects, `services::action_catalog` owns the GTK-free action inventory

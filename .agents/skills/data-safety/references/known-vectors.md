@@ -64,11 +64,11 @@ All paths are written as normalized suffixes relative to any `*/src/` root.
 **Why not fire-and-forget**: `save_manifest` writes the FULL manifest to disk. This is a persistence operation.
 **Current guardrail**: Draft deletion uses `spawn_blocking_then` plus manifest update helpers so it stays under the concurrency guard and merges against the current on-disk manifest. Temp file cleanup after failed inline-create in sidebar uses `std::thread::spawn` for JUST deleting a temp file. That IS fire-and-forget cleanup and is acceptable.
 
-### AW-3: Panic slot leak (CONFIRMED — LOW LIKELIHOOD)
-**Location**: `services/async_task.rs` — `spawn_blocking_then` implementation
-**Code**: `release_slot()` is called inside the spawned thread after `work()` completes. No `catch_unwind` wraps the work closure. No Drop guard ensures slot release.
-**Scenario**: If a work closure panics (e.g., serde panic on corrupt data), `release_slot()` is never called. ACTIVE_THREADS stays incremented. After 8 such panics, all `spawn_blocking_then` calls enter the 50ms retry loop permanently.
-**Likelihood**: Very low — work closures are simple I/O. But possible with corrupt files.
+### AW-3: Worker slot leak or premature release (CONFIRMED HISTORICAL)
+**Former location**: `services/async_task.rs`; current implementation: `crates/gtk-lush/tasks/src/lib.rs` — `spawn_blocking_then`
+**Old code**: `release_slot()` was called inside the spawned thread after `work()` completed. No `catch_unwind` or Drop guard ensured slot release, and saturated work rechecked capacity through a timer loop.
+**Old scenario**: If a work closure panicked, `ACTIVE_THREADS` stayed incremented. After enough panics, all `spawn_blocking_then` calls entered the retry loop permanently.
+**Current guardrail**: `gtk-lush-tasks` owns worker accounting with an RAII `SlotGuard`, holds the slot until the GLib main-loop callback consumes the result, and queues saturated work in a main-thread FIFO woken by slot release.
 
 ### AW-4: Missing final temp metadata sync or parent-directory sync after atomic rename (CONFIRMED HISTORICAL)
 **Location**: `services/json_store.rs`, `services/draft_service.rs`, `services/editor_io.rs`, `services/content_search/replace.rs`, `services/local_history_service.rs`

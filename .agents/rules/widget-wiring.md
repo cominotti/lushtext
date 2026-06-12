@@ -105,8 +105,8 @@ window width), prefer the closest live allocation signal over property
 notifications, and prove that signal actually fires in the relevant widget:
 
 - **`notify::default-width` / `notify::maximized`** fire *before* the new allocation is applied. Reading `window.width()` in these handlers returns the **old** stale value. This causes constraints to silently fail during maximize/unmaximize transitions.
-- **`size_allocate(width, height, baseline)`** receives the **actual allocated dimensions as parameters** when GTK calls the vfunc for that subclass. Prove it fires before wiring repair logic to it. GTK4 can skip a subclass override on widgets whose class installs a layout manager; `LushtextEditorPage` inherits the `GtkBoxLayout` path, so editor viewport reflow must be observed through the source view's scroll-adjustment page sizes instead.
-- **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes (e.g., user drags a `GtkPaned` divider), also connect `notify::position` on the child. For `GtkTextView`/`GtkSourceView` viewport width or height changes, the horizontal and vertical adjustments' `page-size` values are a reliable allocation-derived signal.
+- **`size_allocate(width, height, baseline)`** receives the **actual allocated dimensions as parameters** when GTK calls the vfunc for that subclass. Prove it fires before wiring repair logic to it. GTK4 can skip a subclass override on widgets whose class installs a layout manager; `LushtextEditorPage` inherits the `GtkBoxLayout` path, so editor viewport reflow must be observed through `gtk_lush_viewport::ViewportObserver` on the source view's scroll-adjustment page sizes instead.
+- **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes (e.g., user drags a `GtkPaned` divider), also connect `notify::position` on the child. For `GtkTextView`/`GtkSourceView` viewport width or height changes, the horizontal and vertical adjustments' `page-size` values are a reliable allocation-derived signal; use `gtk_lush_viewport::RestState`/`RestPause` to keep GTK-preserved transient offsets from replacing user scroll intent.
 - `size_allocate` fires on every layout pass. Keep the handler cheap (comparison + maybe one `set_position`). Guard GSettings writes with a value-change check to avoid D-Bus overhead.
 - If allocation-derived geometry updates an `AdwBreakpoint` condition, cache the derived condition or threshold and call `set_condition()` only when it actually changes. Reparsing or reinstalling breakpoint conditions on every animation frame adds main-thread layout churn.
 - If `notify::position` also persists state, suppress that persistence while a programmatic paned animation is in flight. Clamp can stay live every frame; debounced settings writes should run once from the animation completion path.
@@ -212,9 +212,10 @@ change adds a dedicated primitive and proves the timing unchanged. Markdown
 code-block repair currently remains explicit because it pairs idle and timeout
 sources with `SourceId` cancellation and completion callbacks.
 
-`gtk-lush-settle` is a functional in-tree Phase 2 crate, not a Phase 5
-publication-ready external dependency. LushText may consume it through the
-workspace path dependency; external stability still waits for the publishing
+`gtk-lush-settle`, `gtk-lush-tasks`, `gtk-lush-viewport`, and
+`gtk-lush-widgets` are functional in-tree crates, not Phase 5
+publication-ready external dependencies. LushText may consume them through the
+workspace path dependencies; external stability still waits for the publishing
 gates in `crates/gtk-lush/GOVERNANCE.md`.
 
 ## GTK4 Signal Delivery Pitfalls
@@ -276,7 +277,7 @@ accepting the fix.
 
 **GTK4 Window Resizing in Tests:** `set_default_size` does not shrink a window that has already been presented. If a test needs to verify layout behavior at multiple widths (e.g., breakpoint collapse), instantiate separate windows at each target size or instantiate narrow from the start.
 
-**`spawn_blocking_then` results in tests:** Tests that depend on results from `spawn_blocking_then` (e.g., command palette search results, file index rebuilds, workspace folder adds) must wait for the background thread to complete before asserting. `flush_events()` alone is insufficient — it only drains what's already on the main loop, but the background thread may not have posted its `idle_add_once` callback yet. Use `spin_until(|| predicate())` or `wait_until(timeout, || predicate())` to pump the main loop until results arrive. Without this, tests are flaky under parallel execution because thread scheduling varies.
+**`spawn_blocking_then` results in tests:** Tests that depend on results from `gtk_lush_tasks::spawn_blocking_then` (e.g., command palette search results, file index rebuilds, workspace folder adds) must wait for the background thread to complete before asserting. `flush_events()` alone is insufficient — it only drains what's already on the main loop, but the background thread may not have posted its `idle_add_once` callback yet. Use `spin_until(|| predicate())` or `wait_until(timeout, || predicate())` to pump the main loop until results arrive. Without this, tests are flaky under parallel execution because thread scheduling varies.
 
 **Wait helpers are shared — do not copy them:** Use `wait_until` / `flush_events` / `flush_after_delay` / `present_window` from `crates/lushtext/tests/widget/common.rs`. They are imported, not re-defined per module (there were once five copy-pasted `wait_until`s; fixing one missed the rest). `wait_until` sleeps briefly then **drains all ready main-loop sources** — that drain is required to dispatch `spawn_blocking_then`'s low-priority `idle_add_once` completion. Do not rewrite it to a single blocking `MainContext::iteration(true)`: a higher-priority timeout source starves the idle and async-backed waits time out (verified failing 5/5). A private copy in a test module also gets missed when the shared helper changes.
 

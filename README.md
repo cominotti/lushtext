@@ -764,7 +764,6 @@ lushtext-core/src/
     folder_note_service.rs  Folder-note load/save/move/list helpers
     workspace_manager.rs  Workspace CRUD
     workspace_watch.rs  Materialized-scope filesystem watch service for sidebar auto-refresh
-    async_task.rs    spawn_blocking_then concurrency guard
   ui/                GTK4/Libadwaita widgets
     automation.rs    App-owned read-only D-Bus automation adapter and snapshot collection
     window/          Main window shell plus actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, session persistence, tab management, transient-surface dismissal, print, and zoom wiring

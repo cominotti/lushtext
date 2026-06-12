@@ -6,7 +6,7 @@ This subtree contains GTK4/Libadwaita driving adapters.
 
 - Keep widgets as adapters. `mod.rs` is the public facade; `imp.rs` holds template children, state, and signal glue.
 - Keep signal closures thin and delegating. If a closure grows real decision logic, move it into a widget method, helper module, or service.
-- Keep blocking I/O off the GTK main thread. Use `spawn_blocking_then` for filesystem work that can stall the UI.
+- Keep blocking I/O off the GTK main thread. Use `gtk_lush_tasks::spawn_blocking_then` for filesystem work that can stall the UI.
 - Build GTK collections and presentation models here, not in `services/`.
 - Split large widget folders by workflow before adding traits or faux-manager types.
 - Keep read-only automation D-Bus collection and readiness waits in

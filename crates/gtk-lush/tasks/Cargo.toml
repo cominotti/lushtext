@@ -1,0 +1,29 @@
+[package]
+name = "gtk-lush-tasks"
+version = "0.0.0"
+edition = "2024"
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Bounded background task dispatch helpers for gtk-rs applications"
+readme = "README.md"
+repository = "https://github.com/cominotti/lushtext"
+keywords = ["gtk", "gtk4", "tasks", "rust"]
+categories = ["gui", "development-tools"]
+include = [
+    "Cargo.toml",
+    "CHANGELOG.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md",
+    "examples/**",
+    "src/**",
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+glib = { workspace = true }
+
+[dev-dependencies]
+gtk4 = { workspace = true }

@@ -30,9 +30,9 @@ use sourceview5::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::services::async_task::spawn_blocking_then;
 use crate::services::filesystem::{PathStatus, metadata as fs_metadata};
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
+use gtk_lush_tasks::spawn_blocking_then;
 
 use imp::{
     ALERT_BODY_LEFT_MARGIN, ALERT_BODY_RIGHT_MARGIN, DEFINITION_DEF_LEFT_MARGIN,

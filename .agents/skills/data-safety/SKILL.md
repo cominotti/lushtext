@@ -223,10 +223,10 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > Tree: Closure performs file I/O? → No: SAFE. Fire-and-forget cleanup only (temp file delete, no manifest/data writes)? → Yes: SAFE. Writes to files that `spawn_blocking_then` also writes to? → No: SAFE.
 > FLAG HIGH: "Persistence I/O via raw thread bypasses concurrency guard. Races with spawn_blocking_then writes to same file."
 >
-> **AW-3: Panic leaks concurrency slot**
-> Grep: `release_slot` in `async_task.rs` implementation
-> Tree: Slot release in a Drop guard or catch_unwind wrapper? → Yes: SAFE. Panic in work closure can leave ACTIVE_THREADS permanently incremented?
-> FLAG MEDIUM: "Panic in work closure leaks concurrency slot. After 8 panics, all background I/O stalls permanently."
+> **AW-3: Worker slot leak or premature release**
+> Grep: `SlotGuard`, `ACTIVE_THREADS`, and `release_slot_count` in `crates/gtk-lush/tasks/src/lib.rs`
+> Tree: Slot release protected by an RAII guard that survives worker panic? → Yes: continue. Successful result keeps the slot held until the GLib main-loop callback consumes the result? → Yes: SAFE. Panic in work closure can leave ACTIVE_THREADS incremented, or large results are released before the UI consumes them?
+> FLAG MEDIUM: "Background worker slot can leak or release before result consumption. Panics may stall future I/O, or saturated loads may exceed the intended memory/backpressure cap."
 >
 > **AW-4: Temp file, metadata, or renamed directory entry not flushed before completion**
 > Grep: `rename` in atomic write functions (e.g., `json_store::save`, `write_draft`)

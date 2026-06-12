@@ -17,6 +17,9 @@ FAMILY_ROOT = REPO_ROOT / "crates" / "gtk-lush"
 EXPECTED_MEMBERS = {
     "signals": "gtk-lush-signals",
     "settle": "gtk-lush-settle",
+    "tasks": "gtk-lush-tasks",
+    "viewport": "gtk-lush-viewport",
+    "widgets": "gtk-lush-widgets",
 }
 LUSHTEXT_CRATES = {
     "lushtext",

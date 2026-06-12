@@ -1,6 +1,6 @@
 ---
 name: gtk-responsiveness
-description: "Guide and review Rust code for GTK4/Libadwaita responsiveness, performance, and memory efficiency. Uses parallel subagents for deterministic, focused reviews. Auto-invoked when writing or modifying UI code, async patterns, signal handlers, file I/O, TreeListModel usage, or any code that could block the main thread. Use whenever the user writes code in ui/, touches spawn_blocking_then or async_task, works with GLib signals, handles file operations, implements ListView/TreeListModel patterns, or discusses performance, responsiveness, threading, memory leaks, or 'app not responding' issues. Also trigger when reviewing UI code in pull requests."
+description: "Guide and review Rust code for GTK4/Libadwaita responsiveness, performance, and memory efficiency. Uses parallel subagents for deterministic, focused reviews. Auto-invoked when writing or modifying UI code, async patterns, signal handlers, file I/O, TreeListModel usage, or any code that could block the main thread. Use whenever the user writes code in ui/, touches gtk_lush_tasks::spawn_blocking_then, works with GLib signals, handles file operations, implements ListView/TreeListModel patterns, or discusses performance, responsiveness, threading, memory leaks, or 'app not responding' issues. Also trigger when reviewing UI code in pull requests."
 ---
 
 Guide and review Rust code for keeping LushText buttery smooth — no "Waiting for application to respond" dialogs, no UI freezes, no janky scrolling, no memory leaks from signal handlers. The GTK main loop runs on a single thread; any blocking call on that thread freezes the entire UI. This skill ensures every I/O operation, heavy computation, and signal handler follows patterns that keep the main loop free and memory usage low.
@@ -116,10 +116,10 @@ Focus on patterns 1-3 (Fire-and-Forget, Background Work with UI Update, Cancella
 Changed files to review:
 {changed_files}
 
-The project uses a custom async primitive: crate::services::async_task::spawn_blocking_then(state, work, then)
+The project uses a GTK Lush async primitive: gtk_lush_tasks::spawn_blocking_then(state, work, then)
 - state: non-Send GTK object (auto-wrapped in ThreadGuard)
-- work: FnOnce() -> T + Send, runs on background thread via std::thread::spawn
-- then: FnOnce(S, T), runs on main thread via glib::idle_add_once
+- work: FnOnce() -> T + Send, runs on a bounded background thread via std::thread::spawn
+- then: FnOnce(S, T), runs on main thread via glib::idle_add_once; the worker slot remains occupied until this callback consumes the result
 Do NOT recommend Tokio. This pattern is sufficient for file I/O, and file operations should still use `services::filesystem` inside the background closure.
 
 While reviewing, also check for genuine memory leaks: strong reference cycles that prevent widget cleanup, missing `@weak` references in long-lived closures, signal handlers that accumulate without cleanup. Do NOT flag trivial clones, missing `Vec::with_capacity()`, or other micro allocation patterns — those are not responsiveness concerns.

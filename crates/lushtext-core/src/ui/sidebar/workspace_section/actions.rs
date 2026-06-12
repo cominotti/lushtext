@@ -3,7 +3,6 @@
 //! File operation actions for workspace sections: create, rename, delete.
 
 use super::FileTreeItem;
-use crate::services;
 use crate::services::filesystem::{mutate as fs_mutate, write as fs_write};
 use glib::prelude::*;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -39,7 +38,7 @@ impl super::LushtextWorkspaceSection {
         let base_owned = base.to_string();
         let target_dir_for_bg = target_dir.clone();
 
-        services::async_task::spawn_blocking_then(
+        gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || create_unique(&target_dir_for_bg, &base_owned, is_dir),
             move |section, result| {
@@ -239,7 +238,7 @@ impl super::LushtextWorkspaceSection {
 
         let old_path = old_path.to_path_buf();
         let new_path_c = new_path;
-        services::async_task::spawn_blocking_then(
+        gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || {
                 let result = fs_write::rename_durable(&old_path, &new_path_c);
@@ -362,7 +361,7 @@ impl super::LushtextWorkspaceSection {
             };
 
             let path_for_io = path_c.clone();
-            services::async_task::spawn_blocking_then(
+            gtk_lush_tasks::spawn_blocking_then(
                 section,
                 move || {
                     let result = if is_dir {

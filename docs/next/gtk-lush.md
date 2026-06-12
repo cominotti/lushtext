@@ -1,8 +1,8 @@
 # GTK Lush — Umbrella Vision
 
-Status: active umbrella vision. Phase 1 foundation is complete, and Phase 2
-functional in-tree APIs for `gtk-lush-signals` and `gtk-lush-settle` are current
-under `extract-gtk-lush-signals-and-settle`.
+Status: active umbrella vision. Phases 1 and 2 are complete, and Phase 3
+functional in-tree APIs for `gtk-lush-tasks`, `gtk-lush-viewport`, and
+`gtk-lush-widgets` are current under `extract-gtk-lush-runtime-geometry`.
 
 GTK Lush is the extraction of LushText's hardened GTK4/Libadwaita patterns into
 a small family of independently adoptable Rust crates, plus a reusable headless
@@ -68,10 +68,10 @@ and the code they fence:
 | --- | --- | --- |
 | Signal/binding handler lifetimes | `gtk-lush-signals` owns fitting signal, binding, and row-registration lifetimes; retained explicit sites are documented in the Phase 2 audit | `rust.md` (GObject subclassing), `widget-wiring.md` |
 | Debounce / settle helpers | `gtk-lush-settle` replaces the former private `crates/lushtext-core/src/ui/settle.rs` helper for fitting debounce, superseding-timer, and readiness-settle call sites | `widget-wiring.md` (Superseding Timers And Settle Helpers), `ui.md` (minimap reflow burst) |
-| Main-thread-safe background tasks | `services::async_task::spawn_blocking_then` + per-site generation stamping | `rust.md` (Background I/O, snapshot boundaries) |
-| Viewport observation without dead vfuncs | `editor_page/overscroll.rs` adjustment observers + rest-state tracking | `widget-wiring.md` (size_allocate vs layout managers) |
-| Zero-min clipping bin | `LushtextShrinkableBin` | `ui.md` (Split-View Rules) |
-| Render-hold overlay (freeze last-good pixels across a layout storm) | Minimap reflow freeze (`editor_page/minimap.rs`) | `ui.md` (minimap guardrails), `widget-wiring.md` |
+| Main-thread-safe background tasks | `gtk-lush-tasks` owns bounded worker dispatch and freshness tokens; per-site domain freshness remains explicit | `rust.md` (Background I/O, snapshot boundaries) |
+| Viewport observation without dead vfuncs | `gtk-lush-viewport` owns adjustment observers and lower-edge rest state; LushText owns repairs | `widget-wiring.md` (size_allocate vs layout managers) |
+| Zero-min clipping bin | `gtk-lush-widgets::ClipBin` registered as `GtkLushClipBin` | `ui.md` (Split-View Rules) |
+| Render-hold overlay (freeze last-good pixels across a layout storm) | `gtk-lush-widgets::RenderHoldOverlay` owns capture/cover/opacity mechanics; minimap owns timing | `ui.md` (minimap guardrails), `widget-wiring.md` |
 | Headless widget harness | `crates/lushtext/tests/widget.rs` + `scripts/run-widget-tests.sh` + `tests/widget/common.rs` wait helpers | `gtk-testing` skill |
 | Readiness/snapshot automation spine | `ui/automation.rs`, `model/automation.rs`, D-Bus Automation1 | `docs/automation.md`, `widget-wiring.md` |
 | Visual-geometry proof lane | `scripts/visual-geometry-smoke.py`, `test-visual-geometry.py`, `visual_geometry_png.py`, scenario JSONs, `check-visual-proof-policy.py` | `build.md`, `ui.md`, `gtk-agentic-debugging` skill |
@@ -129,14 +129,14 @@ as one audited primitive.
 
 Main-thread-safe background work with staleness-proof completion.
 
-- **API sketch:** `spawn_blocking_then(state, work, then)` extracted as-is,
-  plus a typestate completion token: `then` receives a `Fresh<T>` that can only
-  be applied to UI state after the embedded generation/identity check passes —
-  the "stale worker result mutates UI" bug becomes unrepresentable.
+- **API:** `spawn_blocking_then(state, work, then)`,
+  `spawn_blocking_then_weak`, and `FreshnessToken`/`Fresh`/`Stale` helpers.
+  The crate owns bounded dispatch and main-thread completion; callers keep the
+  actual generation, path, tab, or search identity policy beside the workflow.
 - **Rust features:** typestate, `glib::thread_guard::ThreadGuard` wrapping,
   `Send` bounds that document the thread contract in signatures.
-- **Replaces in LushText:** `services::async_task` and the per-call-site
-  generation/weak-identity checks documented in `rust.md`.
+- **Replaces in LushText:** the former `services::async_task`; per-call-site
+  generation/weak-identity checks remain explicit in their workflow modules.
 - **Acceptance:** all async-backed widget tests pass unmodified in timing;
   the low-priority idle completion contract (required by `wait_until`) is
   preserved and documented as a stability guarantee.
@@ -147,13 +147,13 @@ Allocation-derived geometry observation for widgets whose `size_allocate`
 vfunc never fires (layout-manager classes — `GtkBox`, and anything else GTK4
 routes through a layout manager).
 
-- **API sketch:** `ViewportObserver::for_scrollable(&text_view)` (or any
-  `Scrollable`) emitting `WidthChanged`/`HeightChanged` events from adjustment
-  page-size deltas, plus `RestState` tracking (at-left/at-top recorded only
-  outside reflow windows so GTK-preserved offsets cannot masquerade as user
-  intent).
-- **Rust features:** sealed event enum, callback registration that composes
-  with `gtk-lush-signals`-style ownership without depending on it.
+- **API:** `ViewportObserver::for_scrollable(&text_view)` (or any
+  `Scrollable`) emitting `ViewportBoundsChange` and `ViewportValueChange`
+  structs from adjustment page-size and value deltas, plus `RestState` and
+  `RestPause` tracking so GTK-preserved offsets during reflow windows cannot
+  masquerade as user intent.
+- **Rust features:** public value objects, callback registration that composes
+  with drop-owned signal cleanup without depending on `gtk-lush-signals`.
 - **Replaces in LushText:** `editor_page/overscroll.rs::setup_allocation_reflow_observers`
   and friends.
 - **Acceptance:** the documented dead-vfunc trap has a failing-then-passing
@@ -162,19 +162,19 @@ routes through a layout manager).
 
 ### 4.5 `gtk-lush-widgets`
 
-The small custom widgets that exist to keep geometry honest.
+Small widget and overlay-owner primitives that exist to keep geometry honest.
 
-- **`ClipBin`** (from `LushtextShrinkableBin`): zero-minimum clipping bin so a
+- **`ClipBin`** (from the former `LushtextShrinkableBin`): zero-minimum clipping bin so a
   flexible region can never push fixed chrome out of the window.
 - **`RenderHoldOverlay`** (from the minimap reflow freeze): capture a child's
   last rendered pixels synchronously (`snapshot_child` + renderer texture),
-  hold them over the live child (opacity-managed) across a declared "storm",
-  then reveal after a settle/warm window. Generalized API: `hold()`,
-  `extend()`, `reveal_after(duration)`, with the opacity pairing enforced by
-  one owner so an unbalanced hide cannot leave an invisible child.
-- **Rust features:** ordinary GObject subclasses (these are widgets; the
-  family does not avoid subclassing, it avoids *requiring consumers* to adopt
-  patterns).
+  hold them over the live child (opacity-managed) across a caller-declared
+  storm, warm the live child underneath, then reveal/clear through one owner so
+  an unbalanced hide cannot leave an invisible child.
+- **Rust features:** `ClipBin` is a GObject widget subclass, while
+  `RenderHoldOverlay` is a plain Rust owner installed around a caller-provided
+  `GtkOverlay`. The family does not avoid subclassing, it avoids requiring
+  consumers to adopt app-specific widget patterns.
 - **Acceptance:** widget tests for measure/clip contracts; visual-geometry
   scenarios proving pixel-hold and seamless reveal; the GTK warning gate stays
   clean (no adjusted-size or measure warnings under the harness).
@@ -279,11 +279,16 @@ Status: current/completed in-tree functional API phase. These crates remain
 
 ### Phase 3 — Geometry and tasking: `gtk-lush-tasks`, `gtk-lush-viewport`, `gtk-lush-widgets`
 
-1. Extract `spawn_blocking_then` + typestate completion; migrate
-   `services::async_task` consumers.
-2. Extract the viewport observers; migrate `overscroll.rs`.
+Status: current/completed in-tree functional API phase. These crates remain
+`0.0.0` and are not Phase 5 publication-ready.
+
+1. Extract `spawn_blocking_then` + explicit freshness helpers; migrate
+   former `services::async_task` consumers. Complete for in-tree Phase 3.
+2. Extract the viewport observers; migrate `overscroll.rs`. Complete for
+   in-tree Phase 3.
 3. Generalize `ShrinkableBin` → `ClipBin` and the minimap freeze →
-   `RenderHoldOverlay`; migrate the minimap to consume them.
+   `RenderHoldOverlay`; migrate the minimap to consume them. Complete for
+   in-tree Phase 3.
 4. These are visual-sensitive migrations: each lands with widget tests plus a
    passing visual-geometry run including the pixel-anchor and animation-stream
    scenarios.

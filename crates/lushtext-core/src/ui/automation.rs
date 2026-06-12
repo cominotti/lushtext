@@ -1025,10 +1025,10 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
         if let Some(freeze) = editor
             .imp()
             .minimap
-            .reflow_freeze_picture
+            .render_hold
             .borrow()
             .as_ref()
-            .cloned()
+            .map(|hold| hold.cover().clone())
         {
             push_widget_surface(&mut surfaces, "minimap-reflow-freeze", &freeze, root);
         } else {

@@ -90,8 +90,8 @@ CARGO_TEST_PROP           = cargo nextest run -p lushtext-core --features proper
 CARGO_TEST_FUZZ_CORPUS_REPLAY = cargo test -p lushtext-core --features fuzzing --test fuzz_corpus_replay
 PROPTEST_DEEP_CASES ?= 512
 
-GTK_LUSH_PACKAGES := -p gtk-lush-signals -p gtk-lush-settle
-GTK_LUSH_CRATES := crates/gtk-lush/signals crates/gtk-lush/settle
+GTK_LUSH_PACKAGES := -p gtk-lush-signals -p gtk-lush-settle -p gtk-lush-tasks -p gtk-lush-viewport -p gtk-lush-widgets
+GTK_LUSH_CRATES := crates/gtk-lush/signals crates/gtk-lush/settle crates/gtk-lush/tasks crates/gtk-lush/viewport crates/gtk-lush/widgets
 GTK_LUSH_MSRV ?= 1.96.0
 GTK_LUSH_PUBLIC_API_TOOLCHAIN ?= nightly-2026-06-01
 GTK_LUSH_PUBLIC_API_OUT_DIR ?= target/gtk-lush-public-api

@@ -9,9 +9,12 @@ globs: "**/*.rs"
 
 - All dependencies declared in the repository-root `[workspace.dependencies]`, consumed with `{ workspace = true }`.
 - Every crate depends on `workspace-hack` for cargo-hakari.
-- License header `// SPDX-License-Identifier: GPL-3.0-or-later` on every `.rs` file.
+- License header `// SPDX-License-Identifier: GPL-3.0-or-later` on LushText
+  application `.rs` files. GTK Lush family crates under `crates/gtk-lush/`
+  are dual-licensed with `// SPDX-License-Identifier: MIT OR Apache-2.0`.
 - LushText may consume in-tree GTK Lush crates (`gtk-lush-signals`,
-  `gtk-lush-settle`) through workspace path dependencies. GTK Lush family
+  `gtk-lush-settle`, `gtk-lush-tasks`, `gtk-lush-viewport`, and
+  `gtk-lush-widgets`) through workspace path dependencies. GTK Lush family
   crates must remain leaf crates and must not depend on LushText or on each
   other at runtime.
 
@@ -52,12 +55,14 @@ GtkSourceView has its own theming separate from GTK CSS. Always:
 
 ## Background I/O
 
-Use `services::async_task::spawn_blocking_then(state, work, then)` for any I/O that may block:
+Use `gtk_lush_tasks::spawn_blocking_then(state, work, then)` for any I/O that may block:
 - `state`: non-Send GTK object (auto-wrapped in `ThreadGuard`)
 - `work`: runs on background thread, must be `Send`
 - `then`: runs on main thread with result, does NOT need to be `Send`
 
-Never pass GTK objects directly across threads — they are not `Send`/`Sync`. Use `glib::thread_guard::ThreadGuard` or `glib::SendWeakRef`.
+Never pass GTK objects directly across threads — they are not `Send`/`Sync`.
+Let `gtk-lush-tasks` carry GTK-thread state through `ThreadGuard`, and keep
+workflow freshness checks explicit at the call site.
 
 ## GTK Main-Loop Timing
 

@@ -16,11 +16,11 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
 use crate::ui::properties_panel::LushtextPropertiesPanel;
 use crate::ui::search_panel::LushtextSearchPanel;
-use crate::ui::shrinkable_bin::LushtextShrinkableBin;
 use crate::ui::sidebar::{LushtextSidebar, WorkspaceSidebarWidthPreset};
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
 use glib::prelude::*;
 use gtk_lush_settle::{Debounce, SettleBurst, SupersedingTimer};
+use gtk_lush_widgets::ClipBin;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::prelude::AdwApplicationWindowExt;
@@ -478,7 +478,7 @@ impl ObjectSubclass for LushtextWindow {
         LushtextMarkdownPreview::ensure_type();
         LushtextPropertiesPanel::ensure_type();
         LushtextSearchPanel::ensure_type();
-        LushtextShrinkableBin::ensure_type();
+        ClipBin::ensure_type();
 
         klass.bind_template();
     }

@@ -37,7 +37,7 @@ The standard `spawn_blocking_then` pattern. Use for any I/O that needs to update
 ```rust
 // Loading a file into the editor (simplified — actual code also has size checks and cancellation)
 let path = path.to_path_buf();
-async_task::spawn_blocking_then(
+gtk_lush_tasks::spawn_blocking_then(
     self.clone(),
     move || -> Result<String, LoadError> {
         let bytes = filesystem::read::bytes(&path).map_err(|e| LoadError::Io(e.to_string()))?;
@@ -81,7 +81,7 @@ let cancel_token = cancelled.clone();
 *self.imp().cancel_token.borrow_mut() = Some(cancel_token);
 
 let path = path.to_path_buf();
-async_task::spawn_blocking_then(
+gtk_lush_tasks::spawn_blocking_then(
     self.clone(),
     move || -> anyhow::Result<Option<String>> {
         // Check cancellation before expensive work
@@ -183,7 +183,7 @@ When you need to chain async operations (load config → process → save):
 ```rust
 // Step 1: Load workspace config
 let data_dir = data_dir.to_path_buf();
-async_task::spawn_blocking_then(
+gtk_lush_tasks::spawn_blocking_then(
     self.clone(),
     move || workspace_manager::load(&data_dir),
     |window, result| {
@@ -196,7 +196,7 @@ async_task::spawn_blocking_then(
                 // Step 3: Load session (another background operation)
                 if let Some(id) = workspace_id {
                     let data_dir = window.data_dir().to_path_buf();
-                    async_task::spawn_blocking_then(
+                    gtk_lush_tasks::spawn_blocking_then(
                         window.clone(),
                         move || session_service::load(&data_dir, &id),
                         |window, result| {
@@ -231,7 +231,7 @@ for tab in session.tabs.iter() {
     page.set_title(&path.file_name().unwrap_or_default().to_string_lossy());
     
     // Load content in parallel
-    async_task::spawn_blocking_then(
+    gtk_lush_tasks::spawn_blocking_then(
         editor.clone(),
         move || filesystem::read::text(&path),
         move |editor, result| {

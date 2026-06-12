@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
@@ -19,7 +20,7 @@ use crate::model::encoding::{
 };
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use crate::services::{async_task, editor_io, filesystem::metadata as fs_metadata};
+use crate::services::{editor_io, filesystem::metadata as fs_metadata};
 use crate::ui::buffer_snapshot;
 
 use super::{EditorLoadState, LushtextEditorPage, SaveError};
@@ -64,7 +65,7 @@ impl LushtextEditorPage {
         let load_generation = self.imp().load_generation.get().wrapping_add(1);
         self.imp().load_generation.set(load_generation);
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || editor_io::load_text_file_with_encoding(&file_path, &cancel, reopen_as),
             move |editor, result| {
@@ -421,7 +422,7 @@ impl LushtextEditorPage {
         let allow_lossy = self.take_lossy_save_once();
         let history_availability = self.local_history_availability();
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || {
                 let formatted_text =

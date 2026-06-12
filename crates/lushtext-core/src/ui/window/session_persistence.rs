@@ -13,9 +13,10 @@ use crate::services::notifications::NotificationSeverity;
 use crate::services::recovery_metadata::{
     RecoveryDiagnostic, RecoveryPreservation, RecoveryProblem,
 };
-use crate::services::{async_task, draft_service, json_store, session_service};
+use crate::services::{draft_service, json_store, session_service};
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 
 impl super::LushtextWindow {
@@ -81,7 +82,7 @@ impl super::LushtextWindow {
                 let session = window.collect_session();
                 let data_dir = json_store::data_dir();
                 let ordered_generation = u64::from(generation);
-                async_task::spawn_blocking_then(
+                spawn_blocking_then(
                     window,
                     move || session_service::save_ordered(&data_dir, &session, ordered_generation),
                     move |window, result| match result {
@@ -119,7 +120,7 @@ impl super::LushtextWindow {
         let generation = self.imp().session.save_debounce.advance().value();
         let session = self.collect_session();
         let data_dir = json_store::data_dir();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || session_service::save_ordered(&data_dir, &session, u64::from(generation)),
             move |window, result| {
@@ -140,7 +141,7 @@ impl super::LushtextWindow {
     /// Load the session file plus draft restore state in one background task.
     pub fn load_session_and_drafts(&self) {
         let data_dir = json_store::data_dir();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || draft_service::load_restore_state(&data_dir),
             |window, loaded| {

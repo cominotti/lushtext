@@ -156,7 +156,7 @@ impl LushtextSearchPanel {
                 let entries_clone = panel.imp().history.saved_searches.borrow().clone();
 
                 let data_dir = json_store::data_dir();
-                crate::services::async_task::spawn_blocking_then(
+                gtk_lush_tasks::spawn_blocking_then(
                     panel,
                     move || saved_searches::save(&data_dir, &entries_clone),
                     |_panel, result| {
@@ -176,7 +176,7 @@ impl LushtextSearchPanel {
         let entries_clone = imp.history.saved_searches.borrow().clone();
 
         let data_dir = json_store::data_dir();
-        crate::services::async_task::spawn_blocking_then(
+        gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || saved_searches::save(&data_dir, &entries_clone),
             |_panel, result| {

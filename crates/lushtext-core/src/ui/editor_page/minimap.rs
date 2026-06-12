@@ -11,6 +11,8 @@
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_viewport::ViewportAxis;
+use gtk_lush_widgets::RenderHoldCapture;
 use gtk4::{self, cairo};
 use sourceview5::prelude::*;
 
@@ -113,6 +115,8 @@ const MINIMAP_REFLOW_SETTLE_DEBOUNCE: Duration = Duration::from_millis(150);
 const MINIMAP_REFLOW_REVEAL_DELAY: Duration = Duration::from_millis(800);
 /// Hidden source-mark category used to keep modified lines attached to buffer edits.
 const MINIMAP_MODIFIED_MARK_CATEGORY: &str = "lushtext-minimap-modified";
+/// Maximum live source marks used for the modified-line minimap layer.
+const MINIMAP_MODIFIED_LINE_MARK_CAP: usize = 2_000;
 
 /// Whether the minimap is currently usable for the active editor state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -466,24 +470,14 @@ impl LushtextEditorPage {
         imp.minimap_overlay.set_child(Some(&source_map));
         // Hidden freeze layer for width-reflow bursts. It sits between the map
         // and the marker strip so frozen pixels replace the native slider while
-        // live semantic markers stay on top. Filling the overlay content box
-        // covers the map plus both gutters where the slider's CSS outset
-        // paints, and the capture viewport is sized from the same map margins
-        // so `ContentFit::Fill` renders the held pixels exactly 1:1.
-        let reflow_freeze_picture = gtk4::Picture::new();
-        reflow_freeze_picture.set_visible(false);
-        reflow_freeze_picture.set_can_target(false);
-        reflow_freeze_picture.set_content_fit(gtk4::ContentFit::Fill);
-        reflow_freeze_picture.set_halign(gtk4::Align::Fill);
-        reflow_freeze_picture.set_valign(gtk4::Align::Fill);
-        reflow_freeze_picture.add_css_class("minimap-reflow-freeze");
-        imp.minimap_overlay.add_overlay(&reflow_freeze_picture);
-        imp.minimap_overlay
-            .set_measure_overlay(&reflow_freeze_picture, false);
+        // live semantic markers stay on top.
+        let render_hold =
+            gtk_lush_widgets::RenderHoldOverlay::new(&imp.minimap_overlay, &source_map);
+        render_hold.add_cover_css_class("minimap-reflow-freeze");
         imp.minimap_overlay.add_overlay(&marker_strip);
 
         *imp.minimap.source_map.borrow_mut() = Some(source_map);
-        *imp.minimap.reflow_freeze_picture.borrow_mut() = Some(reflow_freeze_picture);
+        *imp.minimap.render_hold.borrow_mut() = Some(render_hold);
         *imp.minimap.marker_strip.borrow_mut() = Some(marker_strip);
 
         let buffer = self.buffer();
@@ -656,6 +650,8 @@ impl LushtextEditorPage {
         let minimap = &self.imp().minimap;
         if !minimap.reflow_settle.pending() {
             minimap.reflow_reveal_pending.set(false);
+            *self.imp().overscroll.reflow_pause.borrow_mut() =
+                Some(self.imp().overscroll.rest_state.pause());
         }
         if freeze_rendered_map {
             self.freeze_native_minimap_for_reflow();
@@ -679,12 +675,20 @@ impl LushtextEditorPage {
     /// as soon as the settled repair finishes.
     fn finish_minimap_reflow_settle(&self, handle: &SettleHandle) {
         // Clear the pin first so the geometry sync below applies the settled margin.
+        let handle_current = handle.is_current();
         handle.finish_if_current();
+        if handle_current {
+            self.imp().overscroll.reflow_pause.borrow_mut().take();
+        }
 
         // The rest flag was recorded from user scrolling outside the burst, so
         // a stale GTK-preserved offset during reallocation cannot suppress the
         // top anchor the user actually had before the reflow started.
-        if self.imp().overscroll.v_rest_at_top.get()
+        if self
+            .imp()
+            .overscroll
+            .rest_state
+            .at_lower(ViewportAxis::Vertical)
             && let Some(adjustment) = self.source_view().vadjustment()
         {
             let lower = adjustment.lower();
@@ -722,10 +726,10 @@ impl LushtextEditorPage {
     fn minimap_reflow_freeze_visible(&self) -> bool {
         self.imp()
             .minimap
-            .reflow_freeze_picture
+            .render_hold
             .borrow()
             .as_ref()
-            .is_some_and(gtk4::prelude::WidgetExt::is_visible)
+            .is_some_and(gtk_lush_widgets::RenderHoldOverlay::is_active)
     }
 
     /// Cover the native map with its last rendered pixels while reflow settles.
@@ -740,78 +744,16 @@ impl LushtextEditorPage {
         if !self.is_minimap_visible() {
             return;
         }
-        let Some(picture) = self
-            .imp()
-            .minimap
-            .reflow_freeze_picture
-            .borrow()
-            .as_ref()
-            .cloned()
-        else {
+        let render_hold = self.imp().minimap.render_hold.borrow();
+        let Some(render_hold) = render_hold.as_ref() else {
             return;
         };
-        let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
-            return;
-        };
-        // If a previous freeze is already hiding the live map, keep its original
-        // pre-burst pixels; recapturing now would snapshot a transparent map.
-        if picture.is_visible() && source_map.opacity() < 0.99 {
-            return;
+        match render_hold.capture() {
+            RenderHoldCapture::Captured | RenderHoldCapture::AlreadyHolding => {}
+            RenderHoldCapture::NotReady(reason) => {
+                tracing::trace!(?reason, "skipping minimap reflow render hold");
+            }
         }
-        let minimap_overlay = &*self.imp().minimap_overlay;
-        // The action path uses `snapshot_child()` outside the normal widget
-        // snapshot vfunc, so require realized, drawable, non-empty geometry
-        // before asking GTK for render nodes.
-        if !source_map.is_mapped()
-            || !minimap_overlay.is_mapped()
-            || !source_map.is_drawable()
-            || !minimap_overlay.is_drawable()
-            || source_map.width() <= 0
-            || source_map.height() <= 0
-        {
-            return;
-        }
-        let Some(source_map_bounds) = source_map.compute_bounds(minimap_overlay) else {
-            return;
-        };
-        if source_map_bounds.width() <= 0.0 || source_map_bounds.height() <= 0.0 {
-            return;
-        }
-        let width = minimap_overlay.width();
-        let height = minimap_overlay.height();
-        if width <= 0 || height <= 0 {
-            return;
-        }
-
-        let Some(renderer) = source_map.native().and_then(|native| native.renderer()) else {
-            return;
-        };
-
-        let snapshot = gtk4::Snapshot::new();
-        // GTK documents `snapshot_child()` as the helper a widget normally uses
-        // from its own `snapshot` vfunc. This action-primed capture is deliberate:
-        // it preserves the exact native slider pixels already rendered before the
-        // shell starts consuming width, while passive allocation observers only
-        // schedule the later settle repair.
-        minimap_overlay.snapshot_child(&source_map, &snapshot);
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "GTK widget sizes are small logical-pixel values that fit f32 exactly"
-        )]
-        let viewport = gtk4::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
-        let node = snapshot.to_node();
-
-        let Some(node) = node else {
-            return;
-        };
-        // `GtkPicture` needs a paintable, so render the captured snapshot node
-        // into a texture whose viewport matches the overlay pixels users see.
-        let texture = renderer.render_texture(&node, Some(&viewport));
-        picture.set_paintable(Some(&texture));
-        picture.set_visible(true);
-        source_map.set_opacity(0.0);
-        debug_assert!(picture.is_visible());
-        debug_assert!(source_map.opacity() <= 0.01);
     }
 
     /// Let the real source map repaint while frozen pixels still cover it.
@@ -821,25 +763,11 @@ impl LushtextEditorPage {
     /// cover is removed gives GTK a few real frames to update the native map
     /// while the temporary picture keeps the user-visible effect unchanged.
     fn warm_live_minimap_under_reflow_freeze(&self) {
-        let Some(picture) = self
-            .imp()
-            .minimap
-            .reflow_freeze_picture
-            .borrow()
-            .as_ref()
-            .cloned()
-        else {
-            return;
-        };
-        if !picture.is_visible() {
-            return;
+        let render_hold = self.imp().minimap.render_hold.borrow();
+        if let Some(render_hold) = render_hold.as_ref() {
+            render_hold.warm_live_child();
+            debug_assert!(render_hold.live_child().opacity() >= 0.99);
         }
-        let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
-            return;
-        };
-        source_map.set_opacity(1.0);
-        source_map.queue_draw();
-        debug_assert!(source_map.opacity() >= 0.99);
     }
 
     /// Reveal the repaired live minimap early when the user scrolls during warmup.
@@ -873,14 +801,11 @@ impl LushtextEditorPage {
     /// Every exit path must restore source-map opacity before hiding and clearing
     /// the picture, or the next live minimap frame can remain invisible.
     fn drop_minimap_reflow_freeze(&self) {
-        if let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref() {
-            source_map.set_opacity(1.0);
-            debug_assert!(source_map.opacity() >= 0.99);
-        }
-        if let Some(picture) = self.imp().minimap.reflow_freeze_picture.borrow().as_ref() {
-            picture.set_visible(false);
-            picture.set_paintable(None::<&gtk4::gdk::Paintable>);
-            debug_assert!(!picture.is_visible());
+        let render_hold = self.imp().minimap.render_hold.borrow();
+        if let Some(render_hold) = render_hold.as_ref() {
+            render_hold.clear();
+            debug_assert!(render_hold.live_child().opacity() >= 0.99);
+            debug_assert!(!render_hold.cover_is_visible());
         }
     }
 
@@ -933,6 +858,7 @@ impl LushtextEditorPage {
             let minimap = &self.imp().minimap;
             let _ = minimap.reflow_settle.clear();
             minimap.reflow_reveal_pending.set(false);
+            self.imp().overscroll.reflow_pause.borrow_mut().take();
             self.sync_minimap_view_geometry();
             self.drop_minimap_reflow_freeze();
             self.imp().minimap.markers.borrow_mut().clear();
@@ -986,10 +912,14 @@ impl LushtextEditorPage {
     /// Mark the inclusive line range as modified-since-save.
     pub(crate) fn record_modified_lines(&self, start_line: u32, end_line: u32) {
         let mut known_lines = self.imp().minimap.modified_lines_cache.borrow_mut();
+        let remaining_capacity = MINIMAP_MODIFIED_LINE_MARK_CAP.saturating_sub(known_lines.len());
+        if remaining_capacity == 0 {
+            return;
+        }
         let mut marks = self.imp().minimap.modified_marks.borrow_mut();
         let buffer = self.buffer();
 
-        for line in start_line..=end_line {
+        for line in modified_line_mark_samples(start_line, end_line, remaining_capacity) {
             if !known_lines.insert(line) {
                 continue;
             }
@@ -1003,6 +933,8 @@ impl LushtextEditorPage {
     ///
     /// Restored drafts are already different from the saved file content, so
     /// this helper lets that programmatic restore surface as minimap feedback.
+    /// Large drafts are sampled rather than projected as one `GtkSourceMark`
+    /// per line, keeping the semantic marker layer bounded.
     pub(crate) fn mark_entire_buffer_modified(&self) {
         self.clear_modified_line_marks();
         let total_lines = document_line_count(self);
@@ -1528,6 +1460,30 @@ fn document_line_count(editor: &LushtextEditorPage) -> u32 {
         .unwrap_or(0)
         .saturating_add(1)
         .max(1)
+}
+
+fn modified_line_mark_samples(start_line: u32, end_line: u32, cap: usize) -> Vec<u32> {
+    if cap == 0 || start_line > end_line {
+        return Vec::new();
+    }
+    let total = u64::from(end_line - start_line) + 1;
+    let cap = u64::try_from(cap).unwrap_or(u64::MAX);
+    if total <= cap {
+        return (start_line..=end_line).collect();
+    }
+
+    let sample_count = cap.max(1);
+    let span = total - 1;
+    let denominator = sample_count.saturating_sub(1).max(1);
+    let mut samples = Vec::with_capacity(usize::try_from(sample_count).unwrap_or(usize::MAX));
+    for index in 0..sample_count {
+        let offset = (index * span) / denominator;
+        let line = start_line.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX));
+        if samples.last().copied() != Some(line) {
+            samples.push(line);
+        }
+    }
+    samples
 }
 
 fn collect_markers(editor: &LushtextEditorPage) -> Vec<MinimapMarker> {
@@ -2144,6 +2100,17 @@ mod tests {
         assert_eq!(MINIMAP_REFLOW_SETTLE_DEBOUNCE, Duration::from_millis(150));
         assert_eq!(MINIMAP_REFLOW_REVEAL_DELAY, Duration::from_millis(800));
         assert_eq!(MINIMAP_MODIFIED_MARK_CATEGORY, "lushtext-minimap-modified");
+        assert_eq!(MINIMAP_MODIFIED_LINE_MARK_CAP, 2_000);
+    }
+
+    #[test]
+    fn test_modified_line_mark_samples_cover_large_ranges_with_a_cap() {
+        let samples = modified_line_mark_samples(0, 9_999, 2_000);
+
+        assert_eq!(samples.len(), 2_000);
+        assert_eq!(samples.first().copied(), Some(0));
+        assert_eq!(samples.last().copied(), Some(9_999));
+        assert!(samples.windows(2).all(|window| window[0] < window[1]));
     }
 
     #[test]

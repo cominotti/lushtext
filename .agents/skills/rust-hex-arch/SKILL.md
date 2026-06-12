@@ -255,7 +255,7 @@ model/     depends on std, serde, and other non-UI pure-Rust crates only
 
 Exceptions:
 - driven adapters in `services/` may depend on `serde_json` and other pure support crates; file I/O goes through `services::filesystem`
-- `async_task.rs` may depend on `gtk4::glib` because it is infrastructure glue for thread hopping
+- GTK Lush infrastructure crates such as `gtk-lush-tasks` may depend on `glib` for main-loop thread hopping, while LushText `services/` remains GTK-free
 
 [FLAG] anything that reverses this dependency direction.
 

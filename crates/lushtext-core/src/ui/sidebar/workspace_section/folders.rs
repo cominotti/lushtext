@@ -456,7 +456,7 @@ pub(super) fn schedule_folder_empty_check(
 ) {
     let path_for_check = folder_path.clone();
     let section_weak = section.downgrade();
-    services::async_task::spawn_blocking_then(
+    gtk_lush_tasks::spawn_blocking_then(
         (top_level_store.clone(), item.clone(), folder_path),
         move || services::file_tree::is_dir_empty(&path_for_check),
         move |(top_level_store, item, folder_path), is_empty| {

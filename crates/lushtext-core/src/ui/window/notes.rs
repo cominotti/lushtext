@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::translate::IntoGlib;
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use gtk4::{gio, pango};
 use libadwaita::prelude::{
@@ -27,8 +28,8 @@ use crate::model::note::{NoteViewMode, RichNoteBody, note_preview_line};
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScope};
 use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{
-    async_task, bookmark_excerpt, bookmark_service, document_note_service, folder_note_service,
-    json_store, local_history_service, migration_ledger,
+    bookmark_excerpt, bookmark_service, document_note_service, folder_note_service, json_store,
+    local_history_service, migration_ledger,
 };
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::{
@@ -361,7 +362,7 @@ impl LushtextWindow {
         let path = path.to_path_buf();
         let path_for_load = path.clone();
         let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             editor.clone(),
             move || {
                 let data_dir = json_store::data_dir();
@@ -410,7 +411,7 @@ impl LushtextWindow {
         let old_path_for_move = old_path.clone();
         let new_path_for_move = new_path.clone();
         let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || {
                 let data_dir = json_store::data_dir();
@@ -484,7 +485,7 @@ impl LushtextWindow {
     /// interrupted rename flow.
     pub(super) fn reconcile_pending_migrations_on_startup(&self) {
         let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || {
                 let data_dir = json_store::data_dir();
@@ -760,7 +761,7 @@ impl LushtextWindow {
             return;
         }
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || {
                 let data_dir = json_store::data_dir();
@@ -925,7 +926,7 @@ impl LushtextWindow {
         let open_editor_snapshots =
             self.open_editor_note_snapshots(&scope_folders, &all_workspaces);
 
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             self.clone(),
             move || {
                 let data_dir = json_store::data_dir();
@@ -1038,7 +1039,7 @@ impl LushtextWindow {
         let path_for_load = path.clone();
         let path_for_dialog = path;
         let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || {
                 let data_dir = json_store::data_dir();
@@ -1134,7 +1135,7 @@ impl LushtextWindow {
         let folder_for_load = folder.clone();
         let folder_for_dialog = folder;
         let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || {
                 let data_dir = json_store::data_dir();
@@ -1227,7 +1228,7 @@ impl LushtextWindow {
         dialog.choose(Some(self), gio::Cancellable::NONE, move |response| {
             if response == RESPONSE_CLEAR {
                 let path_for_delete = path.clone();
-                async_task::spawn_blocking_then(
+                spawn_blocking_then(
                     window,
                     move || {
                         let data_dir = json_store::data_dir();
@@ -1268,7 +1269,7 @@ impl LushtextWindow {
                         note = RichNoteBody::new(&note_text);
                     }
 
-                    async_task::spawn_blocking_then(
+                    spawn_blocking_then(
                         window_for_save,
                         move || {
                             let data_dir = json_store::data_dir();
@@ -1355,7 +1356,7 @@ impl LushtextWindow {
         dialog.choose(Some(self), gio::Cancellable::NONE, move |response| {
             if response == RESPONSE_CLEAR {
                 let folder_for_delete = folder.clone();
-                async_task::spawn_blocking_then(
+                spawn_blocking_then(
                     window,
                     move || {
                         let data_dir = json_store::data_dir();
@@ -1397,7 +1398,7 @@ impl LushtextWindow {
                         note = RichNoteBody::new(&note_text);
                     }
 
-                    async_task::spawn_blocking_then(
+                    spawn_blocking_then(
                         window_for_save,
                         move || {
                             let data_dir = json_store::data_dir();
@@ -1453,7 +1454,7 @@ impl LushtextWindow {
         editor.imp().bookmarks.persistence.save_dirty.set(false);
 
         let window_weak = self.downgrade();
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             editor.clone(),
             move || bookmark_service::save_for_path(&data_dir, &path, &bookmarks).map(|_| ()),
             move |editor, result| {
@@ -2675,7 +2676,7 @@ impl NotesBrowserState {
         let path_for_load = path.clone();
         let line = *line;
         let state_weak = Rc::downgrade(state);
-        async_task::spawn_blocking_then(
+        spawn_blocking_then(
             (),
             move || {
                 delay_bookmark_excerpt_preview_for_test();
