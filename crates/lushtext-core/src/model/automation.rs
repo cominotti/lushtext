@@ -6,6 +6,10 @@
 //! them from live widgets, while documentation, smoke helpers, and D-Bus code
 //! can serialize the same contract without learning about widget internals.
 
+use gtk_lush_proof_spine::{
+    BlockerSummary, ProofStatus, ReadinessPredicate, ReadinessResult, Rect, SnapshotEnvelope,
+    SurfaceSummary, WorkflowEvent, WorkflowPhase,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -191,6 +195,34 @@ impl AutomationWorkflowEventLog {
             self.events.pop_front();
             self.capped = true;
         }
+    }
+}
+
+impl AutomationWorkflowEvent {
+    /// Convert this Automation1 event into the generic proof-spine shape.
+    ///
+    /// Automation1 keeps its existing serialized `phase` and `status` strings.
+    /// The proof-spine projection is only a backing value object for tools that
+    /// want a generic view of workflow activity.
+    #[must_use]
+    pub fn to_proof_event(&self) -> WorkflowEvent {
+        let phase = match self.phase {
+            "started" => WorkflowPhase::Start,
+            "finished" => WorkflowPhase::Finish,
+            _ => WorkflowPhase::Progress,
+        };
+        let status = match self.status {
+            "settled" => ProofStatus::Ready,
+            "running" => ProofStatus::Blocked,
+            _ => ProofStatus::ApplicationFailure,
+        };
+        let mut event = WorkflowEvent::new(self.workflow_id.clone(), phase, status, self.sequence);
+        event.detail = Some(self.summary.clone());
+        event.blocker = self
+            .blocker
+            .as_ref()
+            .map(|blocker| BlockerSummary::new(blocker.clone()));
+        event
     }
 }
 
@@ -387,6 +419,104 @@ mod tests {
         assert_eq!(value["events"][0]["status"], "settled");
         assert_eq!(value["events"][0]["summary"], "save finished");
         assert_eq!(value["events"][0]["blocker"], READINESS_BLOCKER_SAVE);
+    }
+
+    #[test]
+    fn workflow_event_projects_to_proof_spine_without_renaming_automation_fields() {
+        let event = AutomationWorkflowEvent {
+            sequence: 9,
+            workflow_id: AUTOMATION_WORKFLOW_SAVE.to_string(),
+            phase: "started",
+            status: "running",
+            summary: "save started".to_string(),
+            blocker: Some(READINESS_BLOCKER_SAVE.to_string()),
+        };
+
+        let proof_event = event.to_proof_event();
+        let automation_json =
+            serde_json::to_value(event).expect("automation event should serialize");
+
+        assert_eq!(automation_json["phase"], "started");
+        assert_eq!(automation_json["status"], "running");
+        assert_eq!(proof_event.phase, WorkflowPhase::Start);
+        assert_eq!(proof_event.status, ProofStatus::Blocked);
+        assert_eq!(
+            proof_event
+                .blocker
+                .as_ref()
+                .map(|blocker| blocker.kind.as_str()),
+            Some(READINESS_BLOCKER_SAVE)
+        );
+    }
+
+    #[test]
+    fn readiness_result_projects_to_proof_spine_without_status_drift() {
+        let result = AutomationReadinessResult {
+            predicate: AutomationReadinessPredicate::VisualGeometrySettled
+                .as_str()
+                .to_string(),
+            ok: false,
+            status: AutomationReadinessStatus::PredicateTimeout.as_str(),
+            detail: "timed out waiting for visual-geometry-settled".to_string(),
+            blocker: Some(READINESS_BLOCKER_MINIMAP_REFRESH.to_string()),
+        };
+
+        let proof_result = result.to_proof_result();
+        let automation_json =
+            serde_json::to_value(&result).expect("readiness result should serialize");
+
+        assert_eq!(automation_json["status"], "predicate-timeout");
+        assert_eq!(
+            proof_result.predicate.as_str(),
+            AutomationReadinessPredicate::VisualGeometrySettled.as_str()
+        );
+        assert_eq!(proof_result.status, ProofStatus::PredicateTimeout);
+        assert!(!proof_result.ready);
+        assert_eq!(
+            proof_result
+                .blocker
+                .as_ref()
+                .map(|blocker| blocker.kind.as_str()),
+            Some(READINESS_BLOCKER_MINIMAP_REFRESH)
+        );
+
+        let unknown = AutomationReadinessResult {
+            status: "future-status",
+            ..result
+        };
+        assert_eq!(
+            unknown.to_proof_result().status,
+            ProofStatus::ApplicationFailure
+        );
+    }
+
+    #[test]
+    fn snapshot_projects_bounded_visual_surfaces_to_proof_spine() {
+        let snapshot = AutomationSnapshot {
+            interface_version: 1,
+            enabled: true,
+            app_id: "dev.cominotti.lushtext".to_string(),
+            app_version: "0.0.0-test".to_string(),
+            build_profile: "test".to_string(),
+            idle: false,
+            idle_blocker: Some(READINESS_BLOCKER_MINIMAP_REFRESH.to_string()),
+            window: None,
+        };
+
+        let proof_snapshot = snapshot.to_proof_snapshot(12);
+        let automation_json = serde_json::to_value(snapshot).expect("snapshot should serialize");
+
+        assert_eq!(
+            automation_json["idle_blocker"],
+            READINESS_BLOCKER_MINIMAP_REFRESH
+        );
+        assert_eq!(proof_snapshot.sequence, 12);
+        assert_eq!(
+            proof_snapshot.version.interface_version.as_deref(),
+            Some("1")
+        );
+        assert_eq!(proof_snapshot.status, ProofStatus::Blocked);
+        assert!(proof_snapshot.surfaces.is_empty());
     }
 
     #[test]
@@ -849,6 +979,12 @@ impl AutomationReadinessPredicate {
             .map(AutomationReadinessPredicateReference::from)
             .collect()
     }
+
+    /// Convert this Automation1 predicate into the proof-spine identifier.
+    #[must_use]
+    pub fn to_proof_predicate(self) -> ReadinessPredicate {
+        ReadinessPredicate::new(self.as_str())
+    }
 }
 
 /// Stable readiness statuses shared by app waits and host-side smoke helpers.
@@ -879,6 +1015,36 @@ impl AutomationReadinessStatus {
             Self::AutomationUnavailable => "automation-unavailable",
             Self::UnsupportedHostTooling => "unsupported-host-tooling",
             Self::UnknownPredicate => "unknown-predicate",
+        }
+    }
+
+    /// Parse a stable Automation1 status string.
+    #[must_use]
+    pub fn from_status_str(status: &str) -> Option<Self> {
+        match status {
+            "ready" => Some(Self::Ready),
+            "predicate-timeout" => Some(Self::PredicateTimeout),
+            "workflow-failure" => Some(Self::WorkflowFailure),
+            "automation-unavailable" => Some(Self::AutomationUnavailable),
+            "unsupported-host-tooling" => Some(Self::UnsupportedHostTooling),
+            "unknown-predicate" => Some(Self::UnknownPredicate),
+            _ => None,
+        }
+    }
+
+    /// Convert the Automation1 status into the closest proof-spine status.
+    ///
+    /// The Automation1 string remains authoritative for D-Bus clients; this
+    /// mapping only lets generic proof tooling classify the outcome without
+    /// learning every app-specific status spelling.
+    #[must_use]
+    pub const fn to_proof_status(self) -> ProofStatus {
+        match self {
+            Self::Ready => ProofStatus::Ready,
+            Self::PredicateTimeout => ProofStatus::PredicateTimeout,
+            Self::WorkflowFailure | Self::AutomationUnavailable => ProofStatus::ApplicationFailure,
+            Self::UnsupportedHostTooling => ProofStatus::UnsupportedHost,
+            Self::UnknownPredicate => ProofStatus::UnknownPredicate,
         }
     }
 }
@@ -925,6 +1091,34 @@ pub struct AutomationReadinessResult {
     pub blocker: Option<String>,
 }
 
+impl AutomationReadinessResult {
+    /// Convert this Automation1 result into a generic proof-spine readiness result.
+    #[must_use]
+    pub fn to_proof_result(&self) -> ReadinessResult {
+        let mut result = ReadinessResult {
+            predicate: ReadinessPredicate::new(self.predicate.clone()),
+            status: self.proof_status(),
+            ready: self.ok,
+            blocker: self
+                .blocker
+                .as_ref()
+                .map(|blocker| BlockerSummary::new(blocker.clone())),
+            detail: Some(self.detail.clone()),
+        };
+        if result.ready {
+            result.blocker = None;
+        }
+        result
+    }
+
+    fn proof_status(&self) -> ProofStatus {
+        AutomationReadinessStatus::from_status_str(self.status).map_or(
+            ProofStatus::ApplicationFailure,
+            AutomationReadinessStatus::to_proof_status,
+        )
+    }
+}
+
 /// Complete read-only state returned by the automation D-Bus surface.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AutomationSnapshot {
@@ -944,6 +1138,35 @@ pub struct AutomationSnapshot {
     pub idle_blocker: Option<String>,
     /// Current active-window snapshot, if a LushText window exists.
     pub window: Option<AutomationWindowSnapshot>,
+}
+
+impl AutomationSnapshot {
+    /// Convert the visual subset of this Automation1 snapshot into proof-spine form.
+    ///
+    /// The full Automation1 snapshot remains the app-specific JSON contract.
+    /// The proof-spine projection intentionally carries only bounded visual
+    /// surface summaries and high-level idle state.
+    #[must_use]
+    pub fn to_proof_snapshot(&self, sequence: u64) -> SnapshotEnvelope {
+        let mut snapshot = SnapshotEnvelope::new(sequence);
+        snapshot.version = snapshot
+            .version
+            .with_interface_version(self.interface_version.to_string());
+        snapshot.status = if self.idle {
+            ProofStatus::Ready
+        } else {
+            ProofStatus::Blocked
+        };
+        if let Some(window) = &self.window {
+            snapshot.surfaces = window
+                .visual_geometry
+                .surfaces
+                .iter()
+                .map(AutomationVisualSurfaceSnapshot::to_proof_surface)
+                .collect();
+        }
+        snapshot
+    }
 }
 
 /// Bounded state for one application window.
@@ -1069,6 +1292,14 @@ pub struct AutomationVisualRect {
     pub height: i32,
 }
 
+impl AutomationVisualRect {
+    /// Convert this visual rectangle into the proof-spine rectangle type.
+    #[must_use]
+    pub const fn to_proof_rect(self) -> Rect {
+        Rect::new(self.x, self.y, self.width, self.height)
+    }
+}
+
 /// Allocation size for a named surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct AutomationVisualSize {
@@ -1091,6 +1322,16 @@ pub struct AutomationVisualSurfaceSnapshot {
     pub allocation: Option<AutomationVisualSize>,
     /// Stable absence reason when the surface is hidden or unavailable.
     pub absence_reason: Option<String>,
+}
+
+impl AutomationVisualSurfaceSnapshot {
+    /// Convert this named Automation1 surface into a proof-spine surface summary.
+    #[must_use]
+    pub fn to_proof_surface(&self) -> SurfaceSummary {
+        let mut surface = SurfaceSummary::new(self.name.clone(), self.visible);
+        surface.rect = self.rect.map(AutomationVisualRect::to_proof_rect);
+        surface
+    }
 }
 
 /// One named pixel-level crop hint for screenshot-derived assertions.

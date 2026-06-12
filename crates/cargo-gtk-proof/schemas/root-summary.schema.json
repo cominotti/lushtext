@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "schema_id": "root-summary",
+  "required_fields": [
+    "schema_version",
+    "status",
+    "case_count",
+    "passed",
+    "failed",
+    "skipped",
+    "cases"
+  ],
+  "optional_fields": [
+    "animation_frame_sample_count",
+    "animation_verified_invariant_ids",
+    "case_filter",
+    "pixel_anchor_assertion_count",
+    "pixel_verified_invariant_ids",
+    "verified_invariant_ids",
+    "visual_proof_policy"
+  ]
+}

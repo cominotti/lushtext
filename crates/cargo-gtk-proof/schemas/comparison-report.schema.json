@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "schema_id": "comparison-report",
+  "required_fields": [
+    "schema_version",
+    "status"
+  ],
+  "optional_fields": [
+    "app_vs_rendered_disagreements",
+    "pixel_anchor_evidence",
+    "protected_regions",
+    "rendered_anchor_stability"
+  ]
+}

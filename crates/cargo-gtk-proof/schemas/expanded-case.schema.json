@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "schema_id": "expanded-case",
+  "required_fields": [
+    "schema_version",
+    "case_id",
+    "manifest",
+    "size",
+    "color_scheme",
+    "artifact_dir"
+  ],
+  "optional_fields": [
+    "direction",
+    "fixture_kind",
+    "viewport_position",
+    "word_wrap"
+  ]
+}

@@ -14,7 +14,10 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FAMILY_ROOT = REPO_ROOT / "crates" / "gtk-lush"
+CARGO_PROOF_TOOL_MEMBER = "crates/cargo-gtk-proof"
 EXPECTED_MEMBERS = {
+    "proof-harness": "gtk-lush-proof-harness",
+    "proof-spine": "gtk-lush-proof-spine",
     "signals": "gtk-lush-signals",
     "settle": "gtk-lush-settle",
     "tasks": "gtk-lush-tasks",
@@ -50,6 +53,7 @@ def main() -> int:
     workspace = root_manifest.get("workspace", {})
     workspace_members = set(workspace.get("members", []))
     workspace_deps = root_manifest.get("workspace", {}).get("dependencies", {})
+    check_workspace_tools(workspace_members, errors)
 
     for member, package_name in family_members(errors).items():
         crate_root = FAMILY_ROOT / member
@@ -70,6 +74,24 @@ def main() -> int:
         check_crate(crate_root, member, package_name, errors)
 
     return report(errors)
+
+
+def check_workspace_tools(workspace_members: set[str], errors: list[str]) -> None:
+    if CARGO_PROOF_TOOL_MEMBER not in workspace_members:
+        errors.append(f"{CARGO_PROOF_TOOL_MEMBER} is missing from [workspace].members")
+
+    misplaced_tool = FAMILY_ROOT / "cargo-gtk-proof"
+    if misplaced_tool.exists():
+        errors.append(
+            "cargo-gtk-proof is a workspace tool and must not live under crates/gtk-lush/"
+        )
+
+    manifest = load_toml(REPO_ROOT / CARGO_PROOF_TOOL_MEMBER / "Cargo.toml", errors)
+    if not isinstance(manifest, dict):
+        return
+    package = manifest.get("package", {})
+    if package.get("name") != "cargo-gtk-proof":
+        errors.append(f"{CARGO_PROOF_TOOL_MEMBER}/Cargo.toml package.name must be 'cargo-gtk-proof'")
 
 
 def family_members(errors: list[str]) -> dict[str, str]:

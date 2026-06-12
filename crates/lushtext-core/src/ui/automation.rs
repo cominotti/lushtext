@@ -1956,6 +1956,50 @@ mod tests {
     }
 
     #[test]
+    fn introspection_xml_matches_stable_automation1_golden() {
+        let normalized = INTROSPECTION_XML
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let expected = "\
+<node>
+<interface name='dev.cominotti.lushtext.Automation1'>
+<property name='InterfaceVersion' type='u' access='read'/>
+<property name='Enabled' type='b' access='read'/>
+<property name='BuildProfile' type='s' access='read'/>
+<method name='GetActionCatalog'>
+<arg type='s' name='json' direction='out'/>
+</method>
+<method name='GetSnapshot'>
+<arg type='s' name='json' direction='out'/>
+</method>
+<method name='GetReadinessPredicates'>
+<arg type='s' name='json' direction='out'/>
+</method>
+<method name='GetWorkflowEvents'>
+<arg type='s' name='json' direction='out'/>
+</method>
+<method name='WaitForReady'>
+<arg type='s' name='predicate' direction='in'/>
+<arg type='u' name='timeout_msec' direction='in'/>
+<arg type='b' name='ok' direction='out'/>
+<arg type='s' name='status' direction='out'/>
+<arg type='s' name='detail' direction='out'/>
+</method>
+<method name='WaitForIdle'>
+<arg type='u' name='timeout_msec' direction='in'/>
+<arg type='b' name='ok' direction='out'/>
+<arg type='s' name='detail' direction='out'/>
+</method>
+</interface>
+</node>";
+
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
     fn automation_object_path_is_child_of_application_object_path() {
         assert_eq!(
             object_path_for("/dev/cominotti/lushtext"),

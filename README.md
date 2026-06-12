@@ -712,7 +712,8 @@ Cargo workspace:
 - **`crates/lushtext-build-support`** -- build-script helper crate for the build-only filesystem boundary
 - **`crates/lushtext-core`** -- all application logic: domain models, services, GTK widgets
 - **`crates/lushtext`** -- thin binary entry point + integration tests
-- **`crates/gtk-lush/`** -- governed `0.0.0` placeholder crates for extracting reusable GTK4/Libadwaita patterns; real APIs are reserved for follow-up OpenSpec changes
+- **`crates/gtk-lush/`** -- governed `0.0.0` GTK Lush family crates for extracting reusable GTK4/Libadwaita patterns; functional in-tree APIs are not Phase 5 publication-ready
+- **`crates/cargo-gtk-proof`** -- workspace visual proof tool outside the GTK Lush family
 - **`workspace-hack`** -- generated cargo-hakari crate for unified dependency features
 
 ### Module layout
@@ -792,12 +793,16 @@ full-filesystem posture documented and guarded by `make check-flatpak-permission
 ### GTK Lush family
 
 `crates/gtk-lush/` is the in-tree staging area for extracting LushText's
-hardened GTK4/Libadwaita patterns into small Rust crates. The foundation phase
-contains only `0.0.0` placeholder crates, `gtk-lush-signals` and
-`gtk-lush-settle`; they intentionally expose no public API until the
-`extract-gtk-lush-signals-and-settle` follow-up designs the first real helpers.
+hardened GTK4/Libadwaita patterns into small Rust crates. The current family
+members are functional in-tree `0.0.0` APIs for LushText and future adoption
+testing: `gtk-lush-signals`, `gtk-lush-settle`, `gtk-lush-tasks`,
+`gtk-lush-viewport`, `gtk-lush-widgets`, `gtk-lush-proof-harness`, and
+`gtk-lush-proof-spine`. The separate `cargo-gtk-proof` workspace tool lives
+outside the family so the leaf crates remain independently adoptable.
 Governance lives in [`crates/gtk-lush/GOVERNANCE.md`](crates/gtk-lush/GOVERNANCE.md),
 with the umbrella vision in [`docs/next/gtk-lush.md`](docs/next/gtk-lush.md).
+The proof-tool schema, artifact, and privacy contract is documented in
+[`docs/gtk-proof-schemas.md`](docs/gtk-proof-schemas.md).
 
 Use the family-specific checks when touching that area:
 

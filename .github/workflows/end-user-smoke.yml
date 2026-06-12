@@ -96,6 +96,7 @@ jobs:
           name: smoke-${{ matrix.lane }}
           path: ${{ matrix.artifact_path }}
           if-no-files-found: warn
+          retention-days: 7
 
   benchmark-report:
     name: Full Benchmark Report
@@ -137,3 +138,4 @@ jobs:
           name: benchmark-report-full
           path: build/benchmark-report/*.md
           if-no-files-found: warn
+          retention-days: 14

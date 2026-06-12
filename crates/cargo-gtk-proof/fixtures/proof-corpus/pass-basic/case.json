@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "case_id": "pass-basic",
+  "python_status": "passed",
+  "rust_status": "passed",
+  "expected_invariant_ids": ["basic-protected-region"]
+}

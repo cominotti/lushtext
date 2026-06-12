@@ -9,12 +9,14 @@
 use gio::prelude::{ApplicationExt, Cast, ListModelExt, ObjectExt};
 use glib::prelude::IsA;
 use glib::prelude::ToValue;
+pub use gtk_lush_proof_harness::{
+    flush_after_delay, flush_events, present_window, wait_until,
+};
 use gtk4::prelude::{GtkWindowExt, WidgetExt};
 use lushtext_core::config::APP_ID;
 pub use lushtext_core::services::filesystem::{
     fixture, metadata as fs_metadata, mutate as fs_mutate, read as fs_read,
 };
-use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
 
@@ -76,54 +78,6 @@ pub fn test_application() -> libadwaita::Application {
 pub fn test_window() -> lushtext_core::ui::window::LushtextWindow {
     let app = test_application();
     lushtext_core::ui::window::LushtextWindow::new(&app)
-}
-
-/// Run the GTK main loop until no immediate events remain.
-pub fn flush_events() {
-    while glib::MainContext::default().iteration(false) {}
-}
-
-/// Sleep briefly, then flush pending GTK work.
-pub fn flush_after_delay(delay: Duration) {
-    std::thread::sleep(delay);
-    flush_events();
-}
-
-/// Interval between `wait_until` predicate checks.
-const WAIT_UNTIL_POLL_INTERVAL: Duration = Duration::from_millis(20);
-
-/// Poll until the predicate becomes true or the timeout expires.
-///
-/// Each poll sleeps briefly and then **drains every ready main-loop source** via
-/// `flush_events()` (`while iteration(false) {}`). Draining to exhaustion is the
-/// important part: `spawn_blocking_then` delivers its completion through
-/// `glib::idle_add_once`, a *low-priority idle source*. A loop that only blocks
-/// on `MainContext::iteration(true)` with a higher-priority timeout source can
-/// starve that idle indefinitely, so the async result never lands and the wait
-/// times out even though the work finished. Drain-all dispatches the idle as
-/// soon as nothing higher-priority is pending, which is exactly how these tests
-/// observe background completion. Do not "optimize" this into a single blocking
-/// iteration — that regresses every `spawn_blocking_then`-backed wait.
-///
-/// The flake this guards against is a *budget* problem, not a polling-gap one:
-/// give async/realization waits a generous timeout (see callers) rather than
-/// changing the poll mechanism.
-pub fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if predicate() {
-            return;
-        }
-        std::thread::sleep(WAIT_UNTIL_POLL_INTERVAL);
-        flush_events();
-    }
-    panic!("condition was not met within {timeout:?}");
-}
-
-/// Present a window and flush the initial realization work.
-pub fn present_window(window: &impl IsA<gtk4::Window>) {
-    window.present();
-    flush_events();
 }
 
 fn try_emit_key_pressed(widget: &gtk4::Widget, key: gtk4::gdk::Key) -> Option<glib::Propagation> {

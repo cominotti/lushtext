@@ -6,6 +6,12 @@ bounded state. Mutating behavior stays on normal GTK/GIO actions. The
 app-owned D-Bus object is read-only: it describes the action catalog, returns a
 bounded snapshot, and waits for tracked workflows to settle.
 
+Internally, Automation1 now projects readiness and workflow observations through
+the `gtk-lush-proof-spine` value objects used by the extracted proof toolchain.
+That backing layer does not define a new D-Bus contract: the object path,
+interface name, method signatures, status strings, predicate names, and snapshot
+JSON documented here remain the Automation1 surface.
+
 The first automation interface is:
 
 - D-Bus name: `dev.cominotti.lushtext`

@@ -165,6 +165,36 @@ Publication posture: these are functional in-tree `0.0.0` APIs for LushText
 and future adoption testing only. They are not Phase 5 publication-ready, and
 no `0.1.0` release may proceed until the publishing gates above are satisfied.
 
+### 2026-06-12 — Phase 4 Proof Toolchain Audit (`extract-gtk-lush-proof-toolchain`)
+
+Scope: functional in-tree `0.0.0` APIs for `gtk-lush-proof-harness` and
+`gtk-lush-proof-spine`, plus the separate `cargo-gtk-proof` workspace tool for
+schema, corpus, PNG, and policy proof work.
+
+- [x] No ownership of GTK control flow. The harness relaunches tests into a
+      private headless session and runs caller-registered functions, while
+      consuming applications still own GTK initialization, resources, fixtures,
+      and test registries. The spine crate is GTK-free value objects and traits.
+- [x] No view DSL. No template, macro, builder, or custom UI syntax was added.
+- [x] No state, message, or component system. The spine carries bounded proof
+      values, not app state ownership; the harness runs tests, not an update
+      loop.
+- [x] Leaf crates only. The proof family crates do not depend on LushText or on
+      other GTK Lush crates. `cargo-gtk-proof` is deliberately outside the
+      family and may depend on `gtk-lush-proof-spine`.
+- [x] Adwaita remains authoritative. No adaptive behavior, split view,
+      breakpoint, sheet, or animation API is reimplemented.
+- [ ] Pixels and contracts over claims. The phase now has crate tests, schema
+      tests, PNG corpus checks, policy self-tests, and Automation1 ABI drift
+      tests. Full live visual-runner parity, wrapper migration, and final
+      visual smoke evidence remain required before archive.
+
+Exceptions: none.
+
+Publication posture: these are functional in-tree `0.0.0` APIs for LushText
+and future adoption testing only. They are not Phase 5 publication-ready, and
+no `0.1.0` release may proceed until the publishing gates above are satisfied.
+
 ### 2026-06-11 — Phase 3 Runtime Geometry Audit (`extract-gtk-lush-runtime-geometry`)
 
 Scope: functional in-tree `0.0.0` APIs for `gtk-lush-tasks`,

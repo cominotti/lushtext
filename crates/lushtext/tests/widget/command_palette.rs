@@ -22,17 +22,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-/// Spin the main loop (blocking) until the predicate returns true.
-/// Panics after ~2 seconds to prevent infinite hangs.
+/// Keep older command-palette assertions on the shared harness wait semantics.
 fn spin_until(predicate: impl Fn() -> bool) {
-    let start = std::time::Instant::now();
-    while !predicate() {
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(2),
-            "spin_until timed out after 2s"
-        );
-        glib::MainContext::default().iteration(true);
-    }
+    wait_until(Duration::from_secs(2), predicate);
 }
 
 /// Present a test window and wait until the headless compositor allocates it.

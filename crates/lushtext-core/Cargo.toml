@@ -17,6 +17,7 @@ gtk-lush-signals = { workspace = true }
 gtk-lush-tasks = { workspace = true }
 gtk-lush-viewport = { workspace = true }
 gtk-lush-widgets = { workspace = true }
+gtk-lush-proof-spine = { workspace = true }
 gtk4        = { workspace = true }
 libadwaita  = { workspace = true }
 sourceview5 = { workspace = true }

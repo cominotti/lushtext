@@ -37,7 +37,8 @@ workspace-hack for cargo-hakari):
 - `crates/lushtext-build-support` — tiny build-script helper crate, including the build-only filesystem boundary used by `build.rs` files that cannot depend on runtime services
 - `crates/lushtext-core` — all application logic: data models, services, GTK widgets
 - `crates/lushtext` — thin binary entry point + integration tests
-- `crates/gtk-lush/` — governed `0.0.0` GTK Lush family crates for extracting reusable GTK4/Libadwaita patterns; `signals`, `settle`, `tasks`, `viewport`, and `widgets` have functional in-tree APIs but are not Phase 5 publication-ready
+- `crates/gtk-lush/` — governed `0.0.0` GTK Lush family crates for extracting reusable GTK4/Libadwaita patterns; `signals`, `settle`, `tasks`, `viewport`, `widgets`, `proof-harness`, and `proof-spine` have functional in-tree APIs but are not Phase 5 publication-ready
+- `crates/cargo-gtk-proof` — workspace visual proof tool outside the GTK Lush family; owns schema validation, corpus replay, PNG/policy proof logic, and future live visual-runner migration
 - `workspace-hack` — generated cargo-hakari crate for unified dependency features
 
 ### Module Layout (lushtext-core)

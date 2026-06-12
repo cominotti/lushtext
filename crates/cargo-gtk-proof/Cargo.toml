@@ -1,0 +1,25 @@
+[package]
+name = "cargo-gtk-proof"
+version = "0.0.0"
+edition = "2024"
+rust-version.workspace = true
+license = "GPL-3.0-or-later"
+description = "Workspace visual proof tool for GTK Lush and LushText"
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "cargo-gtk-proof"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+crc32fast = { workspace = true }
+flate2 = { workspace = true }
+gtk-lush-proof-spine = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }

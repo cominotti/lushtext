@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "schema_id": "animation-report",
+  "required_fields": [
+    "schema_version",
+    "status"
+  ],
+  "optional_fields": [
+    "animation_frame_evidence",
+    "frames",
+    "invariant_id"
+  ]
+}

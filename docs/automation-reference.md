@@ -30,6 +30,9 @@ anchor, plus every stable AT-SPI anchor used by the accessibility smoke helper.
   `make check-automation-docs`.
 - Mutating operations stay on normal GTK/GIO actions. The
   `dev.cominotti.lushtext.Automation1` object is read-only except for waiting.
+- Automation1 may use `gtk-lush-proof-spine` internally for generic proof
+  projections, but that crate does not define the D-Bus interface. The
+  Automation1 names and signatures in this reference remain authoritative.
 - LushText keeps full filesystem permission. Do not describe this automation
   layer as a portals-only migration. `make check-flatpak-permissions` fails if
   the Flatpak manifest loses `--filesystem=host`.

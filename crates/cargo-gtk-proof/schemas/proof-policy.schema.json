@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "schema_id": "proof-policy",
+  "required_fields": [
+    "schema_version"
+  ],
+  "optional_fields": [
+    "changed_files_digest",
+    "required_animation_invariant_ids",
+    "required_invariant_ids",
+    "visual_sensitive_changes"
+  ]
+}

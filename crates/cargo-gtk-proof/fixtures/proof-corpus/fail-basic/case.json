@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "case_id": "fail-basic",
+  "python_status": "failed",
+  "rust_status": "failed",
+  "expected_failure": "protected-region-diff"
+}

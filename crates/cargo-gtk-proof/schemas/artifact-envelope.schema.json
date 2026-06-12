@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "schema_id": "artifact-envelope",
+  "required_fields": [
+    "ok",
+    "status",
+    "command",
+    "detail",
+    "version",
+    "data"
+  ]
+}
