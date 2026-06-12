@@ -67,8 +67,9 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
         &[NATIVE_MINIMAP_ANIMATION_INVARIANT.to_string()],
         "minimap animation invariant mapping failed",
     )?;
-    if visual_change_fingerprint(&["docs/automation.md".to_string()])?
-        == visual_change_fingerprint(&["missing-visual-proof-file.rs".to_string()])?
+    let root = default_repo_root();
+    if visual_change_fingerprint(&["docs/automation.md".to_string()], &root)?
+        == visual_change_fingerprint(&["missing-visual-proof-file.rs".to_string()], &root)?
     {
         return Err("visual change fingerprint failed to distinguish file sets".to_string());
     }
@@ -83,13 +84,13 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
     });
     proof_is_verified(&summary)?;
     expect_err_contains(
-        proof_matches_current_changes(&summary, &["docs/automation.md".to_string()]),
+        proof_matches_current_changes(&summary, &["docs/automation.md".to_string()], &root),
         "fingerprint",
     )?;
 
-    let digest = visual_change_fingerprint(&["docs/automation.md".to_string()])?;
+    let digest = visual_change_fingerprint(&["docs/automation.md".to_string()], &root)?;
     summary["visual_proof_policy"] = serde_json::json!({ "changed_files_digest": digest });
-    proof_matches_current_changes(&summary, &["docs/automation.md".to_string()])?;
+    proof_matches_current_changes(&summary, &["docs/automation.md".to_string()], &root)?;
     expect_err_contains(
         proof_covers_required_invariants(&summary, &["resources/style/style.css".to_string()]),
         "pixel_verified_invariant_ids",
@@ -226,8 +227,10 @@ pub(crate) fn check_policy(
     artifact_dir: &Path,
     base_ref: Option<&str>,
     require_rust_engine: bool,
+    repo_root: Option<&Path>,
 ) -> PolicyOutcome {
-    let changed = changed_files(base_ref);
+    let root = repo_root.map_or_else(default_repo_root, Path::to_path_buf);
+    let changed = changed_files(base_ref, &root);
     let visual_changes: Vec<String> = changed
         .into_iter()
         .filter(|path| is_visual_sensitive(path))
@@ -257,7 +260,7 @@ pub(crate) fn check_policy(
 
     let detail = proof_is_verified(&summary)
         .and_then(|detail| {
-            proof_matches_current_changes(&summary, &visual_changes)
+            proof_matches_current_changes(&summary, &visual_changes, &root)
                 .map(|match_detail| format!("{detail}; {match_detail}"))
         })
         .and_then(|detail| {
@@ -292,14 +295,15 @@ pub(crate) fn check_policy(
 
 /// Build the current visual-sensitive diff metadata recorded in proof summaries.
 pub(crate) fn current_visual_proof_policy_metadata() -> Result<Value, String> {
-    let visual_changes: Vec<String> = changed_files(None)
+    let root = default_repo_root();
+    let visual_changes: Vec<String> = changed_files(None, &root)
         .into_iter()
         .filter(|path| is_visual_sensitive(path))
         .collect();
     Ok(serde_json::json!({
         "schema_version": crate::model::SUPPORTED_SCHEMA_VERSION,
         "visual_sensitive_changes": visual_changes,
-        "changed_files_digest": visual_change_fingerprint(&visual_changes)?,
+        "changed_files_digest": visual_change_fingerprint(&visual_changes, &root)?,
     }))
 }
 
@@ -428,6 +432,7 @@ fn proof_is_verified(summary: &Value) -> Result<String, String> {
 fn proof_matches_current_changes(
     summary: &Value,
     visual_changes: &[String],
+    root: &Path,
 ) -> Result<String, String> {
     let Some(metadata) = summary
         .get("visual_proof_policy")
@@ -440,7 +445,7 @@ fn proof_matches_current_changes(
     let Some(recorded_digest) = metadata.get("changed_files_digest").and_then(Value::as_str) else {
         return Err("summary has no changed-files digest; rerun visual geometry smoke".to_string());
     };
-    let current_digest = visual_change_fingerprint(visual_changes)?;
+    let current_digest = visual_change_fingerprint(visual_changes, root)?;
     if current_digest != recorded_digest {
         return Err(
             "summary changed-files digest does not match current visual-sensitive diff; rerun visual geometry smoke"
@@ -741,8 +746,7 @@ fn required_animation_invariants_for_changes(paths: &[String]) -> Vec<String> {
     required
 }
 
-fn visual_change_fingerprint(paths: &[String]) -> Result<String, String> {
-    let root = repo_root();
+fn visual_change_fingerprint(paths: &[String], root: &Path) -> Result<String, String> {
     let mut entries = Vec::new();
     let mut sorted = paths
         .iter()
@@ -801,9 +805,9 @@ fn hex_sha256(data: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn changed_files(base_ref: Option<&str>) -> Vec<String> {
+fn changed_files(base_ref: Option<&str>, root: &Path) -> Vec<String> {
     if let Some(base_ref) = base_ref {
-        let files = base_ref_changed_files(base_ref);
+        let files = base_ref_changed_files(base_ref, root);
         if !files.is_empty() {
             return files;
         }
@@ -813,23 +817,26 @@ fn changed_files(base_ref: Option<&str>) -> Vec<String> {
         .and_then(|base_ref| {
             [format!("origin/{base_ref}"), base_ref]
                 .into_iter()
-                .map(|candidate| base_ref_changed_files(&candidate))
+                .map(|candidate| base_ref_changed_files(&candidate, root))
                 .find(|files| !files.is_empty())
         })
-        .unwrap_or_else(status_changed_files)
+        .unwrap_or_else(|| status_changed_files(root))
 }
 
-fn base_ref_changed_files(base_ref: &str) -> Vec<String> {
-    let files = run_git(&["diff", "--name-only", &format!("{base_ref}...HEAD")]);
+fn base_ref_changed_files(base_ref: &str, root: &Path) -> Vec<String> {
+    let files = run_git(
+        &["diff", "--name-only", &format!("{base_ref}...HEAD")],
+        root,
+    );
     if files.is_empty() {
-        run_git(&["diff", "--name-only", base_ref, "HEAD"])
+        run_git(&["diff", "--name-only", base_ref, "HEAD"], root)
     } else {
         files
     }
 }
 
-fn status_changed_files() -> Vec<String> {
-    let mut files = run_git(&["status", "--porcelain=v1", "--untracked-files=all"])
+fn status_changed_files(root: &Path) -> Vec<String> {
+    let mut files = run_git(&["status", "--porcelain=v1", "--untracked-files=all"], root)
         .into_iter()
         .filter_map(|line| {
             let path = line.get(3..)?;
@@ -845,12 +852,8 @@ fn status_changed_files() -> Vec<String> {
     files
 }
 
-fn run_git(args: &[&str]) -> Vec<String> {
-    let Ok(output) = Command::new("git")
-        .args(args)
-        .current_dir(repo_root())
-        .output()
-    else {
+fn run_git(args: &[&str], root: &Path) -> Vec<String> {
+    let Ok(output) = Command::new("git").args(args).current_dir(root).output() else {
         return Vec::new();
     };
     if !output.status.success() {
@@ -864,7 +867,7 @@ fn run_git(args: &[&str]) -> Vec<String> {
         .collect()
 }
 
-fn repo_root() -> PathBuf {
+fn default_repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 

@@ -40,9 +40,11 @@ diagnostic/oracle path and is not default Rust proof.
   bounded details. Any mismatch exits nonzero and reports compatibility drift.
 - `cargo gtk-proof policy --self-test`
   Runs Rust proof-policy negative and positive tests.
-- `cargo gtk-proof policy [--artifact-dir DIR] [--base-ref REF]`
+- `cargo gtk-proof policy [--artifact-dir DIR] [--base-ref REF] [--repo-root DIR]`
   Checks whether visual-sensitive local changes have current visual proof
-  evidence. The default artifact directory is `build/smoke/visual-geometry`.
+  evidence. The default artifact directory is `build/smoke/visual-geometry`,
+  and `--repo-root` resolves git state and file digests from another checkout
+  (hermetic tests use it to point at a scratch repository).
 - `cargo gtk-proof policy --require-rust-engine`
   Adds the post-migration guard that passing summaries must identify
   authoritative `cargo-gtk-proof` engine metadata, schema version, and scenario

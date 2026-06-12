@@ -120,6 +120,7 @@ CORPUS FLAGS:
 POLICY FLAGS:
     --artifact-dir DIR   Read visual proof artifacts from DIR
     --base-ref REF       Compare visual-sensitive changes against REF
+    --repo-root DIR      Resolve git state and file digests from DIR
     --require-rust-engine
                          Require authoritative cargo-gtk-proof engine metadata
 "
@@ -557,6 +558,7 @@ fn handle_policy(args: &[String], stdout: &mut impl Write) -> io::Result<i32> {
     }
     let mut artifact_dir = PathBuf::from("build/smoke/visual-geometry");
     let mut base_ref = None;
+    let mut repo_root: Option<PathBuf> = None;
     let mut require_rust_engine = false;
     let mut index = 0;
     while index < args.len() {
@@ -591,6 +593,21 @@ fn handle_policy(args: &[String], stdout: &mut impl Write) -> io::Result<i32> {
                 base_ref = Some(value.as_str());
                 index += 2;
             }
+            "--repo-root" => {
+                let Some(value) = args.get(index + 1) else {
+                    write_envelope(
+                        stdout,
+                        &ArtifactEnvelope::failure(
+                            "policy",
+                            ProofStatus::UsageError,
+                            "missing --repo-root value",
+                        ),
+                    )?;
+                    return Ok(2);
+                };
+                repo_root = Some(PathBuf::from(value));
+                index += 2;
+            }
             "--require-rust-engine" => {
                 require_rust_engine = true;
                 index += 1;
@@ -609,7 +626,12 @@ fn handle_policy(args: &[String], stdout: &mut impl Write) -> io::Result<i32> {
         }
     }
 
-    let outcome = policy::check_policy(&artifact_dir, base_ref, require_rust_engine);
+    let outcome = policy::check_policy(
+        &artifact_dir,
+        base_ref,
+        require_rust_engine,
+        repo_root.as_deref(),
+    );
     let envelope = if outcome.ok {
         ArtifactEnvelope::success("policy", outcome.detail)
     } else {
@@ -1047,6 +1069,9 @@ mod tests {
     #[test]
     fn policy_strict_engine_rejects_python_only_summary_after_migration() {
         let tempdir = tempfile::tempdir().expect("tempdir");
+        let scratch_repo = tempfile::tempdir().expect("scratch repo tempdir");
+        let changed_path = "resources/style/style.css";
+        init_scratch_repo_with_visual_change(scratch_repo.path(), changed_path);
         let summary = serde_json::json!({
             "schema_version": 1,
             "status": "passed",
@@ -1055,7 +1080,7 @@ mod tests {
             "failed": 0,
             "skipped": 0,
             "visual_proof_policy": {
-                "changed_files_digest": policy_digest_for_test(policy_visual_sensitive_status_paths_for_test())
+                "changed_files_digest": policy_digest_for_test(scratch_repo.path(), &[changed_path])
             },
             "pixel_verified_invariant_ids": ["native-minimap-highlight-anchors"],
             "animation_verified_invariant_ids": ["native-minimap-animation-highlight-anchors"],
@@ -1109,6 +1134,8 @@ mod tests {
                 tempdir.path().to_str().expect("utf8 tempdir"),
                 "--base-ref",
                 "HEAD",
+                "--repo-root",
+                scratch_repo.path().to_str().expect("utf8 scratch repo"),
                 "--require-rust-engine",
             ],
             &mut stdout,
@@ -1127,13 +1154,12 @@ mod tests {
         assert!(stderr.is_empty());
     }
 
-    fn policy_digest_for_test(paths: Vec<String>) -> String {
+    fn policy_digest_for_test(repo_root: &Path, paths: &[&str]) -> String {
         use sha2::{Digest, Sha256};
 
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut entries = Vec::new();
         for path in paths {
-            let absolute = repo_root.join(&path);
+            let absolute = repo_root.join(path);
             let data = fs::read(&absolute).expect("test visual-sensitive file");
             entries.push(serde_json::json!({
                 "path": path,
@@ -1146,51 +1172,42 @@ mod tests {
         format!("{:x}", Sha256::digest(&encoded))
     }
 
-    fn path_has_extension(path: &str, expected: &str) -> bool {
-        Path::new(path)
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
-    }
-
-    fn policy_visual_sensitive_status_paths_for_test() -> Vec<String> {
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let output = std::process::Command::new("git")
-            .args(["status", "--porcelain=v1", "--untracked-files=all"])
-            .current_dir(&repo_root)
-            .output()
-            .expect("git status");
-        assert!(output.status.success());
-        let mut paths = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| line.get(3..))
-            .map(|path| {
-                path.split_once(" -> ")
-                    .map_or(path, |(_old, new)| new)
-                    .replace('\\', "/")
-            })
-            .filter(|path| {
-                path == "crates/lushtext-core/src/model/automation.rs"
-                    || path == "scripts/check-visual-proof-policy.py"
-                    || path == "scripts/lushtext-automation.py"
-                    || path == "scripts/test-visual-geometry.py"
-                    || path == "scripts/visual-geometry-smoke.py"
-                    || path == "scripts/visual_geometry_png.py"
-                    || path.starts_with("crates/lushtext-core/src/ui/")
-                    || path.starts_with("crates/lushtext/tests/widget/")
-                    || path.starts_with("resources/ui/")
-                    || path.starts_with("resources/style/")
-                    || path.starts_with("scripts/visual-geometry-scenarios/")
-                    || path_has_extension(path, "blp")
-                    || path_has_extension(path, "css")
-                    || path_has_extension(path, "ui")
-            })
-            .collect::<Vec<_>>();
-        paths.sort();
-        paths.dedup();
-        assert!(
-            !paths.is_empty(),
-            "strict policy fixture expects this change to be visual-sensitive"
-        );
-        paths
+    // Policy tests must not read the developer's or CI runner's live checkout
+    // state: a scratch repository with one baseline commit and one uncommitted
+    // visual-sensitive file gives `git status` a deterministic answer instead.
+    fn init_scratch_repo_with_visual_change(root: &Path, visual_path: &str) {
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("run git in scratch repo");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed in scratch repo: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "--quiet"]);
+        fs::write(root.join("baseline.txt"), "baseline\n").expect("baseline file");
+        git(&["add", "baseline.txt"]);
+        // The scratch repo has no developer identity or signing keys (CI
+        // containers in particular), so both are pinned for this one commit.
+        git(&[
+            "-c",
+            "user.name=cargo-gtk-proof-test",
+            "-c",
+            "user.email=cargo-gtk-proof-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "baseline",
+        ]);
+        let absolute = root.join(visual_path);
+        fs::create_dir_all(absolute.parent().expect("visual path parent"))
+            .expect("create visual path dirs");
+        fs::write(&absolute, ".minimap-slider { margin-top: 5px; }\n").expect("visual file");
     }
 }
