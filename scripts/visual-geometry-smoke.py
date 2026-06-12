@@ -580,6 +580,7 @@ def mutter_child(args: argparse.Namespace) -> int:
         mutter.wait_for_automation_object(bus)
         mutter.wait_for_ready(bus, case_dir, "file-open-complete", 5000)
         mutter.wait_for_ready(bus, case_dir, "visual-geometry-settled", 5000)
+        prepare_sidebar_target_state(bus, case, case_dir, "before")
         prepare_case_state(bus, case, case_dir)
         wait_for_case_final_geometry(bus, case_dir, case, "before")
         before = capture_step(bus, case_dir, case, "before")
@@ -710,6 +711,20 @@ def run_case_action(bus, case: dict[str, Any]) -> None:
         mutter.activate_window_action(bus, "toggle-command-palette")
     else:
         raise RuntimeError(f"unsupported scenario type: {scenario_type}")
+
+
+def prepare_sidebar_target_state(bus, case: dict[str, Any], case_dir: Path, step: str) -> None:
+    if case["manifest"]["scenario_type"] != "minimap-sidebar":
+        return
+
+    target_visible = sidebar_target_visible(case, step)
+    mutter.activate_window_action(bus, "set-sidebar-visible", bool_parameter=target_visible)
+    with (case_dir / "automation-waits.txt").open("a", encoding="utf-8") as waits:
+        waits.write(
+            f"predicate=prepare-sidebar-target:{step} ok=true status=action "
+            f"detail=set-sidebar-visible={target_visible}\n"
+        )
+    mutter.wait_for_ready(bus, case_dir, "visual-geometry-settled", 5000)
 
 
 def run_case_action_with_optional_animation_sampling(
@@ -1460,7 +1475,9 @@ def wait_for_case_final_geometry(bus, case_dir: Path, case: dict[str, Any], step
 
     while time.monotonic() < deadline:
         snapshot = mutter.snapshot_json(bus)
-        matches, detail = sidebar_final_geometry_matches(snapshot, target_visible)
+        matches, detail = sidebar_final_geometry_matches(
+            snapshot, target_visible, compact_overlay_allowed(case)
+        )
         sample = final_geometry_sample(snapshot, target_visible, matches, detail)
         samples.append(sample)
         last_detail = detail
@@ -1498,12 +1515,16 @@ def assert_capture_final_geometry(case: dict[str, Any], snapshot: dict[str, Any]
     if case["manifest"]["scenario_type"] != "minimap-sidebar":
         return
     target_visible = sidebar_target_visible(case, step)
-    matches, detail = sidebar_final_geometry_matches(snapshot, target_visible)
+    matches, detail = sidebar_final_geometry_matches(
+        snapshot, target_visible, compact_overlay_allowed(case)
+    )
     if not matches:
         raise RuntimeError(f"sidebar final geometry changed before {step} capture: {detail}")
 
 
-def sidebar_final_geometry_matches(snapshot: dict[str, Any], target_visible: bool) -> tuple[bool, str]:
+def sidebar_final_geometry_matches(
+    snapshot: dict[str, Any], target_visible: bool, compact_overlay_allowed: bool = False
+) -> tuple[bool, str]:
     try:
         sidebar = rect_for(snapshot, "workspace-sidebar")
         editor = rect_for(snapshot, "editor-viewport")
@@ -1516,10 +1537,13 @@ def sidebar_final_geometry_matches(snapshot: dict[str, Any], target_visible: boo
     if target_visible:
         if sidebar.x != 0:
             return False, f"workspace-sidebar x={sidebar.x}, expected 0"
-        expected_editor_x = sidebar.x + sidebar.width
-        if editor.x != expected_editor_x:
-            return False, f"editor-viewport x={editor.x}, expected {expected_editor_x}"
-        return True, "workspace sidebar is fully visible"
+        side_by_side_editor_x = sidebar.x + sidebar.width
+        if editor.x == side_by_side_editor_x:
+            return True, "workspace sidebar is fully visible beside editor"
+        if compact_overlay_allowed and editor.x == 0:
+            return True, "workspace sidebar is fully visible as collapsed overlay"
+        expected = f"0 or {side_by_side_editor_x}" if compact_overlay_allowed else str(side_by_side_editor_x)
+        return False, f"editor-viewport x={editor.x}, expected {expected}"
 
     expected_sidebar_x = -sidebar.width
     if sidebar.x != expected_sidebar_x:
@@ -1527,6 +1551,11 @@ def sidebar_final_geometry_matches(snapshot: dict[str, Any], target_visible: boo
     if editor.x != 0:
         return False, f"editor-viewport x={editor.x}, expected 0"
     return True, "workspace sidebar is fully hidden"
+
+
+def compact_overlay_allowed(case: dict[str, Any]) -> bool:
+    width = case.get("size", {}).get("width")
+    return isinstance(width, int) and width <= 860
 
 
 def final_geometry_signature(snapshot: dict[str, Any]) -> tuple[Any, ...]:
@@ -2029,12 +2058,21 @@ def assert_allowed_region_relationships(case: dict[str, Any], before: dict[str, 
     if scenario_type == "minimap-sidebar":
         before_editor = rect_for(before, "editor-viewport")
         after_editor = rect_for(after, "editor-viewport")
+        before_sidebar = rect_for(before, "workspace-sidebar")
+        after_sidebar = rect_for(after, "workspace-sidebar")
         rect_for(after, "minimap-shell")
         rect_for(after, "minimap-source-map")
         rect_for(after, "minimap-marker-strip")
-        if case["direction"] == "hide" and after_editor.width <= before_editor.width:
+        overlay_transition = compact_overlay_allowed(case) and compact_overlay_sidebar_transition(
+            case["direction"],
+            before_editor,
+            after_editor,
+            before_sidebar,
+            after_sidebar,
+        )
+        if case["direction"] == "hide" and after_editor.width <= before_editor.width and not overlay_transition:
             raise RuntimeError(f"sidebar hide should widen editor: before={before_editor} after={after_editor}")
-        if case["direction"] == "show" and after_editor.width >= before_editor.width:
+        if case["direction"] == "show" and after_editor.width >= before_editor.width and not overlay_transition:
             raise RuntimeError(f"sidebar show should narrow editor: before={before_editor} after={after_editor}")
         before_anchor = scroll_anchor(before, "source-view")
         after_anchor = scroll_anchor(after, "source-view")
@@ -2051,6 +2089,29 @@ def assert_allowed_region_relationships(case: dict[str, Any], before: dict[str, 
         active = surface(after, "active-transient")
         if active.get("visible") is not True:
             raise RuntimeError(f"command palette should expose active transient geometry: {active}")
+
+
+def compact_overlay_sidebar_transition(
+    direction: str,
+    before_editor,
+    after_editor,
+    before_sidebar,
+    after_sidebar,
+) -> bool:
+    editor_stayed_overlayed = (
+        before_editor.x == 0
+        and after_editor.x == 0
+        and before_editor.width == after_editor.width
+        and before_editor.y == after_editor.y
+        and before_editor.height == after_editor.height
+    )
+    if not editor_stayed_overlayed:
+        return False
+    if direction == "show":
+        return before_sidebar.x == -before_sidebar.width and after_sidebar.x == 0
+    if direction == "hide":
+        return before_sidebar.x == 0 and after_sidebar.x == -after_sidebar.width
+    return False
 
 
 WARNING_RE = re.compile(

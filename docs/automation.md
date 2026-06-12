@@ -68,7 +68,8 @@ the narrowest predicate that matches the workflow under test, such as
 `file-open-complete`, `search-complete`, `save-complete`, or
 `workspace-refresh-complete`. Screenshot scenario helpers should use
 `visual-geometry-settled` before capture so layout, adaptive shell state,
-minimap refresh/debounce, and visual workflow blockers have settled.
+workspace sidebar transitions, minimap refresh/debounce, and visual workflow
+blockers have settled.
 `WaitForIdle(timeout_msec)` remains as a compatibility alias for waiting on the
 broader `idle` predicate.
 
@@ -249,8 +250,8 @@ make visual-geometry-smoke
 
 The visual geometry lane launches each scenario in one isolated headless Mutter
 session, waits for `visual-geometry-settled`, then also waits for scenario
-specific final allocation predicates such as fully shown or hidden workspace
-sidebar geometry before capturing screenshots. It captures before/after
+specific final allocation predicates such as fully shown, fully hidden, or
+compact-overlay workspace sidebar geometry before capturing screenshots. It captures before/after
 screenshots and bounded `visual_geometry` snapshots from the same app process,
 including native minimap visible-rect and adjustment diagnostics, compares
 protected regions with exact PNG crops and declared masks, asserts

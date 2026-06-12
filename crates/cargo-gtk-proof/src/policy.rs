@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::read_json_value;
 
 const VISUAL_SENSITIVE_PREFIXES: &[&str] = &[
+    "crates/cargo-gtk-proof/src/",
     "crates/lushtext-core/src/ui/",
     "crates/lushtext/tests/widget/",
     "resources/ui/",
@@ -37,6 +38,14 @@ const VISUAL_SENSITIVE_SUFFIXES: &[&str] = &[".blp", ".css", ".ui"];
 // generated summaries; changing them would invalidate existing smoke evidence.
 const NATIVE_MINIMAP_HIGHLIGHT_INVARIANT: &str = "native-minimap-highlight-anchors";
 const NATIVE_MINIMAP_ANIMATION_INVARIANT: &str = "native-minimap-animation-highlight-anchors";
+const WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS: &[&str] = &[
+    "minimap-sidebar-workspace-animation--compact-overlay--force-light--wrap-true--hide",
+    "minimap-sidebar-workspace-animation--compact-overlay--force-light--wrap-true--show",
+    "minimap-sidebar-workspace-animation--intermediate-1100sp--force-light--wrap-true--hide",
+    "minimap-sidebar-workspace-animation--intermediate-1100sp--force-light--wrap-true--show",
+    "minimap-sidebar-workspace-animation--wide-desktop--force-light--wrap-true--hide",
+    "minimap-sidebar-workspace-animation--wide-desktop--force-light--wrap-true--show",
+];
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct PolicyOutcome {
@@ -51,6 +60,7 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
         || !is_visual_sensitive("resources/style/style.css")
         || !is_visual_sensitive("scripts/visual-geometry-scenarios/example.json")
         || !is_visual_sensitive("scripts/check-visual-proof-policy.py")
+        || !is_visual_sensitive("crates/cargo-gtk-proof/src/live.rs")
         || is_visual_sensitive("docs/automation.md")
     {
         return Err("visual-sensitive path classification failed".to_string());
@@ -61,11 +71,23 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
         "minimap pixel invariant mapping failed",
     )?;
     assert_eq_detail(
+        &required_invariants_for_changes(&["crates/cargo-gtk-proof/src/live.rs".to_string()]),
+        &[NATIVE_MINIMAP_HIGHLIGHT_INVARIANT.to_string()],
+        "Rust proof engine pixel invariant mapping failed",
+    )?;
+    assert_eq_detail(
         &required_animation_invariants_for_changes(&[
             "crates/lushtext-core/src/ui/editor_page/overscroll.rs".to_string(),
         ]),
         &[NATIVE_MINIMAP_ANIMATION_INVARIANT.to_string()],
         "minimap animation invariant mapping failed",
+    )?;
+    assert_eq_detail(
+        &required_animation_invariants_for_changes(&[
+            "crates/cargo-gtk-proof/src/live.rs".to_string()
+        ]),
+        &[NATIVE_MINIMAP_ANIMATION_INVARIANT.to_string()],
+        "Rust proof engine animation invariant mapping failed",
     )?;
     let root = default_repo_root();
     if visual_change_fingerprint(&["docs/automation.md".to_string()], &root)?
@@ -183,10 +205,41 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
             "animation frame rows",
         )?;
     }
-    summary["cases"][0]["animation_frame_evidence"] = valid_animation;
+    summary["cases"][0]["animation_frame_evidence"] = valid_animation.clone();
     proof_covers_required_invariants(
         &summary,
         &["crates/lushtext-core/src/ui/editor_page/overscroll.rs".to_string()],
+    )?;
+    expect_err_contains(
+        proof_covers_required_invariants(
+            &summary,
+            &["crates/lushtext-core/src/ui/window/imp.rs".to_string()],
+        ),
+        "workspace-sidebar animation matrix",
+    )?;
+    let pixel_anchor_evidence = summary["cases"][0]["pixel_anchor_evidence"].clone();
+    let final_geometry = summary["cases"][0]["final_geometry"].clone();
+    summary["cases"] = Value::Array(
+        WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS
+            .iter()
+            .map(|case_id| {
+                serde_json::json!({
+                    "case_id": case_id,
+                    "status": "passed",
+                    "pixel_verified_invariant_ids": [NATIVE_MINIMAP_HIGHLIGHT_INVARIANT],
+                    "animation_verified_invariant_ids": [NATIVE_MINIMAP_ANIMATION_INVARIANT],
+                    "pixel_anchor_evidence": pixel_anchor_evidence.clone(),
+                    "animation_frame_evidence": valid_animation.clone(),
+                    "final_geometry": final_geometry.clone(),
+                })
+            })
+            .collect(),
+    );
+    summary["case_count"] = serde_json::json!(WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS.len());
+    summary["passed"] = serde_json::json!(WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS.len());
+    proof_covers_required_invariants(
+        &summary,
+        &["crates/lushtext-core/src/ui/window/imp.rs".to_string()],
     )?;
     expect_err_contains(proof_has_rust_engine_metadata(&summary), "engine metadata")?;
     summary["engine"] = serde_json::json!({
@@ -513,10 +566,14 @@ fn proof_covers_required_animation_invariants(
         ));
     }
     proof_has_required_animation_case_evidence(summary, &required)?;
-    Ok(format!(
+    let mut details = vec![format!(
         "summary animation-verified required visual invariant ids: {}",
         required.join(", ")
-    ))
+    )];
+    if workspace_sidebar_animation_matrix_required(visual_changes) {
+        details.push(proof_has_workspace_sidebar_animation_matrix(summary)?);
+    }
+    Ok(details.join("; "))
 }
 
 fn proof_has_required_case_evidence(
@@ -588,6 +645,52 @@ fn proof_has_required_animation_case_evidence(
         }
     }
     Ok("required visual animation cases include sampled frame rows".to_string())
+}
+
+fn proof_has_workspace_sidebar_animation_matrix(summary: &Value) -> Result<String, String> {
+    let Some(cases) = summary.get("cases").and_then(Value::as_array) else {
+        return Err(
+            "summary has no workspace-sidebar animation matrix cases; rerun visual geometry smoke"
+                .to_string(),
+        );
+    };
+    for case_id in WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS {
+        let Some(case) = cases
+            .iter()
+            .find(|case| case.get("case_id").and_then(Value::as_str) == Some(case_id))
+        else {
+            return Err(format!(
+                "summary is missing workspace-sidebar animation matrix case {case_id}"
+            ));
+        };
+        if case.get("status").and_then(Value::as_str) != Some("passed") {
+            return Err(format!(
+                "workspace-sidebar animation matrix case {case_id} did not pass"
+            ));
+        }
+        if !string_array(case.get("pixel_verified_invariant_ids")).is_some_and(|ids| {
+            ids.iter()
+                .any(|id| id == NATIVE_MINIMAP_HIGHLIGHT_INVARIANT)
+        }) || !case_has_actionable_pixel_evidence(case)
+        {
+            return Err(format!(
+                "workspace-sidebar animation matrix case {case_id} lacks pixel evidence"
+            ));
+        }
+        if !string_array(case.get("animation_verified_invariant_ids")).is_some_and(|ids| {
+            ids.iter()
+                .any(|id| id == NATIVE_MINIMAP_ANIMATION_INVARIANT)
+        }) || !case_has_actionable_animation_evidence(case)
+        {
+            return Err(format!(
+                "workspace-sidebar animation matrix case {case_id} lacks animation frame rows"
+            ));
+        }
+    }
+    Ok(format!(
+        "workspace-sidebar animation matrix verified {} cases",
+        WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS.len()
+    ))
 }
 
 fn case_has_actionable_pixel_evidence(case: &Value) -> bool {
@@ -701,6 +804,8 @@ fn required_invariants_for_changes(paths: &[String]) -> Vec<String> {
     let mut required = Vec::new();
     for path in paths.iter().map(|item| item.replace('\\', "/")) {
         if (path == "crates/lushtext-core/src/ui/editor_page/minimap.rs"
+            || path == "crates/lushtext-core/src/ui/window/actions.rs"
+            || path == "crates/lushtext-core/src/ui/window/imp.rs"
             || path == "crates/lushtext-core/src/ui/automation.rs"
             || path == "crates/lushtext-core/src/model/automation.rs"
             || path == "resources/style/style.css"
@@ -709,6 +814,7 @@ fn required_invariants_for_changes(paths: &[String]) -> Vec<String> {
             || path == "scripts/test-visual-geometry.py"
             || path == "scripts/visual-geometry-smoke.py"
             || path == "scripts/visual_geometry_png.py"
+            || path.starts_with("crates/cargo-gtk-proof/src/")
             || path.starts_with("scripts/visual-geometry-scenarios/minimap-sidebar-"))
             && !required
                 .iter()
@@ -727,6 +833,8 @@ fn required_animation_invariants_for_changes(paths: &[String]) -> Vec<String> {
         if (path == "crates/lushtext-core/src/ui/editor_page/imp.rs"
             || path == "crates/lushtext-core/src/ui/editor_page/minimap.rs"
             || path == "crates/lushtext-core/src/ui/editor_page/overscroll.rs"
+            || path == "crates/lushtext-core/src/ui/window/actions.rs"
+            || path == "crates/lushtext-core/src/ui/window/imp.rs"
             || path == "crates/lushtext-core/src/ui/automation.rs"
             || path == "crates/lushtext-core/src/model/automation.rs"
             || path == "scripts/check-visual-proof-policy.py"
@@ -734,6 +842,7 @@ fn required_animation_invariants_for_changes(paths: &[String]) -> Vec<String> {
             || path == "scripts/test-visual-geometry.py"
             || path == "scripts/visual-geometry-smoke.py"
             || path == "scripts/visual_geometry_png.py"
+            || path.starts_with("crates/cargo-gtk-proof/src/")
             || path.starts_with("scripts/visual-geometry-scenarios/minimap-sidebar-"))
             && !required
                 .iter()
@@ -744,6 +853,22 @@ fn required_animation_invariants_for_changes(paths: &[String]) -> Vec<String> {
     }
     required.sort();
     required
+}
+
+fn workspace_sidebar_animation_matrix_required(paths: &[String]) -> bool {
+    paths
+        .iter()
+        .map(|item| item.replace('\\', "/"))
+        .any(|path| {
+            path == "crates/lushtext-core/src/ui/window/actions.rs"
+                || path == "crates/lushtext-core/src/ui/window/imp.rs"
+                || path == "scripts/check-visual-proof-policy.py"
+                || path == "scripts/test-visual-geometry.py"
+                || path == "scripts/visual-geometry-smoke.py"
+                || path
+                    == "scripts/visual-geometry-scenarios/minimap-sidebar-workspace-animation.json"
+                || path.starts_with("crates/cargo-gtk-proof/src/")
+        })
 }
 
 fn visual_change_fingerprint(paths: &[String], root: &Path) -> Result<String, String> {

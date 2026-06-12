@@ -111,6 +111,7 @@ notifications, and prove that signal actually fires in the relevant widget:
 - If allocation-derived geometry updates an `AdwBreakpoint` condition, cache the derived condition or threshold and call `set_condition()` only when it actually changes. Reparsing or reinstalling breakpoint conditions on every animation frame adds main-thread layout churn.
 - If `notify::position` also persists state, suppress that persistence while a programmatic paned animation is in flight. Clamp can stay live every frame; debounced settings writes should run once from the animation completion path.
 - Treat `notify::position` primarily as the **user-drag** path. If a timed animation is already driving valid paned positions directly, short-circuit the `notify::position` handler while that animation is active so the same frame is not reprocessed as if it were a manual drag.
+- When a `SettleBurst` or similar readiness gate protects notify handlers during a toolkit-owned animation, arm the gate **before** setting the animated property. GTK/Libadwaita notify signals can run synchronously from the setter; arming the gate afterward lets same-frame reconciliation run before the guard exists.
 - When a layout action is expected to leave neighboring chrome unchanged,
   protect that chrome with same-session visual geometry comparisons rather
   than relying on separate before/after launches. Protected regions must be

@@ -419,7 +419,7 @@ impl LushtextWindow {
             .imp()
             .settings
             .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, visible);
-        self.sync_secondary_surface_layout();
+        self.start_workspace_sidebar_transition();
     }
 
     /// Persist the user's explicit document-properties preference, then let the

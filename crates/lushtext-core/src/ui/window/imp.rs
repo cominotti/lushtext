@@ -73,6 +73,13 @@ pub(super) const PREVIEW_DEFAULT_WIDTH_SP: i32 = 300;
 pub(super) const PREVIEW_MAX_WIDTH_FRACTION: f64 = 1.0 / 3.0;
 /// Short delay for Adwaita layout and embedded preview children to settle.
 pub(super) const PREVIEW_SETTLE_DELAY_MS: u64 = 16;
+/// Delay before final secondary-surface reconciliation after a sidebar toggle.
+///
+/// Adwaita drives `OverlaySplitView:show-sidebar` with its own animated
+/// transition. Holding unrelated breakpoint/presentation changes for about one
+/// transition budget prevents those changes from forcing the sidebar to the
+/// endpoint in the same visible frame.
+const WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS: u64 = 260;
 
 /// Secondary surfaces that can compete for the compact-width slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -344,6 +351,8 @@ pub struct LushtextWindow {
     pub preferred_preview_width: Cell<i32>,
     /// Settle burst while preview layout switching or embedded widget repair is pending.
     pub preview_transition_settle: SettleBurst,
+    /// Settle burst while Adwaita's workspace sidebar transition is in flight.
+    pub workspace_sidebar_transition_settle: SettleBurst,
     /// Debounce for preview renders (300ms).
     pub preview_render_debounce: Debounce,
     /// Debounce for command-palette file index rebuilds (300ms).
@@ -435,6 +444,7 @@ impl Default for LushtextWindow {
             preview_mode: Cell::new(false),
             preferred_preview_width: Cell::new(PREVIEW_DEFAULT_WIDTH_SP),
             preview_transition_settle: SettleBurst::default(),
+            workspace_sidebar_transition_settle: SettleBurst::default(),
             preview_render_debounce: Debounce::default(),
             index_rebuild_debounce: Debounce::default(),
             saved_focus: RefCell::new(None),
@@ -605,6 +615,9 @@ impl ObjectImpl for LushtextWindow {
                         split.set_sidebar_width_fraction(fixed);
                         return;
                     }
+                    if window.imp().workspace_sidebar_transition_settle.pending() {
+                        return;
+                    }
                     sync_properties_breakpoint(&window);
                     sync_properties_split_view(&window, width);
                 },
@@ -618,6 +631,9 @@ impl ObjectImpl for LushtextWindow {
                     let Some(window) = window_weak.upgrade() else {
                         return;
                     };
+                    if window.imp().workspace_sidebar_transition_settle.pending() {
+                        return;
+                    }
                     let width = current_window_width(&window);
                     sync_properties_breakpoint(&window);
                     sync_properties_split_view(&window, width);
@@ -632,6 +648,9 @@ impl ObjectImpl for LushtextWindow {
                     let Some(window) = window_weak.upgrade() else {
                         return;
                     };
+                    if window.imp().workspace_sidebar_transition_settle.pending() {
+                        return;
+                    }
                     let width = current_window_width(&window);
                     sync_properties_breakpoint(&window);
                     sync_properties_split_view(&window, width);
@@ -1534,10 +1553,12 @@ fn sync_split_view_widths(window: &super::LushtextWindow, window_width: i32) {
             .workspace_split_view
             .set_sidebar_width_fraction(workspace_fraction);
     }
-    sync_properties_breakpoint(window);
-    sync_properties_split_view(window, window_width);
     window.sync_preview_width_constraints(window_width);
-    sync_secondary_surfaces(window);
+    if !window.imp().workspace_sidebar_transition_settle.pending() {
+        sync_properties_breakpoint(window);
+        sync_properties_split_view(window, window_width);
+        sync_secondary_surfaces(window);
+    }
 
     window.imp().split_width_synced_for_width.set(window_width);
     window.imp().split_width_syncing.set(false);
@@ -1581,6 +1602,54 @@ impl super::LushtextWindow {
 
     /// Recompute the adaptive properties host after any explicit visibility change.
     pub(super) fn sync_secondary_surface_layout(&self) {
+        if self.imp().workspace_sidebar_transition_settle.pending() {
+            return;
+        }
+        self.sync_secondary_surface_layout_now();
+    }
+
+    /// Start the Adwaita workspace-sidebar transition before reconciling other surfaces.
+    pub(super) fn start_workspace_sidebar_transition(&self) {
+        let width = current_window_width(self);
+        let layout = derive_adaptive_shell_layout(adaptive_shell_inputs_for_width(self, width));
+        sync_workspace_sidebar_width_constraints(self, width);
+        let sidebar_will_change =
+            self.imp().workspace_split_view.shows_sidebar() != layout.render_workspace;
+        if sidebar_will_change {
+            self.imp().workspace_sidebar_transition_settle.schedule(
+                self,
+                std::time::Duration::from_millis(WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS),
+                |window, handle| {
+                    window.sync_secondary_surface_layout_now();
+                    handle.finish_if_current();
+                },
+            );
+            self.imp()
+                .workspace_split_view
+                .set_show_sidebar(layout.render_workspace);
+        }
+        self.sync_secondary_surface_action_states();
+
+        if !sidebar_will_change {
+            self.sync_secondary_surface_layout_now();
+            let _ = self.imp().workspace_sidebar_transition_settle.clear();
+        }
+    }
+
+    /// Return whether the sidebar transition is still blocking geometry readiness.
+    pub(crate) fn workspace_sidebar_transition_pending(&self) -> bool {
+        self.imp().workspace_sidebar_transition_settle.pending()
+    }
+
+    /// Test seam exposing whether sidebar animation coordination blocks readiness.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn workspace_sidebar_transition_pending_for_test(&self) -> bool {
+        self.workspace_sidebar_transition_pending()
+    }
+
+    /// Recompute the adaptive properties host after any explicit visibility change.
+    fn sync_secondary_surface_layout_now(&self) {
         let width = current_window_width(self);
         sync_properties_breakpoint(self);
         sync_properties_split_view(self, width);

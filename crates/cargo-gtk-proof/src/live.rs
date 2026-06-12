@@ -309,6 +309,7 @@ fn capture_case_steps(
     case: &Value,
     case_dir: &Path,
 ) -> Result<(), String> {
+    prepare_sidebar_target_state(client, case, case_dir, "before")?;
     let prepared_actions = prepare_case_before_primary_action(client, case, case_dir)?;
     wait_for_case_final_geometry(client, case, case_dir, "before")?;
     let before = capture_step(client, case_dir, "before")?;
@@ -340,6 +341,39 @@ fn capture_case_steps(
     )
 }
 
+fn prepare_sidebar_target_state(
+    client: &automation::AutomationClient,
+    case: &Value,
+    case_dir: &Path,
+    step: &str,
+) -> Result<(), String> {
+    if scenario_type(case)? != "minimap-sidebar" {
+        return Ok(());
+    }
+
+    let target_visible = sidebar_target_visible(case, step)?;
+    let action = client.activate_window_action(
+        "set-sidebar-visible",
+        automation::ActionParameter::Bool(target_visible),
+    )?;
+    append_automation_wait_line(
+        case_dir,
+        &format!(
+            "predicate=prepare-sidebar-target:{step} ok=true status=action detail={}",
+            action.detail
+        ),
+    )?;
+    let wait = client.wait_for_ready("visual-geometry-settled", 5_000)?;
+    append_automation_wait(case_dir, &wait)?;
+    if !wait.ok {
+        return Err(format!(
+            "Automation1 visual-geometry-settled preparing sidebar {step} failed: {}: {}",
+            wait.status, wait.detail
+        ));
+    }
+    Ok(())
+}
+
 fn wait_for_case_final_geometry(
     client: &automation::AutomationClient,
     case: &Value,
@@ -357,7 +391,11 @@ fn wait_for_case_final_geometry(
 
     while Instant::now() < deadline {
         let snapshot = client.snapshot()?;
-        let (matches, detail) = sidebar_final_geometry_matches(&snapshot, target_visible);
+        let (matches, detail) = sidebar_final_geometry_matches(
+            &snapshot,
+            target_visible,
+            compact_overlay_allowed(case),
+        );
         last_detail.clone_from(&detail);
         samples.push(final_geometry_sample(
             &snapshot,
@@ -1788,7 +1826,11 @@ fn sidebar_target_visible(case: &Value, step: &str) -> Result<bool, String> {
     }
 }
 
-fn sidebar_final_geometry_matches(snapshot: &Value, target_visible: bool) -> (bool, String) {
+fn sidebar_final_geometry_matches(
+    snapshot: &Value,
+    target_visible: bool,
+    compact_overlay_allowed: bool,
+) -> (bool, String) {
     let sidebar = match surface_rect(snapshot, "workspace-sidebar") {
         Ok(rect) => rect,
         Err(error) => return (false, error),
@@ -1814,17 +1856,28 @@ fn sidebar_final_geometry_matches(snapshot: &Value, target_visible: bool) -> (bo
                 format!("workspace-sidebar x={}, expected 0", sidebar.x),
             );
         }
-        let expected_editor_x = sidebar.x + sidebar.width;
-        if editor.x != expected_editor_x {
+        let side_by_side_editor_x = sidebar.x + sidebar.width;
+        if editor.x == side_by_side_editor_x {
             return (
-                false,
-                format!(
-                    "editor-viewport x={}, expected {expected_editor_x}",
-                    editor.x
-                ),
+                true,
+                "workspace sidebar is fully visible beside editor".to_string(),
             );
         }
-        return (true, "workspace sidebar is fully visible".to_string());
+        if compact_overlay_allowed && editor.x == 0 {
+            return (
+                true,
+                "workspace sidebar is fully visible as collapsed overlay".to_string(),
+            );
+        }
+        let expected = if compact_overlay_allowed {
+            format!("0 or {side_by_side_editor_x}")
+        } else {
+            side_by_side_editor_x.to_string()
+        };
+        return (
+            false,
+            format!("editor-viewport x={}, expected {expected}", editor.x),
+        );
     }
 
     let expected_sidebar_x = -sidebar.width;
@@ -1841,6 +1894,12 @@ fn sidebar_final_geometry_matches(snapshot: &Value, target_visible: bool) -> (bo
         return (false, format!("editor-viewport x={}, expected 0", editor.x));
     }
     (true, "workspace sidebar is fully hidden".to_string())
+}
+
+fn compact_overlay_allowed(case: &Value) -> bool {
+    case.pointer("/size/width")
+        .and_then(Value::as_i64)
+        .is_some_and(|width| width <= 860)
 }
 
 fn final_geometry_signature(snapshot: &Value) -> String {
@@ -2206,14 +2265,26 @@ mod tests {
     #[test]
     fn sidebar_final_geometry_matches_visible_and_hidden_targets() {
         let visible = geometry_snapshot(0, 320);
+        let overlay_visible = geometry_snapshot(0, 0);
         let hidden = geometry_snapshot(-320, 0);
 
         assert_eq!(
-            sidebar_final_geometry_matches(&visible, true),
-            (true, "workspace sidebar is fully visible".to_string())
+            sidebar_final_geometry_matches(&visible, true, false),
+            (
+                true,
+                "workspace sidebar is fully visible beside editor".to_string()
+            )
         );
         assert_eq!(
-            sidebar_final_geometry_matches(&hidden, false),
+            sidebar_final_geometry_matches(&overlay_visible, true, true),
+            (
+                true,
+                "workspace sidebar is fully visible as collapsed overlay".to_string()
+            )
+        );
+        assert!(!sidebar_final_geometry_matches(&overlay_visible, true, false).0);
+        assert_eq!(
+            sidebar_final_geometry_matches(&hidden, false, false),
             (true, "workspace sidebar is fully hidden".to_string())
         );
     }
@@ -2222,7 +2293,7 @@ mod tests {
     fn sidebar_final_geometry_reports_mismatch_detail() {
         let snapshot = geometry_snapshot(-100, 0);
 
-        let (matches, detail) = sidebar_final_geometry_matches(&snapshot, false);
+        let (matches, detail) = sidebar_final_geometry_matches(&snapshot, false, false);
 
         assert!(!matches);
         assert!(detail.contains("workspace-sidebar x=-100, expected -320"));

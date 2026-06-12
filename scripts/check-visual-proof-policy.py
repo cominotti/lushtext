@@ -18,6 +18,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT_DIR = REPO_ROOT / "build/smoke/visual-geometry"
 VISUAL_SENSITIVE_PREFIXES = (
+    "crates/cargo-gtk-proof/src/",
     "crates/lushtext-core/src/ui/",
     "crates/lushtext/tests/widget/",
     "resources/ui/",
@@ -39,6 +40,14 @@ VISUAL_SENSITIVE_SUFFIXES = (
 )
 NATIVE_MINIMAP_HIGHLIGHT_INVARIANT = "native-minimap-highlight-anchors"
 NATIVE_MINIMAP_ANIMATION_INVARIANT = "native-minimap-animation-highlight-anchors"
+WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS = (
+    "minimap-sidebar-workspace-animation--compact-overlay--force-light--wrap-true--hide",
+    "minimap-sidebar-workspace-animation--compact-overlay--force-light--wrap-true--show",
+    "minimap-sidebar-workspace-animation--intermediate-1100sp--force-light--wrap-true--hide",
+    "minimap-sidebar-workspace-animation--intermediate-1100sp--force-light--wrap-true--show",
+    "minimap-sidebar-workspace-animation--wide-desktop--force-light--wrap-true--hide",
+    "minimap-sidebar-workspace-animation--wide-desktop--force-light--wrap-true--show",
+)
 
 
 def delegate_cli_to_rust(argv: list[str]) -> int:
@@ -131,6 +140,8 @@ def required_invariants_for_changes(paths: list[str]) -> list[str]:
     for path in (item.replace("\\", "/") for item in paths):
         if (
             path == "crates/lushtext-core/src/ui/editor_page/minimap.rs"
+            or path == "crates/lushtext-core/src/ui/window/actions.rs"
+            or path == "crates/lushtext-core/src/ui/window/imp.rs"
             or path == "crates/lushtext-core/src/ui/automation.rs"
             or path == "crates/lushtext-core/src/model/automation.rs"
             or path == "resources/style/style.css"
@@ -139,6 +150,7 @@ def required_invariants_for_changes(paths: list[str]) -> list[str]:
             or path == "scripts/test-visual-geometry.py"
             or path == "scripts/visual-geometry-smoke.py"
             or path == "scripts/visual_geometry_png.py"
+            or path.startswith("crates/cargo-gtk-proof/src/")
             or path.startswith("scripts/visual-geometry-scenarios/minimap-sidebar-")
         ):
             required.add(NATIVE_MINIMAP_HIGHLIGHT_INVARIANT)
@@ -155,6 +167,8 @@ def required_animation_invariants_for_changes(paths: list[str]) -> list[str]:
             path == "crates/lushtext-core/src/ui/editor_page/imp.rs"
             or path == "crates/lushtext-core/src/ui/editor_page/minimap.rs"
             or path == "crates/lushtext-core/src/ui/editor_page/overscroll.rs"
+            or path == "crates/lushtext-core/src/ui/window/actions.rs"
+            or path == "crates/lushtext-core/src/ui/window/imp.rs"
             or path == "crates/lushtext-core/src/ui/automation.rs"
             or path == "crates/lushtext-core/src/model/automation.rs"
             or path == "scripts/check-visual-proof-policy.py"
@@ -162,10 +176,26 @@ def required_animation_invariants_for_changes(paths: list[str]) -> list[str]:
             or path == "scripts/test-visual-geometry.py"
             or path == "scripts/visual-geometry-smoke.py"
             or path == "scripts/visual_geometry_png.py"
+            or path.startswith("crates/cargo-gtk-proof/src/")
             or path.startswith("scripts/visual-geometry-scenarios/minimap-sidebar-")
         ):
             required.add(NATIVE_MINIMAP_ANIMATION_INVARIANT)
     return sorted(required)
+
+
+def workspace_sidebar_animation_matrix_required(paths: list[str]) -> bool:
+    return any(
+        path in {
+            "crates/lushtext-core/src/ui/window/actions.rs",
+            "crates/lushtext-core/src/ui/window/imp.rs",
+            "scripts/check-visual-proof-policy.py",
+            "scripts/test-visual-geometry.py",
+            "scripts/visual-geometry-smoke.py",
+            "scripts/visual-geometry-scenarios/minimap-sidebar-workspace-animation.json",
+        }
+        or path.startswith("crates/cargo-gtk-proof/src/")
+        for path in (item.replace("\\", "/") for item in paths)
+    )
 
 
 def visual_change_fingerprint(paths: list[str]) -> dict[str, object]:
@@ -326,7 +356,13 @@ def proof_covers_required_animation_invariants(
     evidence_ok, evidence_detail = proof_has_required_animation_case_evidence(summary, required)
     if not evidence_ok:
         return False, evidence_detail
-    return True, f"summary animation-verified required visual invariant ids: {', '.join(required)}"
+    details = [f"summary animation-verified required visual invariant ids: {', '.join(required)}"]
+    if workspace_sidebar_animation_matrix_required(visual_changes):
+        matrix_ok, matrix_detail = proof_has_workspace_sidebar_animation_matrix(summary)
+        if not matrix_ok:
+            return False, matrix_detail
+        details.append(matrix_detail)
+    return True, "; ".join(details)
 
 
 def proof_has_required_case_evidence(
@@ -372,6 +408,51 @@ def proof_has_required_animation_case_evidence(
         if not any(case_has_actionable_animation_evidence(case) for case in matching_cases):
             return False, f"summary case for {invariant_id} lacks animation frame rows"
     return True, "required visual animation cases include sampled frame rows"
+
+
+def proof_has_workspace_sidebar_animation_matrix(
+    summary: dict[str, object],
+) -> tuple[bool, str]:
+    cases = summary.get("cases")
+    if not isinstance(cases, list):
+        return (
+            False,
+            "summary has no workspace-sidebar animation matrix cases; rerun visual geometry smoke",
+        )
+    for case_id in WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS:
+        case = next(
+            (
+                item
+                for item in cases
+                if isinstance(item, dict) and item.get("case_id") == case_id
+            ),
+            None,
+        )
+        if case is None:
+            return False, f"summary is missing workspace-sidebar animation matrix case {case_id}"
+        if case.get("status") != "passed":
+            return False, f"workspace-sidebar animation matrix case {case_id} did not pass"
+        pixel_ids = [str(item) for item in case.get("pixel_verified_invariant_ids", [])]
+        if (
+            NATIVE_MINIMAP_HIGHLIGHT_INVARIANT not in pixel_ids
+            or not case_has_actionable_pixel_evidence(case)
+        ):
+            return False, f"workspace-sidebar animation matrix case {case_id} lacks pixel evidence"
+        animation_ids = [
+            str(item) for item in case.get("animation_verified_invariant_ids", [])
+        ]
+        if (
+            NATIVE_MINIMAP_ANIMATION_INVARIANT not in animation_ids
+            or not case_has_actionable_animation_evidence(case)
+        ):
+            return (
+                False,
+                f"workspace-sidebar animation matrix case {case_id} lacks animation frame rows",
+            )
+    return (
+        True,
+        f"workspace-sidebar animation matrix verified {len(WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS)} cases",
+    )
 
 
 def case_has_actionable_pixel_evidence(case: dict[str, object]) -> bool:
@@ -499,12 +580,19 @@ def run_self_tests() -> None:
     assert is_visual_sensitive("scripts/lushtext-automation.py")
     assert is_visual_sensitive("scripts/test-visual-geometry.py")
     assert is_visual_sensitive("scripts/visual-geometry-smoke.py")
+    assert is_visual_sensitive("crates/cargo-gtk-proof/src/live.rs")
     assert not is_visual_sensitive("docs/automation.md")
     assert required_invariants_for_changes(["resources/style/style.css"]) == [
         NATIVE_MINIMAP_HIGHLIGHT_INVARIANT
     ]
+    assert required_invariants_for_changes(["crates/cargo-gtk-proof/src/live.rs"]) == [
+        NATIVE_MINIMAP_HIGHLIGHT_INVARIANT
+    ]
     assert required_animation_invariants_for_changes(
         ["crates/lushtext-core/src/ui/editor_page/overscroll.rs"]
+    ) == [NATIVE_MINIMAP_ANIMATION_INVARIANT]
+    assert required_animation_invariants_for_changes(
+        ["crates/cargo-gtk-proof/src/live.rs"]
     ) == [NATIVE_MINIMAP_ANIMATION_INVARIANT]
     assert required_invariants_for_changes(["resources/ui/window.blp"]) == []
     assert visual_change_fingerprint(["docs/automation.md"])["digest"] != visual_change_fingerprint(
@@ -656,6 +744,34 @@ def run_self_tests() -> None:
         )
         assert ok
         assert NATIVE_MINIMAP_ANIMATION_INVARIANT in detail
+        ok, detail = proof_covers_required_invariants(
+            summary,
+            ["crates/lushtext-core/src/ui/window/imp.rs"],
+        )
+        assert not ok
+        assert "workspace-sidebar animation matrix" in detail
+        pixel_anchor_evidence = json.loads(json.dumps(summary["cases"][0]["pixel_anchor_evidence"]))
+        final_geometry = json.loads(json.dumps(summary["cases"][0]["final_geometry"]))
+        summary["cases"] = [
+            {
+                "case_id": case_id,
+                "status": "passed",
+                "pixel_verified_invariant_ids": [NATIVE_MINIMAP_HIGHLIGHT_INVARIANT],
+                "animation_verified_invariant_ids": [NATIVE_MINIMAP_ANIMATION_INVARIANT],
+                "pixel_anchor_evidence": pixel_anchor_evidence,
+                "animation_frame_evidence": valid_animation_evidence,
+                "final_geometry": final_geometry,
+            }
+            for case_id in WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS
+        ]
+        summary["case_count"] = len(WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS)
+        summary["passed"] = len(WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS)
+        ok, detail = proof_covers_required_invariants(
+            summary,
+            ["crates/lushtext-core/src/ui/window/imp.rs"],
+        )
+        assert ok
+        assert "workspace-sidebar animation matrix verified" in detail
 
         summary_path.write_text(
             json.dumps(

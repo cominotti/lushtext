@@ -1929,6 +1929,13 @@ fn wait_for_properties_surface(
     );
 }
 
+fn wait_for_workspace_sidebar_transition(window: &LushtextWindow) {
+    wait_until(Duration::from_secs(2), || {
+        !window.workspace_sidebar_transition_pending_for_test()
+    });
+    flush_events();
+}
+
 fn adaptive_shell_change_counter(window: &LushtextWindow) -> std::rc::Rc<std::cell::Cell<u32>> {
     let changes = std::rc::Rc::new(std::cell::Cell::new(0u32));
     {
@@ -5501,6 +5508,192 @@ fn test_compact_layout_mutual_exclusion_switches_secondary_surface() {
 
     assert!(workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_compact_sidebar_show_with_properties_visible_waits_to_close_sheet_until_transition_settles()
+{
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    window.set_default_size(1320, 900);
+    present_window(&window);
+
+    activate_action(&window, "toggle-properties");
+    wait_until(Duration::from_secs(2), || {
+        properties_surface_uses_bottom_sheet(&window) && !workspace_sidebar_visible(&window)
+    });
+
+    activate_action(&window, "toggle-sidebar");
+
+    assert!(workspace_sidebar_visible(&window));
+    assert!(
+        window.workspace_sidebar_transition_pending_for_test(),
+        "compact workspace show should keep visual-geometry readiness blocked while Adwaita animates"
+    );
+    assert!(
+        properties_surface_uses_bottom_sheet(&window),
+        "the visible properties sheet should wait for the sidebar animation before compact arbitration closes it"
+    );
+    assert!(
+        window
+            .imp()
+            .secondary_surfaces
+            .properties_requested_visible
+            .get(),
+        "workspace toggles must not erase the user's requested properties intent"
+    );
+
+    wait_for_workspace_sidebar_transition(&window);
+
+    assert!(workspace_sidebar_visible(&window));
+    assert!(!properties_sidebar_visible(&window));
+    assert!(
+        window
+            .imp()
+            .secondary_surfaces
+            .properties_requested_visible
+            .get(),
+        "final compact rendering may hide properties, but the requested desktop intent should remain"
+    );
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_wide_sidebar_toggle_with_properties_visible_keeps_properties_pane_through_transition() {
+    ensure_gtk_init();
+    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1600, 900);
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || {
+        workspace_sidebar_visible(&window) && properties_surface_uses_right_pane(&window)
+    });
+
+    activate_action(&window, "toggle-sidebar");
+
+    assert!(!workspace_sidebar_visible(&window));
+    assert!(
+        window.workspace_sidebar_transition_pending_for_test(),
+        "wide workspace hide should keep visual-geometry readiness blocked while Adwaita animates"
+    );
+    assert!(
+        properties_surface_uses_right_pane(&window),
+        "wide desktop properties pane should stay visible during workspace hide animation"
+    );
+
+    wait_for_workspace_sidebar_transition(&window);
+
+    assert!(!workspace_sidebar_visible(&window));
+    assert!(properties_surface_uses_right_pane(&window));
+
+    activate_action(&window, "toggle-sidebar");
+
+    assert!(workspace_sidebar_visible(&window));
+    assert!(
+        window.workspace_sidebar_transition_pending_for_test(),
+        "wide workspace show should keep visual-geometry readiness blocked while Adwaita animates"
+    );
+    assert!(
+        properties_surface_uses_right_pane(&window),
+        "wide desktop properties pane should stay visible during workspace show animation"
+    );
+
+    wait_for_workspace_sidebar_transition(&window);
+
+    assert!(workspace_sidebar_visible(&window));
+    assert!(properties_surface_uses_right_pane(&window));
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_intermediate_sidebar_show_defers_properties_reconciliation_until_transition_settles() {
+    ensure_gtk_init();
+    let window =
+        test_window_with_split_view_state_and_size(false, 0.3, false, 0.25, 1100, 900);
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || {
+        !workspace_sidebar_visible(&window)
+            && properties_surface_presentation(&window) == PropertiesSurfacePresentation::Pane
+    });
+
+    activate_action(&window, "toggle-sidebar");
+
+    assert!(workspace_sidebar_visible(&window));
+    assert!(
+        window.workspace_sidebar_transition_pending_for_test(),
+        "workspace toggle should block final visual-geometry readiness while Adwaita animates"
+    );
+    assert_eq!(
+        properties_surface_presentation(&window),
+        PropertiesSurfacePresentation::Pane,
+        "the intermediate-width properties breakpoint must not flip in the same frame as show-sidebar"
+    );
+    assert!(
+        window
+            .imp()
+            .settings
+            .boolean(keys::WORKSPACE_SIDEBAR_VISIBLE),
+        "user intent should persist immediately even while layout reconciliation waits"
+    );
+
+    wait_for_workspace_sidebar_transition(&window);
+
+    assert!(workspace_sidebar_visible(&window));
+    assert_eq!(
+        properties_surface_presentation(&window),
+        PropertiesSurfacePresentation::Sheet,
+        "final reconciliation should still apply the post-toggle breakpoint at 1100sp"
+    );
+    assert!(!properties_sidebar_visible(&window));
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_intermediate_sidebar_hide_defers_properties_reconciliation_until_transition_settles() {
+    ensure_gtk_init();
+    let window =
+        test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 1100, 900);
+    present_window(&window);
+    wait_until(Duration::from_secs(2), || {
+        workspace_sidebar_visible(&window)
+            && properties_surface_presentation(&window) == PropertiesSurfacePresentation::Sheet
+    });
+
+    activate_action(&window, "toggle-sidebar");
+
+    assert!(!workspace_sidebar_visible(&window));
+    assert!(
+        window.workspace_sidebar_transition_pending_for_test(),
+        "workspace hide should block final visual-geometry readiness while Adwaita animates"
+    );
+    assert_eq!(
+        properties_surface_presentation(&window),
+        PropertiesSurfacePresentation::Sheet,
+        "the relaxed no-sidebar breakpoint must wait until the hide transition settles"
+    );
+    assert!(
+        !window
+            .imp()
+            .settings
+            .boolean(keys::WORKSPACE_SIDEBAR_VISIBLE),
+        "hidden intent should persist immediately even while layout reconciliation waits"
+    );
+
+    wait_for_workspace_sidebar_transition(&window);
+
+    assert!(!workspace_sidebar_visible(&window));
+    assert_eq!(
+        properties_surface_presentation(&window),
+        PropertiesSurfacePresentation::Pane,
+        "final reconciliation should restore the no-sidebar breakpoint at 1100sp"
+    );
+
     window.destroy();
     flush_after_delay(Duration::from_millis(50));
 }

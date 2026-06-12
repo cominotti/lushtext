@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "scenario_id": "minimap-sidebar-workspace-animation",
+  "scenario_type": "minimap-sidebar",
+  "invariant_id": "native-minimap-highlight-anchors",
+  "animation_sampling": {
+    "enabled": true,
+    "capture_mode": "stream",
+    "invariant_id": "native-minimap-animation-highlight-anchors",
+    "stream_frame_count": 48,
+    "stream_timeout_ms": 1400,
+    "sample_interval_ms": 16,
+    "max_sample_skew_ms": 80,
+    "max_screen_y_delta": 0,
+    "require_intermediate_geometry": true,
+    "required_anchors": [
+      "minimap-native-viewport-top-edge"
+    ]
+  },
+  "description": "Workspace sidebar show/hide animation matrix covering compact overlay, the reproduced 1100sp intermediate width, and wide desktop layouts.",
+  "matrix": {
+    "sizes": [
+      {
+        "id": "compact-overlay",
+        "width": 837,
+        "height": 900
+      },
+      {
+        "id": "intermediate-1100sp",
+        "width": 1100,
+        "height": 900
+      },
+      {
+        "id": "wide-desktop",
+        "width": 1600,
+        "height": 900
+      }
+    ],
+    "color_schemes": [
+      "force-light"
+    ],
+    "word_wrap": [
+      true
+    ],
+    "directions": [
+      "hide",
+      "show"
+    ],
+    "viewport_positions": [
+      "top"
+    ],
+    "fixture_kinds": [
+      "plain-lines"
+    ]
+  },
+  "protected_regions": [
+    {
+      "name": "header-bar",
+      "surface": "header-bar",
+      "comparison": "exact-equality",
+      "require_same_rect": true,
+      "mask_rects": []
+    },
+    {
+      "name": "status-bar-stable-chrome",
+      "surface": "status-bar",
+      "comparison": "exact-equality",
+      "require_same_rect": true,
+      "mask_rects": [
+        {
+          "x": 0,
+          "y": 0,
+          "width": 80,
+          "height": 80
+        }
+      ]
+    }
+  ],
+  "pixel_anchors": [
+    {
+      "name": "minimap-native-viewport-top-edge",
+      "crop_surface": "minimap-shell",
+      "detector": "native-minimap-viewport-top-edge-row",
+      "min_pixels": 12,
+      "max_screen_y_delta": 0
+    }
+  ],
+  "relative_pixel_anchors": [],
+  "allowed_changing_regions": [
+    {
+      "surface": "workspace-sidebar",
+      "relationship": "visibility toggles according to direction; visible compact layouts may overlay the editor"
+    },
+    {
+      "surface": "editor-viewport",
+      "relationship": "wide and intermediate layouts may shift horizontally, compact overlay layouts keep editor x stable"
+    },
+    {
+      "surface": "minimap-shell",
+      "relationship": "position may move with the editor body but remains visible and allocated"
+    }
+  ],
+  "readiness_predicates": [
+    "file-open-complete",
+    "visual-geometry-settled",
+    "final-sidebar-geometry"
+  ]
+}

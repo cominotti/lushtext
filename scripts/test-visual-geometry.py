@@ -595,10 +595,13 @@ def geometry_snapshot(sidebar_x: int, sidebar_width: int, editor_x: int) -> dict
 def test_final_sidebar_geometry_rejects_mid_animation(tmp: Path) -> None:
     runner = load_runner()
     visible = geometry_snapshot(sidebar_x=0, sidebar_width=360, editor_x=360)
+    overlay_visible = geometry_snapshot(sidebar_x=0, sidebar_width=360, editor_x=0)
     hidden = geometry_snapshot(sidebar_x=-360, sidebar_width=360, editor_x=0)
     mid_animation = geometry_snapshot(sidebar_x=-180, sidebar_width=360, editor_x=180)
 
     assert runner.sidebar_final_geometry_matches(visible, True)[0]
+    assert runner.sidebar_final_geometry_matches(overlay_visible, True, True)[0]
+    assert not runner.sidebar_final_geometry_matches(overlay_visible, True, False)[0]
     assert runner.sidebar_final_geometry_matches(hidden, False)[0]
     assert not runner.sidebar_final_geometry_matches(mid_animation, True)[0]
     assert not runner.sidebar_final_geometry_matches(mid_animation, False)[0]
@@ -619,6 +622,24 @@ def test_final_sidebar_geometry_rejects_mid_animation(tmp: Path) -> None:
     assert payload["samples"][0]["surfaces"][0]["name"] == "workspace-sidebar"
 
 
+def test_compact_overlay_sidebar_transition_keeps_editor_geometry() -> None:
+    runner = load_runner()
+    hidden_snapshot = geometry_snapshot(sidebar_x=-360, sidebar_width=360, editor_x=0)
+    visible_snapshot = geometry_snapshot(sidebar_x=0, sidebar_width=360, editor_x=0)
+    hidden_sidebar = runner.rect_for(hidden_snapshot, "workspace-sidebar")
+    visible_sidebar = runner.rect_for(visible_snapshot, "workspace-sidebar")
+    editor = runner.rect_for(visible_snapshot, "editor-viewport")
+
+    assert runner.compact_overlay_sidebar_transition(
+        "show", editor, editor, hidden_sidebar, visible_sidebar
+    )
+    assert runner.compact_overlay_sidebar_transition(
+        "hide", editor, editor, visible_sidebar, hidden_sidebar
+    )
+    assert runner.compact_overlay_allowed({"size": {"width": 837}})
+    assert not runner.compact_overlay_allowed({"size": {"width": 1100}})
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as directory:
         tmp = Path(directory)
@@ -630,6 +651,7 @@ def main() -> int:
         test_animation_frame_anchor_drift_report(tmp)
         test_animation_timestamp_mapping_rejects_stale_pairs()
         test_final_sidebar_geometry_rejects_mid_animation(tmp)
+        test_compact_overlay_sidebar_transition_keeps_editor_geometry()
     print("PASS: visual geometry script self-tests")
     return 0
 

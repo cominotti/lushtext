@@ -1132,14 +1132,91 @@ fn editor_width_relationship(
 ) -> Result<(), String> {
     let before_editor = surface_box(before_snapshot, "editor-viewport")?;
     let after_editor = surface_box(after_snapshot, "editor-viewport")?;
+    let before_sidebar = surface_box(before_snapshot, "workspace-sidebar")?;
+    let after_sidebar = surface_box(after_snapshot, "workspace-sidebar")?;
     match case.get("direction").and_then(Value::as_str) {
         Some("hide") if after_editor.width > before_editor.width => Ok(()),
         Some("show") if after_editor.width < before_editor.width => Ok(()),
+        Some("hide")
+            if compact_overlay_allowed(case)
+                && compact_overlay_sidebar_transition(
+                    &before_editor,
+                    &after_editor,
+                    &before_sidebar,
+                    &after_sidebar,
+                    "hide",
+                ) =>
+        {
+            Ok(())
+        }
+        Some("show")
+            if compact_overlay_allowed(case)
+                && compact_overlay_sidebar_transition(
+                    &before_editor,
+                    &after_editor,
+                    &before_sidebar,
+                    &after_sidebar,
+                    "show",
+                ) =>
+        {
+            Ok(())
+        }
+        Some("hide")
+            if compact_overlay_sidebar_transition(
+                &before_editor,
+                &after_editor,
+                &before_sidebar,
+                &after_sidebar,
+                "hide",
+            ) =>
+        {
+            Err("compact overlay sidebar transition occurred outside compact width".to_string())
+        }
+        Some("show")
+            if compact_overlay_sidebar_transition(
+                &before_editor,
+                &after_editor,
+                &before_sidebar,
+                &after_sidebar,
+                "show",
+            ) =>
+        {
+            Err("compact overlay sidebar transition occurred outside compact width".to_string())
+        }
         Some(direction) => Err(format!(
             "sidebar {direction} produced editor width {} from {}",
             after_editor.width, before_editor.width
         )),
         None => Err("minimap-sidebar case is missing direction".to_string()),
+    }
+}
+
+fn compact_overlay_allowed(case: &Value) -> bool {
+    case.pointer("/size/width")
+        .and_then(Value::as_i64)
+        .is_some_and(|width| width <= 860)
+}
+
+fn compact_overlay_sidebar_transition(
+    before_editor: &VisualBox,
+    after_editor: &VisualBox,
+    before_sidebar: &VisualBox,
+    after_sidebar: &VisualBox,
+    direction: &str,
+) -> bool {
+    let editor_stayed_overlayed = before_editor.x == 0
+        && after_editor.x == 0
+        && before_editor.width == after_editor.width
+        && before_editor.y == after_editor.y
+        && before_editor.height == after_editor.height;
+    if !editor_stayed_overlayed {
+        return false;
+    }
+
+    match direction {
+        "show" => before_sidebar.x == -before_sidebar.width && after_sidebar.x == 0,
+        "hide" => before_sidebar.x == 0 && after_sidebar.x == -after_sidebar.width,
+        _ => false,
     }
 }
 
@@ -2164,14 +2241,22 @@ mod tests {
     }
 
     fn runner_snapshot(sidebar_x: i64, editor_width: i64) -> serde_json::Value {
+        runner_snapshot_with_editor(sidebar_x, 10, editor_width)
+    }
+
+    fn runner_snapshot_with_editor(
+        sidebar_x: i64,
+        editor_x: i64,
+        editor_width: i64,
+    ) -> serde_json::Value {
         serde_json::json!({
             "window": {
                 "visual_geometry": {
                     "surfaces": [
                         surface_row("header-bar", 0, 0, 40, 2),
                         surface_row("workspace-sidebar", sidebar_x, 2, 10, 18),
-                        surface_row("editor-viewport", 10, 2, editor_width, 18),
-                        surface_row("source-view", 10, 2, editor_width, 18),
+                        surface_row("editor-viewport", editor_x, 2, editor_width, 18),
+                        surface_row("source-view", editor_x, 2, editor_width, 18),
                         surface_row("minimap-shell", 0, 0, 40, 20),
                         surface_row("minimap-source-map", 0, 0, 40, 20),
                         surface_row("minimap-native-viewport", 0, 3, 40, 4),
@@ -2193,6 +2278,23 @@ mod tests {
                 }
             }
         })
+    }
+
+    #[test]
+    fn editor_width_relationship_accepts_compact_overlay_sidebar_transition() {
+        let show_case = serde_json::json!({"direction": "show", "size": {"width": 837}});
+        let hide_case = serde_json::json!({"direction": "hide", "size": {"width": 837}});
+        let wide_show_case = serde_json::json!({"direction": "show", "size": {"width": 1100}});
+        let hidden_overlay = runner_snapshot_with_editor(-10, 0, 30);
+        let visible_overlay = runner_snapshot_with_editor(0, 0, 30);
+
+        assert!(editor_width_relationship(&show_case, &hidden_overlay, &visible_overlay).is_ok());
+        assert!(editor_width_relationship(&hide_case, &visible_overlay, &hidden_overlay).is_ok());
+        assert!(
+            editor_width_relationship(&wide_show_case, &hidden_overlay, &visible_overlay)
+                .expect_err("non-compact overlay is rejected")
+                .contains("outside compact width")
+        );
     }
 
     fn surface_row(name: &str, x: i64, y: i64, width: i64, height: i64) -> serde_json::Value {

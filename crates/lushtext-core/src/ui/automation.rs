@@ -28,7 +28,7 @@ use crate::model::automation::{
     READINESS_BLOCKER_MINIMAP_REFRESH, READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE, READINESS_BLOCKER_SESSION_RESTORE,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION, READINESS_BLOCKER_WORKSPACE_PERSIST,
-    READINESS_BLOCKER_WORKSPACE_SEARCH,
+    READINESS_BLOCKER_WORKSPACE_SEARCH, READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
 };
 use crate::model::palette::SearchMode;
 use crate::model::workspace::WorkspaceScope;
@@ -692,6 +692,13 @@ fn window_readiness_blocker(
         predicate,
         imp.preview_transition_settle.pending(),
         READINESS_BLOCKER_PREVIEW_ANIMATION,
+    ) {
+        return Some(blocker);
+    }
+    if let Some(blocker) = included_blocker(
+        predicate,
+        window.workspace_sidebar_transition_pending(),
+        READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
     ) {
         return Some(blocker);
     }
