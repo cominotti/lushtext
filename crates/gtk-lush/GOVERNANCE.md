@@ -184,16 +184,50 @@ schema, corpus, PNG, and policy proof work.
       family and may depend on `gtk-lush-proof-spine`.
 - [x] Adwaita remains authoritative. No adaptive behavior, split view,
       breakpoint, sheet, or animation API is reimplemented.
-- [ ] Pixels and contracts over claims. The phase now has crate tests, schema
-      tests, PNG corpus checks, policy self-tests, and Automation1 ABI drift
-      tests. Full live visual-runner parity, wrapper migration, and final
-      visual smoke evidence remain required before archive.
+- [x] Pixels and contracts over claims. The phase now has crate tests, schema
+      tests, PNG corpus checks, policy self-tests, Automation1 ABI drift tests,
+      live visual-runner parity, wrapper migration, and final visual proof
+      evidence.
 
 Exceptions: none.
 
 Publication posture: these are functional in-tree `0.0.0` APIs for LushText
 and future adoption testing only. They are not Phase 5 publication-ready, and
 no `0.1.0` release may proceed until the publishing gates above are satisfied.
+
+### 2026-06-12 — Phase 4 Proof Parity Closeout (`complete-gtk-lush-proof-parity`)
+
+Scope: close the Rust/Python proof parity gap for the separate
+`cargo-gtk-proof` workspace tool, migrate the default visual-geometry wrapper
+to Rust, keep Python as an explicit oracle/diagnostic path, and defer Phase 5
+publication work.
+
+- [x] No ownership of GTK control flow. The proof tool launches isolated
+      headless sessions for smoke evidence, but GTK applications still own
+      their main loop, widgets, resources, and app state.
+- [x] No view DSL. The change adds no UI syntax, builder layer, or macros.
+- [x] No state, message, or component system. The proof runner aggregates
+      artifacts and statuses; it does not introduce application state
+      ownership.
+- [x] Leaf crates only. `cargo-gtk-proof` remains outside the GTK Lush family
+      crates, while the family crates keep their existing leaf-crate posture.
+- [x] Adwaita remains authoritative. The runner observes rendered geometry and
+      screenshots; it does not reimplement Adwaita layout or animation
+      behavior.
+- [x] Pixels and contracts over claims. The closeout records corpus parity,
+      PNG/crop/rendered-anchor tests, animation-stream evidence, warning scans,
+      Automation1 artifact-summary checks, Rust policy checks, and the migrated
+      `make visual-geometry-smoke` wrapper.
+
+Exceptions: none.
+
+Publication posture: this completes the Phase 4 proof toolchain parity work
+inside the repository only. It does not approve Phase 5 publication, a second
+consumer, crates.io release, repository split, Flathub-style external
+distribution for GTK Lush crates, or Phase 6 upstreaming. Python remains
+available as `cargo gtk-proof run --oracle python` and
+`make visual-geometry-oracle-smoke` for diagnostics, but it is no longer the
+default proof authority.
 
 ### 2026-06-11 — Phase 3 Runtime Geometry Audit (`extract-gtk-lush-runtime-geometry`)
 

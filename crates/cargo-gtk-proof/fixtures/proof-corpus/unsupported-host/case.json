@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "case_id": "unsupported-host",
+  "python_status": "unsupported-host",
+  "rust_status": "unsupported-host",
+  "python_exit_class": "unsupported-host",
+  "rust_exit_class": "unsupported-host",
+  "python_warning_scan_status": "not-run",
+  "rust_warning_scan_status": "not-run",
+  "python_detail": "missing required command: mutter",
+  "rust_detail": "missing required command: mutter"
+}

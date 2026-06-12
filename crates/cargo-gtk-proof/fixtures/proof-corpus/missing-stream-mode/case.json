@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "case_id": "missing-stream-mode",
+  "python_status": "failed",
+  "rust_status": "failed",
+  "python_exit_class": "policy-failure",
+  "rust_exit_class": "policy-failure",
+  "python_verified_invariant_ids": [],
+  "rust_verified_invariant_ids": [],
+  "python_warning_scan_status": "not-run",
+  "rust_warning_scan_status": "not-run",
+  "python_summary_path": "missing-stream-mode/summary.json",
+  "rust_summary_path": "missing-stream-mode/summary.json",
+  "python_artifact_root_shape": "visual-geometry-case",
+  "rust_artifact_root_shape": "visual-geometry-case",
+  "python_engine": { "name": "visual-geometry-smoke.py", "mode": "oracle" },
+  "rust_engine": { "name": "cargo-gtk-proof", "mode": "parity-replay" },
+  "python_detail": "missing stream animation capture mode",
+  "rust_detail": "missing stream animation capture mode"
+}

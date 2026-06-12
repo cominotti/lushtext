@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "case_id": "png-comparison-detectors",
+  "python_status": "passed",
+  "rust_status": "passed",
+  "python_exit_class": "ok",
+  "rust_exit_class": "ok",
+  "python_verified_invariant_ids": [
+    "deterministic-png-comparison-primitives"
+  ],
+  "rust_verified_invariant_ids": [
+    "deterministic-png-comparison-primitives"
+  ],
+  "python_warning_scan_status": "not-run",
+  "rust_warning_scan_status": "not-run",
+  "python_summary_path": "embedded-png-corpus/summary.json",
+  "rust_summary_path": "embedded-png-corpus/summary.json",
+  "python_artifact_root_shape": "pure-png-corpus",
+  "rust_artifact_root_shape": "pure-png-corpus",
+  "python_engine": {
+    "name": "visual_geometry_png.py",
+    "mode": "oracle-fixture"
+  },
+  "rust_engine": {
+    "name": "cargo-gtk-proof",
+    "mode": "embedded-png-corpus"
+  },
+  "python_detail": "exact, masked, detector, allowed-changing, and rendered-drift checks passed",
+  "rust_detail": "exact, masked, detector, allowed-changing, and rendered-drift checks passed"
+}

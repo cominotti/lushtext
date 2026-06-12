@@ -18,6 +18,8 @@ workspace = true
 [dependencies]
 crc32fast = { workspace = true }
 flate2 = { workspace = true }
+gio = { workspace = true }
+glib = { workspace = true }
 gtk-lush-proof-spine = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "case_id": "malformed-artifact",
+  "python_status": "artifact-error",
+  "rust_status": "artifact-error",
+  "python_exit_class": "artifact-error",
+  "rust_exit_class": "artifact-error",
+  "python_detail": "invalid JSON summary",
+  "rust_detail": "invalid JSON summary"
+}

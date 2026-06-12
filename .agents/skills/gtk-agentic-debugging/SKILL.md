@@ -119,6 +119,11 @@ This is the preferred workflow over broad speculative code changes. For geometry
 
 - Prefer `tty: true` for the live runner. PTY-backed sessions are the most reliable way to preserve stdout and stderr ordering.
 - For automated visual inspection, prefer the headless Mutter helper before live-desktop portal screenshots and before Xvfb. Mutter matches the CI compositor path and avoids stealing the human's focus.
+- Keep headless Mutter/PipeWire runtime directories short, directly under
+  `/tmp` or `$XDG_RUNTIME_DIR`, instead of nesting them under long artifact
+  roots. PipeWire and Wayland sockets hit Unix socket path limits before the
+  app launches, so a deep case directory can invalidate an otherwise-good
+  visual proof run.
 - For pixel invariants, prefer `make visual-geometry-smoke` or
   `scripts/visual-geometry-smoke.py --case-filter ...` so before/after
   screenshots come from the same process, wait on `visual-geometry-settled` plus

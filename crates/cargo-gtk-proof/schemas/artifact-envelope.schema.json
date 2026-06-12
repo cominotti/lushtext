@@ -8,5 +8,20 @@
     "detail",
     "version",
     "data"
+  ],
+  "optional_fields": [
+    "data.actions",
+    "data.animation_verified_invariant_ids",
+    "data.comparison_report",
+    "data.dbus_artifacts",
+    "data.engine",
+    "data.parity",
+    "data.pixel_verified_invariant_ids",
+    "data.state_assertions",
+    "data.summary",
+    "data.verified_invariant_ids",
+    "data.visual_geometry_cases",
+    "data.waits",
+    "data.warning_scan"
   ]
 }

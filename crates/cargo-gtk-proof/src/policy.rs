@@ -2,10 +2,9 @@
 
 //! Visual proof policy checks for the Rust proof tool.
 //!
-//! The default Makefile wrapper still uses the Python policy checker in this
-//! phase. Keeping the Rust mapping side-by-side lets the migration prove that
-//! sensitive files, required invariants, and negative animation cases keep the
-//! same meaning before wrappers move.
+//! The Rust policy checker owns the visual-sensitive mapping used by both the
+//! Makefile gate and the proof runner's current-diff metadata. Keeping that
+//! logic in one module prevents summaries from drifting away from enforcement.
 
 use std::fs;
 use std::io::Read;
@@ -188,6 +187,29 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
         &summary,
         &["crates/lushtext-core/src/ui/editor_page/overscroll.rs".to_string()],
     )?;
+    expect_err_contains(proof_has_rust_engine_metadata(&summary), "engine metadata")?;
+    summary["engine"] = serde_json::json!({
+        "name": "python-visual-oracle",
+        "authoritative": false,
+    });
+    expect_err_contains(
+        proof_has_rust_engine_metadata(&summary),
+        "not cargo-gtk-proof",
+    )?;
+    summary["engine"] = serde_json::json!({
+        "name": "cargo-gtk-proof",
+        "authoritative": true,
+        "tool_version": "0.0.0",
+    });
+    expect_err_contains(proof_has_rust_engine_metadata(&summary), "schema_version")?;
+    summary["schema_version"] = serde_json::json!(1);
+    expect_err_contains(proof_has_rust_engine_metadata(&summary), "scenario_source")?;
+    summary["scenario_source"] = serde_json::json!({
+        "scenario_dir": "scripts/visual-geometry-scenarios",
+        "manifest_count": 1,
+        "expanded_case_count": 1,
+    });
+    proof_has_rust_engine_metadata(&summary)?;
 
     let skipped = serde_json::json!({
         "status": "passed",
@@ -200,7 +222,11 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn check_policy(artifact_dir: &Path, base_ref: Option<&str>) -> PolicyOutcome {
+pub(crate) fn check_policy(
+    artifact_dir: &Path,
+    base_ref: Option<&str>,
+    require_rust_engine: bool,
+) -> PolicyOutcome {
     let changed = changed_files(base_ref);
     let visual_changes: Vec<String> = changed
         .into_iter()
@@ -237,6 +263,14 @@ pub(crate) fn check_policy(artifact_dir: &Path, base_ref: Option<&str>) -> Polic
         .and_then(|detail| {
             proof_covers_required_invariants(&summary, &visual_changes)
                 .map(|coverage_detail| format!("{detail}; {coverage_detail}"))
+        })
+        .and_then(|detail| {
+            if require_rust_engine {
+                proof_has_rust_engine_metadata(&summary)
+                    .map(|engine_detail| format!("{detail}; {engine_detail}"))
+            } else {
+                Ok(detail)
+            }
         });
 
     match detail {
@@ -254,6 +288,41 @@ pub(crate) fn check_policy(artifact_dir: &Path, base_ref: Option<&str>) -> Polic
             ),
         },
     }
+}
+
+/// Build the current visual-sensitive diff metadata recorded in proof summaries.
+pub(crate) fn current_visual_proof_policy_metadata() -> Result<Value, String> {
+    let visual_changes: Vec<String> = changed_files(None)
+        .into_iter()
+        .filter(|path| is_visual_sensitive(path))
+        .collect();
+    Ok(serde_json::json!({
+        "schema_version": crate::model::SUPPORTED_SCHEMA_VERSION,
+        "visual_sensitive_changes": visual_changes,
+        "changed_files_digest": visual_change_fingerprint(&visual_changes)?,
+    }))
+}
+
+fn proof_has_rust_engine_metadata(summary: &Value) -> Result<String, String> {
+    let Some(engine) = summary.get("engine").and_then(Value::as_object) else {
+        return Err(
+            "summary has no Rust proof engine metadata; rerun Rust visual geometry smoke"
+                .to_string(),
+        );
+    };
+    if engine.get("name").and_then(Value::as_str) != Some("cargo-gtk-proof") {
+        return Err("summary engine is not cargo-gtk-proof Rust proof".to_string());
+    }
+    if engine.get("authoritative").and_then(Value::as_bool) != Some(true) {
+        return Err("summary Rust engine metadata is not authoritative".to_string());
+    }
+    if !summary.get("schema_version").is_some_and(Value::is_u64) {
+        return Err("summary has no supported schema_version".to_string());
+    }
+    if summary.get("scenario_source").is_none_or(Value::is_null) {
+        return Err("summary has no scenario_source metadata".to_string());
+    }
+    Ok("summary identifies authoritative Rust proof engine".to_string())
 }
 
 fn assert_eq_detail<T>(left: &[T], right: &[T], detail: &str) -> Result<(), String>

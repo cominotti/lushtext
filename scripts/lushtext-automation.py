@@ -83,6 +83,13 @@ EXIT_CODES = {
 ARTIFACT_SUMMARY_FIELDS = (
     "artifact_dir",
     "status",
+    "schema_version",
+    "engine",
+    "scenario_source",
+    "parity",
+    "parity_report",
+    "environment_report",
+    "missing_capabilities",
     "scenario_id",
     "scenario_type",
     "failure_status",
@@ -142,7 +149,8 @@ CLIENT_FLAGS = (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-VISUAL_GEOMETRY_RUNNER = REPO_ROOT / "scripts/visual-geometry-smoke.py"
+VISUAL_GEOMETRY_PYTHON_VALIDATOR = REPO_ROOT / "scripts/visual-geometry-smoke.py"
+VISUAL_GEOMETRY_REPLAY_PREFIX = ["cargo", "run", "-q", "-p", "cargo-gtk-proof", "--", "run"]
 NATIVE_MINIMAP_HIGHLIGHT_INVARIANT = "native-minimap-highlight-anchors"
 NATIVE_MINIMAP_ANIMATION_INVARIANT = "native-minimap-animation-highlight-anchors"
 
@@ -519,9 +527,12 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         return failure("artifact-summary", "artifact-error", str(exc), {"manifest": str(manifest_path)})
+    if schema_error := unsupported_schema_version(manifest, manifest_path):
+        return schema_error
 
     status = str(manifest.get("status") or "unknown")
     summary_path = artifact_dir / "summary.json"
+    summary_payload = artifact_json(summary_path)
     warning_path = artifact_dir / "assertions/runtime-warning-scan.txt"
     visual_warning_path = artifact_dir / "warning-scan.json"
     visual_comparison_path = (
@@ -542,6 +553,21 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
     data = {
         "artifact_dir": str(artifact_dir),
         "status": status,
+        "schema_version": manifest.get("schema_version"),
+        "engine": summary_payload.get("engine")
+        if isinstance(summary_payload, dict)
+        else manifest.get("engine"),
+        "scenario_source": summary_payload.get("scenario_source")
+        if isinstance(summary_payload, dict)
+        else manifest.get("scenario_source"),
+        "parity": summary_payload.get("parity")
+        if isinstance(summary_payload, dict)
+        else manifest.get("parity"),
+        "parity_report": artifact_json(artifact_dir / "parity-report.json"),
+        "environment_report": artifact_json(artifact_dir / "environment-report.json"),
+        "missing_capabilities": summary_payload.get("missing_capabilities", [])
+        if isinstance(summary_payload, dict)
+        else manifest.get("missing_capabilities", []),
         "scenario_id": manifest.get("scenario_id"),
         "scenario_type": manifest.get("scenario_type"),
         "failure_status": manifest.get("failure_status"),
@@ -550,7 +576,7 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
         "invariant_id": manifest.get("invariant_id"),
         "manifest": str(manifest_path),
         "source_manifest": manifest.get("source_manifest"),
-        "summary": artifact_json(summary_path),
+        "summary": summary_payload,
         "runtime_warning_scan": artifact_text(warning_path),
         "warnings": manifest.get("warnings") or artifact_json(visual_warning_path),
         "workflow_events": workflow_events,
@@ -566,6 +592,9 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
         "app_vs_rendered_disagreements": manifest.get("app_vs_rendered_disagreements", []),
         "rendered_anchor_stability": manifest.get("rendered_anchor_stability", []),
         "animation_sampling": manifest.get("animation_sampling"),
+        "verified_invariant_ids": manifest.get("verified_invariant_ids", []),
+        "pixel_verified_invariant_ids": manifest.get("pixel_verified_invariant_ids", []),
+        "animation_verified_invariant_ids": manifest.get("animation_verified_invariant_ids", []),
         "animation_frame_evidence": manifest.get("animation_frame_evidence"),
         "animation_frame_sample_count": manifest.get("animation_frame_sample_count", 0),
         "allowed_changing_regions": manifest.get("allowed_changing_regions", []),
@@ -583,6 +612,8 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
             failure_status = "artifact-error"
         return failure("artifact-summary", failure_status, detail, data)
     if status == "passed":
+        if animation_failure := animation_artifact_failure(data):
+            return failure("artifact-summary", "artifact-error", animation_failure, data)
         return success("artifact-summary", "scenario manifest reports success", data)
     if status == "skipped":
         return success(
@@ -628,7 +659,7 @@ def write_live_visual_geometry_capture(args: argparse.Namespace, snapshot: dict[
             scenario = None
         else:
             replay_command = [
-                str(VISUAL_GEOMETRY_RUNNER.relative_to(REPO_ROOT)),
+                *VISUAL_GEOMETRY_REPLAY_PREFIX,
                 "--artifact-dir",
                 str((artifact_dir / "replay").relative_to(REPO_ROOT))
                 if (artifact_dir / "replay").is_relative_to(REPO_ROOT)
@@ -866,9 +897,12 @@ def default_minimap_allowed_changing_regions() -> list[dict[str, str]]:
 
 def validate_generated_visual_geometry_scenario(scenario_dir: Path) -> str | None:
     try:
-        spec = importlib.util.spec_from_file_location("visual_geometry_smoke", VISUAL_GEOMETRY_RUNNER)
+        spec = importlib.util.spec_from_file_location(
+            "visual_geometry_smoke",
+            VISUAL_GEOMETRY_PYTHON_VALIDATOR,
+        )
         if spec is None or spec.loader is None:
-            return f"could not load {VISUAL_GEOMETRY_RUNNER}"
+            return f"could not load {VISUAL_GEOMETRY_PYTHON_VALIDATOR}"
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         module.load_manifests(scenario_dir)
@@ -1020,11 +1054,29 @@ def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
                 str(exc),
                 {"summary": str(summary_path)},
             )
+        if schema_error := unsupported_schema_version(summary_payload, summary_path):
+            return schema_error
 
     visual_cases = visual_geometry_case_rows(artifact_dir, summary_payload)
     data = {
         "artifact_dir": str(artifact_dir),
         "status": summary_payload.get("status") if isinstance(summary_payload, dict) else "generic",
+        "schema_version": summary_payload.get("schema_version")
+        if isinstance(summary_payload, dict)
+        else None,
+        "engine": summary_payload.get("engine") if isinstance(summary_payload, dict) else None,
+        "scenario_source": summary_payload.get("scenario_source")
+        if isinstance(summary_payload, dict)
+        else None,
+        "parity": summary_payload.get("parity") if isinstance(summary_payload, dict) else None,
+        "parity_report": summary_payload.get("parity_report")
+        or artifact_json(artifact_dir / "parity-report.json")
+        if isinstance(summary_payload, dict)
+        else artifact_json(artifact_dir / "parity-report.json"),
+        "environment_report": artifact_json(artifact_dir / "environment-report.json"),
+        "missing_capabilities": summary_payload.get("missing_capabilities", [])
+        if isinstance(summary_payload, dict)
+        else [],
         "scenario_id": None,
         "scenario_type": None,
         "failure_status": None,
@@ -1082,8 +1134,13 @@ def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
         "actions": [],
     }
 
-    if isinstance(summary_payload, dict) and summary_payload.get("status") == "skipped":
+    if isinstance(summary_payload, dict) and summary_payload.get("status") in {
+        "skipped",
+        "unsupported-host",
+    }:
         return success("artifact-summary", "visual geometry lane was skipped", data, status="artifact-skipped")
+    if animation_failure := animation_artifact_failure(data):
+        return failure("artifact-summary", "artifact-error", animation_failure, data)
     failed_visual = next((row for row in visual_cases if row.get("status") == "failed"), None)
     if failed_visual is not None:
         failure_status = str(failed_visual.get("failure_status") or "artifact-error")
@@ -1095,6 +1152,113 @@ def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
     if any(row.get("status") == "skipped" for row in manifest_rows):
         return success("artifact-summary", "generic smoke artifact includes a skipped manifest", data, status="artifact-skipped")
     return success("artifact-summary", "generic smoke artifact summary read", data)
+
+
+def unsupported_schema_version(payload: Any, path: Path) -> ClientResult | None:
+    if not isinstance(payload, dict) or "schema_version" not in payload:
+        return None
+    if payload.get("schema_version") == 1:
+        return None
+    return failure(
+        "artifact-summary",
+        "artifact-error",
+        f"unsupported schema_version in {path}: {payload.get('schema_version')}",
+        {"artifact": str(path), "schema_version": payload.get("schema_version")},
+    )
+
+
+def animation_artifact_failure(data: dict[str, Any]) -> str | None:
+    claimed = string_list(data.get("animation_verified_invariant_ids"))
+    if not claimed:
+        return None
+
+    visual_cases = data.get("visual_geometry_cases")
+    if isinstance(visual_cases, list) and visual_cases:
+        for invariant_id in claimed:
+            matching_cases = [
+                row
+                for row in visual_cases
+                if isinstance(row, dict)
+                and row.get("status") == "passed"
+                and invariant_id in string_list(row.get("animation_verified_invariant_ids"))
+            ]
+            if not matching_cases:
+                return (
+                    "animation invariant "
+                    f"{invariant_id} has no passing visual geometry case row"
+                )
+            if not any(
+                has_actionable_animation_frame_evidence(row.get("animation_frame_evidence"))
+                for row in matching_cases
+            ):
+                return (
+                    "animation invariant "
+                    f"{invariant_id} lacks stream intermediate frame evidence"
+                )
+        return None
+
+    if not has_actionable_animation_frame_evidence(data.get("animation_frame_evidence")):
+        return "scenario claims animation invariant without stream intermediate frame evidence"
+    return None
+
+
+def has_actionable_animation_frame_evidence(evidence: Any) -> bool:
+    if not isinstance(evidence, dict):
+        return False
+    if (
+        evidence.get("status") != "passed"
+        or evidence.get("capture_mode") != "stream"
+        or not positive_number(evidence.get("sampled_frame_count"))
+        or not positive_number(evidence.get("mapped_intermediate_frame_count"))
+    ):
+        return False
+    max_skew = evidence.get("max_sample_skew_ms")
+    observed_skew = evidence.get("max_sample_skew_observed_ms")
+    if not real_number(max_skew) or not real_number(observed_skew) or observed_skew > max_skew:
+        return False
+    frames = evidence.get("frames")
+    if not isinstance(frames, list) or not frames:
+        return False
+
+    has_mapped_intermediate_anchor = False
+    for frame in frames:
+        if not isinstance(frame, dict):
+            return False
+        if frame.get("status") != "passed" or frame.get("mapped_sample_elapsed_ms") is None:
+            return False
+        sample_skew = frame.get("sample_skew_ms")
+        if not real_number(sample_skew) or sample_skew > max_skew:
+            return False
+        anchors = frame.get("anchors")
+        has_passed_anchor = isinstance(anchors, list) and any(
+            anchor_passed_with_rows(anchor) for anchor in anchors
+        )
+        if frame.get("sidebar_phase") == "intermediate" and has_passed_anchor:
+            has_mapped_intermediate_anchor = True
+    return has_mapped_intermediate_anchor
+
+
+def anchor_passed_with_rows(anchor: Any) -> bool:
+    return (
+        isinstance(anchor, dict)
+        and anchor.get("status") == "passed"
+        and anchor.get("baseline_row_y") is not None
+        and anchor.get("frame_row_y") is not None
+    )
+
+
+def string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def positive_number(value: Any) -> bool:
+    return real_number(value) and value > 0
+
+
+def real_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def visual_geometry_case_rows(artifact_dir: Path, summary_payload: Any) -> list[dict[str, Any]]:
@@ -1402,6 +1566,26 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
                     {
                         "schema_version": 1,
                         "status": "passed",
+                        "engine": {
+                            "name": "cargo-gtk-proof",
+                            "mode": "rust-staged-runner",
+                            "tool_version": "0.0.0",
+                        },
+                        "scenario_source": {
+                            "scenario_dir": "scripts/visual-geometry-scenarios",
+                            "manifest_count": 1,
+                            "expanded_case_count": 1,
+                        },
+                        "parity": {
+                            "status": "passed",
+                            "compared": 1,
+                            "failed": 0,
+                        },
+                        "parity_report": {
+                            "status": "passed",
+                            "compared": 1,
+                            "failed": 0,
+                        },
                         "verified_invariant_ids": ["native-minimap-highlight-anchors"],
                         "pixel_verified_invariant_ids": ["native-minimap-highlight-anchors"],
                         "animation_verified_invariant_ids": [
@@ -1424,8 +1608,28 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
                 ),
                 encoding="utf-8",
             )
+            (root / "environment-report.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "ready",
+                        "runtime": {
+                            "session_bus": "dbus-run-session",
+                            "environment": [{"key": "XDG_RUNTIME_DIR", "value": "runtime"}],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
             root_summary = summarize_artifacts(root)
             assert root_summary.ok
+            assert root_summary.exit_code == 0
+            assert root_summary.data["schema_version"] == 1
+            assert root_summary.data["engine"]["name"] == "cargo-gtk-proof"
+            assert root_summary.data["scenario_source"]["manifest_count"] == 1
+            assert root_summary.data["parity"]["failed"] == 0
+            assert root_summary.data["parity_report"]["status"] == "passed"
+            assert root_summary.data["environment_report"]["status"] == "ready"
             assert root_summary.data["verified_invariant_ids"] == [
                 "native-minimap-highlight-anchors"
             ]
@@ -1441,6 +1645,131 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
                 root_summary.data["visual_geometry_cases"][0]["animation_frame_sample_count"]
                 == 2
             )
+
+            def write_animation_summary_fixture(
+                fixture_root: Path,
+                evidence: dict[str, Any] | None,
+            ) -> ClientResult:
+                fixture_root.mkdir()
+                fixture_case_dir = fixture_root / "animation-case"
+                fixture_case_dir.mkdir()
+                fixture_manifest = {
+                    "schema_version": 1,
+                    "scenario_id": "animation-policy-self-test",
+                    "scenario_type": "minimap-sidebar",
+                    "invariant_id": "native-minimap-highlight-anchors",
+                    "status": "passed",
+                    "animation_verified_invariant_ids": [
+                        "native-minimap-animation-highlight-anchors"
+                    ],
+                    "animation_frame_sample_count": 2,
+                }
+                if evidence is not None:
+                    fixture_manifest["animation_frame_evidence"] = evidence
+                (fixture_case_dir / "scenario-manifest.json").write_text(
+                    json.dumps(fixture_manifest),
+                    encoding="utf-8",
+                )
+                (fixture_root / "summary.json").write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "status": "passed",
+                            "engine": {
+                                "name": "cargo-gtk-proof",
+                                "mode": "rust-staged-runner",
+                            },
+                            "animation_verified_invariant_ids": [
+                                "native-minimap-animation-highlight-anchors"
+                            ],
+                            "case_count": 1,
+                            "cases": [
+                                {
+                                    "case_id": "animation-policy-self-test",
+                                    "status": "passed",
+                                    "artifact_dir": "animation-case",
+                                    "manifest": "scenario-manifest.json",
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return summarize_artifacts(fixture_root)
+
+            base_animation_evidence = {
+                "status": "passed",
+                "capture_mode": "stream",
+                "sampled_frame_count": 2,
+                "mapped_intermediate_frame_count": 1,
+                "max_sample_skew_ms": 80,
+                "max_sample_skew_observed_ms": 8,
+                "frames": [
+                    {
+                        "status": "passed",
+                        "mapped_sample_elapsed_ms": 48,
+                        "sample_skew_ms": 8,
+                        "sidebar_phase": "intermediate",
+                        "anchors": [
+                            {
+                                "status": "passed",
+                                "baseline_row_y": 10,
+                                "frame_row_y": 10,
+                            }
+                        ],
+                    }
+                ],
+            }
+            missing_animation_summary = write_animation_summary_fixture(
+                root / "missing-animation-evidence-root",
+                None,
+            )
+            assert not missing_animation_summary.ok
+            assert missing_animation_summary.status == "artifact-error"
+            assert "lacks stream intermediate frame evidence" in missing_animation_summary.detail
+
+            final_settle_evidence = json.loads(json.dumps(base_animation_evidence))
+            final_settle_evidence["capture_mode"] = "screenshot"
+            final_settle_evidence["mapped_intermediate_frame_count"] = 0
+            final_settle_summary = write_animation_summary_fixture(
+                root / "final-settle-animation-root",
+                final_settle_evidence,
+            )
+            assert not final_settle_summary.ok
+            assert final_settle_summary.status == "artifact-error"
+            assert "lacks stream intermediate frame evidence" in final_settle_summary.detail
+
+            stale_frame_evidence = json.loads(json.dumps(base_animation_evidence))
+            stale_frame_evidence["max_sample_skew_observed_ms"] = 120
+            stale_frame_evidence["frames"][0]["sample_skew_ms"] = 120
+            stale_frame_summary = write_animation_summary_fixture(
+                root / "stale-frame-animation-root",
+                stale_frame_evidence,
+            )
+            assert not stale_frame_summary.ok
+            assert stale_frame_summary.status == "artifact-error"
+            assert "lacks stream intermediate frame evidence" in stale_frame_summary.detail
+
+            single_manifest_dir = root / "single-manifest-animation-policy"
+            single_manifest_dir.mkdir()
+            (single_manifest_dir / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "scenario_id": "single-animation-policy-self-test",
+                        "scenario_type": "minimap-sidebar",
+                        "status": "passed",
+                        "animation_verified_invariant_ids": [
+                            "native-minimap-animation-highlight-anchors"
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            single_manifest_summary = summarize_artifacts(single_manifest_dir)
+            assert not single_manifest_summary.ok
+            assert single_manifest_summary.status == "artifact-error"
+            assert "scenario claims animation invariant" in single_manifest_summary.detail
 
             failed_dir = root / "failed-case"
             failed_dir.mkdir()
@@ -1460,6 +1789,34 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
             failed_summary = summarize_artifacts(failed_dir)
             assert not failed_summary.ok
             assert failed_summary.status == "visual-comparison-failed"
+
+            (root / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "failed",
+                        "engine": {"name": "cargo-gtk-proof", "mode": "rust-staged-runner"},
+                        "case_count": 1,
+                        "passed": 0,
+                        "failed": 1,
+                        "skipped": 0,
+                        "cases": [
+                            {
+                                "case_id": "visual-failed",
+                                "status": "failed",
+                                "failure_status": "visual-comparison-failed",
+                                "artifact_dir": "failed-case",
+                                "manifest": "scenario-manifest.json",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            failed_root_summary = summarize_artifacts(root)
+            assert not failed_root_summary.ok
+            assert failed_root_summary.status == "visual-comparison-failed"
+            assert failed_root_summary.exit_code == 1
 
             pixel_failed_dir = root / "pixel-failed-case"
             pixel_failed_dir.mkdir()
@@ -1497,12 +1854,136 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
             skipped_summary = summarize_artifacts(skipped_dir)
             assert skipped_summary.ok
             assert skipped_summary.status == "artifact-skipped"
+            assert skipped_summary.exit_code == 0
 
             malformed_dir = root / "malformed-case"
             malformed_dir.mkdir()
             (malformed_dir / "scenario-manifest.json").write_text("{not json", encoding="utf-8")
             malformed_summary = summarize_artifacts(malformed_dir)
             assert malformed_summary.status == "artifact-error"
+            assert malformed_summary.exit_code == 1
+
+            unsupported_schema_dir = root / "unsupported-schema-case"
+            unsupported_schema_dir.mkdir()
+            (unsupported_schema_dir / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 999,
+                        "scenario_id": "visual-future",
+                        "scenario_type": "minimap-sidebar",
+                        "status": "passed",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            unsupported_schema_summary = summarize_artifacts(unsupported_schema_dir)
+            assert not unsupported_schema_summary.ok
+            assert unsupported_schema_summary.status == "artifact-error"
+            assert "unsupported schema_version" in unsupported_schema_summary.detail
+
+            unsupported_root = root / "unsupported-root"
+            unsupported_root.mkdir()
+            (unsupported_root / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "unsupported-host",
+                        "engine": {"name": "cargo-gtk-proof", "mode": "rust-staged-runner"},
+                        "skip_reason": "unsupported host tooling: mutter",
+                        "missing_capabilities": ["missing required command: mutter"],
+                        "case_count": 0,
+                        "passed": 0,
+                        "failed": 0,
+                        "skipped": 0,
+                        "cases": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (unsupported_root / "environment-report.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "unsupported-host",
+                        "missing_capabilities": ["missing required command: mutter"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            unsupported_summary = summarize_artifacts(unsupported_root)
+            assert unsupported_summary.ok
+            assert unsupported_summary.status == "artifact-skipped"
+            assert unsupported_summary.exit_code == 0
+            assert unsupported_summary.data["status"] == "unsupported-host"
+            assert unsupported_summary.data["missing_capabilities"] == [
+                "missing required command: mutter"
+            ]
+            assert unsupported_summary.data["environment_report"]["status"] == "unsupported-host"
+
+            oracle_root = root / "python-oracle-root"
+            oracle_root.mkdir()
+            (oracle_root / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "passed",
+                        "engine": {"name": "visual-geometry-smoke.py", "mode": "oracle"},
+                        "case_count": 0,
+                        "passed": 0,
+                        "failed": 0,
+                        "skipped": 0,
+                        "cases": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            oracle_summary = summarize_artifacts(oracle_root)
+            assert oracle_summary.ok
+            assert oracle_summary.data["engine"]["mode"] == "oracle"
+
+            parity_root = root / "parity-root"
+            parity_root.mkdir()
+            (parity_root / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "passed",
+                        "engine": {"name": "cargo-gtk-proof", "mode": "parity-replay"},
+                        "parity": {
+                            "status": "passed",
+                            "python_oracle": {
+                                "name": "visual-geometry-smoke.py",
+                                "mode": "oracle",
+                            },
+                            "compared": 2,
+                            "failed": 0,
+                        },
+                        "case_count": 0,
+                        "passed": 0,
+                        "failed": 0,
+                        "skipped": 0,
+                        "cases": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (parity_root / "parity-report.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "passed",
+                        "compared": 2,
+                        "failed": 0,
+                        "rust_engine": {"name": "cargo-gtk-proof"},
+                        "python_oracle": {"name": "visual-geometry-smoke.py"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            parity_summary = summarize_artifacts(parity_root)
+            assert parity_summary.ok
+            assert parity_summary.data["parity"]["compared"] == 2
+            assert parity_summary.data["parity_report"]["status"] == "passed"
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

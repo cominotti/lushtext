@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "schema_id": "warning-scan",
+  "required_fields": [
+    "status"
+  ],
+  "optional_fields": [
+    "allowed_patterns",
+    "log_path",
+    "matches",
+    "schema_version",
+    "unexpected_count",
+    "warning_count",
+    "warnings"
+  ]
+}

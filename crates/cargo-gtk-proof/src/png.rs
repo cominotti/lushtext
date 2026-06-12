@@ -15,6 +15,7 @@ use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use serde::Serialize;
+use serde_json::Value;
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 // The Rust live runner is not authoritative yet, but the corpus code should
@@ -35,16 +36,18 @@ struct PngImage {
     rows: Vec<Vec<u8>>,
 }
 
+/// Integer rectangle used for deterministic PNG crop and anchor evaluation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-struct Rect {
-    x: i32,
-    y: i32,
-    width: usize,
-    height: usize,
+pub(crate) struct Rect {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
 }
 
 impl Rect {
-    const fn new(x: i32, y: i32, width: usize, height: usize) -> Self {
+    /// Build a rectangle without clamping; callers clamp against each image.
+    pub(crate) const fn new(x: i32, y: i32, width: usize, height: usize) -> Self {
         Self {
             x,
             y,
@@ -54,15 +57,16 @@ impl Rect {
     }
 }
 
+/// Result of running one pixel-anchor detector against one bounded crop.
 #[derive(Debug, Eq, PartialEq, Serialize)]
-struct PixelAnchorDetection {
-    name: String,
-    detector: String,
-    status: String,
-    row_y: Option<i32>,
-    rect: Rect,
-    matched_pixels: usize,
-    required_pixels: usize,
+pub(crate) struct PixelAnchorDetection {
+    pub(crate) name: String,
+    pub(crate) detector: String,
+    pub(crate) status: String,
+    pub(crate) row_y: Option<i32>,
+    pub(crate) rect: Rect,
+    pub(crate) matched_pixels: usize,
+    pub(crate) required_pixels: usize,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize)]
@@ -71,6 +75,7 @@ struct CropComparison {
     before_rect: Rect,
     after_rect: Rect,
     mask_rects: Vec<Rect>,
+    allowed_changing_regions: Vec<Rect>,
     compared_pixels: usize,
     diff_pixels: usize,
     first_difference: Option<DifferencePoint>,
@@ -80,6 +85,33 @@ struct CropComparison {
 struct DifferencePoint {
     x: usize,
     y: usize,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct RenderedAnchorPairReport {
+    name: String,
+    detector: String,
+    status: String,
+    before: PixelAnchorDetection,
+    after: PixelAnchorDetection,
+    screen_y_delta: Option<i32>,
+    max_screen_y_delta: Option<i32>,
+    app_geometry: Option<AppRenderedAnchorGeometry>,
+    diagnostics: Vec<AppVsRenderedDisagreement>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct AppRenderedAnchorGeometry {
+    screen_y_delta: i32,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct AppVsRenderedDisagreement {
+    name: String,
+    status: String,
+    app_screen_y_delta: i32,
+    rendered_screen_y_delta: i32,
+    max_screen_y_delta: i32,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -137,6 +169,9 @@ fn run_png_corpus_at(root: &Path) -> PngResult<u64> {
     if masked.status != "passed" || masked.diff_pixels != 0 {
         return Err("masked crop comparison did not ignore the changed pixel".to_string());
     }
+    if masked.allowed_changing_regions != vec![Rect::new(1, 0, 1, 1)] {
+        return Err("masked crop comparison did not report allowed-changing regions".to_string());
+    }
 
     let clamped = clamp_rect(&read_png(&before)?, Rect::new(-1, 0, 4, 2))?;
     if clamped != Rect::new(0, 0, 2, 2) {
@@ -167,7 +202,29 @@ fn run_png_corpus_at(root: &Path) -> PngResult<u64> {
         return Err("minimap content detector missed the synthetic content row".to_string());
     }
 
-    Ok(4)
+    let before_anchor = root.join("before-anchor.png");
+    let after_anchor = root.join("after-anchor.png");
+    write_rgba(&before_anchor, &anchor_drift_rows(2))?;
+    write_rgba(&after_anchor, &anchor_drift_rows(3))?;
+    let rendered = compare_rendered_anchor_pair(RenderedAnchorPairInput {
+        before_path: &before_anchor,
+        after_path: &after_anchor,
+        name: "minimap-native-viewport-top-edge",
+        before_rect: Rect::new(0, 0, 16, 8),
+        after_rect: Rect::new(0, 0, 16, 8),
+        detector: "native-minimap-viewport-top-edge-row",
+        min_pixels: 8,
+        max_screen_y_delta: Some(0),
+        app_screen_y_delta: Some(0),
+    })?;
+    if rendered.status != "failed"
+        || rendered.screen_y_delta != Some(1)
+        || rendered.diagnostics.is_empty()
+    {
+        return Err("rendered-anchor drift did not fail despite stable app geometry".to_string());
+    }
+
+    Ok(6)
 }
 
 fn native_minimap_anchor_rows() -> Vec<Vec<(u8, u8, u8, u8)>> {
@@ -184,6 +241,16 @@ fn native_minimap_anchor_rows() -> Vec<Vec<(u8, u8, u8, u8)>> {
     }
     for pixel in &mut rows[6][4..24] {
         *pixel = cyan;
+    }
+    rows
+}
+
+fn anchor_drift_rows(edge_row: usize) -> Vec<Vec<(u8, u8, u8, u8)>> {
+    let bg = (29, 29, 32, 255);
+    let edge = (150, 150, 151, 255);
+    let mut rows = vec![vec![bg; 16]; 8];
+    for pixel in &mut rows[edge_row][3..13] {
+        *pixel = edge;
     }
     rows
 }
@@ -209,6 +276,12 @@ fn write_rgba(path: &Path, pixels: &[Vec<(u8, u8, u8, u8)>]) -> PngResult<()> {
         rows: rows.clone(),
     };
     write_png(path, &image, &rows)
+}
+
+/// Write a tiny RGBA PNG fixture for tests that exercise live proof reports.
+#[cfg(test)]
+pub(crate) fn write_rgba_fixture(path: &Path, pixels: &[Vec<(u8, u8, u8, u8)>]) -> PngResult<()> {
+    write_rgba(path, pixels)
 }
 
 fn read_png(path: &Path) -> PngResult<PngImage> {
@@ -646,6 +719,50 @@ fn detect_pixel_anchor(
     })
 }
 
+/// Detect one anchor from a PNG file and optionally write the evaluated crop.
+pub(crate) fn detect_pixel_anchor_in_file(
+    image_path: &Path,
+    name: &str,
+    rect: Rect,
+    detector: &str,
+    min_pixels: usize,
+    crop_path: Option<&Path>,
+) -> PngResult<PixelAnchorDetection> {
+    let image = read_png(image_path)?;
+    let rect = clamp_rect(&image, rect)?;
+    let detection = detect_pixel_anchor(&image, name, rect, detector, min_pixels)?;
+    if let Some(crop_path) = crop_path {
+        write_png(crop_path, &image, &crop_rows(&image, rect)?)?;
+    }
+    Ok(detection)
+}
+
+/// Compare two PNG crops from files and optionally write the evaluated crops.
+pub(crate) fn compare_crops_in_files(
+    before_path: &Path,
+    after_path: &Path,
+    before_rect: Rect,
+    after_rect: Option<Rect>,
+    masks: &[Rect],
+    artifact_prefix: Option<&Path>,
+) -> PngResult<Value> {
+    let before_image = read_png(before_path)?;
+    let after_image = read_png(after_path)?;
+    let before_rect = clamp_rect(&before_image, before_rect)?;
+    let after_rect = after_rect
+        .map(|rect| clamp_rect(&after_image, rect))
+        .transpose()?;
+    let report = compare_crops(
+        before_path,
+        after_path,
+        before_rect,
+        after_rect,
+        masks,
+        artifact_prefix,
+    )?;
+    serde_json::to_value(report).map_err(|error| error.to_string())
+}
+
 fn native_minimap_viewport_edge_count(image: &PngImage, rect: Rect, y: usize) -> PngResult<usize> {
     longest_row_run_count(image, rect, y, is_native_minimap_viewport_edge_pixel)
 }
@@ -856,9 +973,85 @@ fn compare_crops(
         before_rect,
         after_rect,
         mask_rects: masks.to_vec(),
+        allowed_changing_regions: masks.to_vec(),
         compared_pixels,
         diff_pixels,
         first_difference,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct RenderedAnchorPairInput<'a> {
+    before_path: &'a Path,
+    after_path: &'a Path,
+    name: &'a str,
+    before_rect: Rect,
+    after_rect: Rect,
+    detector: &'a str,
+    min_pixels: usize,
+    max_screen_y_delta: Option<i32>,
+    app_screen_y_delta: Option<i32>,
+}
+
+fn compare_rendered_anchor_pair(
+    input: RenderedAnchorPairInput<'_>,
+) -> PngResult<RenderedAnchorPairReport> {
+    let RenderedAnchorPairInput {
+        before_path,
+        after_path,
+        name,
+        before_rect,
+        after_rect,
+        detector,
+        min_pixels,
+        max_screen_y_delta,
+        app_screen_y_delta,
+    } = input;
+    let before_image = read_png(before_path)?;
+    let after_image = read_png(after_path)?;
+    let before = detect_pixel_anchor(&before_image, name, before_rect, detector, min_pixels)?;
+    let after = detect_pixel_anchor(&after_image, name, after_rect, detector, min_pixels)?;
+    let screen_y_delta = before.row_y.zip(after.row_y).map(|(before_y, after_y)| {
+        let delta = after_y - before_y;
+        delta.abs()
+    });
+    let app_geometry =
+        app_screen_y_delta.map(|screen_y_delta| AppRenderedAnchorGeometry { screen_y_delta });
+    let mut diagnostics = Vec::new();
+    let mut status = if before.status == "passed" && after.status == "passed" {
+        "passed"
+    } else {
+        "failed"
+    };
+
+    if let Some(maximum) = max_screen_y_delta
+        && let Some(rendered_delta) = screen_y_delta
+        && rendered_delta > maximum
+    {
+        status = "failed";
+        if let Some(app_delta) = app_screen_y_delta
+            && app_delta <= maximum
+        {
+            diagnostics.push(AppVsRenderedDisagreement {
+                name: name.to_string(),
+                status: "app-vs-rendered-anchor-disagreement".to_string(),
+                app_screen_y_delta: app_delta,
+                rendered_screen_y_delta: rendered_delta,
+                max_screen_y_delta: maximum,
+            });
+        }
+    }
+
+    Ok(RenderedAnchorPairReport {
+        name: name.to_string(),
+        detector: detector.to_string(),
+        status: status.to_string(),
+        before,
+        after,
+        screen_y_delta,
+        max_screen_y_delta,
+        app_geometry,
+        diagnostics,
     })
 }
 
@@ -906,5 +1099,271 @@ mod tests {
         assert_eq!(content.status, "passed");
         assert_eq!(content.row_y, Some(6));
         fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn detector_regression_fixture_covers_all_python_detector_modes() {
+        let root = tempfile::Builder::new()
+            .prefix("cargo-gtk-proof-png-detectors-")
+            .tempdir()
+            .expect("test dir");
+        let path = root.path().join("detectors.png");
+        let bg = (29, 29, 32, 255);
+        let edge = (78, 78, 78, 255);
+        let fill = (60, 60, 63, 255);
+        let cyan = (0, 190, 180, 255);
+        let orange = (245, 132, 28, 255);
+        let mut rows = vec![vec![bg; 12]; 10];
+        for pixel in &mut rows[1][2..10] {
+            *pixel = edge;
+        }
+        for pixel in &mut rows[3][2..10] {
+            *pixel = fill;
+        }
+        for pixel in &mut rows[6][2..10] {
+            *pixel = edge;
+        }
+        for pixel in &mut rows[8][2..7] {
+            *pixel = cyan;
+        }
+        for pixel in &mut rows[9][8..11] {
+            *pixel = orange;
+        }
+        write_rgba(&path, &rows).expect("write image");
+        let image = read_png(&path).expect("read image");
+
+        let checks = [
+            (
+                "native",
+                Rect::new(2, 0, 8, 4),
+                "native-minimap-viewport-top-edge-row",
+                6,
+                1,
+            ),
+            (
+                "legacy-neutral-edge",
+                Rect::new(2, 0, 8, 4),
+                "horizontal-neutral-edge-row",
+                6,
+                1,
+            ),
+            (
+                "content",
+                Rect::new(2, 7, 8, 3),
+                "minimap-content-row",
+                4,
+                8,
+            ),
+            (
+                "fill",
+                Rect::new(2, 2, 8, 3),
+                "viewport-highlight-fill-row",
+                6,
+                3,
+            ),
+            (
+                "bottom-edge",
+                Rect::new(2, 5, 8, 3),
+                "horizontal-neutral-edge-row",
+                6,
+                6,
+            ),
+            (
+                "generic",
+                Rect::new(0, 8, 12, 1),
+                "non-background-row",
+                4,
+                8,
+            ),
+            (
+                "search-marker",
+                Rect::new(0, 8, 12, 2),
+                "minimap-search-marker-row",
+                2,
+                9,
+            ),
+        ];
+
+        for (name, rect, detector, min_pixels, expected_row) in checks {
+            let detection =
+                detect_pixel_anchor(&image, name, rect, detector, min_pixels).expect(detector);
+            assert_eq!(detection.status, "passed", "{detector}");
+            assert_eq!(detection.row_y, Some(expected_row), "{detector}");
+        }
+
+        let error = detect_pixel_anchor(&image, "unknown", Rect::new(0, 0, 2, 2), "bogus", 1)
+            .expect_err("unsupported detector rejected");
+        assert!(error.contains("unsupported pixel anchor detector"));
+    }
+
+    #[test]
+    fn detector_failure_keeps_best_row_for_diagnostics() {
+        let root = tempfile::Builder::new()
+            .prefix("cargo-gtk-proof-png-detector-failure-")
+            .tempdir()
+            .expect("test dir");
+        let path = root.path().join("weak-edge.png");
+        let bg = (29, 29, 32, 255);
+        let edge = (78, 78, 78, 255);
+        let mut rows = vec![vec![bg; 12]; 6];
+        for pixel in &mut rows[2][3..7] {
+            *pixel = edge;
+        }
+        write_rgba(&path, &rows).expect("write image");
+        let image = read_png(&path).expect("read image");
+
+        let detection = detect_pixel_anchor(
+            &image,
+            "minimap-native-viewport-top-edge",
+            Rect::new(0, 0, 12, 6),
+            "native-minimap-viewport-top-edge-row",
+            8,
+        )
+        .expect("detection");
+
+        assert_eq!(detection.status, "failed");
+        assert_eq!(detection.row_y, Some(2));
+        assert_eq!(detection.matched_pixels, 4);
+    }
+
+    #[test]
+    fn comparison_supports_masks_and_different_crop_origins() {
+        let root = tempfile::Builder::new()
+            .prefix("cargo-gtk-proof-png-compare-")
+            .tempdir()
+            .expect("test dir");
+        let before = root.path().join("before.png");
+        let after = root.path().join("after.png");
+        let black = (0, 0, 0, 255);
+        let red = (255, 0, 0, 255);
+        let blue = (0, 0, 255, 255);
+        write_rgba(&before, &[vec![black, red], vec![black, black]]).expect("before image");
+        write_rgba(&after, &[vec![blue, black, red], vec![blue, black, black]])
+            .expect("after image");
+
+        let shifted = compare_crops(
+            &before,
+            &after,
+            Rect::new(0, 0, 2, 2),
+            Some(Rect::new(1, 0, 2, 2)),
+            &[],
+            None,
+        )
+        .expect("shifted comparison");
+        let masked = compare_crops(
+            &before,
+            &after,
+            Rect::new(0, 0, 2, 2),
+            Some(Rect::new(1, 0, 2, 2)),
+            &[Rect::new(1, 0, 1, 1)],
+            None,
+        )
+        .expect("masked comparison");
+
+        assert_eq!(shifted.status, "passed");
+        assert_eq!(masked.status, "passed");
+        assert_eq!(masked.compared_pixels, 3);
+        assert_eq!(masked.allowed_changing_regions, vec![Rect::new(1, 0, 1, 1)]);
+    }
+
+    #[test]
+    fn protected_region_mismatch_reports_first_difference_and_crops() {
+        let root = tempfile::Builder::new()
+            .prefix("cargo-gtk-proof-png-mismatch-")
+            .tempdir()
+            .expect("test dir");
+        let before = root.path().join("before.png");
+        let after = root.path().join("after.png");
+        let prefix = root.path().join("artifacts/header");
+        let black = (0, 0, 0, 255);
+        let red = (255, 0, 0, 255);
+        write_rgba(&before, &[vec![black, black], vec![black, black]]).expect("before image");
+        write_rgba(&after, &[vec![black, red], vec![black, black]]).expect("after image");
+
+        let report = compare_crops(
+            &before,
+            &after,
+            Rect::new(0, 0, 2, 2),
+            None,
+            &[],
+            Some(&prefix),
+        )
+        .expect("comparison");
+
+        assert_eq!(report.status, "failed");
+        assert_eq!(report.diff_pixels, 1);
+        assert_eq!(
+            report.first_difference,
+            Some(DifferencePoint { x: 1, y: 0 })
+        );
+        assert!(root.path().join("artifacts/header-before.png").is_file());
+        assert!(root.path().join("artifacts/header-after.png").is_file());
+        let before_crop = read_png(&root.path().join("artifacts/header-before.png"))
+            .expect("before crop readable");
+        assert_eq!(before_crop.width, 2);
+        assert_eq!(before_crop.height, 2);
+    }
+
+    #[test]
+    fn rendered_anchor_drift_fails_even_when_app_geometry_is_stable() {
+        let root = tempfile::Builder::new()
+            .prefix("cargo-gtk-proof-rendered-anchor-")
+            .tempdir()
+            .expect("test dir");
+        let before = root.path().join("before.png");
+        let after = root.path().join("after.png");
+        write_rgba(&before, &anchor_drift_rows(2)).expect("before image");
+        write_rgba(&after, &anchor_drift_rows(3)).expect("after image");
+
+        let report = compare_rendered_anchor_pair(RenderedAnchorPairInput {
+            before_path: &before,
+            after_path: &after,
+            name: "minimap-native-viewport-top-edge",
+            before_rect: Rect::new(0, 0, 16, 8),
+            after_rect: Rect::new(0, 0, 16, 8),
+            detector: "native-minimap-viewport-top-edge-row",
+            min_pixels: 8,
+            max_screen_y_delta: Some(0),
+            app_screen_y_delta: Some(0),
+        })
+        .expect("rendered anchor comparison");
+
+        assert_eq!(report.status, "failed");
+        assert_eq!(report.screen_y_delta, Some(1));
+        assert_eq!(
+            report.app_geometry,
+            Some(AppRenderedAnchorGeometry { screen_y_delta: 0 })
+        );
+        assert_eq!(
+            report.diagnostics,
+            vec![AppVsRenderedDisagreement {
+                name: "minimap-native-viewport-top-edge".to_string(),
+                status: "app-vs-rendered-anchor-disagreement".to_string(),
+                app_screen_y_delta: 0,
+                rendered_screen_y_delta: 1,
+                max_screen_y_delta: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn malformed_and_oversized_pngs_are_rejected() {
+        let root = tempfile::Builder::new()
+            .prefix("cargo-gtk-proof-png-invalid-")
+            .tempdir()
+            .expect("test dir");
+        let malformed = root.path().join("malformed.png");
+        fs::write(&malformed, b"not a png").expect("malformed fixture");
+        let oversized = root.path().join("oversized.png");
+        fs::File::create(&oversized)
+            .expect("oversized fixture")
+            .set_len(MAX_COMPRESSED_PNG_BYTES + 1)
+            .expect("set len");
+
+        let malformed_error = read_png(&malformed).expect_err("malformed rejected");
+        let oversized_error = read_png(&oversized).expect_err("oversized rejected");
+
+        assert!(malformed_error.contains("not a PNG file"));
+        assert!(oversized_error.contains("exceeds compressed byte limit"));
     }
 }

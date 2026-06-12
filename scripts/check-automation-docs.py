@@ -26,7 +26,7 @@ EXPECTED_HELPER_FLAG_MARKER = (
     "run-crash-recovery-smoke --artifact-dir --binary "
     "run-accessibility-smoke --artifact-dir --binary "
     "run-visual-smoke --artifact-dir --binary "
-    "visual-geometry-smoke --artifact-dir --binary --scenario-dir --case-filter "
+    "cargo-gtk-proof-run --artifact-dir --binary --scenario-dir --case-filter --oracle "
     "capture-lushtext-mutter "
     "--file --output --search --expected-search-matches --enable-minimap "
     "--enable-atspi --window-action --window-string-action --window-bool-action --wait-predicate --wait-window-action --wait-atspi-text "
@@ -502,7 +502,8 @@ def run_checks(
         "scripts/run-automation-smoke.sh",
         "scripts/run-crash-recovery-smoke.sh",
         "scripts/run-accessibility-smoke.sh",
-        "scripts/visual-geometry-smoke.py",
+        "cargo gtk-proof run",
+        "--oracle python",
         "scripts/run-portal-sandbox-smoke.sh",
         "scripts/lushtext-automation.py",
         "scripts/check-flatpak-permissions.py",

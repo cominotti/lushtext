@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "schema_id": "case-summary",
+  "required_fields": [
+    "status"
+  ],
+  "optional_fields": [
+    "animation_frame_evidence",
+    "animation_frame_sample_count",
+    "animation_verified_invariant_ids",
+    "app_vs_rendered_disagreements",
+    "artifact_dir",
+    "case_id",
+    "comparison_report",
+    "failure_status",
+    "final_geometry",
+    "invariant_id",
+    "manifest",
+    "pixel_anchor_assertion_count",
+    "pixel_anchor_evidence",
+    "pixel_verified_invariant_ids",
+    "rendered_anchor_stability",
+    "scenario_id",
+    "schema_version"
+  ]
+}

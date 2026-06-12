@@ -168,6 +168,11 @@ This applies to load-amplified flakes too: heavy local load exposing a 2s async 
   should protect unaffected chrome with exact pixel comparisons and describe
   every allowed-changing region. Do not count two unrelated screenshots from
   separate launches as proof that an unaffected element had zero pixel variance.
+- For before/after visual-geometry cases with setup such as search queries,
+  scrolling, fixture selection, or focus state, drive that precondition and
+  wait for its narrow readiness predicate before capturing the baseline image.
+  A baseline taken before the intended state exists can make the comparison
+  pass or fail for the wrong reason.
 - For rendered effects such as highlights, edge lines, minimap markers, or
   overlay chrome, widget tests should assert the app-owned allocation/projection
   and `make visual-geometry-smoke` should assert named screenshot-derived

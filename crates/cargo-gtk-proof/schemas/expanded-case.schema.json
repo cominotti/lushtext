@@ -12,6 +12,7 @@
   "optional_fields": [
     "direction",
     "fixture_kind",
+    "gsettings",
     "viewport_position",
     "word_wrap"
   ]

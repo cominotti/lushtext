@@ -41,6 +41,30 @@ NATIVE_MINIMAP_HIGHLIGHT_INVARIANT = "native-minimap-highlight-anchors"
 NATIVE_MINIMAP_ANIMATION_INVARIANT = "native-minimap-animation-highlight-anchors"
 
 
+def delegate_cli_to_rust(argv: list[str]) -> int:
+    """Run the Rust policy checker without masking its status or output."""
+
+    command = [
+        "cargo",
+        "run",
+        "-q",
+        "-p",
+        "cargo-gtk-proof",
+        "--",
+        "policy",
+        *argv,
+    ]
+    try:
+        return subprocess.run(command, cwd=REPO_ROOT, check=False).returncode
+    except FileNotFoundError as exc:
+        print(f"missing Rust proof tooling command: {exc.filename}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(delegate_cli_to_rust(sys.argv[1:]))
+
+
 def run_git(args: list[str]) -> list[str]:
     result = subprocess.run(
         ["git", *args],

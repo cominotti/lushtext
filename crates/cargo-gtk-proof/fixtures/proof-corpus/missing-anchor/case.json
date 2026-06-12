@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "case_id": "missing-anchor",
+  "python_status": "failed",
+  "rust_status": "failed",
+  "python_exit_class": "pixel-anchor-failed",
+  "rust_exit_class": "pixel-anchor-failed",
+  "python_verified_invariant_ids": [],
+  "rust_verified_invariant_ids": [],
+  "python_detail": "required anchor not detected",
+  "rust_detail": "required anchor not detected"
+}

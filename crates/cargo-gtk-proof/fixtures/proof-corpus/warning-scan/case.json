@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "case_id": "warning-scan",
+  "python_status": "failed",
+  "rust_status": "failed",
+  "python_exit_class": "warning-scan-failed",
+  "rust_exit_class": "warning-scan-failed",
+  "python_warning_scan_status": "failed",
+  "rust_warning_scan_status": "failed",
+  "python_detail": "unexpected GTK warning",
+  "rust_detail": "unexpected GTK warning"
+}

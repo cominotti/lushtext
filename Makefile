@@ -20,7 +20,8 @@
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make automation-smoke - Real-process D-Bus automation smoke under headless Mutter
 #   make visual-smoke - Real-session screenshot smoke under headless Mutter
-#   make visual-geometry-smoke - Same-session visual invariant screenshot smoke
+#   make visual-geometry-smoke - Rust same-session visual invariant proof
+#   make visual-geometry-oracle-smoke - Python oracle visual invariant diagnostics
 #   make crash-recovery-smoke - Real-process crash/restart recovery smoke with artifacts
 #   make portal-sandbox-smoke - Confined runtime smoke for available Flatpak/Snap paths
 #   make accessibility-smoke - AT-SPI-enabled accessibility smoke
@@ -60,7 +61,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless automation-smoke visual-smoke visual-geometry-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless automation-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -249,7 +250,11 @@ visual-smoke: build-debug
 
 visual-geometry-smoke: build-debug
 	@echo "Running same-session visual geometry invariant lane..."
-	./scripts/visual-geometry-smoke.py --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --binary "$(PWD)/target/debug/lushtext"
+	cargo run -q -p cargo-gtk-proof -- run --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"
+
+visual-geometry-oracle-smoke: build-debug
+	@echo "Running Python visual geometry oracle diagnostics..."
+	cargo run -q -p cargo-gtk-proof -- run --oracle python --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry-python-oracle" --scenario-dir scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"
 
 # Real-process crash/restart smoke under isolated headless Mutter. This lane
 # creates draft/session recovery state through the app, SIGKILLs the process,
@@ -378,8 +383,8 @@ check-end-user-smoke-workflow:
 # Guard local UI-sensitive edits against missing same-session visual proof.
 check-visual-proof-policy:
 	@echo "Checking visual geometry proof policy..."
-	./scripts/check-visual-proof-policy.py --self-test
-	./scripts/check-visual-proof-policy.py
+	cargo run -q -p cargo-gtk-proof -- policy --self-test
+	cargo run -q -p cargo-gtk-proof -- policy
 
 # Validate the reusable agent/developer client without needing a live D-Bus app.
 automation-client-self-test:
@@ -653,7 +658,8 @@ help:
 	@echo "  gtk-lush-api-advisory Run advisory semver/public-API checks"
 	@echo "  automation-client-self-test Validate the reusable D-Bus automation CLI helper"
 	@echo "  visual-smoke Real-session screenshot smoke under headless Mutter"
-	@echo "  visual-geometry-smoke Same-session visual invariant screenshot smoke"
+	@echo "  visual-geometry-smoke Rust same-session visual invariant proof"
+	@echo "  visual-geometry-oracle-smoke Python oracle visual invariant diagnostics"
 	@echo "  portal-sandbox-smoke Confined runtime smoke for available Flatpak/Snap paths"
 	@echo "  accessibility-smoke AT-SPI-enabled accessibility smoke"
 	@echo "  performance-smoke Lightweight Criterion performance smoke"

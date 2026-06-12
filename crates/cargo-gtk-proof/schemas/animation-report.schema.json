@@ -7,7 +7,18 @@
   ],
   "optional_fields": [
     "animation_frame_evidence",
+    "capture_mode",
+    "failures",
     "frames",
-    "invariant_id"
+    "geometry_sample_count",
+    "geometry_samples",
+    "intermediate_geometry_sample_count",
+    "invariant_id",
+    "mapped_intermediate_frame_count",
+    "max_row_drift",
+    "max_sample_skew_ms",
+    "max_sample_skew_observed_ms",
+    "sampled_frame_count",
+    "stream_frame_count"
   ]
 }

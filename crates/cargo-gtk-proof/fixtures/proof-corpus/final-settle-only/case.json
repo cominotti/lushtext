@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "case_id": "final-settle-only",
+  "python_status": "failed",
+  "rust_status": "failed",
+  "python_exit_class": "policy-failure",
+  "rust_exit_class": "policy-failure",
+  "python_verified_invariant_ids": [],
+  "rust_verified_invariant_ids": [],
+  "python_warning_scan_status": "passed",
+  "rust_warning_scan_status": "passed",
+  "python_summary_path": "final-settle-only/summary.json",
+  "rust_summary_path": "final-settle-only/summary.json",
+  "python_artifact_root_shape": "visual-geometry-case",
+  "rust_artifact_root_shape": "visual-geometry-case",
+  "python_engine": { "name": "visual-geometry-smoke.py", "mode": "oracle" },
+  "rust_engine": { "name": "cargo-gtk-proof", "mode": "parity-replay" },
+  "python_detail": "missing animation-frame evidence",
+  "rust_detail": "missing animation-frame evidence"
+}

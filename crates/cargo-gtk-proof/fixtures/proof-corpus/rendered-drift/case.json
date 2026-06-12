@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "case_id": "rendered-drift",
+  "python_status": "failed",
+  "rust_status": "failed",
+  "python_exit_class": "pixel-anchor-failed",
+  "rust_exit_class": "pixel-anchor-failed",
+  "python_detail": "app geometry stayed stable while rendered anchor drifted",
+  "rust_detail": "app geometry stayed stable while rendered anchor drifted"
+}

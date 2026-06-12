@@ -122,6 +122,13 @@ To review smoke output after a run:
 scripts/lushtext-automation.py artifact-summary build/smoke/automation --json
 ```
 
+For Rust-backed visual proof roots, `artifact-summary` preserves the same
+result envelope while surfacing proof engine metadata, schema version,
+scenario source, parity report, environment report, and missing host
+capabilities. Python oracle or diagnostic artifacts remain labeled through the
+same `engine` and `parity` fields rather than being treated as default Rust
+proof.
+
 The raw D-Bus calls remain useful for debugging the protocol directly. Inspect
 the read-only automation object with:
 
@@ -272,19 +279,34 @@ scripts/lushtext-automation.py visual-geometry-capture build/smoke/live-visual-g
   --color-scheme force-light --word-wrap true --fixture-kind plain-lines
 ```
 
-The command writes `live-snapshot.json`, `capture-manifest.json`, and a generated
-scenario under `generated-scenarios/`, then records the exact
-`scripts/visual-geometry-smoke.py --scenario-dir ...` replay command. If theme,
-word wrap, fixture kind, direction, or viewport position cannot be inferred, it
-exits with `missing-field` and asks for explicit overrides. Optional portal
-screenshots are context-only; invariant proof is the Automation1 snapshot plus
-the generated headless visual-geometry replay.
+The command writes `live-snapshot.json`, `capture-manifest.json`, and a
+generated scenario under `generated-scenarios/`, then records the exact
+`cargo run -q -p cargo-gtk-proof -- run --scenario-dir ...` replay command. If
+theme, word wrap, fixture kind, direction, or viewport position cannot be
+inferred, it exits with `missing-field` and asks for explicit overrides.
+Optional portal screenshots are context-only; invariant proof is the
+Automation1 snapshot plus the generated headless visual-geometry replay.
 `make check-visual-proof-policy` is the fast companion gate: when local
 visual-sensitive files have changed, it requires a passing
 unfiltered `build/smoke/visual-geometry/summary.json` whose recorded
 visual-sensitive diff fingerprint still matches the current worktree and whose
 `pixel_verified_invariant_ids` cover any named pixel invariants required by the
-changed files before `make check-policy` can pass.
+changed files before `make check-policy` can pass. The Make target now runs
+`cargo gtk-proof policy`; `scripts/check-visual-proof-policy.py` remains a
+compatibility shim for command callers and an importable metadata helper for the
+Python live runner.
+
+For parity investigation or a diagnostic cross-check, run the legacy visual
+runner through Rust supervision explicitly:
+
+```sh
+cargo gtk-proof run --oracle python --artifact-dir build/smoke/visual-geometry
+```
+
+That command records bounded Rust supervision metadata and the
+`python-visual-oracle` engine. It is diagnostic/oracle output, not default Rust
+proof, and skipped oracle summaries still do not satisfy visual-sensitive proof
+policy.
 
 The crash-recovery lane also uses Automation1 after relaunch: it waits for
 `recovery-restore-complete`, writes `relaunch-automation-snapshot.json`, and

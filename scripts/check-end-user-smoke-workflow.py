@@ -11,6 +11,18 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github/workflows/end-user-smoke.yml"
+MAKEFILE = REPO_ROOT / "Makefile"
+
+RUST_VISUAL_GEOMETRY_COMMAND = (
+    'cargo run -q -p cargo-gtk-proof -- run --artifact-dir '
+    '"$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir '
+    'scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"'
+)
+PYTHON_ORACLE_COMMAND = (
+    'cargo run -q -p cargo-gtk-proof -- run --oracle python --artifact-dir '
+    '"$(SMOKE_ARTIFACT_DIR)/visual-geometry-python-oracle" --scenario-dir '
+    'scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"'
+)
 
 EXPECTED_LANES: dict[str, tuple[str, str]] = {
     "automation": (
@@ -101,9 +113,33 @@ def check_workflow(workflow: str) -> list[str]:
     return findings
 
 
+def check_makefile(makefile: str) -> list[str]:
+    """Return drift findings for local visual-geometry smoke entry points."""
+    findings: list[str] = []
+    required_terms = [
+        "visual-geometry-smoke: build-debug",
+        RUST_VISUAL_GEOMETRY_COMMAND,
+        "visual-geometry-oracle-smoke: build-debug",
+        PYTHON_ORACLE_COMMAND,
+    ]
+    findings.extend(
+        f"Makefile is missing required term `{term}`"
+        for term in required_terms
+        if term not in makefile
+    )
+    default_target = makefile.split("visual-geometry-smoke: build-debug", 1)[-1].split(
+        "visual-geometry-oracle-smoke: build-debug",
+        1,
+    )[0]
+    if "scripts/visual-geometry-smoke.py" in default_target:
+        findings.append("visual-geometry-smoke default must not call the Python oracle script")
+    return findings
+
+
 def main() -> int:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    findings = check_workflow(workflow)
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    findings = [*check_workflow(workflow), *check_makefile(makefile)]
     if findings:
         print("end-user smoke workflow drift detected:")
         for finding in findings:

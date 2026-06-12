@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "case_id": "missing-manifest",
+  "python_status": "artifact-error",
+  "rust_status": "artifact-error",
+  "python_exit_class": "artifact-error",
+  "rust_exit_class": "artifact-error",
+  "python_summary_path": "missing-manifest/summary.json",
+  "rust_summary_path": "missing-manifest/summary.json",
+  "python_detail": "missing scenario-manifest.json",
+  "rust_detail": "missing scenario-manifest.json"
+}

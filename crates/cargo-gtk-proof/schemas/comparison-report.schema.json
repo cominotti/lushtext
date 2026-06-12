@@ -6,9 +6,14 @@
     "status"
   ],
   "optional_fields": [
+    "allowed_changing_regions",
     "app_vs_rendered_disagreements",
+    "final_geometry",
+    "invariant_id",
     "pixel_anchor_evidence",
+    "pixel_anchors",
     "protected_regions",
+    "regions",
     "rendered_anchor_stability"
   ]
 }

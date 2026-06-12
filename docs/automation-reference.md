@@ -19,7 +19,7 @@ terms, scenario-helper flag entries, and scenario manifest field anchors in
 this file, every reusable automation-client command/status/result/artifact
 anchor, plus every stable AT-SPI anchor used by the accessibility smoke helper.
 
-<!-- automation-helper-flags: run-automation-smoke --artifact-dir --binary run-crash-recovery-smoke --artifact-dir --binary run-accessibility-smoke --artifact-dir --binary run-visual-smoke --artifact-dir --binary visual-geometry-smoke --artifact-dir --binary --scenario-dir --case-filter capture-lushtext-mutter --file --output --search --expected-search-matches --enable-minimap --enable-atspi --window-action --window-string-action --window-bool-action --wait-predicate --wait-window-action --wait-atspi-text --color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary visual-geometry-capture self-test --bus-name --object-path --interface --window-path --timeout-ms --json --field --string --bool --uint32 --variant-json --scenario-id --size-id --direction --color-scheme --word-wrap --fixture-kind --viewport-position -->
+<!-- automation-helper-flags: run-automation-smoke --artifact-dir --binary run-crash-recovery-smoke --artifact-dir --binary run-accessibility-smoke --artifact-dir --binary run-visual-smoke --artifact-dir --binary cargo-gtk-proof-run --artifact-dir --binary --scenario-dir --case-filter --oracle capture-lushtext-mutter --file --output --search --expected-search-matches --enable-minimap --enable-atspi --window-action --window-string-action --window-bool-action --wait-predicate --wait-window-action --wait-atspi-text --color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary visual-geometry-capture self-test --bus-name --object-path --interface --window-path --timeout-ms --json --field --string --bool --uint32 --variant-json --scenario-id --size-id --direction --color-scheme --word-wrap --fixture-kind --viewport-position -->
 
 ## Stability Policy
 
@@ -166,6 +166,13 @@ status vocabulary.
 | --- | --- | --- |
 | <span id="automation-client-artifact-field-artifact-dir"></span>`automation-client-artifact-field-artifact-dir` | `artifact_dir` | Absolute artifact directory that was summarized. |
 | <span id="automation-client-artifact-field-status"></span>`automation-client-artifact-field-status` | `status` | Final manifest status, usually `passed`, `failed`, or `skipped`. |
+| <span id="automation-client-artifact-field-schema-version"></span>`automation-client-artifact-field-schema-version` | `schema_version` | Version of the Rust visual proof summary schema when present. |
+| <span id="automation-client-artifact-field-engine"></span>`automation-client-artifact-field-engine` | `engine` | Proof engine metadata, distinguishing Rust default proof from Python oracle or diagnostic output. |
+| <span id="automation-client-artifact-field-scenario-source"></span>`automation-client-artifact-field-scenario-source` | `scenario_source` | Rust proof scenario source metadata such as scenario root, manifest count, and expanded case count. |
+| <span id="automation-client-artifact-field-parity"></span>`automation-client-artifact-field-parity` | `parity` | Inline Rust/Python parity metadata when a parity run produced the summary. |
+| <span id="automation-client-artifact-field-parity-report"></span>`automation-client-artifact-field-parity-report` | `parity_report` | Parsed parity report metadata from the summary or sibling `parity-report.json`. |
+| <span id="automation-client-artifact-field-environment-report"></span>`automation-client-artifact-field-environment-report` | `environment_report` | Parsed Rust proof host/runtime environment report when present. |
+| <span id="automation-client-artifact-field-missing-capabilities"></span>`automation-client-artifact-field-missing-capabilities` | `missing_capabilities` | Bounded host capability diagnostics for skipped or unsupported visual proof runs. |
 | <span id="automation-client-artifact-field-scenario-id"></span>`automation-client-artifact-field-scenario-id` | `scenario_id` | Stable scenario id from the manifest. |
 | <span id="automation-client-artifact-field-scenario-type"></span>`automation-client-artifact-field-scenario-type` | `scenario_type` | Visual geometry scenario family, when present. |
 | <span id="automation-client-artifact-field-failure-status"></span>`automation-client-artifact-field-failure-status` | `failure_status` | Stable machine-readable failure status for visual geometry artifacts. |
@@ -215,10 +222,11 @@ status vocabulary.
 | `scripts/run-accessibility-smoke.sh` | `--binary PATH` | Runs the given LushText binary instead of `target/debug/lushtext`. |
 | `scripts/run-visual-smoke.sh` | `--artifact-dir DIR` | Writes screenshot, Automation1 snapshot, surface/search/workspace/notes/bookmarks/command-palette assertions, per-capture `*-manifest.json`, warning-scan, capture-session, environment, and summary artifacts to `DIR`. |
 | `scripts/run-visual-smoke.sh` | `--binary PATH` | Runs the given LushText binary instead of `target/debug/lushtext`. |
-| `scripts/visual-geometry-smoke.py` | `--artifact-dir DIR` | Writes same-session before/after screenshots, bounded geometry snapshots, protected-region and pixel-anchor comparison reports, warning scans, per-case manifests, and root summary artifacts to `DIR`. |
-| `scripts/visual-geometry-smoke.py` | `--binary PATH` | Runs the given LushText binary instead of `target/debug/lushtext`. |
-| `scripts/visual-geometry-smoke.py` | `--scenario-dir DIR` | Loads visual invariant scenario manifests from `DIR`. |
-| `scripts/visual-geometry-smoke.py` | `--case-filter TEXT` | Runs only visual geometry cases whose generated id contains `TEXT`. |
+| `cargo gtk-proof run` | `--artifact-dir DIR` | Writes same-session before/after screenshots, bounded geometry snapshots, protected-region and pixel-anchor comparison reports, animation-stream evidence, warning scans, per-case manifests, and root summary artifacts to `DIR`. |
+| `cargo gtk-proof run` | `--binary PATH` | Runs the given LushText binary instead of `target/debug/lushtext`. |
+| `cargo gtk-proof run` | `--scenario-dir DIR` | Loads visual invariant scenario manifests from `DIR`. |
+| `cargo gtk-proof run` | `--case-filter TEXT` | Runs only visual geometry cases whose generated id contains `TEXT`. |
+| `cargo gtk-proof run` | `--oracle python` | Runs the legacy Python visual runner under Rust supervision as explicit diagnostic/oracle output. The resulting `python-visual-oracle` engine metadata is non-authoritative and skipped summaries do not count as proof. |
 | `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--file PATH` | Opens the fixture file in the isolated LushText process before capture. |
 | `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--output PATH` | Writes the captured headless Mutter monitor PNG to this path. |
 | `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--search TEXT` | Sets in-document search through `win.set-search-query` and waits for `search-complete`. |
@@ -311,7 +319,9 @@ when the expected focus target remains visible in the same AT-SPI tree.
 assertion artifacts, while `scripts/run-visual-smoke.sh` writes one bounded
 `assertions/<capture>-manifest.json` per visual scenario. The visual geometry
 runner writes one case-level `scenario-manifest.json` per generated matrix case
-and a root `summary.json`; those case manifests extend the same bounded review
+and a root `summary.json`; those artifacts identify authoritative Rust engine
+metadata, schema version, scenario source, parity status, and unsupported-host
+reasons when host tooling is missing. Case manifests extend the same bounded review
 index idea with `scenario_type`, `protected_regions`,
 `allowed_changing_regions`, `geometry_snapshots`, `pixel_anchors`,
 `relative_pixel_anchors`, `invariant_id`, and `comparison_report` fields

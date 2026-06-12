@@ -13,9 +13,15 @@
   "optional_fields": [
     "animation_frame_sample_count",
     "animation_verified_invariant_ids",
+    "artifact_root",
     "case_filter",
+    "engine",
+    "missing_capabilities",
+    "parity",
+    "parity_report",
     "pixel_anchor_assertion_count",
     "pixel_verified_invariant_ids",
+    "scenario_source",
     "verified_invariant_ids",
     "visual_proof_policy"
   ]

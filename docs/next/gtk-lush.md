@@ -1,8 +1,8 @@
 # GTK Lush — Umbrella Vision
 
-Status: active umbrella vision. Phases 1 and 2 are complete, and Phase 3
-functional in-tree APIs for `gtk-lush-tasks`, `gtk-lush-viewport`, and
-`gtk-lush-widgets` are current under `extract-gtk-lush-runtime-geometry`.
+Status: active umbrella vision. Phases 1 through 4 are complete in-tree
+functional API/tooling phases. Phase 5 publication, second-consumer adoption,
+repository split, and upstreaming remain future work.
 
 GTK Lush is the extraction of LushText's hardened GTK4/Libadwaita patterns into
 a small family of independently adoptable Rust crates, plus a reusable headless
@@ -74,7 +74,7 @@ and the code they fence:
 | Render-hold overlay (freeze last-good pixels across a layout storm) | `gtk-lush-widgets::RenderHoldOverlay` owns capture/cover/opacity mechanics; minimap owns timing | `ui.md` (minimap guardrails), `widget-wiring.md` |
 | Headless widget harness | `crates/lushtext/tests/widget.rs` + `scripts/run-widget-tests.sh` + `tests/widget/common.rs` wait helpers | `gtk-testing` skill |
 | Readiness/snapshot automation spine | `ui/automation.rs`, `model/automation.rs`, D-Bus Automation1 | `docs/automation.md`, `widget-wiring.md` |
-| Visual-geometry proof lane | `scripts/visual-geometry-smoke.py`, `test-visual-geometry.py`, `visual_geometry_png.py`, scenario JSONs, `check-visual-proof-policy.py` | `build.md`, `ui.md`, `gtk-agentic-debugging` skill |
+| Visual-geometry proof lane | `cargo gtk-proof run`, `scripts/visual-geometry-smoke.py` as Python oracle, `test-visual-geometry.py`, `visual_geometry_png.py`, scenario JSONs, `check-visual-proof-policy.py` | `build.md`, `ui.md`, `gtk-agentic-debugging` skill |
 
 The README of each extracted crate is the corresponding rule section, rewritten
 around the type that now enforces it. The documentation is already paid for.
@@ -194,10 +194,9 @@ The headless verification toolchain, split into:
   app state. LushText's Automation1 becomes the first implementation.
 - **`cargo-gtk-proof`** (cargo subcommand, Rust): the visual-proof tool surface
   for scenario schema descriptors, bounded result envelopes, PNG comparison
-  primitives, compatibility corpus replay, and proof-policy checks. The current
-  Python live runners remain the executable specification for same-session
-  before/after capture, relative anchors, animation-frame stream sampling, and
-  artifact layout until Rust parity is recorded.
+  primitives, compatibility corpus replay, proof-policy checks, and the default
+  same-session live visual runner. The Python live runner remains an explicit
+  oracle/diagnostic path after Rust parity.
 
 - **Acceptance:** LushText's existing lanes run unchanged on top of the
   extracted pieces where parity is recorded; the scenario schema descriptors
@@ -296,16 +295,17 @@ Status: current/completed in-tree functional API phase. These crates remain
 
 ### Phase 4 — Proof toolchain extraction
 
-Status: active in-tree functional API phase. `gtk-lush-proof-harness` and
-`gtk-lush-proof-spine` now exist as functional `0.0.0` family APIs, and
+Status: completed in-tree functional API phase. `gtk-lush-proof-harness` and
+`gtk-lush-proof-spine` exist as functional `0.0.0` family APIs, and
 `cargo-gtk-proof` exists as a separate workspace tool outside `crates/gtk-lush/`.
-The Rust tool has typed schema validation, bounded result envelopes, a pure PNG
-comparison/detector corpus, and a Rust proof-policy self-test path. LushText's
-widget harness consumes `gtk-lush-proof-harness`, and Automation1 has
-proof-spine readiness/workflow projections plus a D-Bus introspection golden.
-The Python visual runner remains the authoritative live visual path until
-recorded corpus parity, live runner parity, animation proof parity, and wrapper
-migration are complete.
+The Rust tool now owns typed schema validation, bounded result envelopes, the
+pure PNG/detector corpus, proof-policy checks, same-session live visual proof,
+animation-stream evidence, and the default `make visual-geometry-smoke`
+wrapper. LushText's widget harness consumes `gtk-lush-proof-harness`, and
+Automation1 has proof-spine readiness/workflow projections plus a D-Bus
+introspection golden. The Python visual runner remains available only as a
+Rust-supervised oracle/diagnostic path. Phase 5 publishing, second-consumer
+adoption, repository split, and upstreaming remain separate future phases.
 
 1. Extract the harness crate; LushText's `tests/widget.rs` becomes a consumer.
 2. Extract the spine traits; Automation1 implements them with zero D-Bus
@@ -313,11 +313,10 @@ migration are complete.
 3. Port the visual-geometry runner to `cargo-gtk-proof` behind a
    compatibility suite: identical artifacts, summaries, and pass/fail
    decisions on a frozen corpus of recorded scenario runs before the Python
-   path is retired. In progress; pure PNG/schema/policy pieces exist, live
-   same-session runner parity remains.
+   path is retired. Complete for Phase 4; Python is now diagnostic/oracle only.
 4. Publish the scenario schema (versioned JSON schema document) as part of the
-   crate docs. In progress; workspace schema descriptors exist and still need
-   final user-facing schema documentation.
+   crate docs. Complete for Phase 4 in `docs/gtk-proof-schemas.md` and the
+   workspace schema descriptors.
    (Follow-up change name: `extract-gtk-lush-proof-toolchain`.)
 
 ### Phase 5 — Second consumer and the publishing gate
@@ -400,7 +399,8 @@ migration are complete.
   SLA, small surface area, CI matrix on GNOME containers, and a policy that a
   blocked bump halts publishing rather than forking behavior.
 - **Proof-runner port regressions.** Mitigation: the frozen-corpus
-  compatibility suite in Phase 4; Python stays until the corpus decides.
+  compatibility suite and Rust live visual proof in Phase 4; Python remains as
+  an explicit diagnostic oracle rather than the default proof authority.
 - **Maintenance load on a single maintainer.** Mitigation: five boring crates
   over one clever one; upstreaming knowledge instead of carrying it; archiving
   policy.

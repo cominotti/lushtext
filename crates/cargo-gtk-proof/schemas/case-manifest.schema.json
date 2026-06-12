@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "schema_id": "case-manifest",
+  "required_fields": [
+    "schema_version",
+    "scenario_id",
+    "scenario_type"
+  ],
+  "optional_fields": [
+    "allowed_changing_regions",
+    "animation_sampling",
+    "case",
+    "failure_reason",
+    "failure_status",
+    "geometry_snapshots",
+    "gsettings",
+    "invariant_id",
+    "pixel_anchors",
+    "protected_regions",
+    "relative_pixel_anchors",
+    "same_session",
+    "screenshots",
+    "skip_reason",
+    "source_manifest",
+    "warnings"
+  ]
+}
