@@ -133,7 +133,7 @@ persistence identifiers.
 #### Scenario: Artifact root reset is guarded
 - **WHEN** the runner prepares an output artifact directory
 - **THEN** it refuses to recursively clear unsafe roots such as `/`, the home
-  directory, the workspace root, or an empty path
+  directory, the repository root, or an empty path
 - **AND** it only resets the intended bounded artifact root for the current run
 
 ### Requirement: Tool validates versioned scenario and artifact descriptors
