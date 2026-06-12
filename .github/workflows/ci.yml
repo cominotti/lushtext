@@ -170,8 +170,12 @@ jobs:
             git \
             openssl-devel
 
+      # Dated nightly toolchains are not published as dtolnay/rust-toolchain
+      # action refs; the dated pin must flow through the toolchain input.
       - name: Install pinned public API toolchain
-        uses: dtolnay/rust-toolchain@nightly-2026-06-01
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.GTK_LUSH_PUBLIC_API_TOOLCHAIN }}
 
       - uses: Swatinem/rust-cache@v2
         with:
