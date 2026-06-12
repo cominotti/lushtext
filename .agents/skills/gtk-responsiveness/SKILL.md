@@ -1,6 +1,6 @@
 ---
 name: gtk-responsiveness
-description: "Guide and review Rust code for GTK4/Libadwaita responsiveness, performance, and memory efficiency. Uses parallel subagents for deterministic, focused reviews. Auto-invoked when writing or modifying UI code, async patterns, signal handlers, file I/O, TreeListModel usage, or any code that could block the main thread. Use whenever the user writes code in ui/, touches gtk_lush_tasks::spawn_blocking_then, works with GLib signals, handles file operations, implements ListView/TreeListModel patterns, or discusses performance, responsiveness, threading, memory leaks, or 'app not responding' issues. Also trigger when reviewing UI code in pull requests."
+description: "Guide and review Rust code for GTK4/Libadwaita responsiveness, performance, and memory efficiency. Uses parallel subagents for deterministic, focused reviews. Auto-invoked when writing or modifying UI code, async patterns, signal handlers, file I/O, TreeListModel usage, or any code that could block the main thread. Use whenever the user writes code in ui/, touches or should prefer gtk_lush_tasks::spawn_blocking_then, works with GLib signals, handles file operations, implements ListView/TreeListModel patterns, adds debounce/timer code that may fit gtk-lush-settle, or discusses performance, responsiveness, threading, memory leaks, or 'app not responding' issues. Also trigger when reviewing UI code in pull requests."
 ---
 
 Guide and review Rust code for keeping LushText buttery smooth — no "Waiting for application to respond" dialogs, no UI freezes, no janky scrolling, no memory leaks from signal handlers. The GTK main loop runs on a single thread; any blocking call on that thread freezes the entire UI. This skill ensures every I/O operation, heavy computation, and signal handler follows patterns that keep the main loop free and memory usage low.
@@ -24,6 +24,23 @@ If a responsiveness recommendation depends on GTK semantics, confirm it through 
 The main thread runs the GLib main loop, which processes user input events, widget drawing, signal dispatch, timer callbacks, and D-Bus messages. If your code takes >16ms on the main thread (~60fps frame budget), the UI stutters. If it takes >5 seconds, the desktop environment shows "Application Not Responding." There is no exception.
 
 For paned/revealer animations, "responsive" also includes **warning-free live geometry**. A sidebar toggle that feels smooth in a widget test but still logs `GtkBox ... needs at least ...` in the real app is not responsive enough to ship.
+
+## GTK Lush Responsiveness Primitives
+
+Use the existing GTK Lush internal-platform crates before inventing new local
+responsiveness helpers:
+
+- Use `gtk_lush_tasks::spawn_blocking_then` for bounded background work that
+  must return to the GTK main thread. Keep file operations inside
+  `services::filesystem` in the background closure.
+- Use `gtk_lush_settle::{Debounce, SupersedingTimer, SettleBurst}` for fitting
+  UI debounce, superseding one-shots, and readiness-visible settle bursts.
+- Keep raw GLib sources only for explicit pollers, lifecycle sources, chunked
+  population loops, worker-result freshness tokens, or timing patterns that do
+  not match the GTK Lush contract.
+- When a change would add or reshape a GTK Lush primitive, also use
+  `gtk-lush-stewardship`; responsiveness alone should not approve new platform
+  API.
 
 ## Decision Matrix: Sync vs Async
 

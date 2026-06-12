@@ -12,11 +12,12 @@ globs: "**/*.rs"
 - License header `// SPDX-License-Identifier: GPL-3.0-or-later` on LushText
   application `.rs` files. GTK Lush family crates under `crates/gtk-lush/`
   are dual-licensed with `// SPDX-License-Identifier: MIT OR Apache-2.0`.
-- LushText may consume in-tree GTK Lush crates (`gtk-lush-signals`,
-  `gtk-lush-settle`, `gtk-lush-tasks`, `gtk-lush-viewport`, and
-  `gtk-lush-widgets`) through workspace path dependencies. GTK Lush family
-  crates must remain leaf crates and must not depend on LushText or on each
-  other at runtime.
+- LushText may consume in-tree GTK Lush internal-platform crates
+  (`gtk-lush-signals`, `gtk-lush-settle`, `gtk-lush-tasks`,
+  `gtk-lush-viewport`, `gtk-lush-widgets`, `gtk-lush-proof-harness`, and
+  `gtk-lush-proof-spine`) through workspace path dependencies. GTK Lush
+  family crates must remain leaf crates and must not depend on LushText or on
+  each other at runtime.
 
 ## GTK/GLib Imports
 

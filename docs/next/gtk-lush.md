@@ -1,19 +1,24 @@
 # GTK Lush — Umbrella Vision
 
-Status: active umbrella vision. Phases 1 through 4 are complete in-tree
-functional API/tooling phases, and Phase 5a adoption validation is complete
-and archived (`validate-gtk-lush-adoption-surface`). Phase 5b
-publication/graduation, repository split, and upstreaming remain future work.
+Status: current posture is stable in-tree internal platform. Phases 1 through
+4 are complete in-tree functional API/tooling phases, and Phase 5a adoption
+validation is complete and archived (`validate-gtk-lush-adoption-surface`).
+GTK Lush is now maintained as LushText-first workspace infrastructure.
+Publication, repository graduation, LushText migration to published
+dependencies, and broad upstreaming are dormant future tracks that require a
+dedicated maintainer-approved OpenSpec change with refreshed evidence.
 
 GTK Lush is the extraction of LushText's hardened GTK4/Libadwaita patterns into
 a small family of independently adoptable Rust crates, plus a reusable headless
 proof toolchain, governed so that it can never quietly become a framework.
 
-This document is the single narrative for the whole program: principles, crate
-family, phase-by-phase plan, engineering bar, governance, upstreaming, risks,
-and success metrics. The companion OpenSpec change captures the same program as
-verifiable requirements and agent-executable tasks. If the two ever disagree,
-the OpenSpec specs win and this document must be updated in the same change.
+This document remains the umbrella narrative for the whole program:
+principles, crate family, historical phase plan, engineering bar, governance,
+risks, and success metrics. The canonical OpenSpec specs now include
+`gtk-lush-internal-platform`, which supersedes any older roadmap wording that
+looks like automatic publication or upstreaming work. If the narrative and
+OpenSpec specs ever disagree, the OpenSpec specs win and this document must be
+updated in the same change.
 
 ## 1. Mission
 
@@ -209,12 +214,19 @@ that owns app state, theming systems, and one-off LushText domain widgets.
 
 ## 5. Phase plan
 
-Each phase is independently shippable and ends with LushText green on its full
-gate set (`make check`, full widget suite, visual-geometry smoke where
-visual-sensitive files changed). Phases map to OpenSpec changes; Phase 1 plus
-the program scaffolding are covered by `establish-gtk-lush-program`, and each
-later phase is proposed as its own change when its predecessor archives
-(follow-up names reserved below).
+This is now a historical phase plan plus a dormant-track map, not an automatic
+work queue. Completed phases remain documented because they explain the
+current platform. Future GTK Lush work starts only when there is current
+LushText pain, evidence/check drift, proof-tooling value, or a real external
+adopter pull signal. It should still begin as one coherent phase-level
+OpenSpec change and split only when ownership, validation, or artifact clarity
+requires it.
+
+Each active phase is independently shippable and ends with LushText green on
+its full gate set (`make check`, full widget suite, visual-geometry smoke
+where visual-sensitive files changed). Historical phases map to OpenSpec
+changes; Phase 1 plus the program scaffolding are covered by
+`establish-gtk-lush-program`.
 
 ### Phase 0 — Prerequisite simplifications inside LushText
 
@@ -257,15 +269,16 @@ family-crate dependencies. Public settle APIs moved to
    SPDX headers throughout.
 5. Prepare `0.0.0` placeholder packages for optional crates.io reservation
    (squat protection only; publication requires explicit maintainer approval,
-   and real functional publishing is gated by Phase 5b).
+   and real functional publishing is gated by the dormant publication track).
 6. CI: extend existing container lanes to build/test/doc the family; add an
    MSRV verification job and a `cargo-semver-checks` job (advisory until the
    first real publish).
 
 ### Phase 2 — First extractions: `gtk-lush-signals`, `gtk-lush-settle`
 
-Status: current/completed in-tree functional API phase. These crates remain
-`0.0.0` and are not Phase 5b publication-ready.
+Status: completed in-tree functional API phase. These crates remain `0.0.0`
+workspace APIs for the internal platform and are not stable external
+dependencies.
 
 1. Design each API against its rule section; write the README first
    (rule-rewritten-as-docs), then the API, then doctests. Complete.
@@ -279,8 +292,9 @@ Status: current/completed in-tree functional API phase. These crates remain
 
 ### Phase 3 — Geometry and tasking: `gtk-lush-tasks`, `gtk-lush-viewport`, `gtk-lush-widgets`
 
-Status: current/completed in-tree functional API phase. These crates remain
-`0.0.0` and are not Phase 5b publication-ready.
+Status: completed in-tree functional API phase. These crates remain `0.0.0`
+workspace APIs for the internal platform and are not stable external
+dependencies.
 
 1. Extract `spawn_blocking_then` + explicit freshness helpers; migrate
    former `services::async_task` consumers. Complete for in-tree Phase 3.
@@ -305,8 +319,8 @@ animation-stream evidence, and the default `make visual-geometry-smoke`
 wrapper. LushText's widget harness consumes `gtk-lush-proof-harness`, and
 Automation1 has proof-spine readiness/workflow projections plus a D-Bus
 introspection golden. The Python visual runner remains available only as a
-Rust-supervised oracle/diagnostic path. Adoption validation, publishing,
-repository split, and upstreaming remain separate phases.
+   Rust-supervised oracle/diagnostic path. Adoption validation is complete;
+   publishing, repository split, and upstreaming are dormant separate tracks.
 
 1. Extract the harness crate; LushText's `tests/widget.rs` becomes a consumer.
 2. Extract the spine traits; Automation1 implements them with zero D-Bus
@@ -324,7 +338,9 @@ repository split, and upstreaming remain separate phases.
 
 Status: complete and archived (`validate-gtk-lush-adoption-surface`). The
 maintained evidence lives in `crates/gtk-lush-adoption-lab`,
-`fixtures/gtk-lush-adoption/`, and `docs/gtk-lush-adoption/`.
+`fixtures/gtk-lush-adoption/`, and `docs/gtk-lush-adoption/`. This evidence
+is now the maintained internal-platform baseline. It can support a later
+publication proposal, but it does not require one.
 
 1. Build the second consumer: a small real application or gallery/demo app
    maintained in this workspace but outside `crates/gtk-lush/`, using every
@@ -345,7 +361,12 @@ maintained evidence lives in `crates/gtk-lush-adoption-lab`,
    remove LushText-shaped assumptions, or better satisfy the constitution.
    (Follow-up change name: `validate-gtk-lush-adoption-surface`.)
 
-### Phase 5b — Publishing and repository graduation
+### Dormant track — Publishing and repository graduation
+
+This track is not active. It requires a future dedicated, maintainer-approved
+OpenSpec change that cites current evidence, refreshes stale evidence, and
+records release, semver, docs.rs, changelog, credential, repository-history,
+and rollback plans before implementation.
 
 1. Use the archived Phase 5a evidence as the publishing gate input: two real
    consumers, timed adoption journal, unrelated-project spike, API review,
@@ -357,7 +378,11 @@ maintained evidence lives in `crates/gtk-lush-adoption-lab`,
    dependencies allowed only between graduation and first publish).
    (Follow-up change name: `graduate-and-publish-gtk-lush`.)
 
-### Phase 6 — Upstreaming and steady-state maintenance
+### Optional dormant track — Upstreaming and external maintenance
+
+This track is not active as a broad phase. Small upstream documentation or
+issue work remains worthwhile when it directly removes LushText maintenance
+cost, but it does not require GTK Lush publication.
 
 1. Upstream the pure-knowledge wins where maintenance cost drops to zero:
    gtk-rs/GTK documentation issues for the layout-manager `size_allocate`
@@ -381,7 +406,7 @@ maintained evidence lives in `crates/gtk-lush-adoption-lab`,
 - Tests: unit + doctests always; headless widget tests via the harness for
   anything that touches widgets; property tests for pure decision logic.
   Mutation testing: the family's pure decision logic joins the workspace's
-  deterministic cargo-mutants scope as a Phase 5b publishing-gate input; until
+  deterministic cargo-mutants scope as a dormant publication-track input; until
   then `.cargo/mutants.toml` intentionally scopes mutation runs to LushText's
   model/service code, and GTK-bound family code stays out of mutation scope
   permanently per the workspace mutation rules.
@@ -402,37 +427,41 @@ maintained evidence lives in `crates/gtk-lush-adoption-lab`,
 - **Constitution enforcement:** every PR touching the family answers a
   checklist derived from Section 2; a "constitution exception" label requires
   explicit human approval and a GOVERNANCE.md entry.
-- **Treadmill SLAs:** new gtk-rs major supported within one release cycle;
-  GNOME SDK floor raised at most once per year; MSRV at most latest-stable
-  minus two at each publish.
-- **Publishing gates:** no `0.1.0` before (a) the Phase 5a adoption-validation
-  change archives, (b) two real consumers exist, (c) the timed
-  afternoon-adoption test passes, (d) at least one unrelated existing project
-  adoption spike is recorded, (e) semver tooling is green, and (f) docs are
-  complete. Placeholder `0.0.0` reservations carry a README pointing here.
-  Functional in-tree `0.0.0` APIs may exist before Phase 5b, but they must
-  continue to state that external publication stability is not promised yet.
+- **Treadmill SLAs:** new gtk-rs major supported within one release cycle when
+  the family is on a publication track; GNOME SDK floor raised at most once
+  per year; MSRV at most latest-stable minus two at each publish.
+- **Publishing gates:** dormant until a dedicated publication/graduation
+  proposal is approved. No `0.1.0` before (a) the Phase 5a
+  adoption-validation change archives, (b) two real consumers exist, (c) the
+  timed afternoon-adoption test passes, (d) at least one unrelated existing
+  project adoption spike is recorded, (e) semver tooling is green, and (f)
+  docs are complete. Placeholder `0.0.0` reservations carry a README pointing
+  here. Functional in-tree `0.0.0` APIs may exist indefinitely as workspace
+  APIs, but they must continue to state that external publication stability is
+  not promised.
 - **Maintenance honesty:** each crate lists its bus-factor plan; if the
   family ever becomes unmaintained, the constitution requires archiving with
   migration notes rather than silent rot.
-- **Repo split:** in-tree until Phase 5b gates pass; then a dedicated repo with
-  history preserved; LushText pins published versions thereafter.
+- **Repo split:** in-tree workspace path dependencies are the current intended
+  state. A dedicated repo and published LushText dependencies require the
+  dormant publication/graduation track to be explicitly reopened.
 
 ## 8. Risks and mitigations
 
 - **Framework drift** — the central risk. Mitigation: the constitution, the
-  per-PR checklist, the leaf-crate rule, and the periodic audit (Phase 6.3).
-- **Premature generalization from one consumer.** Mitigation: Phase 5a gate;
-  APIs stay `0.0.x` and in-tree until a second consumer has reshaped them.
+  per-PR checklist, the leaf-crate rule, and demand-driven periodic audit.
+- **Premature generalization from one consumer.** Mitigation: keep APIs
+  `0.0.x` and in-tree unless a reopened publication track proves enough
+  external adopter signal to reshape them.
 - **gtk-rs version lag turning into consumer pain.** Mitigation: treadmill
   SLA, small surface area, CI matrix on GNOME containers, and a policy that a
   blocked bump halts publishing rather than forking behavior.
 - **Proof-runner port regressions.** Mitigation: the frozen-corpus
   compatibility suite and Rust live visual proof in Phase 4; Python remains as
   an explicit diagnostic oracle rather than the default proof authority.
-- **Maintenance load on a single maintainer.** Mitigation: five boring crates
-  over one clever one; upstreaming knowledge instead of carrying it; archiving
-  policy.
+- **Maintenance load on a single maintainer.** Mitigation: small leaf crates,
+  demand-driven GTK Lush work, upstream notes when they remove carried cost,
+  and archiving policy.
 - **License friction.** Mitigation: dual MIT/Apache for the family decided up
   front; REUSE-compliant headers from the first commit.
 
@@ -442,20 +471,24 @@ maintained evidence lives in `crates/gtk-lush-adoption-lab`,
   archive).
 - Zero new entries in `.agents/rules/*.md` for pain classes a family crate
   owns (the rule becomes a pointer to crate docs).
-- The adoption-validation phase records a maintained second consumer,
+- The adoption-validation baseline records a maintained second consumer,
   crate-by-crate matrix, timed afternoon-adoption journal, unrelated-project
-  spike, and friction-driven API review before `0.1.0`.
+  spike, and friction-driven API review without forcing `0.1.0`.
 - LushText's full gate set stays green at every phase boundary — including
   pixel-anchor and animation-stream visual scenarios for the geometry crates.
-- At least three upstream contributions accepted (docs or issues) by the end
-  of Phase 6.
+- Optional upstream contributions reduce carried LushText maintenance cost
+  when they are worthwhile.
 
 ## 10. Relationship to OpenSpec
 
-- `establish-gtk-lush-program` (this change): program constitution and
-  governance as capability specs, Phase 1 foundation implementation, and the
-  reserved follow-up roadmap (Phases 0 and 2–6 named above), each later phase
-  arriving as its own proposal that must conform to the
-  `gtk-lush-program-governance` capability.
+- `gtk-lush-internal-platform`: current posture. GTK Lush is stable in-tree
+  LushText infrastructure; publication, repository graduation, published
+  dependency migration, and broad upstreaming are dormant future tracks.
+- `establish-gtk-lush-program`: program constitution and governance as
+  capability specs, Phase 1 foundation implementation, and the original
+  reserved roadmap context.
+- Future GTK Lush work should start as one coherent phase-level proposal and
+  name its demand signal. Publication or graduation work must be its own
+  maintainer-approved proposal with refreshed evidence.
 - This document is the umbrella narrative and must be updated in the same
   change whenever any phase alters scope, naming, or principles.

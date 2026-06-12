@@ -5,7 +5,7 @@ GTK4/Libadwaita patterns into small, independently adoptable Rust crates.
 
 The family is governed by [GOVERNANCE.md](GOVERNANCE.md) and the umbrella
 vision in `docs/next/gtk-lush.md`. The current family members are functional
-in-tree `0.0.0` APIs for LushText and future adoption testing:
+in-tree `0.0.0` APIs for LushText's stable internal platform:
 
 - `gtk-lush-signals`
 - `gtk-lush-settle`
@@ -20,10 +20,11 @@ The companion `cargo-gtk-proof` binary is a workspace proof tool under
 family crates, schemas, and LushText smoke artifacts while leaving the family
 crates as independently adoptable leaves.
 
-They are not Phase 5b publication-ready crates. External stability and any
-`0.1.0` publication still require the adoption-validation, semver, public-API,
-and maintainer approval gates in `GOVERNANCE.md`. Current adoption-validation
-evidence lives in `docs/gtk-lush-adoption/`.
+They are workspace APIs, not stable external dependencies. Publication,
+`0.1.0` release preparation, repository graduation, or LushText migration to
+published GTK Lush crates require a future maintainer-approved proposal that
+refreshes the evidence and satisfies the dormant gates in `GOVERNANCE.md`.
+Current baseline evidence lives in `docs/gtk-lush-adoption/`.
 
 Run the family-specific checks with:
 

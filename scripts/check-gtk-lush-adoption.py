@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Validate the bounded GTK Lush adoption evidence added before publication.
+# Validate the bounded GTK Lush adoption evidence maintained for the internal
+# platform and any future reopened publication track.
 
 from __future__ import annotations
 

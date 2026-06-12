@@ -57,16 +57,15 @@ This crate has no view DSL, no component system, no state/message loop, no
 runtime dependency on another GTK Lush crate, and no replacement for
 Libadwaita adaptive behavior.
 
-## Pre-Publication Status
+## Internal Platform Status
 
-This is the first functional in-tree `0.0.0` API. It is suitable for LushText's
-in-repository migration work, but it is not a Phase 5b publication-ready crate
-and should not be treated as a stable external dependency yet.
+This is the first functional in-tree `0.0.0` API. It is suitable for the
+current LushText internal platform, but it is not a stable external dependency.
 
-Program roadmap and publication gates live in
+Current posture and dormant publication gates live in
 [`docs/next/gtk-lush.md`](https://github.com/cominotti/lushtext/blob/main/docs/next/gtk-lush.md)
 and
 [`crates/gtk-lush/GOVERNANCE.md`](https://github.com/cominotti/lushtext/blob/main/crates/gtk-lush/GOVERNANCE.md).
-Adoption-validation evidence for this crate, including the timed stock
+Baseline adoption evidence for this crate, including the timed stock
 fixture, is tracked in
 [`docs/gtk-lush-adoption/`](https://github.com/cominotti/lushtext/blob/main/docs/gtk-lush-adoption/).

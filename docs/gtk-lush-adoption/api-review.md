@@ -38,7 +38,7 @@ spikes for `gtk4-rs` and Kooha.
 
 - Revisit non-GObject scheduling only if a future external adopter has a real
   GTK application workflow that cannot use weak GTK/GLib targets or pure token
-  checks.
-- Choose a smaller third-party GTK4 app for a later publication phase if the
-  maintainer wants a successful end-to-end external build without installing a
-  large native dependency stack.
+  checks. No action is needed for the current internal platform.
+- Choose a smaller third-party GTK4 app only if a later approved publication or
+  graduation track needs a successful end-to-end external build without
+  installing a large native dependency stack.

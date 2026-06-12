@@ -1,6 +1,6 @@
 ---
 name: gtk4-libadwaita-internals
-description: "Deep operational guide to GTK4, Libadwaita, and GtkSourceView internals for Rust applications using gtk4-rs, libadwaita-rs, and sourceview5-rs. Use when investigating widget lifecycle, measurement and allocation, focus and actions, builder templates, CSS nodes, list virtualization, adaptive Libadwaita containers, GtkSourceView editor features, or GTK and Adwaita warnings and criticals. Trigger on warnings such as `Trying to measure ... needs at least ...`, allocation or snapshot or parenting errors, Paned or Revealer or Box or ListView or TreeListModel behavior, or when implementing or reviewing custom GTK widgets and editor projections in Rust and you need the toolkit contract rather than app-level heuristics."
+description: "Deep operational guide to GTK4, Libadwaita, and GtkSourceView internals for Rust applications using gtk4-rs, libadwaita-rs, and sourceview5-rs. Use when investigating widget lifecycle, measurement and allocation, focus and actions, builder templates, CSS nodes, list virtualization, adaptive Libadwaita containers, GtkSourceView editor features, GTK Lush widget/viewport/signal/settle contracts, or GTK and Adwaita warnings and criticals. Trigger on warnings such as `Trying to measure ... needs at least ...`, allocation or snapshot or parenting errors, Paned or Revealer or Box or ListView or TreeListModel behavior, or when implementing or reviewing custom GTK widgets and editor projections in Rust and you need the toolkit contract rather than app-level heuristics."
 ---
 
 # GTK4 Libadwaita Internals
@@ -33,6 +33,23 @@ Use this skill when the real question is "what contract is GTK, Libadwaita, or G
 6. If it involves GtkSourceView editor features such as marks, gutters, annotations, hover providers, completion, style schemes, or text-buffer projections, use [references/official-sources.md](references/official-sources.md) to confirm both the GtkSourceView source contract and the Rust binding feature gate.
 7. If it involves parentage, mapping, visibility, disposal, or object ownership, read [references/lifecycle-and-ownership.md](references/lifecycle-and-ownership.md).
 8. When the docs are too high-level, use [references/official-sources.md](references/official-sources.md) to jump to the exact upstream source file and function.
+
+## GTK Lush Mapping
+
+After confirming the GTK/Libadwaita contract, map fitting app work to existing
+GTK Lush primitives instead of hand-rolling local helper patterns:
+
+- Signal, binding, and controller lifetimes -> `gtk-lush-signals`.
+- UI debounce, superseding timers, and readiness-linked settle bursts ->
+  `gtk-lush-settle`.
+- Adjustment observation, rest-state, and lower-edge geometry ->
+  `gtk-lush-viewport`.
+- Zero-min clipping and render-hold/capture overlay behavior ->
+  `gtk-lush-widgets`.
+
+This skill establishes toolkit truth; it does not approve new GTK Lush APIs.
+When the existing primitives do not fit and the change proposes a new or
+reshaped GTK Lush contract, also use `gtk-lush-stewardship`.
 
 ## Operating Rules
 

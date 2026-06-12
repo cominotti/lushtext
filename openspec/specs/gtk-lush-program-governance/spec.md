@@ -118,21 +118,20 @@ vision document and declares that no public API is available yet.
   documented as an accepted limitation
 
 ### Requirement: Follow-up roadmap conformance
-Each reserved follow-up phase SHALL arrive as its own OpenSpec change, MUST
+Each future GTK Lush follow-up SHALL arrive as its own OpenSpec change, MUST
 declare conformance to this governance capability, and MUST keep LushText's
 full existing gate set green at its phase boundary, including visual-geometry
-proof whenever visual-sensitive files change. The reserved phases are
-`migrate-preview-pane-to-adwaita`, `normalize-declarative-bindings`,
-`normalize-settle-timer-helpers`, `extract-gtk-lush-signals-and-settle`,
-`extract-gtk-lush-runtime-geometry`, `extract-gtk-lush-proof-toolchain`,
-`complete-gtk-lush-proof-parity`, `validate-gtk-lush-adoption-surface`,
-`graduate-and-publish-gtk-lush`, and `gtk-lush-upstreaming-round-one`, as named
-in the umbrella vision.
+proof whenever visual-sensitive files change. Historical follow-up names remain
+useful context, but `graduate-and-publish-gtk-lush` and
+`gtk-lush-upstreaming-round-one` are dormant tracks that require explicit
+maintainer-approved reopening before implementation.
 
 #### Scenario: Follow-up phase proposed
-- **WHEN** a reserved follow-up change is proposed
+- **WHEN** a future GTK Lush follow-up change is proposed
 - **THEN** its proposal references this capability
 - **AND** its tasks include the full LushText gate set at the phase boundary
+- **AND** it names the LushText pain, evidence drift, proof-tooling value, or
+  external adopter signal that justifies the work
 
 #### Scenario: Geometry extraction phase verification
 - **WHEN** the runtime-geometry or proof-toolchain phase migrates
@@ -146,12 +145,12 @@ in the umbrella vision.
   archived or the extraction proposal records why the prerequisite was
   deliberately superseded
 
-#### Scenario: Adoption validation precedes publication follow-up
-- **WHEN** `graduate-and-publish-gtk-lush` is proposed or implemented
-- **THEN** `validate-gtk-lush-adoption-surface` has already archived or the
-  proposal records an explicit maintainer-approved supersession
-- **AND** publication-specific tasks remain separate from adoption-validation
-  tasks
+#### Scenario: Adoption validation gates a reopened publication track
+- **WHEN** publication or repository graduation is proposed or implemented
+- **THEN** `validate-gtk-lush-adoption-surface` has already archived and the
+  proposal refreshes any stale adoption evidence
+- **AND** publication-specific tasks remain separate from baseline
+  adoption-validation maintenance
 
 ### Requirement: Maintenance honesty and archiving
 Each family crate SHALL document a bus-factor plan, maintainer handoff path,
@@ -271,9 +270,10 @@ responsiveness, Rust architecture, comments, and visual proof before archive.
   it remains outside the reusable crate contract
 - **AND** project rules do not present the retained site as an accidental miss
 
-### Requirement: Proof parity phase closes Phase 4 before publishing gates
+### Requirement: Proof parity phase closes Phase 4 before adoption and publication gates
 The `complete-gtk-lush-proof-parity` phase SHALL close the remaining Phase 4
-proof-toolchain gap before the program enters Phase 5 publishing work. The
+proof-toolchain gap before the program uses proof tooling as adoption or
+publication evidence. The
 phase MUST record that Rust live visual proof, policy, wrappers, scheduled
 smoke, automation summaries, and governance documentation reached parity with
 the Python runner before `cargo gtk-proof run` became authoritative.
@@ -285,9 +285,9 @@ the Python runner before `cargo gtk-proof run` became authoritative.
 - **AND** any remaining Python path is labeled as oracle or diagnostic
   compatibility rather than the default proof authority
 
-#### Scenario: Phase 5 remains blocked until this archive
-- **WHEN** a follow-up proposes publishing, second-consumer adoption,
-  repository split, or first `0.1.0` GTK Lush release work
+#### Scenario: Publication remains blocked until proof parity archives
+- **WHEN** a follow-up proposes publishing, repository split, or first `0.1.0`
+  GTK Lush release work
 - **THEN** review rejects it unless this parity phase has archived or the
   proposal explicitly supersedes it with maintainer-approved governance notes
 
@@ -346,45 +346,44 @@ boundary that keeps publication and second-consumer work out of scope.
 - **AND** it states which Python paths remain available only as oracle or
   diagnostic compatibility
 
-### Requirement: Phase 4 keeps Phase 5 publishing gates deferred
+### Requirement: Phase 4 keeps publication gates deferred
 The proof toolchain and parity phases SHALL NOT publish functional crates,
-claim Phase 5 publication readiness, require a second real consumer, split the
+claim publication readiness, require a second real consumer, split the
 repository, or remove the `0.0.0` pre-publication status of in-tree GTK Lush
 APIs. Any docs updated during Phase 4 MUST continue to state that functional
-publication requires the later `graduate-and-publish-gtk-lush` phase.
+publication requires a later explicit publication or graduation proposal.
 
-#### Scenario: README and CHANGELOG keep pre-publication status
+#### Scenario: README and CHANGELOG keep internal-platform status
 - **WHEN** the proof crates and existing family docs are updated
 - **THEN** their README and CHANGELOG files state that the APIs are functional
-  in-tree `0.0.0` APIs and are not Phase 5 publication-ready
+  in-tree `0.0.0` APIs and are not stable external dependencies
 - **AND** no release automation publishes them as functional crates
 
-#### Scenario: Proposal does not satisfy second-consumer gate
+#### Scenario: Proof parity alone does not satisfy adoption or publication gates
 - **WHEN** the Phase 4 proof parity change completes with LushText consuming
   the extracted pieces and Rust owning the default visual proof runner
-- **THEN** governance still requires Phase 5 for a second real consumer,
-  timed afternoon-adoption test, API review, publication, and repository split
+- **THEN** governance still requires adoption evidence before publication, and
+  a separate approved track before any publication or repository split
 
 #### Scenario: Publishing follow-up remains separate
 - **WHEN** documentation or governance says proof parity is complete
-- **THEN** it also states that publishing gates remain deferred to
-  `graduate-and-publish-gtk-lush`
+- **THEN** it also states that publishing gates remain deferred to a future
+  explicit publication or graduation proposal
 - **AND** proof parity evidence is not treated as a substitute for
   two-consumer adoption or public API review
 
-### Requirement: Adoption validation precedes GTK Lush publication
+### Requirement: Adoption validation precedes any reopened GTK Lush publication
 The GTK Lush program SHALL treat `validate-gtk-lush-adoption-surface` as the
-non-publication adoption-validation phase that precedes
-`graduate-and-publish-gtk-lush`. This phase MUST prove second-consumer
-adoption, timed stock-starter adoption, unrelated-existing-project friction,
-and API review before any later functional `0.1.0` publication or repository
-graduation work begins.
+completed non-publication adoption-validation baseline. This phase proves
+second-consumer adoption, timed stock-starter adoption,
+unrelated-existing-project friction, and API review before any future
+functional `0.1.0` publication or repository graduation track can proceed.
 
 #### Scenario: Adoption phase stays before publishing
 - **WHEN** a follow-up proposes functional crates.io publication, `0.1.0`,
   repository split, or LushText migration to published GTK Lush crates
-- **THEN** review rejects it unless adoption validation has archived or the
-  proposal records an explicit maintainer-approved supersession
+- **THEN** review rejects it unless adoption validation has archived and the
+  proposal refreshes any stale adoption evidence
 
 #### Scenario: Adoption phase does not publish
 - **WHEN** `validate-gtk-lush-adoption-surface` is implemented
@@ -449,7 +448,7 @@ the Rust live runner, wrappers, and automation-client delegation.
 actual Phase 4 result. It MUST distinguish proof family crates from the cargo
 workspace tool, record whether Python remains only as an oracle or diagnostic
 compatibility path, state that Rust owns default live visual proof after
-parity, and keep Phase 5 and Phase 6 scope separate.
+parity, and keep adoption and dormant publication/upstreaming scope separate.
 
 #### Scenario: Tool placement changes the vision document
 - **WHEN** `cargo-gtk-proof` is added or promoted outside `crates/gtk-lush/`
@@ -463,26 +462,25 @@ parity, and keep Phase 5 and Phase 6 scope separate.
   Rust, whether Python remains as a compatibility oracle or diagnostic helper,
   and what evidence justified the transition
 
-#### Scenario: Phase 5 boundary remains visible
+#### Scenario: Adoption and dormant publication boundaries remain visible
 - **WHEN** the vision document describes completed proof parity
 - **THEN** it keeps second-consumer adoption, afternoon-adoption testing,
-  publishing, repository split, and upstreaming in their later phases
+  publishing, repository split, and upstreaming distinct from proof parity
 - **AND** it does not imply that proof parity alone makes GTK Lush
-  publication-ready
+  ready for stable external dependency use
 
-### Requirement: Vision document splits Phase 5 adoption and publishing
-`docs/next/gtk-lush.md` SHALL distinguish the adoption-validation phase from
-the later publication/graduation phase. The vision document MUST continue to
-state that OpenSpec specs are authoritative, and it MUST NOT imply that
-adoption validation alone publishes crates or creates external stability
-guarantees.
+### Requirement: Vision document separates adoption baseline and dormant publishing
+`docs/next/gtk-lush.md` SHALL distinguish the completed adoption-validation
+baseline from any later publication/graduation track. The vision document MUST
+continue to state that OpenSpec specs are authoritative, and it MUST NOT imply
+that adoption validation alone publishes crates, creates external stability
+guarantees, or requires publication to be the next step.
 
-#### Scenario: Roadmap names both halves
+#### Scenario: Roadmap names baseline and dormant track
 - **WHEN** the vision document is updated for this change
-- **THEN** it names the adoption-validation phase before the
-  publication/graduation phase
+- **THEN** it names adoption validation as completed baseline evidence
 - **AND** it keeps publication, repo split, LushText published dependencies,
-  and upstreaming in later work
+  and upstreaming as dormant future tracks requiring explicit approval
 
 #### Scenario: Vision and specs stay aligned
 - **WHEN** adoption scope, crate naming, phase ordering, or publishing gates
@@ -490,3 +488,59 @@ guarantees.
 - **THEN** `docs/next/gtk-lush.md` is updated in the same change
 - **AND** review treats the OpenSpec specs as authoritative if narrative text
   and specs conflict
+
+### Requirement: Internal platform posture governs GTK Lush by default
+The GTK Lush governance contract SHALL recognize the internal platform as the
+default current posture after adoption validation. Governance MUST continue to
+enforce the anti-framework constitution, publishing gates, treadmill SLAs, and
+maintenance honesty, but MUST NOT require publication, repository graduation,
+or upstreaming merely because earlier roadmap text named those possible
+future tracks.
+
+#### Scenario: Governance states the default posture
+- **WHEN** `crates/gtk-lush/GOVERNANCE.md` is updated by this change
+- **THEN** it records that GTK Lush is currently maintained as an in-tree
+  LushText platform
+- **AND** functional publication, `0.1.0`, repository split, and LushText
+  migration to published dependencies remain blocked until a dedicated
+  maintainer-approved publication or graduation change reopens them
+
+#### Scenario: Constitution still blocks overreach
+- **WHEN** future internal-platform work changes a GTK Lush crate or API
+- **THEN** the constitution checklist still rejects control-flow ownership,
+  view DSLs, component/message systems, sibling runtime dependencies, and
+  Libadwaita replacements
+- **AND** no internal-platform shortcut can bypass the exception register
+
+### Requirement: Publication gates are preserved as dormant gates
+Publication gates SHALL remain preserved as dormant gates for future reopened
+publication work. Existing publication, adoption, semver, public-API, docs,
+and maintainer approval gates remain available for that track. They MUST be
+described as dormant gates that apply when publication is explicitly proposed,
+not as unfinished work that blocks the internal platform from being considered
+complete.
+
+#### Scenario: Publication gate text is not removed
+- **WHEN** documentation is pruned for internal stewardship
+- **THEN** the publication gates remain documented
+- **AND** the text distinguishes dormant future-track gates from checks that
+  must run for ordinary in-tree GTK Lush maintenance
+
+#### Scenario: Reopened publication refreshes evidence
+- **WHEN** a future proposal reopens functional publication or repository
+  graduation
+- **THEN** it cites existing adoption-validation evidence
+- **AND** it refreshes any stale adoption, semver, public-API, docs,
+  changelog, release, credential, and maintainer-approval evidence before
+  release or split work proceeds
+
+### Requirement: Bigger phase-level planning remains the GTK Lush default
+GTK Lush planning SHALL prefer one coherent phase-level OpenSpec change for a
+strategic posture, extraction, publication, or stewardship effort. Smaller
+changes MAY be split out only when they have independent ownership,
+validation, or risk boundaries.
+
+#### Scenario: Strategic GTK Lush change is not fragmented by default
+- **WHEN** future GTK Lush work is proposed after this stabilization
+- **THEN** the proposal starts from a phase-level scope
+- **AND** any split into smaller changes records the reason in design or tasks

@@ -3,15 +3,15 @@
 `gtk-lush-widgets` is a `0.0.0` GTK Lush family crate for small reusable GTK
 widgets and render-hold helpers.
 
-## Pre-Publication Status
+## Internal Platform Status
 
-This is the first functional in-tree implementation. It is not a Phase 5b publication-ready
-crate and is not a crates.io release candidate. The current
-API exists so LushText can prove the extraction boundary before publishing any
-GTK Lush crate.
+This is a functional in-tree `0.0.0` implementation for LushText's internal
+platform. It is not a stable external dependency and is not a crates.io release
+candidate. The current API exists so LushText can keep geometry and render-hold
+helpers small, local, and reviewable.
 
-Follow the roadmap in `docs/next/gtk-lush.md`. Adoption-validation evidence
-for this crate is tracked in `docs/gtk-lush-adoption/`.
+Follow the current posture in `docs/next/gtk-lush.md`. Baseline adoption
+evidence for this crate is tracked in `docs/gtk-lush-adoption/`.
 
 ## Scope
 

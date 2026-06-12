@@ -1,6 +1,6 @@
 ---
 name: gtk-perf-review
-description: "Unified performance review entry point for GTK4/Libadwaita Rust code — dispatches parallel subagents for responsiveness (main-thread blocking, signal handlers, timers), Rust code quality (SIMD hot paths, modern idioms, benchmarks), and scale (large files, search indexing, file trees, RAM budgets). Use this skill whenever reviewing or writing Rust code that touches UI, file I/O, async patterns, search, indexing, signal handlers, TreeListModel, or any performance-sensitive path. This is the single entry point that replaces invoking gtk-responsiveness, gtk-perf-rust-optimize, and gtk-perf-scale separately. Trigger on any .rs file change in ui/ or services/, any mention of performance, responsiveness, memory, RAM, threading, large files, slow search, SIMD, benchmarks, or 'app not responding'. Also trigger on pull request reviews involving Rust code."
+description: "Unified performance review entry point for GTK4/Libadwaita Rust code — dispatches parallel subagents for responsiveness (main-thread blocking, signal handlers, timers), Rust code quality (SIMD hot paths, modern idioms, benchmarks), and scale (large files, search indexing, file trees, RAM budgets). Use this skill whenever reviewing or writing Rust code that touches UI, file I/O, async patterns, search, indexing, signal handlers, TreeListModel, GTK Lush responsiveness/proof primitives, or any performance-sensitive path. This is the single entry point that replaces invoking gtk-responsiveness, gtk-perf-rust-optimize, and gtk-perf-scale separately. Trigger on any .rs file change in ui/ or services/, any mention of performance, responsiveness, memory, RAM, threading, large files, slow search, SIMD, benchmarks, gtk-lush-tasks, gtk-lush-settle, or 'app not responding'. Also trigger on pull request reviews involving Rust code."
 ---
 
 Unified performance review for LushText. This skill is a lightweight orchestrator that dispatches three focused subagents — one for **responsiveness** (main-thread blocking), one for **scale** (data-path performance and RAM), and one for **Rust code quality** (SIMD hot paths, modern idioms, benchmark coverage) — then merges their reports into a single unified audit.
@@ -14,6 +14,16 @@ Before treating a bug as purely "performance", check whether the report or diff 
 - builder-template child types, parentage, disposal, focus, CSS-node, or adaptive container rules
 
 If so, read `gtk4-libadwaita-internals` first so the performance review does not misclassify a contract violation as a throughput bug.
+
+## GTK Lush Performance Posture
+
+The responsiveness subreview should prefer existing GTK Lush primitives where
+they fit: `gtk-lush-tasks` for bounded worker-to-main dispatch,
+`gtk-lush-settle` for UI debounce/settle timers, `gtk-lush-viewport` for
+adjustment observation, and `gtk-lush-widgets` for clipping or render-hold
+geometry. Do not turn a performance review into a new GTK Lush API proposal;
+use `gtk-lush-stewardship` when the existing platform contract itself would
+need to change.
 
 ## Philosophy: Readability First
 

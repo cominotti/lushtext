@@ -213,10 +213,11 @@ code-block repair currently remains explicit because it pairs idle and timeout
 sources with `SourceId` cancellation and completion callbacks.
 
 `gtk-lush-settle`, `gtk-lush-tasks`, `gtk-lush-viewport`, and
-`gtk-lush-widgets` are functional in-tree crates, not Phase 5
-publication-ready external dependencies. LushText may consume them through the
-workspace path dependencies; external stability still waits for the publishing
-gates in `crates/gtk-lush/GOVERNANCE.md`.
+`gtk-lush-widgets` are functional in-tree crates for LushText's stable
+internal platform. LushText may consume them through workspace path
+dependencies; external stability, publication, and repository graduation stay
+dormant until a future approved proposal reopens the gates in
+`crates/gtk-lush/GOVERNANCE.md`.
 
 ## GTK4 Signal Delivery Pitfalls
 

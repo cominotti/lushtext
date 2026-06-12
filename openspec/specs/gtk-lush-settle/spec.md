@@ -332,8 +332,9 @@ Phase 5 publication readiness.
 - **WHEN** this change completes
 - **THEN** `docs/next/gtk-lush.md` records that Phase 2 extracted the settle
   API
-- **AND** later runtime-geometry, proof-toolchain, publishing, and upstreaming
-  phases remain in the roadmap
+- **AND** later runtime-geometry and proof-toolchain history remains in the
+  roadmap while publishing and upstreaming are shown only as dormant future
+  tracks
 
 ### Requirement: Settle migration preserves LushText proof gates
 The settle migration SHALL preserve LushText's full existing proof surface.

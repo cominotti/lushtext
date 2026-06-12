@@ -1,8 +1,10 @@
 # GTK Lush Adoption Evidence
 
 This directory holds the bounded evidence for
-`validate-gtk-lush-adoption-surface`. It proves GTK Lush adoption before any
-functional `0.1.0` publication, repository split, or LushText dependency move.
+`validate-gtk-lush-adoption-surface`. It is the maintained baseline evidence
+for GTK Lush's in-tree internal platform. It can support a future
+publication/graduation proposal, but it does not require functional `0.1.0`
+publication, repository split, or LushText dependency migration by itself.
 
 ## Locations
 

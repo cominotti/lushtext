@@ -63,6 +63,6 @@ were marked complete.
   future or Python-authoritative. Fixed in `cargo-gtk-proof` README, module
   docs, comments, and canonical OpenSpec wording, while preserving
   `rust-staged` only as historical compatibility metadata.
-- Comments/readability: workspace and family docs now describe Phase 5a as
-  adoption validation and Phase 5b as future publication, so this phase does
-  not imply crates.io release readiness.
+- Comments/readability: workspace and family docs now describe adoption
+  validation as maintained baseline evidence and publication as a dormant
+  future track, so this phase does not imply crates.io release readiness.

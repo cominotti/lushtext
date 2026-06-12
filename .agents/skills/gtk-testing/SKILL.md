@@ -1,6 +1,6 @@
 ---
 name: gtk-testing
-description: "Guide testing strategy for GTK4/Libadwaita Rust applications, especially LushText's current unit, integration, and custom widget-test harness. Use when adding or fixing tests, deciding the right test level, debugging headless GTK failures, modifying `crates/lushtext/tests/**`, or reasoning about widget visibility, animation, focus, and lifecycle assertions in tests. Trigger on mutter headless, widget harness, `TestContext`, flaky GTK tests, CI test configuration, or any request for GTK test coverage."
+description: "Guide testing strategy for GTK4/Libadwaita Rust applications, especially LushText's current unit, integration, GTK Lush proof harness/spine, cargo-gtk-proof, and custom widget-test harness. Use when adding or fixing tests, deciding the right test level, debugging headless GTK failures, modifying `crates/lushtext/tests/**`, `crates/gtk-lush/proof-*`, or `crates/cargo-gtk-proof`, or reasoning about widget visibility, animation, focus, lifecycle assertions, proof artifacts, or visual geometry in tests. Trigger on mutter headless, widget harness, TestContext, gtk-lush-proof-harness, gtk-lush-proof-spine, cargo-gtk-proof, flaky GTK tests, CI test configuration, or any request for GTK test coverage."
 ---
 
 Guide testing for LushText as it exists today. The repo already has solid coverage layers and a custom GTK widget harness; use them before inventing new structure.
@@ -24,6 +24,23 @@ The testing approach is pragmatic:
   pixels while another surface appears, disappears, or resizes. Reach for the
   broader visual, portal/sandbox, accessibility, or performance smoke lanes only
   when the current widget target cannot express the behavior.
+
+## GTK Lush Proof Stack
+
+Prefer the existing GTK Lush proof infrastructure before adding new harness
+shape:
+
+- Use `gtk-lush-proof-harness` for reusable headless widget-test mechanics,
+  test registration, and environment recommendations.
+- Use `gtk-lush-proof-spine` for readiness, blocker, snapshot,
+  workflow-event, and artifact-envelope value objects. Keep app state,
+  transport, and D-Bus ownership outside the crate.
+- Use `cargo-gtk-proof` and `make visual-geometry-smoke` for same-session
+  visual proof, schema/policy validation, pixel anchors, and bounded proof
+  artifacts.
+- If a test change needs new proof-harness, proof-spine, or proof-tool API,
+  also use `gtk-lush-stewardship` and update the adoption matrix, examples,
+  doctests, policy checks, and public-API advisory surface as needed.
 
 ## Current Test Map
 

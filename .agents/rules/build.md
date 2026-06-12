@@ -143,8 +143,8 @@ in the verification summary.
 ## GTK Lush Family Foundation
 
 GTK Lush family crates live under `crates/gtk-lush/<member>` and must stay
-independently adoptable leaf crates. Use the family-specific lanes while
-working on `establish-gtk-lush-program` or any follow-up GTK Lush phase:
+independently adoptable leaf crates. They are current in-tree LushText platform
+APIs, so use the family-specific lanes while working on GTK Lush changes:
 
 ```
 make check-gtk-lush-policy
@@ -170,7 +170,8 @@ checks. `gtk-lush-doctests` and `gtk-lush-examples` cover the documentation and
 standalone adoption example surface that `nextest` does not exercise.
 
 `gtk-lush-api-advisory` runs `cargo-semver-checks` and `cargo-public-api`
-snapshots in advisory mode until the first real `0.1.0` publication. A missing
+snapshots in advisory mode while GTK Lush remains an internal platform and
+until any future approved first `0.1.0` publication. A missing
 published baseline may produce advisory output, but missing tools, command
 rot, or missing/empty public API snapshots are infrastructure failures. The
 lane must still upload or leave inspectable public API snapshots. Once a crate

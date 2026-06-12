@@ -1,6 +1,6 @@
 ---
 name: rust-hex-arch
-description: "Evaluate Rust code changes and architecture discussions against Hexagonal Architecture, CQS, DDD, and clean-code principles for GTK4/Libadwaita desktop applications. Use whenever Rust files are created, modified, reviewed, or refactored, or when the user asks how to modularize code, separate concerns, improve maintainability, choose between helper extraction vs new types, decide where code should live, or reason about domain purity, service boundaries, adapter splits, command/query boundaries, preview/apply splits, value objects, grouped state structs, or workflow-oriented module structure."
+description: "Evaluate Rust code changes and architecture discussions against Hexagonal Architecture, CQS, DDD, and clean-code principles for GTK4/Libadwaita desktop applications. Use whenever Rust files are created, modified, reviewed, or refactored, or when the user asks how to modularize code, separate concerns, improve maintainability, choose between helper extraction vs new types, decide where code should live, reason about GTK Lush as an internal-platform boundary, or reason about domain purity, service boundaries, adapter splits, command/query boundaries, preview/apply splits, value objects, grouped state structs, or workflow-oriented module structure."
 ---
 
 Evaluate Rust code changes against Hexagonal Architecture, Command-Query Separation (CQS), Domain-Driven Design (DDD), and clean-code principles adapted for GTK4/Libadwaita desktop applications.
@@ -79,31 +79,39 @@ These principles override pattern-matching instinct. When in doubt, favor the si
 
 6. **`spawn_blocking_then` is the async adapter.** The GLib main loop is the event loop. Do not recommend Tokio or another async runtime for ordinary editor I/O.
 
-7. **Signal closures are adapter glue, not business logic.** Thin closures that delegate immediately are good. If a closure grows beyond a few non-delegation lines, the logic likely belongs in a widget method, helper module, or service.
+7. **GTK Lush is an existing internal-platform boundary.** Prefer existing
+   GTK Lush crates over app-local reinvention for fitting signal lifetimes,
+   UI settle/timer helpers, bounded worker return, viewport observation,
+   clipping/render-hold widgets, and proof harness/spine contracts. Do not
+   recommend a new GTK Lush API or crate just because code repeats twice; use
+   `gtk-lush-stewardship` and require a real LushText pain, evidence drift,
+   proof-tooling improvement, or external adopter signal.
 
-8. **A crate boundary is stronger than a module boundary.** The existing two-crate workspace already enforces the major separation. Do not recommend more crates unless scale clearly demands it.
+8. **Signal closures are adapter glue, not business logic.** Thin closures that delegate immediately are good. If a closure grows beyond a few non-delegation lines, the logic likely belongs in a widget method, helper module, or service.
 
-9. **Not every contract needs a trait.** A function signature is already a port. Do not invent traits for single implementations with no testing or runtime polymorphism need.
+9. **A crate boundary is stronger than a module boundary.** The existing two-crate workspace already enforces the major separation. Do not recommend more crates unless scale clearly demands it.
 
-10. **Domain types in `model/` must stay framework-free.** No GTK, GLib, gio, sourceview, or UI/service imports.
+10. **Not every contract needs a trait.** A function signature is already a port. Do not invent traits for single implementations with no testing or runtime polymorphism need.
 
-11. **GLib collections belong in the UI layer.** Services should return `Vec`, `HashMap`, enums, and domain structs. Convert to `gio::ListStore` or similar at the adapter boundary.
+11. **Domain types in `model/` must stay framework-free.** No GTK, GLib, gio, sourceview, or UI/service imports.
 
-12. **Split large driving adapters by workflow before adding abstraction.** If one widget mixes unrelated flows, extract sibling modules by workflow. Prefer `search.rs`, `drafts.rs`, `runtime.rs`, `dialogs.rs`, or similar over new service traits.
+12. **GLib collections belong in the UI layer.** Services should return `Vec`, `HashMap`, enums, and domain structs. Convert to `gio::ListStore` or similar at the adapter boundary.
 
-12. **Repeated value shaping belongs in the domain.** If UI or services rebuild the same field bundle in multiple places, extract a value object in `model/`.
+13. **Split large driving adapters by workflow before adding abstraction.** If one widget mixes unrelated flows, extract sibling modules by workflow. Prefer `search.rs`, `drafts.rs`, `runtime.rs`, `dialogs.rs`, or similar over new service traits.
 
-13. **Large `imp` structs may group related state into plain Rust helper structs.** Grouping fields by workflow is normal adapter hygiene when it improves navigation.
+14. **Repeated value shaping belongs in the domain.** If UI or services rebuild the same field bundle in multiple places, extract a value object in `model/`.
 
-14. **Prefer named structs and enums over anonymous tuples and parallel booleans when semantics matter.** If the reader has to remember what `(bool, bool)` means or which `Cell<u32>` pairs move together, the code wants a named type.
+15. **Large `imp` structs may group related state into plain Rust helper structs.** Grouping fields by workflow is normal adapter hygiene when it improves navigation.
 
-15. **Prefer ubiquitous language over technical bucket names.** If the domain says draft, workspace, session, replacement preview, or formatting override, use those words instead of generic names like `data`, `manager`, `helper`, or `state2`.
+16. **Prefer named structs and enums over anonymous tuples and parallel booleans when semantics matter.** If the reader has to remember what `(bool, bool)` means or which `Cell<u32>` pairs move together, the code wants a named type.
 
-16. **Keep one level of abstraction per function.** A function should not bounce between raw widget manipulation, domain decisions, persistence details, and message formatting without clear internal phase boundaries.
+17. **Prefer ubiquitous language over technical bucket names.** If the domain says draft, workspace, session, replacement preview, or formatting override, use those words instead of generic names like `data`, `manager`, `helper`, or `state2`.
 
-17. **Keep one dominant reason to change per module.** A module can coordinate multiple steps in one workflow, but should not own several unrelated workflows at once.
+18. **Keep one level of abstraction per function.** A function should not bounce between raw widget manipulation, domain decisions, persistence details, and message formatting without clear internal phase boundaries.
 
-18. **Preserve principles, not exact refactors.** A recommendation like "separate draft lifecycle from session persistence" is durable. A recommendation like "create `drafts.rs` and `session_persistence.rs`" is only appropriate when the current diff makes that the clearest concrete move.
+19. **Keep one dominant reason to change per module.** A module can coordinate multiple steps in one workflow, but should not own several unrelated workflows at once.
+
+20. **Preserve principles, not exact refactors.** A recommendation like "separate draft lifecycle from session persistence" is durable. A recommendation like "create `drafts.rs` and `session_persistence.rs`" is only appropriate when the current diff makes that the clearest concrete move.
 
 ## Clean Code / DDD Heuristics
 
@@ -255,7 +263,9 @@ model/     depends on std, serde, and other non-UI pure-Rust crates only
 
 Exceptions:
 - driven adapters in `services/` may depend on `serde_json` and other pure support crates; file I/O goes through `services::filesystem`
-- GTK Lush infrastructure crates such as `gtk-lush-tasks` may depend on `glib` for main-loop thread hopping, while LushText `services/` remains GTK-free
+- GTK Lush internal-platform crates such as `gtk-lush-tasks`, `gtk-lush-settle`,
+  `gtk-lush-viewport`, and `gtk-lush-widgets` may depend on GTK/GLib where
+  their crate contract requires it, while LushText `services/` remains GTK-free
 
 [FLAG] anything that reverses this dependency direction.
 

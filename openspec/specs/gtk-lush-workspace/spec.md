@@ -1,9 +1,10 @@
 # gtk-lush-workspace Specification
 
 ## Purpose
-Specify how GTK Lush family crates live inside the LushText workspace before
-graduation, including crate layout, scaffolding, CI lanes, name reservation, and
-the governance document that keeps the family independently adoptable.
+Specify how GTK Lush family crates live inside the LushText workspace as the
+current internal platform, including crate layout, scaffolding, CI lanes, name
+reservation, path-dependency integration, and the governance document that
+keeps the family independently adoptable.
 
 ## Requirements
 ### Requirement: Family workspace layout
@@ -12,7 +13,8 @@ package names `gtk-lush-<member>`, wired into the root Cargo workspace,
 cargo-hakari (`workspace-hack`), the nextest configuration, the curated
 workspace lint table, and cargo-deny. Family members SHALL NOT depend on
 LushText crates or on each other; LushText consumes family crates via
-workspace path dependencies until the graduation phase.
+workspace path dependencies unless a future explicit publication/graduation
+change migrates that source.
 
 #### Scenario: Workspace integration
 - **WHEN** `cargo hakari generate`, `make check`, and the non-widget test lane
@@ -69,10 +71,10 @@ versions MUST be pinned alongside the existing tool pins.
 Crates.io reservations of `gtk-lush-*` names SHALL be limited to initial
 `0.0.0` placeholders until the publishing gates pass. Placeholder releases SHALL
 contain no functional code, SHALL document their placeholder status, and
-SHALL point at the umbrella vision. In-tree pre-publication workspace crates
+SHALL point at the umbrella vision. In-tree internal-platform workspace crates
 MAY expose functional APIs at version `0.0.0` for LushText migration and proof,
-but their README and CHANGELOG MUST clearly state that they are not
-publication-ready and are not yet covered by the Phase 5 publishing gate.
+but their README and CHANGELOG MUST clearly state that they are workspace APIs,
+not stable external dependencies, and not covered by dormant publication gates.
 
 #### Scenario: Placeholder content audit
 - **WHEN** a `0.0.0` placeholder is prepared
@@ -80,8 +82,9 @@ publication-ready and are not yet covered by the Phase 5 publishing gate.
   `docs/next/gtk-lush.md`, and no public API items
 
 #### Scenario: Functional in-tree crate is not treated as published
-- **WHEN** an in-tree GTK Lush crate exposes functional APIs before Phase 5
-- **THEN** its docs and CHANGELOG identify it as pre-publication `0.0.0`
+- **WHEN** an in-tree GTK Lush crate exposes functional APIs in the internal
+  platform
+- **THEN** its docs and CHANGELOG identify it as an internal-platform `0.0.0`
   workspace API
 - **AND** release automation does not publish it as a functional crate until
   the publishing gates pass
@@ -89,9 +92,9 @@ publication-ready and are not yet covered by the Phase 5 publishing gate.
 ### Requirement: Governance document
 `crates/gtk-lush/GOVERNANCE.md` SHALL exist and record: the constitution
 checklist used in review, the exception register, treadmill SLAs, publishing
-gates, the bus-factor/archiving policy, and the repo-graduation plan
-(in-tree until the publishing gates pass, then a dedicated repository with
-history preserved and LushText pinning published versions).
+gates, the bus-factor/archiving policy, the current internal-platform posture,
+and the dormant repo-graduation plan that requires a later approved proposal
+before any dedicated repository split or published-version migration.
 
 #### Scenario: Exception is recorded
 - **WHEN** a constitution exception is approved for a family crate
@@ -290,3 +293,59 @@ GTK Lush publication.
   stock-fixture checks, matrix checks, and `make check`
 - **AND** visual-sensitive work also includes the required visual-geometry
   proof lane
+
+### Requirement: Workspace path dependencies are the steady-state integration
+LushText SHALL consume functional GTK Lush crates through workspace path
+dependencies as the default steady-state integration. This path-based
+integration MUST be valid for ordinary development, testing, OpenSpec
+implementation, and LushText release preparation unless a future dedicated
+publication/graduation change explicitly migrates the dependency source.
+
+#### Scenario: Path dependencies remain intentional
+- **WHEN** maintainers inspect root workspace dependencies and LushText crate
+  manifests after this change
+- **THEN** GTK Lush dependencies remain workspace path dependencies
+- **AND** documentation describes that arrangement as the current intended
+  internal-platform state rather than a temporary defect
+
+#### Scenario: Published dependency migration requires a new change
+- **WHEN** a future change attempts to replace GTK Lush workspace path
+  dependencies with crates.io dependencies or an external repository source
+- **THEN** it requires a dedicated publication or graduation proposal
+- **AND** that proposal records release, versioning, repository-history, and
+  rollback plans before implementation
+
+### Requirement: Internal-platform checks remain first-class workspace gates
+The workspace SHALL keep GTK Lush policy, doctest, example, adoption, MSRV,
+public-API advisory, and proof-related checks discoverable as local gates for
+the in-tree platform. The checks MAY remain advisory where publication has not
+started, but they MUST catch stale crate lists, dependency-direction drift,
+missing examples, stale adoption matrix rows, and malformed proof-policy
+artifacts.
+
+#### Scenario: Check list stays synchronized
+- **WHEN** a GTK Lush crate is added, removed, renamed, or changes its adoption
+  workflow
+- **THEN** Makefile targets, policy scripts, adoption matrix rows, README
+  crate lists, and advisory package lists are updated in the same change
+- **AND** `make check-gtk-lush-policy` and `make check-gtk-lush-adoption`
+  pass before archive
+
+#### Scenario: Publication-only checks are clearly labeled
+- **WHEN** a check is advisory because the crates are not published
+- **THEN** documentation labels it as advisory for the internal platform
+- **AND** does not imply that a failing publication-only credential or release
+  setup blocks ordinary LushText development
+
+### Requirement: Internal-platform artifacts stay bounded
+GTK Lush internal-platform artifacts SHALL remain bounded and reviewable.
+Generated adoption artifacts, visual proof outputs, external checkouts, large
+logs, screenshots, and temporary worktrees MUST stay in ignored or documented
+artifact locations and MUST NOT be committed as source evidence.
+
+#### Scenario: Generated artifacts are not committed
+- **WHEN** adoption or proof checks create local outputs
+- **THEN** those outputs live under documented ignored build or fixture target
+  paths
+- **AND** committed evidence remains bounded markdown, TOML, schemas,
+  examples, or small fixtures suitable for code review

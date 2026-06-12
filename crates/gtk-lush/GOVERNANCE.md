@@ -4,6 +4,19 @@ GTK Lush exists to extract LushText's hardened GTK4/Libadwaita patterns into
 small, independently adoptable Rust crates. The program is governed so it stays
 a leaf-crate family, not a framework.
 
+## Current Posture
+
+GTK Lush is currently maintained as stable in-tree LushText infrastructure.
+The functional crates remain `0.0.0` workspace APIs consumed through path
+dependencies. This is an intentional steady state, not a publication backlog.
+
+Publication, first `0.1.0` release preparation, repository graduation,
+LushText migration to published GTK Lush dependencies, and broad upstreaming
+require a later maintainer-approved OpenSpec change. That change must cite
+current adoption evidence, refresh any stale evidence, and record the release,
+semver, docs.rs, changelog, credential, repository-history, and rollback work
+before implementation.
+
 ## Constitution
 
 Every GTK Lush crate, API, and follow-up change must pass this checklist:
@@ -53,6 +66,10 @@ optional cleanup.
   Libadwaita behavior.
 
 ## Publishing Gates
+
+These are dormant future-track gates. They do not block ordinary in-tree
+LushText development or internal GTK Lush stewardship, but they become
+mandatory if a future proposal explicitly reopens publication or graduation.
 
 `0.0.0` reservations may exist only to protect names. A reservation package
 must contain no public API, must point readers to `docs/next/gtk-lush.md`, and
@@ -105,10 +122,12 @@ Silent rot is not allowed. An unmaintained crate must be archived deliberately.
 
 ## Repository Graduation
 
-GTK Lush stays in this repository until the Phase 5 publishing gates pass. At
-graduation, the family moves to a dedicated `gtk-lush` repository with history
-preserved, and LushText consumes published versions. Path dependencies are
-allowed only during the in-tree and graduation transition windows.
+GTK Lush stays in this repository as the current internal-platform state.
+Workspace path dependencies are intentional for LushText development, testing,
+and release preparation. A dedicated `gtk-lush` repository, preserved-history
+split, and LushText migration to published versions may happen only after a
+future maintainer-approved publication or graduation change reopens this track
+and satisfies the dormant gates above.
 
 ## Review Log
 
@@ -164,9 +183,9 @@ binding, and private settle-helper ownership.
 
 Exceptions: none.
 
-Publication posture: these are functional in-tree `0.0.0` APIs for LushText
-and future adoption testing only. They are not Phase 5b publication-ready, and
-no `0.1.0` release may proceed until the publishing gates above are satisfied.
+Publication posture: these are functional in-tree `0.0.0` APIs for LushText.
+They are not stable external dependencies, and no `0.1.0` release may proceed
+until a future approved publication track satisfies the dormant gates above.
 
 ### 2026-06-12 — Phase 5a Adoption Validation (`validate-gtk-lush-adoption-surface`)
 
@@ -225,8 +244,8 @@ Verification evidence:
 
 Publication posture: this phase may reshape breaking `0.0.0` APIs based on
 adoption friction, but it does not publish functional crates, prepare `0.1.0`,
-split the repository, move LushText to published dependencies, or perform the
-Phase 6 upstreaming round.
+split the repository, move LushText to published dependencies, or perform a
+broad upstreaming round.
 
 ### 2026-06-12 — Phase 4 Proof Toolchain Audit (`extract-gtk-lush-proof-toolchain`)
 
@@ -254,9 +273,36 @@ schema, corpus, PNG, and policy proof work.
 
 Exceptions: none.
 
-Publication posture: these are functional in-tree `0.0.0` APIs for LushText
-and future adoption testing only. They are not Phase 5b publication-ready, and
-no `0.1.0` release may proceed until the publishing gates above are satisfied.
+Publication posture: these are functional in-tree `0.0.0` APIs for LushText.
+They are not stable external dependencies, and no `0.1.0` release may proceed
+until a future approved publication track satisfies the dormant gates above.
+
+### 2026-06-12 — Internal Platform Stabilization (`stabilize-gtk-lush-internal-platform`)
+
+Scope: declare GTK Lush's current successful state as in-tree LushText
+infrastructure, keep local verification gates alive, and make publication,
+repository graduation, and broad upstreaming explicit dormant tracks.
+
+- [x] No ownership of GTK control flow. This is a documentation/spec posture
+      change and does not alter GTK runtime, scheduling, widgets, proof
+      runners, or app control flow.
+- [x] No view DSL. No UI syntax, builder layer, macros, or public API shape is
+      changed.
+- [x] No state, message, or component system. The change adds stewardship
+      criteria only.
+- [x] Leaf crates only. Workspace path dependencies remain intentional and no
+      family crate gains a sibling runtime dependency.
+- [x] Adwaita remains authoritative. No adaptive behavior changes.
+- [x] Pixels and contracts over claims. The verification surface remains local
+      OpenSpec validation, GTK Lush policy/adoption checks, agent-doc checks,
+      `make check`, and `git diff --check`.
+
+Exceptions: none.
+
+Publication posture: GTK Lush remains a functional in-tree `0.0.0` platform
+for LushText. Publication, `0.1.0`, repository graduation, published LushText
+dependencies, and broad upstreaming require a future maintainer-approved
+proposal with refreshed evidence.
 
 ### 2026-06-12 — Phase 4 Proof Parity Closeout (`complete-gtk-lush-proof-parity`)
 
@@ -285,9 +331,9 @@ publication work.
 Exceptions: none.
 
 Publication posture: this completes the Phase 4 proof toolchain parity work
-inside the repository only. It does not approve Phase 5 publication, a second
+inside the repository only. It does not approve publication, a second
 consumer, crates.io release, repository split, Flathub-style external
-distribution for GTK Lush crates, or Phase 6 upstreaming. Python remains
+distribution for GTK Lush crates, or a broad upstreaming track. Python remains
 available as `cargo gtk-proof run --oracle python` and
 `make visual-geometry-oracle-smoke` for diagnostics, but it is no longer the
 default proof authority.
@@ -317,6 +363,6 @@ content bin, and minimap render-hold mechanics.
 
 Exceptions: none.
 
-Publication posture: these are functional in-tree `0.0.0` APIs for LushText
-and future adoption testing only. They are not Phase 5b publication-ready, and
-no `0.1.0` release may proceed until the publishing gates above are satisfied.
+Publication posture: these are functional in-tree `0.0.0` APIs for LushText.
+They are not stable external dependencies, and no `0.1.0` release may proceed
+until a future approved publication track satisfies the dormant gates above.
