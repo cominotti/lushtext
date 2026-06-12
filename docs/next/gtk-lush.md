@@ -1,9 +1,9 @@
 # GTK Lush — Umbrella Vision
 
 Status: active umbrella vision. Phases 1 through 4 are complete in-tree
-functional API/tooling phases. Phase 5a adoption validation is the current
-pre-publication phase. Phase 5b publication/graduation, repository split, and
-upstreaming remain future work.
+functional API/tooling phases, and Phase 5a adoption validation is complete
+and archived (`validate-gtk-lush-adoption-surface`). Phase 5b
+publication/graduation, repository split, and upstreaming remain future work.
 
 GTK Lush is the extraction of LushText's hardened GTK4/Libadwaita patterns into
 a small family of independently adoptable Rust crates, plus a reusable headless
@@ -322,6 +322,10 @@ repository split, and upstreaming remain separate phases.
 
 ### Phase 5a — Adoption validation before publication
 
+Status: complete and archived (`validate-gtk-lush-adoption-surface`). The
+maintained evidence lives in `crates/gtk-lush-adoption-lab`,
+`fixtures/gtk-lush-adoption/`, and `docs/gtk-lush-adoption/`.
+
 1. Build the second consumer: a small real application or gallery/demo app
    maintained in this workspace but outside `crates/gtk-lush/`, using every
    functional GTK Lush crate in anger without importing LushText app crates.
@@ -375,8 +379,12 @@ repository split, and upstreaming remain separate phases.
 - `examples/*.rs` proving single-crate adoption on stock gtk-rs.
 - Workspace lint table inherited from LushText's curated set.
 - Tests: unit + doctests always; headless widget tests via the harness for
-  anything that touches widgets; property tests for pure decision logic;
-  mutation testing included in the deterministic scope.
+  anything that touches widgets; property tests for pure decision logic.
+  Mutation testing: the family's pure decision logic joins the workspace's
+  deterministic cargo-mutants scope as a Phase 5b publishing-gate input; until
+  then `.cargo/mutants.toml` intentionally scopes mutation runs to LushText's
+  model/service code, and GTK-bound family code stays out of mutation scope
+  permanently per the workspace mutation rules.
 - `cargo-semver-checks` and a `public-api` snapshot in CI; MSRV declared in
   `Cargo.toml` (`rust-version`) and verified by a dedicated job; `cargo-deny`
   advisories/licenses/bans/sources green.
