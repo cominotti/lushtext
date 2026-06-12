@@ -68,10 +68,12 @@ Libadwaita adaptive behavior.
 ## Pre-Publication Status
 
 This is the first functional in-tree `0.0.0` API. It is suitable for LushText's
-in-repository migration work, but it is not a Phase 5 publication-ready crate
+in-repository migration work, but it is not a Phase 5b publication-ready crate
 and should not be treated as a stable external dependency yet.
 
 Program roadmap and publication gates live in
 [`docs/next/gtk-lush.md`](https://github.com/cominotti/lushtext/blob/main/docs/next/gtk-lush.md)
 and
 [`crates/gtk-lush/GOVERNANCE.md`](https://github.com/cominotti/lushtext/blob/main/crates/gtk-lush/GOVERNANCE.md).
+Adoption-validation evidence for this crate is tracked in
+[`docs/gtk-lush-adoption/`](https://github.com/cominotti/lushtext/blob/main/docs/gtk-lush-adoption/).

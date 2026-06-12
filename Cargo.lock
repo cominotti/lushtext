@@ -934,6 +934,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "gtk-lush-adoption-lab"
+version = "0.0.0"
+dependencies = [
+ "gio",
+ "glib",
+ "gtk-lush-proof-harness",
+ "gtk-lush-proof-spine",
+ "gtk-lush-settle",
+ "gtk-lush-signals",
+ "gtk-lush-tasks",
+ "gtk-lush-viewport",
+ "gtk-lush-widgets",
+ "gtk4",
+ "libadwaita",
+ "serde_json",
+]
+
+[[package]]
 name = "gtk-lush-proof-harness"
 version = "0.0.0"
 dependencies = [
@@ -1272,6 +1290,9 @@ dependencies = [
  "gio",
  "glib",
  "gtk-lush-proof-harness",
+ "gtk-lush-tasks",
+ "gtk-lush-viewport",
+ "gtk-lush-widgets",
  "gtk4",
  "libadwaita",
  "libtest-mimic",
@@ -2612,7 +2633,6 @@ dependencies = [
  "glib",
  "glib-sys",
  "gobject-sys",
- "libc",
  "log",
  "memchr",
  "num-traits",

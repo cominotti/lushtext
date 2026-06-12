@@ -459,6 +459,7 @@ make check-blueprint    # Validate Blueprint drift and UI template contract
 make check-automation-docs # Validate automation docs against exported action/D-Bus contracts
 make automation-client-self-test # Validate reusable D-Bus automation CLI helper
 make check-flatpak-permissions # Verify the Flatpak keeps intentional full filesystem access
+make check-gtk-lush-adoption # GTK Lush adoption lab, stock fixture, and matrix checks
 make lint-blueprint     # Advisory grouped Blueprint lint triage
 make lint-advisory # grouped advisory Rust lint discovery
 make pre-commit  # repo pre-commit gate (fmt + all-feature Clippy + policy audits)
@@ -712,7 +713,8 @@ Cargo workspace:
 - **`crates/lushtext-build-support`** -- build-script helper crate for the build-only filesystem boundary
 - **`crates/lushtext-core`** -- all application logic: domain models, services, GTK widgets
 - **`crates/lushtext`** -- thin binary entry point + integration tests
-- **`crates/gtk-lush/`** -- governed `0.0.0` GTK Lush family crates for extracting reusable GTK4/Libadwaita patterns; functional in-tree APIs are not Phase 5 publication-ready
+- **`crates/gtk-lush/`** -- governed `0.0.0` GTK Lush family crates for extracting reusable GTK4/Libadwaita patterns; functional in-tree APIs are not Phase 5b publication-ready
+- **`crates/gtk-lush-adoption-lab`** -- maintained second-consumer GTK application for adoption validation; it is a consumer, not a GTK Lush family crate
 - **`crates/cargo-gtk-proof`** -- workspace visual proof tool outside the GTK Lush family
 - **`workspace-hack`** -- generated cargo-hakari crate for unified dependency features
 
@@ -803,11 +805,18 @@ Governance lives in [`crates/gtk-lush/GOVERNANCE.md`](crates/gtk-lush/GOVERNANCE
 with the umbrella vision in [`docs/next/gtk-lush.md`](docs/next/gtk-lush.md).
 The proof-tool schema, artifact, and privacy contract is documented in
 [`docs/gtk-proof-schemas.md`](docs/gtk-proof-schemas.md).
+Adoption-validation evidence, including the maintained lab, stock fixture,
+timed journal, external-project spike, and matrix, lives in
+[`docs/gtk-lush-adoption/`](docs/gtk-lush-adoption/).
 
 Use the family-specific checks when touching that area:
 
 ```sh
 make check-gtk-lush-policy
+make check-gtk-lush-adoption
+make gtk-lush-adoption-lab
+make gtk-lush-stock-fixtures
+make gtk-lush-adoption-matrix
 make gtk-lush-doctests
 make gtk-lush-examples
 make gtk-lush-msrv
@@ -832,6 +841,10 @@ make check-automation-docs # Automation documentation drift check
 make automation-client-self-test # Reusable D-Bus automation client self-test
 make check-flatpak-permissions # Flatpak full-filesystem permission guard
 make check-gtk-lush-policy # GTK Lush family scaffolding/dependency guard
+make check-gtk-lush-adoption # GTK Lush adoption lab, stock fixture, and matrix checks
+make gtk-lush-adoption-lab # GTK Lush adoption lab tests
+make gtk-lush-stock-fixtures # Stock one-crate adoption fixture checks
+make gtk-lush-adoption-matrix # Adoption matrix and evidence location check
 make gtk-lush-doctests # GTK Lush family doctests
 make gtk-lush-examples # GTK Lush standalone adoption examples
 make gtk-lush-msrv # GTK Lush family MSRV check

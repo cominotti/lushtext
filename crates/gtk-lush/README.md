@@ -20,14 +20,19 @@ The companion `cargo-gtk-proof` binary is a workspace proof tool under
 family crates, schemas, and LushText smoke artifacts while leaving the family
 crates as independently adoptable leaves.
 
-They are not Phase 5 publication-ready crates. External stability and any
-`0.1.0` publication still require the second-consumer, adoption-test, semver,
-public-API, and maintainer approval gates in `GOVERNANCE.md`.
+They are not Phase 5b publication-ready crates. External stability and any
+`0.1.0` publication still require the adoption-validation, semver, public-API,
+and maintainer approval gates in `GOVERNANCE.md`. Current adoption-validation
+evidence lives in `docs/gtk-lush-adoption/`.
 
 Run the family-specific checks with:
 
 ```sh
 make check-gtk-lush-policy
+make check-gtk-lush-adoption
+make gtk-lush-adoption-lab
+make gtk-lush-stock-fixtures
+make gtk-lush-adoption-matrix
 make gtk-lush-doctests
 make gtk-lush-examples
 make gtk-lush-msrv

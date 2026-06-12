@@ -60,9 +60,12 @@ must say plainly that it is not ready for functional use.
 
 No crate may publish `0.1.0` or later until all gates below are true:
 
+- `validate-gtk-lush-adoption-surface` has archived.
 - LushText is one real consumer.
 - At least one additional non-contrived application is a real consumer.
 - A fresh timed afternoon-adoption test has passed for the crate.
+- At least one unrelated existing gtk-rs or Libadwaita project adoption spike
+  has been recorded for a GTK Lush crate.
 - All friction from that adoption test is filed as issues or fixed.
 - `cargo-semver-checks` and public-API tooling are green.
 - The crate README, doctests, examples, changelog, and docs.rs metadata satisfy
@@ -162,8 +165,68 @@ binding, and private settle-helper ownership.
 Exceptions: none.
 
 Publication posture: these are functional in-tree `0.0.0` APIs for LushText
-and future adoption testing only. They are not Phase 5 publication-ready, and
+and future adoption testing only. They are not Phase 5b publication-ready, and
 no `0.1.0` release may proceed until the publishing gates above are satisfied.
+
+### 2026-06-12 — Phase 5a Adoption Validation (`validate-gtk-lush-adoption-surface`)
+
+Scope: maintain a second-consumer adoption lab outside `crates/gtk-lush/`,
+prove every functional family crate through a crate-by-crate adoption matrix,
+run a timed stock gtk-rs adoption exercise, record an unrelated existing
+project adoption spike, clean stale proof-tool wording, and complete
+friction-driven API review without publishing crates.
+
+- [x] No ownership of GTK control flow. The lab and fixtures use ordinary GTK,
+      Libadwaita, GLib, and GTK Lush APIs as consumers; they do not wrap the
+      GTK main loop, widget lifecycle, rendering, or scheduling.
+- [x] No view DSL. The adoption surfaces use programmatic gtk-rs or ordinary
+      GtkBuilder/Blueprint patterns only; no replacement UI syntax is added.
+- [x] No state, message, or component system. The lab may hold local demo
+      state, but the family APIs and consumer checks do not create an app
+      framework, model/update loop, actor tree, or message bus.
+- [x] Leaf crates only. The lab may depend on multiple family crates because
+      it is a consumer, while every crate under `crates/gtk-lush/` remains a
+      runtime leaf with no LushText or sibling family dependency.
+- [x] Adwaita remains authoritative. The adoption lab does not reimplement
+      Adwaita split views, breakpoints, sheets, or adaptive behavior.
+- [x] Pixels and contracts over claims. The phase proof includes family
+      policy, doctests, standalone examples, adoption-lab checks, stock
+      fixture checks, adoption matrix validation, API advisory output, widget
+      or visual proof when required, and the full LushText gate.
+
+Adoption evidence completed before archive:
+
+- [x] adoption lab workflow for every functional crate
+- [x] crate-by-crate adoption matrix
+- [x] timed stock gtk-rs adoption journal
+- [x] unrelated existing project adoption spike note
+- [x] API review classification and decisions
+- [x] specialist review notes for GTK testing, GTK runtime/contracts,
+      performance, data safety/privacy, architecture, and comments
+
+Exceptions: none until explicitly recorded above.
+
+Verification evidence:
+
+- `make check-gtk-lush-policy`
+- `make gtk-lush-doctests`
+- `make gtk-lush-examples`
+- `make gtk-lush-msrv`
+- `make gtk-lush-api-advisory`
+- `make gtk-lush-adoption-lab`
+- `make gtk-lush-stock-fixtures`
+- `make gtk-lush-adoption-matrix`
+- `cargo test -p lushtext --test widget gtk_lush_adoption`
+- `make test-widget-headless`
+- `make visual-geometry-smoke`
+- `make check-visual-proof-policy`
+- `make check`
+- OpenSpec strict validation for the change, all changes, specs, and all
+
+Publication posture: this phase may reshape breaking `0.0.0` APIs based on
+adoption friction, but it does not publish functional crates, prepare `0.1.0`,
+split the repository, move LushText to published dependencies, or perform the
+Phase 6 upstreaming round.
 
 ### 2026-06-12 — Phase 4 Proof Toolchain Audit (`extract-gtk-lush-proof-toolchain`)
 
@@ -192,7 +255,7 @@ schema, corpus, PNG, and policy proof work.
 Exceptions: none.
 
 Publication posture: these are functional in-tree `0.0.0` APIs for LushText
-and future adoption testing only. They are not Phase 5 publication-ready, and
+and future adoption testing only. They are not Phase 5b publication-ready, and
 no `0.1.0` release may proceed until the publishing gates above are satisfied.
 
 ### 2026-06-12 — Phase 4 Proof Parity Closeout (`complete-gtk-lush-proof-parity`)
@@ -255,5 +318,5 @@ content bin, and minimap render-hold mechanics.
 Exceptions: none.
 
 Publication posture: these are functional in-tree `0.0.0` APIs for LushText
-and future adoption testing only. They are not Phase 5 publication-ready, and
+and future adoption testing only. They are not Phase 5b publication-ready, and
 no `0.1.0` release may proceed until the publishing gates above are satisfied.

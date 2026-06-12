@@ -5,12 +5,13 @@ headless GTK widget-test harness behavior.
 
 ## Pre-Publication Status
 
-This is the first functional in-tree implementation. It is not a Phase 5 publication-ready
+This is the first functional in-tree implementation. It is not a Phase 5b publication-ready
 crate and is not a crates.io release candidate. The current API exists so
 LushText can prove the extraction boundary before publishing any GTK Lush
 crate.
 
-Follow the roadmap in `docs/next/gtk-lush.md`.
+Follow the roadmap in `docs/next/gtk-lush.md`. Adoption-validation evidence
+for this crate is tracked in `docs/gtk-lush-adoption/`.
 
 ## Scope
 

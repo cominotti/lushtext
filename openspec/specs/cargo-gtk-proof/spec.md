@@ -1,19 +1,18 @@
 ## Purpose
 
-Define the staged Rust `cargo gtk-proof` tool used for visual proof schemas,
-compatibility corpus replay, artifact summaries, and proof-policy parity while
-live visual execution remains gated by explicit parity evidence.
+Define the Rust `cargo gtk-proof` tool used for visual proof schemas,
+compatibility corpus replay, artifact summaries, proof-policy checks, and the
+default same-session live visual runner.
 
 ## Requirements
 
-### Requirement: Cargo GTK proof tool exposes stable staged subcommands
+### Requirement: Cargo GTK proof tool exposes stable proof subcommands
 The workspace SHALL provide a Rust cargo subcommand named `cargo-gtk-proof`
 whose binary can be invoked through cargo as `cargo gtk-proof`. The tool MUST
 provide documented subcommands for validating schemas, summarizing artifacts,
 replaying the compatibility corpus, enforcing proof policy, and executing live
-visual scenarios. Once parity is recorded, `cargo gtk-proof run` SHALL be the
-authoritative live visual runner for LushText visual-geometry proof rather
-than a reserved non-coverage command.
+visual scenarios. `cargo gtk-proof run` SHALL be the authoritative live visual
+runner for LushText visual-geometry proof on supported hosts.
 
 #### Scenario: Help lists proof subcommands
 - **WHEN** a developer runs `cargo gtk-proof --help`
@@ -37,6 +36,31 @@ than a reserved non-coverage command.
 - **THEN** the command exits with a stable unsupported-host or skipped status
 - **AND** it writes bounded diagnostic artifacts
 - **AND** it does not count any visual invariant as verified
+
+### Requirement: Proof tool wording reflects post-parity Rust authority
+`cargo-gtk-proof` docs and specs SHALL describe Rust live visual proof as the
+default authoritative proof path after Phase 4 parity. They MUST NOT describe
+the Rust live runner as a future implementation slice, a staged non-coverage
+surface, or secondary to Python. Python MAY be described only as an explicit
+diagnostic, oracle, or compatibility path. Historical fixture identifiers or
+serialized compatibility metadata MAY retain old names only when documented as
+historical compatibility data.
+
+#### Scenario: Stale staged wording is removed
+- **WHEN** maintainers search current proof-tool docs, source module docs, and
+  canonical OpenSpec wording for staged-runner or future-live-runner language
+- **THEN** no user-facing or canonical text claims Rust live visual proof is
+  still staged, future, or non-authoritative
+- **AND** any retained historical `rust-staged` metadata is documented as
+  compatibility fixture data rather than current tool status
+
+#### Scenario: Python path is explicitly diagnostic
+- **WHEN** a developer reads `cargo-gtk-proof` help, README, source docs, or
+  proof-tool specs
+- **THEN** Python is described as an explicit oracle, diagnostic, or
+  compatibility path
+- **AND** the docs do not imply that Python is the default execution oracle for
+  current visual proof
 
 ### Requirement: Rust live runner owns bounded process orchestration
 `cargo-gtk-proof` SHALL implement the live visual runner for LushText
@@ -70,27 +94,26 @@ verified.
   configuration, fixture, and window size
 - **AND** cross-session captures are not used for exact protected-region proof
 
-### Requirement: Rust live runner records parity before wrapper migration
-`cargo-gtk-proof` SHALL include a parity mode that compares Rust live-runner
-output with the Python oracle before local wrappers, scheduled smoke
-workflows, or proof-policy defaults move to Rust. Parity MUST cover status,
-exit class, required summary fields, invariant IDs, warning-scan result, and
-bounded artifact path shape.
+### Requirement: Rust live runner preserves explicit Python oracle parity
+`cargo-gtk-proof` SHALL retain an explicit parity/oracle mode that compares
+Rust live-runner output with historical Python oracle fixtures or diagnostics.
+Parity MUST cover status, exit class, required summary fields, invariant IDs,
+warning-scan result, and bounded artifact path shape.
 
-#### Scenario: Parity mismatch blocks default migration
+#### Scenario: Parity mismatch is diagnostic
 - **WHEN** a Python-oracle parity replay produces a different status, exit
   class, invariant set, warning-scan decision, required field, or bounded
   artifact path than Rust
-- **THEN** wrapper defaults remain on the Python path
-- **AND** the parity report identifies the scenario, case, field, and artifact
+- **THEN** the parity report identifies the scenario, case, field, and artifact
   roots needed for diagnosis
 
-#### Scenario: Parity success records migration evidence
+#### Scenario: Parity success records compatibility evidence
 - **WHEN** all required parity scenarios agree
 - **THEN** the Rust summary records the parity corpus identity, Python-oracle
   status, Rust engine metadata, schema versions, compared case count, failed
   mismatch count, and migration timestamp or equivalent run identity
-- **AND** documentation can cite that evidence before wrappers flip
+- **AND** documentation can cite that evidence when comparing current Rust
+  output with historical Python oracle behavior
 
 ### Requirement: Rust live runner protects artifact privacy and resource budgets
 `cargo-gtk-proof` SHALL keep live-runner artifacts bounded and
@@ -198,22 +221,20 @@ anchors, and rendered pixel drift hidden by app geometry.
   geometry, and final-settle-only fixtures fail with stable statuses
 - **AND** no raw image data is embedded in terminal output
 
-### Requirement: Compatibility corpus gates Python retirement
-The Rust tool SHALL include a bounded compatibility corpus that blocks wrapper
-defaults from moving away from the Python runner or policy checker until
-parity is proved. The corpus MUST cover checked-in status fixtures, pure PNG
+### Requirement: Compatibility corpus preserves Python oracle parity
+The Rust tool SHALL include a bounded compatibility corpus that preserves
+historical Python oracle and policy-checker parity as explicit diagnostics.
+The corpus MUST cover checked-in status fixtures, pure PNG
 comparison/detector fixtures, and representative live-result fixtures for
 passing, failing, skipped, unsupported-host, missing-manifest, malformed
 artifact, missing-anchor, rendered-anchor drift, warning-scan failure, stale
-frame/sample pairing, final-settle-only, and successful animation cases before
-wrappers flip.
+frame/sample pairing, final-settle-only, and successful animation cases.
 
-#### Scenario: Corpus parity blocks wrapper migration
+#### Scenario: Corpus parity reports drift
 - **WHEN** any compatibility corpus case produces a different Rust pass/fail
   decision, required status, required summary field, required invariant ID,
   required exit class, or required bounded artifact path than the Python oracle
-- **THEN** wrapper defaults remain on the Python path
-- **AND** the Rust mismatch is reported with the corpus case identity and
+- **THEN** the Rust mismatch is reported with the corpus case identity and
   artifact path
 
 #### Scenario: Corpus records replay metadata
@@ -229,11 +250,11 @@ wrappers flip.
 - **THEN** each fixture produces the documented failure status
 - **AND** the replay remains independent of live compositor availability
 
-### Requirement: Proof policy is ported without flipping wrappers
+### Requirement: Proof policy is Rust-authoritative
 `cargo-gtk-proof` SHALL implement visual proof-policy detection and negative
-self-tests, and after parity is recorded it SHALL become the default local
-proof-policy implementation. The Rust policy MUST preserve visual-sensitive
-file detection, required invariant mapping, fingerprint matching,
+self-tests as the default local proof-policy implementation. The Rust policy
+MUST preserve visual-sensitive file detection, required invariant mapping,
+fingerprint matching,
 artifact-summary validation, negative self-tests, status vocabulary, and
 unsupported-host semantics. `scripts/check-visual-proof-policy.py` MAY remain
 as a compatibility wrapper, but it MUST delegate to or agree with the Rust

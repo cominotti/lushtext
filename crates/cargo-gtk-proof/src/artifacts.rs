@@ -98,7 +98,11 @@ pub(crate) struct EngineMetadata {
 }
 
 impl EngineMetadata {
-    /// Metadata for the staged Rust runner before live visual parity is proven.
+    /// Historical compatibility metadata for staged Rust-runner corpus fixtures.
+    ///
+    /// Current live proof uses [`rust_live`](Self::rust_live). The old
+    /// `rust-staged-runner` string remains serializable only so frozen Phase 4
+    /// corpus data can still be replayed and compared.
     pub(crate) const fn rust_staged() -> Self {
         Self {
             name: "cargo-gtk-proof",

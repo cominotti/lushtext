@@ -2,10 +2,9 @@
 
 //! Workspace CLI implementation for GTK visual proof tooling.
 //!
-//! The tool starts with schema, summary, corpus, and policy command surfaces so
-//! wrappers can migrate without command drift. Live visual capture is added in
-//! later implementation slices; until then, unsupported live commands report a
-//! stable proof-spine envelope instead of pretending coverage passed.
+//! The tool owns schema, summary, corpus, policy, and Rust same-session live
+//! visual proof command surfaces. Python remains available only as an explicit
+//! Rust-supervised diagnostic/oracle path.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

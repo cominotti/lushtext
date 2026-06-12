@@ -4,3 +4,4 @@
 
 - First functional in-tree pre-publication implementation for proof protocol
   value objects and provider traits.
+- Adoption-lab and matrix evidence before functional publication.

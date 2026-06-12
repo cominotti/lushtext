@@ -32,6 +32,10 @@ make check-policy # fast policy audits beside rustfmt and Clippy
 make check-automation-docs # automation docs drift check against action/D-Bus contracts
 make check-visual-proof-policy # require visual geometry proof for local visual-sensitive changes
 make check-gtk-lush-policy # validate GTK Lush family scaffolding/dependency direction
+make check-gtk-lush-adoption # run GTK Lush adoption lab, stock fixture, and matrix checks
+make gtk-lush-adoption-lab # build/test the maintained GTK Lush adoption lab
+make gtk-lush-stock-fixtures # check stock one-crate GTK Lush adoption fixtures
+make gtk-lush-adoption-matrix # validate GTK Lush adoption matrix and evidence
 make gtk-lush-doctests # run doctests for GTK Lush family crates
 make gtk-lush-examples # compile standalone GTK Lush adoption examples
 make gtk-lush-msrv # check GTK Lush family crates with the declared MSRV
@@ -144,6 +148,10 @@ working on `establish-gtk-lush-program` or any follow-up GTK Lush phase:
 
 ```
 make check-gtk-lush-policy
+make check-gtk-lush-adoption
+make gtk-lush-adoption-lab
+make gtk-lush-stock-fixtures
+make gtk-lush-adoption-matrix
 make gtk-lush-doctests
 make gtk-lush-examples
 make gtk-lush-msrv
@@ -153,9 +161,13 @@ make gtk-lush-api-advisory
 `make check-gtk-lush-policy` is part of `make check-policy` and fails on
 missing family scaffolding, missing MIT/Apache license metadata, missing SPDX
 headers, LushText crate dependencies, or runtime dependencies between GTK Lush
-family crates. `gtk-lush-doctests` and `gtk-lush-examples` cover the
-documentation and standalone adoption example surface that `nextest` does not
-exercise.
+family crates. `make gtk-lush-adoption-matrix` is also part of
+`make check-policy` and fails if the adoption lab, stock fixtures, matrix,
+evidence documents, ignored artifact roots, or one-crate fixture dependency
+contracts drift. Use `make check-gtk-lush-adoption` during GTK Lush adoption
+work to run the matrix check plus the maintained lab and stock fixture cargo
+checks. `gtk-lush-doctests` and `gtk-lush-examples` cover the documentation and
+standalone adoption example surface that `nextest` does not exercise.
 
 `gtk-lush-api-advisory` runs `cargo-semver-checks` and `cargo-public-api`
 snapshots in advisory mode until the first real `0.1.0` publication. A missing

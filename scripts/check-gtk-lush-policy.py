@@ -122,7 +122,7 @@ def check_crate(crate_root: Path, member: str, package_name: str, errors: list[s
     if package.get("name") != package_name:
         errors.append(f"{crate_root / 'Cargo.toml'} package.name must be {package_name!r}")
     if package.get("version") != "0.0.0":
-        errors.append(f"{package_name} must remain version 0.0.0 before Phase 5 publication")
+        errors.append(f"{package_name} must remain version 0.0.0 before Phase 5b publication")
     if package.get("license") != "MIT OR Apache-2.0":
         errors.append(f"{package_name} license must be exactly 'MIT OR Apache-2.0'")
     rust_version = package.get("rust-version")
@@ -278,7 +278,7 @@ def check_readme(crate_root: Path, member: str, errors: list[str]) -> str:
         if phrase not in text:
             errors.append(f"{readme_path.relative_to(REPO_ROOT)} must mention {phrase!r}")
     if is_functional_in_tree_readme(text):
-        for phrase in ("Pre-Publication Status", "not a Phase 5 publication-ready"):
+        for phrase in ("Pre-Publication Status", "not a Phase 5b publication-ready"):
             if phrase not in text:
                 errors.append(f"{readme_path.relative_to(REPO_ROOT)} must mention {phrase!r}")
     else:

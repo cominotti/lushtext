@@ -13,3 +13,5 @@ and this crate follows SemVer after functional publication.
   `SupersedingTimer`.
 - Generation-token tests, settle pending-state tests, property tests, doctests,
   and standalone gtk-rs adoption example.
+- Adoption-lab, timed stock fixture, external-spike, and matrix evidence before
+  functional publication.

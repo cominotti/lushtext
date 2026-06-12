@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/cargo-gtk-proof",
+    "crates/gtk-lush-adoption-lab",
     "crates/gtk-lush/proof-harness",
     "crates/gtk-lush/proof-spine",
     "crates/gtk-lush/settle",
@@ -14,7 +15,7 @@ members = [
     "crates/lushtext",
     "workspace-hack",
 ]
-exclude = ["fuzz"]
+exclude = ["fuzz", "fixtures/gtk-lush-adoption/stock-settle"]
 
 # Default binary for `cargo run`
 default-members = ["crates/lushtext"]

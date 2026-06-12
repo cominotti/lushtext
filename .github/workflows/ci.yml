@@ -71,6 +71,9 @@ jobs:
       - name: GTK Lush family policy
         run: make check-gtk-lush-policy
 
+      - name: GTK Lush adoption evidence policy
+        run: make gtk-lush-adoption-matrix
+
       - name: Rustdoc lint gate
         run: |
           RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" \
@@ -115,6 +118,12 @@ jobs:
 
       - name: Compile GTK Lush standalone examples
         run: make gtk-lush-examples
+
+      - name: Test GTK Lush adoption lab
+        run: make gtk-lush-adoption-lab
+
+      - name: Check GTK Lush stock adoption fixtures
+        run: make gtk-lush-stock-fixtures
 
   gtk-lush-msrv:
     name: GTK Lush MSRV

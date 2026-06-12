@@ -2,9 +2,10 @@
 
 //! Typed validation for the current proof schema descriptors.
 //!
-//! The live Python visual runner remains the execution oracle in this phase,
-//! but Rust owns enough structure to reject stale, malformed, or future-version
-//! artifacts before policy checks trust them.
+//! Rust-owned same-session visual proof is the default authority. Python
+//! artifacts remain supported only as explicit oracle or compatibility data, so
+//! validation keeps rejecting stale, malformed, or future-version artifacts
+//! before policy checks trust them.
 
 use std::fmt;
 

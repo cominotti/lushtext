@@ -39,6 +39,10 @@
 #   make check-end-user-smoke-workflow - Ensure scheduled smoke lanes match docs
 #   make check-visual-proof-policy - Require visual geometry proof for local visual-sensitive changes
 #   make check-gtk-lush-policy - Verify GTK Lush family scaffolding and constitution rails
+#   make check-gtk-lush-adoption - Run GTK Lush adoption lab, stock fixture, and matrix checks
+#   make gtk-lush-adoption-lab - Build/test the maintained GTK Lush adoption lab
+#   make gtk-lush-stock-fixtures - Check stock one-crate GTK Lush adoption fixtures
+#   make gtk-lush-adoption-matrix - Validate GTK Lush adoption matrix and evidence locations
 #   make gtk-lush-doctests - Run doctests for GTK Lush family crates
 #   make gtk-lush-examples - Compile standalone GTK Lush adoption examples
 #   make gtk-lush-msrv - Check GTK Lush family crates with the declared MSRV
@@ -62,7 +66,7 @@
 #   make help        - Show available targets
 
 .PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless automation-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -93,6 +97,8 @@ PROPTEST_DEEP_CASES ?= 512
 
 GTK_LUSH_PACKAGES := -p gtk-lush-signals -p gtk-lush-settle -p gtk-lush-tasks -p gtk-lush-viewport -p gtk-lush-widgets -p gtk-lush-proof-harness -p gtk-lush-proof-spine
 GTK_LUSH_CRATES := crates/gtk-lush/signals crates/gtk-lush/settle crates/gtk-lush/tasks crates/gtk-lush/viewport crates/gtk-lush/widgets crates/gtk-lush/proof-harness crates/gtk-lush/proof-spine
+GTK_LUSH_ADOPTION_LAB_PACKAGE := -p gtk-lush-adoption-lab
+GTK_LUSH_STOCK_FIXTURES := fixtures/gtk-lush-adoption/stock-settle
 GTK_LUSH_MSRV ?= 1.96.0
 GTK_LUSH_PUBLIC_API_TOOLCHAIN ?= nightly-2026-06-01
 GTK_LUSH_PUBLIC_API_OUT_DIR ?= target/gtk-lush-public-api
@@ -395,6 +401,24 @@ check-gtk-lush-policy:
 	@echo "Checking GTK Lush family policy..."
 	./scripts/check-gtk-lush-policy.py
 
+gtk-lush-adoption-matrix:
+	@echo "Checking GTK Lush adoption matrix and evidence..."
+	./scripts/check-gtk-lush-adoption.py
+
+gtk-lush-adoption-lab:
+	@echo "Testing GTK Lush adoption lab..."
+	cargo test $(GTK_LUSH_ADOPTION_LAB_PACKAGE) --all-targets
+
+gtk-lush-stock-fixtures:
+	@echo "Checking stock GTK Lush adoption fixtures..."
+	@set -eu; \
+	for fixture in $(GTK_LUSH_STOCK_FIXTURES); do \
+		echo "Checking $$fixture..."; \
+		CARGO_TARGET_DIR="$(PWD)/target" cargo check --manifest-path "$$fixture/Cargo.toml" --locked; \
+	done
+
+check-gtk-lush-adoption: gtk-lush-adoption-matrix gtk-lush-adoption-lab gtk-lush-stock-fixtures
+
 gtk-lush-doctests:
 	@echo "Running GTK Lush doctests..."
 	cargo test $(GTK_LUSH_PACKAGES) --doc
@@ -443,7 +467,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy automation-client-self-test
+check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test
 
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
@@ -652,6 +676,10 @@ help:
 	@echo "  check-end-user-smoke-workflow Verify scheduled/manual smoke matrix lanes"
 	@echo "  check-visual-proof-policy Require visual geometry proof for local visual-sensitive changes"
 	@echo "  check-gtk-lush-policy Verify GTK Lush family scaffolding and dependency direction"
+	@echo "  check-gtk-lush-adoption Run adoption lab, stock fixture, and matrix checks"
+	@echo "  gtk-lush-adoption-lab Build/test the maintained GTK Lush adoption lab"
+	@echo "  gtk-lush-stock-fixtures Check stock one-crate GTK Lush adoption fixtures"
+	@echo "  gtk-lush-adoption-matrix Validate GTK Lush adoption matrix and evidence"
 	@echo "  gtk-lush-doctests Run GTK Lush family doctests"
 	@echo "  gtk-lush-examples Compile GTK Lush standalone examples"
 	@echo "  gtk-lush-msrv Check GTK Lush family crates with GTK_LUSH_MSRV"
@@ -680,6 +708,10 @@ help:
 	@echo "  pre-commit   Repo pre-commit gate (fmt + all-feature clippy + policy audits)"
 	@echo "  check-policy Fast policy audits, including filesystem and Blueprint checks"
 	@echo "  check-gtk-lush-policy Verify GTK Lush family scaffolding and dependency direction"
+	@echo "  check-gtk-lush-adoption Run adoption lab, stock fixture, and matrix checks"
+	@echo "  gtk-lush-adoption-lab Build/test the maintained GTK Lush adoption lab"
+	@echo "  gtk-lush-stock-fixtures Check stock one-crate GTK Lush adoption fixtures"
+	@echo "  gtk-lush-adoption-matrix Validate GTK Lush adoption matrix and evidence"
 	@echo "  blueprint-generate Regenerate GtkBuilder .ui files from Blueprint sources"
 	@echo "  check-blueprint Validate Blueprint drift and UI template contract"
 	@echo "  check-flatpak-permissions Verify Flatpak keeps intentional full filesystem access"

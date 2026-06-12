@@ -1,0 +1,24 @@
+[package]
+name = "gtk-lush-adoption-lab"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+rust-version.workspace = true
+
+[dependencies]
+gio = { workspace = true }
+glib = { workspace = true }
+gtk4 = { workspace = true }
+gtk-lush-proof-harness = { workspace = true }
+gtk-lush-proof-spine = { workspace = true }
+gtk-lush-settle = { workspace = true }
+gtk-lush-signals = { workspace = true }
+gtk-lush-tasks = { workspace = true }
+gtk-lush-viewport = { workspace = true }
+gtk-lush-widgets = { workspace = true }
+libadwaita = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -18,8 +18,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-// The Rust live runner is not authoritative yet, but the corpus code should
-// already reject oversized or hostile artifacts before decoding them in CI.
+// The Rust live runner is authoritative, and corpus replay still needs to
+// reject oversized or hostile artifacts before decoding them in CI.
 const MAX_COMPRESSED_PNG_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_DECODED_PNG_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PNG_PIXELS: usize = 4096 * 4096;

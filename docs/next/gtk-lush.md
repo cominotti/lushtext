@@ -1,8 +1,9 @@
 # GTK Lush — Umbrella Vision
 
 Status: active umbrella vision. Phases 1 through 4 are complete in-tree
-functional API/tooling phases. Phase 5 publication, second-consumer adoption,
-repository split, and upstreaming remain future work.
+functional API/tooling phases. Phase 5a adoption validation is the current
+pre-publication phase. Phase 5b publication/graduation, repository split, and
+upstreaming remain future work.
 
 GTK Lush is the extraction of LushText's hardened GTK4/Libadwaita patterns into
 a small family of independently adoptable Rust crates, plus a reusable headless
@@ -256,7 +257,7 @@ family-crate dependencies. Public settle APIs moved to
    SPDX headers throughout.
 5. Prepare `0.0.0` placeholder packages for optional crates.io reservation
    (squat protection only; publication requires explicit maintainer approval,
-   and real functional publishing is gated by Phase 5).
+   and real functional publishing is gated by Phase 5b).
 6. CI: extend existing container lanes to build/test/doc the family; add an
    MSRV verification job and a `cargo-semver-checks` job (advisory until the
    first real publish).
@@ -264,7 +265,7 @@ family-crate dependencies. Public settle APIs moved to
 ### Phase 2 — First extractions: `gtk-lush-signals`, `gtk-lush-settle`
 
 Status: current/completed in-tree functional API phase. These crates remain
-`0.0.0` and are not Phase 5 publication-ready.
+`0.0.0` and are not Phase 5b publication-ready.
 
 1. Design each API against its rule section; write the README first
    (rule-rewritten-as-docs), then the API, then doctests. Complete.
@@ -279,7 +280,7 @@ Status: current/completed in-tree functional API phase. These crates remain
 ### Phase 3 — Geometry and tasking: `gtk-lush-tasks`, `gtk-lush-viewport`, `gtk-lush-widgets`
 
 Status: current/completed in-tree functional API phase. These crates remain
-`0.0.0` and are not Phase 5 publication-ready.
+`0.0.0` and are not Phase 5b publication-ready.
 
 1. Extract `spawn_blocking_then` + explicit freshness helpers; migrate
    former `services::async_task` consumers. Complete for in-tree Phase 3.
@@ -304,8 +305,8 @@ animation-stream evidence, and the default `make visual-geometry-smoke`
 wrapper. LushText's widget harness consumes `gtk-lush-proof-harness`, and
 Automation1 has proof-spine readiness/workflow projections plus a D-Bus
 introspection golden. The Python visual runner remains available only as a
-Rust-supervised oracle/diagnostic path. Phase 5 publishing, second-consumer
-adoption, repository split, and upstreaming remain separate future phases.
+Rust-supervised oracle/diagnostic path. Adoption validation, publishing,
+repository split, and upstreaming remain separate phases.
 
 1. Extract the harness crate; LushText's `tests/widget.rs` becomes a consumer.
 2. Extract the spine traits; Automation1 implements them with zero D-Bus
@@ -319,17 +320,35 @@ adoption, repository split, and upstreaming remain separate future phases.
    workspace schema descriptors.
    (Follow-up change name: `extract-gtk-lush-proof-toolchain`.)
 
-### Phase 5 — Second consumer and the publishing gate
+### Phase 5a — Adoption validation before publication
 
-1. Build the second consumer: a small real application (or gallery/demo app
-   maintained in the family workspace) that uses every crate in anger, plus at
-   least one crate adopted by an unrelated existing project.
-2. Run the afternoon-adoption test literally: a fresh agent session adopts one
-   crate into a stock gtk-rs starter app, timed, journaled, friction logged as
-   issues.
-3. API review pass driven by second-consumer friction; only then `0.1.0`
-   publishes with docs.rs metadata, CHANGELOGs, and release automation.
-4. Graduate the family to its own repository (`gtk-lush`), preserving history
+1. Build the second consumer: a small real application or gallery/demo app
+   maintained in this workspace but outside `crates/gtk-lush/`, using every
+   functional GTK Lush crate in anger without importing LushText app crates.
+2. Maintain a crate-by-crate adoption matrix that names each lab workflow,
+   standalone example, stock fixture, proof/test evidence, friction status,
+   and API decision.
+3. Run the afternoon-adoption test literally: a fresh agent session adopts one
+   crate into a stock gtk-rs starter app, timed, journaled, and friction
+   classified into documentation, example, naming, type-shape, feature-flag,
+   missing-helper, overreach, accepted-limitation, or follow-up work.
+4. Attempt at least one adoption spike in an unrelated existing gtk-rs or
+   Libadwaita project, preserving only bounded notes or patch summaries here,
+   not the outside project source tree.
+5. Complete an API review pass driven by second-consumer, stock-starter, and
+   external-project friction while all functional APIs are still `0.0.0`.
+   Breaking pre-publication changes are expected when they reduce ceremony,
+   remove LushText-shaped assumptions, or better satisfy the constitution.
+   (Follow-up change name: `validate-gtk-lush-adoption-surface`.)
+
+### Phase 5b — Publishing and repository graduation
+
+1. Use the archived Phase 5a evidence as the publishing gate input: two real
+   consumers, timed adoption journal, unrelated-project spike, API review,
+   semver/public-API advisory output, and complete crate docs.
+2. Publish `0.1.0` only after the adoption gate is satisfied, with docs.rs
+   metadata, CHANGELOGs, release automation, and explicit maintainer approval.
+3. Graduate the family to its own repository (`gtk-lush`), preserving history
    (`git filter-repo`), with LushText consuming published versions (path
    dependencies allowed only between graduation and first publish).
    (Follow-up change name: `graduate-and-publish-gtk-lush`.)
@@ -378,22 +397,24 @@ adoption, repository split, and upstreaming remain separate future phases.
 - **Treadmill SLAs:** new gtk-rs major supported within one release cycle;
   GNOME SDK floor raised at most once per year; MSRV at most latest-stable
   minus two at each publish.
-- **Publishing gates:** no `0.1.0` before (a) two real consumers, (b) the
-  timed afternoon-adoption test passes, (c) semver tooling green, (d) docs
+- **Publishing gates:** no `0.1.0` before (a) the Phase 5a adoption-validation
+  change archives, (b) two real consumers exist, (c) the timed
+  afternoon-adoption test passes, (d) at least one unrelated existing project
+  adoption spike is recorded, (e) semver tooling is green, and (f) docs are
   complete. Placeholder `0.0.0` reservations carry a README pointing here.
-  Functional in-tree `0.0.0` APIs may exist before Phase 5, but they must
+  Functional in-tree `0.0.0` APIs may exist before Phase 5b, but they must
   continue to state that external publication stability is not promised yet.
 - **Maintenance honesty:** each crate lists its bus-factor plan; if the
   family ever becomes unmaintained, the constitution requires archiving with
   migration notes rather than silent rot.
-- **Repo split:** in-tree until Phase 5 gates pass; then a dedicated repo with
+- **Repo split:** in-tree until Phase 5b gates pass; then a dedicated repo with
   history preserved; LushText pins published versions thereafter.
 
 ## 8. Risks and mitigations
 
 - **Framework drift** — the central risk. Mitigation: the constitution, the
   per-PR checklist, the leaf-crate rule, and the periodic audit (Phase 6.3).
-- **Premature generalization from one consumer.** Mitigation: Phase 5 gate;
+- **Premature generalization from one consumer.** Mitigation: Phase 5a gate;
   APIs stay `0.0.x` and in-tree until a second consumer has reshaped them.
 - **gtk-rs version lag turning into consumer pain.** Mitigation: treadmill
   SLA, small surface area, CI matrix on GNOME containers, and a policy that a
@@ -413,7 +434,9 @@ adoption, repository split, and upstreaming remain separate future phases.
   archive).
 - Zero new entries in `.agents/rules/*.md` for pain classes a family crate
   owns (the rule becomes a pointer to crate docs).
-- The afternoon-adoption test passes, timed and journaled, before `0.1.0`.
+- The adoption-validation phase records a maintained second consumer,
+  crate-by-crate matrix, timed afternoon-adoption journal, unrelated-project
+  spike, and friction-driven API review before `0.1.0`.
 - LushText's full gate set stays green at every phase boundary — including
   pixel-anchor and animation-stream visual scenarios for the geometry crates.
 - At least three upstream contributions accepted (docs or issues) by the end

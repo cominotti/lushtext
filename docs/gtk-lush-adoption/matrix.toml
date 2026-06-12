@@ -1,0 +1,73 @@
+stock_fixtures = ["fixtures/gtk-lush-adoption/stock-settle"]
+generated_artifacts = ["build/gtk-lush-adoption"]
+ignored_external_checkouts = ["build/gtk-lush-adoption/external-checkouts"]
+
+[[crates]]
+package = "gtk-lush-signals"
+lab_workflow = "Signals page: SignalBag, BindingBag, RegistrationBag, clear/drop, recycle/rebind state."
+standalone_example = "crates/gtk-lush/signals/examples/signals.rs"
+stock_fixture_status = "Not selected for timed stock fixture; covered by lab workflow and standalone example."
+tests_proof_evidence = "cargo test -p gtk-lush-adoption-lab --all-targets; make gtk-lush-examples; make gtk-lush-doctests; focused widget harness covers adoption runtime lanes."
+friction_status = "No blocking friction. RegistrationBag remains the explicit escape hatch for non-signal lifecycle cleanup."
+api_decision = "Keep current API names and ownership shape."
+follow_up = "None for this phase."
+
+[[crates]]
+package = "gtk-lush-settle"
+lab_workflow = "Settle page: debounce latest generation, SettleBurst pending state, SupersedingTimer re-arm, weak target cancellation."
+standalone_example = "crates/gtk-lush/settle/examples/settle.rs and fixtures/gtk-lush-adoption/stock-settle"
+stock_fixture_status = "Selected timed fixture; elapsed check 0:18.81 on 2026-06-12."
+tests_proof_evidence = "make gtk-lush-stock-fixtures; cargo test -p gtk-lush-adoption-lab --all-targets; make gtk-lush-doctests; focused widget harness covers adoption runtime lanes."
+friction_status = "Accepted limitation: full schedule examples need a GTK/GLib object target; pure token helpers are simple."
+api_decision = "Keep current API. Add docs/examples rather than widening API."
+follow_up = "Revisit only if another external adopter needs non-GObject schedule targets."
+
+[[crates]]
+package = "gtk-lush-tasks"
+lab_workflow = "Tasks page: bounded worker dispatch, main-thread completion, freshness rejection, panic-safe result wrapping."
+standalone_example = "crates/gtk-lush/tasks/examples/tasks.rs"
+stock_fixture_status = "Not selected for timed stock fixture; async behavior is covered by lab workflow and crate example."
+tests_proof_evidence = "cargo test -p gtk-lush-adoption-lab --all-targets; make gtk-lush-examples; make gtk-lush-doctests; cargo test -p lushtext --test widget gtk_lush_adoption."
+friction_status = "No blocking friction. Panic safety is caller-owned by returning Result from catch_unwind."
+api_decision = "Keep dispatcher API; do not add a framework-level task runtime."
+follow_up = "None for this phase."
+
+[[crates]]
+package = "gtk-lush-viewport"
+lab_workflow = "Viewport page: TextView scroll adjustments, bounds/value callbacks, RestState, RestPause, lower-edge detection."
+standalone_example = "crates/gtk-lush/viewport/examples/viewport.rs"
+stock_fixture_status = "Not selected for timed stock fixture; requires scrollable GTK surface, covered by lab and example."
+tests_proof_evidence = "cargo test -p gtk-lush-adoption-lab --all-targets; make gtk-lush-examples; make gtk-lush-doctests; cargo test -p lushtext --test widget gtk_lush_adoption."
+friction_status = "No blocking friction. App-owned reaction logic stays outside the crate."
+api_decision = "Keep observer/value-object API."
+follow_up = "None for this phase."
+
+[[crates]]
+package = "gtk-lush-widgets"
+lab_workflow = "Widgets page: ClipBin constrained geometry and RenderHoldOverlay capture, not-ready, warm, reveal, early clear, non-targetable cover."
+standalone_example = "crates/gtk-lush/widgets/examples/clip_bin.rs and crates/gtk-lush/widgets/examples/render_hold.rs"
+stock_fixture_status = "Not selected for timed stock fixture; rendered behavior belongs in lab/widget/visual proof."
+tests_proof_evidence = "cargo test -p gtk-lush-adoption-lab --all-targets; make gtk-lush-examples; cargo test -p lushtext --test widget gtk_lush_adoption; make test-widget-headless."
+friction_status = "Accepted limitation: capture needs mapped drawable geometry; NotReady variants make this explicit."
+api_decision = "Keep current API and document NotReady as normal consumer state."
+follow_up = "Run visual proof if RenderHoldOverlay internals change."
+
+[[crates]]
+package = "gtk-lush-proof-harness"
+lab_workflow = "Proof Harness page: HarnessConfig, RegisteredTest, recommended pre-GTK environment, non-LushText test identity."
+standalone_example = "crates/gtk-lush/proof-harness/examples/harness.rs"
+stock_fixture_status = "Not selected for timed stock fixture; intended as dev/test dependency."
+tests_proof_evidence = "cargo test -p gtk-lush-adoption-lab --all-targets; make gtk-lush-examples; make gtk-lush-doctests."
+friction_status = "No blocking friction. Harness intentionally returns environment recommendations instead of mutating process env."
+api_decision = "Keep caller-owned environment and registry contract."
+follow_up = "None for this phase."
+
+[[crates]]
+package = "gtk-lush-proof-spine"
+lab_workflow = "Proof Spine page: readiness, blocker, snapshot, workflow-event, and artifact-envelope provider values."
+standalone_example = "crates/gtk-lush/proof-spine/examples/spine.rs"
+stock_fixture_status = "Not selected for timed stock fixture; GTK-free values covered by lab workflow and standalone example."
+tests_proof_evidence = "cargo test -p gtk-lush-adoption-lab --all-targets; make gtk-lush-examples; make gtk-lush-doctests."
+friction_status = "No blocking friction. Provider traits stay app-owned and transport-free."
+api_decision = "Keep current value object and provider trait surface."
+follow_up = "None for this phase."

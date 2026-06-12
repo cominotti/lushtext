@@ -37,7 +37,7 @@ diagnostic/oracle path and is not default Rust proof.
 - `cargo gtk-proof corpus --parity [DIR]`
   Replays the Python-oracle and Rust fixture fields for status, exit class,
   invariant IDs, warning-scan status, artifact path shape, engine metadata, and
-  bounded details. Any mismatch exits nonzero and blocks wrapper migration.
+  bounded details. Any mismatch exits nonzero and reports compatibility drift.
 - `cargo gtk-proof policy --self-test`
   Runs Rust proof-policy negative and positive tests.
 - `cargo gtk-proof policy [--artifact-dir DIR] [--base-ref REF]`

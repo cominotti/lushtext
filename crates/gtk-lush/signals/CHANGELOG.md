@@ -13,3 +13,4 @@ and this crate follows SemVer after functional publication.
   `RegistrationBag`.
 - Weak-source signal cleanup, idempotent clear/drop behavior, doctests, and
   standalone gtk-rs adoption example.
+- Adoption-lab and matrix evidence before functional publication.

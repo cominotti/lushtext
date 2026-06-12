@@ -83,7 +83,7 @@ impl RuntimeLayout {
         }
     }
 
-    /// Return process environment overrides for the future live-runner child.
+    /// Return process environment overrides for the live-runner child.
     pub(crate) fn process_environment(&self) -> Vec<(String, String)> {
         [
             ("GSETTINGS_BACKEND", "keyfile".to_string()),
