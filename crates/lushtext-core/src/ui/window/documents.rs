@@ -73,6 +73,9 @@ impl LushtextWindow {
     /// placeholders for the same path so the requested file can load in a fresh
     /// selected tab while any recoverable failed buffer remains visible.
     pub fn open_document_from_activation(&self, path: &Path) {
+        if self.queue_activation_open_if_startup_pending(path) {
+            return;
+        }
         self.open_document_with_intent(path, OpenDocumentIntent::ExternalActivation);
     }
 

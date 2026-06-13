@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_v1_legacy_single_folder_payload_migrates_to_one_workspace_folder() {
+    fn test_load_v1_legacy_single_folder_payload_is_preserved_and_reset() {
         let dir = TempDir::new().expect("expected operation to succeed");
         fixture::write_text(
             &dir.path().join(WORKSPACES_FILE),
@@ -426,48 +426,20 @@ mod tests {
             .expect("workspace fixture"),
         );
 
-        let loaded = load(dir.path()).expect("load legacy single-folder payload");
+        let loaded = load_recovering(dir.path());
 
-        assert_eq!(loaded.workspaces.len(), 1);
-        assert_eq!(loaded.workspaces[0].name, "Existing");
-        assert_eq!(
-            loaded.workspaces[0].folder_paths(),
-            vec![PathBuf::from("/tmp/existing")]
-        );
-        let migrated_folder_id = loaded.workspaces[0].folders[0].id.clone();
+        assert!(loaded.value.workspaces.is_empty());
+        assert_eq!(loaded.value.current_scope(), WorkspaceScope::All);
+        assert!(matches!(
+            loaded.diagnostics[0].problem,
+            RecoveryProblem::UnsupportedFormat { .. }
+        ));
         assert!(
-            migrated_folder_id.as_str().starts_with("migrated-folder-"),
-            "legacy single-folder migration should assign a stable migrated folder id"
-        );
-        assert_eq!(
-            load(dir.path())
-                .expect("reload legacy single-folder payload")
-                .workspaces[0]
-                .folders[0]
-                .id,
-            migrated_folder_id,
-            "loading the same legacy payload twice should derive the same migrated folder id"
-        );
-        assert_eq!(
-            loaded.current_scope(),
-            WorkspaceScope::workspace(WorkspaceId::new("existing"))
-        );
-
-        save(dir.path(), &loaded).expect("save migrated folder-set workspace");
-        let saved_json = fixture::read_text(&dir.path().join(WORKSPACES_FILE));
-        assert!(saved_json.contains("\"folders\""));
-        assert!(
-            !saved_json.contains("\"root\""),
-            "saving a migrated v1 single-folder payload must rewrite only folder-set fields"
-        );
-        assert_eq!(
-            load(dir.path())
-                .expect("reload saved migrated folder-set payload")
-                .workspaces[0]
-                .folders[0]
-                .id,
-            migrated_folder_id,
-            "saving the migrated payload should preserve the stable folder id"
+            loaded.diagnostics[0]
+                .preservation
+                .quarantine_path()
+                .is_some(),
+            "legacy single-folder payload should be preserved before defaults are used"
         );
     }
 
@@ -1163,7 +1135,7 @@ mod tests {
                     "workspaces": [{
                         "id": "existing",
                         "name": "Existing",
-                        "root": "/tmp/existing"
+                        "folders": []
                     }]
                 }),
             ))

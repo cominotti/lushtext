@@ -26,7 +26,7 @@ Keep this index in sync with `.agents/rules/*.md`. When a new rule file is added
 - `git.md` — git workflow and commit conventions
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, module-splitting, and state-grouping conventions
-- `ui.md` — UI, theming, state-extreme visibility checks, GSettings binding rules, Libadwaita template-validation caveats, adaptive dialog navigation, file-tree DnD/TreeExpander behavior, TextView child-anchor geometry, adaptive bottom-sheet sizing, and GTK paned geometry/animation conventions
+- `ui.md` — UI, theming, state-extreme visibility checks, grouped-row dialog/detail readability, GSettings binding rules, Libadwaita template-validation caveats, adaptive dialog navigation, file-tree DnD/TreeExpander behavior, TextView child-anchor geometry, adaptive bottom-sheet sizing, and GTK paned geometry/animation conventions
 - `widget-wiring.md` — GTK widget composition, signal wiring, GTK Lush signal/settle helpers, declarative projection bindings, state-extreme coverage, menu popup lifecycle, tab projection state, live paned-validation, and allocation-frame animation rules
 
 ## Architecture
@@ -82,6 +82,7 @@ src/
 │   ├── file_peek.rs    # Bounded read-only snapshots for sidebar file peek
 │   ├── file_limits.rs  # File size thresholds for graceful degradation
 │   ├── file_tree.rs    # Directory scanning (pure I/O, bounded/cancellable helpers for sidebar)
+│   ├── format_upgrade/ # Sealed inventory, plan, backup, apply, and legacy converter workflow for app-data format upgrades
 │   ├── json_store.rs   # Generic JSON load/save + data_dir()
 │   ├── notifications.rs # Window-scoped status and inline notification store
 │   ├── migration_ledger.rs # Durable retry ledger and startup reconciliation for sidecar/history migrations
@@ -97,7 +98,7 @@ src/
 │   └── benchmarks.rs   # Criterion benchmarks for all performance-sensitive services
 └── ui/                 # GTK4/Libadwaita widgets (each folder keeps mod.rs + imp.rs)
     ├── automation.rs    # App-owned read-only D-Bus automation adapter, readiness waits, and snapshot collection
-    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, print, session persistence, tab management, transient-surface dismissal, workspace scope, and zoom
+    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, startup data preflight, print, session persistence, tab management, transient-surface dismissal, workspace scope, and zoom
     ├── editor_page/     # Per-tab editor adapter plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark projection, load/save, monitor, and in-tab search helpers
     ├── sidebar/         # Multi-workspace sidebar orchestrator plus dialogs, callbacks, and per-workspace sections
     ├── search_panel/    # Workspace-wide content search panel plus history, list factory, replace, results, and runtime flows
@@ -107,7 +108,7 @@ src/
     ├── info_bar/        # Contextual editor inline alerts above editor
     ├── search_bar/      # Find/replace widget
     ├── status_bar/      # Bottom bar: feedback messages + file metadata
-    └── preferences/     # AdwPreferencesDialog
+    └── preferences/     # AdwPreferencesDialog, including the Data page for app-data format status
 ```
 
 ## Nested AGENTS.md Files
@@ -193,6 +194,8 @@ make dev-tools   # Flatpak deps + GTK debug input/screenshot helpers
 make build       # Release build
 make build-debug # Debug build
 make run         # Debug build + force a fresh run with temporary GNOME desktop staging
+make run-format-upgrade-newer-manual-test # Launch with isolated future-version app data
+make run-format-upgrade-older-manual-test # Launch with isolated upgradeable old-version app data
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
 make test        # All tests (unit + integration + widget)
 make test-unit   # Unit tests only

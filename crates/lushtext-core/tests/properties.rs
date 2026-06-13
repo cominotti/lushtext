@@ -13,6 +13,8 @@ mod durable_write_metadata;
 mod editor_formatting;
 #[path = "properties/encoding_sidecar.rs"]
 mod encoding_sidecar;
+#[path = "properties/format_upgrade.rs"]
+mod format_upgrade;
 #[path = "properties/inline_footnotes.rs"]
 mod inline_footnotes;
 #[path = "properties/palette.rs"]

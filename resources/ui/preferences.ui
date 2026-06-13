@@ -242,5 +242,60 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
         </child>
       </object>
     </child>
+    <child>
+      <object class="AdwPreferencesPage">
+        <property name="title" translatable="yes">Data</property>
+        <property name="icon-name">drive-harddisk-symbolic</property>
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title" translatable="yes">Format</property>
+            <child>
+              <object class="AdwActionRow" id="data_status_row">
+                <property name="title" translatable="yes">Data Format</property>
+                <property name="subtitle" translatable="yes">Checking app data formats</property>
+                <property name="activatable-widget">data_scan_button</property>
+                <child type="suffix">
+                  <object class="GtkButton" id="data_scan_button">
+                    <property name="icon-name">view-refresh-symbolic</property>
+                    <property name="tooltip-text" translatable="yes">Rescan data formats</property>
+                    <property name="valign">3</property>
+                    <style>
+                      <class name="flat"/>
+                    </style>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title" translatable="yes">Actions</property>
+            <child>
+              <object class="AdwActionRow" id="data_convert_row">
+                <property name="title" translatable="yes">Update Data</property>
+                <property name="subtitle" translatable="yes">Convert supported older app data to the current format</property>
+                <property name="visible">false</property>
+                <property name="activatable-widget">data_convert_button</property>
+                <child type="suffix">
+                  <object class="GtkButton" id="data_convert_button">
+                    <property name="label" translatable="yes">Convert</property>
+                    <property name="valign">3</property>
+                    <style>
+                      <class name="suggested-action"/>
+                    </style>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwPreferencesGroup" id="data_details_group">
+            <property name="title" translatable="yes">Details</property>
+          </object>
+        </child>
+      </object>
+    </child>
   </template>
 </interface>

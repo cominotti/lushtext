@@ -17,6 +17,8 @@ use lushtext_core::config::APP_ID;
 pub use lushtext_core::services::filesystem::{
     fixture, metadata as fs_metadata, mutate as fs_mutate, read as fs_read,
 };
+use std::ffi::OsString;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
 
@@ -78,6 +80,47 @@ pub fn test_application() -> libadwaita::Application {
 pub fn test_window() -> lushtext_core::ui::window::LushtextWindow {
     let app = test_application();
     lushtext_core::ui::window::LushtextWindow::new(&app)
+}
+
+/// Temporarily point app-data I/O at a fresh directory for one widget test.
+///
+/// `json_store::data_dir()` reads `LUSHTEXT_DATA_DIR` dynamically, so tests
+/// that need deterministic startup or Preferences data scans can isolate only
+/// their own metadata without depending on earlier widget-test residue.
+pub struct IsolatedDataDir {
+    tempdir: tempfile::TempDir,
+    previous: Option<OsString>,
+}
+
+impl IsolatedDataDir {
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.tempdir.path()
+    }
+}
+
+impl Drop for IsolatedDataDir {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            // SAFETY: widget tests are driven on the single GTK harness thread;
+            // this guard restores the process env after windows from the test
+            // have been dropped.
+            unsafe { std::env::set_var("LUSHTEXT_DATA_DIR", previous) };
+        } else {
+            // SAFETY: see the restoration case above.
+            unsafe { std::env::remove_var("LUSHTEXT_DATA_DIR") };
+        }
+    }
+}
+
+pub fn isolated_data_dir() -> IsolatedDataDir {
+    ensure_gtk_init();
+    let tempdir = tempfile::tempdir().expect("isolated app data tempdir");
+    let previous = std::env::var_os("LUSHTEXT_DATA_DIR");
+    // SAFETY: widget tests are serialized by the GTK harness before the test
+    // constructs windows or starts background app-data tasks.
+    unsafe { std::env::set_var("LUSHTEXT_DATA_DIR", tempdir.path()) };
+    IsolatedDataDir { tempdir, previous }
 }
 
 fn try_emit_key_pressed(widget: &gtk4::Widget, key: gtk4::gdk::Key) -> Option<glib::Propagation> {

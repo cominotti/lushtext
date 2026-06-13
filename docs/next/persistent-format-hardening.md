@@ -15,6 +15,12 @@ introducing a database before the product needs database-shaped queries. The
 next hardening step is a clean public-era format contract for the JSON files we
 write from that point forward.
 
+Current implementation note: public-era app-owned JSON now uses v1 envelopes as
+the baseline. While v1 remains latest, format-upgrade scans are no-op for v1 and
+missing metadata. Future version steps should add converter fixtures under the
+sealed `services::format_upgrade::legacy` path, not latest-version runtime
+readers.
+
 ## Current Format Fit
 
 Pretty JSON is a better fit than TOML for current persistent state because
@@ -84,11 +90,13 @@ allow a clean break from pre-public bare JSON shapes:
 - Do not add permanent legacy bare-JSON readers.
 - Treat unsupported pre-public JSON as unsupported metadata: preserve it through
   quarantine or in-place diagnostics before writing a v1 replacement.
-- If conversion is useful, keep it as an optional one-shot helper under
-  `scripts/migrations/` rather than normal runtime app code.
-- For the current hardening pass, no migration script is added. Pre-public
-  files are preserved through recovery diagnostics and reset to v1 defaults
-  only when replacement is safe.
+- If conversion is useful for public-era version steps, keep the old-format
+  parser and converter in `services::format_upgrade::legacy`, with tests that
+  convert one version step at a time. Latest-version runtime readers should not
+  gain permanent old-shape branches.
+- For the v1 baseline, no converter is needed. Pre-public bare files are still
+  preserved through recovery diagnostics and reset to v1 defaults only when
+  replacement is safe.
 - Use recovery-aware loading for important user-managed files that still fall
   back to empty state today, especially `workspaces.json` and
   `saved-searches.json`.

@@ -6,6 +6,8 @@
 #   make build       - Release build
 #   make build-debug - Debug build
 #   make run         - Debug build + force a fresh dev run with GNOME desktop staging
+#   make run-format-upgrade-newer-manual-test - Launch with isolated future-version app data
+#   make run-format-upgrade-older-manual-test - Launch with isolated upgradeable old-version app data
 #   make refresh-dock-icon - Regenerate app icon assets and restart dev run so GNOME Shell reloads the app icon
 #   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
@@ -65,7 +67,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless automation-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless automation-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -94,6 +96,8 @@ CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 
 CARGO_TEST_PROP           = cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
 CARGO_TEST_FUZZ_CORPUS_REPLAY = cargo test -p lushtext-core --features fuzzing --test fuzz_corpus_replay
 PROPTEST_DEEP_CASES ?= 512
+FORMAT_UPGRADE_TEST_HOME ?=
+FORMAT_UPGRADE_TEST_VERSION ?= 999
 
 GTK_LUSH_PACKAGES := -p gtk-lush-signals -p gtk-lush-settle -p gtk-lush-tasks -p gtk-lush-viewport -p gtk-lush-widgets -p gtk-lush-proof-harness -p gtk-lush-proof-spine
 GTK_LUSH_CRATES := crates/gtk-lush/signals crates/gtk-lush/settle crates/gtk-lush/tasks crates/gtk-lush/viewport crates/gtk-lush/widgets crates/gtk-lush/proof-harness crates/gtk-lush/proof-spine
@@ -150,6 +154,21 @@ build-debug:
 run: build-debug
 	@echo "Running LushText..."
 	LUSHTEXT_DEV_RUN_FORCE_RESTART=1 ./scripts/run-dev-app.sh
+
+# Preserve the original manual-test command name; it now means the newer-data drill.
+run-format-upgrade-manual-test: run-format-upgrade-newer-manual-test
+
+# Prepare isolated app data that looks like it came from a newer LushText and
+# launch the normal dev app against that XDG_DATA_HOME.
+run-format-upgrade-newer-manual-test: build-debug
+	@FORMAT_UPGRADE_TEST_HOME="$(FORMAT_UPGRADE_TEST_HOME)" FORMAT_UPGRADE_TEST_VERSION="$(FORMAT_UPGRADE_TEST_VERSION)" bash ./scripts/run-format-upgrade-manual-test.sh newer
+
+# Prepare isolated app data that can be upgraded through a test-only legacy
+# converter and launch a debug build with that manual fixture enabled.
+run-format-upgrade-older-manual-test:
+	@echo "Building LushText with manual format-upgrade fixtures..."
+	cargo build -p lushtext --features manual-format-upgrade-fixtures
+	@FORMAT_UPGRADE_TEST_HOME="$(FORMAT_UPGRADE_TEST_HOME)" FORMAT_UPGRADE_TEST_VERSION=0 bash ./scripts/run-format-upgrade-manual-test.sh older
 
 # Force a fresh dev relaunch so GNOME Shell reloads the dock icon
 refresh-dock-icon:
@@ -662,6 +681,8 @@ help:
 	@echo "  build        Release build (optimized)"
 	@echo "  build-debug  Debug build"
 	@echo "  run          Debug build and force a fresh dev run with GNOME desktop staging"
+	@echo "  run-format-upgrade-newer-manual-test Launch with isolated future-version app data"
+	@echo "  run-format-upgrade-older-manual-test Launch with isolated upgradeable old-version app data"
 	@echo "  refresh-dock-icon Regenerate app icon assets + force a fresh dock icon reload in GNOME Shell"
 	@echo ""
 	@echo "Test targets:"

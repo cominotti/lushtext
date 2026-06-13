@@ -2,12 +2,20 @@
 
 //! Tests for LushtextPreferences dialog.
 
-use crate::common::ensure_gtk_init;
+use crate::common::{ensure_gtk_init, fixture, fs_metadata, isolated_data_dir, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::config::{self, keys};
-use libadwaita::prelude::*;
+use lushtext_core::services::format_upgrade::{
+    FORMAT_UPGRADE_BACKUP_DIR, test_support::ConverterRegistry,
+};
+use lushtext_core::services::json_format::{
+    KIND_BOOKMARK_SIDECAR, KIND_SESSION, SUPPORTED_JSON_VERSION,
+};
 use lushtext_core::ui::preferences::LushtextPreferences;
+use libadwaita::prelude::*;
+use serde_json::json;
+use std::time::Duration;
 
 fn has_accessible_role(root: &impl IsA<gtk4::Widget>, role: gtk4::AccessibleRole) -> bool {
     let mut stack = vec![root.as_ref().clone()];
@@ -22,6 +30,31 @@ fn has_accessible_role(root: &impl IsA<gtk4::Widget>, role: gtk4::AccessibleRole
         }
     }
     false
+}
+
+fn find_scrolled_window(root: &impl IsA<gtk4::Widget>) -> Option<gtk4::ScrolledWindow> {
+    let mut stack = vec![root.as_ref().clone()];
+    while let Some(widget) = stack.pop() {
+        if let Ok(scroller) = widget.clone().downcast::<gtk4::ScrolledWindow>() {
+            return Some(scroller);
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            stack.push(current.clone());
+            child = current.next_sibling();
+        }
+    }
+    None
+}
+
+fn list_box_child_count(list: &gtk4::ListBox) -> usize {
+    let mut count = 0;
+    let mut child = list.first_child();
+    while let Some(current) = child {
+        count += 1;
+        child = current.next_sibling();
+    }
+    count
 }
 
 #[test]
@@ -69,6 +102,14 @@ fn test_preferences_controls_expose_accessibility_roles() {
     assert!(
         has_accessible_role(&*imp.transparency_button, gtk4::AccessibleRole::Button),
         "transparency menu should expose a button role"
+    );
+    assert_eq!(
+        imp.data_scan_button.accessible_role(),
+        gtk4::AccessibleRole::Button
+    );
+    assert_eq!(
+        imp.data_convert_button.accessible_role(),
+        gtk4::AccessibleRole::Button
     );
 }
 
@@ -304,4 +345,209 @@ fn test_workspace_sidebar_width_row_updates_setting() {
     while glib::MainContext::default().iteration(false) {}
 
     assert_eq!(settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), 0.4);
+}
+
+#[test]
+fn test_data_page_reports_current_format_and_hides_convert() {
+    let _data_dir = isolated_data_dir();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_operation_inflight.get()
+            && imp.data_status_row.subtitle().as_deref() == Some("Data format is current")
+    });
+
+    assert_eq!(imp.data_status_row.title().as_str(), "Data Format");
+    assert_eq!(
+        imp.data_status_row.subtitle().as_deref(),
+        Some("Data format is current")
+    );
+    assert!(!imp.data_convert_row.is_visible());
+    assert!(!imp.data_convert_button.is_sensitive());
+    assert!(
+        imp.data_details_list.first_child().is_some(),
+        "current state should still render a concise details row"
+    );
+}
+
+#[test]
+fn test_data_page_does_not_offer_convert_for_future_version() {
+    let data_dir = isolated_data_dir();
+    let future_session = json!({
+        "kind": KIND_SESSION,
+        "version": 2,
+        "data": { "tabs": [], "active_tab_index": null }
+    });
+    fixture::write_text(
+        &data_dir.path().join("session.json"),
+        &serde_json::to_string_pretty(&future_session).expect("future session JSON"),
+    );
+
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_operation_inflight.get()
+            && imp
+                .data_status_row
+                .subtitle()
+                .is_some_and(|subtitle| subtitle.contains("created by a newer LushText"))
+    });
+
+    assert_eq!(
+        imp.data_status_row.subtitle().as_deref(),
+        Some("Some app data was created by a newer LushText")
+    );
+    assert!(
+        !imp.data_convert_row.is_visible(),
+        "newer/future metadata must not be presented as convertible"
+    );
+    assert!(!imp.data_convert_button.is_sensitive());
+    assert!(
+        !imp.data_last_scan_offers_convert.get(),
+        "future metadata must not arm the Convert action"
+    );
+}
+
+#[test]
+fn test_data_page_keeps_many_awkward_items_in_bounded_details_scroller() {
+    let data_dir = isolated_data_dir();
+    let bookmarks_dir = data_dir.path().join("bookmarks");
+    fixture::create_dir_all(&bookmarks_dir);
+    for index in 0..16 {
+        let path = bookmarks_dir.join(format!(
+            "{index:02}-very-long-bookmark-sidecar-name-that-should-not-expand-the-dialog.json"
+        ));
+        fixture::write_text(
+            &path,
+            &serde_json::to_string_pretty(&json!({
+                "kind": KIND_BOOKMARK_SIDECAR,
+                "version": SUPPORTED_JSON_VERSION + 1,
+                "data": { "bookmarks": [] }
+            }))
+            .expect("future bookmark sidecar JSON"),
+        );
+    }
+
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_operation_inflight.get()
+            && imp
+                .data_status_row
+                .subtitle()
+                .is_some_and(|subtitle| subtitle.contains("created by a newer LushText"))
+    });
+
+    let scroller =
+        find_scrolled_window(&*imp.data_details_group).expect("data details scroller");
+    assert_eq!(scroller.hscrollbar_policy(), gtk4::PolicyType::Never);
+    assert_eq!(scroller.max_content_height(), 240);
+    assert!(list_box_child_count(&imp.data_details_list) >= 16);
+    assert!(!imp.data_convert_row.is_visible());
+}
+
+#[test]
+fn test_data_page_shows_convert_only_for_registered_supported_legacy_plan() {
+    let data_dir = isolated_data_dir();
+    let session_path = data_dir.path().join("session.json");
+    fixture::write_text(
+        &session_path,
+        &serde_json::to_string_pretty(&json!({
+            "kind": KIND_SESSION,
+            "version": 0,
+            "data": { "tabs": [], "active_tab_index": null }
+        }))
+        .expect("legacy session JSON"),
+    );
+    let registry = ConverterRegistry::production().with_converter(
+        KIND_SESSION,
+        0,
+        SUPPORTED_JSON_VERSION,
+        |_| {
+            Ok(serde_json::to_vec(&json!({
+                "kind": KIND_SESSION,
+                "version": SUPPORTED_JSON_VERSION,
+                "data": { "tabs": [], "active_tab_index": null }
+            }))
+            .expect("converted session JSON"))
+        },
+    );
+    let _registry_override = ConverterRegistry::override_production_for_test(registry);
+
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_operation_inflight.get() && imp.data_convert_row.is_visible()
+    });
+
+    assert!(imp.data_convert_button.is_sensitive());
+    assert_eq!(imp.data_convert_button.label().as_deref(), Some("Convert"));
+
+    imp.data_convert_button.emit_clicked();
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_operation_inflight.get()
+            && imp.data_status_row.subtitle().as_deref() == Some("Data format is current")
+    });
+
+    assert!(!imp.data_convert_row.is_visible());
+    let value: serde_json::Value =
+        serde_json::from_str(&fixture::read_text(&session_path)).expect("converted session");
+    assert_eq!(
+        value.get("version").and_then(serde_json::Value::as_u64),
+        Some(u64::from(SUPPORTED_JSON_VERSION))
+    );
+}
+
+#[test]
+fn test_data_page_keeps_failed_convert_retryable() {
+    let data_dir = isolated_data_dir();
+    let session_path = data_dir.path().join("session.json");
+    fixture::write_text(
+        &session_path,
+        &serde_json::to_string_pretty(&json!({
+            "kind": KIND_SESSION,
+            "version": 0,
+            "data": { "tabs": [], "active_tab_index": null }
+        }))
+        .expect("legacy session JSON"),
+    );
+    let registry = ConverterRegistry::production().with_converter(
+        KIND_SESSION,
+        0,
+        SUPPORTED_JSON_VERSION,
+        |_| Err(std::io::Error::other("synthetic conversion failure").into()),
+    );
+    let _registry_override = ConverterRegistry::override_production_for_test(registry);
+
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_operation_inflight.get() && imp.data_convert_row.is_visible()
+    });
+
+    imp.data_convert_button.emit_clicked();
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_operation_inflight.get()
+            && imp.data_convert_button.label().as_deref() == Some("Retry")
+    });
+
+    assert!(imp.data_convert_row.is_visible());
+    assert!(imp.data_convert_button.is_sensitive());
+    assert!(
+        imp.data_status_row
+            .subtitle()
+            .is_some_and(|subtitle| subtitle.contains("Data update failed")),
+        "retry state should keep failure detail visible"
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(&fixture::read_text(&session_path)).expect("retryable session");
+    assert_eq!(value.get("version").and_then(serde_json::Value::as_u64), Some(0));
+    assert!(
+        fs_metadata::exists(&data_dir.path().join(FORMAT_UPGRADE_BACKUP_DIR)),
+        "failed convert should still leave backup evidence before retry"
+    );
 }

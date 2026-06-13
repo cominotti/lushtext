@@ -243,6 +243,17 @@ pub struct DraftState {
     pub close_discard_ids: RefCell<HashSet<String>>,
 }
 
+/// Startup data-flow gate state owned by the window shell.
+#[derive(Default)]
+pub struct StartupDataFlowState {
+    /// Whether format preflight and any required user decision have resolved.
+    pub completed: Cell<bool>,
+    /// Whether a preflight task is already running for this window.
+    pub running: Cell<bool>,
+    /// External activation paths queued while startup metadata consumers are paused.
+    pub pending_activation_paths: RefCell<Vec<PathBuf>>,
+}
+
 /// Tab-strip menu and close-authorization state owned by the window shell.
 pub struct TabManagementState {
     /// Shared `GMenu` model reused for the Adwaita tab context menu.
@@ -375,6 +386,8 @@ pub struct LushtextWindow {
     pub focus_mode: FocusModeState,
     /// Draft persistence and autosave state.
     pub drafts: DraftState,
+    /// Format preflight state that gates startup metadata consumers.
+    pub startup_data_flow: StartupDataFlowState,
     /// Tab-menu targeting, pinned-page wiring, and bulk-close authorization.
     pub tab_management: TabManagementState,
     /// Weak handle for browser-navigation actions while Browse Notes is visible.
@@ -454,6 +467,7 @@ impl Default for LushtextWindow {
             session: SessionState::default(),
             focus_mode: FocusModeState::default(),
             drafts: DraftState::default(),
+            startup_data_flow: StartupDataFlowState::default(),
             tab_management: TabManagementState::default(),
             active_notes_browser: RefCell::new(None),
             search_saved_focus: RefCell::new(None),
@@ -896,11 +910,6 @@ impl ObjectImpl for LushtextWindow {
         });
 
         obj.update_content_stack();
-        obj.reconcile_pending_migrations_on_startup();
-        self.sidebar.load_workspaces();
-        obj.refresh_workspace_scope_consumers();
-        obj.load_session_and_drafts();
-        obj.start_autosave_timer();
     }
 
     fn dispose(&self) {

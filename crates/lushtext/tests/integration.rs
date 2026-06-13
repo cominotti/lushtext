@@ -33,3 +33,6 @@ mod local_history;
 
 #[path = "integration/search_replace.rs"]
 mod search_replace;
+
+#[path = "integration/format_upgrade.rs"]
+mod format_upgrade;

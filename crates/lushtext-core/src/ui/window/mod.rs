@@ -24,6 +24,7 @@ mod preview;
 mod print;
 mod search;
 mod session_persistence;
+mod startup_data;
 mod tabs;
 mod transient_surfaces;
 mod workspace_scope;
@@ -101,6 +102,7 @@ impl LushtextWindow {
         window.update_content_stack();
         window.refresh_status_bar();
         window.render_notifications();
+        window.begin_startup_data_flow();
         window
     }
 

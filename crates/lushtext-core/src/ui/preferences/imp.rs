@@ -9,12 +9,30 @@
 //! setting into the percentage label shown in its row suffix.
 
 use crate::config::keys;
+use crate::services::{format_upgrade, json_store};
 use crate::ui::sidebar::WorkspaceSidebarWidthPreset;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::value::ToValue;
+use gtk_lush_tasks::spawn_blocking_then_weak;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
+use std::cell::Cell;
 
+/// Maximum rows rendered per metadata group before showing an omitted-count row.
+const DATA_DETAILS_MAX_ROWS_PER_GROUP: usize = 32;
+
+/// Background conversion result returned to the Preferences Data page on the GTK main thread.
+enum DataConvertWorkerResult {
+    NoConvert(format_upgrade::FormatPlan),
+    Applied {
+        plan: format_upgrade::FormatPlan,
+        result: Result<format_upgrade::FormatApplyOutcome, String>,
+    },
+}
+
+// CompositeTemplate loads preferences.ui from the compiled GResource; each
+// #[template_child] field is bound to the widget with the matching template ID.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/preferences.ui")]
 pub struct LushtextPreferences {
@@ -66,8 +84,29 @@ pub struct LushtextPreferences {
     pub workspace_auto_collapse_row: TemplateChild<libadwaita::SwitchRow>,
     #[template_child]
     pub workspace_empty_folder_lookahead_cap_row: TemplateChild<libadwaita::SpinRow>,
+    /// Status row summarizing the latest app-data format scan.
+    #[template_child]
+    pub data_status_row: TemplateChild<libadwaita::ActionRow>,
+    /// Button that reruns the read-only app-data format scan.
+    #[template_child]
+    pub data_scan_button: TemplateChild<gtk4::Button>,
+    /// Row containing the Convert action when the last scan found a supported upgrade.
+    #[template_child]
+    pub data_convert_row: TemplateChild<libadwaita::ActionRow>,
+    /// Button that applies supported conversions after rescanning app data.
+    #[template_child]
+    pub data_convert_button: TemplateChild<gtk4::Button>,
+    /// Group that hosts the bounded per-file format details list.
+    #[template_child]
+    pub data_details_group: TemplateChild<libadwaita::PreferencesGroup>,
 
     pub settings: gio::Settings,
+    /// Scroll-contained list of metadata details for the Data page.
+    pub data_details_list: gtk4::ListBox,
+    /// Whether the last completed scan exposed a supported Convert action.
+    pub data_last_scan_offers_convert: Cell<bool>,
+    /// Whether a scan or conversion command is already running.
+    pub data_operation_inflight: Cell<bool>,
 }
 
 impl Default for LushtextPreferences {
@@ -96,12 +135,22 @@ impl Default for LushtextPreferences {
             bookmark_gutter_row: TemplateChild::default(),
             workspace_auto_collapse_row: TemplateChild::default(),
             workspace_empty_folder_lookahead_cap_row: TemplateChild::default(),
+            data_status_row: TemplateChild::default(),
+            data_scan_button: TemplateChild::default(),
+            data_convert_row: TemplateChild::default(),
+            data_convert_button: TemplateChild::default(),
+            data_details_group: TemplateChild::default(),
             settings: gio::Settings::new(crate::config::APP_ID),
+            data_details_list: gtk4::ListBox::new(),
+            data_last_scan_offers_convert: Cell::new(false),
+            data_operation_inflight: Cell::new(false),
         }
     }
 }
 
 #[glib::object_subclass]
+// ObjectSubclass registers this Rust struct as the GLib runtime type;
+// ObjectImpl below owns lifecycle hooks after GTK initializes template children.
 impl ObjectSubclass for LushtextPreferences {
     const NAME: &'static str = "LushtextPreferences";
     type Type = super::LushtextPreferences;
@@ -200,6 +249,7 @@ impl ObjectImpl for LushtextPreferences {
         self.setup_workspace_sidebar_width_row();
         self.setup_font_button();
         self.setup_transparency_row();
+        self.setup_data_page();
         self.apply_accessibility_metadata();
     }
 }
@@ -215,6 +265,209 @@ impl LushtextPreferences {
             .set_accessible_role(gtk4::AccessibleRole::Group);
         self.workspace_empty_folder_lookahead_cap_row
             .set_accessible_role(gtk4::AccessibleRole::Group);
+        self.data_scan_button
+            .update_property(&[gtk4::accessible::Property::Label("Rescan app data formats")]);
+        self.data_convert_button
+            .update_property(&[gtk4::accessible::Property::Label(
+                "Convert supported older app data",
+            )]);
+    }
+
+    /// Build and wire the Preferences > Data page.
+    fn setup_data_page(&self) {
+        self.data_details_list
+            .set_selection_mode(gtk4::SelectionMode::None);
+        self.data_details_list.add_css_class("boxed-list");
+
+        let scroll = gtk4::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .max_content_height(240)
+            .child(&self.data_details_list)
+            .build();
+        self.data_details_group.add(&scroll);
+
+        let prefs_weak = self.obj().downgrade();
+        // GObject signals are GTK's observer pattern: the button emits
+        // "clicked", and this closure upgrades the weak dialog reference before
+        // changing UI state.
+        self.data_scan_button.connect_clicked(move |_| {
+            if let Some(prefs) = prefs_weak.upgrade() {
+                prefs.imp().run_data_scan();
+            }
+        });
+
+        let prefs_weak = self.obj().downgrade();
+        self.data_convert_button.connect_clicked(move |_| {
+            if let Some(prefs) = prefs_weak.upgrade() {
+                prefs.imp().run_data_convert();
+            }
+        });
+
+        self.run_data_scan();
+    }
+
+    /// Run the manual Data-page scan on a background thread.
+    fn run_data_scan(&self) {
+        if self.data_operation_inflight.replace(true) {
+            return;
+        }
+        self.data_scan_button.set_sensitive(false);
+        self.data_convert_button.set_sensitive(false);
+        self.data_status_row
+            .set_subtitle("Checking app data formats");
+
+        let prefs = self.obj().clone();
+        spawn_blocking_then_weak(
+            &prefs,
+            || {
+                let data_dir = json_store::data_dir();
+                let inventory = format_upgrade::scan(&data_dir);
+                format_upgrade::build_plan(&inventory)
+            },
+            |prefs, plan| {
+                let imp = prefs.imp();
+                imp.data_operation_inflight.set(false);
+                imp.data_scan_button.set_sensitive(true);
+                imp.render_data_plan(&plan, None);
+            },
+        );
+    }
+
+    /// Run a supported conversion from the Data page.
+    fn run_data_convert(&self) {
+        if self.data_operation_inflight.replace(true) {
+            return;
+        }
+        if !self.data_last_scan_offers_convert.get() {
+            self.data_operation_inflight.set(false);
+            return;
+        }
+
+        self.data_scan_button.set_sensitive(false);
+        self.data_convert_button.set_sensitive(false);
+        self.data_status_row
+            .set_subtitle("Updating supported older app data");
+
+        let prefs = self.obj().clone();
+        spawn_blocking_then_weak(
+            &prefs,
+            move || {
+                let data_dir = json_store::data_dir();
+                let inventory = format_upgrade::scan(&data_dir);
+                let plan = format_upgrade::build_plan(&inventory);
+                if !plan.offers_convert() {
+                    return DataConvertWorkerResult::NoConvert(plan);
+                }
+                let result =
+                    format_upgrade::apply_plan(&data_dir, &plan).map_err(|error| error.to_string());
+                DataConvertWorkerResult::Applied { plan, result }
+            },
+            |prefs, result| {
+                let imp = prefs.imp();
+                imp.data_operation_inflight.set(false);
+                imp.data_scan_button.set_sensitive(true);
+                match result {
+                    DataConvertWorkerResult::NoConvert(plan) => {
+                        let detail = if plan.has_no_action() {
+                            None
+                        } else {
+                            Some("No supported conversion is available for the current scan")
+                        };
+                        imp.render_data_plan(&plan, detail);
+                    }
+                    DataConvertWorkerResult::Applied {
+                        result: Ok(outcome),
+                        ..
+                    } if outcome.is_success() => imp.run_data_scan(),
+                    DataConvertWorkerResult::Applied {
+                        plan,
+                        result: Ok(outcome),
+                    } => {
+                        let detail = outcome.failures.first().map(|failure| {
+                            format!("{}: {}", failure.path.display(), failure.detail)
+                        });
+                        imp.render_data_plan(&plan, detail.as_deref());
+                    }
+                    DataConvertWorkerResult::Applied {
+                        plan,
+                        result: Err(detail),
+                    } => {
+                        imp.render_data_plan(&plan, Some(&detail));
+                    }
+                }
+            },
+        );
+    }
+
+    /// Render one scanned format plan into Data page status, details, and action state.
+    fn render_data_plan(&self, plan: &format_upgrade::FormatPlan, failure: Option<&str>) {
+        let status = data_plan_status(plan, failure);
+        let offers_convert = plan.offers_convert();
+        self.data_status_row.set_subtitle(&status);
+        self.data_convert_row.set_visible(offers_convert);
+        self.data_convert_button.set_sensitive(offers_convert);
+        self.data_convert_button.set_label(if failure.is_some() {
+            "Retry"
+        } else {
+            "Convert"
+        });
+        self.data_last_scan_offers_convert.set(offers_convert);
+        self.render_data_details(plan, failure);
+    }
+
+    /// Rebuild the bounded per-file detail list for the current Data page plan.
+    fn render_data_details(&self, plan: &format_upgrade::FormatPlan, failure: Option<&str>) {
+        while let Some(child) = self.data_details_list.first_child() {
+            self.data_details_list.remove(&child);
+        }
+
+        if let Some(detail) = failure {
+            let row = libadwaita::ActionRow::builder()
+                .title("Last Attempt Failed")
+                .subtitle(detail)
+                .build();
+            self.data_details_list.append(&row);
+        }
+
+        if plan.has_no_action() {
+            let row = libadwaita::ActionRow::builder()
+                .title("Current")
+                .subtitle("No app data files require a format update")
+                .build();
+            self.data_details_list.append(&row);
+            return;
+        }
+
+        for group in &plan.groups {
+            for planned in group.actions.iter().take(DATA_DETAILS_MAX_ROWS_PER_GROUP) {
+                let row = libadwaita::ActionRow::builder()
+                    .title(format!(
+                        "{}: {}",
+                        group.metadata_kind.label(),
+                        planned.item.path.display()
+                    ))
+                    .subtitle(action_summary(planned))
+                    .build();
+                self.data_details_list.append(&row);
+            }
+            let omitted = group
+                .actions
+                .len()
+                .saturating_sub(DATA_DETAILS_MAX_ROWS_PER_GROUP);
+            if omitted > 0 {
+                let row = libadwaita::ActionRow::builder()
+                    .title(format!(
+                        "{}: {} more item(s)",
+                        group.metadata_kind.label(),
+                        omitted
+                    ))
+                    .subtitle("Additional matching app data is included in the action")
+                    .build();
+                self.data_details_list.append(&row);
+            }
+        }
     }
 
     /// Keep the workspace width preference aligned with the three named shell presets
@@ -330,4 +583,37 @@ impl PreferencesDialogImpl for LushtextPreferences {}
 /// Format one stored opacity value as a whole-percent label for the row suffix.
 fn transparency_label_text(opacity: f64) -> String {
     format!("{:>3.0}%", (opacity.clamp(0.0, 1.0) * 100.0).floor())
+}
+
+/// Summarize a scan/apply result in the compact Data page status row.
+fn data_plan_status(plan: &format_upgrade::FormatPlan, failure: Option<&str>) -> String {
+    if let Some(detail) = failure {
+        return format!("Data update failed: {detail}");
+    }
+    if plan.has_no_action() {
+        "Data format is current".to_string()
+    } else if plan.has_future_version_blocker() {
+        "Some app data was created by a newer LushText".to_string()
+    } else if plan.offers_convert() {
+        "Supported older app data can be updated".to_string()
+    } else {
+        "Some app data needs preservation or recovery".to_string()
+    }
+}
+
+/// Convert one planned item into the short subtitle shown in the details list.
+fn action_summary(planned: &format_upgrade::FormatPlannedItem) -> String {
+    match &planned.action {
+        format_upgrade::FormatPlanAction::NoAction => "No action required".to_string(),
+        format_upgrade::FormatPlanAction::ConvertToLatest {
+            from_version,
+            to_version,
+        } => format!("Convert from v{from_version} to v{to_version}"),
+        format_upgrade::FormatPlanAction::StartFreshOnly => {
+            "No converter is available; Start Fresh preserves this data first".to_string()
+        }
+        format_upgrade::FormatPlanAction::ReportOnly => {
+            "Recovery metadata will preserve or report this issue".to_string()
+        }
+    }
 }

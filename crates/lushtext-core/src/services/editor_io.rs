@@ -19,13 +19,26 @@ use crate::services::filesystem::{
 use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "test-utils")]
+use std::time::Duration;
 
 /// Maximum number of concrete lossy characters included in one preview.
 ///
 /// The preview exists to explain the risk, not to render a full diff for a
 /// large document, so the sample stays intentionally small and fast to inspect.
 const MAX_LOSSY_PREVIEW_ISSUES: usize = 8;
+
+#[cfg(feature = "test-utils")]
+static LOAD_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Configure an artificial editor-load delay for widget race tests.
+#[cfg(feature = "test-utils")]
+pub fn set_load_delay_for_test(delay_ms: u64) {
+    LOAD_DELAY_MS.store(delay_ms, Ordering::Release);
+}
 
 /// Successful result from `load_text_file`.
 #[derive(Debug)]
@@ -211,6 +224,8 @@ pub fn load_text_file_with_encoding(
         return Err(LoadError::Cancelled);
     }
 
+    delay_load_for_test();
+
     let facts = fs_metadata::file_facts(path).map_err(|source| LoadError::Metadata {
         path: path.to_path_buf(),
         source,
@@ -253,6 +268,17 @@ pub fn load_text_file_with_encoding(
         file_health,
     })
 }
+
+#[cfg(feature = "test-utils")]
+fn delay_load_for_test() {
+    let delay_ms = LOAD_DELAY_MS.load(Ordering::Acquire);
+    if delay_ms > 0 {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
+}
+
+#[cfg(not(feature = "test-utils"))]
+fn delay_load_for_test() {}
 
 /// Classify raw editor bytes without filesystem access for fuzz targets.
 ///

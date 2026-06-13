@@ -71,6 +71,15 @@ fn wait_for_palette_index(window: &LushtextWindow, expected_index: usize) {
     });
 }
 
+/// Wait until persisted workspaces have loaded and the selected empty scope is reflected.
+fn wait_for_empty_selected_workspace_index(window: &LushtextWindow, expected_total_folders: usize) {
+    wait_until(Duration::from_secs(10), || {
+        window.imp().sidebar.all_workspace_folder_paths().len() == expected_total_folders
+            && window.imp().sidebar.current_scope_folder_paths().is_empty()
+            && window.imp().command_palette.file_index_len() == 0
+    });
+}
+
 fn emit_key(widget: &gtk4::Widget, key: gtk4::gdk::Key) -> glib::Propagation {
     let controllers = widget.observe_controllers();
     for index in 0..controllers.n_items() {
@@ -1383,13 +1392,13 @@ fn test_palette_empty_selected_workspace_scope_has_no_workspace_file_rows() {
 
     let window = test_window();
     present_window(&window);
-    wait_for_palette_index(&window, 0);
+    wait_for_empty_selected_workspace_index(&window, 1);
 
     activate_action(&window, "toggle-command-palette");
     let palette = window.imp().command_palette.clone();
     palette.imp().set_mode(SearchMode::Files);
     palette.imp().rebuild_results("beta");
-    wait_until(Duration::from_secs(5), || {
+    wait_until(Duration::from_secs(10), || {
         palette.imp().no_results_label.property::<bool>("visible")
     });
 

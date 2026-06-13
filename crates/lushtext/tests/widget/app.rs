@@ -11,7 +11,7 @@ use gtk4::prelude::{GtkApplicationExt, TextBufferExt};
 use lushtext_core::app::LushtextApplication;
 use lushtext_core::config;
 use lushtext_core::model::session::{SessionData, SessionTab};
-use lushtext_core::services::{json_store, session_service};
+use lushtext_core::services::{editor_io, json_store, session_service};
 use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use lushtext_core::ui::window::LushtextWindow;
 use sourceview5::StyleSchemeManager;
@@ -98,6 +98,9 @@ fn active_window(app: &LushtextApplication) -> LushtextWindow {
 }
 
 fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.selected_page().is_some()
+    });
     window
         .imp()
         .tab_view
@@ -141,6 +144,20 @@ fn status_text_contains(window: &LushtextWindow, needle: &str) -> bool {
 fn clear_session() {
     session_service::save(&json_store::data_dir(), &SessionData::default())
         .expect("clear test session");
+}
+
+struct EditorLoadDelayReset;
+
+impl Drop for EditorLoadDelayReset {
+    fn drop(&mut self) {
+        editor_io::set_load_delay_for_test(0);
+    }
+}
+
+fn delay_editor_loads_for_test(delay: Duration) -> EditorLoadDelayReset {
+    let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+    editor_io::set_load_delay_for_test(delay_ms);
+    EditorLoadDelayReset
 }
 
 fn open_files(app: &LushtextApplication, paths: &[&Path]) {
@@ -423,6 +440,7 @@ fn test_open_activation_modified_failed_placeholder_remains_recoverable_without_
     let missing = dir.path().join("modified-failed.txt");
     let app = test_lushtext_application();
     let files = [gio::File::for_path(&missing)];
+    let load_delay = delay_editor_loads_for_test(Duration::from_millis(250));
 
     app.open(&files, "");
     let window = active_window(&app);
@@ -436,6 +454,7 @@ fn test_open_activation_modified_failed_placeholder_remains_recoverable_without_
             && !window.imp().open_paths.borrow().contains(&missing)
             && status_text_contains(&window, &missing_status)
     });
+    drop(load_delay);
 
     fixture::write_text(&missing, "fresh file from desktop\n");
     open_files(&app, &[missing.as_path()]);
@@ -458,6 +477,7 @@ fn test_open_activation_modified_failed_placeholder_restores_draft_after_restart
     let missing = dir.path().join("restart-missing.txt");
     let app = test_lushtext_application();
     let files = [gio::File::for_path(&missing)];
+    let load_delay = delay_editor_loads_for_test(Duration::from_millis(250));
 
     app.open(&files, "");
     let window = active_window(&app);
@@ -470,6 +490,7 @@ fn test_open_activation_modified_failed_placeholder_restores_draft_after_restart
         failed_editor.load_state() == EditorLoadState::Failed
             && failed_editor.file_path().as_deref() == Some(missing.as_path())
     });
+    drop(load_delay);
     window.flush_dirty_drafts().expect("flush failed-placeholder draft");
     window.save_session_sync();
 
@@ -494,6 +515,7 @@ fn test_save_after_modified_failed_placeholder_restores_duplicate_bookkeeping() 
     let missing = dir.path().join("save-after-failed.txt");
     let app = test_lushtext_application();
     let files = [gio::File::for_path(&missing)];
+    let load_delay = delay_editor_loads_for_test(Duration::from_millis(250));
 
     app.open(&files, "");
     let window = active_window(&app);
@@ -505,6 +527,7 @@ fn test_save_after_modified_failed_placeholder_restores_duplicate_bookkeeping() 
             && failed_editor.file_path().as_deref() == Some(missing.as_path())
             && !window.imp().open_paths.borrow().contains(&missing)
     });
+    drop(load_delay);
 
     window.activate_action("save", None);
     flush_events();

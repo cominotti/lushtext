@@ -20,6 +20,10 @@ This crate owns the application's real behavior: domain types, services, and GTK
 - Treat `services/` as application logic and driven adapters. Prefer free functions unless a trait is clearly justified.
 - Treat `model/` as the home for invariants, value objects, and repeated field bundles.
 - Treat `services::filesystem` as the only production filesystem adapter. Prefer `metadata::exists` or `metadata::path_status` for cheap status probes and keep `metadata::file_facts` for workflows that need canonical identity, byte size, or mtime.
+- Keep old metadata-format structs, parsers, and converter chains sealed under
+  `services::format_upgrade::legacy`. Ordinary runtime readers, domain models,
+  and UI adapters must continue to know only the latest supported app-owned
+  format; upgrade preview/apply values returned to UI must stay plain Rust data.
 
 ## Editing Rules
 

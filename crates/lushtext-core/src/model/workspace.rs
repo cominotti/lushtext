@@ -5,10 +5,8 @@
 //! This module stays framework-free and defines the durable workspace contract
 //! that the sidebar shell, search, palette, and note workflows all share.
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-
-use crate::model::sidecar_identity::stable_bytes_hash;
 
 /// Stable identifier for a workspace.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -53,16 +51,6 @@ impl WorkspaceFolderId {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-
-    /// Derive a repeatable folder id when loading the old single-folder payload.
-    #[must_use]
-    fn from_legacy_payload(workspace_id: &WorkspaceId, folder_path: &Path) -> Self {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(workspace_id.as_str().as_bytes());
-        bytes.push(0);
-        bytes.extend_from_slice(folder_path.to_string_lossy().as_bytes());
-        Self(format!("migrated-folder-{}", stable_bytes_hash(&bytes)))
     }
 }
 
@@ -171,14 +159,13 @@ impl FolderTreeEntry {
 }
 
 /// One persisted workspace containing an ordered set of folders.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceConfig {
     /// Stable identifier used by persisted scope selection and callbacks.
     pub id: WorkspaceId,
     /// User-visible workspace label shown in the selector and section header.
     pub name: String,
     /// Ordered folder memberships that define this workspace.
-    #[serde(default)]
     pub folders: Vec<WorkspaceFolder>,
 }
 
@@ -246,39 +233,6 @@ impl WorkspaceConfig {
         let insert_at = new_index.min(self.folders.len());
         self.folders.insert(insert_at, folder);
         old_index != insert_at
-    }
-}
-
-impl<'de> Deserialize<'de> for WorkspaceConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct RawWorkspaceConfig {
-            id: WorkspaceId,
-            name: String,
-            folders: Option<Vec<WorkspaceFolder>>,
-            #[serde(rename = "root")]
-            legacy_folder: Option<PathBuf>,
-        }
-
-        let raw = RawWorkspaceConfig::deserialize(deserializer)?;
-        let folders = match raw.folders {
-            Some(folders) => folders,
-            None => raw.legacy_folder.map_or_else(Vec::new, |folder_path| {
-                vec![WorkspaceFolder::with_id(
-                    WorkspaceFolderId::from_legacy_payload(&raw.id, &folder_path),
-                    folder_path,
-                )]
-            }),
-        };
-
-        Ok(Self {
-            id: raw.id,
-            name: raw.name,
-            folders,
-        })
     }
 }
 
@@ -726,20 +680,17 @@ mod tests {
     }
 
     #[test]
-    fn workspace_config_deserializes_legacy_single_folder_payload() {
-        let restored: WorkspaceConfig = serde_json::from_value(serde_json::json!({
+    fn workspace_config_rejects_legacy_single_folder_payload() {
+        let error = serde_json::from_value::<WorkspaceConfig>(serde_json::json!({
             "id": "legacy",
             "name": "Legacy",
             "root": "/tmp/legacy"
         }))
-        .expect("legacy workspace config");
+        .expect_err("legacy workspace config must not deserialize as latest");
 
-        assert_eq!(restored.id, WorkspaceId::new("legacy"));
-        assert_eq!(restored.name, "Legacy");
-        assert_eq!(restored.folder_paths(), vec![PathBuf::from("/tmp/legacy")]);
-        assert_eq!(
-            restored.folders[0].id,
-            WorkspaceFolderId::new("migrated-folder-75ab1baeef54db5a")
+        assert!(
+            error.is_data(),
+            "legacy payload should fail as an incompatible data shape: {error}"
         );
     }
 

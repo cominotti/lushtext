@@ -8,7 +8,7 @@
 
 use crate::common::{
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
-    fs_metadata, fs_mutate, fs_read, wait_until,
+    fs_metadata, fs_mutate, fs_read, isolated_data_dir, wait_until,
 };
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
 use glib::prelude::{Cast, IsA, ObjectExt, ToValue, ToVariant};
@@ -47,8 +47,8 @@ use lushtext_core::services::notifications::{
 };
 use lushtext_core::services::{
     action_catalog, bookmark_service, document_note_service, draft_service, editor_io,
-    folder_note_service, json_store, local_history_service, saved_searches, session_service,
-    workspace_manager,
+    folder_note_service, format_upgrade, json_format, json_store, local_history_service,
+    saved_searches, session_service, workspace_manager,
 };
 use lushtext_core::services::palette::FileIndex;
 use lushtext_core::ui::automation::{
@@ -393,6 +393,12 @@ fn wait_for_workspace_consumers(window: &LushtextWindow, expected_folders: usize
             .len()
             == expected_folders
             && window.imp().command_palette.file_index_len() == expected_index
+    });
+}
+
+fn wait_for_startup_data_flow(window: &LushtextWindow) {
+    wait_until(Duration::from_secs(10), || {
+        window.imp().startup_data_flow.completed.get()
     });
 }
 
@@ -1011,6 +1017,73 @@ fn find_button_by_label(widget: &gtk4::Widget, label: &str) -> Option<gtk4::Butt
     }
 
     None
+}
+
+fn alert_dialog_extra_label_texts(dialog: &libadwaita::AlertDialog) -> Vec<String> {
+    let extra_child = dialog.extra_child().expect("alert dialog extra child");
+    let mut labels = Vec::new();
+    collect_label_texts(&extra_child, &mut labels);
+    labels
+}
+
+fn alert_dialog_extra_structure_counts(dialog: &libadwaita::AlertDialog) -> (usize, usize) {
+    let extra_child = dialog.extra_child().expect("alert dialog extra child");
+    let mut preferences_groups = 0;
+    let mut action_rows = 0;
+    collect_extra_structure_counts(&extra_child, &mut preferences_groups, &mut action_rows);
+    (preferences_groups, action_rows)
+}
+
+fn collect_extra_structure_counts(
+    widget: &gtk4::Widget,
+    preferences_groups: &mut usize,
+    action_rows: &mut usize,
+) {
+    if widget
+        .clone()
+        .downcast::<libadwaita::PreferencesGroup>()
+        .is_ok()
+    {
+        *preferences_groups += 1;
+    }
+    if widget.clone().downcast::<libadwaita::ActionRow>().is_ok() {
+        *action_rows += 1;
+    }
+
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        collect_extra_structure_counts(&child_widget, preferences_groups, action_rows);
+        child = child_widget.next_sibling();
+    }
+}
+
+fn collect_label_texts(widget: &gtk4::Widget, labels: &mut Vec<String>) {
+    if let Ok(label) = widget.clone().downcast::<gtk4::Label>() {
+        let text = label.label().to_string();
+        if !text.is_empty() {
+            labels.push(text);
+        }
+    }
+
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        collect_label_texts(&child_widget, labels);
+        child = child_widget.next_sibling();
+    }
+}
+
+fn assert_label_text_contains(labels: &[String], needle: &str) {
+    assert!(
+        labels.iter().any(|label| label.contains(needle)),
+        "expected a dialog detail label containing '{needle}', got {labels:?}"
+    );
+}
+
+fn assert_no_label_text_contains(labels: &[String], needle: &str) {
+    assert!(
+        !labels.iter().any(|label| label.contains(needle)),
+        "did not expect a dialog detail label containing '{needle}', got {labels:?}"
+    );
 }
 
 fn find_button_by_tooltip(widget: &gtk4::Widget, tooltip: &str) -> Option<gtk4::Button> {
@@ -1727,7 +1800,31 @@ fn click_labeled_widget(widget: &gtk4::Widget, label: &str) {
         return;
     }
 
+    if let Some(row) = find_action_row_by_title(widget, label) {
+        row.emit_by_name::<()>("activated", &[]);
+        flush_events();
+        return;
+    }
+
     panic!("clickable widget '{label}' not found");
+}
+
+fn find_action_row_by_title(widget: &gtk4::Widget, title: &str) -> Option<libadwaita::ActionRow> {
+    if let Ok(row) = widget.clone().downcast::<libadwaita::ActionRow>()
+        && row.title().as_str() == title
+    {
+        return Some(row);
+    }
+
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_action_row_by_title(&child_widget, title) {
+            return Some(found);
+        }
+        child = child_widget.next_sibling();
+    }
+
+    None
 }
 
 fn find_toggle_button_by_label(widget: &gtk4::Widget, label: &str) -> Option<gtk4::ToggleButton> {
@@ -2372,6 +2469,7 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
 
     let window = test_window();
     present_window(&window);
+    wait_for_startup_data_flow(&window);
     window.open_document(&file_path);
     wait_until(Duration::from_secs(5), || {
         active_editor(&window).file_size().is_some()
@@ -7961,6 +8059,10 @@ fn test_reopen_with_encoding_requires_discard_confirmation_for_modified_document
 
     activate_action(&window, "show-encoding-controls");
     let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
+    assert_eq!(alert_dialog_extra_structure_counts(&dialog), (2, 5));
+    let labels = alert_dialog_extra_label_texts(&dialog);
+    assert_label_text_contains(&labels, "Current Document");
+    assert_label_text_contains(&labels, "Actions");
     click_alert_extra_button(&dialog, "Reopen with Encoding…");
 
     wait_until(Duration::from_secs(2), || {
@@ -7969,6 +8071,10 @@ fn test_reopen_with_encoding_requires_discard_confirmation_for_modified_document
             .is_some_and(|heading| heading.contains("Reopen with Encoding"))
     });
     let dialog = visible_alert_dialog(&window).expect("reopen encoding dialog visible");
+    assert_eq!(alert_dialog_extra_structure_counts(&dialog), (2, 7));
+    let labels = alert_dialog_extra_label_texts(&dialog);
+    assert_label_text_contains(&labels, "Current Decoding");
+    assert_label_text_contains(&labels, "Encoding Options");
     click_alert_extra_button(&dialog, "Windows-1252");
 
     wait_until(Duration::from_secs(2), || {
@@ -7993,6 +8099,7 @@ fn test_status_bar_encoding_label_stays_short_after_save_policy_change() {
 
     activate_action(&window, "show-encoding-controls");
     let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
+    assert_eq!(alert_dialog_extra_structure_counts(&dialog), (2, 5));
     click_alert_extra_button(&dialog, "Save Using Encoding…");
 
     wait_until(Duration::from_secs(2), || {
@@ -8001,6 +8108,10 @@ fn test_status_bar_encoding_label_stays_short_after_save_policy_change() {
             .is_some_and(|heading| heading.contains("Save Using Encoding"))
     });
     let dialog = visible_alert_dialog(&window).expect("save encoding dialog visible");
+    assert_eq!(alert_dialog_extra_structure_counts(&dialog), (2, 7));
+    let labels = alert_dialog_extra_label_texts(&dialog);
+    assert_label_text_contains(&labels, "Current Save Encoding");
+    assert_label_text_contains(&labels, "Encoding Options");
     click_alert_extra_button(&dialog, "Windows-1252");
 
     wait_until(Duration::from_secs(2), || {
@@ -8049,6 +8160,7 @@ fn test_save_encoding_choice_surfaces_lossy_confirmation() {
             .is_some_and(|heading| heading.contains("Save Using Encoding"))
     });
     let dialog = visible_alert_dialog(&window).expect("save encoding dialog visible");
+    assert_eq!(alert_dialog_extra_structure_counts(&dialog), (2, 7));
     click_alert_extra_button(&dialog, "Windows-1252");
 
     wait_until(Duration::from_secs(2), || {
@@ -8091,6 +8203,7 @@ fn test_stale_lossy_encoding_analysis_result_is_rejected_after_buffer_change() {
             .is_some_and(|heading| heading.contains("Save Using Encoding"))
     });
     let dialog = visible_alert_dialog(&window).expect("save encoding dialog visible");
+    assert_eq!(alert_dialog_extra_structure_counts(&dialog), (2, 7));
     click_alert_extra_button(&dialog, "Windows-1252");
 
     editor.buffer().set_text("plain ascii now");
@@ -8136,6 +8249,11 @@ fn test_mixed_line_endings_warning_opens_normalization_picker_and_updates_status
     });
 
     let dialog = visible_alert_dialog(&window).expect("line endings dialog visible");
+    assert_eq!(alert_dialog_extra_structure_counts(&dialog), (2, 5));
+    let labels = alert_dialog_extra_label_texts(&dialog);
+    assert_label_text_contains(&labels, "Current Document");
+    assert_label_text_contains(&labels, "Future Save Style");
+    assert_label_text_contains(&labels, "Opened With");
     click_alert_extra_button(&dialog, "LF");
 
     assert_eq!(active_editor(&window).save_line_ending(), LineEnding::Lf);
@@ -8481,7 +8599,7 @@ fn test_sync_session_save_failure_keeps_retry_state_and_warns_user() {
 
     window.save_session_sync();
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         window
             .imp()
             .notification_bus
@@ -8524,7 +8642,7 @@ fn test_close_modified_untitled_save_requires_save_as_or_discard() {
     wait_for_save_changes_dialog(&window);
     respond_to_save_changes_dialog(&window, "save");
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         window
             .imp()
             .notification_bus
@@ -8697,7 +8815,7 @@ fn test_close_paths_are_blocked_while_save_is_in_progress() {
 
     close_selected_tab(&window);
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         window
             .imp()
             .notification_bus
@@ -8798,7 +8916,7 @@ fn test_print_failure_reports_feedback_and_preserves_document_state() {
     );
 
     assert_eq!(editor_print_state(&editor), before);
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         window
             .imp()
             .notification_bus
@@ -9429,7 +9547,7 @@ fn test_open_folder_note_for_multi_folder_workspace_requires_folder_choice() {
     assert!(action_enabled(&window, "notes-open-folder-note"));
 
     activate_action(&window, "notes-open-folder-note");
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         visible_alert_dialog(&window)
             .and_then(|dialog| dialog.heading())
             .as_deref()
@@ -11440,6 +11558,194 @@ fn test_session_restore_keeps_pinned_tabs_ahead_of_unpinned_tabs() {
 }
 
 #[test]
+fn test_startup_format_gate_blocks_future_session_and_resumes_after_start_fresh() {
+    let data_dir = isolated_data_dir();
+    fixture::write_text(
+        &data_dir.path().join("session.json"),
+        &format!(
+            r#"{{
+  "kind": "{}",
+  "version": {},
+  "data": {{ "tabs": [], "active_tab_index": null }}
+}}"#,
+            json_format::KIND_SESSION,
+            json_format::SUPPORTED_JSON_VERSION + 1
+        ),
+    );
+    let activation_dir = tempfile::tempdir().expect("activation tempdir");
+    let activation_path = activation_dir.path().join("queued.txt");
+    fixture::write_text(&activation_path, "queued activation");
+
+    let window = test_window();
+    present_window(&window);
+
+    wait_until(Duration::from_secs(10), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Data Was Created by a Newer LushText")
+    });
+
+    assert!(!window.imp().startup_data_flow.completed.get());
+    assert_eq!(
+        window.imp().tab_view.n_pages(),
+        0,
+        "session restore must wait behind the startup format gate"
+    );
+
+    window.open_document_from_activation(&activation_path);
+    flush_events();
+    assert_eq!(
+        window
+            .imp()
+            .startup_data_flow
+            .pending_activation_paths
+            .borrow()
+            .len(),
+        1
+    );
+    assert_eq!(
+        window.imp().tab_view.n_pages(),
+        0,
+        "activation opens should queue while incompatible metadata is unresolved"
+    );
+
+    let dialog = visible_alert_dialog(&window).expect("startup format dialog");
+    let body = dialog.body();
+    assert!(body.contains("newer LushText"));
+    assert!(!body.contains("Options:"));
+    assert!(!body.contains("Affected data:"));
+    assert_eq!(alert_dialog_extra_structure_counts(&dialog), (2, 3));
+    let labels = alert_dialog_extra_label_texts(&dialog);
+    assert_label_text_contains(&labels, "Options");
+    assert_label_text_contains(&labels, "Quit");
+    assert_label_text_contains(&labels, "Close LushText without changing app data.");
+    assert_label_text_contains(&labels, "Start Fresh");
+    assert_label_text_contains(&labels, format_upgrade::FORMAT_UPGRADE_BACKUP_DIR);
+    assert_label_text_contains(&labels, "Affected Data");
+    assert_label_text_contains(&labels, "Session");
+    assert_label_text_contains(&labels, "1 item was created by a newer LushText.");
+    assert_no_label_text_contains(&labels, "Convert");
+    assert!(!dialog.has_response("convert"));
+    assert!(find_button_by_label(dialog.upcast_ref(), "Convert").is_none());
+    assert!(find_button_by_label(dialog.upcast_ref(), "_Convert").is_none());
+    alert_response_button(&dialog, "start-fresh").emit_clicked();
+    flush_events();
+
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.imp().tab_view.n_pages() == 1
+            && active_editor(&window).file_path().as_deref() == Some(activation_path.as_path())
+    });
+
+    assert!(window.imp().startup_data_flow.completed.get());
+    assert!(
+        window
+            .imp()
+            .startup_data_flow
+            .pending_activation_paths
+            .borrow()
+            .is_empty()
+    );
+    assert!(
+        !fs_metadata::exists(&data_dir.path().join("session.json")),
+        "Start Fresh should move the future session out of active app data"
+    );
+    assert!(fs_metadata::exists(
+        &data_dir
+            .path()
+            .join(format_upgrade::FORMAT_UPGRADE_BACKUP_DIR)
+    ));
+}
+
+/// Test converter used only to make the startup gate exercise its Convert path.
+fn convert_session_v0_fixture_to_v1(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    let data = value
+        .get("data")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"tabs": [], "active_tab_index": null}));
+    Ok(serde_json::to_vec_pretty(&serde_json::json!({
+        "kind": json_format::KIND_SESSION,
+        "version": json_format::SUPPORTED_JSON_VERSION,
+        "data": data,
+    }))?)
+}
+
+#[test]
+fn test_startup_format_gate_offers_convert_for_upgradeable_older_session() {
+    let data_dir = isolated_data_dir();
+    fixture::write_text(
+        &data_dir.path().join("session.json"),
+        &format!(
+            r#"{{
+  "kind": "{}",
+  "version": 0,
+  "data": {{ "tabs": [], "active_tab_index": null }}
+}}"#,
+            json_format::KIND_SESSION
+        ),
+    );
+    let registry = format_upgrade::test_support::ConverterRegistry::production().with_converter(
+        json_format::KIND_SESSION,
+        0,
+        json_format::SUPPORTED_JSON_VERSION,
+        convert_session_v0_fixture_to_v1,
+    );
+    let _registry_override =
+        format_upgrade::test_support::ConverterRegistry::override_production_for_test(registry);
+
+    let window = test_window();
+    present_window(&window);
+
+    wait_until(Duration::from_secs(10), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Older LushText Data Can Be Updated")
+    });
+
+    assert!(!window.imp().startup_data_flow.completed.get());
+    let dialog = visible_alert_dialog(&window).expect("startup format dialog");
+    let body = dialog.body();
+    assert!(body.contains("older app data"));
+    assert!(!body.contains("Options:"));
+    assert!(!body.contains("Affected data:"));
+    assert_eq!(alert_dialog_extra_structure_counts(&dialog), (2, 4));
+    let labels = alert_dialog_extra_label_texts(&dialog);
+    assert_label_text_contains(&labels, "Options");
+    assert_label_text_contains(&labels, "Convert");
+    assert_label_text_contains(
+        &labels,
+        "Back up affected files, then update supported older data to the current format.",
+    );
+    assert_label_text_contains(&labels, "Start Fresh");
+    assert_label_text_contains(&labels, format_upgrade::FORMAT_UPGRADE_BACKUP_DIR);
+    assert_label_text_contains(&labels, "Quit");
+    assert_label_text_contains(&labels, "Close LushText without changing app data.");
+    assert_label_text_contains(&labels, "Affected Data");
+    assert_label_text_contains(&labels, "Session");
+    assert_label_text_contains(&labels, "1 item can be converted to the current format.");
+    assert!(dialog.has_response("convert"));
+    assert_eq!(dialog.response_label("convert").as_str(), "_Convert");
+
+    dialog.emit_by_name::<()>("response", &[&"convert"]);
+    flush_events();
+
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+    });
+
+    let saved = fixture::read_text(&data_dir.path().join("session.json"));
+    assert!(saved.contains(r#""version": 1"#));
+    assert!(fs_metadata::exists(
+        &data_dir
+            .path()
+            .join(format_upgrade::FORMAT_UPGRADE_BACKUP_DIR)
+    ));
+}
+
+#[test]
 fn test_startup_restore_surfaces_grouped_recovery_diagnostics() {
     ensure_gtk_init();
     let data_dir = json_store::data_dir();
@@ -11450,7 +11756,7 @@ fn test_startup_restore_surfaces_grouped_recovery_diagnostics() {
     let window = test_window();
     present_window(&window);
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         window
             .imp()
             .notification_bus
@@ -11478,7 +11784,7 @@ fn test_workspace_recovery_surfaces_visible_warning() {
     let window = test_window();
     present_window(&window);
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         window
             .imp()
             .notification_bus
@@ -11504,7 +11810,7 @@ fn test_saved_search_recovery_surfaces_visible_warning() {
     let window = test_window();
     present_window(&window);
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         window
             .imp()
             .notification_bus

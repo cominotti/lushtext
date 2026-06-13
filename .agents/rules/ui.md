@@ -243,6 +243,35 @@ Acceptance for these states:
 - Button contrast changes must use the scoped `.inline-alert-button` class under `.editor-inline-alert`; do not target every nested `button` in the alert.
 - The message (`message_box`) and the trailing action row (`actions_box`) are the two children of an `AdwWrapBox` (`content_wrap`). When the editor column is wide enough they share one line with the action group pinned to the trailing edge (`justify=spread` + `justify-last-line`); when the column is too narrow the action group wraps as one atomic unit onto its own row beneath the message. Keep `actions_box` a single `GtkBox` child of the wrap box so its buttons can never be split across rows — `AdwWrapBox` only wraps whole children. `AdwWrapBox` (libadwaita 1.7, available under the `v1_9` feature) must be `ensure_type()`-registered in `class_init` before `bind_template()`.
 
+## Decision And Detail Dialogs (CRITICAL)
+
+Dialogs, popovers, preferences pages, bottom sheets, and similar secondary
+screens that explain multiple choices, actions, affected-data items, or current
+settings must use visibly grouped rows instead of dense body paragraphs,
+undifferentiated button stacks, or one large label pretending to be a list.
+
+- Keep the primary `AdwAlertDialog` body short: one summary sentence or a brief
+  problem statement. Put option explanations, action consequences, and data
+  inventories in the structured content below it.
+- Prefer `AdwPreferencesGroup` sections with `AdwActionRow` rows for compact
+  decision and detail surfaces. Use one group per conceptual set, such as
+  `Options`, `Actions`, `Affected Data`, `Current Document`, or
+  `Future Save Style`.
+- Give every row a short title and a clear subtitle. Let Adwaita's row
+  typography carry the visual distinction: row titles are scannable, subtitles
+  are smaller secondary text, and group titles frame the section.
+- Use activatable rows for choices or commands, and non-activatable rows for
+  facts/status. Dialog response buttons may remain the final commit/cancel
+  controls, but the explanatory rows should make the consequences readable
+  before the user reaches those buttons.
+- Apply this same grouped-row pattern to Preferences sections and status/action
+  dialogs such as format upgrades, line endings, encodings, and invisible
+  character display whenever there is more than one meaningful option or fact.
+  A flat paragraph is acceptable only for a truly single-message dialog.
+- Widget coverage for important workflow dialogs should assert the grouped
+  section labels and representative row titles/subtitles, especially for
+  empty, incompatible, upgradeable, and constrained-width states.
+
 ## Dialog Text Surface Padding (CRITICAL)
 
 Any `GtkTextView`, `GtkSourceView`, or similar document surface placed inside a `GtkScrolledWindow` within a dialog, browser, popover, or other secondary surface must provide explicit inner content padding. Outer shell margins do not pad the document itself.

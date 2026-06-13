@@ -226,6 +226,24 @@ to quit, and temporarily stages a GNOME desktop entry and app icon so the fresh
 development copy appears correctly in GNOME Shell. If the existing app refuses
 to close, the launcher fails instead of activating stale code.
 
+To manually exercise the format-upgrade startup gate without touching your real
+LushText data, run:
+
+```sh
+make run-format-upgrade-newer-manual-test
+make run-format-upgrade-older-manual-test
+```
+
+The newer-data target writes future-version app metadata plus a draft body that
+Start Fresh should preserve, and should show Quit plus Start Fresh with no
+Convert option. The older-data target builds a debug binary with a manual
+fixture converter, writes only a synthetic v0 session file, and should show
+Convert, Start Fresh, and Quit without draft-recovery warnings. Both targets
+launch LushText against an isolated `XDG_DATA_HOME`, keep that directory
+available for inspecting `format-upgrade-backups/`, and reset only app data
+previously created by the same manual test marker when rerun with
+`FORMAT_UPGRADE_TEST_HOME=...`.
+
 ### Mutation testing
 
 LushText uses `cargo-mutants` for deterministic model, service, and pure helper
@@ -354,6 +372,7 @@ Stored state can include document text:
 | `saved-searches.json` | Named saved searches |
 | `replace-backup-journal/` | Temporary per-file undo journal for multi-file Replace All |
 | `replace-backup.json` | Legacy temporary Replace All undo file, cleared with stale journal state |
+| `format-upgrade-backups/` | Preserved app-data files and manifests from Convert or Start Fresh format actions |
 
 To fully reset LushText state, close the app and remove that app-data directory.
 For Flatpak installs, also reset the sandboxed GSettings if you want preferences
@@ -451,6 +470,8 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libglib2.0
 make build       # Release build
 make build-debug # Debug build
 make run         # Debug build + force a fresh run with temporary GNOME desktop staging
+make run-format-upgrade-newer-manual-test # Launch with isolated future-version app data
+make run-format-upgrade-older-manual-test # Launch with isolated upgradeable old-version app data
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
 make test        # All tests (unit + integration + widget)
 make check       # fmt + all-feature Clippy + fast policy audits
@@ -755,6 +776,7 @@ lushtext-core/src/
     editor_io.rs     Encoding-aware text file load/save helpers, health analysis, and mtimes
     editorconfig.rs  .editorconfig resolution
     file_peek.rs     Bounded read-only snapshots for sidebar file peek
+    format_upgrade/  Sealed inventory, plan, backup, apply, and legacy converter workflow for app-data format upgrades
     notifications.rs Window-scoped status and inline notification store
     file_tree.rs     Directory scanning
     draft_service.rs Draft autosave
@@ -769,7 +791,7 @@ lushtext-core/src/
     workspace_watch.rs  Materialized-scope filesystem watch service for sidebar auto-refresh
   ui/                GTK4/Libadwaita widgets
     automation.rs    App-owned read-only D-Bus automation adapter and snapshot collection
-    window/          Main window shell plus actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, session persistence, tab management, transient-surface dismissal, print, and zoom wiring
+    window/          Main window shell plus actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, startup data preflight, session persistence, tab management, transient-surface dismissal, print, and zoom wiring
     editor_page/     GtkSourceView tab plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark projection, load/save, monitor, and in-tab search helpers
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
@@ -778,7 +800,7 @@ lushtext-core/src/
     search_bar/      Find/replace
     status_bar/      Bottom bar
     info_bar/        Contextual warnings
-    preferences/     Settings dialog
+    preferences/     Settings dialog, including the Data page for app-data format scan/conversion status
 ```
 
 Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)

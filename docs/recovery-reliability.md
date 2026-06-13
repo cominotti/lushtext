@@ -29,6 +29,28 @@ Important files and directories:
   window.
 - `migration-ledger.json` records retryable post-rename sidecar and
   local-history migration work.
+- `format-upgrade-backups/` stores user-selected format-upgrade and Start
+  Fresh preservation manifests plus the affected app-data files.
+
+## Format Upgrades
+
+`services::format_upgrade` owns app-data format compatibility decisions. Normal
+runtime readers only understand the latest supported JSON envelope version. The
+upgrade service is the compartment that may recognize older envelopes, build a
+read-only inventory and plan, and apply a user-selected Convert or Start Fresh
+command.
+
+The current public baseline is v1, so v1 and missing metadata are no-op scan
+results. Future-version metadata, meaning app data written by a newer LushText,
+must not offer Convert or downgrade. Startup blocks before workspace, session,
+draft, migration-ledger, and Replace All recovery consumers run, then asks the
+user to Quit or Start Fresh. Start Fresh preserves the affected files under
+`format-upgrade-backups/` before allowing current defaults to be created.
+
+Converter code for a future v1-to-v2 or later step belongs under
+`services::format_upgrade::legacy`. Each version step should have fixtures and
+tests proving the old bytes are backed up before replacement, failures leave
+the original retryable, and future versions still never produce Convert.
 
 ## Quarantine And Repair
 
@@ -48,6 +70,11 @@ User-facing recovery messages stay grouped, for example "Some recovery data
 could not be loaded" or "Some bookmark data could not be loaded." Full paths,
 quarantine paths, metadata classes, and failure categories belong in logs,
 tests, and smoke artifacts.
+
+Format upgrades and recovery quarantine are separate paths: upgrades are
+explicit user decisions for versioned app-data compatibility, while quarantine
+is the runtime recovery path for malformed, unsupported, unsafe, or partially
+repairable metadata encountered by latest-version readers.
 
 ## Migration Ledgers
 

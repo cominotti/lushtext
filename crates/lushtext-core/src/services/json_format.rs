@@ -47,6 +47,9 @@ pub const KIND_REPLACE_UNDO_CLEANUP_MARKER: &str =
 /// Reserved kind used only to classify retired pre-public single-file undo backups.
 pub const KIND_RETIRED_REPLACE_UNDO_BACKUP: &str =
     "dev.cominotti.lushtext.retired-replace-all-undo-backup";
+/// Stable document kind for format-upgrade backup manifests.
+pub const KIND_FORMAT_UPGRADE_BACKUP_MANIFEST: &str =
+    "dev.cominotti.lushtext.format-upgrade-backup-manifest";
 
 /// Borrowed representation used when writing a v1 JSON envelope.
 #[derive(Serialize)]

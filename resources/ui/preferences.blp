@@ -203,4 +203,55 @@ template $LushtextPreferences: Adw.PreferencesDialog {
       }
     }
   }
+
+  Adw.PreferencesPage {
+    title: _("Data");
+    icon-name: "drive-harddisk-symbolic";
+
+    Adw.PreferencesGroup {
+      title: _("Format");
+
+      Adw.ActionRow data_status_row {
+        title: _("Data Format");
+        subtitle: _("Checking app data formats");
+        activatable-widget: data_scan_button;
+
+        [suffix]
+        Button data_scan_button {
+          icon-name: "view-refresh-symbolic";
+          tooltip-text: _("Rescan data formats");
+          valign: center;
+
+          styles [
+            "flat",
+          ]
+        }
+      }
+    }
+
+    Adw.PreferencesGroup {
+      title: _("Actions");
+
+      Adw.ActionRow data_convert_row {
+        title: _("Update Data");
+        subtitle: _("Convert supported older app data to the current format");
+        visible: false;
+        activatable-widget: data_convert_button;
+
+        [suffix]
+        Button data_convert_button {
+          label: _("Convert");
+          valign: center;
+
+          styles [
+            "suggested-action",
+          ]
+        }
+      }
+    }
+
+    Adw.PreferencesGroup data_details_group {
+      title: _("Details");
+    }
+  }
 }

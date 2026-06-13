@@ -46,42 +46,61 @@ impl super::LushtextWindow {
 
         let dialog = build_dialog(
             "Text Encoding",
-            &format!(
-                "Opened as {}. Next save uses {}.",
-                editor.opened_encoding().label(),
-                editor.save_encoding().label()
-            ),
+            "Review and change how this document reads and writes text bytes.",
         );
         let content = standard_dialog_content();
+        let current_group = libadwaita::PreferencesGroup::builder()
+            .title("Current Document")
+            .build();
+        current_group.add(&static_dialog_row(
+            "Opened As",
+            editor.opened_encoding().label(),
+        ));
+        current_group.add(&static_dialog_row(
+            "Next Save",
+            editor.save_encoding().label(),
+        ));
+        content.append(&current_group);
 
-        append_action_button_with_sensitivity(
-            &content,
+        let actions_group = libadwaita::PreferencesGroup::builder()
+            .title("Actions")
+            .build();
+        append_action_row_with_sensitivity(
+            &actions_group,
             "Reopen with Encoding…",
+            if editor.file_path().is_some() {
+                "Reinterpret the bytes currently on disk with a different encoding."
+            } else {
+                "Save this document before reopening it with another encoding."
+            },
             editor.file_path().is_some(),
             self.downgrade(),
-            dialog.clone(),
+            &dialog,
             |window| {
                 window.show_reopen_encoding_dialog();
             },
         );
-        append_action_button(
-            &content,
+        append_action_row(
+            &actions_group,
             "Save Using Encoding…",
+            "Change how future saves encode this document.",
             self.downgrade(),
-            dialog.clone(),
+            &dialog,
             |window| {
                 window.show_save_encoding_dialog();
             },
         );
-        append_action_button(
-            &content,
+        append_action_row(
+            &actions_group,
             "Invisible Characters…",
+            "Choose whether whitespace and hidden encoding-adjacent characters are drawn.",
             self.downgrade(),
-            dialog.clone(),
+            &dialog,
             |window| {
                 window.show_invisible_characters_dialog();
             },
         );
+        content.append(&actions_group);
 
         dialog.set_extra_child(Some(&content));
         dialog.present(Some(self));
@@ -95,25 +114,39 @@ impl super::LushtextWindow {
 
         let dialog = build_dialog(
             "Reopen with Encoding",
-            "Choose how to interpret the bytes currently on disk.",
+            "Choose a decoding for the bytes currently on disk.",
         );
         let content = standard_dialog_content();
-        append_section_label(&content, "Choose Encoding");
+        let current_group = libadwaita::PreferencesGroup::builder()
+            .title("Current Decoding")
+            .build();
+        current_group.add(&static_dialog_row(
+            "Opened As",
+            editor.opened_encoding().label(),
+        ));
+        content.append(&current_group);
 
+        let options_group = libadwaita::PreferencesGroup::builder()
+            .title("Encoding Options")
+            .build();
         for encoding in DocumentEncoding::COMMON {
-            let button = gtk4::Button::with_label(encoding.label());
-            button.add_css_class("flat");
-            button.set_sensitive(editor.opened_encoding() != encoding);
             let window_weak = self.downgrade();
-            let dialog_clone = dialog.clone();
-            button.connect_clicked(move |_| {
-                if let Some(window) = window_weak.upgrade() {
+            append_choice_row(
+                &options_group,
+                encoding.label(),
+                reopen_encoding_subtitle(encoding, editor.opened_encoding() == encoding),
+                ChoiceRowState {
+                    selected: editor.opened_encoding() == encoding,
+                    enabled: editor.opened_encoding() != encoding,
+                },
+                move |window| {
                     window.request_reopen_with_encoding(encoding);
-                }
-                dialog_clone.close();
-            });
-            content.append(&button);
+                },
+                window_weak,
+                &dialog,
+            );
         }
+        content.append(&options_group);
 
         dialog.set_extra_child(Some(&content));
         dialog.present(Some(self));
@@ -127,25 +160,39 @@ impl super::LushtextWindow {
 
         let dialog = build_dialog(
             "Save Using Encoding",
-            "Choose how the next save should encode this document.",
+            "Choose the encoding used by future saves.",
         );
         let content = standard_dialog_content();
-        append_section_label(&content, "Choose Encoding");
+        let current_group = libadwaita::PreferencesGroup::builder()
+            .title("Current Save Encoding")
+            .build();
+        current_group.add(&static_dialog_row(
+            "Next Save",
+            editor.save_encoding().label(),
+        ));
+        content.append(&current_group);
 
+        let options_group = libadwaita::PreferencesGroup::builder()
+            .title("Encoding Options")
+            .build();
         for encoding in DocumentEncoding::COMMON {
-            let button = gtk4::Button::with_label(encoding.label());
-            button.add_css_class("flat");
-            button.set_sensitive(editor.save_encoding() != encoding);
             let window_weak = self.downgrade();
-            let dialog_clone = dialog.clone();
-            button.connect_clicked(move |_| {
-                if let Some(window) = window_weak.upgrade() {
+            append_choice_row(
+                &options_group,
+                encoding.label(),
+                save_encoding_subtitle(encoding, editor.save_encoding() == encoding),
+                ChoiceRowState {
+                    selected: editor.save_encoding() == encoding,
+                    enabled: editor.save_encoding() != encoding,
+                },
+                move |window| {
                     window.choose_save_encoding(encoding);
-                }
-                dialog_clone.close();
-            });
-            content.append(&button);
+                },
+                window_weak,
+                &dialog,
+            );
         }
+        content.append(&options_group);
 
         dialog.set_extra_child(Some(&content));
         dialog.present(Some(self));
@@ -162,26 +209,32 @@ impl super::LushtextWindow {
             "Choose how much whitespace and encoding-adjacent detail the editor should draw.",
         );
         let content = standard_dialog_content();
-        append_section_label(&content, "Choose Mode");
+        let options_group = libadwaita::PreferencesGroup::builder()
+            .title("Mode Options")
+            .build();
 
         for mode in [
             InvisibleCharactersMode::Off,
             InvisibleCharactersMode::WhitespaceOnly,
             InvisibleCharactersMode::All,
         ] {
-            let button = gtk4::Button::with_label(mode.label());
-            button.add_css_class("flat");
-            button.set_sensitive(editor.invisible_characters_mode() != mode);
             let window_weak = self.downgrade();
-            let dialog_clone = dialog.clone();
-            button.connect_clicked(move |_| {
-                if let Some(window) = window_weak.upgrade() {
+            append_choice_row(
+                &options_group,
+                mode.label(),
+                invisible_mode_subtitle(mode, editor.invisible_characters_mode() == mode),
+                ChoiceRowState {
+                    selected: editor.invisible_characters_mode() == mode,
+                    enabled: editor.invisible_characters_mode() != mode,
+                },
+                move |window| {
                     window.set_invisible_characters_mode_for_active_editor(mode);
-                }
-                dialog_clone.close();
-            });
-            content.append(&button);
+                },
+                window_weak,
+                &dialog,
+            );
         }
+        content.append(&options_group);
 
         dialog.set_extra_child(Some(&content));
         dialog.present(Some(self));
@@ -193,46 +246,51 @@ impl super::LushtextWindow {
             return;
         };
 
-        let body = if editor.detected_line_ending() == LineEnding::Mixed {
-            format!(
-                "This document opened with mixed line endings. The next save is currently set to {}.",
-                editor.save_line_ending().label()
-            )
-        } else {
-            format!(
-                "This document opened with {} line endings. The next save is currently set to {}.",
-                editor.detected_line_ending().label(),
-                editor.save_line_ending().label()
-            )
-        };
-
         let dialog = libadwaita::AlertDialog::builder()
             .heading("Line Endings")
-            .body(body)
+            .body("Choose the line-ending style LushText should use on future saves.")
             .build();
         dialog.add_response(RESPONSE_CLOSE, "_Close");
         dialog.set_default_response(Some(RESPONSE_CLOSE));
         dialog.set_close_response(RESPONSE_CLOSE);
 
-        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-        content.set_margin_top(6);
-        content.set_margin_bottom(6);
-        append_section_label(&content, "Choose Future Save Style");
+        let content = standard_dialog_content();
+        let current_group = libadwaita::PreferencesGroup::builder()
+            .title("Current Document")
+            .build();
+        current_group.add(&static_dialog_row(
+            "Opened With",
+            opened_line_ending_subtitle(editor.detected_line_ending()),
+        ));
+        current_group.add(&static_dialog_row(
+            "Next Save",
+            editor.save_line_ending().label(),
+        ));
+        content.append(&current_group);
 
+        let options_group = libadwaita::PreferencesGroup::builder()
+            .title("Future Save Style")
+            .build();
         for line_ending in LineEnding::SAVE_CHOICES {
-            let button = gtk4::Button::with_label(line_ending.label());
-            button.add_css_class("flat");
-            button.set_sensitive(editor.save_line_ending() != line_ending);
+            let is_selected = editor.save_line_ending() == line_ending;
+            let can_activate = !is_selected || editor.detected_line_ending() == LineEnding::Mixed;
             let window_weak = self.downgrade();
-            let dialog_clone = dialog.clone();
-            button.connect_clicked(move |_| {
-                if let Some(window) = window_weak.upgrade() {
+            append_choice_row(
+                &options_group,
+                line_ending.label(),
+                line_ending_subtitle(line_ending, is_selected, editor.detected_line_ending()),
+                ChoiceRowState {
+                    selected: is_selected,
+                    enabled: can_activate,
+                },
+                move |window| {
                     window.apply_line_ending_choice(line_ending);
-                }
-                dialog_clone.close();
-            });
-            content.append(&button);
+                },
+                window_weak,
+                &dialog,
+            );
         }
+        content.append(&options_group);
 
         dialog.set_extra_child(Some(&content));
         dialog.present(Some(self));
@@ -327,7 +385,8 @@ impl super::LushtextWindow {
                 if !confirmed {
                     return;
                 }
-                if let (Some(window), Some(editor)) = (window_weak.upgrade(), editor_weak.upgrade())
+                if let Some(window) = window_weak.upgrade()
+                    && let Some(editor) = editor_weak.upgrade()
                 {
                     editor.load_file_async_with_encoding(&path, Some(encoding));
                     window.publish_status_message(
@@ -611,45 +670,204 @@ fn standard_dialog_content() -> gtk4::Box {
     content
 }
 
-/// Append a compact section heading into an AlertDialog extra child.
-fn append_section_label(container: &gtk4::Box, title: &str) {
-    let label = gtk4::Label::new(Some(title));
-    label.set_xalign(0.0);
-    label.add_css_class("heading");
-    container.append(&label);
+/// Selection and activation state for one grouped dialog option row.
+#[derive(Clone, Copy)]
+struct ChoiceRowState {
+    /// Whether the row represents the editor's current policy.
+    selected: bool,
+    /// Whether activating the row should apply a new policy.
+    enabled: bool,
 }
 
-/// Append one dialog action button that closes the current dialog before
-/// opening the next window-level format surface.
-fn append_action_button(
-    container: &gtk4::Box,
-    label: &str,
+/// Create a read-only row for current document facts.
+fn static_dialog_row(
+    title: impl Into<glib::GString>,
+    subtitle: impl Into<glib::GString>,
+) -> libadwaita::ActionRow {
+    dialog_row(title, subtitle, false)
+}
+
+/// Append one activatable row that closes the current dialog before running an action.
+fn append_action_row(
+    group: &libadwaita::PreferencesGroup,
+    title: &str,
+    subtitle: &str,
     window_weak: glib::WeakRef<super::LushtextWindow>,
-    dialog: libadwaita::AlertDialog,
+    dialog: &libadwaita::AlertDialog,
     action: impl Fn(super::LushtextWindow) + 'static,
 ) {
-    append_action_button_with_sensitivity(container, label, true, window_weak, dialog, action);
+    append_action_row_with_sensitivity(group, title, subtitle, true, window_weak, dialog, action);
 }
 
-/// Append one dialog action button with an explicit sensitivity override.
-fn append_action_button_with_sensitivity(
-    container: &gtk4::Box,
-    label: &str,
+/// Append one activatable row with an explicit sensitivity override.
+fn append_action_row_with_sensitivity(
+    group: &libadwaita::PreferencesGroup,
+    title: &str,
+    subtitle: &str,
     sensitive: bool,
     window_weak: glib::WeakRef<super::LushtextWindow>,
-    dialog: libadwaita::AlertDialog,
+    dialog: &libadwaita::AlertDialog,
     action: impl Fn(super::LushtextWindow) + 'static,
 ) {
-    let button = gtk4::Button::with_label(label);
-    button.add_css_class("flat");
-    button.set_sensitive(sensitive);
-    button.connect_clicked(move |_| {
-        dialog.close();
-        if let Some(window) = window_weak.upgrade() {
-            action(window);
+    let row = dialog_row(title, subtitle, sensitive);
+    if sensitive {
+        row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
+        let dialog_weak = dialog.downgrade();
+        row.connect_activated(move |_| {
+            if let Some(dialog) = dialog_weak.upgrade() {
+                dialog.close();
+            }
+            if let Some(window) = window_weak.upgrade() {
+                action(window);
+            }
+        });
+    } else {
+        row.set_sensitive(false);
+    }
+    group.add(&row);
+}
+
+/// Append one option row that can either show the current choice or apply a new one.
+fn append_choice_row(
+    group: &libadwaita::PreferencesGroup,
+    title: &str,
+    subtitle: String,
+    state: ChoiceRowState,
+    action: impl Fn(super::LushtextWindow) + 'static,
+    window_weak: glib::WeakRef<super::LushtextWindow>,
+    dialog: &libadwaita::AlertDialog,
+) {
+    let row = dialog_row(title, subtitle, state.enabled);
+    if state.selected {
+        row.add_suffix(&gtk4::Image::from_icon_name("object-select-symbolic"));
+    }
+    if state.enabled {
+        let dialog_weak = dialog.downgrade();
+        row.connect_activated(move |_| {
+            if let Some(dialog) = dialog_weak.upgrade() {
+                dialog.close();
+            }
+            if let Some(window) = window_weak.upgrade() {
+                action(window);
+            }
+        });
+    }
+    group.add(&row);
+}
+
+/// Build one row with title/subtitle typography and optional activation.
+fn dialog_row(
+    title: impl Into<glib::GString>,
+    subtitle: impl Into<glib::GString>,
+    activatable: bool,
+) -> libadwaita::ActionRow {
+    libadwaita::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .title_lines(0)
+        .subtitle_lines(0)
+        .activatable(activatable)
+        .selectable(false)
+        .build()
+}
+
+/// Describe what a reopen option does without implying it changes save policy.
+fn reopen_encoding_subtitle(encoding: DocumentEncoding, selected: bool) -> String {
+    let prefix = if selected {
+        "Current opened encoding."
+    } else {
+        "Reinterpret the file from disk with this encoding."
+    };
+    format!("{prefix} {}", encoding_description(encoding))
+}
+
+/// Describe what a save option does, including lossy-confirmation expectations.
+fn save_encoding_subtitle(encoding: DocumentEncoding, selected: bool) -> String {
+    let prefix = if selected {
+        "Current save encoding."
+    } else {
+        "Use this encoding on future saves."
+    };
+    format!("{prefix} {}", encoding_description(encoding))
+}
+
+/// Keep encoding option explanations consistent across reopen and save pickers.
+fn encoding_description(encoding: DocumentEncoding) -> &'static str {
+    match encoding {
+        DocumentEncoding::Utf8 => "Standard UTF-8 without a byte-order mark.",
+        DocumentEncoding::Utf8Bom => "UTF-8 with a byte-order mark prefix.",
+        DocumentEncoding::Windows1252 => {
+            "Legacy Windows Western text; unsupported characters need confirmation."
         }
-    });
-    container.append(&button);
+        DocumentEncoding::ShiftJis => {
+            "Japanese legacy text; unsupported characters need confirmation."
+        }
+        DocumentEncoding::Utf16Le => "UTF-16 little-endian with a byte-order mark.",
+        DocumentEncoding::Utf16Be => "UTF-16 big-endian with a byte-order mark.",
+    }
+}
+
+/// Explain the currently detected line-ending state.
+fn opened_line_ending_subtitle(line_ending: LineEnding) -> String {
+    if line_ending == LineEnding::Mixed {
+        "Mixed line endings were detected in the loaded document.".to_string()
+    } else {
+        format!(
+            "{} detected in the loaded document.",
+            line_ending_description(line_ending)
+        )
+    }
+}
+
+/// Describe a save-line-ending option and whether it is already selected.
+fn line_ending_subtitle(line_ending: LineEnding, selected: bool, detected: LineEnding) -> String {
+    if selected && detected == LineEnding::Mixed {
+        return format!(
+            "Currently selected for the next save. Choose it to clear the mixed-line-ending warning. {}",
+            line_ending_description(line_ending)
+        );
+    }
+    if selected {
+        return format!(
+            "Current save style. {}",
+            line_ending_description(line_ending)
+        );
+    }
+    format!(
+        "Use this style on future saves. {}",
+        line_ending_description(line_ending)
+    )
+}
+
+/// Return the plain-language meaning of one save-capable line-ending style.
+fn line_ending_description(line_ending: LineEnding) -> &'static str {
+    match line_ending {
+        LineEnding::Lf => "Unix-style line feed.",
+        LineEnding::Crlf => "Windows-style carriage return plus line feed.",
+        LineEnding::Cr => "Legacy carriage-return-only line endings.",
+        LineEnding::Mixed => "Mixed line endings cannot be written as a save style.",
+    }
+}
+
+/// Describe one invisible-character display mode in row-subtitle form.
+fn invisible_mode_subtitle(mode: InvisibleCharactersMode, selected: bool) -> String {
+    let prefix = if selected {
+        "Current display mode."
+    } else {
+        "Switch to this display mode."
+    };
+    format!("{prefix} {}", invisible_mode_description(mode))
+}
+
+/// Return the plain-language meaning of one invisible-character display mode.
+fn invisible_mode_description(mode: InvisibleCharactersMode) -> &'static str {
+    match mode {
+        InvisibleCharactersMode::Off => "Hide whitespace and hidden-character markers.",
+        InvisibleCharactersMode::WhitespaceOnly => "Draw spaces and tabs with editor markers.",
+        InvisibleCharactersMode::All => {
+            "Draw whitespace plus supported hidden-character and BOM markers."
+        }
+    }
 }
 
 /// Return whether the active file-health set includes hidden-character issues.

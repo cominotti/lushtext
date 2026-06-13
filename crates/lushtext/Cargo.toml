@@ -17,6 +17,11 @@ name = "widget"
 path = "tests/widget.rs"
 harness = false
 
+# Manual GUI upgrade drills need the core test-utils converter hook; release
+# and ordinary dev builds keep it disabled so shipped code stays latest-only.
+[features]
+manual-format-upgrade-fixtures = ["lushtext-core/test-utils"]
+
 [lints]
 workspace = true
 
@@ -35,6 +40,7 @@ tempfile    = { workspace = true }
 assert_cmd  = { workspace = true }
 predicates  = { workspace = true }
 serde_json  = { workspace = true }
+anyhow      = { workspace = true }
 gtk4        = { workspace = true }
 gtk-lush-tasks = { workspace = true }
 gtk-lush-viewport = { workspace = true }
