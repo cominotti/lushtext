@@ -91,7 +91,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     <property name="sidebar">
                       <object class="LushtextSidebar" id="sidebar">
                         <style>
-                          <class name="shell-chrome-opaque"/>
+                          <class name="side-rail-chrome-opaque"/>
                         </style>
                       </object>
                     </property>
@@ -234,7 +234,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                         <child type="properties">
                           <object class="LushtextPropertiesPanel" id="properties_panel">
                             <style>
-                              <class name="shell-chrome-opaque"/>
+                              <class name="side-rail-chrome-opaque"/>
+                              <class name="document-properties-inspector"/>
                             </style>
                           </object>
                         </child>

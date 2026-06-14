@@ -4414,8 +4414,26 @@ fn test_shell_chrome_uses_explicit_opaque_classes_for_transparency_mode() {
 
     assert!(window.imp().header_bar.has_css_class("header-chrome-opaque"));
     assert!(window.imp().tab_bar.has_css_class("header-chrome-opaque"));
-    assert!(window.imp().sidebar.has_css_class("shell-chrome-opaque"));
-    assert!(window.imp().properties_panel.has_css_class("shell-chrome-opaque"));
+    assert!(window.imp().sidebar.has_css_class("side-rail-chrome-opaque"));
+    assert!(
+        window
+            .imp()
+            .properties_panel
+            .has_css_class("side-rail-chrome-opaque")
+    );
+    assert!(
+        window
+            .imp()
+            .properties_panel
+            .has_css_class("document-properties-inspector")
+    );
+    assert!(!window.imp().sidebar.has_css_class("shell-chrome-opaque"));
+    assert!(
+        !window
+            .imp()
+            .properties_panel
+            .has_css_class("shell-chrome-opaque")
+    );
     assert!(window.imp().status_bar.has_css_class("status-bar"));
 }
 

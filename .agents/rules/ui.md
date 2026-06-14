@@ -10,6 +10,7 @@ globs: "**/*.{rs,ui,css}"
 LushText should look and feel like GNOME Text Editor, with these differences:
 - Persistent left workspace sidebar on desktop, plus an optional right-side properties panel
 - Workspace concept with ordered workspace folders
+- The workspace sidebar and document-properties panel share side-rail chrome on `@headerbar_bg_color`; keep unrelated opaque shell surfaces such as empty states, search bars, and preview placeholders on `@window_bg_color`
 
 ## Widget Hierarchy
 

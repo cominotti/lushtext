@@ -355,6 +355,10 @@ window {{
   background-color: @headerbar_bg_color;
 }}
 
+.side-rail-chrome-opaque {{
+  background-color: @headerbar_bg_color;
+}}
+
 .shell-chrome-opaque,
 .empty-state-opaque,
 .preview-placeholder-opaque,

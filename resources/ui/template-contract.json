@@ -6756,7 +6756,7 @@
           "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/2:child/0:object:AdwTabBar#tab_bar/1:style/0:class"
         },
         {
-          "name": "shell-chrome-opaque",
+          "name": "side-rail-chrome-opaque",
           "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:GtkLushClipBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/1:property/0:object:LushtextSidebar#sidebar/0:style/0:class"
         },
         {
@@ -6764,8 +6764,12 @@
           "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:GtkLushClipBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/1:child/0:object:GtkStack#content_stack/3:child/0:object:GtkStackPage/1:property/0:object:AdwStatusPage#empty_page/3:style/0:class"
         },
         {
-          "name": "shell-chrome-opaque",
+          "name": "side-rail-chrome-opaque",
           "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:GtkLushClipBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/4:child/0:object:LushtextPropertiesPanel#properties_panel/0:style/0:class"
+        },
+        {
+          "name": "document-properties-inspector",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:GtkLushClipBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/4:child/0:object:LushtextPropertiesPanel#properties_panel/0:style/1:class"
         },
         {
           "name": "linked",
