@@ -10,15 +10,21 @@
 .status-bar {
   background-color: @headerbar_bg_color;
   border-top: 1px solid @borders;
-  min-height: 26px;
+  min-height: 32px;
 }
 
 /* Sidebar toggle: subdued flat button matching the status bar aesthetic */
 .status-bar .sidebar-toggle {
-  min-width: 24px;
-  min-height: 24px;
+  min-width: 26px;
+  min-height: 26px;
   padding: 0;
   color: @dim_label_color;
+}
+
+/* Metadata controls stay compact while gaining enough height to scan easily. */
+.status-bar .status-metadata-control {
+  min-height: 26px;
+  padding: 0 2px;
 }
 
 /* Status message lane: pulsing this wrapper highlights the whole message area,

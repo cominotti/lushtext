@@ -13,8 +13,8 @@ template $LushtextStatusBar: Box {
     tooltip-text: _("Toggle Sidebar");
     action-name: "win.toggle-sidebar";
     margin-start: 4;
-    margin-top: 2;
-    margin-bottom: 2;
+    margin-top: 3;
+    margin-bottom: 3;
     valign: center;
 
     styles [
@@ -37,8 +37,9 @@ template $LushtextStatusBar: Box {
       xalign: 0.0;
       ellipsize: end;
       margin-start: 12;
-      margin-top: 4;
-      margin-bottom: 4;
+      margin-top: 6;
+      margin-bottom: 6;
+      valign: center;
 
       styles [
         "caption",
@@ -56,8 +57,9 @@ template $LushtextStatusBar: Box {
       visible: false;
       margin-start: 12;
       margin-end: 8;
-      margin-top: 4;
-      margin-bottom: 4;
+      margin-top: 6;
+      margin-bottom: 6;
+      valign: center;
 
       styles [
         "caption",
@@ -67,8 +69,8 @@ template $LushtextStatusBar: Box {
 
     Separator editorconfig_separator {
       orientation: vertical;
-      margin-top: 6;
-      margin-bottom: 6;
+      margin-top: 8;
+      margin-bottom: 8;
       visible: false;
     }
 
@@ -78,20 +80,22 @@ template $LushtextStatusBar: Box {
       tooltip-text: _("Line Endings");
       margin-start: 10;
       margin-end: 4;
-      margin-top: 4;
-      margin-bottom: 4;
+      margin-top: 3;
+      margin-bottom: 3;
+      valign: center;
 
       styles [
         "flat",
         "caption",
         "dim-label",
+        "status-metadata-control",
       ]
     }
 
     Separator {
       orientation: vertical;
-      margin-top: 6;
-      margin-bottom: 6;
+      margin-top: 8;
+      margin-bottom: 8;
     }
 
     Button encoding_button {
@@ -100,13 +104,15 @@ template $LushtextStatusBar: Box {
       tooltip-text: _("Text Encoding");
       margin-start: 10;
       margin-end: 12;
-      margin-top: 4;
-      margin-bottom: 4;
+      margin-top: 3;
+      margin-bottom: 3;
+      valign: center;
 
       styles [
         "flat",
         "caption",
         "dim-label",
+        "status-metadata-control",
       ]
     }
   }

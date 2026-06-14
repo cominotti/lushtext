@@ -118,6 +118,33 @@ impl Drop for ReplacePreviewDelayReset {
     }
 }
 
+struct VisualSettingsReset {
+    color_scheme: libadwaita::ColorScheme,
+    gtk_theme_name: Option<glib::GString>,
+}
+
+impl VisualSettingsReset {
+    fn capture() -> Self {
+        ensure_gtk_init();
+        let style_manager = libadwaita::StyleManager::default();
+        let settings = gtk4::Settings::default().expect("GTK settings");
+        Self {
+            color_scheme: style_manager.color_scheme(),
+            gtk_theme_name: settings.gtk_theme_name(),
+        }
+    }
+}
+
+impl Drop for VisualSettingsReset {
+    fn drop(&mut self) {
+        libadwaita::StyleManager::default().set_color_scheme(self.color_scheme);
+        if let Some(settings) = gtk4::Settings::default() {
+            settings.set_gtk_theme_name(self.gtk_theme_name.as_deref());
+        }
+        flush_events();
+    }
+}
+
 /// Return whether the message area has any severity or animation-restart pulse state.
 fn status_message_area_has_any_pulse(window: &LushtextWindow) -> bool {
     let area = &window.imp().status_bar.imp().message_area_box;
@@ -126,6 +153,29 @@ fn status_message_area_has_any_pulse(window: &LushtextWindow) -> bool {
         || area.has_css_class("status-pulse-error")
         || area.has_css_class("status-pulse-a")
         || area.has_css_class("status-pulse-b")
+}
+
+fn assert_status_bar_readable_one_row(window: &LushtextWindow, context: &str) {
+    let status_bar = &window.imp().status_bar;
+    assert_positive_allocation(&**status_bar, context);
+    let height = status_bar.height();
+    assert!(
+        (32..=44).contains(&height),
+        "{context}: status bar should be readable without becoming a second header, got height {height}"
+    );
+
+    let message_area = &status_bar.imp().message_area_box;
+    assert!(
+        message_area.width() > 0 && message_area.height() > 0,
+        "{context}: message area should keep a positive allocation, got {}x{}",
+        message_area.width(),
+        message_area.height()
+    );
+    assert!(
+        message_area.height() <= height,
+        "{context}: message area should stay within the status row, got area height {} and row height {height}",
+        message_area.height()
+    );
 }
 
 fn seed_restored_window_size(width: i32, height: i32) {
@@ -4370,6 +4420,82 @@ fn test_shell_chrome_uses_explicit_opaque_classes_for_transparency_mode() {
 }
 
 #[test]
+fn test_status_bar_readability_height_stays_subordinate_to_header_bar() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_default_size(1200, 720);
+    present_window(&window);
+
+    wait_for_positive_allocation(&*window.imp().header_bar, "header bar");
+    wait_for_positive_allocation(&*window.imp().status_bar, "status bar");
+
+    assert_status_bar_readable_one_row(&window, "no-document status bar");
+    assert!(
+        window.imp().status_bar.height() < window.imp().header_bar.height(),
+        "the status bar should gain readable comfort without matching the header bar, status={} header={}",
+        window.imp().status_bar.height(),
+        window.imp().header_bar.height()
+    );
+    assert!(
+        !window.imp().status_bar.imp().metadata_box.is_visible(),
+        "metadata controls should remain hidden when no document is active"
+    );
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_status_bar_visual_modes_keep_readable_scoped_chrome() {
+    ensure_gtk_init();
+    let _reset = VisualSettingsReset::capture();
+    let settings = gtk4::Settings::default().expect("GTK settings");
+
+    for (context, color_scheme, theme_name) in [
+        (
+            "light status bar",
+            libadwaita::ColorScheme::ForceLight,
+            None,
+        ),
+        (
+            "dark status bar",
+            libadwaita::ColorScheme::ForceDark,
+            None,
+        ),
+        (
+            "high-contrast status bar",
+            libadwaita::ColorScheme::ForceLight,
+            Some("HighContrast"),
+        ),
+    ] {
+        libadwaita::StyleManager::default().set_color_scheme(color_scheme);
+        settings.set_gtk_theme_name(theme_name);
+        flush_events();
+
+        let window = test_window();
+        window.set_default_size(1200, 720);
+        present_window(&window);
+        window.publish_status_message(
+            "Saved a long status-bar visual verification message",
+            NotificationSeverity::Warning,
+        );
+        flush_events();
+
+        let status_bar = window.imp().status_bar.imp();
+        assert_status_bar_readable_one_row(&window, context);
+        assert!(status_bar.message_area_box.has_css_class("status-message-area"));
+        assert!(status_bar.message_area_box.has_css_class("status-pulse-warning"));
+        assert!(status_bar.message_label.has_css_class("status-message-label"));
+        assert!(status_bar.message_label.has_css_class("status-warning"));
+        assert!(!status_bar.message_label.wraps());
+        assert!(!status_bar.metadata_box.is_visible());
+
+        window.destroy();
+        flush_after_delay(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn test_transient_status_message_pulses_full_message_area() {
     ensure_gtk_init();
     let window = test_window();
@@ -5823,7 +5949,7 @@ fn test_short_normal_window_preserves_status_bar_with_optional_surfaces() {
         current_window_height(&window) >= window.height_request(),
         "short windows should be raised to the advertised normal-mode height request"
     );
-    assert_positive_allocation(&*window.imp().status_bar, "status bar");
+    assert_status_bar_readable_one_row(&window, "short normal status bar");
     assert!(
         window.imp().search_panel.imp().results_scroll.height_request()
             <= current_window_height(&window) / 3,
@@ -5871,6 +5997,7 @@ fn test_forced_tiny_window_preserves_status_bar() {
     });
 
     assert_positive_allocation(&*window.imp().status_bar, "status bar");
+    assert_status_bar_readable_one_row(&window, "forced tiny status bar");
     let status_bounds = window
         .imp()
         .status_bar
@@ -9138,6 +9265,37 @@ fn test_narrow_window_keeps_quick_encoding_controls_visible() {
         status_bar.encoding_button.property::<bool>("visible"),
         "narrow windows should keep the encoding entry point visible",
     );
+    assert_status_bar_readable_one_row(&window, "narrow status bar");
+    assert_eq!(
+        status_bar.message_label.ellipsize(),
+        gtk4::pango::EllipsizeMode::End
+    );
+    assert!(!status_bar.message_label.wraps());
+
+    let status_widget = window.imp().status_bar.upcast_ref::<gtk4::Widget>();
+    for (name, widget) in [
+        (
+            "line-ending control",
+            status_bar.line_ending_button.upcast_ref::<gtk4::Widget>(),
+        ),
+        (
+            "encoding control",
+            status_bar.encoding_button.upcast_ref::<gtk4::Widget>(),
+        ),
+    ] {
+        let bounds = widget
+            .compute_bounds(status_widget)
+            .unwrap_or_else(|| panic!("{name} should compute bounds in the status bar"));
+        assert!(
+            bounds.x() >= 0.0
+                && bounds.y() >= 0.0
+                && bounds.x() + bounds.width() <= status_widget.width() as f32 + 1.0
+                && bounds.y() + bounds.height() <= status_widget.height() as f32 + 1.0,
+            "{name} should remain reachable inside the narrow status row, bounds={bounds:?}, status={}x{}",
+            status_widget.width(),
+            status_widget.height()
+        );
+    }
 }
 
 #[test]

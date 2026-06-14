@@ -90,8 +90,31 @@ fn test_message_area_contains_expanding_label() {
     assert!(label.hexpands());
     assert!((4..=8).contains(&area.margin_start()));
     assert_eq!(label.margin_start(), 12);
-    assert_eq!(label.margin_top(), 4);
-    assert_eq!(label.margin_bottom(), 4);
+    assert_eq!(label.margin_top(), 6);
+    assert_eq!(label.margin_bottom(), 6);
+    assert_eq!(label.valign(), gtk4::Align::Center);
+    assert_eq!(label.ellipsize(), gtk4::pango::EllipsizeMode::End);
+    assert!(!label.wraps());
+}
+
+#[test]
+fn test_long_message_ellipsizes_inside_single_message_lane() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    let message = "Saved a deeply nested workspace document with a very long path that must stay \
+        inside the status bar message lane";
+
+    bar.render_message(Some(&status_message(message, MessageKind::Info)));
+
+    let label = &bar.imp().message_label;
+    assert_eq!(label.label().as_str(), message);
+    assert!(label.hexpands());
+    assert_eq!(label.ellipsize(), gtk4::pango::EllipsizeMode::End);
+    assert!(!label.wraps());
+    assert_eq!(
+        label.parent().as_ref(),
+        Some(bar.imp().message_area_box.upcast_ref::<gtk4::Widget>())
+    );
 }
 
 #[test]
@@ -269,6 +292,21 @@ fn test_set_metadata_visible_again() {
     assert!(bar.imp().metadata_box.is_visible());
 }
 
+#[test]
+fn test_hidden_metadata_keeps_empty_status_strip_structure() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+
+    bar.set_metadata_visible(false);
+
+    assert!(!bar.imp().metadata_box.is_visible());
+    assert!(bar.imp().sidebar_toggle_button.is_visible());
+    assert!(bar.imp().message_area_box.is_visible());
+    assert!(bar.imp().message_area_box.hexpands());
+    assert_eq!(bar.imp().message_area_box.margin_start(), 6);
+    assert_eq!(bar.imp().message_label.label().as_str(), "");
+}
+
 // --- Metadata controls ---
 
 #[test]
@@ -309,6 +347,26 @@ fn test_set_editorconfig_inactive_hides_badge_and_separator() {
     bar.set_editorconfig_active(false);
     assert!(!bar.imp().editorconfig_label.is_visible());
     assert!(!bar.imp().editorconfig_separator.is_visible());
+}
+
+#[test]
+fn test_metadata_controls_keep_compact_readable_chrome() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+    let imp = bar.imp();
+
+    assert_eq!(imp.editorconfig_label.margin_top(), 6);
+    assert_eq!(imp.editorconfig_label.margin_bottom(), 6);
+    assert_eq!(imp.editorconfig_label.valign(), gtk4::Align::Center);
+    assert_eq!(imp.editorconfig_separator.margin_top(), 8);
+    assert_eq!(imp.editorconfig_separator.margin_bottom(), 8);
+
+    for button in [&imp.line_ending_button, &imp.encoding_button] {
+        assert!(button.has_css_class("status-metadata-control"));
+        assert_eq!(button.margin_top(), 3);
+        assert_eq!(button.margin_bottom(), 3);
+        assert_eq!(button.valign(), gtk4::Align::Center);
+    }
 }
 
 // --- Sidebar toggle button ---
