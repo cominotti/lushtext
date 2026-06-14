@@ -13,7 +13,9 @@ mod imp;
 pub mod workspace_section;
 mod workspaces;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -26,6 +28,43 @@ pub use workspace_section::LushtextWorkspaceSection as WorkspaceSection;
 
 /// Debounce interval for persisting workspace changes to disk (ms).
 pub(super) const PERSIST_DEBOUNCE_MS: u64 = 150;
+
+/// Window-owned projection of file tabs that sidebar rows may render.
+///
+/// The sidebar treats these paths as display identities only. The window still
+/// owns duplicate detection, active-tab selection, canonical reconciliation,
+/// and failed-load handling.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SidebarFileRowStateSnapshot {
+    open_identities: HashSet<PathBuf>,
+    active_identities: HashSet<PathBuf>,
+}
+
+impl SidebarFileRowStateSnapshot {
+    /// Build a snapshot from the open and active file identities visible to the window.
+    #[must_use]
+    pub(crate) fn from_identities(
+        open_identities: HashSet<PathBuf>,
+        active_identities: HashSet<PathBuf>,
+    ) -> Self {
+        Self {
+            open_identities,
+            active_identities,
+        }
+    }
+
+    /// Return whether a file-tree path is open in any tab.
+    #[must_use]
+    pub(crate) fn is_open(&self, path: &Path) -> bool {
+        self.open_identities.contains(path)
+    }
+
+    /// Return whether a file-tree path is the active tab.
+    #[must_use]
+    pub(crate) fn is_active(&self, path: &Path) -> bool {
+        self.active_identities.contains(path)
+    }
+}
 
 /// Supported named workspace sidebar presets used by Preferences and shell math.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,6 +188,20 @@ impl LushtextSidebar {
             if section.remove_from_model(target_path) {
                 return;
             }
+        }
+    }
+
+    /// Replace the open/active file projection and resync realized section rows.
+    pub(crate) fn set_file_row_state_snapshot(&self, snapshot: SidebarFileRowStateSnapshot) {
+        let imp = self.imp();
+        if imp.file_row_state_snapshot.borrow().as_ref() == &snapshot {
+            return;
+        }
+
+        let snapshot = Rc::new(snapshot);
+        *imp.file_row_state_snapshot.borrow_mut() = Rc::clone(&snapshot);
+        for section in self.imp().sections.borrow().iter() {
+            section.set_file_row_state_snapshot(Rc::clone(&snapshot));
         }
     }
 

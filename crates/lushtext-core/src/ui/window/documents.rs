@@ -2,6 +2,7 @@
 
 //! Document lifecycle and window chrome helpers for the main window.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +17,7 @@ use crate::services::editorconfig;
 use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::notifications::InlineActionNotification;
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use crate::ui::sidebar::SidebarFileRowStateSnapshot;
 use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
@@ -109,10 +111,12 @@ impl LushtextWindow {
                 && let Some(editor) = editor_weak.upgrade()
             {
                 if window.close_loaded_canonical_duplicate(&editor) {
+                    window.refresh_sidebar_file_row_states();
                     return;
                 }
                 editor.start_file_monitor();
                 window.check_draft_on_open(&editor, &path_for_draft);
+                window.refresh_sidebar_file_row_states();
                 window.refresh_status_bar();
             }
         }));
@@ -134,12 +138,15 @@ impl LushtextWindow {
                 let mut open_paths = window.imp().open_paths.borrow_mut();
                 open_paths.remove(&key_for_failure);
                 open_paths.remove(path_for_failure.as_path());
+                drop(open_paths);
+                window.refresh_sidebar_file_row_states();
                 return;
             };
             let first_open_failed = editor.load_state() == EditorLoadState::Failed;
             if !first_open_failed {
                 window.refresh_header_bar();
                 window.refresh_status_bar();
+                window.refresh_sidebar_file_row_states();
                 return;
             }
             {
@@ -156,6 +163,7 @@ impl LushtextWindow {
             if editor.is_modified() {
                 window.refresh_header_bar();
                 window.refresh_status_bar();
+                window.refresh_sidebar_file_row_states();
                 return;
             }
             editor.clear_file_path_after_failed_load();
@@ -163,6 +171,7 @@ impl LushtextWindow {
             if let Some(page) = page_weak.upgrade() {
                 page.set_title(&editor.title());
             }
+            window.refresh_sidebar_file_row_states();
             window.refresh_header_bar();
             window.refresh_status_bar();
         }));
@@ -240,6 +249,7 @@ impl LushtextWindow {
 
         let (Some(current_page), Some(existing_page)) = (current_page, existing_page) else {
             self.imp().open_paths.borrow_mut().insert(canonical_path);
+            self.refresh_sidebar_file_row_states();
             return false;
         };
 
@@ -247,6 +257,7 @@ impl LushtextWindow {
         editor.imp().canonical_file_path.borrow_mut().take();
         tab_view.set_selected_page(&existing_page);
         tab_view.close_page(&current_page);
+        self.refresh_sidebar_file_row_states();
         true
     }
 
@@ -272,6 +283,7 @@ impl LushtextWindow {
                         open_paths.insert(canonical_path);
                     }
                 }
+                window.refresh_sidebar_file_row_states();
                 if let Some(editor) = window.active_editor() {
                     editor.set_draft_restored(false);
                     window.dismiss_editor_notifications(&editor);
@@ -365,6 +377,7 @@ impl LushtextWindow {
         self.imp().tab_view.set_selected_page(&page);
         self.exit_preview_only_mode_now();
         self.update_content_stack();
+        self.refresh_sidebar_file_row_states();
         self.refresh_status_bar();
     }
 
@@ -702,6 +715,34 @@ impl LushtextWindow {
         })
     }
 
+    /// Refresh sidebar file-row markers from the current file-backed tabs.
+    pub(super) fn refresh_sidebar_file_row_states(&self) {
+        let tab_view = &self.imp().tab_view;
+        let selected_page = tab_view.selected_page();
+        let mut open_identities = HashSet::new();
+        let mut active_identities = HashSet::new();
+
+        for index in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(index);
+            let child = page.child();
+            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
+                continue;
+            };
+            if editor.load_state() == EditorLoadState::Failed {
+                continue;
+            }
+
+            collect_sidebar_file_identities(&mut open_identities, editor);
+            if selected_page.as_ref() == Some(&page) {
+                collect_sidebar_file_identities(&mut active_identities, editor);
+            }
+        }
+
+        self.imp().sidebar.set_file_row_state_snapshot(
+            SidebarFileRowStateSnapshot::from_identities(open_identities, active_identities),
+        );
+    }
+
     /// Update the file path and title for any tab matching `old_path`.
     /// For directory renames, rewrites paths of all files inside the directory.
     pub fn update_tab_path(&self, old_path: &Path, new_path: &Path) {
@@ -733,6 +774,7 @@ impl LushtextWindow {
                 page.set_title(&editor.title());
             }
         }
+        self.refresh_sidebar_file_row_states();
         self.refresh_header_bar();
         self.refresh_command_palette_sources();
         self.refresh_status_bar();
@@ -770,6 +812,7 @@ impl LushtextWindow {
                     .borrow_mut()
                     .insert(canonical.clone());
                 editor.set_file_path_with_canonical(&updated_for_apply, Some(canonical));
+                window.refresh_sidebar_file_row_states();
             },
         );
     }
@@ -800,7 +843,17 @@ impl LushtextWindow {
         }
         self.update_content_stack();
         self.refresh_command_palette_sources();
+        self.refresh_sidebar_file_row_states();
         self.refresh_status_bar();
+    }
+}
+
+fn collect_sidebar_file_identities(identities: &mut HashSet<PathBuf>, editor: &LushtextEditorPage) {
+    if let Some(path) = editor.file_path() {
+        identities.insert(open_path_key(&path));
+    }
+    if let Some(canonical_path) = editor.canonical_file_path() {
+        identities.insert(canonical_path);
     }
 }
 

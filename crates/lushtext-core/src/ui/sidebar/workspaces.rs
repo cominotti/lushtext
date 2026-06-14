@@ -150,6 +150,7 @@ impl LushtextSidebar {
             section.set_visible(section_visible);
             if section_visible {
                 section.sync_workspace_folder_reorder_handles();
+                section.sync_file_row_states();
             }
         }
         *self.imp().applied_workspace_filter.borrow_mut() = current_scope;
@@ -200,6 +201,9 @@ impl LushtextSidebar {
     pub(super) fn create_section(&self, workspace: &WorkspaceConfig) -> WorkspaceSection {
         let section = WorkspaceSection::new(workspace.id.clone());
         section.set_workspace_name(&workspace.name);
+        section.set_file_row_state_snapshot(std::rc::Rc::clone(
+            &self.imp().file_row_state_snapshot.borrow(),
+        ));
         section.load_workspace_folders(&workspace.folders);
         self.wire_section_callbacks(&section);
         section

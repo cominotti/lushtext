@@ -14,6 +14,7 @@ use crate::model::workspace::{
 use crate::services::file_peek::PeekRequestToken;
 use crate::services::notifications::NotificationSeverity;
 use crate::services::workspace_watch::WorkspaceWatcher;
+use crate::ui::sidebar::SidebarFileRowStateSnapshot;
 use gtk_lush_settle::Debounce;
 use gtk_lush_signals::SignalBag;
 use gtk4::gio;
@@ -24,6 +25,7 @@ use gtk4::{self, CompositeTemplate, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -199,6 +201,8 @@ pub struct LushtextWorkspaceSection {
     pub dir_rows: RefCell<HashMap<PathBuf, glib::WeakRef<gtk4::TreeListRow>>>,
     /// Weak refs to child ListStores for direct model manipulation.
     pub dir_stores: RefCell<HashMap<PathBuf, glib::WeakRef<gio::ListStore>>>,
+    /// Latest window-owned open/active tab projection for file-row decoration.
+    pub(super) file_row_state_snapshot: RefCell<Rc<SidebarFileRowStateSnapshot>>,
     /// Cancellation tokens for background directory scans, grouped by path.
     ///
     /// Overlapping workspace folders can materialize the same directory in
@@ -281,6 +285,7 @@ impl ObjectSubclass for LushtextWorkspaceSection {
 impl ObjectImpl for LushtextWorkspaceSection {
     fn constructed(&self) {
         self.parent_constructed();
+        self.file_tree_view.add_css_class("workspace-file-tree");
         self.setup_factory();
         self.obj().register_folder_reorder_section();
         self.setup_file_context_menu();
@@ -370,6 +375,7 @@ impl LushtextWorkspaceSection {
 
             let overlay = gtk4::Overlay::new();
             overlay.add_css_class("workspace-folder-dnd-surface");
+            overlay.add_css_class("workspace-file-row-state-surface");
 
             // GTK4 trees use TreeListModel for hierarchy, ListView for row
             // recycling, and TreeExpander for indentation/disclosure; each bind
@@ -389,6 +395,12 @@ impl LushtextWorkspaceSection {
                 gtk4::accessible::Property::Label("Reorder Folder"),
                 gtk4::accessible::Property::Description("Drag to reorder this workspace folder"),
             ]);
+
+            let open_indicator = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            open_indicator.add_css_class("workspace-file-open-indicator");
+            open_indicator.set_valign(gtk4::Align::Center);
+            open_indicator.set_can_target(false);
+            open_indicator.set_focusable(false);
 
             let icon = gtk4::Image::new();
             icon.set_icon_size(gtk4::IconSize::Normal);
@@ -434,6 +446,7 @@ impl LushtextWorkspaceSection {
             });
 
             content_box.append(&drag_handle);
+            content_box.append(&open_indicator);
             content_box.append(&icon);
             content_box.append(&label);
             expander.set_child(Some(&content_box));
@@ -552,13 +565,16 @@ impl LushtextWorkspaceSection {
 
                 let icon = drag_handle
                     .next_sibling()
+                    .and_downcast::<gtk4::Widget>()
+                    .expect("second child is open indicator")
+                    .next_sibling()
                     .and_downcast::<gtk4::Image>()
-                    .expect("second child is Image");
+                    .expect("third child is Image");
 
                 let label = icon
                     .next_sibling()
                     .and_downcast::<gtk4::Label>()
-                    .expect("third child is Label");
+                    .expect("fourth child is Label");
 
                 icon_presentation::icon_for_file_item(&file_item).apply_to(&icon);
                 let display_name = file_item.name();
@@ -693,6 +709,14 @@ impl LushtextWorkspaceSection {
                         gesture.set_propagation_phase(phase);
                     }
                 }
+
+                if let Some(section) = section_weak.upgrade() {
+                    super::sync_file_row_state_for_overlay(&section, &overlay);
+                } else {
+                    super::reset_file_row_state_for_overlay(&overlay);
+                }
+            } else {
+                super::reset_file_row_state_for_overlay(&overlay);
             }
         });
 
@@ -711,7 +735,9 @@ impl LushtextWorkspaceSection {
                 if let Some(content_box) = expander.child().and_downcast::<gtk4::Box>()
                     && let Some(drag_handle) =
                         content_box.first_child().and_downcast::<gtk4::Button>()
-                    && let Some(icon) = drag_handle.next_sibling().and_downcast::<gtk4::Image>()
+                    && let Some(open_indicator) =
+                        drag_handle.next_sibling().and_downcast::<gtk4::Widget>()
+                    && let Some(icon) = open_indicator.next_sibling().and_downcast::<gtk4::Image>()
                     && let Some(label) = icon.next_sibling().and_downcast::<gtk4::Label>()
                 {
                     // Recycled ListItem widgets must leave no row-local editing
@@ -730,6 +756,7 @@ impl LushtextWorkspaceSection {
                     content_box.set_margin_end(0);
                 }
 
+                super::reset_file_row_state_for_overlay(&overlay);
                 super::dnd::reset_reorder_row_for_unbind(&overlay);
 
                 if let Some(section) = section_weak.upgrade()

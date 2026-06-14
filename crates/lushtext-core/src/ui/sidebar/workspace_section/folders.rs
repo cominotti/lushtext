@@ -44,6 +44,7 @@ impl LushtextWorkspaceSection {
         self.imp().drilldown_header_box.set_visible(false);
         self.load_folder_model(&entries, false);
         self.sync_workspace_folder_reorder_handles();
+        self.sync_file_row_states();
     }
 
     pub(super) fn load_folder_model(&self, folders: &[FolderTreeEntry], auto_expand: bool) {
@@ -91,6 +92,7 @@ impl LushtextWorkspaceSection {
         self.update_button_state();
         self.sync_workspace_folder_reorder_handles();
         self.restore_folder_model_state(auto_expand);
+        self.sync_file_row_states();
         self.restart_workspace_watch();
     }
 
@@ -155,6 +157,7 @@ impl LushtextWorkspaceSection {
         }
         self.update_button_state();
         self.sync_workspace_folder_reorder_handles();
+        self.sync_file_row_states();
         self.restart_workspace_watch();
     }
 
@@ -178,6 +181,7 @@ impl LushtextWorkspaceSection {
 
         self.update_button_state();
         self.sync_workspace_folder_reorder_handles();
+        self.sync_file_row_states();
         self.restart_workspace_watch();
     }
 
@@ -319,6 +323,7 @@ impl LushtextWorkspaceSection {
             gtk4::accessible::Property::Description(description),
         ]);
         self.sync_workspace_folder_reorder_handles();
+        self.sync_file_row_states();
     }
 
     /// Collapses the top-level folders of this workspace section.
@@ -326,6 +331,7 @@ impl LushtextWorkspaceSection {
         for row in self.expanded_folder_rows() {
             row.set_expanded(false);
         }
+        self.sync_file_row_states();
         self.restart_workspace_watch();
     }
 
@@ -334,6 +340,7 @@ impl LushtextWorkspaceSection {
         for row in self.collapsed_non_empty_folder_rows() {
             row.set_expanded(true);
         }
+        self.sync_file_row_states();
         self.restart_workspace_watch();
     }
 
@@ -344,6 +351,7 @@ impl LushtextWorkspaceSection {
         for row in rows {
             row.set_expanded(any_collapsed);
         }
+        self.sync_file_row_states();
         self.restart_workspace_watch();
     }
 

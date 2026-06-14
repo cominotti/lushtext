@@ -80,8 +80,11 @@ fn realized_folder_row_content(
         .expect("content box should start with the reorder handle");
     let icon = drag_handle
         .next_sibling()
+        .and_downcast::<gtk4::Widget>()
+        .expect("reorder handle should be followed by the open-file indicator")
+        .next_sibling()
         .and_downcast::<gtk4::Image>()
-        .expect("reorder handle should be followed by the row icon");
+        .expect("open-file indicator should be followed by the row icon");
     let label = icon
         .next_sibling()
         .and_downcast::<gtk4::Label>()
@@ -292,6 +295,62 @@ fn realized_overlay_for_path(
 ) -> Option<gtk4::Overlay> {
     let row_widget = realized_row_widget_for_path(section, target_path)?;
     row_widget.first_child().and_downcast::<gtk4::Overlay>()
+}
+
+fn assert_workspace_row_state(
+    section: &LushtextWorkspaceSection,
+    target_path: &Path,
+    expected_open: bool,
+    expected_active: bool,
+) {
+    wait_until(Duration::from_secs(2), || {
+        section
+            .file_row_state_for_test(target_path)
+            .is_some_and(|state| state.open == expected_open && state.active == expected_active)
+    });
+    let state = section
+        .file_row_state_for_test(target_path)
+        .unwrap_or_else(|| panic!("realized row state missing for {}", target_path.display()));
+    assert_eq!(
+        state.open,
+        expected_open,
+        "unexpected open marker for {}",
+        target_path.display()
+    );
+    assert_eq!(
+        state.active,
+        expected_active,
+        "unexpected active marker for {}",
+        target_path.display()
+    );
+    assert!(
+        state.indicator,
+        "realized row should keep the fixed open-file indicator gutter"
+    );
+}
+
+fn realized_workspace_row_state_count(
+    section: &LushtextWorkspaceSection,
+    target_path: &Path,
+    expected_open: bool,
+    expected_active: bool,
+) -> usize {
+    let mut count = 0;
+    let mut child = section.imp().file_tree_view.first_child();
+    while let Some(row_widget) = child {
+        if let Some(overlay) = row_widget.first_child().and_downcast::<gtk4::Overlay>()
+            && let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>()
+            && let Some(tree_row) = expander.list_row()
+            && let Some(item) = tree_row.item().and_downcast::<FileTreeItem>()
+            && item.path().as_deref() == Some(target_path)
+            && overlay.has_css_class("workspace-file-open") == expected_open
+            && overlay.has_css_class("workspace-file-active") == expected_active
+        {
+            count += 1;
+        }
+        child = row_widget.next_sibling();
+    }
+    count
 }
 
 fn realized_drag_handle_for_path(
@@ -642,8 +701,11 @@ fn test_long_workspace_folder_label_ellipsizes_and_keeps_controls_visible() {
         .expect("content box should start with the reorder handle");
     let icon = drag_handle
         .next_sibling()
+        .and_downcast::<gtk4::Widget>()
+        .expect("reorder handle should be followed by the open-file indicator")
+        .next_sibling()
         .and_downcast::<gtk4::Image>()
-        .expect("reorder handle should be followed by the row icon");
+        .expect("open-file indicator should be followed by the row icon");
     let label = icon
         .next_sibling()
         .and_downcast::<gtk4::Label>()
@@ -1637,6 +1699,156 @@ fn test_file_tree_file_row_uses_regular_content_type_icon() {
         names.first().is_some_and(|name| !name.ends_with("-symbolic")),
         "file row should prefer a regular themed icon, got {names:?}"
     );
+}
+
+#[test]
+fn test_workspace_row_state_css_keeps_click_selection_transient() {
+    ensure_gtk_init();
+    let css = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../resources/style/style.css"
+    ));
+    assert!(css.contains("listview.workspace-file-tree row:selected"));
+    assert!(css.contains("background-color: transparent"));
+    assert!(css.contains("listview.workspace-file-tree row:hover"));
+    assert!(css.contains("listview.workspace-file-tree row:active"));
+    assert!(css.contains("listview.workspace-file-tree row:focus"));
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("row-state-css"));
+    let dir = tempfile::tempdir().expect("row state css tempdir");
+    let file = dir.path().join("plain.txt");
+    fixture::write_text(&file, "plain");
+    section.load_folders(&[FolderTreeEntry::File { path: file.clone() }]);
+    let _window = present_section_window(&section);
+
+    assert!(section.imp().file_tree_view.has_css_class("workspace-file-tree"));
+    select_path(&section, &file);
+    assert_eq!(selected_path(&section).as_deref(), Some(file.as_path()));
+    assert_workspace_row_state(&section, &file, false, false);
+}
+
+#[test]
+fn test_workspace_row_state_open_and_active_markers_apply_to_files_only() {
+    let fixture = make_peek_fixture();
+    let _window = present_section_window(&fixture.section);
+
+    assert_workspace_row_state(&fixture.section, &fixture.text_a, false, false);
+    assert_workspace_row_state(&fixture.section, &fixture.text_b, false, false);
+    assert_workspace_row_state(&fixture.section, &fixture.directory, false, false);
+
+    fixture.section.set_file_row_state_for_test(
+        &[fixture.text_a.as_path(), fixture.text_b.as_path()],
+        &[fixture.text_b.as_path()],
+    );
+
+    assert_workspace_row_state(&fixture.section, &fixture.text_a, true, false);
+    assert_workspace_row_state(&fixture.section, &fixture.text_b, true, true);
+    assert_workspace_row_state(&fixture.section, &fixture.directory, false, false);
+
+    fixture.section.set_file_row_state_for_test(
+        &[fixture.text_a.as_path()],
+        &[fixture.text_a.as_path()],
+    );
+    assert_workspace_row_state(&fixture.section, &fixture.text_a, true, true);
+    assert_workspace_row_state(&fixture.section, &fixture.text_b, false, false);
+}
+
+#[test]
+fn test_workspace_row_state_keyboard_peek_preserves_selection_without_open_marker() {
+    let fixture = make_peek_fixture();
+    let window = present_section_window(&fixture.section);
+
+    select_path(&fixture.section, &fixture.text_a);
+    tree_view(&fixture.section).grab_focus();
+    assert_workspace_row_state(&fixture.section, &fixture.text_a, false, false);
+
+    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
+    wait_until(Duration::from_secs(2), || {
+        fixture.section.peek_visible()
+            && fixture.section.peeked_path().as_deref() == Some(fixture.text_a.as_path())
+            && peek_body_text(&fixture.section).contains("alpha")
+    });
+
+    assert_eq!(
+        selected_path(&fixture.section).as_deref(),
+        Some(fixture.text_a.as_path())
+    );
+    assert_workspace_row_state(&fixture.section, &fixture.text_a, false, false);
+    assert_tree_focus(&window, &fixture.section);
+}
+
+#[test]
+fn test_workspace_row_state_recycling_clears_stale_marker_after_model_rebuild() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("row-state-recycle"));
+    let dir = tempfile::tempdir().expect("row state recycle tempdir");
+    let first = dir.path().join("first.txt");
+    let second = dir.path().join("second.txt");
+    fixture::write_text(&first, "first");
+    fixture::write_text(&second, "second");
+    section.load_folders(&[
+        FolderTreeEntry::File {
+            path: first.clone(),
+        },
+        FolderTreeEntry::File {
+            path: second,
+        },
+    ]);
+    let replacement = dir.path().join("replacement.txt");
+    fixture::write_text(&replacement, "replacement");
+    let _window = present_section_window(&section);
+
+    section.set_file_row_state_for_test(&[first.as_path()], &[first.as_path()]);
+    assert_workspace_row_state(&section, &first, true, true);
+
+    section.load_folders(&[FolderTreeEntry::File {
+        path: replacement.clone(),
+    }]);
+    wait_until(Duration::from_secs(2), || {
+        section.file_row_state_for_test(&replacement).is_some()
+    });
+    assert_workspace_row_state(&section, &replacement, false, false);
+
+    section.set_file_row_state_for_test(&[replacement.as_path()], &[replacement.as_path()]);
+    assert_workspace_row_state(&section, &replacement, true, true);
+    section.set_file_row_state_for_test(&[], &[]);
+    assert_workspace_row_state(&section, &replacement, false, false);
+}
+
+#[test]
+fn test_workspace_row_state_overlapping_workspace_folders_mark_duplicate_file_rows() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("row-state-overlap"));
+    let dir = tempfile::tempdir().expect("row state overlap tempdir");
+    let parent = dir.path().join("project");
+    let child = parent.join("src");
+    let file = child.join("main.rs");
+    fixture::create_dir_all(&child);
+    fixture::write_text(&file, "fn main() {}\n");
+    section.load_workspace_folders(&[
+        WorkspaceFolder::with_id(WorkspaceFolderId::new("parent"), parent),
+        WorkspaceFolder::with_id(WorkspaceFolderId::new("child"), child.clone()),
+    ]);
+    let _window = present_section_window_with_size(&section, 420, 620);
+
+    section.expand_folders();
+    wait_until(Duration::from_secs(3), || row_count_for_path(&section, &child) >= 2);
+    for child_row in rows_for_path(&section, &child) {
+        child_row.set_expanded(true);
+    }
+    wait_until(Duration::from_secs(3), || {
+        row_count_for_path(&section, &file) >= 2
+            && realized_workspace_row_state_count(&section, &file, false, false) >= 2
+    });
+
+    section.set_file_row_state_for_test(&[file.as_path()], &[]);
+    wait_until(Duration::from_secs(2), || {
+        realized_workspace_row_state_count(&section, &file, true, false) >= 2
+    });
+    section.set_file_row_state_for_test(&[file.as_path()], &[file.as_path()]);
+    wait_until(Duration::from_secs(2), || {
+        realized_workspace_row_state_count(&section, &file, true, true) >= 2
+    });
 }
 
 #[test]

@@ -158,6 +158,51 @@
   background-color: @headerbar_bg_color;
 }
 
+/* Workspace file tree: clicking rows keeps keyboard selection without leaving
+   a permanent fill; hover, press, and focus remain visible interaction states. */
+listview.workspace-file-tree row:selected {
+  background-color: transparent;
+  box-shadow: none;
+  color: @window_fg_color;
+}
+
+listview.workspace-file-tree row:hover {
+  background-color: alpha(@window_fg_color, 0.06);
+}
+
+listview.workspace-file-tree row:active {
+  background-color: alpha(@window_fg_color, 0.10);
+}
+
+listview.workspace-file-tree row:focus {
+  outline: 1px solid alpha(@accent_color, 0.62);
+  outline-offset: -2px;
+}
+
+.workspace-file-open-indicator {
+  min-width: 3px;
+  min-height: 18px;
+  border-radius: 9999px;
+  background-color: transparent;
+}
+
+.workspace-file-row-state-surface.workspace-file-open .workspace-file-open-indicator {
+  background-color: alpha(@accent_bg_color, 0.42);
+}
+
+.workspace-file-row-state-surface.workspace-file-active .workspace-file-open-indicator {
+  background-color: @accent_bg_color;
+}
+
+.workspace-file-row-state-surface.workspace-file-open label {
+  font-weight: 500;
+}
+
+.workspace-file-row-state-surface.workspace-file-active label {
+  color: @accent_color;
+  font-weight: 700;
+}
+
 /* Command palette: floating overlay at top-center */
 .command-palette-container {
   background-color: @window_bg_color;

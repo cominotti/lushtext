@@ -7,12 +7,14 @@
 
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
+use crate::ui::sidebar::SidebarFileRowStateSnapshot;
 use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use super::workspace_section::LushtextWorkspaceSection;
 
@@ -46,6 +48,8 @@ pub struct LushtextSidebar {
     pub workspaces_file: RefCell<WorkspacesFile>,
     /// Live workspace section widgets in display order.
     pub sections: RefCell<Vec<LushtextWorkspaceSection>>,
+    /// Window-owned tab projection forwarded into every workspace section.
+    pub(super) file_row_state_snapshot: RefCell<Rc<SidebarFileRowStateSnapshot>>,
     /// Current workspace scope mirrored into the selector row and section visibility.
     pub current_scope: RefCell<WorkspaceScope>,
     /// Maps dropdown positions to concrete scope values.
@@ -97,6 +101,7 @@ impl Default for LushtextSidebar {
             new_workspace_button: TemplateChild::default(),
             workspaces_file: RefCell::default(),
             sections: RefCell::default(),
+            file_row_state_snapshot: RefCell::default(),
             current_scope: RefCell::new(WorkspaceScope::All),
             workspace_filter_options: RefCell::default(),
             syncing_workspace_filter: Cell::default(),

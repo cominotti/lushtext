@@ -853,6 +853,7 @@ make test-unit   # Unit tests only
 make test-int    # Integration tests only
 make test-widget # Widget tests through the private headless runner
 make test-widget-headless # Widget tests with the CI mutter/dbus setup
+make test-workspace-row-states # Focused workspace file-row state widget tests
 make automation-smoke # Real-process D-Bus automation smoke with artifacts
 make visual-smoke # Headless Mutter screenshot smoke with artifacts
 make crash-recovery-smoke # SIGKILL/relaunch recovery smoke with artifacts

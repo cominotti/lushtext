@@ -16,12 +16,16 @@ mod tree_index;
 mod tree_loading;
 mod watch;
 
+#[cfg(feature = "test-utils")]
+use std::collections::HashSet;
 use std::path::Path;
+use std::rc::Rc;
 
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
+use super::SidebarFileRowStateSnapshot;
 use super::file_tree_item::FileTreeItem;
 use crate::model::workspace::{WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId};
 use crate::services::notifications::NotificationSeverity;
@@ -51,6 +55,33 @@ pub struct WorkspaceFolderReorderHoverDecision {
     pub accepts_drop: bool,
 }
 
+#[cfg(feature = "test-utils")]
+/// Test-only summary of the realized open/active decoration on one file row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileRowStateForTest {
+    /// Whether the realized file row carries the open-tab marker.
+    pub open: bool,
+    /// Whether the realized file row carries the active-tab marker.
+    pub active: bool,
+    /// Whether the row keeps the fixed-width indicator gutter allocated.
+    pub indicator: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileRowVisualState {
+    Ordinary,
+    Open,
+    Active,
+}
+
+/// CSS class applied to file rows whose path is open in any tab.
+const FILE_ROW_OPEN_CLASS: &str = "workspace-file-open";
+/// CSS class applied to the file row for the currently selected tab.
+const FILE_ROW_ACTIVE_CLASS: &str = "workspace-file-active";
+#[cfg(feature = "test-utils")]
+/// CSS class for the fixed-width row indicator gutter used by widget tests.
+const FILE_ROW_INDICATOR_CLASS: &str = "workspace-file-open-indicator";
+
 impl LushtextWorkspaceSection {
     /// Construct a workspace section with the provided stable workspace id.
     #[must_use]
@@ -75,6 +106,38 @@ impl LushtextWorkspaceSection {
     #[must_use]
     pub fn workspace_id(&self) -> WorkspaceId {
         self.imp().workspace_id.borrow().clone()
+    }
+
+    /// Replace the open/active file-row projection and resync realized rows.
+    pub(crate) fn set_file_row_state_snapshot(&self, snapshot: Rc<SidebarFileRowStateSnapshot>) {
+        *self.imp().file_row_state_snapshot.borrow_mut() = snapshot;
+        if self.property::<bool>("visible") {
+            self.sync_file_row_states();
+        }
+    }
+
+    /// Reapply open/active file-row styling to currently realized ListView rows.
+    pub(crate) fn sync_file_row_states(&self) {
+        for_each_realized_file_row_overlay(self, |overlay| {
+            sync_file_row_state_for_overlay(self, &overlay);
+        });
+    }
+
+    /// Test helper for applying an open/active file projection without a window.
+    #[cfg(feature = "test-utils")]
+    pub fn set_file_row_state_for_test(&self, open_paths: &[&Path], active_paths: &[&Path]) {
+        let open_identities = open_paths
+            .iter()
+            .map(|path| path.to_path_buf())
+            .collect::<HashSet<_>>();
+        let active_identities = active_paths
+            .iter()
+            .map(|path| path.to_path_buf())
+            .collect::<HashSet<_>>();
+        self.set_file_row_state_snapshot(Rc::new(SidebarFileRowStateSnapshot::from_identities(
+            open_identities,
+            active_identities,
+        )));
     }
 
     /// Store the parent-sidebar callback invoked when a file row is activated.
@@ -400,6 +463,129 @@ impl LushtextWorkspaceSection {
     pub fn workspace_folder_reorder_drag_hover_fallback_count_for_test(&self) -> usize {
         tree_loading::drag_hover_child_model_count_for_test()
     }
+
+    /// Test helper exposing the realized CSS state for a file-tree row.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn file_row_state_for_test(&self, path: &Path) -> Option<FileRowStateForTest> {
+        let overlay = realized_file_row_overlay_for_path(self, path)?;
+        Some(FileRowStateForTest {
+            open: overlay.has_css_class(FILE_ROW_OPEN_CLASS),
+            active: overlay.has_css_class(FILE_ROW_ACTIVE_CLASS),
+            indicator: file_row_state_indicator(&overlay).is_some(),
+        })
+    }
+}
+
+pub(super) fn sync_file_row_state_for_overlay(
+    section: &LushtextWorkspaceSection,
+    overlay: &gtk4::Overlay,
+) {
+    let state = file_row_visual_state_for_overlay(section, overlay);
+    apply_file_row_visual_state(overlay, state);
+}
+
+pub(super) fn reset_file_row_state_for_overlay(overlay: &gtk4::Overlay) {
+    apply_file_row_visual_state(overlay, FileRowVisualState::Ordinary);
+}
+
+fn file_row_visual_state_for_overlay(
+    section: &LushtextWorkspaceSection,
+    overlay: &gtk4::Overlay,
+) -> FileRowVisualState {
+    let Some(tree_row) = overlay
+        .child()
+        .and_downcast::<gtk4::TreeExpander>()
+        .and_then(|expander| expander.list_row())
+    else {
+        return FileRowVisualState::Ordinary;
+    };
+    let Some(item) = tree_row.item().and_downcast::<FileTreeItem>() else {
+        return FileRowVisualState::Ordinary;
+    };
+    if item.is_dir() || item.is_placeholder() {
+        return FileRowVisualState::Ordinary;
+    }
+    let Some(path) = item.path() else {
+        return FileRowVisualState::Ordinary;
+    };
+
+    let snapshot = section.imp().file_row_state_snapshot.borrow();
+    if snapshot.is_active(&path) {
+        FileRowVisualState::Active
+    } else if snapshot.is_open(&path) {
+        FileRowVisualState::Open
+    } else {
+        FileRowVisualState::Ordinary
+    }
+}
+
+fn apply_file_row_visual_state(overlay: &gtk4::Overlay, state: FileRowVisualState) {
+    let wants_open = matches!(state, FileRowVisualState::Open | FileRowVisualState::Active);
+    let wants_active = matches!(state, FileRowVisualState::Active);
+
+    if overlay.has_css_class(FILE_ROW_OPEN_CLASS) != wants_open {
+        if wants_open {
+            overlay.add_css_class(FILE_ROW_OPEN_CLASS);
+        } else {
+            overlay.remove_css_class(FILE_ROW_OPEN_CLASS);
+        }
+    }
+
+    if overlay.has_css_class(FILE_ROW_ACTIVE_CLASS) != wants_active {
+        if wants_active {
+            overlay.add_css_class(FILE_ROW_ACTIVE_CLASS);
+        } else {
+            overlay.remove_css_class(FILE_ROW_ACTIVE_CLASS);
+        }
+    }
+}
+
+fn for_each_realized_file_row_overlay(
+    section: &LushtextWorkspaceSection,
+    mut visit: impl FnMut(gtk4::Overlay),
+) {
+    let mut row_widget = section.imp().file_tree_view.first_child();
+    while let Some(row) = row_widget {
+        if let Some(overlay) = row.first_child().and_downcast::<gtk4::Overlay>() {
+            visit(overlay);
+        }
+        row_widget = row.next_sibling();
+    }
+}
+
+#[cfg(feature = "test-utils")]
+fn file_row_state_indicator(overlay: &gtk4::Overlay) -> Option<gtk4::Widget> {
+    let expander = overlay.child().and_downcast::<gtk4::TreeExpander>()?;
+    let content_box = expander.child().and_downcast::<gtk4::Box>()?;
+    let mut child = content_box.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if widget.has_css_class(FILE_ROW_INDICATOR_CLASS) {
+            return Some(widget);
+        }
+    }
+    None
+}
+
+#[cfg(feature = "test-utils")]
+fn realized_file_row_overlay_for_path(
+    section: &LushtextWorkspaceSection,
+    target_path: &Path,
+) -> Option<gtk4::Overlay> {
+    let mut row_widget = section.imp().file_tree_view.first_child();
+    while let Some(row) = row_widget {
+        if let Some(overlay) = row.first_child().and_downcast::<gtk4::Overlay>()
+            && let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>()
+            && let Some(tree_row) = expander.list_row()
+            && let Some(item) = tree_row.item().and_downcast::<FileTreeItem>()
+            && item.path().as_deref() == Some(target_path)
+        {
+            return Some(overlay);
+        }
+        row_widget = row.next_sibling();
+    }
+    None
 }
 
 /// Activate a row: open files, toggle directories, and ignore reorder drags.

@@ -410,6 +410,7 @@ fn append_next_child_batch(
             let placeholder = [FileTreeItem::new_placeholder(truncated_directory_label())];
             store.splice(store.n_items(), 0, &placeholder);
         }
+        section.sync_file_row_states();
         finish_child_scan(section, &dir_path, &token);
         return;
     }
@@ -475,6 +476,7 @@ fn reconcile_child_store(
 
     section.recache_child_store(dir_path, store);
     schedule_child_state_restore(section);
+    section.sync_file_row_states();
     finish_child_scan(section, dir_path, token);
 }
 

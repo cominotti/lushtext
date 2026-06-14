@@ -168,6 +168,7 @@ impl super::LushtextWindow {
                 }
                 editor.set_file_path_with_canonical(path, canonical_path);
                 self.refresh_canonical_path_after_rename(editor, path);
+                self.refresh_sidebar_file_row_states();
                 self.assign_draft_id(editor);
                 self.resolve_editorconfig_for_editor(editor, path);
                 self.reset_notes_after_save_as(editor, path);

@@ -834,6 +834,7 @@ impl ObjectImpl for LushtextWindow {
             .connect_notify_local(Some("n-pages"), move |_, _| {
                 if let Some(window) = window_weak.upgrade() {
                     window.update_content_stack();
+                    window.refresh_sidebar_file_row_states();
                 }
             });
 
@@ -842,6 +843,7 @@ impl ObjectImpl for LushtextWindow {
             .connect_notify_local(Some("selected-page"), move |_, _| {
                 if let Some(window) = window_weak.upgrade() {
                     window.refresh_status_bar();
+                    window.refresh_sidebar_file_row_states();
                     window.reload_if_evicted();
                     window.maybe_evict_background_tabs();
                     window.save_session_debounced();
@@ -904,6 +906,7 @@ impl ObjectImpl for LushtextWindow {
                 }
                 window.update_content_stack();
                 window.refresh_command_palette_sources();
+                window.refresh_sidebar_file_row_states();
                 window.refresh_status_bar();
                 window.save_session_debounced();
             }

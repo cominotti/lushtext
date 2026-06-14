@@ -218,6 +218,7 @@ impl super::LushtextWindow {
 
         self.imp().session.restoring.set(false);
         self.update_content_stack();
+        self.refresh_sidebar_file_row_states();
         self.refresh_status_bar();
     }
 

@@ -20,6 +20,7 @@
 #   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
 #   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
+#   make test-workspace-row-states - Focused idempotent workspace file-row state widget tests
 #   make automation-smoke - Real-process D-Bus automation smoke under headless Mutter
 #   make visual-smoke - Real-session screenshot smoke under headless Mutter
 #   make visual-geometry-smoke - Rust same-session visual invariant proof
@@ -67,7 +68,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless automation-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-workspace-row-states automation-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -93,6 +94,7 @@ CARGO_TEST_INT        = cargo test --workspace --test integration
 endif
 CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh --headless
 CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 1
+CARGO_TEST_WORKSPACE_ROW_STATES = ./scripts/run-widget-tests.sh --headless --retries 1 -- workspace_row_state
 CARGO_TEST_PROP           = cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
 CARGO_TEST_FUZZ_CORPUS_REPLAY = cargo test -p lushtext-core --features fuzzing --test fuzz_corpus_replay
 PROPTEST_DEEP_CASES ?= 512
@@ -259,6 +261,13 @@ test-widget:
 test-widget-headless:
 	@echo "Running widget tests under mutter --headless..."
 	$(CARGO_TEST_WIDGET_HEADLESS)
+
+# Focused workspace-sidebar file-row state tests. The filter is a shared test
+# name substring, so this stays narrow while still exercising section and window
+# coverage through the normal isolated widget harness.
+test-workspace-row-states:
+	@echo "Running focused workspace file-row state widget tests..."
+	$(CARGO_TEST_WORKSPACE_ROW_STATES)
 
 # Real-process D-Bus smoke under isolated headless Mutter. This proves the
 # app-owned automation object, snapshots, waits, and a parameterized action.
@@ -693,6 +702,7 @@ help:
 	@echo "  test-prop-deep Deeper property run with PROPTEST_DEEP_CASES"
 	@echo "  test-widget  Widget tests under the private headless runner"
 	@echo "  test-widget-headless Widget tests with the CI headless setup"
+	@echo "  test-workspace-row-states Focused workspace file-row state widget tests"
 	@echo "  automation-smoke Real-process D-Bus automation smoke under headless Mutter"
 	@echo "  check-end-user-smoke-workflow Verify scheduled/manual smoke matrix lanes"
 	@echo "  check-visual-proof-policy Require visual geometry proof for local visual-sensitive changes"

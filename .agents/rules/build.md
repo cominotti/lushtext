@@ -21,6 +21,7 @@ make fuzz-corpus-replay # stable replay of committed fuzz corpus seeds
 make fuzz-smoke # bounded local cargo-fuzz smoke, requires nightly tooling
 make fuzz-operation-smoke # bounded structured-operation fuzz smoke
 make test-widget-headless # CI-style mutter/dbus widget run
+make test-workspace-row-states # focused workspace file-row state widget run
 make visual-geometry-smoke # same-session visual invariant screenshots and geometry snapshots
 make visual-smoke # real-session screenshot smoke with artifacts
 make crash-recovery-smoke # real-process SIGKILL/relaunch recovery smoke with artifacts

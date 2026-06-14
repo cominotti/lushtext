@@ -56,7 +56,7 @@ use lushtext_core::ui::automation::{
     wait_for_ready_for_test,
 };
 use lushtext_core::ui::editor_page::{
-    LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
+    EditorLoadState, LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
 };
 use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
@@ -2463,6 +2463,29 @@ fn seed_peek_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (folder_dir, alpha, beta)
 }
 
+fn seed_workspace_row_state_files() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+    ensure_gtk_init();
+    let folder_dir = tempfile::tempdir().expect("workspace row state tempdir");
+    let alpha = folder_dir.path().join("alpha.txt");
+    let beta = folder_dir.path().join("beta.txt");
+    let missing = folder_dir.path().join("missing.txt");
+    fixture::write_text(&alpha, "alpha\n");
+    fixture::write_text(&beta, "beta\n");
+    fixture::write_text(&missing, "remove before opening\n");
+
+    let workspaces = WorkspacesFile {
+        current_scope: WorkspaceScope::All,
+        workspaces: vec![WorkspaceConfig::with_one_folder(
+            WorkspaceId::new("ws-row-state"),
+            "row state",
+            folder_dir.path().to_path_buf(),
+        )],
+    };
+    workspace_manager::save(&json_store::data_dir(), &workspaces)
+        .expect("save row-state workspaces");
+    (folder_dir, alpha, beta, missing)
+}
+
 fn seed_named_tab_files(names: &[&str]) -> (tempfile::TempDir, Vec<PathBuf>) {
     let dir = tempfile::tempdir().expect("named tab tempdir");
     let paths = names
@@ -2660,6 +2683,34 @@ fn first_sidebar_section(window: &LushtextWindow) -> lushtext_core::ui::sidebar:
         .first()
         .cloned()
         .expect("sidebar should have at least one section")
+}
+
+fn assert_window_workspace_row_state(
+    section: &lushtext_core::ui::sidebar::WorkspaceSection,
+    target_path: &Path,
+    expected_open: bool,
+    expected_active: bool,
+) {
+    wait_until(Duration::from_secs(3), || {
+        section
+            .file_row_state_for_test(target_path)
+            .is_some_and(|state| state.open == expected_open && state.active == expected_active)
+    });
+    let state = section
+        .file_row_state_for_test(target_path)
+        .unwrap_or_else(|| panic!("workspace row not realized for {}", target_path.display()));
+    assert_eq!(
+        state.open,
+        expected_open,
+        "unexpected open marker for {}",
+        target_path.display()
+    );
+    assert_eq!(
+        state.active,
+        expected_active,
+        "unexpected active marker for {}",
+        target_path.display()
+    );
 }
 
 #[test]
@@ -7433,6 +7484,191 @@ fn test_save_as_canonical_refresh_after_tab_close_does_not_reopen_path_key() {
     let open_paths = window.imp().open_paths.borrow();
     assert!(!open_paths.contains(&path));
     assert!(!open_paths.contains(&canonical));
+}
+
+#[test]
+fn test_workspace_row_state_window_tracks_open_switch_close_and_failed_load() {
+    let _data_dir = isolated_data_dir();
+    let (_folder_dir, alpha, beta, missing) = seed_workspace_row_state_files();
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_sections(&window, 1);
+
+    let section = first_sidebar_section(&window);
+    section.expand_folders();
+    select_sidebar_path(&section, &alpha);
+    select_sidebar_path(&section, &beta);
+    select_sidebar_path(&section, &missing);
+
+    window.open_document(&alpha);
+    wait_until(Duration::from_secs(3), || {
+        active_editor(&window).file_size().is_some()
+            && active_editor(&window).file_path().as_deref() == Some(alpha.as_path())
+    });
+    assert_window_workspace_row_state(&section, &alpha, true, true);
+
+    window.open_document(&beta);
+    wait_until(Duration::from_secs(3), || {
+        window.imp().tab_view.n_pages() == 2
+            && active_editor(&window).file_path().as_deref() == Some(beta.as_path())
+            && active_editor(&window).file_size().is_some()
+    });
+    assert_window_workspace_row_state(&section, &alpha, true, false);
+    assert_window_workspace_row_state(&section, &beta, true, true);
+
+    window.open_document(&alpha);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 2
+            && active_editor(&window).file_path().as_deref() == Some(alpha.as_path())
+    });
+    assert_window_workspace_row_state(&section, &alpha, true, true);
+    assert_window_workspace_row_state(&section, &beta, true, false);
+
+    window.close_tab_for_path(&alpha);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+            && active_editor(&window).file_path().as_deref() == Some(beta.as_path())
+    });
+    assert_window_workspace_row_state(&section, &alpha, false, false);
+    assert_window_workspace_row_state(&section, &beta, true, true);
+
+    fixture::remove_file(&missing);
+    window.open_document(&missing);
+    wait_until(Duration::from_secs(3), || {
+        active_editor(&window).load_state() == EditorLoadState::Failed
+            && active_editor(&window).file_path().is_none()
+    });
+    assert_window_workspace_row_state(&section, &missing, false, false);
+    assert_window_workspace_row_state(&section, &beta, true, false);
+}
+
+#[test]
+fn test_workspace_row_state_window_updates_save_as_rename_and_delete() {
+    let _data_dir = isolated_data_dir();
+    let (_folder_dir, alpha, beta, _missing) = seed_workspace_row_state_files();
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_sections(&window, 1);
+
+    let section = first_sidebar_section(&window);
+    section.expand_folders();
+    select_sidebar_path(&section, &alpha);
+    select_sidebar_path(&section, &beta);
+
+    window.new_tab();
+    let editor = active_editor(&window);
+    editor.buffer().set_text("save as alpha\n");
+    editor.buffer().set_modified(true);
+    window.select_save_as_destination_for_test(&alpha);
+    wait_until(Duration::from_secs(3), || {
+        editor.file_path().as_deref() == Some(alpha.as_path()) && !editor.is_modified()
+    });
+    assert_window_workspace_row_state(&section, &alpha, true, true);
+    assert_window_workspace_row_state(&section, &beta, false, false);
+
+    editor.buffer().set_text("save as beta\n");
+    editor.buffer().set_modified(true);
+    window.select_save_as_destination_for_test(&beta);
+    wait_until(Duration::from_secs(3), || {
+        editor.file_path().as_deref() == Some(beta.as_path()) && !editor.is_modified()
+    });
+    assert_window_workspace_row_state(&section, &alpha, false, false);
+    assert_window_workspace_row_state(&section, &beta, true, true);
+
+    window.update_tab_path(&beta, &alpha);
+    wait_until(Duration::from_secs(3), || {
+        active_editor(&window).file_path().as_deref() == Some(alpha.as_path())
+    });
+    assert_window_workspace_row_state(&section, &alpha, true, true);
+    assert_window_workspace_row_state(&section, &beta, false, false);
+
+    window.close_tab_for_path(&alpha);
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    assert_window_workspace_row_state(&section, &alpha, false, false);
+}
+
+#[test]
+fn test_workspace_row_state_window_restores_session_and_hidden_scope_projection() {
+    let _data_dir = isolated_data_dir();
+    let (_folders_dir, _left_folder, right_folder) =
+        seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-left")));
+    let right_file = right_folder.join("beta.rs");
+    session_service::save(
+        &json_store::data_dir(),
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: Some(right_file.clone()),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("save row-state session");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_sections(&window, 2);
+    wait_until(Duration::from_secs(3), || {
+        window.imp().tab_view.n_pages() == 1
+            && active_editor(&window).file_path().as_deref() == Some(right_file.as_path())
+    });
+
+    let right_section = window.imp().sidebar.imp().sections.borrow()[1].clone();
+    assert!(
+        !right_section.property::<bool>("visible"),
+        "right workspace should start hidden behind the selected left scope"
+    );
+
+    let dropdown = &window.imp().sidebar.imp().workspace_filter_dropdown;
+    dropdown.set_selected(2);
+    flush_after_delay(Duration::from_millis(300));
+    wait_until(Duration::from_secs(3), || right_section.property::<bool>("visible"));
+    right_section.expand_folders();
+
+    assert_window_workspace_row_state(&right_section, &right_file, true, true);
+}
+
+#[test]
+fn test_workspace_row_state_empty_and_no_workspace_shells_stay_neutral() {
+    let data_dir = isolated_data_dir();
+    seed_empty_folder_set_workspace();
+    let loose_file = data_dir.path().join("loose.txt");
+    fixture::write_text(&loose_file, "loose\n");
+
+    let empty_window = test_window();
+    present_window(&empty_window);
+    wait_for_workspace_sections(&empty_window, 1);
+    let empty_section = first_sidebar_section(&empty_window);
+    empty_window.open_document(&loose_file);
+    wait_until(Duration::from_secs(3), || {
+        active_editor(&empty_window).file_path().as_deref() == Some(loose_file.as_path())
+            && active_editor(&empty_window).file_size().is_some()
+    });
+    assert!(
+        empty_section.file_row_state_for_test(&loose_file).is_none(),
+        "an empty workspace should not invent row-state surfaces for files outside its tree"
+    );
+    assert!(empty_section.imp().empty_folder_set_label.is_visible());
+
+    seed_no_workspaces();
+    let no_workspace_window = test_window();
+    present_window(&no_workspace_window);
+    wait_until(Duration::from_secs(3), || {
+        no_workspace_window.imp().sidebar.imp().sections.borrow().is_empty()
+    });
+    no_workspace_window.open_document(&loose_file);
+    wait_until(Duration::from_secs(3), || {
+        active_editor(&no_workspace_window).file_path().as_deref() == Some(loose_file.as_path())
+            && active_editor(&no_workspace_window).file_size().is_some()
+    });
+    assert!(
+        no_workspace_window.imp().sidebar.imp().sections.borrow().is_empty(),
+        "no-workspace startup should stay structurally empty while tab row-state changes"
+    );
 }
 
 #[test]
