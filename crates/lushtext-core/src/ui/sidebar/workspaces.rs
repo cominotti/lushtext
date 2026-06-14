@@ -146,7 +146,11 @@ impl LushtextSidebar {
     pub(super) fn apply_workspace_filter_visibility(&self) {
         let current_scope = self.imp().current_scope.borrow().clone();
         for section in self.imp().sections.borrow().iter() {
-            section.set_visible(current_scope.includes_workspace(&section.workspace_id()));
+            let section_visible = current_scope.includes_workspace(&section.workspace_id());
+            section.set_visible(section_visible);
+            if section_visible {
+                section.sync_workspace_folder_reorder_handles();
+            }
         }
         *self.imp().applied_workspace_filter.borrow_mut() = current_scope;
     }

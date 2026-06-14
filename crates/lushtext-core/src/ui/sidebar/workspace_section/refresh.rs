@@ -331,6 +331,7 @@ impl LushtextWorkspaceSection {
         }
 
         self.schedule_top_level_folder_empty_checks(&top_level_store);
+        self.sync_workspace_folder_reorder_handles();
         true
     }
 

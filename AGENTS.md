@@ -27,7 +27,7 @@ Keep this index in sync with `.agents/rules/*.md`. When a new rule file is added
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, module-splitting, and state-grouping conventions
 - `ui.md` — UI, theming, state-extreme visibility checks, grouped-row dialog/detail readability, GSettings binding rules, Libadwaita template-validation caveats, adaptive dialog navigation, file-tree DnD/TreeExpander behavior, TextView child-anchor geometry, adaptive bottom-sheet sizing, and GTK paned geometry/animation conventions
-- `widget-wiring.md` — GTK widget composition, signal wiring, GTK Lush signal/settle helpers, declarative projection bindings, state-extreme coverage, menu popup lifecycle, tab projection state, live paned-validation, and allocation-frame animation rules
+- `widget-wiring.md` — GTK widget composition, signal wiring, GTK Lush signal/settle helpers, declarative projection bindings, factory row projection refresh, state-extreme coverage, menu popup lifecycle, tab projection state, live paned-validation, and allocation-frame animation rules
 
 ## Architecture
 

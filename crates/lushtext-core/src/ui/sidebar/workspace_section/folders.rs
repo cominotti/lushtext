@@ -43,6 +43,7 @@ impl LushtextWorkspaceSection {
         self.imp().drilldown_stack.borrow_mut().clear();
         self.imp().drilldown_header_box.set_visible(false);
         self.load_folder_model(&entries, false);
+        self.sync_workspace_folder_reorder_handles();
     }
 
     pub(super) fn load_folder_model(&self, folders: &[FolderTreeEntry], auto_expand: bool) {
@@ -88,6 +89,7 @@ impl LushtextWorkspaceSection {
         *imp.tree_model.borrow_mut() = Some(tree_model);
         self.sync_section_body_visibility();
         self.update_button_state();
+        self.sync_workspace_folder_reorder_handles();
         self.restore_folder_model_state(auto_expand);
         self.restart_workspace_watch();
     }
@@ -152,6 +154,7 @@ impl LushtextWorkspaceSection {
             self.load_folder_model(&[new_entry], false);
         }
         self.update_button_state();
+        self.sync_workspace_folder_reorder_handles();
         self.restart_workspace_watch();
     }
 
@@ -174,6 +177,7 @@ impl LushtextWorkspaceSection {
         }
 
         self.update_button_state();
+        self.sync_workspace_folder_reorder_handles();
         self.restart_workspace_watch();
     }
 
@@ -314,6 +318,7 @@ impl LushtextWorkspaceSection {
             gtk4::accessible::Property::Label(label),
             gtk4::accessible::Property::Description(description),
         ]);
+        self.sync_workspace_folder_reorder_handles();
     }
 
     /// Collapses the top-level folders of this workspace section.

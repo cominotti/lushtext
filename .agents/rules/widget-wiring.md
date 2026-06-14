@@ -31,6 +31,14 @@ binding replaces only the projection part of a handler, keep the side-effect
 handler explicit and document the split in the local audit or test when the
 ordering is easy to misread.
 
+For `GtkListView` or other factory-backed rows, bind-time projection is not
+enough when a row control depends on parent collection state that can change
+without rebinding the row. Centralize the predicate used by `connect_bind()` and
+any explicit repair path, then run a cheap synchronization over realized rows
+after membership, filter-visibility, in-place refresh, or reorder changes. Reset
+stale overlay or drop-target state in the same pass so recycled rows cannot keep
+old affordances.
+
 ## Signal And Binding Lifetimes
 
 Use `gtk_lush_signals` for GTK registration ownership that has an explicit

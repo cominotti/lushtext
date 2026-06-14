@@ -210,6 +210,19 @@ impl LushtextWorkspaceSection {
         });
     }
 
+    /// Repaint realized row drag handles after the top-level folder set changes.
+    pub(crate) fn sync_workspace_folder_reorder_handles(&self) {
+        for_each_realized_row_overlay(self, |overlay| {
+            let show_handle =
+                workspace_folder_reorder_handle_should_show_for_overlay(self, &overlay);
+            set_reorder_handle_visible(&overlay, show_handle);
+            hide_reorder_indicator(&overlay);
+            if !folder_reorder_drag_is_active() {
+                set_reorder_shield_targetable(&overlay, false);
+            }
+        });
+    }
+
     /// Resolve a drop onto a live row and emit the absolute-index reorder request.
     fn request_workspace_folder_drop_from_payload(
         &self,
@@ -345,6 +358,16 @@ impl Drop for ActiveFolderDragRestore {
     fn drop(&mut self) {
         set_active_drag(self.previous.take());
     }
+}
+
+/// Return whether one bound row has a valid workspace-folder reorder destination.
+pub(super) fn workspace_folder_reorder_handle_should_show(
+    section: &LushtextWorkspaceSection,
+    tree_row: &gtk4::TreeListRow,
+) -> bool {
+    section.imp().drilldown_stack.borrow().is_empty()
+        && section.imp().original_folders.borrow().len() > 1
+        && workspace_folder_id_for_tree_row(tree_row).is_some()
 }
 
 fn set_active_drag(payload: Option<FolderDragPayload>) {
@@ -635,6 +658,24 @@ fn for_each_realized_row_overlay(
     }
 }
 
+fn workspace_folder_reorder_handle_should_show_for_overlay(
+    section: &LushtextWorkspaceSection,
+    overlay: &gtk4::Overlay,
+) -> bool {
+    overlay
+        .child()
+        .and_downcast::<gtk4::TreeExpander>()
+        .and_then(|expander| expander.list_row())
+        .is_some_and(|tree_row| workspace_folder_reorder_handle_should_show(section, &tree_row))
+}
+
+fn set_reorder_handle_visible(overlay: &gtk4::Overlay, visible: bool) {
+    if let Some(drag_handle) = reorder_drag_handle(overlay) {
+        drag_handle.set_visible(visible);
+        drag_handle.set_sensitive(visible);
+    }
+}
+
 fn set_reorder_shield_targetable(overlay: &gtk4::Overlay, targetable: bool) {
     if let Some(shield) = reorder_shield(overlay) {
         shield.set_can_target(targetable);
@@ -676,6 +717,15 @@ fn reorder_shield(overlay: &gtk4::Overlay) -> Option<gtk4::Widget> {
         }
     }
     None
+}
+
+fn reorder_drag_handle(overlay: &gtk4::Overlay) -> Option<gtk4::Button> {
+    let expander = overlay.child().and_downcast::<gtk4::TreeExpander>()?;
+    let content_box = expander.child().and_downcast::<gtk4::Box>()?;
+    content_box
+        .first_child()
+        .and_downcast::<gtk4::Button>()
+        .filter(|button| button.has_css_class("workspace-folder-drag-handle"))
 }
 
 fn reorder_indicator_surface(overlay: &gtk4::Overlay) -> Option<gtk4::Box> {

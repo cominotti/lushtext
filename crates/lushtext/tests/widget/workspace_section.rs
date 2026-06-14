@@ -306,6 +306,50 @@ fn realized_drag_handle_for_path(
         .filter(|button| button.has_css_class("workspace-folder-drag-handle"))
 }
 
+fn realized_top_level_drag_handle_for_path(
+    section: &LushtextWorkspaceSection,
+    target_path: &Path,
+) -> Option<gtk4::Button> {
+    let mut child = section.imp().file_tree_view.first_child();
+    while let Some(row_widget) = child {
+        if let Some(overlay) = row_widget.first_child().and_downcast::<gtk4::Overlay>()
+            && let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>()
+            && let Some(tree_row) = expander.list_row()
+            && tree_row.depth() == 0
+            && let Some(item) = tree_row.item().and_downcast::<FileTreeItem>()
+            && item.path().as_deref() == Some(target_path)
+            && let Some(content_box) = expander.child().and_downcast::<gtk4::Box>()
+            && let Some(drag_handle) = content_box.first_child().and_downcast::<gtk4::Button>()
+            && drag_handle.has_css_class("workspace-folder-drag-handle")
+        {
+            return Some(drag_handle);
+        }
+        child = row_widget.next_sibling();
+    }
+    None
+}
+
+fn assert_reorder_handle_visible(
+    section: &LushtextWorkspaceSection,
+    target_path: &Path,
+    expected_visible: bool,
+) {
+    let handle = realized_top_level_drag_handle_for_path(section, target_path)
+        .expect("realized top-level row should have the recycled reorder-handle widget");
+    assert_eq!(
+        handle.is_visible(),
+        expected_visible,
+        "unexpected reorder-handle visibility for {}",
+        target_path.display()
+    );
+    assert_eq!(
+        handle.is_sensitive(),
+        expected_visible,
+        "reorder-handle sensitivity should track visibility for {}",
+        target_path.display()
+    );
+}
+
 fn realized_drop_target_for_path(
     section: &LushtextWorkspaceSection,
     target_path: &Path,
@@ -728,6 +772,139 @@ fn test_workspace_folder_reorder_handle_only_shows_when_folder_can_move() {
         two_folder_handle.has_css_class("workspace-folder-drag-handle"),
         "the handle should carry a stable style hook for DnD presentation"
     );
+}
+
+#[test]
+fn test_workspace_folder_reorder_handles_update_on_live_membership_changes() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("live-membership"));
+    section.load_workspace_folders(&[]);
+    let window = present_section_window(&section);
+    assert!(
+        section
+            .imp()
+            .empty_folder_set_label
+            .property::<bool>("visible"),
+        "empty workspaces should show their empty folder-set state"
+    );
+    assert!(section.imp().header_box.property::<bool>("visible"));
+    assert!(
+        section.imp().add_folder_button.width() > 0 && section.imp().refresh_button.width() > 0,
+        "empty workspaces should keep header actions reachable"
+    );
+    assert_eq!(visible_reorder_drop_target_count(&section), 0);
+
+    let first = tempfile::tempdir().expect("first folder");
+    let second = tempfile::tempdir().expect("second folder");
+    let first_id = WorkspaceFolderId::new("first");
+    let second_id = WorkspaceFolderId::new("second");
+
+    section.add_workspace_folder(&first_id, first.path());
+    wait_until(Duration::from_secs(5), || {
+        top_level_workspace_folder_ids(&section) == ["first".to_string()]
+            && realized_drag_handle_for_path(&section, first.path()).is_some()
+    });
+    assert_reorder_handle_visible(&section, first.path(), false);
+    assert!(
+        !section
+            .imp()
+            .empty_folder_set_label
+            .property::<bool>("visible"),
+        "the first folder should replace the empty state with the tree body"
+    );
+    assert!(
+        realized_reorder_shield_for_path(&section, first.path())
+            .is_some_and(|shield| !shield.can_target()),
+        "reorder shields should stay inert when there is no active drag"
+    );
+
+    section.add_workspace_folder(&second_id, second.path());
+    wait_until(Duration::from_secs(5), || {
+        top_level_workspace_folder_ids(&section) == ["first".to_string(), "second".to_string()]
+            && realized_drag_handle_for_path(&section, second.path())
+                .is_some_and(|handle| handle.is_visible())
+            && realized_drag_handle_for_path(&section, first.path())
+                .is_some_and(|handle| handle.is_visible())
+    });
+    assert_reorder_handle_visible(&section, first.path(), true);
+    assert_reorder_handle_visible(&section, second.path(), true);
+
+    section.with_active_workspace_folder_reorder_drag_for_test(&first_id, || {
+        let hover = section.simulate_workspace_folder_reorder_hover_after_for_test(second.path());
+        assert!(
+            hover.shows_indicator,
+            "valid hover should establish insertion feedback before removal"
+        );
+        assert_eq!(visible_reorder_drop_target_count(&section), 1);
+
+        section.remove_workspace_folder(&second_id, second.path());
+        flush_events();
+        assert_eq!(top_level_workspace_folder_ids(&section), ["first".to_string()]);
+        assert_eq!(
+            visible_reorder_drop_target_count(&section),
+            0,
+            "membership sync should clear stale insertion feedback"
+        );
+    });
+
+    assert_reorder_handle_visible(&section, first.path(), false);
+    assert!(
+        realized_reorder_shield_for_path(&section, first.path())
+            .is_some_and(|shield| !shield.can_target()),
+        "the remaining one-folder row should leave its shield inert after the drag ends"
+    );
+
+    section.remove_workspace_folder(&first_id, first.path());
+    wait_until(Duration::from_secs(5), || {
+        top_level_workspace_folder_ids(&section).is_empty()
+            && section
+                .imp()
+                .empty_folder_set_label
+                .property::<bool>("visible")
+    });
+    assert_eq!(visible_reorder_drop_target_count(&section), 0);
+    assert!(
+        section.imp().header_box.property::<bool>("visible"),
+        "removing every folder should leave the workspace header reachable"
+    );
+    assert!(
+        !section
+            .imp()
+            .inner_scrolled_window
+            .property::<bool>("visible"),
+        "empty workspace state should not leave a fake tree body visible"
+    );
+
+    drop(window);
+}
+
+#[test]
+fn test_workspace_folder_reorder_handles_update_after_hidden_membership_change() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("hidden-membership"));
+    let first = tempfile::tempdir().expect("first folder");
+    let second = tempfile::tempdir().expect("second folder");
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("first"),
+        first.path().to_path_buf(),
+    )]);
+    let window = present_section_window(&section);
+    assert_reorder_handle_visible(&section, first.path(), false);
+
+    section.set_visible(false);
+    section.add_workspace_folder(&WorkspaceFolderId::new("second"), second.path());
+    flush_events();
+    section.set_visible(true);
+
+    wait_until(Duration::from_secs(5), || {
+        top_level_workspace_folder_ids(&section) == ["first".to_string(), "second".to_string()]
+            && realized_drag_handle_for_path(&section, first.path()).is_some()
+            && realized_drag_handle_for_path(&section, second.path()).is_some()
+    });
+    assert_reorder_handle_visible(&section, first.path(), true);
+    assert_reorder_handle_visible(&section, second.path(), true);
+
+    drop(window);
 }
 
 #[test]
@@ -2216,6 +2393,7 @@ fn test_refresh_reconciles_top_level_rows_without_losing_folder_ids() {
         WorkspaceFolder::with_id(WorkspaceFolderId::new("second"), second.path().to_path_buf()),
         WorkspaceFolder::with_id(WorkspaceFolderId::new("third"), third.path().to_path_buf()),
     ]);
+    let window = present_section_window(&section);
 
     *section.imp().original_folders.borrow_mut() = vec![
         FolderTreeEntry::Directory {
@@ -2238,6 +2416,11 @@ fn test_refresh_reconciles_top_level_rows_without_losing_folder_ids() {
                 "third".to_string(),
             ]
     });
+    assert_reorder_handle_visible(&section, second.path(), true);
+    assert_reorder_handle_visible(&section, first.path(), true);
+    assert_reorder_handle_visible(&section, third.path(), true);
+
+    drop(window);
 }
 
 #[test]
@@ -2389,6 +2572,8 @@ fn test_overlapping_workspace_folders_render_literal_duplicate_file_rows() {
         top_level_workspace_folder_ids(&section),
         ["parent".to_string(), "child".to_string()]
     );
+    assert_reorder_handle_visible(&section, parent.path(), true);
+    assert_reorder_handle_visible(&section, &child, true);
 }
 
 #[test]
@@ -2695,6 +2880,17 @@ fn test_workspace_body_collapse_survives_section_model_reload() {
         "ordinary section reloads should preserve the workspace body collapse state"
     );
     assert!(section.has_folders());
+
+    section.set_section_body_collapsed(false);
+    let window = present_section_window(&section);
+    wait_until(Duration::from_secs(5), || {
+        realized_drag_handle_for_path(&section, first.path()).is_some()
+            && realized_drag_handle_for_path(&section, second.path()).is_some()
+    });
+    assert_reorder_handle_visible(&section, first.path(), true);
+    assert_reorder_handle_visible(&section, second.path(), true);
+
+    drop(window);
 }
 
 #[test]

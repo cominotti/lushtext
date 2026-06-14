@@ -592,12 +592,9 @@ impl LushtextWorkspaceSection {
                     focus_btn.set_visible(false);
                 }
 
-                let show_reorder_handle = tree_row.depth() == 0
-                    && file_item.workspace_folder_id().is_some()
-                    && section_weak.upgrade().is_some_and(|section| {
-                        section.imp().drilldown_stack.borrow().is_empty()
-                            && section.imp().original_folders.borrow().len() > 1
-                    });
+                let show_reorder_handle = section_weak.upgrade().is_some_and(|section| {
+                    super::dnd::workspace_folder_reorder_handle_should_show(&section, &tree_row)
+                });
                 drag_handle.set_visible(show_reorder_handle);
                 drag_handle.set_sensitive(show_reorder_handle);
 
