@@ -65,6 +65,41 @@
   </screenshots>
 
   <releases>
+    <release version="0.3.0" date="2026-06-14">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Wikisource, "The Poems of Oscar Wilde/Symphony in Yellow" from The Poems of Oscar Wilde (1909), first printed stanza.</p>
+        <p>Selection: Complete first stanza.</p>
+        <p>Complete stanza:</p>
+        <p>&gt; An omnibus across the bridge</p>
+        <p>&gt; Crawls like a yellow butterfly,</p>
+        <p>&gt; And, here and there, a passer-by</p>
+        <p>&gt; Shows like a little restless midge.</p>
+        <p>Oscar Wilde, "Symphony in Yellow"</p>
+        <p>## What's Changed</p>
+        <p>LushText workspaces are now named, ordered folder sets instead of one-folder roots. You can create an empty workspace by name, add one or more folders afterward, reorder top-level folders without moving anything on disk, collapse busy workspace sections, and keep overlapping folders visible in the sidebar while search, the command palette, notes, and bookmarks de-duplicate results by file identity.</p>
+        <p>The app-data safety story is much stronger. LushText now has a startup format preflight, a `Preferences &gt; Data` status page, backup-before-replacement behavior for future format upgrades or Start Fresh decisions, recovery quarantine for damaged metadata, retryable migration ledgers after in-app renames, and clearer diagnostics when session, draft, sidecar, local-history, search, or Replace All evidence cannot be fully trusted.</p>
+        <p>Saving and Replace All now share more of the same durable filesystem contract. Writes coordinate by stable target, preserve symlink-backed saves by updating the resolved file, distinguish ordinary write failures from durability-unconfirmed writes, and keep Replace All undo evidence in per-file durable journals with safety caps for large or actively changing files.</p>
+        <p>The workspace sidebar is easier to read while you work. Sticky click selection no longer pretends that a row is special, open files and the active tab now have explicit row indicators, reorder handles refresh after sidebar mutations, zero-folder workspaces have clearer empty states, and the workspace sidebar plus document properties pane now share a calmer side-rail style.</p>
+        <p>Several everyday editor surfaces received polish: the bottom status bar is more legible without becoming a second toolbar, the minimap behaves more steadily during sidebar animation and dense viewport changes, inline alerts sit more naturally in the editor, and Markdown preview now handles reference-style and markdown-it-style inline footnotes more faithfully.</p>
+        <p>Maintainers and automation users get a larger proof surface. LushText now exposes a documented read-only D-Bus automation snapshot, a machine-readable action catalog, reusable automation client commands, visual/crash/portal/accessibility/performance smoke lanes, GTK Lush proof tooling, Blueprint template checks, mutation testing, and release-lane fixes for Flatpak and Flathub handoff workflows.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for normal users upgrading from v0.2.0.</p>
+        <p>If you are building LushText from source, update to Rust 1.96.0 or newer and install `blueprint-compiler` before regenerating UI templates. Maintainers should still confirm whether the release workflow deploys the Cominotti Flatpak repository directly or uploads the `cominotti-flatpak-repository` artifact for manual publication, and should review any optional Flathub pull request before merging it.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>Workspace notes are now presented as folder notes. Existing legacy `workspace-notes/` sidecars remain recognized as compatibility data, but new user-facing labels and current storage use folder-note terminology.</p>
+        <p>Public-era v1 app metadata is expected to continue normally. Older pre-public or unsupported bare JSON metadata is not silently treated as current data; LushText preserves it through recovery or format-upgrade backup paths before starting fresh or writing a current replacement.</p>
+        <p>Future-version app metadata written by a newer LushText cannot be downgraded by this release. If that state is detected at startup, the safest choice is to quit and reopen it with the newer app; Start Fresh is available only after preservation succeeds.</p>
+        <p>The minimap and Replace All safety limits remain intentionally conservative for very large or rapidly changing files. LushText may hide expensive minimap details, skip files that changed after search, or refuse undo payloads that exceed configured safety bounds to protect responsiveness and user data.</p>
+        <p>Snap packaging remains preparation-only until its external store and GNOME platform gates are ready. The Flatpak continues to use full filesystem access for local workspace editing and does not move to portals-only file access in this release.</p>
+        <p>## Bug Fixes</p>
+        <p>Workspace folder reorder handles now resync after folder add, remove, reorder, refresh, and row-recycling transitions, so drag affordances do not go stale while the sidebar changes around them.</p>
+        <p>Minimap viewport diagnostics, marker placement, overscroll handling, and sidebar animation interactions are steadier, reducing visual drift and layout surprises in dense documents and constrained windows.</p>
+        <p>Replace All undo recovery is more robust after partial failures, and modified or actively saving tabs are skipped more consistently instead of being overwritten by a broad replace operation.</p>
+        <p>Recovery metadata handling now preserves malformed, oversized, unreadable, unsupported, or unsafe app-owned state before defaults or repairs are written, reducing the chance that a startup recovery problem becomes silent data loss.</p>
+        <p>The release lane includes fixes for the Cominotti Flatpak workflow, Flathub runtime remote setup, trusted workspace handling in container jobs, and recovery-ref reruns when publication tooling needs to be repaired after a public tag exists.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-06-01">
       <description>
         <p>## Poetic Opening</p>
