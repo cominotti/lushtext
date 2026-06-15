@@ -308,7 +308,7 @@ fn validate_visual_scenario(value: &Value) -> Result<(), ValidationError> {
                 ));
             }
         }
-        "command-palette-overlay" => {}
+        "command-palette-overlay" | "open-popover" => {}
         other => {
             return Err(ValidationError::malformed(format!(
                 "unsupported scenario_type {other}"
@@ -504,6 +504,7 @@ impl VisualScenarioManifest {
         match self.scenario_type.as_str() {
             "minimap-sidebar" => self.minimap_sidebar_cases(manifest_value),
             "command-palette-overlay" => self.command_palette_cases(manifest_value),
+            "open-popover" => self.open_popover_cases(manifest_value),
             _ => Ok(Vec::new()),
         }
     }
@@ -598,6 +599,41 @@ impl VisualScenarioManifest {
                     viewport_position: None,
                     fixture_kind: Some("plain-lines".to_string()),
                 });
+            }
+        }
+        Ok(cases)
+    }
+
+    fn open_popover_cases(
+        &self,
+        manifest_value: &Value,
+    ) -> Result<Vec<ExpandedCaseOverview>, ValidationError> {
+        let fixture_kinds = default_when_empty(&self.matrix.fixture_kinds, "dense");
+        let mut cases = Vec::new();
+        for size in &self.matrix.sizes {
+            for color_scheme in &self.matrix.color_schemes {
+                for fixture_kind in &fixture_kinds {
+                    let case_id = format!(
+                        "{}--{}--{}--{}",
+                        self.scenario_id, size.id, color_scheme, fixture_kind
+                    );
+                    cases.push(ExpandedCaseOverview {
+                        schema_version: SUPPORTED_SCHEMA_VERSION,
+                        case_id: case_id.clone(),
+                        manifest: manifest_value.clone(),
+                        size: serde_json::to_value(size).map_err(|error| {
+                            ValidationError::malformed(format!(
+                                "case size serialization failed: {error}"
+                            ))
+                        })?,
+                        color_scheme: color_scheme.clone(),
+                        artifact_dir: case_id,
+                        word_wrap: Some(false),
+                        direction: Some("open".to_string()),
+                        viewport_position: None,
+                        fixture_kind: Some(fixture_kind.clone()),
+                    });
+                }
             }
         }
         Ok(cases)

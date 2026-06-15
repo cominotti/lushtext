@@ -51,7 +51,7 @@ pub(crate) struct RuntimeLayout {
 impl RuntimeLayout {
     /// Create runtime, data, config, and cache directories under the artifact root.
     pub(crate) fn prepare(artifact_dir: &Path) -> Result<Self, String> {
-        let root = artifact_dir.join("runtime");
+        let root = absolute_for_hash(&artifact_dir.join("runtime"))?;
         let runtime_dir = runtime_dir_for_artifact(artifact_dir, &root)?;
         let data_dir = root.join("data");
         let config_dir = root.join("config");
@@ -416,6 +416,7 @@ mod tests {
             &layout.config_dir,
             &layout.cache_dir,
         ] {
+            assert!(dir.is_absolute(), "{} is absolute", dir.display());
             assert!(dir.is_dir(), "{} exists", dir.display());
         }
         #[cfg(unix)]

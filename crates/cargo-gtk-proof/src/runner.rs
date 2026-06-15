@@ -1092,6 +1092,44 @@ fn evaluate_allowed_region_relationships(
                 surface_box(after_snapshot, "active-transient").map(|_| ()),
             );
         }
+        "open-popover" => {
+            push_relationship(
+                &mut rows,
+                &mut status,
+                "active-transient-visible",
+                surface_box(after_snapshot, "active-transient").map(|_| ()),
+            );
+            push_relationship(
+                &mut rows,
+                &mut status,
+                "open-popover-search-visible",
+                surface_box(after_snapshot, "open-popover-search").map(|_| ()),
+            );
+            push_relationship(
+                &mut rows,
+                &mut status,
+                "open-popover-chooser-visible",
+                surface_box(after_snapshot, "open-popover-chooser").map(|_| ()),
+            );
+            push_relationship(
+                &mut rows,
+                &mut status,
+                "open-popover-content-state",
+                open_popover_content_relationship(case, after_snapshot),
+            );
+            push_relationship(
+                &mut rows,
+                &mut status,
+                "open-popover-fits-viewport",
+                open_popover_fits_viewport(case, after_snapshot),
+            );
+            push_relationship(
+                &mut rows,
+                &mut status,
+                "header-open-precedes-new-tab",
+                header_open_precedes_new_tab(after_snapshot),
+            );
+        }
         _ => {
             push_relationship(
                 &mut rows,
@@ -1121,6 +1159,66 @@ fn push_relationship(
             *status = "failed";
             rows.push(json!({"name": name, "status": "failed", "detail": error}));
         }
+    }
+}
+
+fn header_open_precedes_new_tab(snapshot: &Value) -> Result<(), String> {
+    let header = surface_box(snapshot, "header-bar")?;
+    let open = surface_box(snapshot, "header-open-menu-button")?;
+    let new_tab = surface_box(snapshot, "header-new-tab-button")?;
+    let open_right = open.x + open.width;
+    let new_right = new_tab.x + new_tab.width;
+    let header_right = header.x + header.width;
+
+    if open.x < header.x || new_right > header_right {
+        return Err(format!(
+            "header buttons exceed header bounds: header={header:?} open={open:?} new_tab={new_tab:?}"
+        ));
+    }
+    if open_right > new_tab.x {
+        return Err(format!(
+            "Open button should be before New Tab without overlap: open={open:?} new_tab={new_tab:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn open_popover_content_relationship(case: &Value, snapshot: &Value) -> Result<(), String> {
+    match case
+        .get("fixture_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("dense")
+    {
+        "empty" => surface_box(snapshot, "open-popover-empty-state").map(|_| ()),
+        "dense" | "awkward" => {
+            let list = surface_box(snapshot, "open-popover-recent-list")?;
+            if (532..=548).contains(&list.height) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "open-popover-recent-list height {} did not match the 10-row viewport",
+                    list.height
+                ))
+            }
+        }
+        _ => surface_box(snapshot, "open-popover-recent-list").map(|_| ()),
+    }
+}
+
+fn open_popover_fits_viewport(case: &Value, snapshot: &Value) -> Result<(), String> {
+    let popover = surface_box(snapshot, "open-popover")?;
+    let height = case
+        .get("size")
+        .and_then(|size| size.get("height"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "open-popover case is missing size.height".to_string())?;
+    if popover.y >= 0 && popover.y + popover.height <= height {
+        Ok(())
+    } else {
+        Err(format!(
+            "open-popover rect y={} height={} exceeds viewport height {}",
+            popover.y, popover.height, height
+        ))
     }
 }
 
@@ -1847,6 +1945,7 @@ fn write_fixture(case: &model::ExpandedCaseOverview, case_dir: &Path) -> Result<
     let path = fixture_dir.join(format!("{}.{}", case.case_id, extension));
     let text = match case.scenario_type() {
         Some("minimap-sidebar") => minimap_fixture_text(case),
+        Some("open-popover") => "Open popover visual geometry fixture\n".to_string(),
         _ => "Command palette visual geometry fixture\n".to_string(),
     };
     std::fs::write(&path, text)
@@ -2295,6 +2394,39 @@ mod tests {
                 .expect_err("non-compact overlay is rejected")
                 .contains("outside compact width")
         );
+    }
+
+    #[test]
+    fn header_open_precedes_new_tab_requires_open_left_of_new_button() {
+        let valid = runner_header_snapshot(4, 18, 40);
+        let overlapping = runner_header_snapshot(20, 18, 40);
+        let clipped = runner_header_snapshot(4, 34, 40);
+
+        assert!(header_open_precedes_new_tab(&valid).is_ok());
+        assert!(
+            header_open_precedes_new_tab(&overlapping)
+                .expect_err("overlapping controls should fail")
+                .contains("before New Tab")
+        );
+        assert!(
+            header_open_precedes_new_tab(&clipped)
+                .expect_err("clipped controls should fail")
+                .contains("exceed header bounds")
+        );
+    }
+
+    fn runner_header_snapshot(open_x: i64, new_x: i64, header_width: i64) -> serde_json::Value {
+        serde_json::json!({
+            "window": {
+                "visual_geometry": {
+                    "surfaces": [
+                        surface_row("header-bar", 0, 0, header_width, 12),
+                        surface_row("header-open-menu-button", open_x, 2, 12, 8),
+                        surface_row("header-new-tab-button", new_x, 2, 8, 8)
+                    ]
+                }
+            }
+        })
     }
 
     fn surface_row(name: &str, x: i64, y: i64, width: i64, height: i64) -> serde_json::Value {

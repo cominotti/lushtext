@@ -296,8 +296,8 @@ for recovery metadata, quarantine, migration-ledger, and crash-smoke triage.
 
 ## First Run
 
-1. Open a file with `Ctrl+O`, from the header-bar open button, or by launching
-   `lushtext PATH`.
+1. Open a file with `Ctrl+O`, search recent documents from the header-bar Open
+   button or `Ctrl+K`, or launch `lushtext PATH`.
 2. Add a workspace folder from the left sidebar to browse a project directory.
 3. Use the workspace selector to choose `All workspaces` or one specific workspace.
 4. Open the command palette with `Ctrl+Shift+P` to search files and commands.
@@ -415,6 +415,7 @@ The full shortcut list is available in **Main Menu > Keyboard Shortcuts**.
 |----------|----------|
 | New file | `Ctrl+N` |
 | Open file | `Ctrl+O` |
+| Open recent documents | `Ctrl+K` |
 | Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
 | Close tab | `Ctrl+W` |
 | Print | `Ctrl+P` |
@@ -752,6 +753,7 @@ lushtext-core/src/
     workspace.rs     Workspace persistence model
     session.rs       Tab session model
     palette.rs       Command palette types
+    recent_document.rs App-owned recent-document history rows
     draft.rs         Draft persistence metadata
     note.rs          Shared note-body primitives
     bookmark.rs      Bookmark sidecar model
@@ -772,6 +774,7 @@ lushtext-core/src/
     note_storage.rs  Shared sidecar identity/load/filter helpers for note workflows
     content_search/  Parallel workspace grep plus replace/undo helpers
     palette/         Command registry, SIMD fuzzy search, and file indexing
+    recent_documents.rs App-owned recent-document load/save/search helpers
     durable_write.rs Private crash-durable write state machine over the filesystem backend
     editor_io.rs     Encoding-aware text file load/save helpers, health analysis, and mtimes
     editorconfig.rs  .editorconfig resolution
@@ -791,12 +794,13 @@ lushtext-core/src/
     workspace_watch.rs  Materialized-scope filesystem watch service for sidebar auto-refresh
   ui/                GTK4/Libadwaita widgets
     automation.rs    App-owned read-only D-Bus automation adapter and snapshot collection
-    window/          Main window shell plus actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, startup data preflight, session persistence, tab management, transient-surface dismissal, print, and zoom wiring
+    window/          Main window shell plus actions, documents, drafts, encoding, Focus Mode, local-history, notes, recent Open popover integration, search, preview, startup data preflight, session persistence, tab management, transient-surface dismissal, print, and zoom wiring
     editor_page/     GtkSourceView tab plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark projection, load/save, monitor, and in-tab search helpers
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows
     command_palette/ Ctrl+P fuzzy search
+    open_popover/    Ctrl+K recent-document Open popover
     search_bar/      Find/replace
     status_bar/      Bottom bar
     info_bar/        Contextual warnings

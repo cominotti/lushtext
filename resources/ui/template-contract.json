@@ -982,6 +982,360 @@
         }
       ]
     },
+    "open-popover.ui": {
+      "accessibility": [],
+      "child_roles": [
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/6:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/7:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/2:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/6:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/7:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child",
+          "type": ""
+        }
+      ],
+      "layout_properties": [],
+      "menu_attributes": [],
+      "menus": [],
+      "objects": [
+        {
+          "class": "GtkBox",
+          "id": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox"
+        },
+        {
+          "class": "GtkBox",
+          "id": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox"
+        },
+        {
+          "class": "GtkSearchEntry",
+          "id": "search_entry",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/6:child/0:object:GtkSearchEntry#search_entry"
+        },
+        {
+          "class": "GtkButton",
+          "id": "chooser_button",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/7:child/0:object:GtkButton#chooser_button"
+        },
+        {
+          "class": "GtkSeparator",
+          "id": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/2:child/0:object:GtkSeparator"
+        },
+        {
+          "class": "GtkStack",
+          "id": "stack",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack"
+        },
+        {
+          "class": "GtkBox",
+          "id": "empty_state",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state"
+        },
+        {
+          "class": "GtkImage",
+          "id": "",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/6:child/0:object:GtkImage"
+        },
+        {
+          "class": "GtkLabel",
+          "id": "empty_title",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/7:child/0:object:GtkLabel#empty_title"
+        },
+        {
+          "class": "GtkScrolledWindow",
+          "id": "recent_scroller",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#recent_scroller"
+        },
+        {
+          "class": "GtkListView",
+          "id": "list_view",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#recent_scroller/8:property/0:object:GtkListView#list_view"
+        }
+      ],
+      "properties": [
+        {
+          "context": "",
+          "name": "halign",
+          "path": "0:template:LushtextOpenPopover/0:property",
+          "translatable": "",
+          "value": "1"
+        },
+        {
+          "context": "",
+          "name": "valign",
+          "path": "0:template:LushtextOpenPopover/1:property",
+          "translatable": "",
+          "value": "2"
+        },
+        {
+          "context": "",
+          "name": "width-request",
+          "path": "0:template:LushtextOpenPopover/2:property",
+          "translatable": "",
+          "value": "350"
+        },
+        {
+          "context": "",
+          "name": "orientation",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/0:property",
+          "translatable": "",
+          "value": "1"
+        },
+        {
+          "context": "",
+          "name": "orientation",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/0:property",
+          "translatable": "",
+          "value": "0"
+        },
+        {
+          "context": "",
+          "name": "margin-top",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/2:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "margin-bottom",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/3:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "margin-start",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/4:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "margin-end",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/5:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "hexpand",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/6:child/0:object:GtkSearchEntry#search_entry/0:property",
+          "translatable": "",
+          "value": "true"
+        },
+        {
+          "context": "",
+          "name": "placeholder-text",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/6:child/0:object:GtkSearchEntry#search_entry/1:property",
+          "translatable": "yes",
+          "value": "Search documents"
+        },
+        {
+          "context": "",
+          "name": "icon-name",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/7:child/0:object:GtkButton#chooser_button/0:property",
+          "translatable": "",
+          "value": "document-open-symbolic"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/7:child/0:object:GtkButton#chooser_button/1:property",
+          "translatable": "yes",
+          "value": "Open New Document"
+        },
+        {
+          "context": "",
+          "name": "orientation",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/2:child/0:object:GtkSeparator/0:property",
+          "translatable": "",
+          "value": "0"
+        },
+        {
+          "context": "",
+          "name": "orientation",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/0:property",
+          "translatable": "",
+          "value": "1"
+        },
+        {
+          "context": "",
+          "name": "margin-start",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/2:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "margin-top",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/3:property",
+          "translatable": "",
+          "value": "36"
+        },
+        {
+          "context": "",
+          "name": "margin-bottom",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/4:property",
+          "translatable": "",
+          "value": "36"
+        },
+        {
+          "context": "",
+          "name": "margin-end",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "icon-name",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/6:child/0:object:GtkImage/0:property",
+          "translatable": "",
+          "value": "document-open-recent-symbolic"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/7:child/0:object:GtkLabel#empty_title/0:property",
+          "translatable": "yes",
+          "value": "No Recent Documents"
+        },
+        {
+          "context": "",
+          "name": "hexpand",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#recent_scroller/0:property",
+          "translatable": "",
+          "value": "true"
+        },
+        {
+          "context": "",
+          "name": "vexpand",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#recent_scroller/1:property",
+          "translatable": "",
+          "value": "true"
+        },
+        {
+          "context": "",
+          "name": "min-content-width",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#recent_scroller/2:property",
+          "translatable": "",
+          "value": "250"
+        },
+        {
+          "context": "",
+          "name": "hscrollbar-policy",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#recent_scroller/4:property",
+          "translatable": "",
+          "value": "2"
+        },
+        {
+          "context": "",
+          "name": "vscrollbar-policy",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#recent_scroller/5:property",
+          "translatable": "",
+          "value": "1"
+        },
+        {
+          "context": "",
+          "name": "propagate-natural-height",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#recent_scroller/6:property",
+          "translatable": "",
+          "value": "true"
+        },
+        {
+          "context": "",
+          "name": "propagate-natural-width",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#recent_scroller/7:property",
+          "translatable": "",
+          "value": "false"
+        }
+      ],
+      "roots": [
+        {
+          "class": "LushtextOpenPopover",
+          "parent": "GtkPopover",
+          "path": "0:template:LushtextOpenPopover",
+          "tag": "template"
+        }
+      ],
+      "style_classes": [
+        {
+          "name": "open-popover",
+          "path": "0:template:LushtextOpenPopover/3:style/0:class"
+        },
+        {
+          "name": "dim-label",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/6:child/0:object:GtkImage/2:style/0:class"
+        },
+        {
+          "name": "dim-label",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/7:child/0:object:GtkLabel#empty_title/1:style/0:class"
+        },
+        {
+          "name": "open-popover-empty-title",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/7:child/0:object:GtkLabel#empty_title/1:style/1:class"
+        }
+      ],
+      "translations": [
+        {
+          "context": "",
+          "name": "placeholder-text",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/6:child/0:object:GtkSearchEntry#search_entry/1:property",
+          "value": "Search documents"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/1:child/0:object:GtkBox/7:child/0:object:GtkButton#chooser_button/1:property",
+          "value": "Open New Document"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/7:child/0:object:GtkLabel#empty_title/0:property",
+          "value": "No Recent Documents"
+        }
+      ]
+    },
     "preferences.ui": {
       "accessibility": [],
       "child_roles": [
@@ -4164,6 +4518,11 @@
         },
         {
           "internal-child": "",
+          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/13:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child",
           "type": ""
         },
@@ -4303,6 +4662,11 @@
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/12:child/0:object:GtkShortcutsShortcut"
         },
         {
+          "class": "GtkShortcutsShortcut",
+          "id": "",
+          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/13:child/0:object:GtkShortcutsShortcut"
+        },
+        {
           "class": "GtkShortcutsGroup",
           "id": "",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup"
@@ -4397,68 +4761,75 @@
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut/0:property",
           "translatable": "yes",
-          "value": "Save"
+          "value": "Open Recent Documents"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut/0:property",
           "translatable": "yes",
-          "value": "Save As"
+          "value": "Save"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/5:child/0:object:GtkShortcutsShortcut/0:property",
           "translatable": "yes",
-          "value": "Local History"
+          "value": "Save As"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/6:child/0:object:GtkShortcutsShortcut/0:property",
           "translatable": "yes",
-          "value": "Close Tab"
+          "value": "Local History"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/7:child/0:object:GtkShortcutsShortcut/0:property",
           "translatable": "yes",
-          "value": "Print"
+          "value": "Close Tab"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/8:child/0:object:GtkShortcutsShortcut/0:property",
           "translatable": "yes",
-          "value": "Command Palette"
+          "value": "Print"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/9:child/0:object:GtkShortcutsShortcut/0:property",
           "translatable": "yes",
-          "value": "Toggle Minimap"
+          "value": "Command Palette"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/10:child/0:object:GtkShortcutsShortcut/0:property",
           "translatable": "yes",
-          "value": "Document Properties"
+          "value": "Toggle Minimap"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/11:child/0:object:GtkShortcutsShortcut/0:property",
           "translatable": "yes",
-          "value": "Fullscreen"
+          "value": "Document Properties"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/12:child/0:object:GtkShortcutsShortcut/0:property",
+          "translatable": "yes",
+          "value": "Fullscreen"
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/13:child/0:object:GtkShortcutsShortcut/0:property",
           "translatable": "yes",
           "value": "Focus Mode"
         },
@@ -4572,60 +4943,66 @@
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut/0:property",
-          "value": "Save"
+          "value": "Open Recent Documents"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut/0:property",
-          "value": "Save As"
+          "value": "Save"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/5:child/0:object:GtkShortcutsShortcut/0:property",
-          "value": "Local History"
+          "value": "Save As"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/6:child/0:object:GtkShortcutsShortcut/0:property",
-          "value": "Close Tab"
+          "value": "Local History"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/7:child/0:object:GtkShortcutsShortcut/0:property",
-          "value": "Print"
+          "value": "Close Tab"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/8:child/0:object:GtkShortcutsShortcut/0:property",
-          "value": "Command Palette"
+          "value": "Print"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/9:child/0:object:GtkShortcutsShortcut/0:property",
-          "value": "Toggle Minimap"
+          "value": "Command Palette"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/10:child/0:object:GtkShortcutsShortcut/0:property",
-          "value": "Document Properties"
+          "value": "Toggle Minimap"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/11:child/0:object:GtkShortcutsShortcut/0:property",
-          "value": "Fullscreen"
+          "value": "Document Properties"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/12:child/0:object:GtkShortcutsShortcut/0:property",
+          "value": "Fullscreen"
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/13:child/0:object:GtkShortcutsShortcut/0:property",
           "value": "Focus Mode"
         },
         {
@@ -5497,6 +5874,26 @@
         },
         {
           "internal-child": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage/1:property/0:object:GtkBox/1:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage/1:property/0:object:GtkBox/2:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/2:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
           "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child",
           "type": "start"
         },
@@ -6083,14 +6480,54 @@
           "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar"
         },
         {
-          "class": "GtkButton",
-          "id": "new_tab_button",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkButton#new_tab_button"
+          "class": "GtkMenuButton",
+          "id": "open_menu_button",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button"
+        },
+        {
+          "class": "LushtextOpenPopover",
+          "id": "open_popover",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/1:property/0:object:LushtextOpenPopover#open_popover"
+        },
+        {
+          "class": "GtkStack",
+          "id": "open_button_stack",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack"
+        },
+        {
+          "class": "GtkStackPage",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage"
+        },
+        {
+          "class": "GtkBox",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage/1:property/0:object:GtkBox"
+        },
+        {
+          "class": "GtkLabel",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage/1:property/0:object:GtkBox/1:child/0:object:GtkLabel"
+        },
+        {
+          "class": "GtkImage",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage/1:property/0:object:GtkBox/2:child/0:object:GtkImage"
+        },
+        {
+          "class": "GtkStackPage",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/2:child/0:object:GtkStackPage"
+        },
+        {
+          "class": "GtkImage",
+          "id": "",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkImage"
         },
         {
           "class": "GtkButton",
-          "id": "open_button",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child/0:object:GtkButton#open_button"
+          "id": "new_tab_button",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child/0:object:GtkButton#new_tab_button"
         },
         {
           "class": "AdwWindowTitle",
@@ -6346,45 +6783,52 @@
         },
         {
           "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/0:property",
+          "translatable": "yes",
+          "value": "Recently Used Documents"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage/1:property/0:object:GtkBox/1:child/0:object:GtkLabel/0:property",
+          "translatable": "yes",
+          "value": "_Open"
+        },
+        {
+          "context": "",
           "name": "icon-name",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkButton#new_tab_button/0:property",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage/1:property/0:object:GtkBox/2:child/0:object:GtkImage/0:property",
+          "translatable": "",
+          "value": "pan-down-symbolic"
+        },
+        {
+          "context": "",
+          "name": "icon-name",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkImage/0:property",
+          "translatable": "",
+          "value": "folder-symbolic"
+        },
+        {
+          "context": "",
+          "name": "icon-name",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child/0:object:GtkButton#new_tab_button/0:property",
           "translatable": "",
           "value": "tab-new-symbolic"
         },
         {
           "context": "",
           "name": "tooltip-text",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkButton#new_tab_button/1:property",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child/0:object:GtkButton#new_tab_button/1:property",
           "translatable": "yes",
           "value": "New File"
         },
         {
           "context": "",
           "name": "action-name",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkButton#new_tab_button/2:property",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child/0:object:GtkButton#new_tab_button/2:property",
           "translatable": "",
           "value": "win.new-tab"
-        },
-        {
-          "context": "",
-          "name": "icon-name",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child/0:object:GtkButton#open_button/0:property",
-          "translatable": "",
-          "value": "document-open-symbolic"
-        },
-        {
-          "context": "",
-          "name": "tooltip-text",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child/0:object:GtkButton#open_button/1:property",
-          "translatable": "yes",
-          "value": "Open File"
-        },
-        {
-          "context": "",
-          "name": "action-name",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child/0:object:GtkButton#open_button/2:property",
-          "translatable": "",
-          "value": "win.open-file"
         },
         {
           "context": "",
@@ -6745,6 +7189,10 @@
         },
         {
           "name": "flat",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/2:style/0:class"
+        },
+        {
+          "name": "flat",
           "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/4:child/0:object:GtkToggleButton#document_properties_toggle_button/3:style/0:class"
         },
         {
@@ -6780,14 +7228,20 @@
         {
           "context": "",
           "name": "tooltip-text",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkButton#new_tab_button/1:property",
-          "value": "New File"
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/0:property",
+          "value": "Recently Used Documents"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage/1:property/0:object:GtkBox/1:child/0:object:GtkLabel/0:property",
+          "value": "_Open"
         },
         {
           "context": "",
           "name": "tooltip-text",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child/0:object:GtkButton#open_button/1:property",
-          "value": "Open File"
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/2:child/0:object:GtkButton#new_tab_button/1:property",
+          "value": "New File"
         },
         {
           "context": "",

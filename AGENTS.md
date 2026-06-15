@@ -55,6 +55,7 @@ src/
 │   ├── workspace.rs    # WorkspaceId, WorkspaceScope, WorkspaceFolder, FolderTreeEntry, WorkspaceConfig, WorkspacesFile
 │   ├── session.rs      # SessionTab, SessionData — global session for tab restore
 │   ├── palette.rs      # IndexedFile, CommandDef, CommandCategory, SearchMode, ScoredResult
+│   ├── recent_document.rs # RecentDocumentEntry, RecentDocumentFile, RecentDocumentRow — app-owned recent-document history
 │   ├── draft.rs        # DraftEntry, DraftManifest — draft persistence metadata
 │   ├── note.rs         # RichNoteBody, NoteViewMode — shared note-body primitives
 │   ├── bookmark.rs     # BookmarkId, BookmarkRecord, BookmarkDocument — saved-file line bookmarks
@@ -75,6 +76,7 @@ src/
 │   ├── note_storage.rs # Shared sidecar identity/load/filter helpers for note workflows
 │   ├── content_search/ # Workspace-wide grep: streaming search + replace/undo helpers
 │   ├── palette/        # Command registry, fuzzy matching, and file indexing
+│   ├── recent_documents.rs # App-owned recent-document load/save/search and open-tab exclusion helpers
 │   ├── draft_service.rs # Draft persistence: save/load/delete draft files and manifest
 │   ├── durable_write.rs # Private crash-durable write state machine over the filesystem backend: safe temp perms, metadata-before-final-sync, stable target guards, copy fallback, streaming writes, before/after-rename failure classification
 │   ├── editor_io.rs    # Encoding-aware text file load/save helpers, health analysis, mtimes
@@ -98,11 +100,12 @@ src/
 │   └── benchmarks.rs   # Criterion benchmarks for all performance-sensitive services
 └── ui/                 # GTK4/Libadwaita widgets (each folder keeps mod.rs + imp.rs)
     ├── automation.rs    # App-owned read-only D-Bus automation adapter, readiness waits, and snapshot collection
-    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, encoding, Focus Mode, local-history, notes, search, preview, startup data preflight, print, session persistence, tab management, transient-surface dismissal, workspace scope, and zoom
+    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, encoding, Focus Mode, local-history, notes, recent Open popover integration, search, preview, startup data preflight, print, session persistence, tab management, transient-surface dismissal, workspace scope, and zoom
     ├── editor_page/     # Per-tab editor adapter plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark projection, load/save, monitor, and in-tab search helpers
     ├── sidebar/         # Multi-workspace sidebar orchestrator plus dialogs, callbacks, and per-workspace sections
     ├── search_panel/    # Workspace-wide content search panel plus history, list factory, replace, results, and runtime flows
     ├── command_palette/ # Ctrl+P fuzzy search: files + commands
+    ├── open_popover/    # Ctrl+K searchable recent-document Open popover
     ├── properties_panel/ # Right-side document metadata + formatting controls
     ├── markdown_preview/ # Read-only Markdown preview (pulldown-cmark → TextTags + anchored GTK widgets)
     ├── info_bar/        # Contextual editor inline alerts above editor

@@ -170,7 +170,7 @@ impl super::LushtextWindow {
 
         for tab in &session.tabs {
             if let Some(path) = &tab.path {
-                self.open_document(path);
+                self.open_document_from_session_restore(path);
                 if let Some(page) = self.imp().tab_view.selected_page() {
                     self.restore_tab_pinned_state(&page, tab.pinned);
                     if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
@@ -219,6 +219,7 @@ impl super::LushtextWindow {
         self.imp().session.restoring.set(false);
         self.update_content_stack();
         self.refresh_sidebar_file_row_states();
+        self.refresh_open_popover_rows();
         self.refresh_status_bar();
     }
 

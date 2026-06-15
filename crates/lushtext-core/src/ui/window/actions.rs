@@ -24,6 +24,9 @@ impl LushtextWindow {
             gio::ActionEntry::builder("open-file")
                 .activate(|window: &Self, _, _| window.show_open_file_dialog())
                 .build(),
+            gio::ActionEntry::builder("open-recent")
+                .activate(|window: &Self, _, _| window.open_recent_popover())
+                .build(),
             gio::ActionEntry::builder("open-folder")
                 .activate(|window: &Self, _, _| {
                     window.imp().sidebar.create_new_workspace();
@@ -547,6 +550,7 @@ impl LushtextWindow {
         let shortcuts = [
             ("win.new-tab", "<Control>n"),
             ("win.open-file", "<Control>o"),
+            ("win.open-recent", "<Control>k"),
             ("win.save", "<Control>s"),
             ("win.save-as", "<Control><Shift>s"),
             ("win.show-local-history", "<Control><Alt>l"),

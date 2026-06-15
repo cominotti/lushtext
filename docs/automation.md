@@ -262,6 +262,10 @@ warnings, and writes per-case manifests plus comparison reports under
 `build/smoke/visual-geometry`. Reports include final sidebar/editor/minimap
 geometry, screenshot-derived pixel rows, small crop paths, and app-vs-rendered
 diagnostics when Automation1 anchors stay stable but rendered rows move.
+The lane also includes Open popover cases for empty, representative, dense,
+awkward-label, and 720p-height recent-document states. The Open popover cases
+also assert the header's `header-open-menu-button` surface remains before
+`header-new-tab-button` while the popover is active.
 Per-step `*-rendered-anchor-stability.json` files record warmup-vs-final row
 stability so stale native frames fail before the before/after comparison. The
 root summary records `verified_invariant_ids` plus

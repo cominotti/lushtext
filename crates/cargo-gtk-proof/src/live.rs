@@ -182,7 +182,7 @@ fn run_internal_session_with_programs(
         logs.push(artifacts::safe_display_path(&wireplumber_log));
 
         apply_gsettings(&case, programs, &case_dir)?;
-        run_mutter_for_case(&case, case_json, programs, &case_dir)?;
+        run_mutter_for_case(&case, case_json, programs, &case_dir, &runtime_dir)?;
         Ok(())
     })();
 
@@ -229,9 +229,13 @@ fn run_mutter_child_with_programs(
     let case_dir = case_dir_for(case_json)?;
     let binary = required_string(&case, "binary")?;
     let fixture = required_string(&case, "fixture")?;
+    let app_data_dir = case_dir.join("app-data");
+    fs::create_dir_all(&app_data_dir)
+        .map_err(|error| format!("cannot create {}: {error}", app_data_dir.display()))?;
+    prepare_open_popover_recents(&case, &case_dir, &app_data_dir)?;
     fs::write(case_dir.join("lushtext.stdout"), b"")
         .map_err(|error| format!("cannot create lushtext stdout log: {error}"))?;
-    let app_env = lushtext_process_environment();
+    let app_env = lushtext_process_environment(&app_data_dir);
     let log_path = case_dir.join("lushtext.stderr");
     let mut app = process::start_logged_child(binary, &[fixture], &app_env, &log_path)?;
     fs::write(case_dir.join("app.pid"), format!("{}\n", app.id()))
@@ -1807,6 +1811,7 @@ fn primary_action_name(case: &Value) -> Result<&'static str, String> {
     match scenario_type(case)? {
         "minimap-sidebar" => Ok("toggle-sidebar"),
         "command-palette-overlay" => Ok("toggle-command-palette"),
+        "open-popover" => Ok("open-recent"),
         other => Err(format!(
             "unsupported visual geometry scenario type: {other}"
         )),
@@ -1990,6 +1995,7 @@ fn run_mutter_for_case(
     case_json: &Path,
     programs: &LivePrograms,
     case_dir: &Path,
+    runtime_dir: &Path,
 ) -> Result<(), String> {
     let size = case_size(case)?;
     let monitor = format!("{}x{}", size.width, size.height);
@@ -2007,7 +2013,13 @@ fn run_mutter_for_case(
         case_json.to_string_lossy().into_owned(),
     ];
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-    let env = vec![("NO_AT_BRIDGE".to_string(), "1".to_string())];
+    let env = vec![
+        ("NO_AT_BRIDGE".to_string(), "1".to_string()),
+        (
+            "XDG_RUNTIME_DIR".to_string(),
+            runtime_dir.to_string_lossy().into_owned(),
+        ),
+    ];
     let result = process::run_logged_command(
         &programs.mutter,
         &arg_refs,
@@ -2083,7 +2095,72 @@ fn apply_gsettings(case: &Value, programs: &LivePrograms, case_dir: &Path) -> Re
     Ok(())
 }
 
-fn lushtext_process_environment() -> Vec<(String, String)> {
+fn prepare_open_popover_recents(
+    case: &Value,
+    case_dir: &Path,
+    data_dir: &Path,
+) -> Result<(), String> {
+    if scenario_type(case)? != "open-popover" {
+        return Ok(());
+    }
+
+    let fixture_kind = case
+        .get("fixture_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("dense");
+    let count = match fixture_kind {
+        "empty" => 0,
+        "representative" => 2,
+        _ => 12,
+    };
+    let recent_root = case_dir.join("open-popover-recents");
+    fs::create_dir_all(&recent_root)
+        .map_err(|error| format!("cannot create {}: {error}", recent_root.display()))?;
+    let mut entries = Vec::new();
+    let base_time = 2_000_000_000u64;
+
+    for index in 0..count {
+        let path = open_popover_recent_path(&recent_root, fixture_kind, index);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        }
+        fs::write(&path, format!("Open popover recent fixture {index}\n"))
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+        let canonical = fs::canonicalize(&path)
+            .map_err(|error| format!("cannot canonicalize {}: {error}", path.display()))?;
+        entries.push(serde_json::json!({
+            "path": path.to_string_lossy(),
+            "canonical_path": canonical.to_string_lossy(),
+            "last_opened_secs": base_time.saturating_sub(index as u64),
+        }));
+    }
+
+    fs::create_dir_all(data_dir)
+        .map_err(|error| format!("cannot create {}: {error}", data_dir.display()))?;
+    let recent_path = data_dir.join("recent-documents.json");
+    let document = serde_json::json!({ "entries": entries });
+    let bytes = serde_json::to_vec_pretty(&document)
+        .map_err(|error| format!("cannot serialize recent documents: {error}"))?;
+    fs::write(&recent_path, bytes)
+        .map_err(|error| format!("cannot write {}: {error}", recent_path.display()))
+}
+
+fn open_popover_recent_path(root: &Path, fixture_kind: &str, index: usize) -> PathBuf {
+    if fixture_kind == "awkward" {
+        let folder = root
+            .join("a very long folder name with spaces")
+            .join("symbols []() and mixed width")
+            .join(format!("deep-level-{index:02}"));
+        return folder.join(format!(
+            "this-is-a-ridiculously-long-file-name-that-must-ellipsize-{index:02}.rs"
+        ));
+    }
+
+    root.join(format!("recent-document-{index:02}.txt"))
+}
+
+fn lushtext_process_environment(data_dir: &Path) -> Vec<(String, String)> {
     let mut env = vec![
         ("GDK_BACKEND".to_string(), "wayland".to_string()),
         ("GSETTINGS_BACKEND".to_string(), "keyfile".to_string()),
@@ -2097,6 +2174,10 @@ fn lushtext_process_environment() -> Vec<(String, String)> {
         ("GSK_RENDERER".to_string(), "cairo".to_string()),
         ("GTK_USE_PORTAL".to_string(), "0".to_string()),
         ("NO_AT_BRIDGE".to_string(), "1".to_string()),
+        (
+            "LUSHTEXT_DATA_DIR".to_string(),
+            data_dir.to_string_lossy().into_owned(),
+        ),
     ];
     if let Ok(value) = std::env::var("XDG_RUNTIME_DIR") {
         env.push(("XDG_RUNTIME_DIR".to_string(), value));
@@ -2198,8 +2279,9 @@ mod tests {
             mutter: "/bin/false".to_string(),
         };
 
-        let error = run_mutter_for_case(&case, &case_json, &programs, tempdir.path())
-            .expect_err("fake mutter fails after command construction");
+        let error =
+            run_mutter_for_case(&case, &case_json, &programs, tempdir.path(), tempdir.path())
+                .expect_err("fake mutter fails after command construction");
 
         assert!(error.contains("headless Mutter child exited"));
         let log = fs::read_to_string(tempdir.path().join("mutter-child.log")).expect("log text");

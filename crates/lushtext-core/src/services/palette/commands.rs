@@ -32,6 +32,12 @@ pub fn all_commands() -> &'static [CommandDef] {
             shortcut: Some("Ctrl+O"),
         },
         CommandDef {
+            id: "win.open-recent",
+            label: "Open Recent Documents",
+            category: CommandCategory::File,
+            shortcut: Some("Ctrl+K"),
+        },
+        CommandDef {
             id: "win.open-folder",
             label: "Open Folder",
             category: CommandCategory::File,

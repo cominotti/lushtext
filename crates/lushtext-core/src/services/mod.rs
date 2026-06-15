@@ -30,6 +30,7 @@ pub mod migration_ledger;
 mod note_storage;
 pub mod notifications;
 pub mod palette;
+pub mod recent_documents;
 pub mod recovery_metadata;
 pub mod saved_searches;
 pub mod search_backup;

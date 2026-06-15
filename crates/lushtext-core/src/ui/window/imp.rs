@@ -9,11 +9,13 @@
 use super::notes::ActiveNotesBrowser;
 use crate::config::{self, keys};
 use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
+use crate::model::recent_document::RecentDocumentEntry;
 use crate::model::workspace::WorkspaceScope;
 use crate::services::notifications::NotificationBus;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
+use crate::ui::open_popover::LushtextOpenPopover;
 use crate::ui::properties_panel::LushtextPropertiesPanel;
 use crate::ui::search_panel::LushtextSearchPanel;
 use crate::ui::sidebar::{LushtextSidebar, WorkspaceSidebarWidthPreset};
@@ -57,6 +59,8 @@ const NORMAL_MODE_MIN_HEIGHT_SP: i32 = 360;
 /// This numeric value feeds both pure layout math and the Libadwaita breakpoint
 /// condition string so the declarative and imperative paths cannot drift.
 const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: i32 = 860;
+/// GNOME Text Editor switches the header Open control to an icon at 400sp.
+const OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP: i32 = 400;
 /// Wide document-properties presentation in the multi-layout view.
 const PROPERTIES_LAYOUT_PANE: &str = "pane";
 /// Compact document-properties presentation in the multi-layout view.
@@ -254,6 +258,30 @@ pub struct StartupDataFlowState {
     pub pending_activation_paths: RefCell<Vec<PathBuf>>,
 }
 
+/// Recent-document state owned by the window and projected into the Open popover.
+#[derive(Default)]
+pub struct RecentDocumentsState {
+    /// Newest-first persisted recent-document entries.
+    pub entries: RefCell<Vec<RecentDocumentEntry>>,
+    /// Whether startup recent-document loading is still in flight.
+    pub loading: Cell<bool>,
+    /// Paths removed while the startup load was in flight.
+    pub removed_while_loading: RefCell<Vec<PathBuf>>,
+    /// Monotonic version advanced by in-memory user mutations.
+    pub generation: Cell<u64>,
+    /// Whether the popover projection should be rebuilt before the next popup.
+    pub rows_dirty: Cell<bool>,
+    /// Debounce for coalescing bursts of recent-document persistence writes.
+    pub save_debounce: Debounce,
+    /// Whether a recent-document save is currently running on a worker.
+    pub save_inflight: Cell<bool>,
+    /// Whether another save should run after the in-flight save completes.
+    pub save_pending: Cell<bool>,
+    /// Widget tests may seed recents before the async startup load returns.
+    #[cfg(feature = "test-utils")]
+    pub test_seeded: Cell<bool>,
+}
+
 /// Tab-strip menu and close-authorization state owned by the window shell.
 pub struct TabManagementState {
     /// Shared `GMenu` model reused for the Adwaita tab context menu.
@@ -295,7 +323,11 @@ pub struct LushtextWindow {
     #[template_child]
     pub new_tab_button: TemplateChild<gtk4::Button>,
     #[template_child]
-    pub open_button: TemplateChild<gtk4::Button>,
+    pub open_menu_button: TemplateChild<gtk4::MenuButton>,
+    #[template_child]
+    pub open_button_stack: TemplateChild<gtk4::Stack>,
+    #[template_child]
+    pub open_popover: TemplateChild<LushtextOpenPopover>,
     #[template_child]
     pub document_properties_toggle_button: TemplateChild<gtk4::ToggleButton>,
     #[template_child]
@@ -388,6 +420,8 @@ pub struct LushtextWindow {
     pub drafts: DraftState,
     /// Format preflight state that gates startup metadata consumers.
     pub startup_data_flow: StartupDataFlowState,
+    /// App-owned recent documents backing the Open popover.
+    pub recent_documents: RecentDocumentsState,
     /// Tab-menu targeting, pinned-page wiring, and bulk-close authorization.
     pub tab_management: TabManagementState,
     /// Weak handle for browser-navigation actions while Browse Notes is visible.
@@ -424,7 +458,9 @@ impl Default for LushtextWindow {
             header_bar: TemplateChild::default(),
             title_widget: TemplateChild::default(),
             new_tab_button: TemplateChild::default(),
-            open_button: TemplateChild::default(),
+            open_menu_button: TemplateChild::default(),
+            open_button_stack: TemplateChild::default(),
+            open_popover: TemplateChild::default(),
             document_properties_toggle_button: TemplateChild::default(),
             tab_bar: TemplateChild::default(),
             window_overlay: TemplateChild::default(),
@@ -468,6 +504,7 @@ impl Default for LushtextWindow {
             focus_mode: FocusModeState::default(),
             drafts: DraftState::default(),
             startup_data_flow: StartupDataFlowState::default(),
+            recent_documents: RecentDocumentsState::default(),
             tab_management: TabManagementState::default(),
             active_notes_browser: RefCell::new(None),
             search_saved_focus: RefCell::new(None),
@@ -499,6 +536,7 @@ impl ObjectSubclass for LushtextWindow {
         LushtextEditorPage::ensure_type();
         LushtextStatusBar::ensure_type();
         LushtextCommandPalette::ensure_type();
+        LushtextOpenPopover::ensure_type();
         LushtextMarkdownPreview::ensure_type();
         LushtextPropertiesPanel::ensure_type();
         LushtextSearchPanel::ensure_type();
@@ -519,7 +557,9 @@ impl ObjectImpl for LushtextWindow {
         let obj = self.obj();
         let settings = &self.settings;
 
+        self.open_button_stack.set_visible_child_name("wide");
         self.apply_accessibility_metadata();
+        obj.setup_open_popover_callbacks();
 
         let w = settings.int(keys::WINDOW_WIDTH);
         let h = settings.int(keys::WINDOW_HEIGHT);
@@ -835,6 +875,7 @@ impl ObjectImpl for LushtextWindow {
                 if let Some(window) = window_weak.upgrade() {
                     window.update_content_stack();
                     window.refresh_sidebar_file_row_states();
+                    window.refresh_open_popover_rows();
                 }
             });
 
@@ -844,6 +885,7 @@ impl ObjectImpl for LushtextWindow {
                 if let Some(window) = window_weak.upgrade() {
                     window.refresh_status_bar();
                     window.refresh_sidebar_file_row_states();
+                    window.refresh_open_popover_rows();
                     window.reload_if_evicted();
                     window.maybe_evict_background_tabs();
                     window.save_session_debounced();
@@ -907,6 +949,7 @@ impl ObjectImpl for LushtextWindow {
                 window.update_content_stack();
                 window.refresh_command_palette_sources();
                 window.refresh_sidebar_file_row_states();
+                window.refresh_open_popover_rows();
                 window.refresh_status_bar();
                 window.save_session_debounced();
             }
@@ -935,8 +978,12 @@ impl LushtextWindow {
     fn apply_accessibility_metadata(&self) {
         self.new_tab_button
             .update_property(&[gtk4::accessible::Property::Label("New file")]);
-        self.open_button
-            .update_property(&[gtk4::accessible::Property::Label("Open file")]);
+        self.open_menu_button.update_property(&[
+            gtk4::accessible::Property::Label("Open recent documents"),
+            gtk4::accessible::Property::Description(
+                "Search recent documents or open the file chooser",
+            ),
+        ]);
         self.document_properties_toggle_button.update_property(&[
             gtk4::accessible::Property::Label("Toggle document properties"),
             gtk4::accessible::Property::Description(
@@ -1214,6 +1261,19 @@ fn install_split_view_breakpoints(window: &super::LushtextWindow) {
         Some(&true.to_value()),
     );
     window.add_breakpoint(workspace_bp);
+
+    let open_button_bp = libadwaita::Breakpoint::new(
+        libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(
+            OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
+        ))
+        .expect("valid Open button breakpoint condition"),
+    );
+    open_button_bp.add_setter(
+        window.imp().open_button_stack.upcast_ref::<glib::Object>(),
+        "visible-child-name",
+        Some(&"narrow".to_value()),
+    );
+    window.add_breakpoint(open_button_bp);
 }
 
 fn properties_breakpoint_condition(max_width_sp: i32) -> String {

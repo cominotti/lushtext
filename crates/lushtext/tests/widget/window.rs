@@ -3165,7 +3165,7 @@ fn test_shell_controls_expose_accessibility_roles() {
         gtk4::AccessibleRole::Button
     );
     assert_eq!(
-        window.imp().open_button.accessible_role(),
+        window.imp().open_menu_button.accessible_role(),
         gtk4::AccessibleRole::Button
     );
     assert_eq!(

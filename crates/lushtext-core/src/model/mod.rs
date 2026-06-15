@@ -19,6 +19,7 @@ pub mod local_history;
 pub mod migration_ledger;
 pub mod note;
 pub mod palette;
+pub mod recent_document;
 pub mod session;
 pub mod sidecar_identity;
 pub mod workspace;

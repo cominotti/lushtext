@@ -22,6 +22,7 @@ mod notes;
 mod notifications;
 mod preview;
 mod print;
+mod recent_open;
 mod search;
 mod session_persistence;
 mod startup_data;
@@ -99,6 +100,7 @@ impl LushtextWindow {
         search::setup_search_panel(&window);
         window.start_notification_sweep_timer();
         window.setup_shortcuts();
+        window.load_recent_documents_async();
         window.update_content_stack();
         window.refresh_status_bar();
         window.render_notifications();

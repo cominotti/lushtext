@@ -1003,6 +1003,18 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
     let mut scroll_anchors = Vec::new();
 
     push_widget_surface(&mut surfaces, "header-bar", &*imp.header_bar, root);
+    push_widget_surface(
+        &mut surfaces,
+        "header-open-menu-button",
+        &*imp.open_menu_button,
+        root,
+    );
+    push_widget_surface(
+        &mut surfaces,
+        "header-new-tab-button",
+        &*imp.new_tab_button,
+        root,
+    );
     push_widget_surface(&mut surfaces, "tab-strip", &*imp.tab_bar, root);
     push_widget_surface(&mut surfaces, "status-bar", &*imp.status_bar, root);
     push_widget_surface(&mut surfaces, "workspace-sidebar", &*imp.sidebar, root);
@@ -1014,6 +1026,7 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
     );
     push_widget_surface(&mut surfaces, "preview", &*imp.markdown_preview, root);
     push_widget_surface(&mut surfaces, "search-panel", &*imp.search_panel, root);
+    push_open_popover_surfaces(window, &mut surfaces, root);
 
     if let Some(editor) = active_editor(window) {
         push_widget_surface(
@@ -1199,9 +1212,62 @@ fn push_active_transient_surface(
         push_widget_surface(surfaces, "active-transient", &*imp.command_palette, root);
     } else if imp.search_panel_revealer.reveals_child() {
         push_widget_surface(surfaces, "active-transient", &*imp.search_panel, root);
+    } else if open_popover_visible(window) {
+        push_widget_surface(surfaces, "active-transient", &*imp.open_popover, root);
     } else {
         surfaces.push(absent_visual_surface("active-transient", "none-active"));
     }
+}
+
+fn push_open_popover_surfaces(
+    window: &LushtextWindow,
+    surfaces: &mut Vec<AutomationVisualSurfaceSnapshot>,
+    root: &gtk4::Widget,
+) {
+    let imp = window.imp();
+    if !open_popover_visible(window) {
+        for name in [
+            "open-popover",
+            "open-popover-search",
+            "open-popover-chooser",
+            "open-popover-recent-list",
+            "open-popover-empty-state",
+        ] {
+            surfaces.push(absent_visual_surface(name, "popover-closed"));
+        }
+        return;
+    }
+
+    push_widget_surface(surfaces, "open-popover", &*imp.open_popover, root);
+    push_widget_surface(
+        surfaces,
+        "open-popover-search",
+        &imp.open_popover.search_entry_widget(),
+        root,
+    );
+    push_widget_surface(
+        surfaces,
+        "open-popover-chooser",
+        &imp.open_popover.chooser_button_widget(),
+        root,
+    );
+    push_widget_surface(
+        surfaces,
+        "open-popover-recent-list",
+        &imp.open_popover.recent_scroller_widget(),
+        root,
+    );
+    push_widget_surface(
+        surfaces,
+        "open-popover-empty-state",
+        &imp.open_popover.empty_state_widget(),
+        root,
+    );
+}
+
+fn open_popover_visible(window: &LushtextWindow) -> bool {
+    let imp = window.imp();
+    imp.open_menu_button.is_active() || imp.open_popover.is_visible()
 }
 
 fn push_widget_surface(
@@ -1767,6 +1833,7 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
         compact_surface: window.compact_surface_label().map(ToOwned::to_owned),
         command_palette_visible: imp.palette_revealer.reveals_child(),
         search_panel_visible: imp.search_panel_revealer.reveals_child(),
+        open_popover_visible: open_popover_visible(window),
         preview_pane_visible: imp.preview_visible.get(),
         preview_mode: imp.preview_mode.get(),
         focus_mode: imp.focus_mode.active.get(),
@@ -1775,6 +1842,7 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
         active_transient_surface: active_transient_surface_name(
             imp.palette_revealer.reveals_child(),
             imp.search_panel_revealer.reveals_child(),
+            open_popover_visible(window),
             active_editor_search,
         ),
     }
@@ -1876,12 +1944,15 @@ fn bounded_snapshot_text(text: impl AsRef<str>) -> String {
 fn active_transient_surface_name(
     command_palette_visible: bool,
     search_panel_visible: bool,
+    open_popover_visible: bool,
     editor_search_visible: bool,
 ) -> Option<String> {
     if command_palette_visible {
         Some("command-palette".to_string())
     } else if search_panel_visible {
         Some("workspace-search".to_string())
+    } else if open_popover_visible {
+        Some("open-popover".to_string())
     } else if editor_search_visible {
         Some("editor-search".to_string())
     } else {

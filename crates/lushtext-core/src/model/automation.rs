@@ -1248,6 +1248,8 @@ pub struct AutomationSurfaceSnapshot {
     pub command_palette_visible: bool,
     /// Workspace search panel revealer state.
     pub search_panel_visible: bool,
+    /// Header Open popover state.
+    pub open_popover_visible: bool,
     /// Side-by-side Markdown preview pane state.
     pub preview_pane_visible: bool,
     /// Preview-only Markdown mode state.

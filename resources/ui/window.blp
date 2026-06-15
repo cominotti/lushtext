@@ -16,17 +16,49 @@ template $LushtextWindow: Adw.ApplicationWindow {
       ]
 
       [start]
+      MenuButton open_menu_button {
+        tooltip-text: _("Recently Used Documents");
+        popover: $LushtextOpenPopover open_popover {};
+
+        styles [
+          "flat",
+        ]
+
+        child: Stack open_button_stack {
+          hhomogeneous: false;
+
+          StackPage {
+            name: "wide";
+
+            child: Box {
+              spacing: 3;
+
+              Label {
+                label: _("_Open");
+                use-underline: true;
+              }
+
+              Image {
+                icon-name: "pan-down-symbolic";
+              }
+            };
+          }
+
+          StackPage {
+            name: "narrow";
+
+            child: Image {
+              icon-name: "folder-symbolic";
+            };
+          }
+        };
+      }
+
+      [start]
       Button new_tab_button {
         icon-name: "tab-new-symbolic";
         tooltip-text: _("New File");
         action-name: "win.new-tab";
-      }
-
-      [start]
-      Button open_button {
-        icon-name: "document-open-symbolic";
-        tooltip-text: _("Open File");
-        action-name: "win.open-file";
       }
 
       title-widget: Adw.WindowTitle title_widget {

@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "scenario_id": "open-popover",
+  "scenario_type": "open-popover",
+  "description": "Same-session GNOME-style Open popover invariant for recent-document geometry.",
+  "matrix": {
+    "sizes": [
+      {
+        "id": "desktop",
+        "width": 1260,
+        "height": 900
+      },
+      {
+        "id": "hd-720",
+        "width": 1280,
+        "height": 720
+      }
+    ],
+    "color_schemes": [
+      "force-light",
+      "force-dark"
+    ],
+    "fixture_kinds": [
+      "empty",
+      "representative",
+      "dense",
+      "awkward"
+    ]
+  },
+  "protected_regions": [
+    {
+      "name": "header-bar",
+      "surface": "header-bar",
+      "comparison": "exact-equality",
+      "require_same_rect": true,
+      "mask_rects": [
+        {
+          "x": 0,
+          "y": 0,
+          "width": 125,
+          "height": 47
+        },
+        {
+          "x": 0,
+          "y": 38,
+          "width": 371,
+          "height": 9
+        }
+      ]
+    },
+    {
+      "name": "status-bar",
+      "surface": "status-bar",
+      "comparison": "exact-equality",
+      "require_same_rect": true,
+      "mask_rects": []
+    }
+  ],
+  "allowed_changing_regions": [
+    {
+      "surface": "active-transient",
+      "relationship": "Open popover becomes visible without moving protected chrome"
+    },
+    {
+      "surface": "open-popover-recent-list",
+      "relationship": "Dense recent rows are capped to the 10-row item region"
+    },
+    {
+      "surface": "open-popover-empty-state",
+      "relationship": "Empty recents show the GNOME-style empty state"
+    },
+    {
+      "surface": "header-open-menu-button",
+      "relationship": "Header Open remains before New Tab while the Open popover is active"
+    }
+  ],
+  "readiness_predicates": [
+    "file-open-complete",
+    "visual-geometry-settled"
+  ]
+}

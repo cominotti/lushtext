@@ -43,10 +43,22 @@ pub(super) fn open_path_key(path: &Path) -> PathBuf {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum OpenDocumentIntent {
     /// In-app navigation such as sidebar rows, command palette results, and
-    /// session restore.
+    /// recent-document activation.
     InApp,
     /// Desktop, CLI, or file-manager activation explicitly requesting a file.
     ExternalActivation,
+    /// Startup session restore should reopen tabs without reshuffling recents.
+    SessionRestore,
+}
+
+impl OpenDocumentIntent {
+    fn records_recent(self) -> bool {
+        !matches!(self, Self::SessionRestore)
+    }
+
+    fn bypasses_failed_placeholder(self) -> bool {
+        matches!(self, Self::ExternalActivation)
+    }
 }
 
 impl LushtextWindow {
@@ -81,11 +93,21 @@ impl LushtextWindow {
         self.open_document_with_intent(path, OpenDocumentIntent::ExternalActivation);
     }
 
+    /// Open a file while restoring startup session state without updating recent history.
+    pub(super) fn open_document_from_session_restore(&self, path: &Path) {
+        self.open_document_with_intent(path, OpenDocumentIntent::SessionRestore);
+    }
+
     fn open_document_with_intent(&self, path: &Path, intent: OpenDocumentIntent) {
         let tab_view = &self.imp().tab_view;
         let key = open_path_key(path);
         if let Some(page) = self.find_open_document_page(&key, intent) {
             tab_view.set_selected_page(&page);
+            if intent.records_recent()
+                && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+            {
+                self.record_recent_open_for_editor(editor, path);
+            }
             return;
         }
 
@@ -105,18 +127,25 @@ impl LushtextWindow {
 
         let window_weak = self.downgrade();
         let path_for_draft = path.to_path_buf();
+        let path_for_recent = path.to_path_buf();
+        let record_recent = intent.records_recent();
         let editor_weak = editor_page.downgrade();
         *editor_page.imp().load.load_completed_callback.borrow_mut() = Some(Box::new(move || {
             if let Some(window) = window_weak.upgrade()
                 && let Some(editor) = editor_weak.upgrade()
             {
+                if record_recent {
+                    window.record_recent_open_for_editor(&editor, &path_for_recent);
+                }
                 if window.close_loaded_canonical_duplicate(&editor) {
                     window.refresh_sidebar_file_row_states();
+                    window.refresh_open_popover_rows();
                     return;
                 }
                 editor.start_file_monitor();
                 window.check_draft_on_open(&editor, &path_for_draft);
                 window.refresh_sidebar_file_row_states();
+                window.refresh_open_popover_rows();
                 window.refresh_status_bar();
             }
         }));
@@ -140,6 +169,7 @@ impl LushtextWindow {
                 open_paths.remove(path_for_failure.as_path());
                 drop(open_paths);
                 window.refresh_sidebar_file_row_states();
+                window.refresh_open_popover_rows();
                 return;
             };
             let first_open_failed = editor.load_state() == EditorLoadState::Failed;
@@ -147,6 +177,7 @@ impl LushtextWindow {
                 window.refresh_header_bar();
                 window.refresh_status_bar();
                 window.refresh_sidebar_file_row_states();
+                window.refresh_open_popover_rows();
                 return;
             }
             {
@@ -164,6 +195,7 @@ impl LushtextWindow {
                 window.refresh_header_bar();
                 window.refresh_status_bar();
                 window.refresh_sidebar_file_row_states();
+                window.refresh_open_popover_rows();
                 return;
             }
             editor.clear_file_path_after_failed_load();
@@ -172,6 +204,7 @@ impl LushtextWindow {
                 page.set_title(&editor.title());
             }
             window.refresh_sidebar_file_row_states();
+            window.refresh_open_popover_rows();
             window.refresh_header_bar();
             window.refresh_status_bar();
         }));
@@ -205,7 +238,7 @@ impl LushtextWindow {
             if !matches_key {
                 continue;
             }
-            if intent == OpenDocumentIntent::ExternalActivation
+            if intent.bypasses_failed_placeholder()
                 && editor.load_state() == EditorLoadState::Failed
             {
                 continue;
@@ -250,6 +283,7 @@ impl LushtextWindow {
         let (Some(current_page), Some(existing_page)) = (current_page, existing_page) else {
             self.imp().open_paths.borrow_mut().insert(canonical_path);
             self.refresh_sidebar_file_row_states();
+            self.refresh_open_popover_rows();
             return false;
         };
 
@@ -258,6 +292,7 @@ impl LushtextWindow {
         tab_view.set_selected_page(&existing_page);
         tab_view.close_page(&current_page);
         self.refresh_sidebar_file_row_states();
+        self.refresh_open_popover_rows();
         true
     }
 
@@ -284,6 +319,7 @@ impl LushtextWindow {
                     }
                 }
                 window.refresh_sidebar_file_row_states();
+                window.refresh_open_popover_rows();
                 if let Some(editor) = window.active_editor() {
                     editor.set_draft_restored(false);
                     window.dismiss_editor_notifications(&editor);
@@ -378,6 +414,7 @@ impl LushtextWindow {
         self.exit_preview_only_mode_now();
         self.update_content_stack();
         self.refresh_sidebar_file_row_states();
+        self.refresh_open_popover_rows();
         self.refresh_status_bar();
     }
 
@@ -775,6 +812,7 @@ impl LushtextWindow {
             }
         }
         self.refresh_sidebar_file_row_states();
+        self.refresh_open_popover_rows();
         self.refresh_header_bar();
         self.refresh_command_palette_sources();
         self.refresh_status_bar();
@@ -813,6 +851,7 @@ impl LushtextWindow {
                     .insert(canonical.clone());
                 editor.set_file_path_with_canonical(&updated_for_apply, Some(canonical));
                 window.refresh_sidebar_file_row_states();
+                window.refresh_open_popover_rows();
             },
         );
     }
@@ -844,6 +883,7 @@ impl LushtextWindow {
         self.update_content_stack();
         self.refresh_command_palette_sources();
         self.refresh_sidebar_file_row_states();
+        self.refresh_open_popover_rows();
         self.refresh_status_bar();
     }
 }

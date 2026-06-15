@@ -13,6 +13,7 @@ pub mod command_palette;
 pub mod editor_page;
 pub mod info_bar;
 pub mod markdown_preview;
+pub mod open_popover;
 pub mod preferences;
 pub mod properties_panel;
 pub mod search_bar;

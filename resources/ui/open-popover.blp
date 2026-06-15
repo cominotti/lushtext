@@ -1,0 +1,85 @@
+using Gtk 4.0;
+
+template $LushtextOpenPopover: Popover {
+  halign: start;
+  valign: end;
+  width-request: 350;
+
+  styles [
+    "open-popover",
+  ]
+
+  child: Box {
+    orientation: vertical;
+
+    Box {
+      orientation: horizontal;
+      spacing: 6;
+      margin-top: 6;
+      margin-bottom: 6;
+      margin-start: 6;
+      margin-end: 6;
+
+      SearchEntry search_entry {
+        hexpand: true;
+        placeholder-text: _("Search documents");
+      }
+
+      Button chooser_button {
+        icon-name: "document-open-symbolic";
+        tooltip-text: _("Open New Document");
+      }
+    }
+
+    Separator {
+      orientation: horizontal;
+    }
+
+    Stack stack {
+      vhomogeneous: false;
+      hhomogeneous: false;
+
+      Box empty_state {
+        orientation: vertical;
+        spacing: 24;
+        margin-start: 6;
+        margin-top: 36;
+        margin-bottom: 36;
+        margin-end: 6;
+
+        Image {
+          icon-name: "document-open-recent-symbolic";
+          pixel-size: 96;
+
+          styles [
+            "dim-label",
+          ]
+        }
+
+        Label empty_title {
+          label: _("No Recent Documents");
+
+          styles [
+            "dim-label",
+            "open-popover-empty-title",
+          ]
+        }
+      }
+
+      ScrolledWindow recent_scroller {
+        hexpand: true;
+        vexpand: true;
+        min-content-width: 250;
+        max-content-width: 250;
+        hscrollbar-policy: never;
+        vscrollbar-policy: automatic;
+        propagate-natural-height: true;
+        propagate-natural-width: false;
+
+        child: ListView list_view {
+          single-click-activate: true;
+        };
+      }
+    }
+  };
+}

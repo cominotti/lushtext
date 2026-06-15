@@ -213,6 +213,38 @@ listview.workspace-file-tree row:focus {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
+/* GNOME Text Editor-style Open popover. */
+.open-popover contents {
+  padding: 0;
+}
+
+.open-popover listview {
+  margin-bottom: 3px;
+  background: none;
+  color: inherit;
+}
+
+.open-popover listview row {
+  border-radius: 6px;
+  margin: 3px 6px;
+}
+
+.open-popover listview row:first-child {
+  margin-top: 6px;
+}
+
+.open-popover listview row button {
+  padding: 3px;
+  margin: 0;
+  min-height: 24px;
+  min-width: 24px;
+}
+
+.open-popover-empty-title {
+  font-weight: 700;
+  font-size: 140%;
+}
+
 .command-palette-mode {
   min-width: 132px;
 }
