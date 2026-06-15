@@ -2,9 +2,9 @@
 
 //! Built-in command registry and unified command-palette search entry points.
 //!
-//! This slice owns static command definitions, Notes workflow classification,
-//! command subset searches, and the merge logic that combines command results
-//! with file-index matches.
+//! This slice owns static command definitions, Notes workflow classification for
+//! command rows, command subset searches, and the merge logic that combines
+//! command results with file-index matches.
 
 use crate::model::palette::{
     CommandCategory, CommandDef, PaletteFileEntry, ScoredResult, SearchMode, SearchResultItem,
@@ -322,10 +322,11 @@ pub fn search_open_files<'a>(
     )
 }
 
-/// Search the palette's launcher sources according to the active mode.
+/// Search the palette's file and command launcher sources according to mode.
 ///
-/// `Notes` filters to note/bookmark commands only; it does not scan note bodies
-/// or sidecars, keeping this service fast, GTK-free, and bounded.
+/// Note records are supplied by the cached note source in `services::palette::notes`.
+/// This helper therefore returns no rows for `Notes` mode instead of falling
+/// back to note workflow commands.
 #[must_use]
 pub fn search_all<'a>(
     index: &'a FileIndex,
@@ -335,7 +336,7 @@ pub fn search_all<'a>(
 ) -> Vec<ScoredResult<'a>> {
     match mode {
         SearchMode::Files => index.search(query, max),
-        SearchMode::Notes => search_note_commands(query, max),
+        SearchMode::Notes => Vec::new(),
         SearchMode::Commands => search_commands(query, max),
         SearchMode::All => {
             let files = index.search(query, max);

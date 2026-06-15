@@ -5,6 +5,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::bookmark::BookmarkRecord;
+
 /// A file entry in the palette's search index.
 #[derive(Debug, Clone)]
 pub struct IndexedFile {
@@ -128,9 +130,9 @@ impl CommandCategory {
 
 /// The palette's shared launcher-mode vocabulary.
 ///
-/// `Notes` filters note and bookmark actions, not persisted note body content;
-/// full note search belongs to note workflows so the palette stays bounded and
-/// side-effect-free.
+/// `Notes` searches persisted note and bookmark rows. Note-related actions
+/// remain available through `Commands` mode so commands do not duplicate the
+/// first-class note record source.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
     #[default]
@@ -209,7 +211,7 @@ impl SearchMode {
         match self {
             Self::All => "Search files, notes, and commands (Tab to switch mode)",
             Self::Files => "Search files (Tab to switch mode)",
-            Self::Notes => "Search note actions (Tab to switch mode)",
+            Self::Notes => "Search note contents (Tab to switch mode)",
             Self::Commands => "Type a command (Tab to switch mode)",
         }
     }
@@ -256,6 +258,127 @@ pub enum SearchResultItem<'a> {
     File(&'a IndexedFile),
     /// Static command registry entry.
     Command(&'a CommandDef),
+}
+
+/// Semantic group for note rows in the command palette and Notes browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaletteNoteCategory {
+    /// Saved bookmarks attached to files in the current workspace scope.
+    Bookmarks,
+    /// Notes attached to configured workspace folders.
+    FolderNotes,
+    /// Document notes attached to files in the current workspace scope.
+    DocumentNotes,
+    /// Saved open-tab notes outside the current workspace scope.
+    OpenTabs,
+}
+
+impl PaletteNoteCategory {
+    /// Browser and Notes-mode category order.
+    pub const ALL: [Self; 4] = [
+        Self::Bookmarks,
+        Self::FolderNotes,
+        Self::DocumentNotes,
+        Self::OpenTabs,
+    ];
+
+    /// Header label used in dedicated Notes surfaces.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Bookmarks => "Bookmarks",
+            Self::FolderNotes => "Folder Notes",
+            Self::DocumentNotes => "Document Notes",
+            Self::OpenTabs => "Open Tabs",
+        }
+    }
+
+    /// Header label used in mixed All mode.
+    ///
+    /// Open file-backed tabs already use "Open Tabs" there, so note rows from
+    /// saved open tabs get a more explicit group label.
+    #[must_use]
+    pub fn all_mode_label(self) -> &'static str {
+        match self {
+            Self::OpenTabs => "Open Tab Notes",
+            _ => self.label(),
+        }
+    }
+}
+
+/// Activation target carried by one note palette row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaletteNoteTarget {
+    /// Jump to a saved file bookmark. The line is stored zero-based.
+    Bookmark {
+        path: PathBuf,
+        line: u32,
+        workspace_folders: Vec<PathBuf>,
+    },
+    /// Open the folder note attached to one configured workspace folder.
+    FolderNote {
+        workspace_name: String,
+        folder: PathBuf,
+    },
+    /// Open the document note attached to one saved file.
+    DocumentNote {
+        path: PathBuf,
+        workspace_folders: Vec<PathBuf>,
+    },
+}
+
+/// One searchable note row shared by the Notes browser and command palette.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteNoteEntry {
+    /// Semantic group that controls section ordering.
+    pub category: PaletteNoteCategory,
+    /// Primary row text.
+    pub title: String,
+    /// Secondary visible metadata such as workspace, folder, path, or line.
+    pub subtitle: String,
+    /// Optional first meaningful note-body line shown as row detail.
+    pub detail: Option<String>,
+    /// Stored note body used only for search and preview workflows.
+    pub note_text: Option<String>,
+    /// Action payload used when the row is activated.
+    pub target: PaletteNoteTarget,
+}
+
+impl PaletteNoteEntry {
+    /// Build the subtitle shown in compact palette rows.
+    #[must_use]
+    pub fn display_subtitle(&self) -> String {
+        self.detail.as_ref().map_or_else(
+            || self.subtitle.clone(),
+            |detail| format!("{} · {detail}", self.subtitle),
+        )
+    }
+
+    /// Return the stored note text, or an empty string for bookmark rows.
+    #[must_use]
+    pub fn note_text(&self) -> &str {
+        self.note_text.as_deref().unwrap_or("")
+    }
+}
+
+/// Main-thread snapshot of one open editor's live note-related state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteOpenEditorNoteSnapshot {
+    /// Saved file path shown in rows and used to resolve sidecar identity.
+    pub path: PathBuf,
+    /// Current live bookmark records from the editor projection.
+    pub bookmarks: Vec<BookmarkRecord>,
+    /// Supplemental source used only when the path is outside the current scope.
+    pub open_tab_source: Option<PaletteOpenTabSource>,
+}
+
+/// Source metadata for a saved open tab outside the current workspace scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteOpenTabSource {
+    /// Restored workspace that owns this path, when it is merely outside the active scope.
+    pub workspace_name: Option<String>,
+    /// Real restored workspace folder for Markdown context, never synthesized.
+    pub workspace_folder: Option<PathBuf>,
 }
 
 #[cfg(test)]
@@ -365,7 +488,7 @@ mod tests {
         );
         assert_eq!(
             SearchMode::Notes.placeholder(),
-            "Search note actions (Tab to switch mode)"
+            "Search note contents (Tab to switch mode)"
         );
         assert_eq!(
             SearchMode::Commands.placeholder(),

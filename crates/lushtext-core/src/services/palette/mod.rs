@@ -9,6 +9,7 @@
 mod commands;
 mod fuzzy;
 mod index;
+mod notes;
 
 #[cfg(feature = "property-tests")]
 pub use commands::merge_sorted_for_property_test;
@@ -19,6 +20,11 @@ pub use commands::{
 };
 pub use fuzzy::fuzzy_score;
 pub use index::FileIndex;
+pub use notes::{
+    PaletteNoteSourceLoad, bookmark_display_label, build_note_entries, format_line_label,
+    load_note_entries_for_scope, open_tab_source_for_path, path_is_in_folders, search_note_entries,
+    search_note_entries_in_category,
+};
 
 #[cfg(test)]
 mod tests;

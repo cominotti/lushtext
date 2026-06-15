@@ -75,7 +75,7 @@ src/
 │   ├── local_history_service.rs # Snapshot capture/list/load/prune/move helpers
 │   ├── note_storage.rs # Shared sidecar identity/load/filter helpers for note workflows
 │   ├── content_search/ # Workspace-wide grep: streaming search + replace/undo helpers
-│   ├── palette/        # Command registry, fuzzy matching, and file indexing
+│   ├── palette/        # Command registry, fuzzy matching, file indexing, and note row search
 │   ├── recent_documents.rs # App-owned recent-document load/save/search and open-tab exclusion helpers
 │   ├── draft_service.rs # Draft persistence: save/load/delete draft files and manifest
 │   ├── durable_write.rs # Private crash-durable write state machine over the filesystem backend: safe temp perms, metadata-before-final-sync, stable target guards, copy fallback, streaming writes, before/after-rename failure classification
@@ -104,7 +104,7 @@ src/
     ├── editor_page/     # Per-tab editor adapter plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark projection, load/save, monitor, and in-tab search helpers
     ├── sidebar/         # Multi-workspace sidebar orchestrator plus dialogs, callbacks, and per-workspace sections
     ├── search_panel/    # Workspace-wide content search panel plus history, list factory, replace, results, and runtime flows
-    ├── command_palette/ # Ctrl+P fuzzy search: files + commands
+    ├── command_palette/ # Ctrl+P search: files + note records + commands
     ├── open_popover/    # Ctrl+K searchable recent-document Open popover
     ├── properties_panel/ # Right-side document metadata + formatting controls
     ├── markdown_preview/ # Read-only Markdown preview (pulldown-cmark → TextTags + anchored GTK widgets)

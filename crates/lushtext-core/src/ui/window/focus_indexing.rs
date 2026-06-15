@@ -346,6 +346,7 @@ impl LushtextWindow {
         self.imp()
             .command_palette
             .set_sources(open_tabs, workspace_group_label);
+        self.refresh_command_palette_note_source();
     }
 
     /// Snapshot file-backed tabs so the palette can search active documents.

@@ -3,7 +3,10 @@
 //! Command palette GObject implementation: template binding, search scheduling,
 //! and grouped result presentation.
 
-use crate::model::palette::{PaletteFileEntry, SearchMode, SearchResultItem};
+use crate::model::palette::{
+    PaletteFileEntry, PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, SearchMode,
+    SearchResultItem,
+};
 use crate::services::palette::{self, FileIndex};
 use crate::ui::command_palette::item::PaletteItem;
 use glib::prelude::*;
@@ -34,6 +37,11 @@ enum SearchHit {
         display_name: String,
         subtitle: String,
         action_id: String,
+    },
+    Note {
+        display_name: String,
+        subtitle: String,
+        target: PaletteNoteTarget,
     },
 }
 
@@ -70,6 +78,14 @@ impl SearchHit {
         }
     }
 
+    fn from_note(note: &PaletteNoteEntry) -> Self {
+        Self::Note {
+            display_name: note.title.clone(),
+            subtitle: note.display_subtitle(),
+            target: note.target.clone(),
+        }
+    }
+
     /// Convert the background-thread hit into a `PaletteItem` for the GTK list model.
     fn into_item(self) -> PaletteItem {
         match self {
@@ -84,6 +100,11 @@ impl SearchHit {
                 subtitle,
                 action_id,
             } => PaletteItem::new_command_raw(display_name, subtitle, action_id),
+            Self::Note {
+                display_name,
+                subtitle,
+                target,
+            } => PaletteItem::new_note_raw(display_name, subtitle, target),
         }
     }
 }
@@ -127,6 +148,8 @@ pub struct LushtextCommandPalette {
     pub file_index: RefCell<Arc<FileIndex>>,
     /// Open file-backed tabs supplied by the window shell.
     pub open_tabs: RefCell<Vec<PaletteFileEntry>>,
+    /// Cached note rows supplied by the window shell after sidecar loading.
+    pub note_entries: RefCell<Arc<[PaletteNoteEntry]>>,
     /// Label for the workspace-indexed file group.
     pub workspace_group_label: RefCell<String>,
     /// Guard used while programmatically syncing the mode dropdown.
@@ -154,6 +177,7 @@ impl Default for LushtextCommandPalette {
             results_store: gio::ListStore::new::<PaletteItem>(),
             file_index: RefCell::new(Arc::new(FileIndex::default())),
             open_tabs: RefCell::default(),
+            note_entries: RefCell::new(Arc::from(Vec::<PaletteNoteEntry>::new())),
             workspace_group_label: RefCell::new("All Workspaces".to_string()),
             syncing_mode_selector: Cell::new(false),
             activate_callback: RefCell::default(),
@@ -454,6 +478,7 @@ impl LushtextCommandPalette {
         let mode = self.mode.get();
         let index = Arc::clone(&self.file_index.borrow());
         let open_tabs = self.open_tabs.borrow().clone();
+        let note_entries = Arc::clone(&self.note_entries.borrow());
         let workspace_group_label = self.workspace_group_label.borrow().clone();
 
         gtk_lush_tasks::spawn_blocking_then(
@@ -462,6 +487,7 @@ impl LushtextCommandPalette {
                 let hits = grouped_hits(
                     &index,
                     &open_tabs,
+                    note_entries.as_ref(),
                     &workspace_group_label,
                     &query,
                     mode,
@@ -609,6 +635,7 @@ impl LushtextCommandPalette {
 fn grouped_hits(
     index: &FileIndex,
     open_tabs: &[PaletteFileEntry],
+    note_entries: &[PaletteNoteEntry],
     workspace_group_label: &str,
     query: &str,
     mode: SearchMode,
@@ -630,7 +657,13 @@ fn grouped_hits(
             );
         }
         SearchMode::Notes => {
-            append_note_command_sections(&mut hits, query, max_per_source);
+            append_note_groups(
+                &mut hits,
+                note_entries,
+                query,
+                max_per_source,
+                PaletteNoteCategory::label,
+            );
         }
         SearchMode::Commands => {
             append_command_group(&mut hits, query, max_per_source);
@@ -645,8 +678,18 @@ fn grouped_hits(
                 query,
                 max_per_source,
             );
-            append_note_command_group(&mut hits, query, max_per_source);
-            append_non_note_command_group(&mut hits, query, max_per_source);
+            append_note_groups(
+                &mut hits,
+                note_entries,
+                query,
+                max_per_source,
+                PaletteNoteCategory::all_mode_label,
+            );
+            append_group(
+                &mut hits,
+                "Commands",
+                command_hits_from_results(palette::search_commands(query, max_per_source)),
+            );
         }
     }
 
@@ -698,25 +741,21 @@ fn append_command_group(hits: &mut Vec<SearchHit>, query: &str, max: usize) {
     hits.extend(command_hits);
 }
 
-/// Append note workflow commands as one source group in mixed `All` mode.
-fn append_note_command_group(hits: &mut Vec<SearchHit>, query: &str, max: usize) {
-    let command_hits = command_hits_from_results(palette::search_note_commands(query, max));
-    append_group(hits, "Notes", command_hits);
-}
-
-/// Append non-note commands in mixed `All` mode to avoid duplicate note rows.
-fn append_non_note_command_group(hits: &mut Vec<SearchHit>, query: &str, max: usize) {
-    let command_hits = command_hits_from_results(palette::search_non_note_commands(query, max));
-    append_group(hits, "Commands", command_hits);
-}
-
-/// Append Notes mode groups in the workflow-oriented section order.
-fn append_note_command_sections(hits: &mut Vec<SearchHit>, query: &str, max: usize) {
-    for section in palette::NoteCommandSection::ALL {
-        let command_hits = command_hits_from_results(palette::search_note_commands_for_section(
-            section, query, max,
-        ));
-        append_group(hits, section.label(), command_hits);
+/// Append note record groups in the shared Notes taxonomy order.
+fn append_note_groups(
+    hits: &mut Vec<SearchHit>,
+    note_entries: &[PaletteNoteEntry],
+    query: &str,
+    max: usize,
+    label_for_category: impl Fn(PaletteNoteCategory) -> &'static str,
+) {
+    for category in PaletteNoteCategory::ALL {
+        let note_hits =
+            palette::search_note_entries_in_category(note_entries, category, query, max)
+                .into_iter()
+                .map(SearchHit::from_note)
+                .collect();
+        append_group(hits, label_for_category(category), note_hits);
     }
 }
 

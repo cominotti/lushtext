@@ -400,6 +400,13 @@ pub struct LushtextWindow {
     pub preview_render_debounce: Debounce,
     /// Debounce for command-palette file index rebuilds (300ms).
     pub index_rebuild_debounce: Debounce,
+    /// Debounce for command-palette note source refreshes after bursty note edits.
+    pub command_palette_notes_refresh_debounce: Debounce,
+    /// Generation for command-palette note source loads.
+    ///
+    /// Sidecar scans run off the main thread; this token prevents an older
+    /// load from replacing note rows after scope or note state has changed.
+    pub command_palette_notes_generation: Cell<u32>,
     /// Focus widget saved before the command palette steals focus.
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     /// One-tick latch for Escape already handled by a child command-palette entry.
@@ -496,6 +503,8 @@ impl Default for LushtextWindow {
             workspace_sidebar_transition_settle: SettleBurst::default(),
             preview_render_debounce: Debounce::default(),
             index_rebuild_debounce: Debounce::default(),
+            command_palette_notes_refresh_debounce: Debounce::default(),
+            command_palette_notes_generation: Cell::new(0),
             saved_focus: RefCell::new(None),
             transient_child_escape_handled: Cell::new(false),
             open_paths: RefCell::new(HashSet::new()),
@@ -847,6 +856,10 @@ impl ObjectImpl for LushtextWindow {
             if item.is_file() {
                 if let Some(path) = item.file_path() {
                     window.open_document(&path);
+                }
+            } else if item.is_note() {
+                if let Some(target) = item.note_target() {
+                    window.activate_palette_note_target(&target);
                 }
             } else if item.is_command() {
                 let action_id = item.action_id();

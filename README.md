@@ -24,7 +24,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Workspace content search** -- Ctrl+Shift+F parallel grep across the current workspace scope (`All workspaces` or one selected workspace) with streaming results, regex/literal/whole-word modes, .gitignore toggle, glob file filter, F4/Shift+F4 match navigation, progress reporting, search history with full state recall, and named saved searches
 - **Multi-file Replace All** -- preview proposed changes with per-match checkboxes, atomic file writes, stable save/replace coordination, file and undo-memory caps, per-file durable undo journals, skip-modified-tabs safety, and full undo support within the active safety window
 - **Find and replace** -- per-tab search bar with match highlighting
-- **Command palette** -- Ctrl+P fuzzy search for files and commands, scoped to the current workspace selection unless `All workspaces` is active (SIMD-accelerated via nucleo)
+- **Command palette** -- Ctrl+P search for files, note records, and commands, scoped to the current workspace selection unless `All workspaces` is active (SIMD-accelerated for fuzzy file/command matching via nucleo)
 - **Automation spine** -- same-user agents and smoke tools can discover the action catalog, activate normal exported GTK actions, wait for app-owned workflows to become idle, inspect bounded D-Bus snapshots, and summarize smoke artifacts without exposing document contents or changing LushText's full-filesystem permission model
 - **Large file handling** -- graceful degradation: >1MB toast, >10MB disable syntax, >50MB disable undo, >500MB refuse
 - **Buffer eviction** -- background tabs evicted when total memory exceeds 256MB, transparently reloaded on focus
@@ -773,7 +773,7 @@ lushtext-core/src/
     local_history_service.rs  Local-history capture/list/load/prune/move helpers
     note_storage.rs  Shared sidecar identity/load/filter helpers for note workflows
     content_search/  Parallel workspace grep plus replace/undo helpers
-    palette/         Command registry, SIMD fuzzy search, and file indexing
+    palette/         Command registry, SIMD fuzzy search, file indexing, and note row search
     recent_documents.rs App-owned recent-document load/save/search helpers
     durable_write.rs Private crash-durable write state machine over the filesystem backend
     editor_io.rs     Encoding-aware text file load/save helpers, health analysis, and mtimes
@@ -799,7 +799,7 @@ lushtext-core/src/
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows
-    command_palette/ Ctrl+P fuzzy search
+    command_palette/ Ctrl+P file, note, and command search
     open_popover/    Ctrl+K recent-document Open popover
     search_bar/      Find/replace
     status_bar/      Bottom bar

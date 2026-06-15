@@ -7,7 +7,7 @@
 mod imp;
 pub mod item;
 
-use crate::model::palette::{IndexedFile, PaletteFileEntry, SearchMode};
+use crate::model::palette::{IndexedFile, PaletteFileEntry, PaletteNoteEntry, SearchMode};
 use crate::services::palette::FileIndex;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -71,6 +71,15 @@ impl LushtextCommandPalette {
     /// Replace the open file-backed tab source used by grouped file results.
     pub fn set_open_tabs(&self, open_tabs: Vec<PaletteFileEntry>) {
         *self.imp().open_tabs.borrow_mut() = open_tabs;
+        if self.is_visible() {
+            let query = self.imp().search_entry.text();
+            self.imp().rebuild_results(&query);
+        }
+    }
+
+    /// Replace the cached note rows used by Notes and All mode.
+    pub fn set_note_entries(&self, note_entries: Vec<PaletteNoteEntry>) {
+        *self.imp().note_entries.borrow_mut() = Arc::from(note_entries);
         if self.is_visible() {
             let query = self.imp().search_entry.text();
             self.imp().rebuild_results(&query);
@@ -174,6 +183,12 @@ impl LushtextCommandPalette {
     #[must_use]
     pub fn open_tab_source_count(&self) -> usize {
         self.imp().open_tabs.borrow().len()
+    }
+
+    /// Number of cached note entries supplied by the window shell.
+    #[must_use]
+    pub fn note_source_count(&self) -> usize {
+        self.imp().note_entries.borrow().len()
     }
 
     /// Number of queued index mutations waiting for the debounce flush.

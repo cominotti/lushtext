@@ -543,7 +543,7 @@ workspace_data = {
 write_envelope(data_dir / "workspaces.json", "dev.cominotti.lushtext.workspace-state", workspace_data)
 
 if name != "notes-empty":
-    few_names = {"notes-few", "notes-constrained", "bookmarks-few", "bookmarks-constrained"}
+    few_names = {"notes-few", "notes-constrained", "bookmarks-few", "bookmarks-constrained", "command-palette-notes"}
     few_count = 2 if name in few_names else 8
     bookmark_count = 2 if name in few_names else 8
     for index in range(few_count):
@@ -831,7 +831,7 @@ run_capture() {
     if [[ "$name" == workspace-* ]]; then
         prepare_workspace_capture_state "$name" "$capture_dir"
     fi
-    if [[ "$name" == notes-* || "$name" == bookmarks-* ]]; then
+    if [[ "$name" == notes-* || "$name" == bookmarks-* || "$name" == "command-palette-notes" ]]; then
         prepare_notes_capture_state "$name" "$capture_dir"
     fi
     if [[ "$name" == command-palette-* ]]; then
@@ -935,7 +935,7 @@ run_capture() {
                 capture_args+=(
                     --window-string-action "set-command-palette-mode=notes"
                     --window-string-action "set-command-palette-query=bookmark"
-                    --wait-atspi-text "Browse Bookmarks"
+                    --wait-atspi-text "Visual bookmark"
                 )
                 ;;
             command-palette-no-results)

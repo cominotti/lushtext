@@ -3,12 +3,13 @@
 //! Widget and window-integration tests for command palette template wiring,
 //! grouped results, keyboard flow, click-away dismissal, and focus restoration.
 
-use crate::common::{ensure_gtk_init, fixture, flush_events, wait_until};
+use crate::common::{ensure_gtk_init, fixture, flush_events, isolated_data_dir, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::prelude::ToValue;
 use gtk4::prelude::*;
 use lushtext_core::model::palette::{
-    CommandCategory, CommandDef, IndexedFile, PaletteFileEntry, SearchMode,
+    CommandCategory, CommandDef, IndexedFile, PaletteFileEntry, PaletteNoteCategory,
+    PaletteNoteEntry, PaletteNoteTarget, SearchMode,
 };
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
@@ -17,7 +18,7 @@ use lushtext_core::services::{json_store, workspace_manager};
 use lushtext_core::services::palette::FileIndex;
 use lushtext_core::ui::command_palette::LushtextCommandPalette;
 use lushtext_core::ui::command_palette::item::PaletteItem;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -137,6 +138,46 @@ fn row_subtitle(palette: &LushtextCommandPalette, label: &str) -> Option<String>
         .map(|item| item.subtitle())
 }
 
+fn bookmark_note(title: &str, subtitle: &str, path: PathBuf, line: u32) -> PaletteNoteEntry {
+    PaletteNoteEntry {
+        category: PaletteNoteCategory::Bookmarks,
+        title: title.to_string(),
+        subtitle: subtitle.to_string(),
+        detail: None,
+        note_text: None,
+        target: PaletteNoteTarget::Bookmark {
+            path,
+            line,
+            workspace_folders: Vec::new(),
+        },
+    }
+}
+
+fn open_tab_bookmark_note(title: &str, subtitle: &str, path: PathBuf, line: u32) -> PaletteNoteEntry {
+    PaletteNoteEntry {
+        category: PaletteNoteCategory::OpenTabs,
+        ..bookmark_note(title, subtitle, path, line)
+    }
+}
+
+fn text_note(
+    category: PaletteNoteCategory,
+    title: &str,
+    subtitle: &str,
+    detail: &str,
+    body: &str,
+    target: PaletteNoteTarget,
+) -> PaletteNoteEntry {
+    PaletteNoteEntry {
+        category,
+        title: title.to_string(),
+        subtitle: subtitle.to_string(),
+        detail: Some(detail.to_string()),
+        note_text: Some(body.to_string()),
+        target,
+    }
+}
+
 fn rebuild_and_wait_for_label(palette: &LushtextCommandPalette, query: &str, label: &str) {
     palette.imp().rebuild_results(query);
     spin_until(|| palette_labels(palette).iter().any(|item| item == label));
@@ -230,6 +271,32 @@ fn test_palette_item_header_is_not_activatable() {
     assert!(!item.is_file());
     assert!(!item.is_command());
     assert!(!item.is_activatable());
+}
+
+#[test]
+fn test_palette_item_note_is_activatable_without_body_text() {
+    ensure_gtk_init();
+    let path = PathBuf::from("/workspace/src/main.rs");
+    let target = PaletteNoteTarget::Bookmark {
+        path,
+        line: 4,
+        workspace_folders: vec![PathBuf::from("/workspace")],
+    };
+    let item = PaletteItem::new_note_raw(
+        "Bookmark · Review",
+        "/workspace/src/main.rs · Line 5",
+        target.clone(),
+    );
+
+    assert_eq!(item.display_name(), "Bookmark · Review");
+    assert_eq!(item.subtitle(), "/workspace/src/main.rs · Line 5");
+    assert!(item.is_note());
+    assert!(item.is_activatable());
+    assert!(!item.is_file());
+    assert!(!item.is_command());
+    assert_eq!(item.note_target(), Some(target));
+    assert!(item.file_path().is_none());
+    assert!(item.action_id().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +664,31 @@ fn test_command_palette_all_mode_groups_sources_by_priority() {
         "/tmp/open_tab.rs".to_string(),
         PathBuf::from("/tmp/open_tab.rs"),
     )]);
+    palette.set_note_entries(vec![
+        bookmark_note(
+            "Bookmark · Open task",
+            "Project · /tmp/open_note.rs · Line 2",
+            PathBuf::from("/tmp/open_note.rs"),
+            1,
+        ),
+        text_note(
+            PaletteNoteCategory::DocumentNotes,
+            "Document Note · open_note.rs",
+            "Project · /workspace/open_note.rs",
+            "Open document note",
+            "Open document note body",
+            PaletteNoteTarget::DocumentNote {
+                path: PathBuf::from("/workspace/open_note.rs"),
+                workspace_folders: vec![PathBuf::from("/workspace")],
+            },
+        ),
+        open_tab_bookmark_note(
+            "Bookmark · Open tab note",
+            "Open tab · Outside workspace · /tmp/open_tab_note.rs · Line 3",
+            PathBuf::from("/tmp/open_tab_note.rs"),
+            2,
+        ),
+    ]);
     palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
     palette.imp().set_mode(SearchMode::All);
 
@@ -605,24 +697,26 @@ fn test_command_palette_all_mode_groups_sources_by_priority() {
 
     let open_tabs = row_position(&labels, "Open Tabs");
     let workspace = row_position(&labels, "Selected Workspace");
-    let notes = row_position(&labels, "Notes");
+    let bookmarks = row_position(&labels, "Bookmarks");
+    let document_notes = row_position(&labels, "Document Notes");
+    let open_tab_notes = row_position(&labels, "Open Tab Notes");
     let commands = row_position(&labels, "Commands");
     assert!(
-        open_tabs < workspace && workspace < notes && notes < commands,
+        open_tabs < workspace
+            && workspace < bookmarks
+            && bookmarks < document_notes
+            && document_notes < open_tab_notes
+            && open_tab_notes < commands,
         "All mode groups should preserve priority: {labels:?}",
     );
     assert!(labels.iter().any(|label| label == "open_tab.rs"));
     assert!(labels.iter().any(|label| label == "open_workspace.rs"));
+    assert!(labels.iter().any(|label| label == "Bookmark · Open task"));
+    assert!(labels.iter().any(|label| label == "Document Note · open_note.rs"));
+    assert!(labels.iter().any(|label| label == "Bookmark · Open tab note"));
     assert!(labels.iter().any(|label| label == "Open Document Note"));
     assert!(labels.iter().any(|label| label == "Open File"));
-    assert_eq!(
-        labels
-            .iter()
-            .filter(|label| label.as_str() == "Open Document Note")
-            .count(),
-        1,
-        "note commands should not be duplicated under Commands: {labels:?}",
-    );
+    assert!(!labels.iter().any(|label| label == "Notes"));
 }
 
 #[test]
@@ -713,37 +807,68 @@ fn test_command_palette_aggregate_scope_deduplicates_duplicate_workspace_files()
 }
 
 #[test]
-fn test_command_palette_notes_mode_groups_note_commands_by_intent() {
+fn test_command_palette_notes_mode_groups_note_records_by_category() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
+    palette.set_note_entries(vec![
+        bookmark_note(
+            "Bookmark · Review parser",
+            "Core · /workspace/src/parser.rs · Line 8",
+            PathBuf::from("/workspace/src/parser.rs"),
+            7,
+        ),
+        text_note(
+            PaletteNoteCategory::FolderNotes,
+            "Folder Note · Core",
+            "Core · /workspace",
+            "Folder planning",
+            "Folder planning body",
+            PaletteNoteTarget::FolderNote {
+                workspace_name: "Core".to_string(),
+                folder: PathBuf::from("/workspace"),
+            },
+        ),
+        text_note(
+            PaletteNoteCategory::DocumentNotes,
+            "Document Note · parser.rs",
+            "Core · /workspace · /workspace/src/parser.rs",
+            "Document planning",
+            "Document planning body",
+            PaletteNoteTarget::DocumentNote {
+                path: PathBuf::from("/workspace/src/parser.rs"),
+                workspace_folders: vec![PathBuf::from("/workspace")],
+            },
+        ),
+        open_tab_bookmark_note(
+            "Bookmark · Outside tab",
+            "Open tab · Outside workspace · /tmp/outside.md · Line 3",
+            PathBuf::from("/tmp/outside.md"),
+            2,
+        ),
+    ]);
     palette.imp().set_mode(SearchMode::Notes);
 
-    rebuild_and_wait_for_label(&palette, "", "Workspace");
+    rebuild_and_wait_for_label(&palette, "", "Open Tabs");
     let labels = palette_labels(&palette);
 
-    let browse = row_position(&labels, "Browse");
-    let current_document = row_position(&labels, "Current Document");
-    let bookmark_navigation = row_position(&labels, "Bookmark Navigation");
-    let workspace = row_position(&labels, "Workspace");
+    let bookmarks = row_position(&labels, "Bookmarks");
+    let folder_notes = row_position(&labels, "Folder Notes");
+    let document_notes = row_position(&labels, "Document Notes");
+    let open_tabs = row_position(&labels, "Open Tabs");
     assert!(
-        browse < current_document
-            && current_document < bookmark_navigation
-            && bookmark_navigation < workspace,
-        "Notes mode groups should preserve intent order: {labels:?}",
+        bookmarks < folder_notes && folder_notes < document_notes && document_notes < open_tabs,
+        "Notes mode groups should preserve note category order: {labels:?}",
     );
-    assert!(labels.iter().any(|label| label == "Browse Notes"));
-    assert!(labels.iter().any(|label| label == "Browse Bookmarks"));
-    assert!(labels.iter().any(|label| label == "Toggle Bookmark"));
-    assert!(labels.iter().any(|label| label == "Edit Bookmark"));
-    assert!(labels.iter().any(|label| label == "Open Document Note"));
-    assert!(labels.iter().any(|label| label == "Next Bookmark"));
-    assert!(labels.iter().any(|label| label == "Previous Bookmark"));
-    assert!(labels.iter().any(|label| label == "Open Folder Note"));
+    assert!(labels.iter().any(|label| label == "Bookmark · Review parser"));
+    assert!(labels.iter().any(|label| label == "Folder Note · Core"));
+    assert!(labels.iter().any(|label| label == "Document Note · parser.rs"));
+    assert!(labels.iter().any(|label| label == "Bookmark · Outside tab"));
     assert!(!labels.iter().any(|label| label == "Commands"));
+    assert!(!labels.iter().any(|label| label == "Browse Notes"));
 }
 
 #[test]
-fn test_command_palette_notes_mode_excludes_files_and_non_note_commands() {
+fn test_command_palette_notes_mode_excludes_files_and_commands() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
 
@@ -756,19 +881,239 @@ fn test_command_palette_notes_mode_excludes_files_and_non_note_commands() {
         "/tmp/open_notes_tab.rs".to_string(),
         PathBuf::from("/tmp/open_notes_tab.rs"),
     )]);
+    palette.set_note_entries(vec![text_note(
+        PaletteNoteCategory::DocumentNotes,
+        "Document Note · open_notes.rs",
+        "Project · /workspace/open_notes.rs",
+        "Open note detail",
+        "Open note body",
+        PaletteNoteTarget::DocumentNote {
+            path: PathBuf::from("/workspace/open_notes.rs"),
+            workspace_folders: vec![PathBuf::from("/workspace")],
+        },
+    )]);
     palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
     palette.imp().set_mode(SearchMode::Notes);
 
-    rebuild_and_wait_for_label(&palette, "open", "Open Document Note");
+    rebuild_and_wait_for_label(&palette, "open", "Document Note · open_notes.rs");
     let labels = palette_labels(&palette);
 
-    assert!(labels.iter().any(|label| label == "Open Document Note"));
-    assert!(labels.iter().any(|label| label == "Open Folder Note"));
-    assert!(!labels.iter().any(|label| label == "Open Tabs"));
+    assert!(labels.iter().any(|label| label == "Document Note · open_notes.rs"));
     assert!(!labels.iter().any(|label| label == "Selected Workspace"));
     assert!(!labels.iter().any(|label| label == "open_notes.rs"));
     assert!(!labels.iter().any(|label| label == "open_notes_tab.rs"));
     assert!(!labels.iter().any(|label| label == "Open File"));
+    assert!(!labels.iter().any(|label| label == "Open Document Note"));
+}
+
+#[test]
+fn test_command_palette_notes_mode_empty_source_has_no_fake_rows() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    palette.imp().set_mode(SearchMode::Notes);
+
+    palette.imp().rebuild_results("");
+    wait_until(Duration::from_secs(5), || palette_labels(&palette).is_empty());
+
+    assert!(palette_labels(&palette).is_empty());
+    assert!(
+        !palette.imp().no_results_label.property::<bool>("visible"),
+        "empty default Notes mode should not show a no-results warning"
+    );
+
+    palette.imp().rebuild_results("missing-note");
+    wait_until(Duration::from_secs(5), || {
+        palette.imp().no_results_label.property::<bool>("visible")
+    });
+    assert!(palette_labels(&palette).is_empty());
+}
+
+#[test]
+fn test_command_palette_notes_mode_handles_dense_awkward_rows() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    let entries = (0..80)
+        .map(|index| {
+            bookmark_note(
+                &format!(
+                    "Bookmark · Dense Awkward Label {index:02} With Extra Long Searchable Text"
+                ),
+                &format!(
+                    "Dense Workspace · /workspace/deeply/nested/path/{index:02}/file.rs · Line {}",
+                    index + 1
+                ),
+                PathBuf::from(format!("/workspace/deeply/nested/path/{index:02}/file.rs")),
+                u32::try_from(index).expect("dense test index should fit u32"),
+            )
+        })
+        .collect();
+    palette.set_note_entries(entries);
+    palette.imp().set_mode(SearchMode::Notes);
+
+    rebuild_and_wait_until(&palette, "dense awkward", |labels| labels.len() == 51);
+    let labels = palette_labels(&palette);
+    assert_eq!(labels.first().map(String::as_str), Some("Bookmarks"));
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|label| label.starts_with("Bookmark · Dense Awkward Label"))
+            .count(),
+        50,
+        "Notes mode should cap dense category rows without adding unrelated groups: {labels:?}"
+    );
+    assert!(!labels.iter().any(|label| label == "Commands"));
+}
+
+#[test]
+fn test_command_palette_notes_mode_matches_note_content_and_metadata() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    palette.set_note_entries(vec![
+        bookmark_note(
+            "Bookmark · Ship checkpoint",
+            "Release Workspace · /workspace/src/lib.rs · Line 42",
+            PathBuf::from("/workspace/src/lib.rs"),
+            41,
+        ),
+        text_note(
+            PaletteNoteCategory::FolderNotes,
+            "Folder Note · Release Workspace",
+            "Release Workspace · /workspace/docs",
+            "Folder note detail",
+            "Folder body mentions migration checklist",
+            PaletteNoteTarget::FolderNote {
+                workspace_name: "Release Workspace".to_string(),
+                folder: PathBuf::from("/workspace/docs"),
+            },
+        ),
+        text_note(
+            PaletteNoteCategory::DocumentNotes,
+            "Document Note · lib.rs",
+            "Release Workspace · /workspace · /workspace/src/lib.rs",
+            "Document note detail",
+            "Document body mentions rollout proof",
+            PaletteNoteTarget::DocumentNote {
+                path: PathBuf::from("/workspace/src/lib.rs"),
+                workspace_folders: vec![PathBuf::from("/workspace")],
+            },
+        ),
+    ]);
+    palette.imp().set_mode(SearchMode::Notes);
+
+    rebuild_and_wait_for_label(&palette, "rollout proof", "Document Note · lib.rs");
+    assert_eq!(palette_labels(&palette), vec!["Document Notes", "Document Note · lib.rs"]);
+
+    rebuild_and_wait_for_label(&palette, "migration checklist", "Folder Note · Release Workspace");
+    assert_eq!(
+        palette_labels(&palette),
+        vec!["Folder Notes", "Folder Note · Release Workspace"]
+    );
+
+    rebuild_and_wait_for_label(&palette, "Ship checkpoint", "Bookmark · Ship checkpoint");
+    assert_eq!(
+        palette_labels(&palette),
+        vec!["Bookmarks", "Bookmark · Ship checkpoint"]
+    );
+
+    rebuild_and_wait_for_label(&palette, "Line 42", "Bookmark · Ship checkpoint");
+    assert!(palette_labels(&palette).iter().any(|label| label == "Bookmark · Ship checkpoint"));
+
+    rebuild_and_wait_for_label(&palette, "/workspace/docs", "Folder Note · Release Workspace");
+    assert!(palette_labels(&palette)
+        .iter()
+        .any(|label| label == "Folder Note · Release Workspace"));
+
+    rebuild_and_wait_for_label(&palette, "/workspace/src/lib.rs", "Document Note · lib.rs");
+    let labels = palette_labels(&palette);
+    assert!(labels.iter().any(|label| label == "Bookmark · Ship checkpoint"));
+    assert!(labels.iter().any(|label| label == "Document Note · lib.rs"));
+}
+
+#[test]
+fn test_command_palette_note_rows_activate_all_target_variants() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    let bookmark_path = PathBuf::from("/workspace/src/lib.rs");
+    let folder_path = PathBuf::from("/workspace/docs");
+    let document_path = PathBuf::from("/workspace/README.md");
+    palette.set_note_entries(vec![
+        bookmark_note(
+            "Bookmark · Activate bookmark",
+            "Project · /workspace/src/lib.rs · Line 7",
+            bookmark_path.clone(),
+            6,
+        ),
+        text_note(
+            PaletteNoteCategory::FolderNotes,
+            "Folder Note · Project",
+            "Project · /workspace/docs",
+            "Folder activation",
+            "Folder activation body",
+            PaletteNoteTarget::FolderNote {
+                workspace_name: "Project".to_string(),
+                folder: folder_path.clone(),
+            },
+        ),
+        text_note(
+            PaletteNoteCategory::DocumentNotes,
+            "Document Note · README.md",
+            "Project · /workspace · /workspace/README.md",
+            "Document activation",
+            "Document activation body",
+            PaletteNoteTarget::DocumentNote {
+                path: document_path.clone(),
+                workspace_folders: vec![PathBuf::from("/workspace")],
+            },
+        ),
+    ]);
+    palette.imp().set_mode(SearchMode::Notes);
+    rebuild_and_wait_for_label(&palette, "", "Document Note · README.md");
+
+    let activated = Rc::new(RefCell::new(Vec::new()));
+    let activated_clone = activated.clone();
+    palette.connect_item_activated(move |item| {
+        if let Some(target) = item.note_target() {
+            activated_clone.borrow_mut().push(target);
+        }
+    });
+
+    let selection = palette
+        .imp()
+        .results_view
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+        .expect("results should use a SingleSelection model");
+    for label in [
+        "Bookmark · Activate bookmark",
+        "Folder Note · Project",
+        "Document Note · README.md",
+    ] {
+        let position = u32::try_from(row_position(&palette_labels(&palette), label))
+            .expect("palette row position should fit GTK selection index");
+        selection.set_selected(position);
+        palette.imp().activate_selected();
+    }
+
+    let targets = activated.borrow();
+    assert!(matches!(
+        &targets[0],
+        PaletteNoteTarget::Bookmark { path, line, .. }
+            if path == &bookmark_path && *line == 6
+    ));
+    assert!(matches!(
+        &targets[1],
+        PaletteNoteTarget::FolderNote {
+            workspace_name,
+            folder,
+        } if workspace_name == "Project" && folder == &folder_path
+    ));
+    assert!(matches!(
+        &targets[2],
+        PaletteNoteTarget::DocumentNote {
+            path,
+            workspace_folders,
+        } if path == &document_path && workspace_folders == &vec![PathBuf::from("/workspace")]
+    ));
 }
 
 #[test]
@@ -1372,6 +1717,7 @@ fn test_palette_workspace_group_label_follows_aggregate_workspace_scope() {
 #[test]
 fn test_palette_empty_selected_workspace_scope_has_no_workspace_file_rows() {
     ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
     let folders_dir = tempfile::tempdir().expect("scoped workspace folders tempdir");
     let other_folder = folders_dir.path().join("other");
     fixture::create_dir_all(&other_folder);
@@ -1395,11 +1741,15 @@ fn test_palette_empty_selected_workspace_scope_has_no_workspace_file_rows() {
     wait_for_empty_selected_workspace_index(&window, 1);
 
     activate_action(&window, "toggle-command-palette");
+    wait_until(Duration::from_secs(5), || {
+        window.imp().palette_revealer.reveals_child()
+    });
     let palette = window.imp().command_palette.clone();
     palette.imp().set_mode(SearchMode::Files);
     palette.imp().rebuild_results("beta");
     wait_until(Duration::from_secs(10), || {
         palette.imp().no_results_label.property::<bool>("visible")
+            && palette_labels(&palette).is_empty()
     });
 
     let labels = palette_labels(&palette);
@@ -1421,15 +1771,23 @@ fn test_palette_open_tabs_can_appear_outside_selected_workspace() {
     present_window(&window);
     wait_for_palette_index(&window, 1);
     window.open_document(&outside_file);
-    flush_events();
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window)
+            .and_then(|editor| editor.file_path())
+            .as_deref()
+            == Some(outside_file.as_path())
+    });
 
     activate_action(&window, "toggle-command-palette");
     let palette = window.imp().command_palette.clone();
     palette.imp().set_mode(SearchMode::Files);
     palette.imp().rebuild_results("beta");
-    spin_until(|| {
+    wait_until(Duration::from_secs(5), || {
         let labels = palette_labels(&palette);
         labels.iter().any(|label| label == "beta.rs")
+            && labels.iter().any(|label| label == "Open Tabs")
+            && !labels.iter().any(|label| label == "Selected Workspace")
+            && !labels.iter().any(|label| label == "alpha.rs")
             && !labels.iter().any(|label| label == "Commands")
     });
 

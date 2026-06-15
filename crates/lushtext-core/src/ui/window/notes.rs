@@ -6,7 +6,6 @@
 //! scheduling, and workspace browse logic out of the generic document shell.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 #[cfg(feature = "test-utils")]
@@ -24,12 +23,15 @@ use libadwaita::prelude::{
 
 use crate::model::bookmark::BookmarkRecord;
 use crate::model::migration_ledger::MigrationKind;
-use crate::model::note::{NoteViewMode, RichNoteBody, note_preview_line};
+use crate::model::note::{NoteViewMode, RichNoteBody};
+use crate::model::palette::{
+    PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot,
+};
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScope};
 use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{
     bookmark_excerpt, bookmark_service, document_note_service, folder_note_service, json_store,
-    local_history_service, migration_ledger,
+    local_history_service, migration_ledger, palette as palette_service,
 };
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::{
@@ -46,6 +48,9 @@ use super::LushtextWindow;
 /// 200ms coalesces rapid line-shift edits into one filesystem write without
 /// letting note state drift for long after the user pauses typing.
 const NOTES_SAVE_DEBOUNCE_MS: u64 = 200;
+
+/// Coalesce command-palette note-source reloads after live note/bookmark bursts.
+const COMMAND_PALETTE_NOTES_REFRESH_DEBOUNCE_MS: u64 = 150;
 
 /// Alert-dialog response IDs reused by the note workflows.
 const RESPONSE_CANCEL: &str = "cancel";
@@ -111,26 +116,6 @@ struct NotesBrowserLoadResult {
     diagnostics: Vec<RecoveryDiagnostic>,
 }
 
-/// Main-thread snapshot of one open editor's live bookmark and saved path state.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OpenEditorNoteSnapshot {
-    /// Saved file path shown in browser rows and used to resolve sidecar identity.
-    path: PathBuf,
-    /// Current live bookmark records from `GtkSourceMark` positions.
-    bookmarks: Vec<BookmarkRecord>,
-    /// Supplemental source used only when the path is outside the current scope.
-    open_tab_source: Option<OpenTabSource>,
-}
-
-/// Source metadata for a saved open tab outside the current workspace scope.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OpenTabSource {
-    /// Restored workspace that owns this path, when it is merely outside the active scope.
-    workspace_name: Option<String>,
-    /// Real restored workspace folder for Markdown context, never synthesized.
-    workspace_folder: Option<PathBuf>,
-}
-
 /// Decision for `Open Folder Note...` when the caller has not supplied an exact folder row.
 ///
 /// Folder notes are attached to folders, not workspaces. Naming this decision
@@ -156,39 +141,11 @@ enum FolderNoteOpenTarget {
     },
 }
 
-/// Origin of a browser row that is attached to a saved document path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum NotesBrowserDocumentSource {
-    /// The row belongs to the currently browsed workspace scope.
-    Workspace {
-        /// User-visible workspace label.
-        workspace_name: String,
-        /// Workspace folder used for Markdown context and document-note actions.
-        workspace_folder: PathBuf,
-    },
-    /// The row comes from a saved open tab outside the current scope.
-    OpenTab(OpenTabSource),
-}
-
 /// One entry shown in the unified notes browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum NotesBrowserEntry {
-    Bookmark {
-        source: NotesBrowserDocumentSource,
-        path: PathBuf,
-        line: u32,
-        label: Option<String>,
-    },
-    FolderNote {
-        workspace_name: String,
-        folder: PathBuf,
-        note: RichNoteBody,
-    },
-    Document {
-        source: NotesBrowserDocumentSource,
-        path: PathBuf,
-        note: RichNoteBody,
-    },
+struct NotesBrowserEntry {
+    /// Shared note row produced by the GTK-free palette note source.
+    note: PaletteNoteEntry,
 }
 
 /// Lowercased search query plus a small prefix table for allocation-light matching.
@@ -324,6 +281,7 @@ impl LushtextWindow {
                 && let Some(editor) = editor_weak.upgrade()
             {
                 window.save_bookmarks_debounced(&editor);
+                window.refresh_command_palette_note_source_debounced();
                 if window.is_active_editor(&editor) {
                     window.refresh_notes_menu_state();
                 }
@@ -377,6 +335,7 @@ impl LushtextWindow {
                     Ok(bookmarks) => {
                         editor.load_bookmarks(&bookmarks);
                         if let Some(window) = window_weak.upgrade() {
+                            window.refresh_command_palette_note_source_debounced();
                             window.refresh_status_bar();
                         }
                     }
@@ -399,6 +358,7 @@ impl LushtextWindow {
     pub(super) fn reset_notes_after_save_as(&self, editor: &LushtextEditorPage, path: &Path) {
         editor.clear_bookmarks();
         self.resolve_notes_for_editor(editor, path);
+        self.refresh_command_palette_note_source_debounced();
     }
 
     /// Migrate sidecar documents after an in-app sidebar rename.
@@ -476,6 +436,8 @@ impl LushtextWindow {
                             MessageKind::Warning,
                         );
                     }
+                } else if let Some(window) = window_weak.upgrade() {
+                    window.refresh_command_palette_note_source_debounced();
                 }
             },
         );
@@ -930,67 +892,20 @@ impl LushtextWindow {
             self.clone(),
             move || {
                 let data_dir = json_store::data_dir();
-                let folder_notes = if visible_workspaces.is_empty() {
-                    folder_note_service::FolderNoteListing {
-                        notes: Vec::new(),
-                        diagnostics: Vec::new(),
-                    }
-                } else {
-                    folder_note_service::list_folder_notes_for_scope_recovering(
-                        &data_dir,
-                        &visible_workspaces,
-                        &scope,
-                    )?
-                };
-                let bookmark_listing = if scope_folders.is_empty() {
-                    bookmark_service::WorkspaceBookmarkListing {
-                        bookmarks: Vec::new(),
-                        diagnostics: Vec::new(),
-                    }
-                } else {
-                    bookmark_service::list_workspace_bookmarks_recovering(
-                        &data_dir,
-                        &scope_folders,
-                    )?
-                };
-                let bookmark_diagnostics = bookmark_listing.diagnostics;
-                let live_bookmarks = open_editor_snapshots
-                    .iter()
-                    .filter(|snapshot| snapshot.open_tab_source.is_none())
-                    .map(|snapshot| OpenEditorNoteSnapshot {
-                        path: snapshot.path.clone(),
-                        bookmarks: snapshot.bookmarks.clone(),
-                        open_tab_source: None,
-                    })
-                    .collect();
-                let bookmarks =
-                    merge_live_bookmark_snapshots(bookmark_listing.bookmarks, live_bookmarks);
-                let document_notes = if scope_folders.is_empty() {
-                    document_note_service::WorkspaceDocumentNoteListing {
-                        notes: Vec::new(),
-                        diagnostics: Vec::new(),
-                    }
-                } else {
-                    document_note_service::list_workspace_document_notes_recovering(
-                        &data_dir,
-                        &scope_folders,
-                    )?
-                };
-                let mut diagnostics = Vec::new();
-                diagnostics.extend(folder_notes.diagnostics);
-                diagnostics.extend(bookmark_diagnostics);
-                diagnostics.extend(document_notes.diagnostics);
-                let entries = build_notes_browser_entries(
-                    &visible_workspaces,
-                    bookmarks,
-                    folder_notes.notes,
-                    document_notes.notes,
-                    open_editor_snapshots,
+                let load = palette_service::load_note_entries_for_scope(
                     &data_dir,
-                );
+                    &visible_workspaces,
+                    &scope,
+                    &scope_folders,
+                    open_editor_snapshots,
+                )?;
                 Ok::<_, anyhow::Error>(NotesBrowserLoadResult {
-                    entries,
-                    diagnostics,
+                    entries: load
+                        .entries
+                        .into_iter()
+                        .map(NotesBrowserEntry::from)
+                        .collect(),
+                    diagnostics: load.diagnostics,
                 })
             },
             |window, result| match result {
@@ -1235,8 +1150,11 @@ impl LushtextWindow {
                         document_note_service::delete_for_path(&data_dir, &path_for_delete)
                     },
                     |window, result| match result {
-                        Ok(()) => window
-                            .publish_status_message("Document note cleared", MessageKind::Info),
+                        Ok(()) => {
+                            window.refresh_command_palette_note_source_debounced();
+                            window
+                                .publish_status_message("Document note cleared", MessageKind::Info);
+                        }
                         Err(error) => {
                             tracing::error!("Failed to clear document note: {error}");
                             window.publish_status_message(
@@ -1278,6 +1196,7 @@ impl LushtextWindow {
                         },
                         |window, result| match result {
                             Ok(()) => {
+                                window.refresh_command_palette_note_source_debounced();
                                 window.publish_status_message(
                                     "Document note saved",
                                     MessageKind::Info,
@@ -1364,6 +1283,7 @@ impl LushtextWindow {
                     },
                     |window, result| match result {
                         Ok(()) => {
+                            window.refresh_command_palette_note_source_debounced();
                             window.publish_status_message("Folder note cleared", MessageKind::Info);
                         }
                         Err(error) => {
@@ -1407,6 +1327,7 @@ impl LushtextWindow {
                         },
                         |window, result| match result {
                             Ok(()) => {
+                                window.refresh_command_palette_note_source_debounced();
                                 window
                                     .publish_status_message("Folder note saved", MessageKind::Info);
                             }
@@ -1483,7 +1404,7 @@ impl LushtextWindow {
         &self,
         scope_folders: &[PathBuf],
         all_workspaces: &[WorkspaceConfig],
-    ) -> Vec<OpenEditorNoteSnapshot> {
+    ) -> Vec<PaletteOpenEditorNoteSnapshot> {
         let tab_view = &self.imp().tab_view;
         let mut snapshots = Vec::new();
         for index in 0..tab_view.n_pages() {
@@ -1495,15 +1416,95 @@ impl LushtextWindow {
             let Some(path) = editor.file_path() else {
                 continue;
             };
-            let open_tab_source = (!path_is_in_folders(&path, scope_folders))
-                .then(|| open_tab_source_for_path(all_workspaces, &path));
-            snapshots.push(OpenEditorNoteSnapshot {
+            let open_tab_source = (!palette_service::path_is_in_folders(&path, scope_folders))
+                .then(|| palette_service::open_tab_source_for_path(all_workspaces, &path));
+            snapshots.push(PaletteOpenEditorNoteSnapshot {
                 path: path.clone(),
                 bookmarks: editor.bookmark_records(),
                 open_tab_source,
             });
         }
         snapshots
+    }
+
+    /// Coalesce cached note-row refreshes after bursty note and bookmark edits.
+    pub(super) fn refresh_command_palette_note_source_debounced(&self) {
+        self.imp().command_palette_notes_refresh_debounce.schedule(
+            self,
+            Duration::from_millis(COMMAND_PALETTE_NOTES_REFRESH_DEBOUNCE_MS),
+            |window, _| {
+                window.refresh_command_palette_note_source();
+            },
+        );
+    }
+
+    /// Refresh cached command-palette note rows from the current workspace scope.
+    ///
+    /// The GTK thread only snapshots open-editor bookmark metadata here. Sidecar
+    /// listing and document identity work stay in the background task, and the
+    /// generation guard prevents stale completions from replacing newer rows.
+    pub(super) fn refresh_command_palette_note_source(&self) {
+        let workspaces_file = self.imp().sidebar.workspaces_file();
+        let scope = workspaces_file.current_scope();
+        let all_workspaces = workspaces_file.workspaces;
+        let visible_workspaces: Vec<WorkspaceConfig> = match &scope {
+            WorkspaceScope::All => all_workspaces.clone(),
+            WorkspaceScope::Workspace(workspace_id) => all_workspaces
+                .iter()
+                .filter(|workspace| &workspace.id == workspace_id)
+                .cloned()
+                .collect(),
+        };
+        let scope_folders: Vec<PathBuf> = visible_workspaces
+            .iter()
+            .flat_map(WorkspaceConfig::folder_paths)
+            .collect();
+        let open_editor_snapshots =
+            self.open_editor_note_snapshots(&scope_folders, &all_workspaces);
+
+        let generation = self
+            .imp()
+            .command_palette_notes_generation
+            .get()
+            .wrapping_add(1);
+        self.imp().command_palette_notes_generation.set(generation);
+        let window_weak = self.downgrade();
+        spawn_blocking_then(
+            (),
+            move || {
+                let data_dir = json_store::data_dir();
+                palette_service::load_note_entries_for_scope(
+                    &data_dir,
+                    &visible_workspaces,
+                    &scope,
+                    &scope_folders,
+                    open_editor_snapshots,
+                )
+            },
+            move |(), result| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                if window.imp().command_palette_notes_generation.get() != generation {
+                    return;
+                }
+                match result {
+                    Ok(load) => {
+                        Self::trace_browse_recovery_diagnostics(&load.diagnostics);
+                        window.imp().command_palette.set_note_entries(load.entries);
+                    }
+                    Err(error) => {
+                        tracing::warn!("Failed to refresh command-palette notes: {error}");
+                        if window.imp().palette_revealer.reveals_child() {
+                            window.publish_status_message(
+                                "Notes could not be loaded for the palette",
+                                MessageKind::Warning,
+                            );
+                        }
+                    }
+                }
+            },
+        );
     }
 
     /// Find an already-open saved editor for a concrete path.
@@ -2035,6 +2036,26 @@ impl LushtextWindow {
         }
     }
 
+    /// Activate one note-search target through the existing note workflows.
+    pub(super) fn activate_palette_note_target(&self, target: &PaletteNoteTarget) {
+        match target {
+            PaletteNoteTarget::Bookmark { path, line, .. } => {
+                open_editor_at_line(self, path, line.saturating_add(1));
+            }
+            PaletteNoteTarget::FolderNote {
+                workspace_name,
+                folder,
+            } => self.open_folder_note_for_folder(workspace_name, folder),
+            PaletteNoteTarget::DocumentNote {
+                path,
+                workspace_folders,
+            } => {
+                self.open_document(path);
+                self.open_document_note_for_path_with_folders(path, workspace_folders.clone());
+            }
+        }
+    }
+
     /// Return the current browser handle, clearing stale state left by a closed dialog.
     fn current_notes_browser(&self) -> Option<ActiveNotesBrowser> {
         let browser = self.imp().active_notes_browser.borrow().clone();
@@ -2331,190 +2352,81 @@ fn build_notes_preview_page(
     content
 }
 
-impl OpenTabSource {
-    /// User-facing source label for rows that come from a saved open tab.
-    #[must_use]
-    fn row_label(&self) -> String {
-        match (&self.workspace_name, &self.workspace_folder) {
-            (Some(workspace_name), Some(folder)) => {
-                format!("Open tab · {workspace_name} · {}", folder.display())
-            }
-            (Some(workspace_name), None) => format!("Open tab · {workspace_name}"),
-            (None, _) => "Open tab · Outside workspace".to_string(),
-        }
-    }
-}
-
-impl NotesBrowserDocumentSource {
-    /// User-facing source label shown in row subtitles and preview metadata.
-    #[must_use]
-    fn row_label(&self) -> String {
-        match self {
-            Self::Workspace {
-                workspace_name,
-                workspace_folder,
-            } => format!("{workspace_name} · {}", workspace_folder.display()),
-            Self::OpenTab(source) => source.row_label(),
-        }
-    }
-
-    /// Return whether this row belongs to the supplemental open-tab section.
-    #[must_use]
-    fn is_open_tab(&self) -> bool {
-        matches!(self, Self::OpenTab(_))
-    }
-
-    /// Real workspace folders available for Markdown rendering and note actions.
-    #[must_use]
-    fn workspace_folders(&self) -> Vec<PathBuf> {
-        match self {
-            Self::Workspace {
-                workspace_folder, ..
-            } => vec![workspace_folder.clone()],
-            Self::OpenTab(source) => source.workspace_folder.iter().cloned().collect(),
-        }
-    }
-}
-
 impl NotesBrowserEntry {
+    /// Wrap one shared note source row for browser-specific preview behavior.
+    fn from(note: PaletteNoteEntry) -> Self {
+        Self { note }
+    }
+
     /// User-facing row title used in the browser list.
     #[must_use]
     fn row_title(&self) -> String {
-        match self {
-            Self::Bookmark { line, label, .. } => {
-                format!(
-                    "Bookmark · {}",
-                    bookmark_display_label(label.as_deref(), *line)
-                )
-            }
-            Self::FolderNote { workspace_name, .. } => format!("Folder Note · {workspace_name}"),
-            Self::Document { path, .. } => {
-                let file_name = path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into_owned(),
-                );
-                format!("Document Note · {file_name}")
-            }
-        }
+        self.note.title.clone()
     }
 
     /// Secondary row text used for scope and location metadata.
     #[must_use]
     fn row_subtitle(&self) -> String {
-        match self {
-            Self::Bookmark {
-                source, path, line, ..
-            } => format!(
-                "{} · {} · {}",
-                source.row_label(),
-                path.display(),
-                format_line_label(*line)
-            ),
-            Self::FolderNote {
-                workspace_name,
-                folder,
-                ..
-            } => format!("{workspace_name} · {}", folder.display()),
-            Self::Document { source, path, .. } => {
-                format!("{} · {}", source.row_label(), path.display())
-            }
-        }
+        self.note.subtitle.clone()
     }
 
     /// Optional row detail showing the first meaningful line of note text.
     #[must_use]
     fn row_detail(&self) -> Option<String> {
-        if let Self::Bookmark { .. } = self {
-            None
-        } else {
-            let preview = note_preview_line(self.note_text());
-            (!preview.is_empty()).then_some(preview)
-        }
+        self.note.detail.clone()
     }
 
     /// Title shown in the preview header for the selected note.
     #[must_use]
     fn preview_title(&self) -> String {
-        match self {
-            Self::Bookmark { line, label, .. } => {
-                format!(
-                    "Bookmark · {}",
-                    bookmark_display_label(label.as_deref(), *line)
-                )
-            }
-            Self::FolderNote { workspace_name, .. } => format!("Folder Note · {workspace_name}"),
-            Self::Document { path, .. } => {
-                let file_name = path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into_owned(),
-                );
-                format!("Document Note · {file_name}")
-            }
-        }
+        self.row_title()
     }
 
     /// Secondary preview metadata shown under the selected note title.
     #[must_use]
     fn preview_meta(&self) -> String {
-        match self {
-            Self::Bookmark {
-                source, path, line, ..
-            } => format!(
-                "{} · {} · {}",
-                source.row_label(),
-                path.display(),
-                format_line_label(*line)
-            ),
-            Self::FolderNote {
-                workspace_name,
-                folder,
-                ..
-            } => format!("{workspace_name} · {}", folder.display()),
-            Self::Document { source, path, .. } => {
-                format!("{} · {}", source.row_label(), path.display())
-            }
-        }
+        self.row_subtitle()
     }
 
     /// Note text rendered into the preview widget.
     #[must_use]
     fn note_text(&self) -> &str {
-        match self {
-            Self::Bookmark { .. } => "",
-            Self::FolderNote { note, .. } | Self::Document { note, .. } => &note.text,
-        }
+        self.note.note_text()
     }
 
     /// Render context used by the shared markdown preview widget.
     #[must_use]
     fn render_context(&self) -> MarkdownPreviewRenderContext {
-        match self {
-            Self::FolderNote { folder, .. } => {
+        match &self.note.target {
+            PaletteNoteTarget::FolderNote { folder, .. } => {
                 MarkdownPreviewRenderContext::new(None, vec![folder.clone()])
             }
-            Self::Bookmark { source, path, .. } | Self::Document { source, path, .. } => {
-                MarkdownPreviewRenderContext::new(Some(path.clone()), source.workspace_folders())
+            PaletteNoteTarget::Bookmark {
+                path,
+                workspace_folders,
+                ..
             }
+            | PaletteNoteTarget::DocumentNote {
+                path,
+                workspace_folders,
+            } => MarkdownPreviewRenderContext::new(Some(path.clone()), workspace_folders.clone()),
         }
     }
 
     /// Symbolic icon used by the grouped Adwaita sidebar item.
     #[must_use]
     fn sidebar_icon_name(&self) -> &'static str {
-        match self {
-            Self::Bookmark { .. } => "bookmark-new-symbolic",
-            Self::FolderNote { .. } => "folder-symbolic",
-            Self::Document { .. } => "text-x-generic-symbolic",
+        match self.note.target {
+            PaletteNoteTarget::Bookmark { .. } => "bookmark-new-symbolic",
+            PaletteNoteTarget::FolderNote { .. } => "folder-symbolic",
+            PaletteNoteTarget::DocumentNote { .. } => "text-x-generic-symbolic",
         }
     }
 
     /// Return whether this row belongs in the supplemental open-tab section.
     #[must_use]
     fn is_open_tab(&self) -> bool {
-        match self {
-            Self::Bookmark { source, .. } | Self::Document { source, .. } => source.is_open_tab(),
-            Self::FolderNote { .. } => false,
-        }
+        self.note.category == PaletteNoteCategory::OpenTabs
     }
 
     /// Return whether this entry matches one prepared search query.
@@ -2597,7 +2509,7 @@ impl NotesBrowserState {
 
         state.preview_title.set_label(&entry.preview_title());
         state.preview_meta.set_label(&entry.preview_meta());
-        if matches!(entry, &NotesBrowserEntry::Bookmark { .. }) {
+        if matches!(&entry.note.target, PaletteNoteTarget::Bookmark { .. }) {
             Self::refresh_bookmark_preview(state, entry, generation);
         } else if entry.note_text().trim().is_empty() {
             state.show_markdown_placeholder("This note is empty.");
@@ -2654,7 +2566,7 @@ impl NotesBrowserState {
 
     /// Resolve and render a bookmark preview for the selected row.
     fn refresh_bookmark_preview(state: &Rc<Self>, entry: &NotesBrowserEntry, generation: u32) {
-        let NotesBrowserEntry::Bookmark { path, line, .. } = entry else {
+        let PaletteNoteTarget::Bookmark { path, line, .. } = &entry.note.target else {
             return;
         };
 
@@ -2771,8 +2683,8 @@ impl NotesBrowserState {
             return false;
         };
         matches!(
-            self.all_entries.get(entry_index),
-            Some(NotesBrowserEntry::Bookmark {
+            self.all_entries.get(entry_index).map(|entry| &entry.note.target),
+            Some(PaletteNoteTarget::Bookmark {
                 path: selected_path,
                 line: selected_line,
                 ..
@@ -3054,7 +2966,7 @@ fn append_notes_sidebar_sections(
         "Bookmarks",
         matching_indices.iter().copied().filter(|index| {
             all_entries.get(*index).is_some_and(|entry| {
-                matches!(entry, NotesBrowserEntry::Bookmark { .. }) && !entry.is_open_tab()
+                entry.note.category == PaletteNoteCategory::Bookmarks && !entry.is_open_tab()
             })
         }),
         all_entries,
@@ -3066,7 +2978,7 @@ fn append_notes_sidebar_sections(
         matching_indices.iter().copied().filter(|index| {
             all_entries
                 .get(*index)
-                .is_some_and(|entry| matches!(entry, NotesBrowserEntry::FolderNote { .. }))
+                .is_some_and(|entry| entry.note.category == PaletteNoteCategory::FolderNotes)
         }),
         all_entries,
         &mut ordered_indices,
@@ -3076,7 +2988,7 @@ fn append_notes_sidebar_sections(
         "Document Notes",
         matching_indices.iter().copied().filter(|index| {
             all_entries.get(*index).is_some_and(|entry| {
-                matches!(entry, NotesBrowserEntry::Document { .. }) && !entry.is_open_tab()
+                entry.note.category == PaletteNoteCategory::DocumentNotes && !entry.is_open_tab()
             })
         }),
         all_entries,
@@ -3143,20 +3055,7 @@ fn sidebar_item_index(item: Option<libadwaita::SidebarItem>) -> Option<usize> {
 
 /// Route one browser row back through the appropriate window workflow.
 fn activate_notes_browser_entry(window: &LushtextWindow, entry: &NotesBrowserEntry) {
-    match entry {
-        NotesBrowserEntry::Bookmark { path, line, .. } => {
-            open_editor_at_line(window, path, line.saturating_add(1));
-        }
-        NotesBrowserEntry::FolderNote {
-            workspace_name,
-            folder,
-            ..
-        } => window.open_folder_note_for_folder(workspace_name, folder),
-        NotesBrowserEntry::Document { path, source, .. } => {
-            window.open_document(path);
-            window.open_document_note_for_path_with_folders(path, source.workspace_folders());
-        }
-    }
+    window.activate_palette_note_target(&entry.note.target);
 }
 
 /// Convert one concrete workspace into the only valid folder-note action shape.
@@ -3179,235 +3078,6 @@ fn folder_note_target_for_workspace(workspace: WorkspaceConfig) -> FolderNoteOpe
             folders,
         },
     }
-}
-
-/// Merge bookmarks plus folder and document notes into one browser entry list.
-fn build_notes_browser_entries(
-    visible_workspaces: &[WorkspaceConfig],
-    bookmarks: Vec<bookmark_service::WorkspaceBookmark>,
-    folder_notes: Vec<folder_note_service::ListedFolderNote>,
-    document_notes: Vec<document_note_service::WorkspaceDocumentNote>,
-    open_editor_snapshots: Vec<OpenEditorNoteSnapshot>,
-    data_dir: &Path,
-) -> Vec<NotesBrowserEntry> {
-    let mut bookmark_entries = Vec::new();
-    let mut folder_note_entries = Vec::new();
-    let mut document_entries = Vec::new();
-    let mut scoped_document_ids = HashSet::new();
-
-    for bookmark in bookmarks {
-        if let Some(workspace) = workspace_for_path(visible_workspaces, &bookmark.path) {
-            remember_document_identity(&mut scoped_document_ids, &bookmark.path);
-            let workspace_folder = workspace_folder_for_path(workspace, &bookmark.path)
-                .unwrap_or_else(|| bookmark.path.clone());
-            bookmark_entries.push(NotesBrowserEntry::Bookmark {
-                source: NotesBrowserDocumentSource::Workspace {
-                    workspace_name: workspace.name.clone(),
-                    workspace_folder,
-                },
-                path: bookmark.path,
-                line: bookmark.line,
-                label: bookmark.label,
-            });
-        }
-    }
-
-    folder_note_entries.extend(folder_notes.into_iter().map(|note| {
-        NotesBrowserEntry::FolderNote {
-            workspace_name: note.workspace_name,
-            folder: note.folder,
-            note: note.note,
-        }
-    }));
-
-    for note in document_notes {
-        if let Some(workspace) = workspace_for_path(visible_workspaces, &note.path) {
-            remember_document_identity(&mut scoped_document_ids, &note.path);
-            let workspace_folder = workspace_folder_for_path(workspace, &note.path)
-                .unwrap_or_else(|| note.path.clone());
-            document_entries.push(NotesBrowserEntry::Document {
-                source: NotesBrowserDocumentSource::Workspace {
-                    workspace_name: workspace.name.clone(),
-                    workspace_folder,
-                },
-                path: note.path,
-                note: note.note,
-            });
-        }
-    }
-
-    let mut open_tab_entries =
-        build_open_tab_notes_browser_entries(data_dir, open_editor_snapshots, &scoped_document_ids);
-
-    sort_notes_browser_entries_by_label(&mut bookmark_entries);
-    sort_notes_browser_entries_by_label(&mut document_entries);
-    sort_notes_browser_entries_by_label(&mut open_tab_entries);
-
-    let mut entries = Vec::new();
-    entries.extend(bookmark_entries);
-    entries.extend(folder_note_entries);
-    entries.extend(document_entries);
-    entries.extend(open_tab_entries);
-    entries
-}
-
-/// Keep non-folder note rows in their familiar title/subtitle order.
-fn sort_notes_browser_entries_by_label(entries: &mut [NotesBrowserEntry]) {
-    entries.sort_by(|left, right| {
-        left.row_title()
-            .cmp(&right.row_title())
-            .then_with(|| left.row_subtitle().cmp(&right.row_subtitle()))
-    });
-}
-
-/// Add a resolved document identity to the defensive dedupe set when possible.
-fn remember_document_identity(document_ids: &mut HashSet<String>, path: &Path) {
-    if let Ok(identity) = bookmark_service::resolve_document_identity(path) {
-        document_ids.insert(identity.sidecar_id);
-    }
-}
-
-/// Build supplemental rows for saved open tabs outside the current workspace scope.
-fn build_open_tab_notes_browser_entries(
-    data_dir: &Path,
-    open_editor_snapshots: Vec<OpenEditorNoteSnapshot>,
-    scoped_document_ids: &HashSet<String>,
-) -> Vec<NotesBrowserEntry> {
-    let mut entries = Vec::new();
-    for snapshot in open_editor_snapshots {
-        let Some(open_tab_source) = snapshot.open_tab_source else {
-            continue;
-        };
-        if bookmark_service::resolve_document_identity(&snapshot.path)
-            .is_ok_and(|identity| scoped_document_ids.contains(&identity.sidecar_id))
-        {
-            continue;
-        }
-
-        let source = NotesBrowserDocumentSource::OpenTab(open_tab_source);
-        entries.extend(snapshot.bookmarks.into_iter().map(|bookmark| {
-            NotesBrowserEntry::Bookmark {
-                source: source.clone(),
-                path: snapshot.path.clone(),
-                line: bookmark.line,
-                label: bookmark.label,
-            }
-        }));
-
-        if let Ok(Some(document)) = document_note_service::load_for_path(data_dir, &snapshot.path) {
-            entries.push(NotesBrowserEntry::Document {
-                source,
-                path: snapshot.path,
-                note: document.note,
-            });
-        }
-    }
-    entries
-}
-
-/// Overlay sidecar bookmark rows with current open-editor rows for the same file.
-///
-/// Listing still comes from sidecars for closed files, but open editors can be
-/// newer than their debounced sidecar. Resolving identities here keeps the
-/// filesystem work in the existing background browse task.
-fn merge_live_bookmark_snapshots(
-    persisted: Vec<bookmark_service::WorkspaceBookmark>,
-    live_snapshots: Vec<OpenEditorNoteSnapshot>,
-) -> Vec<bookmark_service::WorkspaceBookmark> {
-    if live_snapshots.is_empty() {
-        return persisted;
-    }
-
-    let mut live_document_ids = HashSet::new();
-    let mut live_rows = Vec::new();
-    for snapshot in live_snapshots {
-        let Ok(identity) = bookmark_service::resolve_document_identity(&snapshot.path) else {
-            continue;
-        };
-        live_document_ids.insert(identity.sidecar_id);
-        live_rows.extend(snapshot.bookmarks.into_iter().map(|bookmark| {
-            bookmark_service::WorkspaceBookmark {
-                path: snapshot.path.clone(),
-                bookmark_id: bookmark.id,
-                line: bookmark.line,
-                label: bookmark.label,
-            }
-        }));
-    }
-
-    if live_document_ids.is_empty() {
-        return persisted;
-    }
-
-    let mut live_path_cache = HashMap::new();
-    let mut merged: Vec<_> = persisted
-        .into_iter()
-        .filter(|bookmark| {
-            let is_live_document =
-                *live_path_cache
-                    .entry(bookmark.path.clone())
-                    .or_insert_with(|| {
-                        bookmark_service::resolve_document_identity(&bookmark.path)
-                            .is_ok_and(|identity| live_document_ids.contains(&identity.sidecar_id))
-                    });
-            !is_live_document
-        })
-        .collect();
-    merged.extend(live_rows);
-    merged.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then_with(|| left.line.cmp(&right.line))
-            .then_with(|| left.bookmark_id.0.cmp(&right.bookmark_id.0))
-    });
-    merged
-}
-
-/// Return whether one path is inside any folder in the current browse scope.
-fn path_is_in_folders(path: &Path, folders: &[PathBuf]) -> bool {
-    folders.iter().any(|folder| path.starts_with(folder))
-}
-
-/// Classify an out-of-scope saved open tab for browser source metadata.
-fn open_tab_source_for_path(all_workspaces: &[WorkspaceConfig], path: &Path) -> OpenTabSource {
-    let owning_workspace = workspace_for_path(all_workspaces, path);
-    OpenTabSource {
-        workspace_name: owning_workspace.map(|workspace| workspace.name.clone()),
-        workspace_folder: owning_workspace
-            .and_then(|workspace| workspace_folder_for_path(workspace, path)),
-    }
-}
-
-/// Find the first configured workspace that owns one saved path.
-///
-/// Workspace order is user-authored, so overlapping folder coverage uses the
-/// same primary-context rule as the sidebar and search surfaces.
-fn workspace_for_path<'a>(
-    workspaces: &'a [WorkspaceConfig],
-    path: &Path,
-) -> Option<&'a WorkspaceConfig> {
-    workspaces
-        .iter()
-        .find(|workspace| workspace_folder_for_path(workspace, path).is_some())
-}
-
-/// Find the first configured folder in one workspace that owns a path.
-///
-/// A workspace may intentionally list both a parent folder and one of its
-/// descendants. The ordered folder set, not path depth, decides the primary
-/// folder context for metadata and Markdown rendering.
-fn workspace_folder_for_path(workspace: &WorkspaceConfig, path: &Path) -> Option<PathBuf> {
-    workspace
-        .folders
-        .iter()
-        .find(|folder| path.starts_with(folder.path()))
-        .map(|folder| folder.path.clone())
-}
-
-/// Display one zero-based bookmark line in the 1-based form users expect.
-#[must_use]
-fn format_line_label(line: u32) -> String {
-    format!("Line {}", line.saturating_add(1))
 }
 
 /// Parse only the syntax of a user-facing 1-based bookmark line.
@@ -3437,14 +3107,6 @@ fn bookmark_edit_error_message(error: &BookmarkEditError) -> String {
             format!("Line {line} already has another bookmark.")
         }
     }
-}
-
-/// Return the bookmark's explicit label or its stable line fallback.
-#[must_use]
-fn bookmark_display_label(label: Option<&str>, line: u32) -> String {
-    label
-        .filter(|label| !label.trim().is_empty())
-        .map_or_else(|| format_line_label(line), ToOwned::to_owned)
 }
 
 /// Build the base dialog used by bookmark browsers.

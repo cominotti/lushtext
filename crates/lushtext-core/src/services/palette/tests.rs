@@ -262,21 +262,17 @@ fn search_all_mixed_mode_includes_files_and_commands() {
 }
 
 #[test]
-fn search_all_notes_mode_includes_only_note_commands() {
+fn search_all_notes_mode_uses_cached_note_source_elsewhere() {
     let dir = TempDir::new().expect("expected operation to succeed");
     fixture::write_text(&dir.path().join("notes.rs"), "");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let results = search_all(&index, "notes", SearchMode::Notes, 50);
 
-    assert!(results.iter().all(|result| match result.item {
-        SearchResultItem::Command(command) => is_note_command(command),
-        SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => false,
-    }));
-    assert!(results.iter().any(|result| match result.item {
-        SearchResultItem::Command(command) => command.id == "win.show-notes",
-        SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => false,
-    }));
+    assert!(
+        results.is_empty(),
+        "note records require the cached note source, not file/command search"
+    );
 }
 
 #[test]

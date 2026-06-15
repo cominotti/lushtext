@@ -5,7 +5,7 @@
 //! Wraps palette row data into a GObject suitable for `gio::ListStore`.
 //! Contains no domain logic — pure data carrier for the GTK adapter.
 
-use crate::model::palette::{CommandDef, IndexedFile};
+use crate::model::palette::{CommandDef, IndexedFile, PaletteNoteTarget};
 use glib::subclass::prelude::*;
 use gtk4::glib;
 use std::cell::{Cell, RefCell};
@@ -14,7 +14,7 @@ use std::path::PathBuf;
 // The imp module owns private GObject storage; the public wrapper below is the
 // ListStore-facing API.
 mod imp {
-    use super::{Cell, ObjectImpl, ObjectSubclass, PathBuf, RefCell, glib};
+    use super::{Cell, ObjectImpl, ObjectSubclass, PaletteNoteTarget, PathBuf, RefCell, glib};
 
     // GObject methods take &self; RefCell/Cell provide interior mutability.
     #[derive(Default)]
@@ -27,7 +27,9 @@ mod imp {
         pub action_id: RefCell<String>,
         /// For files: the absolute path to open. `None` for commands.
         pub file_path: RefCell<Option<PathBuf>>,
-        /// Discriminant: header, file, or command.
+        /// For notes: the activation target. `None` for files and commands.
+        pub note_target: RefCell<Option<PaletteNoteTarget>>,
+        /// Discriminant: header, file, command, or note.
         pub kind: Cell<u8>,
     }
 
@@ -57,6 +59,8 @@ const KIND_FILE: u8 = 0;
 const KIND_COMMAND: u8 = 1;
 /// Discriminant value for non-activatable source headers.
 const KIND_HEADER: u8 = 2;
+/// Discriminant value for note search results.
+const KIND_NOTE: u8 = 3;
 
 impl PaletteItem {
     /// Create a non-activatable group header row.
@@ -93,6 +97,21 @@ impl PaletteItem {
         imp.subtitle.replace(subtitle.into());
         imp.action_id.replace(action_id.into());
         imp.kind.set(KIND_COMMAND);
+        obj
+    }
+
+    /// Create a palette item for a note search result.
+    pub fn new_note_raw(
+        display_name: impl Into<String>,
+        subtitle: impl Into<String>,
+        target: PaletteNoteTarget,
+    ) -> Self {
+        let obj: Self = glib::Object::builder().build();
+        let imp = obj.imp();
+        imp.display_name.replace(display_name.into());
+        imp.subtitle.replace(subtitle.into());
+        imp.note_target.replace(Some(target));
+        imp.kind.set(KIND_NOTE);
         obj
     }
 
@@ -133,6 +152,11 @@ impl PaletteItem {
     }
 
     #[must_use]
+    pub fn note_target(&self) -> Option<PaletteNoteTarget> {
+        self.imp().note_target.borrow().clone()
+    }
+
+    #[must_use]
     pub fn is_file(&self) -> bool {
         self.imp().kind.get() == KIND_FILE
     }
@@ -140,6 +164,11 @@ impl PaletteItem {
     #[must_use]
     pub fn is_command(&self) -> bool {
         self.imp().kind.get() == KIND_COMMAND
+    }
+
+    #[must_use]
+    pub fn is_note(&self) -> bool {
+        self.imp().kind.get() == KIND_NOTE
     }
 
     /// Return whether this row is a presentation-only source header.
@@ -151,6 +180,6 @@ impl PaletteItem {
     /// Return whether this row can activate a file or command.
     #[must_use]
     pub fn is_activatable(&self) -> bool {
-        self.is_file() || self.is_command()
+        self.is_file() || self.is_command() || self.is_note()
     }
 }
