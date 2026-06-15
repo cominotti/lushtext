@@ -15,7 +15,9 @@ use lushtext_core::services::json_format::{
 use lushtext_core::ui::preferences::LushtextPreferences;
 use libadwaita::prelude::*;
 use serde_json::json;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const FAST_SCAN_VISIBLE_DWELL: Duration = Duration::from_millis(900);
 
 fn has_accessible_role(root: &impl IsA<gtk4::Widget>, role: gtk4::AccessibleRole) -> bool {
     let mut stack = vec![root.as_ref().clone()];
@@ -348,7 +350,7 @@ fn test_workspace_sidebar_width_row_updates_setting() {
 }
 
 #[test]
-fn test_data_page_reports_current_format_and_hides_convert() {
+fn test_data_page_reports_current_format_hides_actions_and_shows_verified_current() {
     let _data_dir = isolated_data_dir();
     let prefs = LushtextPreferences::new();
     let imp = prefs.imp();
@@ -363,12 +365,64 @@ fn test_data_page_reports_current_format_and_hides_convert() {
         imp.data_status_row.subtitle().as_deref(),
         Some("Data format is current")
     );
+    assert!(imp.data_current_indicator.is_visible());
+    assert!(
+        !imp.data_actions_group.is_visible(),
+        "current state should not leave an empty Actions group visible"
+    );
     assert!(!imp.data_convert_row.is_visible());
     assert!(!imp.data_convert_button.is_sensitive());
     assert!(
         imp.data_details_list.first_child().is_some(),
         "current state should still render a concise details row"
     );
+}
+
+#[test]
+fn test_data_page_refresh_keeps_verifying_state_visible_for_fast_current_scan() {
+    let _data_dir = isolated_data_dir();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_operation_inflight.get()
+            && imp.data_status_row.subtitle().as_deref() == Some("Data format is current")
+    });
+
+    imp.data_scan_button.emit_clicked();
+    let started_at = Instant::now();
+
+    assert!(imp.data_operation_inflight.get());
+    assert_eq!(
+        imp.data_status_row.subtitle().as_deref(),
+        Some("Verifying app data formats")
+    );
+    assert!(!imp.data_scan_button.is_sensitive());
+    assert!(!imp.data_convert_button.is_sensitive());
+    assert!(!imp.data_current_indicator.is_visible());
+
+    while started_at.elapsed() < FAST_SCAN_VISIBLE_DWELL {
+        glib::MainContext::default().iteration(false);
+        assert!(
+            imp.data_operation_inflight.get(),
+            "fast current scan should stay visibly verifying for a perceptible dwell"
+        );
+        assert_eq!(
+            imp.data_status_row.subtitle().as_deref(),
+            Some("Verifying app data formats")
+        );
+        assert!(!imp.data_scan_button.is_sensitive());
+        assert!(!imp.data_current_indicator.is_visible());
+    }
+
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_operation_inflight.get()
+            && imp.data_status_row.subtitle().as_deref() == Some("Data format is current")
+    });
+
+    assert!(imp.data_scan_button.is_sensitive());
+    assert!(imp.data_current_indicator.is_visible());
+    assert!(!imp.data_actions_group.is_visible());
 }
 
 #[test]
@@ -403,7 +457,9 @@ fn test_data_page_does_not_offer_convert_for_future_version() {
         !imp.data_convert_row.is_visible(),
         "newer/future metadata must not be presented as convertible"
     );
+    assert!(!imp.data_actions_group.is_visible());
     assert!(!imp.data_convert_button.is_sensitive());
+    assert!(!imp.data_current_indicator.is_visible());
     assert!(
         !imp.data_last_scan_offers_convert.get(),
         "future metadata must not arm the Convert action"
@@ -446,6 +502,7 @@ fn test_data_page_keeps_many_awkward_items_in_bounded_details_scroller() {
     assert_eq!(scroller.hscrollbar_policy(), gtk4::PolicyType::Never);
     assert_eq!(scroller.max_content_height(), 240);
     assert!(list_box_child_count(&imp.data_details_list) >= 16);
+    assert!(!imp.data_actions_group.is_visible());
     assert!(!imp.data_convert_row.is_visible());
 }
 
@@ -484,8 +541,10 @@ fn test_data_page_shows_convert_only_for_registered_supported_legacy_plan() {
         !imp.data_operation_inflight.get() && imp.data_convert_row.is_visible()
     });
 
+    assert!(imp.data_actions_group.is_visible());
     assert!(imp.data_convert_button.is_sensitive());
     assert_eq!(imp.data_convert_button.label().as_deref(), Some("Convert"));
+    assert!(!imp.data_current_indicator.is_visible());
 
     imp.data_convert_button.emit_clicked();
     wait_until(Duration::from_secs(10), || {
@@ -493,6 +552,8 @@ fn test_data_page_shows_convert_only_for_registered_supported_legacy_plan() {
             && imp.data_status_row.subtitle().as_deref() == Some("Data format is current")
     });
 
+    assert!(imp.data_current_indicator.is_visible());
+    assert!(!imp.data_actions_group.is_visible());
     assert!(!imp.data_convert_row.is_visible());
     let value: serde_json::Value =
         serde_json::from_str(&fixture::read_text(&session_path)).expect("converted session");
@@ -535,8 +596,10 @@ fn test_data_page_keeps_failed_convert_retryable() {
             && imp.data_convert_button.label().as_deref() == Some("Retry")
     });
 
+    assert!(imp.data_actions_group.is_visible());
     assert!(imp.data_convert_row.is_visible());
     assert!(imp.data_convert_button.is_sensitive());
+    assert!(!imp.data_current_indicator.is_visible());
     assert!(
         imp.data_status_row
             .subtitle()

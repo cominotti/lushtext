@@ -18,9 +18,15 @@ use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
 use std::cell::Cell;
+use std::time::{Duration, Instant};
 
 /// Maximum rows rendered per metadata group before showing an omitted-count row.
 const DATA_DETAILS_MAX_ROWS_PER_GROUP: usize = 32;
+/// Minimum time a successful fast scan remains visibly "checking" in Preferences.
+///
+/// One second is long enough for users to perceive that Refresh did work while
+/// staying short enough that genuinely slow scans are not delayed further.
+const DATA_SCAN_MINIMUM_VISIBLE_DURATION: Duration = Duration::from_secs(1);
 
 /// Background conversion result returned to the Preferences Data page on the GTK main thread.
 enum DataConvertWorkerResult {
@@ -29,6 +35,15 @@ enum DataConvertWorkerResult {
         plan: format_upgrade::FormatPlan,
         result: Result<format_upgrade::FormatApplyOutcome, String>,
     },
+}
+
+/// Presentation policy for a Data page scan result.
+#[derive(Clone, Copy)]
+enum DataScanPresentation {
+    /// Initial and post-convert scans should reveal actionable state as soon as it is ready.
+    Immediate,
+    /// Manual Refresh keeps the checking state visible long enough to prove the click did work.
+    VisibleDwell,
 }
 
 // CompositeTemplate loads preferences.ui from the compiled GResource; each
@@ -87,9 +102,15 @@ pub struct LushtextPreferences {
     /// Status row summarizing the latest app-data format scan.
     #[template_child]
     pub data_status_row: TemplateChild<libadwaita::ActionRow>,
+    /// Success indicator shown only after the latest scan proves current data.
+    #[template_child]
+    pub data_current_indicator: TemplateChild<gtk4::Image>,
     /// Button that reruns the read-only app-data format scan.
     #[template_child]
     pub data_scan_button: TemplateChild<gtk4::Button>,
+    /// Group containing Data page actions; hidden when no real action is available.
+    #[template_child]
+    pub data_actions_group: TemplateChild<libadwaita::PreferencesGroup>,
     /// Row containing the Convert action when the last scan found a supported upgrade.
     #[template_child]
     pub data_convert_row: TemplateChild<libadwaita::ActionRow>,
@@ -136,7 +157,9 @@ impl Default for LushtextPreferences {
             workspace_auto_collapse_row: TemplateChild::default(),
             workspace_empty_folder_lookahead_cap_row: TemplateChild::default(),
             data_status_row: TemplateChild::default(),
+            data_current_indicator: TemplateChild::default(),
             data_scan_button: TemplateChild::default(),
+            data_actions_group: TemplateChild::default(),
             data_convert_row: TemplateChild::default(),
             data_convert_button: TemplateChild::default(),
             data_details_group: TemplateChild::default(),
@@ -267,6 +290,10 @@ impl LushtextPreferences {
             .set_accessible_role(gtk4::AccessibleRole::Group);
         self.data_scan_button
             .update_property(&[gtk4::accessible::Property::Label("Rescan app data formats")]);
+        self.data_current_indicator
+            .update_property(&[gtk4::accessible::Property::Label(
+                "App data format verified current",
+            )]);
         self.data_convert_button
             .update_property(&[gtk4::accessible::Property::Label(
                 "Convert supported older app data",
@@ -294,7 +321,9 @@ impl LushtextPreferences {
         // changing UI state.
         self.data_scan_button.connect_clicked(move |_| {
             if let Some(prefs) = prefs_weak.upgrade() {
-                prefs.imp().run_data_scan();
+                prefs
+                    .imp()
+                    .run_data_scan(DataScanPresentation::VisibleDwell);
             }
         });
 
@@ -305,20 +334,22 @@ impl LushtextPreferences {
             }
         });
 
-        self.run_data_scan();
+        self.run_data_scan(DataScanPresentation::Immediate);
     }
 
-    /// Run the manual Data-page scan on a background thread.
-    fn run_data_scan(&self) {
+    /// Run a Data-page scan on a background thread.
+    fn run_data_scan(&self, presentation: DataScanPresentation) {
         if self.data_operation_inflight.replace(true) {
             return;
         }
-        self.data_scan_button.set_sensitive(false);
-        self.data_convert_button.set_sensitive(false);
-        self.data_status_row
-            .set_subtitle("Checking app data formats");
+        self.show_data_operation_in_progress("Verifying app data formats");
 
         let prefs = self.obj().clone();
+        let scan_started_at = Instant::now();
+        let minimum_visible_duration = match presentation {
+            DataScanPresentation::Immediate => Duration::ZERO,
+            DataScanPresentation::VisibleDwell => DATA_SCAN_MINIMUM_VISIBLE_DURATION,
+        };
         spawn_blocking_then_weak(
             &prefs,
             || {
@@ -326,11 +357,22 @@ impl LushtextPreferences {
                 let inventory = format_upgrade::scan(&data_dir);
                 format_upgrade::build_plan(&inventory)
             },
-            |prefs, plan| {
+            move |prefs, plan| {
                 let imp = prefs.imp();
-                imp.data_operation_inflight.set(false);
-                imp.data_scan_button.set_sensitive(true);
-                imp.render_data_plan(&plan, None);
+                let remaining = minimum_visible_duration.saturating_sub(scan_started_at.elapsed());
+                if remaining.is_zero() {
+                    imp.complete_data_scan(&plan);
+                } else {
+                    let prefs_weak = prefs.downgrade();
+                    // GLib timeout callbacks run on the GTK main loop; the
+                    // weak dialog reference prevents a delayed fast-scan result
+                    // from keeping a closed Preferences dialog alive.
+                    glib::timeout_add_local_once(remaining, move || {
+                        if let Some(prefs) = prefs_weak.upgrade() {
+                            prefs.imp().complete_data_scan(&plan);
+                        }
+                    });
+                }
             },
         );
     }
@@ -345,10 +387,7 @@ impl LushtextPreferences {
             return;
         }
 
-        self.data_scan_button.set_sensitive(false);
-        self.data_convert_button.set_sensitive(false);
-        self.data_status_row
-            .set_subtitle("Updating supported older app data");
+        self.show_data_operation_in_progress("Updating supported older app data");
 
         let prefs = self.obj().clone();
         spawn_blocking_then_weak(
@@ -380,7 +419,7 @@ impl LushtextPreferences {
                     DataConvertWorkerResult::Applied {
                         result: Ok(outcome),
                         ..
-                    } if outcome.is_success() => imp.run_data_scan(),
+                    } if outcome.is_success() => imp.run_data_scan(DataScanPresentation::Immediate),
                     DataConvertWorkerResult::Applied {
                         plan,
                         result: Ok(outcome),
@@ -405,7 +444,10 @@ impl LushtextPreferences {
     fn render_data_plan(&self, plan: &format_upgrade::FormatPlan, failure: Option<&str>) {
         let status = data_plan_status(plan, failure);
         let offers_convert = plan.offers_convert();
+        let verified_current = failure.is_none() && plan.has_no_action();
         self.data_status_row.set_subtitle(&status);
+        self.data_current_indicator.set_visible(verified_current);
+        self.data_actions_group.set_visible(offers_convert);
         self.data_convert_row.set_visible(offers_convert);
         self.data_convert_button.set_sensitive(offers_convert);
         self.data_convert_button.set_label(if failure.is_some() {
@@ -415,6 +457,21 @@ impl LushtextPreferences {
         });
         self.data_last_scan_offers_convert.set(offers_convert);
         self.render_data_details(plan, failure);
+    }
+
+    /// Present an active Data-page operation before its background result lands.
+    fn show_data_operation_in_progress(&self, subtitle: &str) {
+        self.data_current_indicator.set_visible(false);
+        self.data_scan_button.set_sensitive(false);
+        self.data_convert_button.set_sensitive(false);
+        self.data_status_row.set_subtitle(subtitle);
+    }
+
+    /// Accept a completed scan after any visible verification dwell has elapsed.
+    fn complete_data_scan(&self, plan: &format_upgrade::FormatPlan) {
+        self.data_operation_inflight.set(false);
+        self.data_scan_button.set_sensitive(true);
+        self.render_data_plan(plan, None);
     }
 
     /// Rebuild the bounded per-file detail list for the current Data page plan.

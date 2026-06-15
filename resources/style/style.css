@@ -258,6 +258,10 @@ listview.workspace-file-tree row:focus {
   margin-top: 4px;
 }
 
+.data-current-indicator {
+  color: @success_color;
+}
+
 /* Theme selector: colored circles matching GNOME Text Editor */
 .theme-selector {
   margin: 9px;

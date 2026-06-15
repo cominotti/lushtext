@@ -217,6 +217,18 @@ template $LushtextPreferences: Adw.PreferencesDialog {
         activatable-widget: data_scan_button;
 
         [suffix]
+        Image data_current_indicator {
+          icon-name: "object-select-symbolic";
+          tooltip-text: _("Data format verified");
+          valign: center;
+          visible: false;
+
+          styles [
+            "data-current-indicator",
+          ]
+        }
+
+        [suffix]
         Button data_scan_button {
           icon-name: "view-refresh-symbolic";
           tooltip-text: _("Rescan data formats");
@@ -229,8 +241,9 @@ template $LushtextPreferences: Adw.PreferencesDialog {
       }
     }
 
-    Adw.PreferencesGroup {
+    Adw.PreferencesGroup data_actions_group {
       title: _("Actions");
+      visible: false;
 
       Adw.ActionRow data_convert_row {
         title: _("Update Data");
