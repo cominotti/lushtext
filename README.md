@@ -232,6 +232,7 @@ LushText data, run:
 ```sh
 make run-format-upgrade-newer-manual-test
 make run-format-upgrade-older-manual-test
+make run-command-palette-notes-manual-test
 ```
 
 The newer-data target writes future-version app metadata plus a draft body that
@@ -243,6 +244,13 @@ launch LushText against an isolated `XDG_DATA_HOME`, keep that directory
 available for inspecting `format-upgrade-backups/`, and reset only app data
 previously created by the same manual test marker when rerun with
 `FORMAT_UPGRADE_TEST_HOME=...`.
+
+The command-palette Notes manual test writes the same bookmark, folder-note,
+document-note, and open-tab note fixture used by the focused smoke lane, opens a
+fresh dev app against isolated app data, and preselects Notes mode with the
+default `palette` query. Use `COMMAND_PALETTE_NOTES_MANUAL_HOME=...` to keep a
+specific fixture directory between runs, or `COMMAND_PALETTE_NOTES_QUERY=...` to
+exercise a different full-text Notes query.
 
 ### Mutation testing
 
@@ -281,6 +289,7 @@ record host details and skip clearly when a machine lacks the required runtime:
 ```sh
 make visual-smoke          # headless Mutter screenshot smoke with artifacts
 make automation-smoke      # real-process D-Bus automation smoke with artifacts
+make command-palette-notes-smoke # focused Notes palette screenshot with all note kinds
 make crash-recovery-smoke  # SIGKILL/relaunch recovery smoke with artifacts
 make portal-sandbox-smoke  # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke   # AT-SPI-enabled smoke outside the widget harness
@@ -473,6 +482,7 @@ make build-debug # Debug build
 make run         # Debug build + force a fresh run with temporary GNOME desktop staging
 make run-format-upgrade-newer-manual-test # Launch with isolated future-version app data
 make run-format-upgrade-older-manual-test # Launch with isolated upgradeable old-version app data
+make run-command-palette-notes-manual-test # Launch with isolated Notes palette fixtures
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
 make test        # All tests (unit + integration + widget)
 make check       # fmt + all-feature Clippy + fast policy audits
@@ -859,6 +869,7 @@ make test-widget # Widget tests through the private headless runner
 make test-widget-headless # Widget tests with the CI mutter/dbus setup
 make test-workspace-row-states # Focused workspace file-row state widget tests
 make automation-smoke # Real-process D-Bus automation smoke with artifacts
+make command-palette-notes-smoke # Focused Notes palette smoke with all note kinds
 make visual-smoke # Headless Mutter screenshot smoke with artifacts
 make crash-recovery-smoke # SIGKILL/relaunch recovery smoke with artifacts
 make portal-sandbox-smoke # Confined Flatpak/Snap smoke diagnostics

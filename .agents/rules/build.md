@@ -12,6 +12,7 @@ Use `make` targets for development. The Makefile auto-detects nextest for non-wi
 ```
 make dev-tools  # Flatpak runtime/SDK deps + GTK debug input/screenshot helpers
 make run        # build + force a fresh launch with temporary GNOME desktop staging
+make run-command-palette-notes-manual-test # launch isolated Notes palette fixtures for manual review
 make refresh-dock-icon # regenerate icon assets + force a fresh GNOME Shell dock icon reload
 make verify-flatpak-identity # verify Flatpak export identity, permissions, and MIME registration
 make test       # all tests
@@ -24,6 +25,7 @@ make test-widget-headless # CI-style mutter/dbus widget run
 make test-workspace-row-states # focused workspace file-row state widget run
 make visual-geometry-smoke # same-session visual invariant screenshots and geometry snapshots
 make visual-smoke # real-session screenshot smoke with artifacts
+make command-palette-notes-smoke # focused Notes palette screenshot with all note kinds
 make crash-recovery-smoke # real-process SIGKILL/relaunch recovery smoke with artifacts
 make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
@@ -355,6 +357,15 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   headless Mutter through the existing screenshot automation, captures a
   representative editor/search/minimap screenshot, and stores environment and
   session artifacts under `build/smoke/visual` by default.
+- `make command-palette-notes-smoke` builds the debug binary, seeds an isolated
+  workspace with bookmark, folder-note, document-note, and open-tab note
+  sidecars, opens the command palette in Notes mode, captures one screenshot,
+  and asserts the Notes separators plus representative rows through AT-SPI. It
+  is a focused local drill, not part of the broad `make end-user-smoke` bundle.
+- `make run-command-palette-notes-manual-test` uses the same fixture data as the
+  focused Notes smoke lane, launches the live dev app with isolated cache,
+  config, and data directories, preselects the command palette's Notes mode, and
+  waits until the user closes LushText.
 - `make crash-recovery-smoke` builds the debug binary, launches LushText under
   isolated headless Mutter with isolated XDG and `LUSHTEXT_DATA_DIR` state,
   creates file-backed and untitled draft/session recovery data through the real
