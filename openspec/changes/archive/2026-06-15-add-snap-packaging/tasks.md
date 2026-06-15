@@ -37,24 +37,30 @@
 
 - [x] 6.1 Add a verification script (or extend smoke test) that reports confinement type and effective plug connection state
 - [x] 6.2 Assert `common-id` is `dev.cominotti.lushtext` and the desktop entry is present in the built snap
-- [ ] 6.3 Record the registered snap name so verification keys off the actual name — script reads the name from `snap/snapcraft.yaml` (`lushtext`); finalize once 7.1 confirms the registered name
+- [x] 6.3 Record the configured snap name for scaffold verification by reading it from `snap/snapcraft.yaml` (`lushtext`); final Store registration confirmation is deferred below
 
-## 7. Store Registration & Release (external, ready now)
+## Deferred Snap Activation Ledger
 
-- [ ] 7.1 Resolve and register the snap name in the Snap Store (use a fallback if `lushtext` is taken)
-- [ ] 7.2 Set store visibility to Unlisted
-- [ ] 7.3 Export store credentials and add the `SNAPCRAFT_STORE_CREDENTIALS` secret to the CI repository
+The scaffold is complete and intentionally archived. These external/platform
+activation items are preserved for a future change instead of remaining as
+active acceptance tasks here.
 
-## 8. Platform-Gated Activation (blocked on gnome-50-2604 / core26 platform snap)
+### Store Registration & Release
 
-- [ ] 8.1 When the `core26` / GNOME 50 platform snap publishes, switch `base:` to `core26` and confirm the `gnome` extension targets it (or wire the content plug manually — Path 1.5 — if the extension lags)
-- [ ] 8.2 Build the strict-confined snap against GTK 4.22 / Libadwaita 1.9 and run the local smoke test against the real artifact
-- [ ] 8.3 Enable the gated CI build/publish-to-edge job and confirm a green build produces an edge revision
-- [ ] 8.4 Verify the end-to-end install flow: `snap install lushtext` fails by default and `snap install lushtext --edge` succeeds, and the snap is absent from `snap find`
+- Resolve and register the snap name in the Snap Store, using a fallback if `lushtext` is taken.
+- Set store visibility to Unlisted.
+- Export store credentials and add the `SNAPCRAFT_STORE_CREDENTIALS` secret to the CI repository.
 
-## 9. Acceptance Verification
+### Platform-Gated Activation
 
-- [ ] 9.1 Run the confined smoke test and confirm no AppArmor/seccomp denials
-- [ ] 9.2 Confirm GResource and GSettings load inside confinement and a HOME-rooted workspace operates normally
-- [ ] 9.3 Confirm an out-of-scope path is handled gracefully (portal or access error, no crash/data loss)
-- [ ] 9.4 Confirm documentation (`README.md`, `AGENTS.md`, `build.md`) matches the shipped Snap behavior and the platform gate
+- When the `core26` / GNOME 50 platform snap publishes, switch `base:` to `core26` and confirm the `gnome` extension targets it, or wire the content plug manually if the extension lags.
+- Build the strict-confined snap against GTK 4.22 / Libadwaita 1.9 and run the local smoke test against the real artifact.
+- Enable the gated CI build/publish-to-edge job and confirm a green build produces an edge revision.
+- Verify the end-to-end install flow: `snap install lushtext` fails by default, `snap install lushtext --edge` succeeds, and the snap is absent from `snap find`.
+
+### Acceptance Verification
+
+- Run the confined smoke test and confirm no AppArmor/seccomp denials.
+- Confirm GResource and GSettings load inside confinement and a HOME-rooted workspace operates normally.
+- Confirm an out-of-scope path is handled gracefully (portal or access error, no crash/data loss).
+- Confirm documentation (`README.md`, `AGENTS.md`, `.agents/rules/build.md`) matches the shipped Snap behavior and the platform gate.
