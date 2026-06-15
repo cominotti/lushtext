@@ -23,7 +23,7 @@ with zero throwaway work.
   principled posture than the Flatpak's current `--filesystem=host` and aligns
   with the portal-first follow-up already documented in
   `flatpak-sandbox-identity`. Strict confinement narrows host access compared to
-  the Flatpak; behavior for workspace roots outside `$HOME` must be defined.
+  the Flatpak; behavior for workspace folders outside `$HOME` must be defined.
 - Register and release the Snap as **Unlisted + edge-only**: omitted from store
   search, and `snap install lushtext` fails by default so testers must run
   `snap install lushtext --edge`. Promotion to discoverable/stable is a later

@@ -122,7 +122,7 @@ and the `common-id` linkage.
   standalone value (validation, registration, CI structure); the gated build path
   simply stays inactive. Path 1.5 (edge content-plug wiring) is the escape hatch
   if waiting for extension support is too slow.
-- **[Strict confinement breaks workspace roots outside `$HOME`]** → Specify the
+- **[Strict confinement breaks workspace folders outside `$HOME`]** → Specify the
   behavior explicitly (portal-mediated open, `removable-media` for media mounts)
   and cover it in the smoke test rather than discovering it post-release.
 - **[Baked absolute path drifts from the `layout:` target]** → The smoke test

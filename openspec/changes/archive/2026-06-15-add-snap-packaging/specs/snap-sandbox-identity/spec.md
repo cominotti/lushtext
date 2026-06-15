@@ -37,20 +37,20 @@ and `removable-media` interfaces rather than broad unconfined filesystem access.
 - **THEN** the Snap does not request classic confinement or an equivalent broad
   host-filesystem escape hatch as its default posture
 
-### Requirement: Confinement Boundary For Workspace Roots Is Defined
-The Snap SHALL define and document how workspace roots and files outside the
+### Requirement: Confinement Boundary For Workspace Folders Is Defined
+The Snap SHALL define and document how workspace folders and files outside the
 confined-accessible locations behave, because strict confinement is narrower than
 the Flatpak's host access.
 
-#### Scenario: Workspace root inside HOME works
-- **WHEN** a user adds a workspace root under their home directory in the confined
+#### Scenario: Workspace folder inside HOME works
+- **WHEN** a user adds a workspace folder under their home directory in the confined
   Snap
 - **THEN** the file tree and editing operate normally through the `home` interface
 
 #### Scenario: Out-of-scope path is handled gracefully
 - **WHEN** the confined Snap is asked to open a path outside the
   confined-accessible locations (for example via a CLI argument or a restored
-  workspace root under `/opt`)
+  workspace folder under `/opt`)
 - **THEN** the app surfaces an access error or routes through a portal rather than
   crashing or silently losing data
 

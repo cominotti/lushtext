@@ -11,7 +11,7 @@
 
 - [x] 2.1 Declare `home` and `removable-media` plugs and confirm the `gnome` extension supplies Wayland/X11/GPU/portal access
 - [x] 2.2 Document the rationale for each declared plug beyond the extension defaults
-- [x] 2.3 Define and document behavior for workspace roots / paths outside confined-accessible locations (portal-mediated open or graceful access error, never crash or silent data loss)
+- [x] 2.3 Define and document behavior for workspace folders / paths outside confined-accessible locations (portal-mediated open or graceful access error, never crash or silent data loss)
 
 ## 3. Local Confined Smoke Test (ready now, runs gated)
 
@@ -61,6 +61,6 @@ active acceptance tasks here.
 ### Acceptance Verification
 
 - Run the confined smoke test and confirm no AppArmor/seccomp denials.
-- Confirm GResource and GSettings load inside confinement and a HOME-rooted workspace operates normally.
+- Confirm GResource and GSettings load inside confinement and a workspace folder under HOME operates normally.
 - Confirm an out-of-scope path is handled gracefully (portal or access error, no crash/data loss).
 - Confirm documentation (`README.md`, `AGENTS.md`, `.agents/rules/build.md`) matches the shipped Snap behavior and the platform gate.
