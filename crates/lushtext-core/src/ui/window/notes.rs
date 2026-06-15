@@ -1429,6 +1429,11 @@ impl LushtextWindow {
 
     /// Coalesce cached note-row refreshes after bursty note and bookmark edits.
     pub(super) fn refresh_command_palette_note_source_debounced(&self) {
+        if !self.imp().palette_revealer.reveals_child() {
+            self.invalidate_command_palette_note_source();
+            return;
+        }
+
         self.imp().command_palette_notes_refresh_debounce.schedule(
             self,
             Duration::from_millis(COMMAND_PALETTE_NOTES_REFRESH_DEBOUNCE_MS),
@@ -1444,6 +1449,12 @@ impl LushtextWindow {
     /// listing and document identity work stay in the background task, and the
     /// generation guard prevents stale completions from replacing newer rows.
     pub(super) fn refresh_command_palette_note_source(&self) {
+        let generation = self.next_command_palette_notes_generation();
+        if !self.imp().palette_revealer.reveals_child() {
+            self.imp().command_palette.set_note_entries(Vec::new());
+            return;
+        }
+
         let workspaces_file = self.imp().sidebar.workspaces_file();
         let scope = workspaces_file.current_scope();
         let all_workspaces = workspaces_file.workspaces;
@@ -1462,12 +1473,6 @@ impl LushtextWindow {
         let open_editor_snapshots =
             self.open_editor_note_snapshots(&scope_folders, &all_workspaces);
 
-        let generation = self
-            .imp()
-            .command_palette_notes_generation
-            .get()
-            .wrapping_add(1);
-        self.imp().command_palette_notes_generation.set(generation);
         let window_weak = self.downgrade();
         spawn_blocking_then(
             (),
@@ -1491,7 +1496,14 @@ impl LushtextWindow {
                 match result {
                     Ok(load) => {
                         Self::trace_browse_recovery_diagnostics(&load.diagnostics);
+                        let has_diagnostics = !load.diagnostics.is_empty();
                         window.imp().command_palette.set_note_entries(load.entries);
+                        if has_diagnostics && window.imp().palette_revealer.reveals_child() {
+                            window.publish_status_message(
+                                "Some note data could not be loaded for the palette",
+                                MessageKind::Warning,
+                            );
+                        }
                     }
                     Err(error) => {
                         tracing::warn!("Failed to refresh command-palette notes: {error}");
@@ -1505,6 +1517,21 @@ impl LushtextWindow {
                 }
             },
         );
+    }
+
+    fn invalidate_command_palette_note_source(&self) {
+        self.next_command_palette_notes_generation();
+        self.imp().command_palette.set_note_entries(Vec::new());
+    }
+
+    fn next_command_palette_notes_generation(&self) -> u32 {
+        let generation = self
+            .imp()
+            .command_palette_notes_generation
+            .get()
+            .wrapping_add(1);
+        self.imp().command_palette_notes_generation.set(generation);
+        generation
     }
 
     /// Find an already-open saved editor for a concrete path.

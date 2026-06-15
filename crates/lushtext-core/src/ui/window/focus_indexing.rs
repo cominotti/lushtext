@@ -80,6 +80,7 @@ impl LushtextWindow {
             imp.palette_revealer.set_reveal_child(true);
             imp.command_palette.open();
             self.set_command_palette_actions_enabled(true);
+            self.refresh_command_palette_note_source();
         }
     }
 

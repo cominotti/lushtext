@@ -80,7 +80,7 @@ impl LushtextCommandPalette {
     /// Replace the cached note rows used by Notes and All mode.
     pub fn set_note_entries(&self, note_entries: Vec<PaletteNoteEntry>) {
         *self.imp().note_entries.borrow_mut() = Arc::from(note_entries);
-        if self.is_visible() {
+        if self.is_visible() && matches!(self.mode(), SearchMode::All | SearchMode::Notes) {
             let query = self.imp().search_entry.text();
             self.imp().rebuild_results(&query);
         }

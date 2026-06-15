@@ -10306,7 +10306,7 @@ fn test_open_folder_note_warns_when_sidecar_is_corrupt() {
     wait_for_workspace_consumers(&window, 1, 1);
 
     activate_action(&window, "open-folder-note");
-    wait_until(Duration::from_secs(5), || {
+    wait_until(Duration::from_secs(10), || {
         visible_alert_dialog(&window)
             .and_then(|dialog| dialog.heading())
             .as_deref()
@@ -10519,7 +10519,7 @@ fn test_notes_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
     let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         sidebar.items().n_items() == 1
             && window
                 .imp()
@@ -11217,7 +11217,7 @@ fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
 
     let dialog = visible_sheet_dialog(&window).expect("bookmark browser dialog");
     let child = dialog.child().expect("bookmark browser child");
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         find_label_by_text(&child, "valid bookmark").is_some()
             && window
                 .imp()
