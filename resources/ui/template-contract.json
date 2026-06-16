@@ -1849,14 +1849,14 @@
           "name": "title",
           "path": "0:template:LushtextPreferences/1:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/4:child/0:object:AdwActionRow#transparency_row/0:property",
           "translatable": "yes",
-          "value": "Transparency"
+          "value": "Background Opacity"
         },
         {
           "context": "",
           "name": "subtitle",
           "path": "0:template:LushtextPreferences/1:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/4:child/0:object:AdwActionRow#transparency_row/1:property",
           "translatable": "yes",
-          "value": "Adjust the opacity of editor and Markdown preview backgrounds"
+          "value": "Lower values make editor and Markdown preview backgrounds more transparent"
         },
         {
           "context": "",
@@ -2318,13 +2318,13 @@
           "context": "",
           "name": "title",
           "path": "0:template:LushtextPreferences/1:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/4:child/0:object:AdwActionRow#transparency_row/0:property",
-          "value": "Transparency"
+          "value": "Background Opacity"
         },
         {
           "context": "",
           "name": "subtitle",
           "path": "0:template:LushtextPreferences/1:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/4:child/0:object:AdwActionRow#transparency_row/1:property",
-          "value": "Adjust the opacity of editor and Markdown preview backgrounds"
+          "value": "Lower values make editor and Markdown preview backgrounds more transparent"
         },
         {
           "context": "",

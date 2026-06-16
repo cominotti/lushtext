@@ -39,8 +39,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
             </child>
             <child>
               <object class="AdwActionRow" id="transparency_row">
-                <property name="title" translatable="yes">Transparency</property>
-                <property name="subtitle" translatable="yes">Adjust the opacity of editor and Markdown preview backgrounds</property>
+                <property name="title" translatable="yes">Background Opacity</property>
+                <property name="subtitle" translatable="yes">Lower values make editor and Markdown preview backgrounds more transparent</property>
                 <property name="activatable-widget">transparency_button</property>
                 <child type="suffix">
                   <object class="GtkMenuButton" id="transparency_button">

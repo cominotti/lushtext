@@ -68,8 +68,8 @@
     </key>
     <key name="tab-content-opacity" type="d">
       <default>1.0</default>
-      <summary>Tab Content Transparency</summary>
-      <description>Opacity used for editor and Markdown preview document backgrounds, where 1.0 is fully opaque.</description>
+      <summary>Tab Content Background Opacity</summary>
+      <description>Opacity used for editor and Markdown preview document backgrounds, where 1.0 is fully opaque and lower values are more transparent.</description>
       <range min="0.0" max="1.0"/>
     </key>
     <key name="use-system-font" type="b">

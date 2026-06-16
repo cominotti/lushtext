@@ -103,7 +103,7 @@ fn test_preferences_controls_expose_accessibility_roles() {
     );
     assert!(
         has_accessible_role(&*imp.transparency_button, gtk4::AccessibleRole::Button),
-        "transparency menu should expose a button role"
+        "background opacity menu should expose a button role"
     );
     assert_eq!(
         imp.data_scan_button.accessible_role(),
@@ -262,7 +262,7 @@ fn test_color_scheme_row_populated() {
 }
 
 #[test]
-fn test_transparency_row_is_visible_with_default_percentage() {
+fn test_background_opacity_row_is_visible_with_default_percentage() {
     ensure_gtk_init();
     let settings = gio::Settings::new(config::APP_ID);
     settings
@@ -273,12 +273,17 @@ fn test_transparency_row_is_visible_with_default_percentage() {
     let imp = prefs.imp();
 
     assert!(imp.transparency_row.is_visible());
+    assert_eq!(imp.transparency_row.title().as_str(), "Background Opacity");
+    assert_eq!(
+        imp.transparency_row.subtitle().as_deref(),
+        Some("Lower values make editor and Markdown preview backgrounds more transparent")
+    );
     assert_eq!(imp.transparency_adjustment.value(), 1.0);
     assert_eq!(imp.transparency_label.label().as_str(), "100%");
 }
 
 #[test]
-fn test_transparency_row_updates_setting_and_label() {
+fn test_background_opacity_row_updates_setting_and_label() {
     ensure_gtk_init();
     let settings = gio::Settings::new(config::APP_ID);
     settings
@@ -293,10 +298,15 @@ fn test_transparency_row_updates_setting_and_label() {
 
     assert!((settings.double(keys::TAB_CONTENT_OPACITY) - 0.85).abs() < f64::EPSILON);
     assert_eq!(imp.transparency_label.label().as_str(), " 85%");
+    assert_ne!(
+        imp.transparency_label.label().as_str(),
+        " 15%",
+        "the row displays opacity, not inverted transparency"
+    );
 }
 
 #[test]
-fn test_transparency_row_restores_persisted_percentage() {
+fn test_background_opacity_row_restores_persisted_percentage() {
     ensure_gtk_init();
     let settings = gio::Settings::new(config::APP_ID);
     settings

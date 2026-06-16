@@ -7,7 +7,7 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Document properties surface** -- persistent left workspace tree plus an adaptive document-properties surface that appears as a right pane on spacious windows and a bottom sheet on compact ones, keeping document metadata, file-health details, and formatting-source explanation out of the bottom bar
 - **Focus Mode** -- `Ctrl+Shift+F11` enters a reversible fullscreen writing shell with chrome suppressed, readable editor/Markdown columns, a subtle source text-origin guide, optional typewriter scrolling, and `Alt+P` preview-only support
 - **Adaptive workspace sidebar width** -- choose `Small`, `Comfy`, or `Large` in `Preferences > Workspace`; each preset stays comfortable on large displays by clamping to a bounded desktop width
-- **Tab content transparency** -- adjust `Transparency` in `Preferences > Editor > Appearance` to soften editor and Markdown preview backgrounds while keeping the header, side panels, status/search chrome, and minimap opaque
+- **Tab content transparency** -- adjust `Background Opacity` in `Preferences > Editor > Appearance` to soften editor and Markdown preview backgrounds while keeping the header, side panels, status/search chrome, and minimap opaque
 - **Workspaces** -- named ordered folder sets with a shared current workspace scope, persisted across sessions
 - **Workspace auto-refresh** -- external file and folder changes refresh the sidebar's currently materialized top-level folder rows and expanded directories automatically, with access-noise filtering plus in-place reconciliation for both subtree and manual folder refreshes to avoid visible flashing, and a per-section `Refresh` button for deterministic broader reloads
 - **File peek** -- press `Space` on a selected sidebar file to inspect a bounded read-only preview in a floating card with the absolute file path, then `Enter` or `Open` to promote it into a real tab
@@ -326,8 +326,8 @@ Preferences are stored with GSettings under `dev.cominotti.lushtext`.
   are chosen automatically when GNOME is in dark mode.
 - **Use System Monospace Font** and **Custom Font** control editor and sidebar
   monospace text.
-- **Transparency** adjusts editor and Markdown preview document backgrounds
-  without making window chrome or side panels transparent.
+- **Background Opacity** adjusts editor and Markdown preview document
+  backgrounds without making window chrome or side panels transparent.
 - **Focus Mode** preferences set the target column width and optional typewriter
   scrolling.
 - **Use EditorConfig**, **Word Wrap**, **Tab Width**, **Insert Spaces Instead of
