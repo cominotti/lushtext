@@ -706,6 +706,24 @@ fn alert_response_button(dialog: &libadwaita::AlertDialog, response: &str) -> gt
         .unwrap_or_else(|| panic!("response button '{response}' not found"))
 }
 
+fn note_save_response_button(dialog: &libadwaita::AlertDialog) -> gtk4::Button {
+    alert_response_button(dialog, "save")
+}
+
+fn assert_note_save_response_visible(dialog: &libadwaita::AlertDialog) {
+    let save = note_save_response_button(dialog);
+    assert!(
+        save.property::<bool>("visible"),
+        "note dialog Save response should stay visible"
+    );
+}
+
+fn wait_for_note_save_response_sensitive(dialog: &libadwaita::AlertDialog, expected: bool) {
+    wait_until(Duration::from_secs(5), || {
+        note_save_response_button(dialog).is_sensitive() == expected
+    });
+}
+
 fn activate_widget_without_pointer(widget: &impl IsA<gtk4::Widget>) {
     let widget = widget.as_ref();
     assert!(widget.is_sensitive(), "widget should be keyboard activatable");
@@ -1724,6 +1742,67 @@ fn assert_note_editor_render_keeps_modal_geometry(
     assert_eq!(
         edit_text_origin, render_text_origin,
         "rendered note text should start at the same content origin as editable note text"
+    );
+}
+
+/// Verifies that an existing note dialog keeps stable geometry when it opens in Render mode.
+///
+/// The helper intentionally switches Render -> Edit -> Render so regressions in
+/// first-transition allocation, natural size, or text origin are caught in one place.
+fn assert_note_editor_render_first_keeps_modal_geometry(
+    dialog: &impl IsA<gtk4::Widget>,
+    extra: &gtk4::Widget,
+    stack: &gtk4::Stack,
+) {
+    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+    let render_dialog_size = settled_widget_outer_size(dialog);
+    let render_stack_size = settled_widget_outer_size(stack);
+    let render_extra_natural_size = measured_natural_outer_size(extra);
+    let render_stack_natural_size = measured_natural_outer_size(stack);
+    let render_text_origin = note_editor_visible_text_origin(extra, false);
+    assert_note_editor_render_surface_ready_before_first_render(extra);
+
+    stack.set_visible_child_name("edit");
+    flush_after_delay(Duration::from_millis(40));
+    assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
+    assert_eq!(
+        settled_widget_outer_size(dialog),
+        render_dialog_size,
+        "note editor modal outer allocation must not change on first Render -> Edit switch"
+    );
+    assert_eq!(
+        settled_widget_outer_size(stack),
+        render_stack_size,
+        "note editor stack allocation must not change on first Render -> Edit switch"
+    );
+    assert_eq!(
+        measured_natural_outer_size(extra),
+        render_extra_natural_size,
+        "note editor modal content must keep the same natural outer size on Render -> Edit"
+    );
+    assert_eq!(
+        measured_natural_outer_size(stack),
+        render_stack_natural_size,
+        "note editor stack must keep the same natural size on Render -> Edit"
+    );
+    assert_eq!(
+        note_editor_visible_text_origin(extra, true),
+        render_text_origin,
+        "editable note text should start at the same content origin as rendered note text"
+    );
+
+    stack.set_visible_child_name("render");
+    flush_after_delay(Duration::from_millis(40));
+    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+    assert_eq!(
+        settled_widget_outer_size(dialog),
+        render_dialog_size,
+        "note editor modal outer allocation must stay stable after returning to Render"
+    );
+    assert_eq!(
+        settled_widget_outer_size(stack),
+        render_stack_size,
+        "note editor stack allocation must stay stable after returning to Render"
     );
 }
 
@@ -10164,13 +10243,16 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
     ensure_gtk_init();
     let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_folder.join("document-note.md");
-    fixture::write_text(&path, "# Heading\n\nBody\n");
+    let source_text = "# Heading\n\nBody\n";
+    let saved_note = "# Heading\n\nSaved note\n\n- dense item\n- [x] checked item\n\nA very long markdown line that should stay inside the stable note dialog surface while it starts in Render mode.";
+    let changed_note = "# Heading\n\nChanged note after review";
+    fixture::write_text(&path, source_text);
 
     let data_dir = json_store::data_dir();
     document_note_service::save_for_path(
         &data_dir,
         &path,
-        &RichNoteBody::new("# Heading\n\nSaved note"),
+        &RichNoteBody::new(saved_note),
     )
     .expect("save document note");
 
@@ -10195,7 +10277,9 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
     let switcher = find_stack_switcher(&extra).expect("note editor switcher");
     let stack = find_note_editor_stack(&extra).expect("note editor stack");
     assert_eq!(switcher.stack(), Some(stack.clone()));
-    assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
+    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+    assert_note_save_response_visible(&dialog);
+    wait_for_note_save_response_sensitive(&dialog, false);
 
     let switcher_bounds = switcher
         .compute_bounds(&extra)
@@ -10213,12 +10297,34 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
     );
 
     assert_note_editor_text_margins_match(&extra);
-    assert_note_editor_render_keeps_modal_geometry(&dialog, &extra, &stack);
-    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+    assert_note_editor_render_first_keeps_modal_geometry(&dialog, &extra, &stack);
 
     stack.set_visible_child_name("edit");
     flush_events();
     assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
+    let (edit, _) = note_editor_text_views(&extra);
+    edit.buffer().set_text("  # Heading\n\nSaved note\n\n- dense item\n- [x] checked item\n\nA very long markdown line that should stay inside the stable note dialog surface while it starts in Render mode.  ");
+    wait_for_note_save_response_sensitive(&dialog, false);
+    edit.buffer().set_text(changed_note);
+    wait_for_note_save_response_sensitive(&dialog, true);
+    edit.buffer().set_text(saved_note);
+    wait_for_note_save_response_sensitive(&dialog, false);
+    edit.buffer().set_text("  \n\t  ");
+    wait_for_note_save_response_sensitive(&dialog, false);
+    edit.buffer().set_text(changed_note);
+    wait_for_note_save_response_sensitive(&dialog, true);
+    stack.set_visible_child_name("render");
+    flush_events();
+    wait_for_note_save_response_sensitive(&dialog, true);
+    alert_response_button(&dialog, "save").emit_clicked();
+    flush_events();
+    wait_until(Duration::from_secs(5), || {
+        document_note_service::load_for_path(&data_dir, &path)
+            .ok()
+            .flatten()
+            .is_some_and(|document| document.note.text == changed_note)
+    });
+    assert_eq!(fixture::read_text(&path), source_text);
 }
 
 #[test]
@@ -10250,6 +10356,16 @@ fn test_empty_document_note_first_render_keeps_modal_geometry_after_typing() {
     let dialog = visible_alert_dialog(&window).expect("document note dialog");
     let extra = dialog.extra_child().expect("document note extra child");
     let stack = find_note_editor_stack(&extra).expect("note editor stack");
+    assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
+    assert_note_save_response_visible(&dialog);
+    wait_for_note_save_response_sensitive(&dialog, false);
+    let (edit, _) = note_editor_text_views(&extra);
+    edit.buffer().set_text("  \n\t  ");
+    wait_for_note_save_response_sensitive(&dialog, false);
+    edit.buffer().set_text("# Typed document note\n\nPreview me");
+    wait_for_note_save_response_sensitive(&dialog, true);
+    edit.buffer().set_text("");
+    wait_for_note_save_response_sensitive(&dialog, false);
     assert_note_editor_text_margins_match(&extra);
     assert_typed_note_editor_first_render_keeps_modal_geometry(
         &dialog,
@@ -10257,6 +10373,51 @@ fn test_empty_document_note_first_render_keeps_modal_geometry_after_typing() {
         &stack,
         "# Typed document note\n\nPreview me",
     );
+}
+
+#[test]
+fn test_document_note_save_sensitivity_handles_large_chunked_buffer_edits() {
+    ensure_gtk_init();
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("large-document-note.md");
+    fixture::write_text(&path, "# Source\n\nBody\n");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_path() == Some(path.clone())
+            && action_enabled(&window, "open-document-note")
+    });
+
+    activate_action(&window, "open-document-note");
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Document Note")
+    });
+
+    let dialog = visible_alert_dialog(&window).expect("document note dialog");
+    let extra = dialog.extra_child().expect("document note extra child");
+    let stack = find_note_editor_stack(&extra).expect("note editor stack");
+    assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
+    wait_for_note_save_response_sensitive(&dialog, false);
+
+    stack.set_visible_child_name("render");
+    flush_events();
+    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+
+    let large_note = "chunked note body\n".repeat(150_000);
+    let (edit, _) = note_editor_text_views(&extra);
+    edit.buffer().set_text(&large_note);
+    wait_for_note_save_response_sensitive(&dialog, true);
+
+    edit.buffer().set_text("");
+    wait_for_note_save_response_sensitive(&dialog, false);
 }
 
 #[test]
@@ -10285,6 +10446,14 @@ fn test_open_folder_note_dialog_for_concrete_scope() {
             .as_deref()
             == Some("Folder Note")
     });
+
+    let dialog = visible_alert_dialog(&window).expect("folder note dialog");
+    let extra = dialog.extra_child().expect("folder note extra child");
+    let stack = find_note_editor_stack(&extra).expect("folder note editor stack");
+    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+    assert_note_save_response_visible(&dialog);
+    wait_for_note_save_response_sensitive(&dialog, false);
+    assert_note_editor_render_first_keeps_modal_geometry(&dialog, &extra, &stack);
 }
 
 #[test]
@@ -10330,6 +10499,7 @@ fn test_folder_note_dialog_saves_renders_and_clears_note() {
         seed_scoped_workspaces(WorkspaceScope::workspace(WorkspaceId::new("ws-right")));
     let data_dir = json_store::data_dir();
     let note_text = "# Saved folder note\n\nPersistent body";
+    let changed_note = "# Saved folder note\n\nPersistent body\n\nReviewed from Render";
 
     let window = test_window();
     present_window(&window);
@@ -10347,10 +10517,21 @@ fn test_folder_note_dialog_saves_renders_and_clears_note() {
     let dialog = visible_alert_dialog(&window).expect("folder note dialog");
     let extra = dialog.extra_child().expect("folder note extra child");
     let stack = find_note_editor_stack(&extra).expect("folder note editor stack");
+    assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
+    assert_note_save_response_visible(&dialog);
+    wait_for_note_save_response_sensitive(&dialog, false);
     let (edit, render) = note_editor_text_views(&extra);
+    edit.buffer().set_text("  \n\t  ");
+    wait_for_note_save_response_sensitive(&dialog, false);
     edit.buffer().set_text(note_text);
+    wait_for_note_save_response_sensitive(&dialog, true);
+    edit.buffer().set_text("");
+    wait_for_note_save_response_sensitive(&dialog, false);
+    edit.buffer().set_text(note_text);
+    wait_for_note_save_response_sensitive(&dialog, true);
     stack.set_visible_child_name("render");
     flush_events();
+    wait_for_note_save_response_sensitive(&dialog, true);
     wait_until(Duration::from_secs(5), || {
         let buffer = render.buffer();
         buffer
@@ -10358,8 +10539,6 @@ fn test_folder_note_dialog_saves_renders_and_clears_note() {
             .contains("Saved folder note")
     });
 
-    stack.set_visible_child_name("edit");
-    flush_events();
     alert_response_button(&dialog, "save").emit_clicked();
     flush_events();
     wait_until(Duration::from_secs(5), || {
@@ -10382,6 +10561,42 @@ fn test_folder_note_dialog_saves_renders_and_clears_note() {
             == Some("Folder Note")
     });
     let dialog = visible_alert_dialog(&window).expect("reopened folder note dialog");
+    let extra = dialog.extra_child().expect("reopened folder note extra child");
+    let stack = find_note_editor_stack(&extra).expect("reopened folder note editor stack");
+    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+    wait_for_note_save_response_sensitive(&dialog, false);
+    stack.set_visible_child_name("edit");
+    flush_events();
+    let (edit, _) = note_editor_text_views(&extra);
+    edit.buffer().set_text("  # Saved folder note\n\nPersistent body  ");
+    wait_for_note_save_response_sensitive(&dialog, false);
+    edit.buffer().set_text(changed_note);
+    wait_for_note_save_response_sensitive(&dialog, true);
+    stack.set_visible_child_name("render");
+    flush_events();
+    wait_for_note_save_response_sensitive(&dialog, true);
+    alert_response_button(&dialog, "save").emit_clicked();
+    flush_events();
+    wait_until(Duration::from_secs(5), || {
+        folder_note_service::load_for_folder(&data_dir, &right_folder)
+            .ok()
+            .flatten()
+            .is_some_and(|document| document.note.text == changed_note)
+            && window
+                .imp()
+                .notification_bus
+                .status_bar_view()
+                .is_some_and(|status| status.text.contains("Folder note saved"))
+    });
+
+    activate_action(&window, "open-folder-note");
+    wait_until(Duration::from_secs(5), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Folder Note")
+    });
+    let dialog = visible_alert_dialog(&window).expect("reopened changed folder note dialog");
     alert_response_button(&dialog, "clear").emit_clicked();
     flush_events();
     wait_until(Duration::from_secs(5), || {
@@ -10418,6 +10633,9 @@ fn test_empty_folder_note_first_render_keeps_modal_geometry_after_typing() {
     let dialog = visible_alert_dialog(&window).expect("folder note dialog");
     let extra = dialog.extra_child().expect("folder note extra child");
     let stack = find_note_editor_stack(&extra).expect("folder note editor stack");
+    assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
+    assert_note_save_response_visible(&dialog);
+    wait_for_note_save_response_sensitive(&dialog, false);
     assert_note_editor_text_margins_match(&extra);
     assert_typed_note_editor_first_render_keeps_modal_geometry(
         &dialog,
@@ -10481,6 +10699,12 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
             .as_deref()
             == Some("Document Note")
     });
+    let dialog = visible_alert_dialog(&window).expect("browse-opened document note dialog");
+    let extra = dialog.extra_child().expect("browse-opened document note extra child");
+    let stack = find_note_editor_stack(&extra).expect("browse-opened note editor stack");
+    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+    assert_note_save_response_visible(&dialog);
+    wait_for_note_save_response_sensitive(&dialog, false);
     assert!(!action_enabled(&window, "set-notes-browser-query"));
     assert!(!action_enabled(&window, "select-notes-browser-row"));
     assert!(!action_enabled(&window, "open-notes-browser-selection"));

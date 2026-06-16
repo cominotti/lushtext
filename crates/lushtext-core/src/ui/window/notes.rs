@@ -23,7 +23,7 @@ use libadwaita::prelude::{
 
 use crate::model::bookmark::BookmarkRecord;
 use crate::model::migration_ledger::MigrationKind;
-use crate::model::note::{NoteViewMode, RichNoteBody};
+use crate::model::note::{NoteEditorPresentation, NoteViewMode, RichNoteBody};
 use crate::model::palette::{
     PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot,
 };
@@ -51,6 +51,12 @@ const NOTES_SAVE_DEBOUNCE_MS: u64 = 200;
 
 /// Coalesce command-palette note-source reloads after live note/bookmark bursts.
 const COMMAND_PALETTE_NOTES_REFRESH_DEBOUNCE_MS: u64 = 150;
+
+/// Coalesce note-editor dirty-state checks after rapid typing.
+///
+/// Save sensitivity is helpful feedback, but recomputing it from the whole
+/// buffer on every keystroke can steal time from text input on large notes.
+const NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS: u64 = 80;
 
 /// Alert-dialog response IDs reused by the note workflows.
 const RESPONSE_CANCEL: &str = "cancel";
@@ -1127,13 +1133,16 @@ impl LushtextWindow {
         path_label.add_css_class("dim-label");
         content.append(&path_label);
 
-        let initial_text = existing_note.as_ref().map_or("", |note| note.text.as_str());
+        let loaded_text = existing_note.as_ref().map(|note| note.text.as_str());
+        let presentation = NoteEditorPresentation::from_loaded_text(loaded_text);
+        let initial_text = loaded_text.unwrap_or("");
         let (surface, note_view) = build_note_editor_surface(
             initial_text,
             &MarkdownPreviewRenderContext::new(Some(path.to_path_buf()), workspace_folders),
-            NoteViewMode::Edit,
+            presentation.initial_mode(),
             "Write some note text to preview rendered markdown.",
         );
+        install_note_save_response_state(&dialog, &note_view.buffer(), presentation, initial_text);
         content.append(&surface);
         dialog.set_extra_child(Some(&content));
 
@@ -1259,13 +1268,16 @@ impl LushtextWindow {
         folder_label.add_css_class("dim-label");
         content.append(&folder_label);
 
-        let initial_text = existing_note.as_ref().map_or("", |note| note.text.as_str());
+        let loaded_text = existing_note.as_ref().map(|note| note.text.as_str());
+        let presentation = NoteEditorPresentation::from_loaded_text(loaded_text);
+        let initial_text = loaded_text.unwrap_or("");
         let (surface, note_view) = build_note_editor_surface(
             initial_text,
             &MarkdownPreviewRenderContext::new(None, vec![folder.to_path_buf()]),
-            NoteViewMode::Edit,
+            presentation.initial_mode(),
             "Write some note text to preview rendered markdown.",
         );
+        install_note_save_response_state(&dialog, &note_view.buffer(), presentation, initial_text);
         content.append(&surface);
         dialog.set_extra_child(Some(&content));
 
@@ -2194,9 +2206,10 @@ fn build_note_editor_surface(
         .text_view()
         .set_bottom_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
     preview.show_content_placeholder(empty_preview_description);
-    // Existing notes open in Edit mode, but the hidden Render page still
-    // participates in stack measurement. Render once up front so the first
-    // click on Render does not swap placeholder geometry into content geometry.
+    // Non-empty notes may open directly in Render, and the hidden Render page
+    // still participates in stack measurement when Edit starts first. Render
+    // once up front so either initial mode has stable geometry without doing a
+    // second markdown pass during setup.
     if !initial_text.trim().is_empty() {
         render_note_preview(
             &preview,
@@ -2207,12 +2220,17 @@ fn build_note_editor_surface(
     }
     stack.add_titled(&preview, Some("render"), "Render");
 
+    match initial_mode {
+        NoteViewMode::Edit => stack.set_visible_child_name("edit"),
+        NoteViewMode::Render => stack.set_visible_child_name("render"),
+    }
+
     let buffer = note_view.buffer();
-    let preview_clone = preview.clone();
+    let preview_for_render = preview;
     let render_context_clone = render_context.clone();
     stack.connect_notify_local(Some("visible-child-name"), move |stack, _| {
         if stack.visible_child_name().as_deref() == Some("render") {
-            let preview = preview_clone.clone();
+            let preview = preview_for_render.clone();
             let buffer = buffer.clone();
             let render_context = render_context_clone.clone();
             glib::idle_add_local_once(move || {
@@ -2226,21 +2244,95 @@ fn build_note_editor_surface(
         }
     });
 
-    match initial_mode {
-        NoteViewMode::Edit => stack.set_visible_child_name("edit"),
-        NoteViewMode::Render => {
-            stack.set_visible_child_name("render");
-            render_note_preview(
-                &preview,
-                &note_view.buffer(),
-                render_context,
-                empty_preview_description,
-            );
+    content.append(&stack);
+    (content, note_view)
+}
+
+/// Wires the Save response to the note buffer's normalized dirty-state policy.
+///
+/// Runs on the GTK main thread and installs a `TextBuffer::changed` handler; the
+/// handler weakly references the dialog so late changes cannot keep it alive.
+fn install_note_save_response_state(
+    dialog: &libadwaita::AlertDialog,
+    buffer: &gtk4::TextBuffer,
+    presentation: NoteEditorPresentation,
+    initial_text: &str,
+) {
+    dialog.set_response_enabled(RESPONSE_SAVE, presentation.save_enabled_for(initial_text));
+
+    let refresh = NoteSaveResponseRefresh::new(dialog, presentation);
+    buffer.connect_changed(move |buffer| {
+        refresh.schedule(buffer);
+    });
+}
+
+/// Main-loop state for coalescing Save sensitivity refreshes.
+#[derive(Clone)]
+struct NoteSaveResponseRefresh {
+    dialog_weak: glib::WeakRef<libadwaita::AlertDialog>,
+    presentation: Rc<NoteEditorPresentation>,
+    debounce: Debounce,
+    in_flight: Rc<Cell<bool>>,
+    rerun_requested: Rc<Cell<bool>>,
+}
+
+impl NoteSaveResponseRefresh {
+    /// Create a refresh state object tied to one note editor dialog.
+    fn new(dialog: &libadwaita::AlertDialog, presentation: NoteEditorPresentation) -> Self {
+        Self {
+            dialog_weak: dialog.downgrade(),
+            presentation: Rc::new(presentation),
+            debounce: Debounce::new(),
+            in_flight: Rc::new(Cell::new(false)),
+            rerun_requested: Rc::new(Cell::new(false)),
         }
     }
 
-    content.append(&stack);
-    (content, note_view)
+    /// Schedule a trailing Save sensitivity refresh after live text edits.
+    fn schedule(&self, buffer: &gtk4::TextBuffer) {
+        let refresh = self.clone();
+        self.debounce.schedule(
+            buffer,
+            Duration::from_millis(NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS),
+            move |buffer, _| refresh.queue(buffer),
+        );
+    }
+
+    /// Recompute Save sensitivity from the newest buffer snapshot without blocking input.
+    ///
+    /// At most one large-buffer snapshot runs at a time. If rapid typing changes
+    /// the buffer while a snapshot is collecting chunks, the stale result is
+    /// ignored and exactly one follow-up snapshot reads the latest buffer text.
+    fn queue(&self, buffer: gtk4::TextBuffer) {
+        if self.dialog_weak.upgrade().is_none() {
+            return;
+        }
+
+        if self.in_flight.replace(true) {
+            self.rerun_requested.set(true);
+            return;
+        }
+
+        let refresh = self.clone();
+        let buffer_for_rerun = buffer.clone();
+        snapshot_note_buffer_text(buffer, move |text| {
+            let rerun_requested = refresh.rerun_requested.replace(false);
+            refresh.in_flight.set(false);
+
+            if rerun_requested {
+                if refresh.dialog_weak.upgrade().is_some() {
+                    refresh.queue(buffer_for_rerun);
+                }
+                return;
+            }
+
+            let Some(dialog) = refresh.dialog_weak.upgrade() else {
+                return;
+            };
+            dialog
+                .set_response_enabled(RESPONSE_SAVE, refresh.presentation.save_enabled_for(&text));
+        });
+    }
 }
 
 /// Render one note body into the shared markdown preview widget.

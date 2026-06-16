@@ -17,6 +17,8 @@ mod encoding_sidecar;
 mod format_upgrade;
 #[path = "properties/inline_footnotes.rs"]
 mod inline_footnotes;
+#[path = "properties/note.rs"]
+mod note;
 #[path = "properties/palette.rs"]
 mod palette;
 #[path = "properties/path_rebasing.rs"]
