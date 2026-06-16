@@ -65,6 +65,37 @@
   </screenshots>
 
   <releases>
+    <release version="0.4.0" date="2026-06-16">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Folger Shakespeare Library, "Sonnet 18," final couplet.</p>
+        <p>Selection: Complete final couplet.</p>
+        <p>Complete stanza:</p>
+        <p>&gt; So long as men can breathe or eyes can see,</p>
+        <p>&gt; So long lives this, and this gives life to thee.</p>
+        <p>William Shakespeare, "Sonnet 18"</p>
+        <p>## What's Changed</p>
+        <p>LushText now has a GNOME-style Open popover for recent documents. The header Open button and Ctrl+K open a searchable recent list with file names, parent paths, age labels, row removal, empty/search states, and a direct path back to the file chooser. Recent rows are app-owned and bounded: LushText records local file paths and timestamps after explicit opens, excludes files that are already open, prunes missing or unsupported entries, and keeps startup session restore from reshuffling your recent history.</p>
+        <p>The command palette can now search note records directly. Notes mode searches bookmarks, folder notes, document notes, and note-related open tabs using the same note taxonomy as Browse Notes, including previews and workspace-aware grouping. All mode now includes notes alongside files and commands, so remembered context is reachable without opening a separate notes browser first.</p>
+        <p>Note editing feels calmer. Existing notes open in rendered preview mode when there is meaningful saved content, empty notes open in edit mode, and Save is available only for meaningful changes instead of whitespace-only edits.</p>
+        <p>The tab strip now stays visible even when only one normal tab is open, making tab context actions easier to discover and keeping the document chrome more consistent.</p>
+        <p>Preferences and supporting tools received polish too. The Background Opacity wording now more clearly describes editor and Markdown preview document backgrounds, the Data page wording is tidier, and the development surface gained focused command-palette-notes smoke/manual fixtures plus stronger visual proof coverage for the new Open popover.</p>
+        <p>The Snap packaging work is now captured in OpenSpec and maintainer documentation as preparation work. This release does not add a new public Snap channel.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for normal users upgrading from v0.3.0.</p>
+        <p>Maintainers should review the release workflow output after publication: the Cominotti Flatpak repository remains the primary Flatpak channel, while any Flathub handoff is optional and depends on the configured GitHub Actions secrets. Snap packaging remains preparation-only until its external store and platform gates are ready.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>LushText now writes an app-owned `recent-documents.json` file for the Open popover. It stores local paths, canonical identities when available, and last-opened timestamps, but not document text, note bodies, drafts, local-history contents, or private sidecar identifiers.</p>
+        <p>Recent Open currently supports local filesystem documents only. Unsupported URI-style entries are ignored or pruned instead of being offered as reopen targets.</p>
+        <p>Malformed or unreadable note, bookmark, or sidecar metadata may be skipped from note search while LushText records recovery diagnostics. This keeps search safe and bounded, but it means damaged metadata may not appear in the command palette until the underlying sidecar is recoverable.</p>
+        <p>No deprecations are introduced in this release.</p>
+        <p>## Bug Fixes</p>
+        <p>Recent Open now refreshes from the real open-tab set, so stale open-path cache entries no longer hide valid recent documents after tabs close, rename, save-as, or external-file transitions.</p>
+        <p>The Open popover rows better match the intended GNOME-style shape: long paths use tooltips and ellipsizing instead of widening the popover, the list avoids horizontal scrolling, and search/reset behavior is steadier across repeated openings.</p>
+        <p>Command palette note refreshes are non-destructive, so loading or updating note rows no longer clears the active palette query or disrupts the visible search state.</p>
+        <p>Folder-note wording in AppStream metadata now matches the current user-facing model, and the Background Opacity preference text is clearer about what becomes transparent.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-06-14">
       <description>
         <p>## Poetic Opening</p>
