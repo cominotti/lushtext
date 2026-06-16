@@ -110,6 +110,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
         </child>
         <child>
           <object class="AdwTabBar" id="tab_bar">
+            <property name="autohide">false</property>
             <property name="view">tab_view</property>
             <style>
               <class name="header-chrome-opaque"/>

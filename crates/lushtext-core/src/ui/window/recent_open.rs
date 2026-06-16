@@ -25,6 +25,15 @@ impl LushtextWindow {
     /// Wire Open popover callbacks to the same production workflows as actions.
     pub(super) fn setup_open_popover_callbacks(&self) {
         let window_weak = self.downgrade();
+        self.imp().open_popover.connect_show(move |_| {
+            if let Some(window) = window_weak.upgrade() {
+                // The header MenuButton can show the popover directly, bypassing
+                // the window action that normally rebuilds the hidden row model.
+                window.rebuild_open_popover_rows();
+            }
+        });
+
+        let window_weak = self.downgrade();
         self.imp()
             .open_popover
             .connect_open_file_requested(move || {
@@ -180,7 +189,7 @@ impl LushtextWindow {
 
     fn rebuild_open_popover_rows(&self) {
         let entries = self.imp().recent_documents.entries.borrow();
-        let open_identities = self.imp().open_paths.borrow();
+        let open_identities = self.current_open_document_identities();
         let rows = recent_documents::visible_rows_for_open_set(
             &entries,
             &open_identities,

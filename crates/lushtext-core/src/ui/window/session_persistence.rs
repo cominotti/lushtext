@@ -167,6 +167,7 @@ impl super::LushtextWindow {
         let had_tabs_before = tab_view.n_pages() > 0;
         let selected_before_restore = tab_view.selected_page();
         self.imp().session.restoring.set(true);
+        self.begin_tab_projection_refresh_batch();
 
         for tab in &session.tabs {
             if let Some(path) = &tab.path {
@@ -217,10 +218,7 @@ impl super::LushtextWindow {
         }
 
         self.imp().session.restoring.set(false);
-        self.update_content_stack();
-        self.refresh_sidebar_file_row_states();
-        self.refresh_open_popover_rows();
-        self.refresh_status_bar();
+        self.end_tab_projection_refresh_batch();
     }
 
     fn publish_startup_recovery_diagnostics(&self, diagnostics: &[RecoveryDiagnostic]) {

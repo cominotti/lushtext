@@ -20,7 +20,7 @@ use crate::services::json_store;
 
 /// Recent-document storage filename under the app data directory.
 pub const RECENT_DOCUMENTS_FILE: &str = "recent-documents.json";
-/// Keep the full history bounded while still far exceeding the 10-row viewport.
+/// Keep the full history bounded while still far exceeding the Open popover view.
 const MAX_RECENTS: usize = 200;
 /// Refuse oversized app-owned recent metadata before parsing or path probing.
 const MAX_RECENT_DOCUMENTS_BYTES: u64 = 1024 * 1024;
@@ -307,7 +307,10 @@ fn dedupe_sort_prune_existing(
                     .iter()
                     .any(|retained_entry| same_identity(retained_entry, &entry))
                 {
+                    // Entries are sorted newest-first; skipping later duplicates
+                    // preserves the freshest spelling and timestamp for a path.
                     pruned = true;
+                    continue;
                 }
                 add_or_update(
                     &mut retained,
@@ -586,6 +589,28 @@ mod tests {
     }
 
     #[test]
+    fn load_deduplicates_duplicate_persisted_path_spellings() {
+        let dir = TempDir::new().expect("recent duplicate tempdir");
+        let path = dir.path().join("duplicate.txt");
+        fixture::write_text(&path, "duplicate");
+        let entries = RecentDocumentFile {
+            entries: vec![
+                RecentDocumentEntry::new(path.clone(), None, 10),
+                RecentDocumentEntry::new(path.clone(), None, 30),
+            ],
+        };
+        json_store::save(dir.path(), RECENT_DOCUMENTS_FILE, &entries)
+            .expect("seed duplicate recents");
+
+        let loaded = load(dir.path());
+
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].path, path);
+        assert_eq!(loaded.entries[0].last_opened_secs, 30);
+        assert!(loaded.pruned);
+    }
+
+    #[test]
     fn visible_rows_excludes_open_tabs_by_display_or_canonical_identity() {
         let entries = vec![
             RecentDocumentEntry::new(PathBuf::from("/tmp/a.txt"), None, 30),
@@ -605,6 +630,80 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].path, PathBuf::from("/tmp/c.txt"));
+    }
+
+    #[test]
+    fn visible_rows_reappears_after_live_identity_is_removed() {
+        let entry = RecentDocumentEntry::new(PathBuf::from("/tmp/reopened.txt"), None, 30);
+        let entries = vec![entry];
+
+        let open_rows = visible_rows(&entries, &[PathBuf::from("/tmp/reopened.txt")], 40);
+        let closed_rows = visible_rows(&entries, &[], 50);
+
+        assert!(open_rows.is_empty());
+        assert_eq!(closed_rows.len(), 1);
+        assert_eq!(closed_rows[0].path, PathBuf::from("/tmp/reopened.txt"));
+    }
+
+    #[test]
+    fn visible_rows_keeps_display_and_canonical_entries_when_live_set_is_empty() {
+        let entries = vec![
+            RecentDocumentEntry::new(
+                PathBuf::from("/tmp/stale-display.txt"),
+                Some(PathBuf::from("/real/stale-display.txt")),
+                20,
+            ),
+            RecentDocumentEntry::new(PathBuf::from("/tmp/plain.txt"), None, 10),
+        ];
+
+        let rows = visible_rows(&entries, &[], 30);
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.path.as_path())
+                .collect::<Vec<_>>(),
+            vec![
+                Path::new("/tmp/stale-display.txt"),
+                Path::new("/tmp/plain.txt")
+            ]
+        );
+    }
+
+    #[test]
+    fn visible_rows_handles_mixed_open_and_closed_identity_sets() {
+        let entries = vec![
+            RecentDocumentEntry::new(PathBuf::from("/tmp/open-display.txt"), None, 40),
+            RecentDocumentEntry::new(
+                PathBuf::from("/tmp/open-link.txt"),
+                Some(PathBuf::from("/real/open-target.txt")),
+                30,
+            ),
+            RecentDocumentEntry::new(
+                PathBuf::from("/tmp/closed-link.txt"),
+                Some(PathBuf::from("/real/closed-target.txt")),
+                20,
+            ),
+            RecentDocumentEntry::new(PathBuf::from("/tmp/closed-display.txt"), None, 10),
+        ];
+
+        let rows = visible_rows(
+            &entries,
+            &[
+                PathBuf::from("/tmp/open-display.txt"),
+                PathBuf::from("/real/open-target.txt"),
+            ],
+            50,
+        );
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.path.as_path())
+                .collect::<Vec<_>>(),
+            vec![
+                Path::new("/tmp/closed-link.txt"),
+                Path::new("/tmp/closed-display.txt")
+            ]
+        );
     }
 
     #[test]

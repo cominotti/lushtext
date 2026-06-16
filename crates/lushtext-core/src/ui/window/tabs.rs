@@ -367,9 +367,11 @@ impl LushtextWindow {
             preconfirmed.extend(targets.iter().map(tab_page_key));
         }
 
+        self.begin_tab_projection_refresh_batch();
         for page in targets {
             self.imp().tab_view.close_page(page);
         }
+        self.end_tab_projection_refresh_batch();
 
         self.publish_status_message(
             &format!(

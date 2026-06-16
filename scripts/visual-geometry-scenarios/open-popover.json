@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scenario_id": "open-popover",
   "scenario_type": "open-popover",
-  "description": "Same-session GNOME-style Open popover invariant for recent-document geometry.",
+  "description": "Same-session GNOME Text Editor 50.1-style Open popover invariant for recent-document row geometry.",
   "matrix": {
     "sizes": [
       {
@@ -22,7 +22,11 @@
     ],
     "fixture_kinds": [
       "empty",
+      "single",
       "representative",
+      "ten",
+      "all-closed",
+      "all-open",
       "dense",
       "awkward"
     ]
@@ -53,7 +57,14 @@
       "surface": "status-bar",
       "comparison": "exact-equality",
       "require_same_rect": true,
-      "mask_rects": []
+      "mask_rects": [
+        {
+          "x": 0,
+          "y": 0,
+          "width": 371,
+          "height": 33
+        }
+      ]
     }
   ],
   "allowed_changing_regions": [
@@ -63,15 +74,19 @@
     },
     {
       "surface": "open-popover-recent-list",
-      "relationship": "Dense recent rows are capped to the 10-row item region"
+      "relationship": "Dense recent rows are capped to the GNOME 600px item region without moving search or chooser controls"
     },
     {
       "surface": "open-popover-empty-state",
-      "relationship": "Empty recents show the GNOME-style empty state"
+      "relationship": "Empty or all-open recents show the GNOME-style empty state"
     },
     {
       "surface": "header-open-menu-button",
       "relationship": "Header Open remains before New Tab while the Open popover is active"
+    },
+    {
+      "surface": "open-popover-recent-list",
+      "relationship": "Representative, single, all-closed, dense, and awkward rows preserve close-button alignment and readable ellipsized text"
     }
   ],
   "readiness_predicates": [

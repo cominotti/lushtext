@@ -111,7 +111,7 @@ impl LushtextWindow {
             return;
         }
 
-        self.imp().open_paths.borrow_mut().insert(key.clone());
+        self.imp().open_paths.borrow_mut().insert(key);
         let editor_page = LushtextEditorPage::new();
         self.wire_info_bar(&editor_page);
         self.wire_note_callbacks(&editor_page);
@@ -153,7 +153,6 @@ impl LushtextWindow {
         let window_weak = self.downgrade();
         let editor_weak = editor_page.downgrade();
         let page_weak = page.downgrade();
-        let key_for_failure = key;
         let path_for_failure = path.to_path_buf();
         *editor_page.imp().load.load_failed_callback.borrow_mut() = Some(Box::new(move |error| {
             let Some(window) = window_weak.upgrade() else {
@@ -164,10 +163,7 @@ impl LushtextWindow {
                 MessageKind::Error,
             );
             let Some(editor) = editor_weak.upgrade() else {
-                let mut open_paths = window.imp().open_paths.borrow_mut();
-                open_paths.remove(&key_for_failure);
-                open_paths.remove(path_for_failure.as_path());
-                drop(open_paths);
+                window.reconcile_open_paths_from_tabs();
                 window.refresh_sidebar_file_row_states();
                 window.refresh_open_popover_rows();
                 return;
@@ -180,14 +176,7 @@ impl LushtextWindow {
                 window.refresh_open_popover_rows();
                 return;
             }
-            {
-                let mut open_paths = window.imp().open_paths.borrow_mut();
-                open_paths.remove(&key_for_failure);
-                open_paths.remove(path_for_failure.as_path());
-                if let Some(canonical_path) = editor.canonical_file_path() {
-                    open_paths.remove(&canonical_path);
-                }
-            }
+            window.reconcile_open_paths_from_tabs();
             window.apply_preloaded_draft_for_path(&editor, &path_for_failure);
             // A failed load can arrive after the user typed into the tab; keep
             // that buffer instead of demoting the page and rewriting its draft identity.
@@ -318,6 +307,7 @@ impl LushtextWindow {
                         open_paths.insert(canonical_path);
                     }
                 }
+                window.reconcile_open_paths_from_tabs();
                 window.refresh_sidebar_file_row_states();
                 window.refresh_open_popover_rows();
                 if let Some(editor) = window.active_editor() {
@@ -564,11 +554,13 @@ impl LushtextWindow {
         });
     }
 
-    /// Switch the content stack between "tabs" and "empty" states,
-    /// and enable/disable actions that require an active tab.
+    /// Switch the content stack and tab-strip chrome between tabbed and empty states.
+    ///
+    /// This also enables/disables actions that require an active tab.
     pub(super) fn update_content_stack(&self) {
         let imp = self.imp();
         let has_tabs = imp.tab_view.n_pages() > 0;
+        self.sync_tab_bar_visibility();
         if has_tabs {
             imp.content_stack.set_visible_child_name("tabs");
         } else {
@@ -608,6 +600,13 @@ impl LushtextWindow {
         }
 
         self.update_search_navigation_actions();
+    }
+
+    /// Keep the tab strip visible only for normal-mode windows with real tab targets.
+    pub(super) fn sync_tab_bar_visibility(&self) {
+        let imp = self.imp();
+        imp.tab_bar
+            .set_visible(imp.tab_view.n_pages() > 0 && !self.is_focus_mode_active());
     }
 
     /// Enable or disable the F4/Shift+F4 search navigation actions.
@@ -752,6 +751,71 @@ impl LushtextWindow {
         })
     }
 
+    /// Return file identities owned by mounted, non-failed editor tabs.
+    ///
+    /// This is the source of truth for visible UI state. The `open_paths` cache
+    /// can be ahead or behind during close/detach and async path refreshes, but
+    /// mounted tabs tell the Open popover which files are truly open now.
+    pub(super) fn current_open_document_identities(&self) -> HashSet<PathBuf> {
+        let tab_view = &self.imp().tab_view;
+        let mut identities = HashSet::new();
+        for index in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(index);
+            let child = page.child();
+            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
+                continue;
+            };
+            collect_open_document_identities(&mut identities, editor);
+        }
+        identities
+    }
+
+    /// Rebuild duplicate-detection bookkeeping from the mounted tab model.
+    ///
+    /// The cache keeps `open_document()` fast, but tab close, Save As, failed
+    /// loads, and delayed canonical probes can leave stale identities behind.
+    /// Scrubbing from live tabs keeps future duplicate checks healthy without
+    /// making the cache the Open popover's visibility source of truth.
+    pub(super) fn reconcile_open_paths_from_tabs(&self) {
+        let identities = self.current_open_document_identities();
+        self.imp().open_paths.replace(identities);
+    }
+
+    /// Temporarily coalesce tab-model projection refreshes during tab storms.
+    pub(super) fn begin_tab_projection_refresh_batch(&self) {
+        let depth = self.imp().tab_projection_refresh_defer_depth.get();
+        self.imp()
+            .tab_projection_refresh_defer_depth
+            .set(depth.saturating_add(1));
+    }
+
+    /// End a coalesced tab-model refresh and rebuild derived state once.
+    pub(super) fn end_tab_projection_refresh_batch(&self) {
+        let depth = self.imp().tab_projection_refresh_defer_depth.get();
+        debug_assert!(depth > 0, "tab projection refresh batch underflow");
+        if depth <= 1 {
+            self.imp().tab_projection_refresh_defer_depth.set(0);
+            self.refresh_tab_model_projections();
+        } else {
+            self.imp().tab_projection_refresh_defer_depth.set(depth - 1);
+        }
+    }
+
+    /// Whether tab-count notifications should leave derived projections deferred.
+    pub(super) fn tab_projection_refresh_deferred(&self) -> bool {
+        self.imp().tab_projection_refresh_defer_depth.get() > 0
+    }
+
+    /// Rebuild all window projections that derive from the mounted tab model.
+    pub(super) fn refresh_tab_model_projections(&self) {
+        self.reconcile_open_paths_from_tabs();
+        self.update_content_stack();
+        self.refresh_command_palette_sources();
+        self.refresh_sidebar_file_row_states();
+        self.refresh_open_popover_rows();
+        self.refresh_status_bar();
+    }
+
     /// Refresh sidebar file-row markers from the current file-backed tabs.
     pub(super) fn refresh_sidebar_file_row_states(&self) {
         let tab_view = &self.imp().tab_view;
@@ -769,9 +833,9 @@ impl LushtextWindow {
                 continue;
             }
 
-            collect_sidebar_file_identities(&mut open_identities, editor);
+            collect_open_document_identities(&mut open_identities, editor);
             if selected_page.as_ref() == Some(&page) {
-                collect_sidebar_file_identities(&mut active_identities, editor);
+                collect_open_document_identities(&mut active_identities, editor);
             }
         }
 
@@ -811,6 +875,7 @@ impl LushtextWindow {
                 page.set_title(&editor.title());
             }
         }
+        self.reconcile_open_paths_from_tabs();
         self.refresh_sidebar_file_row_states();
         self.refresh_open_popover_rows();
         self.refresh_header_bar();
@@ -850,6 +915,7 @@ impl LushtextWindow {
                     .borrow_mut()
                     .insert(canonical.clone());
                 editor.set_file_path_with_canonical(&updated_for_apply, Some(canonical));
+                window.reconcile_open_paths_from_tabs();
                 window.refresh_sidebar_file_row_states();
                 window.refresh_open_popover_rows();
             },
@@ -859,6 +925,7 @@ impl LushtextWindow {
     /// Close any tab whose file path matches `path` or is inside it (for directories).
     pub fn close_tab_for_path(&self, path: &Path) {
         let tab_view = &self.imp().tab_view;
+        self.begin_tab_projection_refresh_batch();
         for i in (0..tab_view.n_pages()).rev() {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
@@ -880,15 +947,17 @@ impl LushtextWindow {
                 }
             }
         }
-        self.update_content_stack();
-        self.refresh_command_palette_sources();
-        self.refresh_sidebar_file_row_states();
-        self.refresh_open_popover_rows();
-        self.refresh_status_bar();
+        self.end_tab_projection_refresh_batch();
     }
 }
 
-fn collect_sidebar_file_identities(identities: &mut HashSet<PathBuf>, editor: &LushtextEditorPage) {
+fn collect_open_document_identities(
+    identities: &mut HashSet<PathBuf>,
+    editor: &LushtextEditorPage,
+) {
+    if editor.load_state() == EditorLoadState::Failed {
+        return;
+    }
     if let Some(path) = editor.file_path() {
         identities.insert(open_path_key(&path));
     }

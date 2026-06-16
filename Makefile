@@ -10,6 +10,7 @@
 #   make run-format-upgrade-older-manual-test - Launch with isolated upgradeable old-version app data
 #   make run-command-palette-notes-manual-test - Launch with isolated Notes palette fixtures
 #   make refresh-dock-icon - Regenerate app icon assets and restart dev run so GNOME Shell reloads the app icon
+#   make clear-lushtext-xdg - Remove LushText-owned XDG data/config/cache/state and reset app settings
 #   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
 #   make test-int    - Integration tests only
@@ -70,7 +71,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-workspace-row-states automation-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-workspace-row-states automation-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -190,6 +191,10 @@ refresh-dock-icon:
 	@$(MAKE) build-debug
 	@echo "Refreshing the LushText GNOME Shell dock icon..."
 	LUSHTEXT_DEV_RUN_FORCE_RESTART=1 LUSHTEXT_DEV_RUN_TERMINATE_STALE=1 ./scripts/run-dev-app.sh
+
+# Remove only LushText-owned user XDG/config state. Use DRY_RUN=1 to preview.
+clear-lushtext-xdg:
+	@DRY_RUN="$(DRY_RUN)" INCLUDE_FLATPAK="$(INCLUDE_FLATPAK)" RESET_GSETTINGS="$(RESET_GSETTINGS)" ALLOW_RUNNING="$(ALLOW_RUNNING)" ./scripts/clear-lushtext-xdg.sh
 
 # Run all tests
 test:
@@ -709,6 +714,7 @@ help:
 	@echo "  run-format-upgrade-older-manual-test Launch with isolated upgradeable old-version app data"
 	@echo "  run-command-palette-notes-manual-test Launch with isolated Notes palette fixtures"
 	@echo "  refresh-dock-icon Regenerate app icon assets + force a fresh dock icon reload in GNOME Shell"
+	@echo "  clear-lushtext-xdg Remove LushText-owned XDG data/config/cache/state and reset app settings"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  test         All tests (unit + integration + widget)"

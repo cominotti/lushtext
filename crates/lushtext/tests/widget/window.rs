@@ -1057,6 +1057,46 @@ fn prepare_tab_context_menu(window: &LushtextWindow, page: &libadwaita::TabPage)
     flush_events();
 }
 
+fn wait_for_tab_strip_visible(window: &LushtextWindow, context: &str) {
+    let tab_bar = &window.imp().tab_bar;
+    wait_until(Duration::from_secs(2), || {
+        tab_bar.property::<bool>("visible")
+            && tab_bar.is_visible()
+            && tab_bar.width() > 0
+            && tab_bar.height() > 0
+    });
+    assert!(
+        tab_bar.property::<bool>("visible"),
+        "{context}: tab strip should keep its own visible flag"
+    );
+    assert!(
+        tab_bar.is_visible(),
+        "{context}: tab strip should render through the window hierarchy"
+    );
+    assert_positive_allocation(&**tab_bar, context);
+}
+
+fn assert_tab_strip_hidden(window: &LushtextWindow, context: &str) {
+    let tab_bar = &window.imp().tab_bar;
+    assert!(
+        !tab_bar.property::<bool>("visible"),
+        "{context}: tab strip should clear its own visible flag"
+    );
+    assert!(
+        !tab_bar.is_visible(),
+        "{context}: tab strip should not render through the window hierarchy"
+    );
+}
+
+fn assert_tab_context_menu_has_label(window: &LushtextWindow, label: &str, context: &str) {
+    let labels =
+        menu_model_labels(window.imp().tab_management.context_menu.upcast_ref::<gio::MenuModel>());
+    assert!(
+        labels.iter().any(|candidate| candidate == label),
+        "{context}: expected tab context menu label '{label}', got {labels:?}"
+    );
+}
+
 fn visible_alert_dialog(window: &LushtextWindow) -> Option<libadwaita::AlertDialog> {
     window
         .visible_dialog()
@@ -4197,7 +4237,7 @@ fn test_focus_mode_entry_exit_restores_shell_surfaces() {
 
     assert!(action_state_bool(&window, "toggle-focus-mode"));
     assert!(!window.imp().header_bar.property::<bool>("visible"));
-    assert!(!window.imp().tab_bar.property::<bool>("visible"));
+    assert_tab_strip_hidden(&window, "Focus Mode entry");
     assert!(!window.imp().status_bar.property::<bool>("visible"));
     assert!(!workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
@@ -4206,7 +4246,7 @@ fn test_focus_mode_entry_exit_restores_shell_surfaces() {
 
     assert!(!action_state_bool(&window, "toggle-focus-mode"));
     assert!(window.imp().header_bar.property::<bool>("visible"));
-    assert!(window.imp().tab_bar.property::<bool>("visible"));
+    wait_for_tab_strip_visible(&window, "Focus Mode exit");
     assert!(window.imp().status_bar.property::<bool>("visible"));
     assert!(workspace_sidebar_visible(&window));
     assert!(properties_sidebar_visible(&window));
@@ -6117,6 +6157,57 @@ fn test_short_normal_window_preserves_status_bar_with_optional_surfaces() {
     assert!(
         minimap.height() > 0,
         "the minimap should keep a positive height in short compact layouts"
+    );
+
+    window.destroy();
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_single_tab_strip_preserves_constrained_normal_geometry() {
+    ensure_gtk_init();
+    let (_dir, files) = seed_named_tab_files(&["one-tab.txt"]);
+    let window = test_window_with_split_view_state_and_size(false, 0.3, false, 0.25, 760, 360);
+    present_window(&window);
+    window.open_document(&files[0]);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+    });
+
+    let editor = active_editor(&window);
+    wait_for_tab_strip_visible(&window, "single-tab constrained tab strip");
+    wait_for_positive_allocation(editor.source_view(), "single-tab constrained editor viewport");
+    wait_for_positive_allocation(&*window.imp().status_bar, "single-tab constrained status bar");
+    assert_status_bar_readable_one_row(&window, "single-tab constrained status bar");
+
+    let root = window.upcast_ref::<gtk4::Widget>();
+    let tab_bounds = window
+        .imp()
+        .tab_bar
+        .compute_bounds(root)
+        .expect("tab strip bounds in constrained window");
+    let editor_page_bounds = editor
+        .upcast_ref::<gtk4::Widget>()
+        .compute_bounds(root)
+        .expect("editor page bounds in constrained window");
+    let status_bounds = window
+        .imp()
+        .status_bar
+        .compute_bounds(root)
+        .expect("status bar bounds in constrained window");
+
+    assert!(
+        tab_bounds.y() + tab_bounds.height() <= editor_page_bounds.y() + 1.0,
+        "single-tab strip should not overlap the editor page, tab={tab_bounds:?}, editor={editor_page_bounds:?}"
+    );
+    assert!(
+        editor_page_bounds.y() + editor_page_bounds.height() <= status_bounds.y() + 1.0,
+        "single-tab editor page should not overlap the status bar, editor={editor_page_bounds:?}, status={status_bounds:?}"
+    );
+    assert!(
+        status_bounds.y() + status_bounds.height() <= current_window_height(&window) as f32 + 1.0,
+        "single-tab status bar should stay inside the constrained window, status={status_bounds:?}, window height={}",
+        current_window_height(&window)
     );
 
     window.destroy();
@@ -12016,6 +12107,16 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
 }
 
 #[test]
+fn test_empty_window_hides_tab_strip() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+
+    assert_tab_count(&window, 0);
+    assert_tab_strip_hidden(&window, "empty window");
+}
+
+#[test]
 fn test_tab_context_menu_targets_background_tab_for_move_action() {
     ensure_gtk_init();
     let (_dir, files) = seed_named_tab_files(&["a.txt", "b.txt", "c.txt"]);
@@ -12027,6 +12128,14 @@ fn test_tab_context_menu_targets_background_tab_for_move_action() {
     }
     wait_until(Duration::from_secs(2), || {
         window.imp().tab_view.n_pages() == 3
+    });
+    wait_for_tab_strip_visible(&window, "multi-tab strip");
+
+    let pinned_page = find_tab_page_by_title(&window, "b.txt");
+    prepare_tab_context_menu(&window, &pinned_page);
+    activate_action(&window, "toggle-tab-pinned");
+    wait_until(Duration::from_secs(2), || {
+        pinned_page.is_pinned() && tab_titles(&window) == vec!["b.txt", "a.txt", "c.txt"]
     });
 
     let selected_before = window
@@ -12042,7 +12151,7 @@ fn test_tab_context_menu_targets_background_tab_for_move_action() {
 
     activate_action(&window, "move-tab-right");
     wait_until(Duration::from_secs(2), || {
-        tab_titles(&window) == vec!["b.txt", "a.txt", "c.txt"]
+        tab_titles(&window) == vec!["b.txt", "c.txt", "a.txt"]
     });
 
     let selected_after = window
@@ -12056,7 +12165,12 @@ fn test_tab_context_menu_targets_background_tab_for_move_action() {
         "moving a background tab should not retarget selection",
     );
 
-    let last_page = find_tab_page_by_title(&window, "c.txt");
+    let pages = tab_pages(&window);
+    assert!(pages[0].is_pinned());
+    assert!(!pages[1].is_pinned());
+    assert!(!pages[2].is_pinned());
+
+    let last_page = find_tab_page_by_title(&window, "a.txt");
     prepare_tab_context_menu(&window, &last_page);
     assert!(!action_enabled(&window, "move-tab-right"));
 }
@@ -12119,14 +12233,20 @@ fn test_pin_action_updates_indicator_icon() {
     wait_until(Duration::from_secs(2), || {
         window.imp().tab_view.n_pages() == 1
     });
+    wait_for_tab_strip_visible(&window, "single unpinned tab strip");
 
     let page = find_tab_page_by_title(&window, "pin-me.txt");
     prepare_tab_context_menu(&window, &page);
+    assert_tab_context_menu_has_label(&window, "Pin", "single unpinned tab");
+    assert!(action_enabled(&window, "toggle-tab-pinned"));
     activate_action(&window, "toggle-tab-pinned");
     wait_until(Duration::from_secs(2), || page.is_pinned());
+    wait_for_tab_strip_visible(&window, "single pinned tab strip");
     assert!(page.indicator_icon().is_some());
 
     prepare_tab_context_menu(&window, &page);
+    assert_tab_context_menu_has_label(&window, "Unpin", "single pinned tab");
+    assert!(action_enabled(&window, "toggle-tab-pinned"));
     activate_action(&window, "toggle-tab-pinned");
     wait_until(Duration::from_secs(2), || !page.is_pinned());
     assert!(page.indicator_icon().is_none());

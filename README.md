@@ -484,6 +484,7 @@ make run-format-upgrade-newer-manual-test # Launch with isolated future-version 
 make run-format-upgrade-older-manual-test # Launch with isolated upgradeable old-version app data
 make run-command-palette-notes-manual-test # Launch with isolated Notes palette fixtures
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
+make clear-lushtext-xdg # Remove LushText-owned XDG data/config/cache/state and reset app settings
 make test        # All tests (unit + integration + widget)
 make check       # fmt + all-feature Clippy + fast policy audits
 make blueprint-generate # Regenerate generated .ui files from Blueprint sources
@@ -546,6 +547,14 @@ app icon artwork, use `make refresh-dock-icon`: it regenerates the shipped PNG
 fallbacks from `data/icons/dev.cominotti.lushtext.svg`, then restarts the
 current dev instance against a fresh file-backed icon so the dock updates
 immediately.
+
+To reset local LushText state, use `make clear-lushtext-xdg`. It removes only
+LushText-owned XDG paths (`$XDG_DATA_HOME/lushtext`,
+`$XDG_CONFIG_HOME/lushtext`, `$XDG_CACHE_HOME/lushtext`,
+`$XDG_STATE_HOME/lushtext`, and the Flatpak app-private
+`~/.var/app/dev.cominotti.lushtext` directory) and resets the
+`dev.cominotti.lushtext` GSettings schema when available. Preview the operation
+with `make clear-lushtext-xdg DRY_RUN=1`.
 
 ### Flatpak
 

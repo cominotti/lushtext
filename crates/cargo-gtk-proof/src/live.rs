@@ -2110,13 +2110,16 @@ fn prepare_open_popover_recents(
         .unwrap_or("dense");
     let count = match fixture_kind {
         "empty" => 0,
-        "representative" => 2,
+        "single" => 1,
+        "representative" | "all-closed" | "all-open" => 2,
+        "ten" => 10,
         _ => 12,
     };
     let recent_root = case_dir.join("open-popover-recents");
     fs::create_dir_all(&recent_root)
         .map_err(|error| format!("cannot create {}: {error}", recent_root.display()))?;
     let mut entries = Vec::new();
+    let mut session_paths = Vec::new();
     let base_time = 2_000_000_000u64;
 
     for index in 0..count {
@@ -2134,6 +2137,7 @@ fn prepare_open_popover_recents(
             "canonical_path": canonical.to_string_lossy(),
             "last_opened_secs": base_time.saturating_sub(index as u64),
         }));
+        session_paths.push(path);
     }
 
     fs::create_dir_all(data_dir)
@@ -2143,7 +2147,13 @@ fn prepare_open_popover_recents(
     let bytes = serde_json::to_vec_pretty(&document)
         .map_err(|error| format!("cannot serialize recent documents: {error}"))?;
     fs::write(&recent_path, bytes)
-        .map_err(|error| format!("cannot write {}: {error}", recent_path.display()))
+        .map_err(|error| format!("cannot write {}: {error}", recent_path.display()))?;
+
+    if fixture_kind == "all-open" {
+        write_open_popover_session(data_dir, &session_paths)?;
+    }
+
+    Ok(())
 }
 
 fn open_popover_recent_path(root: &Path, fixture_kind: &str, index: usize) -> PathBuf {
@@ -2158,6 +2168,36 @@ fn open_popover_recent_path(root: &Path, fixture_kind: &str, index: usize) -> Pa
     }
 
     root.join(format!("recent-document-{index:02}.txt"))
+}
+
+/// Seed restored tabs so the all-open proof case exercises true tab filtering.
+fn write_open_popover_session(data_dir: &Path, paths: &[PathBuf]) -> Result<(), String> {
+    let tabs = paths
+        .iter()
+        .map(|path| {
+            serde_json::json!({
+                "path": path.to_string_lossy(),
+                "cursor_line": 0,
+                "cursor_col": 0,
+                "scroll_line": 0,
+                "pinned": false,
+            })
+        })
+        .collect::<Vec<_>>();
+    let active_tab_index = (!tabs.is_empty()).then_some(0);
+    let session = serde_json::json!({
+        "kind": "dev.cominotti.lushtext.session",
+        "version": 1,
+        "data": {
+            "tabs": tabs,
+            "active_tab_index": active_tab_index,
+        }
+    });
+    let session_path = data_dir.join("session.json");
+    let bytes = serde_json::to_vec_pretty(&session)
+        .map_err(|error| format!("cannot serialize session fixture: {error}"))?;
+    fs::write(&session_path, bytes)
+        .map_err(|error| format!("cannot write {}: {error}", session_path.display()))
 }
 
 fn lushtext_process_environment(data_dir: &Path) -> Vec<(String, String)> {

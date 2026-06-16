@@ -2,7 +2,9 @@
 
 //! Tests for LushtextApplication.
 
-use crate::common::{ensure_gtk_init, fixture, flush_events, fs_metadata, fs_read, wait_until};
+use crate::common::{
+    ensure_gtk_init, fixture, flush_events, fs_metadata, fs_read, present_window, wait_until,
+};
 use gio::prelude::*;
 use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -12,6 +14,7 @@ use lushtext_core::app::LushtextApplication;
 use lushtext_core::config;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::services::{editor_io, json_store, session_service};
+use lushtext_core::ui::automation::app_snapshot;
 use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use lushtext_core::ui::window::LushtextWindow;
 use sourceview5::StyleSchemeManager;
@@ -139,6 +142,18 @@ fn status_text_contains(window: &LushtextWindow, needle: &str) -> bool {
         .notification_bus
         .status_bar_view()
         .is_some_and(|status| status.text.contains(needle))
+}
+
+/// Fetch a named Open popover surface from the automation snapshot.
+fn open_recent_surface<'a>(
+    snapshot: &'a lushtext_core::model::automation::AutomationVisualGeometrySnapshot,
+    name: &str,
+) -> &'a lushtext_core::model::automation::AutomationVisualSurfaceSnapshot {
+    snapshot
+        .surfaces
+        .iter()
+        .find(|surface| surface.name == name)
+        .unwrap_or_else(|| panic!("snapshot should include {name} surface"))
 }
 
 fn clear_session() {
@@ -269,6 +284,56 @@ fn test_open_activation_reuses_existing_window() {
 
     assert_eq!(reused.as_ptr(), original_window);
     assert_eq!(active_editor(&reused).file_path().as_deref(), Some(second.as_path()));
+}
+
+#[test]
+fn test_open_activation_close_updates_recent_popover_automation_snapshot() {
+    ensure_gtk_init();
+    clear_session();
+    let dir = tempfile::tempdir().expect("activation recent tempdir");
+    let path = dir.path().join("activated-recent.txt");
+    fixture::write_text(&path, "recent from activation\n");
+    let app = test_lushtext_application();
+
+    open_files(&app, &[path.as_path()]);
+    let window = active_window(&app);
+    present_window(&window);
+    wait_for_loaded_tabs(&window, 1);
+    wait_until(Duration::from_secs(3), || {
+        window
+            .recent_documents_for_test()
+            .iter()
+            .any(|entry| entry.matches_path(&path))
+    });
+
+    window.activate_action("close-tab", None);
+    flush_events();
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+
+    window.activate_action("open-recent", None);
+    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        window.imp().open_menu_button.is_active()
+            || gtk4::prelude::WidgetExt::is_visible(&*window.imp().open_popover)
+    });
+
+    let snapshot = app_snapshot(&app);
+    let window_snapshot = snapshot.window.expect("active window snapshot");
+    assert!(window_snapshot.surfaces.open_popover_visible);
+    assert_eq!(
+        window_snapshot.surfaces.active_transient_surface.as_deref(),
+        Some("open-popover")
+    );
+    let list = open_recent_surface(&window_snapshot.visual_geometry, "open-popover-recent-list");
+    let empty = open_recent_surface(&window_snapshot.visual_geometry, "open-popover-empty-state");
+    assert!(
+        list.visible,
+        "automation snapshot should expose the recent list after closing the activated tab"
+    );
+    assert!(
+        !empty.visible,
+        "automation snapshot should not report the empty state when a closed recent row exists"
+    );
 }
 
 #[test]

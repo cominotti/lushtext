@@ -173,7 +173,7 @@ impl LushtextWindow {
         let active = self.is_focus_mode_active();
         let imp = self.imp();
         imp.header_bar.set_visible(!active);
-        imp.tab_bar.set_visible(!active);
+        self.sync_tab_bar_visibility();
         imp.status_bar.set_visible(!active);
         if !active {
             imp.focus_mode_revealer.set_reveal_child(false);

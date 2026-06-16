@@ -155,15 +155,25 @@ matching_binary_pids() {
     for pid in /proc/[0-9]*; do
         [[ -e "$pid/exe" ]] || continue
         exe="$(readlink -f -- "$pid/exe" 2>/dev/null || true)"
+        exe="${exe% (deleted)}"
         [[ "$exe" == "$binary" ]] || continue
         basename -- "$pid"
     done
 }
 
 app_is_registered() {
-    command -v gapplication >/dev/null 2>&1 || return 1
+    if command -v gapplication >/dev/null 2>&1 &&
+        gapplication list-apps 2>/dev/null | grep -Fxq "$app_id"; then
+        return 0
+    fi
 
-    gapplication list-apps 2>/dev/null | grep -Fxq "$app_id"
+    command -v gdbus >/dev/null 2>&1 || return 1
+    gdbus call \
+        --session \
+        --dest org.freedesktop.DBus \
+        --object-path /org/freedesktop/DBus \
+        --method org.freedesktop.DBus.NameHasOwner \
+        "$app_id" 2>/dev/null | grep -q '(true,'
 }
 
 wait_for_existing_instance_to_exit() {

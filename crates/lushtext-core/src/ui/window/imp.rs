@@ -417,6 +417,8 @@ pub struct LushtextWindow {
     pub transient_child_escape_handled: Cell<bool>,
     /// Set of file paths with open tabs, for O(1) duplicate detection in `open_document`.
     pub open_paths: RefCell<HashSet<PathBuf>>,
+    /// Depth counter for tab storms that should rebuild derived projections once.
+    pub tab_projection_refresh_defer_depth: Cell<u32>,
     /// Editor-memory accounting used by the eviction helpers.
     pub editor_memory: EditorMemoryState,
     /// Session save/restore state.
@@ -508,6 +510,7 @@ impl Default for LushtextWindow {
             saved_focus: RefCell::new(None),
             transient_child_escape_handled: Cell::new(false),
             open_paths: RefCell::new(HashSet::new()),
+            tab_projection_refresh_defer_depth: Cell::new(0),
             editor_memory: EditorMemoryState::default(),
             session: SessionState::default(),
             focus_mode: FocusModeState::default(),
@@ -886,7 +889,11 @@ impl ObjectImpl for LushtextWindow {
         self.tab_view
             .connect_notify_local(Some("n-pages"), move |_, _| {
                 if let Some(window) = window_weak.upgrade() {
+                    if window.tab_projection_refresh_deferred() {
+                        return;
+                    }
                     window.update_content_stack();
+                    window.reconcile_open_paths_from_tabs();
                     window.refresh_sidebar_file_row_states();
                     window.refresh_open_popover_rows();
                 }
@@ -959,11 +966,9 @@ impl ObjectImpl for LushtextWindow {
                     editor.cancel_load();
                     editor.stop_file_monitor();
                 }
-                window.update_content_stack();
-                window.refresh_command_palette_sources();
-                window.refresh_sidebar_file_row_states();
-                window.refresh_open_popover_rows();
-                window.refresh_status_bar();
+                if !window.tab_projection_refresh_deferred() {
+                    window.refresh_tab_model_projections();
+                }
                 window.save_session_debounced();
             }
         });

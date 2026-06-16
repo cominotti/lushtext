@@ -169,6 +169,7 @@ impl super::LushtextWindow {
                     }
                 }
                 editor.set_file_path_with_canonical(path, canonical_path);
+                self.reconcile_open_paths_from_tabs();
                 self.refresh_canonical_path_after_rename(editor, path);
                 self.refresh_sidebar_file_row_states();
                 self.refresh_open_popover_rows();

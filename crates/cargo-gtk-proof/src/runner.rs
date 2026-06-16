@@ -20,6 +20,12 @@ use crate::{
     artifacts, host, live, model, png, policy, process, read_json_value, warnings, write_envelope,
 };
 
+/// Theme and font metrics can place the 600px source cap a few pixels around
+/// its nominal value while preserving the GNOME Text Editor row contract.
+const OPEN_POPOVER_LIST_CAP_TOLERANCE: i64 = 12;
+/// GtkPopover snapshots include a small rendered shadow beyond the content box.
+const OPEN_POPOVER_VIEWPORT_SHADOW_TOLERANCE: i64 = 8;
+
 /// Execute the `run` subcommand and write one proof-spine envelope.
 pub(crate) fn handle_run(
     args: &[String],
@@ -1189,14 +1195,16 @@ fn open_popover_content_relationship(case: &Value, snapshot: &Value) -> Result<(
         .and_then(Value::as_str)
         .unwrap_or("dense")
     {
-        "empty" => surface_box(snapshot, "open-popover-empty-state").map(|_| ()),
+        "empty" | "all-open" => surface_box(snapshot, "open-popover-empty-state").map(|_| ()),
         "dense" | "awkward" => {
             let list = surface_box(snapshot, "open-popover-recent-list")?;
-            if (532..=548).contains(&list.height) {
+            let min_height = 600 - OPEN_POPOVER_LIST_CAP_TOLERANCE;
+            let max_height = 600 + OPEN_POPOVER_LIST_CAP_TOLERANCE;
+            if (min_height..=max_height).contains(&list.height) {
                 Ok(())
             } else {
                 Err(format!(
-                    "open-popover-recent-list height {} did not match the 10-row viewport",
+                    "open-popover-recent-list height {} did not match the GNOME 600px source cap",
                     list.height
                 ))
             }
@@ -1207,17 +1215,32 @@ fn open_popover_content_relationship(case: &Value, snapshot: &Value) -> Result<(
 
 fn open_popover_fits_viewport(case: &Value, snapshot: &Value) -> Result<(), String> {
     let popover = surface_box(snapshot, "open-popover")?;
+    let search = surface_box(snapshot, "open-popover-search")?;
+    let chooser = surface_box(snapshot, "open-popover-chooser")?;
     let height = case
         .get("size")
         .and_then(|size| size.get("height"))
         .and_then(Value::as_i64)
         .ok_or_else(|| "open-popover case is missing size.height".to_string())?;
-    if popover.y >= 0 && popover.y + popover.height <= height {
+    let content_bottom = [
+        search.y + search.height,
+        chooser.y + chooser.height,
+        surface_box(snapshot, "open-popover-recent-list")
+            .or_else(|_| surface_box(snapshot, "open-popover-empty-state"))
+            .map(|surface| surface.y + surface.height)?,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(popover.y + popover.height);
+    if popover.y >= 0
+        && content_bottom <= height
+        && popover.y + popover.height <= height + OPEN_POPOVER_VIEWPORT_SHADOW_TOLERANCE
+    {
         Ok(())
     } else {
         Err(format!(
-            "open-popover rect y={} height={} exceeds viewport height {}",
-            popover.y, popover.height, height
+            "open-popover rect y={} height={} content_bottom={} exceeds viewport height {}",
+            popover.y, popover.height, content_bottom, height
         ))
     }
 }

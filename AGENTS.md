@@ -200,6 +200,7 @@ make run         # Debug build + force a fresh run with temporary GNOME desktop 
 make run-format-upgrade-newer-manual-test # Launch with isolated future-version app data
 make run-format-upgrade-older-manual-test # Launch with isolated upgradeable old-version app data
 make refresh-dock-icon # Regenerate app icon assets + force a fresh GNOME Shell dock icon reload
+make clear-lushtext-xdg # Remove LushText-owned XDG data/config/cache/state and reset app settings
 make test        # All tests (unit + integration + widget)
 make test-unit   # Unit tests only
 make test-int    # Integration tests only
