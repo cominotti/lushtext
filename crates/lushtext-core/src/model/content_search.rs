@@ -458,6 +458,11 @@ mod tests {
     }
 
     #[test]
+    fn search_match_line_budget_stays_at_four_kib() {
+        assert_eq!(MAX_SEARCH_MATCH_LINE_BYTES, 4096);
+    }
+
+    #[test]
     fn search_match_bounds_long_lines_around_match_and_skips_replace_preview() {
         let long_line = format!(
             "{}needle{}",
@@ -483,6 +488,77 @@ mod tests {
             &ContentSearchOptions::default(),
         );
         assert!(previews.is_empty());
+    }
+
+    #[test]
+    fn search_match_bounds_keep_boundary_markers_only_when_content_was_omitted() {
+        let long_suffix = format!("needle{}", "b".repeat(MAX_SEARCH_MATCH_LINE_BYTES * 2));
+        let match_at_start = match_in_line(&long_suffix, 0.."needle".len());
+        assert!(match_at_start.line_truncated);
+        assert!(
+            !match_at_start
+                .line_content
+                .starts_with(SEARCH_MATCH_TRUNCATION_MARKER)
+        );
+        assert!(
+            match_at_start
+                .line_content
+                .ends_with(SEARCH_MATCH_TRUNCATION_MARKER)
+        );
+        assert_eq!(
+            &match_at_start.line_content[match_at_start.match_range],
+            "needle"
+        );
+
+        let long_prefix = format!("{}needle", "a".repeat(MAX_SEARCH_MATCH_LINE_BYTES * 2));
+        let start = long_prefix.len() - "needle".len();
+        let match_at_end = match_in_line(&long_prefix, start..long_prefix.len());
+        assert!(match_at_end.line_truncated);
+        assert!(
+            match_at_end
+                .line_content
+                .starts_with(SEARCH_MATCH_TRUNCATION_MARKER)
+        );
+        assert!(
+            !match_at_end
+                .line_content
+                .ends_with(SEARCH_MATCH_TRUNCATION_MARKER)
+        );
+        assert_eq!(
+            &match_at_end.line_content[match_at_end.match_range],
+            "needle"
+        );
+    }
+
+    #[test]
+    fn centered_search_match_uses_half_remaining_budget_on_each_side() {
+        let needle = "needle";
+        let long_line = format!(
+            "{}{needle}{}",
+            "a".repeat(MAX_SEARCH_MATCH_LINE_BYTES * 2),
+            "b".repeat(MAX_SEARCH_MATCH_LINE_BYTES * 2)
+        );
+        let match_start = MAX_SEARCH_MATCH_LINE_BYTES * 2;
+        let search_match = match_in_line(&long_line, match_start..match_start + needle.len());
+        let marker_len = SEARCH_MATCH_TRUNCATION_MARKER.len();
+        let excerpt_budget = MAX_SEARCH_MATCH_LINE_BYTES - marker_len * 2;
+        let expected_left_context = (excerpt_budget - needle.len()) / 2;
+
+        assert!(
+            search_match
+                .line_content
+                .starts_with(SEARCH_MATCH_TRUNCATION_MARKER)
+        );
+        assert!(
+            search_match
+                .line_content
+                .ends_with(SEARCH_MATCH_TRUNCATION_MARKER)
+        );
+        assert_eq!(
+            search_match.match_range.start,
+            marker_len + expected_left_context
+        );
+        assert_eq!(&search_match.line_content[search_match.match_range], needle);
     }
 
     #[test]

@@ -536,6 +536,79 @@ mod tests {
     }
 
     #[test]
+    fn merge_bookmark_documents_keeps_newer_target_bookmark_on_id_conflict() {
+        let source_identity = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/old.rs"),
+            PathBuf::from("/workspace/old.rs"),
+        );
+        let target_identity = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/new.rs"),
+            PathBuf::from("/workspace/new.rs"),
+        );
+        let mut older_source = BookmarkRecord::new(8, Some("source-old-label".to_string()));
+        older_source.id = BookmarkId("bookmark-shared".to_string());
+        older_source.updated_at_secs = 10;
+        let mut newer_target = BookmarkRecord::new(2, Some("target-new-label".to_string()));
+        newer_target.id = BookmarkId("bookmark-shared".to_string());
+        newer_target.updated_at_secs = 20;
+
+        let merged = merge_bookmark_documents(
+            BookmarkDocument {
+                identity: source_identity,
+                bookmarks: vec![older_source],
+            },
+            BookmarkDocument {
+                identity: target_identity.clone(),
+                bookmarks: vec![newer_target],
+            },
+            target_identity.clone(),
+        );
+
+        assert_eq!(merged.identity, target_identity);
+        assert_eq!(merged.bookmarks.len(), 1);
+        assert_eq!(merged.bookmarks[0].line, 2);
+        assert_eq!(
+            merged.bookmarks[0].label.as_deref(),
+            Some("target-new-label")
+        );
+        assert_eq!(merged.bookmarks[0].updated_at_secs, 20);
+    }
+
+    #[test]
+    fn merge_bookmark_documents_keeps_target_bookmark_on_equal_timestamp_conflict() {
+        let source_identity = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/old.rs"),
+            PathBuf::from("/workspace/old.rs"),
+        );
+        let target_identity = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/new.rs"),
+            PathBuf::from("/workspace/new.rs"),
+        );
+        let mut source = BookmarkRecord::new(8, Some("source-label".to_string()));
+        source.id = BookmarkId("bookmark-shared".to_string());
+        source.updated_at_secs = 20;
+        let mut target = BookmarkRecord::new(2, Some("target-label".to_string()));
+        target.id = BookmarkId("bookmark-shared".to_string());
+        target.updated_at_secs = 20;
+
+        let merged = merge_bookmark_documents(
+            BookmarkDocument {
+                identity: source_identity,
+                bookmarks: vec![source],
+            },
+            BookmarkDocument {
+                identity: target_identity.clone(),
+                bookmarks: vec![target],
+            },
+            target_identity,
+        );
+
+        assert_eq!(merged.bookmarks.len(), 1);
+        assert_eq!(merged.bookmarks[0].line, 2);
+        assert_eq!(merged.bookmarks[0].label.as_deref(), Some("target-label"));
+    }
+
+    #[test]
     fn list_workspace_bookmarks_filters_folders_and_sorts_rows() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let inside_a = dir.path().join("workspace/a.rs");

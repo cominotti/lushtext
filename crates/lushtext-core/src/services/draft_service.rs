@@ -753,6 +753,15 @@ mod tests {
     }
 
     #[test]
+    fn draft_policy_constants_are_stable() {
+        assert_eq!(DRAFTS_DIR, "drafts");
+        assert_eq!(MANIFEST_FILE, "manifest.json");
+        assert_eq!(MAX_DRAFT_PRELOAD_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_MANIFEST_REPAIR_DRAFT_SCAN, 2048);
+        assert_eq!(MAX_ORPHAN_CLEANUP_DRAFT_SCAN, 2048);
+    }
+
+    #[test]
     fn draft_id_for_path_is_deterministic() {
         let path = Path::new("/home/user/project/src/main.rs");
         let id1 = draft_id_for_path(path);
@@ -874,6 +883,27 @@ mod tests {
             crate::services::recovery_metadata::RecoveryProblem::UnsupportedFormat { .. }
         ));
         assert!(load.replacement_allowed());
+    }
+
+    #[test]
+    fn loaded_manifest_does_not_run_missing_manifest_repair_from_orphaned_drafts() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        write_draft(dir.path(), "untitled-orphan", "orphan content").expect("write orphan draft");
+        let manifest = DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: "manifest-entry".into(),
+                original_path: None,
+                original_mtime_secs: None,
+                saved_at_secs: 1,
+            }],
+        };
+        save_manifest(dir.path(), &manifest).expect("save manifest");
+
+        let load = load_manifest_for_restore(dir.path(), &SessionData::default());
+
+        assert_eq!(load.outcome, RecoveryLoadOutcome::Loaded);
+        assert_eq!(load.value, manifest);
+        assert!(load.diagnostics.is_empty());
     }
 
     #[test]
@@ -1035,6 +1065,34 @@ mod tests {
     }
 
     #[test]
+    fn draft_preload_decision_allows_exact_single_file_limit() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "exact-large";
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        fixture::create_sparse_file(&draft_path(dir.path(), draft_id), MAX_DRAFT_PRELOAD_BYTES);
+        let mut preloaded_bytes = 0;
+
+        let decision = draft_preload_decision(dir.path(), draft_id, &mut preloaded_bytes);
+
+        assert_eq!(decision, DraftPreloadDecision::Read);
+        assert_eq!(preloaded_bytes, MAX_DRAFT_PRELOAD_BYTES);
+        assert_eq!(oversized_draft_size(dir.path(), draft_id), None);
+    }
+
+    #[test]
+    fn draft_preload_decision_allows_exact_cumulative_budget() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "last-byte";
+        write_draft(dir.path(), draft_id, "x").expect("write small draft");
+        let mut preloaded_bytes = MAX_DRAFT_PRELOAD_BYTES - 1;
+
+        let decision = draft_preload_decision(dir.path(), draft_id, &mut preloaded_bytes);
+
+        assert_eq!(decision, DraftPreloadDecision::Read);
+        assert_eq!(preloaded_bytes, MAX_DRAFT_PRELOAD_BYTES);
+    }
+
+    #[test]
     fn load_restore_state_removes_stale_file_draft_from_manifest_and_disk() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
@@ -1079,6 +1137,55 @@ mod tests {
             read_draft(dir.path(), &draft_id).expect("expected operation to succeed"),
             None
         );
+    }
+
+    #[test]
+    fn load_restore_state_allows_orphan_cleanup_for_clean_loaded_manifest() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        save_manifest(dir.path(), &DraftManifest::default()).expect("save manifest");
+
+        let restore = load_restore_state(dir.path());
+
+        assert!(
+            restore.orphan_cleanup_allowed,
+            "a clean loaded manifest may participate in normal orphan cleanup"
+        );
+        assert!(restore.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn load_restore_state_allows_orphan_cleanup_for_empty_missing_manifest() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+
+        let restore = load_restore_state(dir.path());
+
+        assert!(
+            restore.orphan_cleanup_allowed,
+            "a missing manifest with no surviving draft evidence may run normal orphan cleanup"
+        );
+        assert!(restore.manifest.drafts.is_empty());
+        assert!(restore.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn load_restore_state_disables_orphan_cleanup_when_missing_repair_skips_drafts() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        write_draft(dir.path(), "ambiguous-file-backed-id", "ambiguous")
+            .expect("write ambiguous draft");
+
+        let restore = load_restore_state(dir.path());
+
+        assert!(
+            !restore.orphan_cleanup_allowed,
+            "missing manifests with ambiguous surviving drafts must preserve evidence"
+        );
+        assert!(restore.manifest.drafts.is_empty());
+        assert!(restore.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.problem,
+                crate::services::recovery_metadata::RecoveryProblem::RepairSkipped { .. }
+            )
+        }));
     }
 
     #[test]
@@ -1193,6 +1300,42 @@ mod tests {
                 .expect("repaired manifest should be durable")
                 .find_by_id(draft_id)
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn load_restore_state_repairs_missing_manifest_for_session_untitled_legacy_draft_id() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let draft_id = "session-legacy-draft";
+        write_draft(dir.path(), draft_id, "restored legacy untitled").expect("write legacy draft");
+        session_service::save(
+            dir.path(),
+            &SessionData {
+                tabs: vec![SessionTab {
+                    path: None,
+                    draft_id: Some(draft_id.to_string()),
+                    cursor_line: 0,
+                    cursor_col: 0,
+                    scroll_line: 0,
+                    pinned: false,
+                }],
+                active_tab_index: Some(0),
+            },
+        )
+        .expect("save session");
+
+        let restore = load_restore_state(dir.path());
+
+        assert_eq!(
+            restore.preloaded_drafts.get(draft_id),
+            Some(&PreloadedDraftRestore::Content(
+                "restored legacy untitled".to_string()
+            ))
+        );
+        assert!(restore.manifest.find_by_id(draft_id).is_some());
+        assert!(
+            !restore.orphan_cleanup_allowed,
+            "repaired missing manifests stay conservative until persisted state is trusted"
         );
     }
 

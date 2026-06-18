@@ -1276,8 +1276,6 @@ fn fit_native_slider_to_source_map_bounds(
         || !raw.y.is_finite()
         || !raw.width.is_finite()
         || !raw.height.is_finite()
-        || !source_map_bounds.y.is_finite()
-        || !source_map_bounds.height.is_finite()
         || raw.width <= 0.0
         || raw.height <= 0.0
         || source_map_bounds.height <= 0.0
@@ -1664,8 +1662,19 @@ fn minimap_viewport_bounds(
     let space = minimap_projection_space(source_map, target, target_height)?;
 
     let (visible_start, visible_end) = visible_editor_line_iters(editor)?;
-    let raw_top = line_top_in_target(source_map, space.map_y, &visible_start);
-    let raw_bottom = line_bottom_in_target(source_map, space.map_y, &visible_end);
+    let (visible_start_y, _) = source_map.line_yrange(&visible_start);
+    let raw_top = line_top_in_target(space.map_y, visible_start_y, |buffer_y| {
+        let (_, widget_y) =
+            source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
+        widget_y
+    });
+    let (visible_end_y, visible_end_height) = source_map.line_yrange(&visible_end);
+    let raw_bottom =
+        line_bottom_in_target(space.map_y, visible_end_y, visible_end_height, |buffer_y| {
+            let (_, widget_y) =
+                source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
+            widget_y
+        });
 
     // The native viewport slider should stay visible at document edges, so
     // clamp off-content projections back onto the rendered minimap content.
@@ -1714,8 +1723,17 @@ fn minimap_first_content_row_bounds(
 
     let buffer = source_map.buffer();
     let start_iter = buffer.start_iter();
-    let raw_top = line_top_in_target(source_map, space.map_y, &start_iter);
-    let raw_bottom = line_bottom_in_target(source_map, space.map_y, &start_iter);
+    let (start_y, start_height) = source_map.line_yrange(&start_iter);
+    let raw_top = line_top_in_target(space.map_y, start_y, |buffer_y| {
+        let (_, widget_y) =
+            source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
+        widget_y
+    });
+    let raw_bottom = line_bottom_in_target(space.map_y, start_y, start_height, |buffer_y| {
+        let (_, widget_y) =
+            source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
+        widget_y
+    });
 
     // Content-row anchors prove a real rendered row exists; reject outside
     // geometry instead of clamping so tests cannot pass on a synthetic edge.
@@ -1827,8 +1845,18 @@ fn minimap_projection_space(
     let start_iter = buffer.start_iter();
     let end_line = u32::try_from(buffer.end_iter().line()).unwrap_or_default();
     let end_iter = text_iter_at_line_or_last(&buffer, end_line);
-    let content_top = line_top_in_target(source_map, map_y, &start_iter);
-    let content_bottom = line_bottom_in_target(source_map, map_y, &end_iter);
+    let (start_y, _) = source_map.line_yrange(&start_iter);
+    let content_top = line_top_in_target(map_y, start_y, |buffer_y| {
+        let (_, widget_y) =
+            source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
+        widget_y
+    });
+    let (end_y, end_height) = source_map.line_yrange(&end_iter);
+    let content_bottom = line_bottom_in_target(map_y, end_y, end_height, |buffer_y| {
+        let (_, widget_y) =
+            source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
+        widget_y
+    });
 
     if !map_x.is_finite()
         || !map_y.is_finite()
@@ -1858,8 +1886,18 @@ fn project_marker_bounds(
     let buffer = source_map.buffer();
     let start_iter = text_iter_at_line_or_last(&buffer, marker.start_line);
     let end_iter = text_iter_at_line_or_last(&buffer, marker.end_line);
-    let raw_top = line_top_in_target(source_map, space.map_y_in_strip, &start_iter);
-    let raw_bottom = line_bottom_in_target(source_map, space.map_y_in_strip, &end_iter);
+    let (start_y, _) = source_map.line_yrange(&start_iter);
+    let raw_top = line_top_in_target(space.map_y_in_strip, start_y, |buffer_y| {
+        let (_, widget_y) =
+            source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
+        widget_y
+    });
+    let (end_y, end_height) = source_map.line_yrange(&end_iter);
+    let raw_bottom = line_bottom_in_target(space.map_y_in_strip, end_y, end_height, |buffer_y| {
+        let (_, widget_y) =
+            source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
+        widget_y
+    });
 
     fit_marker_bounds(marker.kind, raw_top, raw_bottom, space)
 }
@@ -1876,36 +1914,26 @@ fn text_iter_at_line_or_last(buffer: &gtk4::TextBuffer, line: u32) -> gtk4::Text
 }
 
 fn line_top_in_target(
-    source_map: &sourceview5::Map,
     map_y_in_target: f64,
-    iter: &gtk4::TextIter,
+    line_y: i32,
+    widget_y_for_buffer_y: impl FnOnce(i32) -> i32,
 ) -> f64 {
-    let (line_y, _) = source_map.line_yrange(iter);
-    map_buffer_y_to_target_y(source_map, map_y_in_target, line_y)
+    target_y_from_widget_y(map_y_in_target, widget_y_for_buffer_y(line_y))
 }
 
 fn line_bottom_in_target(
-    source_map: &sourceview5::Map,
     map_y_in_target: f64,
-    iter: &gtk4::TextIter,
+    line_y: i32,
+    line_height: i32,
+    widget_y_for_buffer_y: impl FnOnce(i32) -> i32,
 ) -> f64 {
-    let (line_y, line_height) = source_map.line_yrange(iter);
-    map_buffer_y_to_target_y(
-        source_map,
-        map_y_in_target,
-        line_y.saturating_add(line_height.max(0)),
-    )
+    let bottom_y = line_y.saturating_add(line_height.max(0));
+    target_y_from_widget_y(map_y_in_target, widget_y_for_buffer_y(bottom_y))
 }
 
-fn map_buffer_y_to_target_y(
-    source_map: &sourceview5::Map,
-    map_y_in_target: f64,
-    buffer_y: i32,
-) -> f64 {
+fn target_y_from_widget_y(map_y_in_target: f64, widget_y: i32) -> f64 {
     // `buffer_to_window_coords` returns y relative to the source-map widget;
     // add the map's target-relative top edge to produce crop/anchor coordinates.
-    let (_, widget_y) =
-        source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, buffer_y);
     map_y_in_target + f64::from(widget_y)
 }
 
@@ -2014,9 +2042,6 @@ fn fit_projected_bounds(
 
     let mut top = raw_top.clamp(lower, upper);
     let mut bottom = raw_bottom.clamp(lower, upper);
-    if bottom < top {
-        bottom = top;
-    }
 
     let target_height = min_height.max(0.0).min(upper - lower);
     if bottom - top < target_height {
@@ -2114,6 +2139,19 @@ mod tests {
     }
 
     #[test]
+    fn test_modified_line_mark_samples_reject_empty_or_reversed_ranges() {
+        assert!(modified_line_mark_samples(4, 4, 0).is_empty());
+        assert!(modified_line_mark_samples(5, 4, 1).is_empty());
+        assert_eq!(modified_line_mark_samples(7, 7, 1), vec![7]);
+    }
+
+    #[test]
+    fn test_modified_line_mark_samples_preserve_full_small_ranges_and_sample_edges() {
+        assert_eq!(modified_line_mark_samples(5, 7, 10), vec![5, 6, 7]);
+        assert_eq!(modified_line_mark_samples(10, 14, 3), vec![10, 12, 14]);
+    }
+
+    #[test]
     fn test_source_map_editor_height_ratio_from_heights_tracks_ratio() {
         assert_eq!(
             source_map_editor_height_ratio_from_heights(1_000, 200),
@@ -2162,6 +2200,26 @@ mod tests {
     }
 
     #[test]
+    fn test_projected_bounds_bottom_uses_top_plus_height() {
+        let bounds = MinimapProjectedBounds {
+            x: 4.0,
+            y: 12.5,
+            width: 64.0,
+            height: 7.25,
+        };
+
+        assert_eq!(bounds.bottom(), 19.75);
+    }
+
+    #[test]
+    fn test_native_projection_source_label_is_stable() {
+        assert_eq!(
+            MinimapNativeProjectionSource::UpstreamVisibleRectEstimate.as_str(),
+            "upstream-visible-rect-estimate"
+        );
+    }
+
+    #[test]
     fn test_native_slider_estimate_subtracts_source_map_visible_offset() {
         let input = NativeSliderEstimateInput {
             map_x: 100.0,
@@ -2186,8 +2244,87 @@ mod tests {
         assert_eq!(settled.y, 52.0);
         assert_eq!(stale_map_scroll.y, 50.0);
         assert_eq!(settled.height, stale_map_scroll.height);
+        assert_eq!(settled.height, 320.0);
         assert_eq!(settled.x, 87.0);
         assert_eq!(settled.width, 120.0);
+
+        let mid_document = native_slider_estimate_from_inputs(NativeSliderEstimateInput {
+            editor_visible_y: 330,
+            editor_visible_height: 330,
+            ..input
+        })
+        .expect("mid-document native slider should preserve scaled top and height");
+        assert_eq!(mid_document.y, 212.0);
+        assert_eq!(mid_document.height, 160.0);
+
+        let bordered = native_slider_estimate_from_inputs(NativeSliderEstimateInput {
+            border_left: 2,
+            border_right: 3,
+            ..input
+        })
+        .expect("native slider should account for CSS borders");
+        assert_eq!(bordered.x, 89.0);
+        assert_eq!(bordered.width, 115.0);
+    }
+
+    #[test]
+    fn test_native_slider_estimate_rejects_each_unusable_input() {
+        let input = NativeSliderEstimateInput {
+            map_x: 100.0,
+            map_y: 52.0,
+            map_width: 94.0,
+            editor_visible_y: 0,
+            editor_visible_height: 660,
+            editor_document_height: 1320,
+            source_map_visible_y: 0,
+            source_map_document_height: 640,
+            border_left: 0,
+            border_right: 0,
+        };
+
+        assert!(native_slider_estimate_from_inputs(input).is_some());
+        assert!(
+            native_slider_estimate_from_inputs(NativeSliderEstimateInput {
+                map_x: f64::NAN,
+                ..input
+            })
+            .is_none()
+        );
+        assert!(
+            native_slider_estimate_from_inputs(NativeSliderEstimateInput {
+                map_y: f64::NAN,
+                ..input
+            })
+            .is_none()
+        );
+        assert!(
+            native_slider_estimate_from_inputs(NativeSliderEstimateInput {
+                map_width: 0.0,
+                ..input
+            })
+            .is_none()
+        );
+        assert!(
+            native_slider_estimate_from_inputs(NativeSliderEstimateInput {
+                editor_visible_height: 0,
+                ..input
+            })
+            .is_none()
+        );
+        assert!(
+            native_slider_estimate_from_inputs(NativeSliderEstimateInput {
+                editor_document_height: 0,
+                ..input
+            })
+            .is_none()
+        );
+        assert!(
+            native_slider_estimate_from_inputs(NativeSliderEstimateInput {
+                source_map_document_height: 0,
+                ..input
+            })
+            .is_none()
+        );
     }
 
     #[test]
@@ -2213,6 +2350,162 @@ mod tests {
         assert!((fitted.height - raw.height).abs() <= f64::EPSILON * 512.0);
         assert_eq!(fitted.bottom(), source_map_bounds.bottom());
         assert!(fitted.y >= source_map_bounds.y);
+
+        let above = MinimapProjectedBounds { y: -20.0, ..raw };
+        let fitted_above = fit_native_slider_to_source_map_bounds(above, source_map_bounds)
+            .expect("offscreen native estimate should fit to the top map edge");
+        assert_eq!(fitted_above.y, source_map_bounds.y);
+        assert_eq!(fitted_above.height, above.height);
+    }
+
+    #[test]
+    fn test_native_slider_visible_bounds_rejects_unusable_geometry() {
+        let raw = MinimapProjectedBounds {
+            x: -13.0,
+            y: 10.0,
+            width: 120.0,
+            height: 184.0,
+        };
+        let source_map_bounds = MinimapProjectedBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 94.0,
+            height: 664.0,
+        };
+
+        assert!(fit_native_slider_to_source_map_bounds(raw, source_map_bounds).is_some());
+        assert!(
+            fit_native_slider_to_source_map_bounds(
+                MinimapProjectedBounds { width: 0.0, ..raw },
+                source_map_bounds,
+            )
+            .is_none()
+        );
+        assert!(
+            fit_native_slider_to_source_map_bounds(
+                MinimapProjectedBounds { height: 0.0, ..raw },
+                source_map_bounds,
+            )
+            .is_none()
+        );
+        assert!(
+            fit_native_slider_to_source_map_bounds(
+                MinimapProjectedBounds { x: f64::NAN, ..raw },
+                source_map_bounds,
+            )
+            .is_none()
+        );
+        assert!(
+            fit_native_slider_to_source_map_bounds(
+                MinimapProjectedBounds { y: f64::NAN, ..raw },
+                source_map_bounds,
+            )
+            .is_none()
+        );
+        assert!(
+            fit_native_slider_to_source_map_bounds(
+                MinimapProjectedBounds {
+                    width: f64::NAN,
+                    ..raw
+                },
+                source_map_bounds,
+            )
+            .is_none()
+        );
+        assert!(
+            fit_native_slider_to_source_map_bounds(
+                MinimapProjectedBounds {
+                    height: f64::NAN,
+                    ..raw
+                },
+                source_map_bounds,
+            )
+            .is_none()
+        );
+        assert!(
+            fit_native_slider_to_source_map_bounds(
+                raw,
+                MinimapProjectedBounds {
+                    height: 0.0,
+                    ..source_map_bounds
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            fit_native_slider_to_source_map_bounds(
+                raw,
+                MinimapProjectedBounds {
+                    y: f64::NAN,
+                    ..source_map_bounds
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            fit_native_slider_to_source_map_bounds(
+                raw,
+                MinimapProjectedBounds {
+                    height: f64::NAN,
+                    ..source_map_bounds
+                },
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn test_document_height_from_iter_rect_uses_y_plus_nonnegative_height() {
+        assert_eq!(
+            document_height_from_iter_rect(gtk4::gdk::Rectangle::new(0, 12, 10, 8)),
+            Some(20)
+        );
+        assert_eq!(
+            document_height_from_iter_rect(gtk4::gdk::Rectangle::new(0, 12, 10, -8)),
+            Some(12)
+        );
+        assert_eq!(
+            document_height_from_iter_rect(gtk4::gdk::Rectangle::new(0, 0, 10, 0)),
+            None
+        );
+        assert_eq!(
+            document_height_from_iter_rect(gtk4::gdk::Rectangle::new(0, -1, 10, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_gtk_f64_to_milli_serializes_finite_values_and_suppresses_nonfinite() {
+        assert_eq!(gtk_f64_to_milli(10.49), 10_490);
+        assert_eq!(gtk_f64_to_milli(12.25), 12_250);
+        assert_eq!(gtk_f64_to_milli(-1.25), -1_250);
+        assert_eq!(gtk_f64_to_milli(f64::NAN), 0);
+        assert_eq!(gtk_f64_to_milli(f64::INFINITY), 0);
+    }
+
+    #[test]
+    fn test_line_top_in_target_offsets_projected_source_map_line() {
+        let projected = line_top_in_target(12.5, 48, |buffer_y| {
+            assert_eq!(buffer_y, 48);
+            30
+        });
+
+        assert_eq!(projected, 42.5);
+    }
+
+    #[test]
+    fn test_line_bottom_in_target_uses_nonnegative_line_height_before_projection() {
+        let projected = line_bottom_in_target(12.5, 48, 7, |buffer_y| {
+            assert_eq!(buffer_y, 55);
+            30
+        });
+        let collapsed = line_bottom_in_target(12.5, 48, -7, |buffer_y| {
+            assert_eq!(buffer_y, 48);
+            30
+        });
+
+        assert_eq!(projected, 42.5);
+        assert_eq!(collapsed, 42.5);
     }
 
     #[test]
@@ -2689,6 +2982,290 @@ mod tests {
                 ProjectedBoundsFit::RejectOutside,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn test_fit_projected_bounds_rejects_each_unusable_input() {
+        let space = MinimapProjectionSpace {
+            target_height: 100.0,
+            map_x: 0.0,
+            map_y: 0.0,
+            map_width: 80.0,
+            content_top: 10.0,
+            content_bottom: 70.0,
+        };
+        assert!(
+            fit_projected_bounds(
+                2.0,
+                40.0,
+                20.0,
+                30.0,
+                space,
+                4.0,
+                ProjectedBoundsFit::ClampOutside,
+            )
+            .is_some()
+        );
+
+        let cases = [
+            (f64::NAN, 40.0, 20.0, 30.0, space),
+            (2.0, f64::NAN, 20.0, 30.0, space),
+            (2.0, 40.0, f64::NAN, 30.0, space),
+            (2.0, 40.0, 20.0, f64::NAN, space),
+            (
+                2.0,
+                40.0,
+                20.0,
+                30.0,
+                MinimapProjectionSpace {
+                    target_height: f64::NAN,
+                    ..space
+                },
+            ),
+            (
+                2.0,
+                40.0,
+                20.0,
+                30.0,
+                MinimapProjectionSpace {
+                    content_top: f64::NAN,
+                    ..space
+                },
+            ),
+            (
+                2.0,
+                40.0,
+                20.0,
+                30.0,
+                MinimapProjectionSpace {
+                    content_bottom: f64::NAN,
+                    ..space
+                },
+            ),
+            (2.0, 0.0, 20.0, 30.0, space),
+            (
+                2.0,
+                40.0,
+                20.0,
+                30.0,
+                MinimapProjectionSpace {
+                    target_height: 0.0,
+                    ..space
+                },
+            ),
+            (
+                2.0,
+                40.0,
+                20.0,
+                30.0,
+                MinimapProjectionSpace {
+                    content_top: 70.0,
+                    content_bottom: 10.0,
+                    ..space
+                },
+            ),
+        ];
+
+        for (x, width, raw_top, raw_bottom, case_space) in cases {
+            assert!(
+                fit_projected_bounds(
+                    x,
+                    width,
+                    raw_top,
+                    raw_bottom,
+                    case_space,
+                    4.0,
+                    ProjectedBoundsFit::ClampOutside,
+                )
+                .is_none()
+            );
+        }
+
+        // Infinities can otherwise clamp into plausible-looking bounds, so
+        // keep them separate from the NaN cases that may collapse naturally.
+        let infinite_cases = [
+            ("x", f64::INFINITY, 40.0, 20.0, 30.0, space),
+            ("width", 2.0, f64::INFINITY, 20.0, 30.0, space),
+            ("raw_top", 2.0, 40.0, f64::NEG_INFINITY, 30.0, space),
+            ("raw_bottom", 2.0, 40.0, 20.0, f64::INFINITY, space),
+            (
+                "target_height",
+                2.0,
+                40.0,
+                20.0,
+                30.0,
+                MinimapProjectionSpace {
+                    target_height: f64::INFINITY,
+                    ..space
+                },
+            ),
+            (
+                "content_top",
+                2.0,
+                40.0,
+                20.0,
+                30.0,
+                MinimapProjectionSpace {
+                    content_top: f64::NEG_INFINITY,
+                    ..space
+                },
+            ),
+            (
+                "content_bottom",
+                2.0,
+                40.0,
+                20.0,
+                30.0,
+                MinimapProjectionSpace {
+                    content_bottom: f64::INFINITY,
+                    ..space
+                },
+            ),
+        ];
+
+        for (label, x, width, raw_top, raw_bottom, case_space) in infinite_cases {
+            assert!(
+                fit_projected_bounds(
+                    x,
+                    width,
+                    raw_top,
+                    raw_bottom,
+                    case_space,
+                    4.0,
+                    ProjectedBoundsFit::ClampOutside,
+                )
+                .is_none(),
+                "{label} infinity should be rejected before projection fitting"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fit_projected_bounds_rejects_outside_but_keeps_touching_edges() {
+        let space = MinimapProjectionSpace {
+            target_height: 100.0,
+            map_x: 0.0,
+            map_y: 0.0,
+            map_width: 80.0,
+            content_top: 10.0,
+            content_bottom: 70.0,
+        };
+
+        assert!(
+            fit_projected_bounds(
+                2.0,
+                40.0,
+                0.0,
+                9.9,
+                space,
+                4.0,
+                ProjectedBoundsFit::RejectOutside,
+            )
+            .is_none()
+        );
+        assert!(
+            fit_projected_bounds(
+                2.0,
+                40.0,
+                70.1,
+                80.0,
+                space,
+                4.0,
+                ProjectedBoundsFit::RejectOutside,
+            )
+            .is_none()
+        );
+
+        let top_edge = fit_projected_bounds(
+            2.0,
+            40.0,
+            0.0,
+            10.0,
+            space,
+            4.0,
+            ProjectedBoundsFit::RejectOutside,
+        )
+        .expect("touching top content edge should remain projectable");
+        assert_eq!(top_edge.y, 10.0);
+        assert_eq!(top_edge.height, 4.0);
+
+        let bottom_edge = fit_projected_bounds(
+            2.0,
+            40.0,
+            70.0,
+            80.0,
+            space,
+            4.0,
+            ProjectedBoundsFit::RejectOutside,
+        )
+        .expect("touching bottom content edge should remain projectable");
+        assert_eq!(bottom_edge.y, 66.0);
+        assert_eq!(bottom_edge.height, 4.0);
+    }
+
+    #[test]
+    fn test_fit_projected_bounds_min_height_uses_content_span_cap() {
+        let space = MinimapProjectionSpace {
+            target_height: 100.0,
+            map_x: 0.0,
+            map_y: 0.0,
+            map_width: 80.0,
+            content_top: 10.0,
+            content_bottom: 70.0,
+        };
+
+        let full_height = fit_projected_bounds(
+            2.0,
+            40.0,
+            30.0,
+            31.0,
+            space,
+            100.0,
+            ProjectedBoundsFit::ClampOutside,
+        )
+        .expect("minimum height should cap at rendered content span");
+        assert_eq!(full_height.y, 10.0);
+        assert_eq!(full_height.height, 60.0);
+
+        let tall_enough = fit_projected_bounds(
+            2.0,
+            40.0,
+            20.0,
+            40.0,
+            space,
+            4.0,
+            ProjectedBoundsFit::ClampOutside,
+        )
+        .expect("already tall projection should stay unchanged");
+        assert_eq!(tall_enough.y, 20.0);
+        assert_eq!(tall_enough.height, 20.0);
+
+        let reversed_edges = fit_projected_bounds(
+            2.0,
+            40.0,
+            40.0,
+            20.0,
+            space,
+            4.0,
+            ProjectedBoundsFit::ClampOutside,
+        )
+        .expect("reversed raw edges should be normalized before fitting");
+        assert_eq!(reversed_edges.y, 20.0);
+        assert_eq!(reversed_edges.height, 20.0);
+
+        assert!(
+            fit_projected_bounds(
+                2.0,
+                40.0,
+                30.0,
+                30.0,
+                space,
+                0.0,
+                ProjectedBoundsFit::ClampOutside,
+            )
+            .is_none(),
+            "zero-height projection with no minimum stays invisible"
         );
     }
 

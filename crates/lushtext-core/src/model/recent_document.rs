@@ -140,4 +140,32 @@ mod tests {
         assert!(entry.matches_path(Path::new("/real/file.txt")));
         assert!(!entry.matches_path(Path::new("/other.txt")));
     }
+
+    #[test]
+    fn row_matches_open_identity_by_display_or_canonical_path() {
+        let row = RecentDocumentRow::from_entry(
+            &RecentDocumentEntry::new(
+                PathBuf::from("/tmp/link.txt"),
+                Some(PathBuf::from("/real/file.txt")),
+                42,
+            ),
+            42,
+        );
+
+        assert!(row.matches_any_identity(&[PathBuf::from("/tmp/link.txt")]));
+        assert!(row.matches_any_identity(&[PathBuf::from("/real/file.txt")]));
+        assert!(!row.matches_any_identity(&[PathBuf::from("/elsewhere.txt")]));
+        assert!(!row.matches_any_identity(&[]));
+    }
+
+    #[test]
+    fn age_label_uses_exact_minute_hour_and_day_boundaries() {
+        assert_eq!(age_label(100, 99), "Now");
+        assert_eq!(age_label(0, 59), "Now");
+        assert_eq!(age_label(0, 60), "1m");
+        assert_eq!(age_label(0, 3_599), "59m");
+        assert_eq!(age_label(0, 3_600), "1h");
+        assert_eq!(age_label(0, 86_399), "23h");
+        assert_eq!(age_label(0, 86_400), "1d");
+    }
 }

@@ -7,6 +7,8 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 tmpdir="$(mktemp -d)"
 expected_mime="MimeType=text/plain;application/x-zerosize;application/json;application/json5;application/toml;application/yaml;text/markdown;"
+prod_app_id="dev.cominotti.lushtext"
+dev_app_id="$prod_app_id.Devel"
 
 cleanup() {
     rm -rf "$tmpdir"
@@ -91,9 +93,27 @@ export GAPPLICATION_LOG="$tmpdir/gapplication.log"
 export GDBUS_LOG="$tmpdir/gdbus.log"
 export GAPPLICATION_RUNNING_MARKER="$tmpdir/gapplication-running"
 
+mkdir -p "$tmpdir/xdg/applications"
+cat > "$tmpdir/xdg/applications/$prod_app_id.desktop" <<EOF
+[Desktop Entry]
+Name=LushText
+Exec=$tmpdir/target/debug/lushtext %U
+Icon=$tmpdir/xdg/icons/lushtext-dev-run/missing.png
+Type=Application
+EOF
+
 LUSHTEXT_DEV_RUN_NO_EXEC=1 "$repo_root/scripts/run-dev-app.sh"
 if [[ -e "$tmpdir/xdg/applications/dev.cominotti.lushtext.desktop" ]]; then
-    echo "normal no-exec staging left a production desktop entry behind" >&2
+    echo "normal no-exec staging left or restored a production desktop shadow" >&2
+    exit 1
+fi
+if [[ -e "$tmpdir/xdg/applications/$dev_app_id.desktop" ]]; then
+    echo "normal no-exec staging left a development desktop entry behind" >&2
+    exit 1
+fi
+if ! find "$tmpdir/xdg/lushtext-backups/desktop-shadows" \
+    -name "$prod_app_id.desktop.*.bak" -print -quit | grep -q .; then
+    echo "normal no-exec staging did not quarantine a stale production desktop shadow" >&2
     exit 1
 fi
 
@@ -104,16 +124,16 @@ if [[ -e "$tmpdir/xdg/applications/dev.cominotti.lushtext.desktop" ]]; then
     echo "persistent staging used the production desktop ID" >&2
     exit 1
 fi
-if [[ ! -f "$tmpdir/xdg/applications/dev.cominotti.lushtext.Devel.desktop" ]]; then
+if [[ ! -f "$tmpdir/xdg/applications/$dev_app_id.desktop" ]]; then
     echo "persistent staging did not create the development desktop entry" >&2
     exit 1
 fi
 grep -q '^Name=LushText (Development)$' \
-    "$tmpdir/xdg/applications/dev.cominotti.lushtext.Devel.desktop"
+    "$tmpdir/xdg/applications/$dev_app_id.desktop"
 grep -Fxq "$expected_mime" \
-    "$tmpdir/xdg/applications/dev.cominotti.lushtext.Devel.desktop"
+    "$tmpdir/xdg/applications/$dev_app_id.desktop"
 if grep -Eq 'text/x-(csrc|chdr|python|rust)|jsonc|properties' \
-    "$tmpdir/xdg/applications/dev.cominotti.lushtext.Devel.desktop"; then
+    "$tmpdir/xdg/applications/$dev_app_id.desktop"; then
     echo "persistent staging advertised a removed or deferred MIME type" >&2
     exit 1
 fi
@@ -127,13 +147,12 @@ if [[ "$(wc -l < "$UPDATE_DESKTOP_DATABASE_LOG")" -lt 3 ]]; then
 fi
 
 if LUSHTEXT_DEV_RUN_NO_EXEC=1 \
-    LUSHTEXT_DEV_RUN_KEEP_STAGED=1 \
     LUSHTEXT_DEV_RUN_STAGED_APP_ID=dev.cominotti.lushtext \
     "$repo_root/scripts/run-dev-app.sh" > "$tmpdir/prod-id.log" 2>&1; then
-    echo "production desktop ID was accepted for persistent staging" >&2
+    echo "production desktop ID was accepted for development staging" >&2
     exit 1
 fi
-grep -q "must not use production desktop ID" "$tmpdir/prod-id.log"
+grep -q "development staging must not use production desktop ID" "$tmpdir/prod-id.log"
 
 touch "$GAPPLICATION_RUNNING_MARKER"
 LUSHTEXT_DEV_RUN_FORCE_RESTART=1 "$repo_root/scripts/run-dev-app.sh"
@@ -142,7 +161,7 @@ if [[ -e "$GAPPLICATION_RUNNING_MARKER" ]]; then
     echo "forced dev run did not ask the registered app owner to quit" >&2
     exit 1
 fi
-grep -Fxq "dev.cominotti.lushtext" "$GTK_LAUNCH_LOG"
+grep -Fxq "$dev_app_id" "$GTK_LAUNCH_LOG"
 
 : > "$GAPPLICATION_LOG"
 : > "$GDBUS_LOG"
@@ -158,7 +177,7 @@ if [[ -e "$GAPPLICATION_RUNNING_MARKER" ]]; then
     echo "forced dev run did not stop the bus-owned app when list-apps was empty" >&2
     exit 1
 fi
-grep -Fxq "dev.cominotti.lushtext" "$GTK_LAUNCH_LOG"
+grep -Fxq "$dev_app_id" "$GTK_LAUNCH_LOG"
 
 : > "$GTK_LAUNCH_LOG"
 touch "$GAPPLICATION_RUNNING_MARKER"
@@ -191,6 +210,51 @@ if kill -0 "$old_pid" 2>/dev/null; then
     echo "forced dev run did not terminate the deleted-inode debug process" >&2
     exit 1
 fi
-grep -Fxq "dev.cominotti.lushtext" "$GTK_LAUNCH_LOG"
+grep -Fxq "$dev_app_id" "$GTK_LAUNCH_LOG"
+
+clear_home="$tmpdir/clear-home"
+mkdir -p "$clear_home/.local/share/applications" \
+    "$clear_home/.local/share/icons/lushtext-dev-run" \
+    "$clear_home/.local/share/icons/hicolor/scalable/apps" \
+    "$clear_home/.local/share/icons/hicolor/symbolic/apps" \
+    "$clear_home/.local/share/icons/hicolor/32x32/apps" \
+    "$clear_home/.local/share/icons/hicolor/64x64/apps" \
+    "$clear_home/.local/share/icons/hicolor/128x128/apps" \
+    "$clear_home/.config/lushtext" \
+    "$clear_home/.cache/lushtext" \
+    "$clear_home/.local/state/lushtext" \
+    "$clear_home/.local/share/lushtext"
+touch "$clear_home/.local/share/applications/$prod_app_id.desktop" \
+    "$clear_home/.local/share/applications/$dev_app_id.desktop" \
+    "$clear_home/.local/share/icons/lushtext-dev-run/$dev_app_id.png" \
+    "$clear_home/.local/share/icons/hicolor/scalable/apps/$dev_app_id.svg" \
+    "$clear_home/.local/share/icons/hicolor/symbolic/apps/$dev_app_id-symbolic.svg" \
+    "$clear_home/.local/share/icons/hicolor/32x32/apps/$dev_app_id.png" \
+    "$clear_home/.local/share/icons/hicolor/64x64/apps/$dev_app_id.png" \
+    "$clear_home/.local/share/icons/hicolor/128x128/apps/$dev_app_id.png"
+
+HOME="$clear_home" \
+XDG_DATA_HOME="$clear_home/.local/share" \
+XDG_CONFIG_HOME="$clear_home/.config" \
+XDG_CACHE_HOME="$clear_home/.cache" \
+XDG_STATE_HOME="$clear_home/.local/state" \
+RESET_GSETTINGS=0 \
+ALLOW_RUNNING=1 \
+    "$repo_root/scripts/clear-lushtext-xdg.sh" > "$tmpdir/clear.log"
+
+for path in \
+    "$clear_home/.local/share/applications/$prod_app_id.desktop" \
+    "$clear_home/.local/share/applications/$dev_app_id.desktop" \
+    "$clear_home/.local/share/icons/lushtext-dev-run" \
+    "$clear_home/.local/share/icons/hicolor/scalable/apps/$dev_app_id.svg" \
+    "$clear_home/.local/share/icons/hicolor/symbolic/apps/$dev_app_id-symbolic.svg" \
+    "$clear_home/.local/share/icons/hicolor/32x32/apps/$dev_app_id.png" \
+    "$clear_home/.local/share/icons/hicolor/64x64/apps/$dev_app_id.png" \
+    "$clear_home/.local/share/icons/hicolor/128x128/apps/$dev_app_id.png"; do
+    if [[ -e "$path" ]]; then
+        echo "clear-lushtext-xdg left development desktop artifact behind: $path" >&2
+        exit 1
+    fi
+done
 
 echo "development desktop staging tests passed"

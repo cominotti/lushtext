@@ -183,3 +183,43 @@ impl MigrationLedgerDocument {
         self.entries.retain(|entry| !entry.is_complete());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_kind_labels_are_stable() {
+        assert_eq!(MigrationKind::Bookmarks.label(), "bookmarks");
+        assert_eq!(MigrationKind::DocumentNotes.label(), "document-notes");
+        assert_eq!(MigrationKind::FolderNotes.label(), "folder-notes");
+        assert_eq!(MigrationKind::LocalHistory.label(), "local-history");
+    }
+
+    #[test]
+    fn migration_entry_matches_both_old_and_new_paths_exactly() {
+        let entry = MigrationEntry::new(
+            7,
+            PathBuf::from("/old"),
+            PathBuf::from("/new"),
+            &[MigrationKind::Bookmarks],
+            42,
+        );
+
+        assert!(entry.matches_paths(Path::new("/old"), Path::new("/new")));
+        assert!(!entry.matches_paths(Path::new("/other-old"), Path::new("/new")));
+        assert!(!entry.matches_paths(Path::new("/old"), Path::new("/other-new")));
+    }
+
+    #[test]
+    fn migration_ledger_allocates_monotonic_nonzero_generations() {
+        let mut ledger = MigrationLedgerDocument::default();
+
+        assert_eq!(ledger.allocate_generation(), 1);
+        assert_eq!(ledger.allocate_generation(), 2);
+
+        ledger.next_generation = 0;
+        assert_eq!(ledger.allocate_generation(), 1);
+        assert_eq!(ledger.next_generation, 2);
+    }
+}

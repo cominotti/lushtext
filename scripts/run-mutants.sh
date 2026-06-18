@@ -14,6 +14,9 @@ MUTANTS_IN_PLACE="${MUTANTS_IN_PLACE:-0}"
 MUTANTS_JOBS="${MUTANTS_JOBS:-}"
 MUTANTS_TEST_THREADS="${MUTANTS_TEST_THREADS:-}"
 MUTANTS_BUILD_JOBS="${MUTANTS_BUILD_JOBS:-}"
+MUTANTS_RE="${MUTANTS_RE:-}"
+MUTANTS_EXCLUDE="${MUTANTS_EXCLUDE:-}"
+MUTANTS_EXCLUDE_RE="${MUTANTS_EXCLUDE_RE:-}"
 
 # Cap per-job parallelism so concurrent jobs do not oversubscribe the host.
 # cargo-mutants runs MUTANTS_JOBS build/test pipelines at once; each one launches
@@ -54,6 +57,9 @@ Environment:
   MUTANTS_JOBS          Build/test this many mutants in parallel (default: serial).
   MUTANTS_TEST_THREADS  Cap nextest threads per mutant job (pairs with MUTANTS_JOBS).
   MUTANTS_BUILD_JOBS    Cap cargo build jobs per mutant job (pairs with MUTANTS_JOBS).
+  MUTANTS_RE            Optional regex for focused mutant proof, matched against --list names.
+  MUTANTS_EXCLUDE       Optional file glob excluded after focused matching.
+  MUTANTS_EXCLUDE_RE    Optional regex for extra focused-run exclusions.
 EOF
 }
 
@@ -113,6 +119,20 @@ mutants_args() {
 
     if [[ -n "${MUTANTS_SHARD}" ]]; then
         args+=(--shard "${MUTANTS_SHARD}")
+    fi
+
+    # Focused survivor proof uses cargo-mutants' name regex so the repo config
+    # and its calibrated excludes remain in force while narrowing the run.
+    if [[ -n "${MUTANTS_RE}" ]]; then
+        args+=(--re "${MUTANTS_RE}")
+    fi
+
+    if [[ -n "${MUTANTS_EXCLUDE}" ]]; then
+        args+=(--exclude "${MUTANTS_EXCLUDE}")
+    fi
+
+    if [[ -n "${MUTANTS_EXCLUDE_RE}" ]]; then
+        args+=(--exclude-re "${MUTANTS_EXCLUDE_RE}")
     fi
 
     # Local runs set this to fan out across cores; CI leaves it empty so the

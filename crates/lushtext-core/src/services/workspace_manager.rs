@@ -635,6 +635,49 @@ mod tests {
     }
 
     #[test]
+    fn add_folder_with_stale_identity_count_or_target_refuses_to_mutate() {
+        let mut file = WorkspacesFile::default();
+        let workspace_id = file.add_workspace("project", "/tmp/project".into());
+        let existing_paths = vec![PathBuf::from("/tmp/project")];
+        let folder_path = PathBuf::from("/tmp/new");
+        let new_folder_identity = folder_identity(&folder_path);
+
+        let stale_count = add_folder_to_workspace_with_identities(
+            &mut file,
+            &workspace_id,
+            folder_path.clone(),
+            &existing_paths,
+            &new_folder_identity,
+            &[],
+        );
+        assert_eq!(
+            stale_count,
+            Err(WorkspaceFolderAddError::StaleFolderSnapshot)
+        );
+
+        let mismatched_identity = folder_identity(Path::new("/tmp/other"));
+        let existing_identities = folder_identities(&existing_paths);
+        let stale_target = add_folder_to_workspace_with_identities(
+            &mut file,
+            &workspace_id,
+            folder_path,
+            &existing_paths,
+            &mismatched_identity,
+            &existing_identities,
+        );
+        assert_eq!(
+            stale_target,
+            Err(WorkspaceFolderAddError::StaleFolderSnapshot)
+        );
+        assert_eq!(
+            file.workspace(&workspace_id)
+                .expect("workspace")
+                .folder_paths(),
+            vec![PathBuf::from("/tmp/project")]
+        );
+    }
+
+    #[test]
     fn remove_folder_removes_membership_without_removing_workspace() {
         let mut file = WorkspacesFile {
             current_scope: WorkspaceScope::workspace(WorkspaceId::new("ws")),
@@ -763,6 +806,32 @@ mod tests {
     }
 
     #[test]
+    fn reorder_folder_reports_missing_folder_without_mutating_state() {
+        let mut file = WorkspacesFile {
+            current_scope: WorkspaceScope::workspace(WorkspaceId::new("ws")),
+            workspaces: vec![WorkspaceConfig::with_folders(
+                WorkspaceId::new("ws"),
+                "Project",
+                vec![WorkspaceFolder::with_id(
+                    WorkspaceFolderId::new("one"),
+                    "/tmp/one".into(),
+                )],
+            )],
+        };
+        let original = file.clone();
+
+        let result = reorder_folder_in_workspace(
+            &mut file,
+            &WorkspaceId::new("ws"),
+            &WorkspaceFolderId::new("missing"),
+            0,
+        );
+
+        assert_eq!(result, Err(WorkspaceFolderReorderError::FolderNotFound));
+        assert_eq!(file, original);
+    }
+
+    #[test]
     fn move_folder_in_workspace_uses_relative_direction() {
         let mut file = WorkspacesFile {
             current_scope: WorkspaceScope::workspace(WorkspaceId::new("ws")),
@@ -874,6 +943,18 @@ mod tests {
         );
         assert_eq!(
             first_up,
+            Err(WorkspaceFolderReorderError::AlreadyAtBoundary)
+        );
+        assert_eq!(file, original);
+
+        let last_down = move_folder_in_workspace(
+            &mut file,
+            &WorkspaceId::new("ws"),
+            &WorkspaceFolderId::new("two"),
+            WorkspaceFolderMoveDirection::Down,
+        );
+        assert_eq!(
+            last_down,
             Err(WorkspaceFolderReorderError::AlreadyAtBoundary)
         );
         assert_eq!(file, original);

@@ -708,6 +708,26 @@ mod tests {
     }
 
     #[test]
+    fn delete_entry_removes_only_the_requested_journal_entry() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path_a = PathBuf::from("/tmp/a.rs");
+        let path_b = PathBuf::from("/tmp/b.rs");
+        let entry_a = ReplaceUndoEntry::new(b"before-a".to_vec(), b"after-a".to_vec());
+        let entry_b = ReplaceUndoEntry::new(b"before-b".to_vec(), b"after-b".to_vec());
+        save_entry(dir.path(), &path_a, &entry_a).expect("save first journal entry");
+        save_entry(dir.path(), &path_b, &entry_b).expect("save second journal entry");
+
+        delete_entry(dir.path(), &path_a).expect("delete first journal entry");
+
+        assert!(!fs_metadata::exists(
+            &dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_a))
+        ));
+        assert!(fs_metadata::exists(
+            &dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_b))
+        ));
+    }
+
+    #[test]
     fn delete_blocks_retired_backup_cleanup_when_preservation_is_unsafe() {
         let dir = TempDir::new().expect("expected operation to succeed");
         fixture::create_dir(&dir.path().join(BACKUP_FILE));
@@ -882,6 +902,26 @@ mod tests {
     }
 
     #[test]
+    fn active_journal_at_exact_undo_payload_cap_remains_active() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = PathBuf::from("/tmp/a.rs");
+        let mut backup = ReplaceUndoBackup::new();
+        let entry = ReplaceUndoEntry::new(b"before".to_vec(), b"after".to_vec());
+        let exact_payload = u64::try_from(entry.original_bytes.len() + entry.replaced_bytes.len())
+            .expect("tiny undo payload should fit in u64");
+        backup.insert(path, entry);
+        save(dir.path(), &backup).expect("save valid journal");
+
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(exact_payload)));
+        let load = load_recovering(dir.path());
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
+
+        assert!(load.active);
+        assert_eq!(load.backup, backup);
+        assert!(load.diagnostics.is_empty());
+    }
+
+    #[test]
     fn active_journal_over_manifest_entry_cap_is_inactive() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let manifest_path = dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE);
@@ -914,6 +954,65 @@ mod tests {
     }
 
     #[test]
+    fn exact_manifest_entry_cap_is_not_reported_as_over_cap() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let manifest_path = dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE);
+        let entries = (0..JOURNAL_SCAN_MAX_ENTRIES)
+            .map(|index| ReplaceJournalManifestEntry {
+                path: PathBuf::from(format!("/tmp/file-{index}.rs")),
+                entry_file: "shared-entry.json".to_string(),
+            })
+            .collect();
+        let manifest = ReplaceJournalManifest { entries };
+        let config = RecoveryLoadConfig::new(
+            dir.path(),
+            &manifest_path,
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+        );
+        save_enveloped_json_path(&config, KIND_REPLACE_UNDO_MANIFEST, &manifest)
+            .expect("write exact-cap manifest fixture");
+
+        let load = load_recovering(dir.path());
+
+        assert!(!load.active);
+        assert!(!load.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.problem,
+                RecoveryProblem::RepairSkipped { ref detail }
+                    if detail.contains("entry cap")
+            )
+        }));
+    }
+
+    #[test]
+    fn empty_manifest_with_matching_entry_count_is_not_active() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let manifest_path = dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE);
+        let manifest = ReplaceJournalManifest {
+            entries: Vec::new(),
+        };
+        let config = RecoveryLoadConfig::new(
+            dir.path(),
+            &manifest_path,
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+        );
+        save_enveloped_json_path(&config, KIND_REPLACE_UNDO_MANIFEST, &manifest)
+            .expect("write empty manifest fixture");
+
+        let load = load_recovering(dir.path());
+
+        assert!(!load.active);
+        assert!(load.backup.is_empty());
+        assert!(load.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.problem,
+                RecoveryProblem::RepairSkipped { ref detail }
+                    if detail.contains("manifest is empty")
+            )
+        }));
+    }
+
+    #[test]
     fn mark_journal_active_rejects_manifest_entry_count_above_cap() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let mut backup = ReplaceUndoBackup::new();
@@ -931,6 +1030,53 @@ mod tests {
             error.to_string().contains("entry cap"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn mark_journal_active_accepts_exact_manifest_entry_cap() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let mut backup = ReplaceUndoBackup::new();
+        for index in 0..JOURNAL_SCAN_MAX_ENTRIES {
+            backup.insert(
+                PathBuf::from(format!("/tmp/file-{index}.rs")),
+                ReplaceUndoEntry::new(b"before".to_vec(), b"after".to_vec()),
+            );
+        }
+
+        mark_journal_active(dir.path(), &backup).expect("exact cap should be accepted");
+
+        assert!(fs_metadata::exists(
+            &dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE)
+        ));
+    }
+
+    #[test]
+    fn orphan_journal_detection_reports_only_extra_json_entries() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let active_path = PathBuf::from("/tmp/active.rs");
+        let orphan_path = PathBuf::from("/tmp/orphan.rs");
+        let active_entry = ReplaceUndoEntry::new(b"before-a".to_vec(), b"after-a".to_vec());
+        let orphan_entry = ReplaceUndoEntry::new(b"before-b".to_vec(), b"after-b".to_vec());
+        save_entry(dir.path(), &active_path, &active_entry).expect("save active journal entry");
+        save_entry(dir.path(), &orphan_path, &orphan_entry).expect("save orphan journal entry");
+        let journal_dir = dir.path().join(JOURNAL_DIR);
+        fixture::write_text(&journal_dir.join(JOURNAL_MANIFEST_FILE), "{}");
+        fixture::write_text(&journal_dir.join(CLEANUP_MARKER_FILE), "{}");
+        fixture::write_text(&journal_dir.join("notes.txt"), "not a journal entry");
+        let active_files = HashSet::from([entry_file_name(&active_path)]);
+
+        let diagnostics = detect_orphan_journal_entries(dir.path(), &journal_dir, &active_files);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].original_path,
+            journal_dir.join(entry_file_name(&orphan_path))
+        );
+        assert!(matches!(
+            diagnostics[0].problem,
+            RecoveryProblem::RepairSkipped { ref detail }
+                if detail.contains("orphaned entry")
+        ));
     }
 
     #[cfg(unix)]

@@ -440,6 +440,15 @@ mod tests {
     }
 
     #[test]
+    fn bookmark_excerpt_policy_constants_are_stable() {
+        assert_eq!(BOOKMARK_EXCERPT_CONTEXT_BEFORE_LINES, 3);
+        assert_eq!(BOOKMARK_EXCERPT_CONTEXT_AFTER_LINES, 7);
+        assert_eq!(BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT, 1024 * 1024);
+        assert_eq!(BOOKMARK_EXCERPT_SCAN_LINE_LIMIT, 20_000);
+        assert_eq!(BOOKMARK_EXCERPT_LINE_CHAR_LIMIT, 4096);
+    }
+
+    #[test]
     fn extracts_window_at_file_start() {
         let excerpt = ready(extract_from_text(
             &numbered_text(6),
@@ -511,6 +520,21 @@ mod tests {
         assert_eq!(
             excerpt.body_text_with_markers(),
             "... earlier bookmark context omitted ...\n\nbefore\ntarget\n\n... later bookmark context omitted ..."
+        );
+    }
+
+    #[test]
+    fn context_lines_reject_target_at_end_boundary() {
+        assert_eq!(
+            unavailable_reason(extract_from_context_lines(
+                BookmarkExcerptPresentation::PlainText,
+                4,
+                6,
+                vec!["line-4".to_string(), "line-5".to_string()],
+                false,
+                false,
+            )),
+            BookmarkExcerptUnavailableReason::LineOutOfRange
         );
     }
 
@@ -636,5 +660,38 @@ mod tests {
             )),
             BookmarkExcerptUnavailableReason::LineBeyondPreviewBudget
         );
+    }
+
+    #[test]
+    fn read_bounded_bytes_marks_truncation_only_when_file_exceeds_limit() {
+        let exact = tempfile::NamedTempFile::new().expect("temp file");
+        fixture::write_repeated_bytes(exact.path(), b"x", BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT as u64);
+        let exact_bytes =
+            read_bounded_bytes(exact.path(), BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT).expect("read exact");
+
+        assert_eq!(exact_bytes.bytes.len(), BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT);
+        assert!(!exact_bytes.truncated_by_bytes);
+
+        let over = tempfile::NamedTempFile::new().expect("temp file");
+        fixture::write_repeated_bytes(
+            over.path(),
+            b"x",
+            (BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT + 1) as u64,
+        );
+        let over_bytes =
+            read_bounded_bytes(over.path(), BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT).expect("read over");
+
+        assert_eq!(over_bytes.bytes.len(), BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT);
+        assert!(over_bytes.truncated_by_bytes);
+    }
+
+    #[test]
+    fn validated_utf8_prefix_accepts_only_truncated_incomplete_tail_sequences() {
+        assert_eq!(
+            validated_utf8_prefix(&[b'o', b'k', b' ', 0xc3], true).expect("valid prefix"),
+            "ok "
+        );
+        assert!(validated_utf8_prefix(&[b'o', b'k', b' ', 0xc3], false).is_err());
+        assert!(validated_utf8_prefix(&[0xff], true).is_err());
     }
 }

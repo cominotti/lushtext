@@ -13,7 +13,6 @@ desktop_template="$repo_root/data/$app_id.desktop.in"
 desktop_icon_source="$repo_root/data/icons/hicolor/128x128/apps/$app_id.png"
 desktop_icon_hash="$(sha256sum "$desktop_icon_source" | awk '{ print substr($1, 1, 16) }')"
 desktop_icon_dir="$data_home/icons/lushtext-dev-run"
-desktop_icon_target="$desktop_icon_dir/$app_id-$desktop_icon_hash.png"
 target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
 build_target="${CARGO_BUILD_TARGET:-}"
 keep_staged="${LUSHTEXT_DEV_RUN_KEEP_STAGED:-0}"
@@ -21,21 +20,22 @@ no_exec="${LUSHTEXT_DEV_RUN_NO_EXEC:-0}"
 force_restart="${LUSHTEXT_DEV_RUN_FORCE_RESTART:-0}"
 terminate_stale="${LUSHTEXT_DEV_RUN_TERMINATE_STALE:-0}"
 restart_timeout_seconds="${LUSHTEXT_DEV_RUN_RESTART_TIMEOUT_SECONDS:-5}"
-desktop_app_id="$app_id"
+desktop_app_id="${LUSHTEXT_DEV_RUN_STAGED_APP_ID:-$app_id.Devel}"
+production_desktop_target="$desktop_dir/$app_id.desktop"
+shadow_backup_dir="$data_home/lushtext-backups/desktop-shadows"
 
-if [[ "$keep_staged" == "1" ]]; then
-    desktop_app_id="${LUSHTEXT_DEV_RUN_STAGED_APP_ID:-$app_id.Devel}"
-    if [[ "$desktop_app_id" == "$app_id" ]]; then
-        echo "Error: persistent development staging must not use production desktop ID $app_id." >&2
-        echo "Use the default $app_id.Devel ID or set LUSHTEXT_DEV_RUN_STAGED_APP_ID to another non-production ID." >&2
-        exit 1
-    fi
+if [[ "$desktop_app_id" == "$app_id" ]]; then
+    echo "Error: development staging must not use production desktop ID $app_id." >&2
+    echo "Use the default $app_id.Devel ID or set LUSHTEXT_DEV_RUN_STAGED_APP_ID to another non-production ID." >&2
+    exit 1
 fi
 
 if [[ "$desktop_app_id" =~ [[:space:]/] ]]; then
     echo "Error: desktop application ID '$desktop_app_id' is not safe for a desktop filename." >&2
     exit 1
 fi
+
+desktop_icon_target="$desktop_icon_dir/$desktop_app_id-$desktop_icon_hash.png"
 
 if [[ ! "$restart_timeout_seconds" =~ ^[0-9]+$ ]]; then
     echo "Error: LUSHTEXT_DEV_RUN_RESTART_TIMEOUT_SECONDS must be a non-negative integer." >&2
@@ -120,6 +120,25 @@ desktop_entry_icon_path() {
     local desktop_file="$1"
 
     awk -F= '$1 == "Icon" { print substr($0, index($0, "=") + 1); exit }' "$desktop_file"
+}
+
+desktop_has_flatpak_marker() {
+    local desktop_file="$1"
+
+    [[ -f "$desktop_file" ]] && grep -qx "X-Flatpak=$app_id" "$desktop_file"
+}
+
+quarantine_production_desktop_shadow() {
+    local shadow="$production_desktop_target"
+    local backup
+
+    [[ -e "$shadow" || -L "$shadow" ]] || return 0
+    desktop_has_flatpak_marker "$shadow" && return 0
+
+    mkdir -p -- "$shadow_backup_dir"
+    backup="$shadow_backup_dir/$app_id.desktop.$(date +%Y%m%d-%H%M%S).$$.bak"
+    mv -- "$shadow" "$backup"
+    echo "Moved stale production desktop entry to $backup so the Flatpak export stays visible." >&2
 }
 
 install_desktop_icon_target() {
@@ -239,13 +258,11 @@ stage_file() {
     install -m 0644 -- "$src" "$dst"
 }
 
+quarantine_production_desktop_shadow
 install_desktop_icon_target
 
 desktop_tmp="$backup_dir/$desktop_app_id.desktop"
-desktop_name="LushText"
-if [[ "$keep_staged" == "1" ]]; then
-    desktop_name="LushText (Development)"
-fi
+desktop_name="LushText (Development)"
 sed \
     -e "s|^Name=.*$|Name=$desktop_name|" \
     -e "s|^Exec=.*$|Exec=$binary %U|" \
@@ -256,15 +273,15 @@ sed \
 repair_desktop_entry_icon "$desktop_target"
 stage_file "$desktop_tmp" "$desktop_target"
 stage_file "$repo_root/data/icons/dev.cominotti.lushtext.svg" \
-    "$icons_root/scalable/apps/dev.cominotti.lushtext.svg"
+    "$icons_root/scalable/apps/$desktop_app_id.svg"
 stage_file "$repo_root/data/icons/dev.cominotti.lushtext-symbolic.svg" \
-    "$icons_root/symbolic/apps/dev.cominotti.lushtext-symbolic.svg"
+    "$icons_root/symbolic/apps/$desktop_app_id-symbolic.svg"
 stage_file "$repo_root/data/icons/hicolor/32x32/apps/dev.cominotti.lushtext.png" \
-    "$icons_root/32x32/apps/dev.cominotti.lushtext.png"
+    "$icons_root/32x32/apps/$desktop_app_id.png"
 stage_file "$repo_root/data/icons/hicolor/64x64/apps/dev.cominotti.lushtext.png" \
-    "$icons_root/64x64/apps/dev.cominotti.lushtext.png"
+    "$icons_root/64x64/apps/$desktop_app_id.png"
 stage_file "$repo_root/data/icons/hicolor/128x128/apps/dev.cominotti.lushtext.png" \
-    "$icons_root/128x128/apps/dev.cominotti.lushtext.png"
+    "$icons_root/128x128/apps/$desktop_app_id.png"
 
 refresh_shell_metadata
 

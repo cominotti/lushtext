@@ -761,6 +761,25 @@ mod tests {
     }
 
     #[test]
+    fn palette_note_text_query_preserves_trimmed_query_and_prefix_table() {
+        let query = PaletteNoteTextQuery::new("  Launch Plan  ").expect("query");
+        let overlap_query = PaletteNoteTextQuery::new("ababaca").expect("overlap query");
+
+        assert_eq!(query.as_str(), "Launch Plan");
+        assert!(query.matches("the launch plan is ready"));
+        assert!(overlap_query.matches("prefix abababaca suffix"));
+        assert!(!overlap_query.matches("prefix ababaxyca suffix"));
+        assert_eq!(
+            PaletteNoteTextQuery::prefix_table(&"ababaca".chars().collect::<Vec<_>>()),
+            vec![0, 0, 1, 2, 3, 0, 1]
+        );
+        assert_eq!(
+            PaletteNoteTextQuery::prefix_table(&"ababb".chars().collect::<Vec<_>>()),
+            vec![0, 0, 1, 2, 0]
+        );
+    }
+
+    #[test]
     fn search_note_entries_in_category_limits_matches_to_that_category() {
         let entries = vec![
             test_note_entry(
@@ -812,6 +831,80 @@ mod tests {
         );
 
         assert!(search_note_entries(&entries, "needle-from-source-only", 10).is_empty());
+    }
+
+    #[test]
+    fn note_path_scope_and_open_tab_source_labels_are_exact() {
+        let folder = PathBuf::from("/workspace/root");
+        assert!(path_is_in_folders(
+            Path::new("/workspace/root/docs/file.md"),
+            std::slice::from_ref(&folder)
+        ));
+        assert!(!path_is_in_folders(
+            Path::new("/workspace/rootish/docs/file.md"),
+            std::slice::from_ref(&folder)
+        ));
+
+        let in_workspace = PaletteOpenTabSource {
+            workspace_name: Some("Docs".to_string()),
+            workspace_folder: Some(folder.clone()),
+        };
+        assert_eq!(
+            in_workspace.row_label(),
+            format!("Open tab · Docs · {}", folder.display())
+        );
+        assert_eq!(
+            PaletteOpenTabSource {
+                workspace_name: Some("Scratch".to_string()),
+                workspace_folder: None,
+            }
+            .row_label(),
+            "Open tab · Scratch"
+        );
+        assert_eq!(
+            PaletteOpenTabSource {
+                workspace_name: None,
+                workspace_folder: None,
+            }
+            .row_label(),
+            "Open tab · Outside workspace"
+        );
+    }
+
+    #[test]
+    fn document_identity_dedupe_and_label_sorting_helpers_preserve_note_rows() {
+        let dir = TempDir::new().expect("tempdir");
+        let file = dir.path().join("doc.md");
+        write_file(&file, "# doc\n");
+        let mut document_ids = HashSet::new();
+
+        remember_document_identity(&mut document_ids, &file);
+        remember_document_identity(&mut document_ids, &dir.path().join("missing.md"));
+
+        assert_eq!(document_ids.len(), 1);
+
+        let mut entries = vec![
+            test_note_entry(PaletteNoteCategory::DocumentNotes, "Zeta", "body"),
+            test_note_entry(PaletteNoteCategory::DocumentNotes, "Alpha", "body"),
+            PaletteNoteEntry {
+                subtitle: "A subtitle".to_string(),
+                ..test_note_entry(PaletteNoteCategory::DocumentNotes, "Alpha", "body")
+            },
+        ];
+
+        sort_note_entries_by_label(&mut entries);
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.title.as_str(), entry.subtitle.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Alpha", "A subtitle"),
+                ("Alpha", "Core · /workspace"),
+                ("Zeta", "Core · /workspace"),
+            ]
+        );
     }
 
     #[test]
