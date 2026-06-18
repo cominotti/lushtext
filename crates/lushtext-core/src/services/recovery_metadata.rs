@@ -1178,6 +1178,85 @@ mod tests {
     }
 
     #[test]
+    fn default_metadata_cap_is_sixteen_mib() {
+        assert_eq!(DEFAULT_MAX_METADATA_BYTES, 16_777_216);
+    }
+
+    #[test]
+    fn metadata_class_slugs_and_labels_are_stable_and_distinct() {
+        let cases = [
+            (
+                RecoveryMetadataClass::WorkspaceState,
+                "workspace-state",
+                "workspace state",
+            ),
+            (
+                RecoveryMetadataClass::SavedSearches,
+                "saved-searches",
+                "saved searches",
+            ),
+            (
+                RecoveryMetadataClass::SearchHistory,
+                "search-history",
+                "recent search history",
+            ),
+            (RecoveryMetadataClass::Session, "session", "session"),
+            (
+                RecoveryMetadataClass::DraftManifest,
+                "draft-manifest",
+                "draft manifest",
+            ),
+            (
+                RecoveryMetadataClass::BookmarkSidecar,
+                "bookmark-sidecar",
+                "bookmark sidecar",
+            ),
+            (
+                RecoveryMetadataClass::DocumentNoteSidecar,
+                "document-note-sidecar",
+                "document note",
+            ),
+            (
+                RecoveryMetadataClass::FolderNoteSidecar,
+                "folder-note-sidecar",
+                "folder note",
+            ),
+            (
+                RecoveryMetadataClass::LocalHistoryIndex,
+                "local-history-index",
+                "local history",
+            ),
+            (
+                RecoveryMetadataClass::ReplaceAllUndoJournal,
+                "replace-all-undo-journal",
+                "replace undo journal",
+            ),
+            (
+                RecoveryMetadataClass::MigrationLedger,
+                "migration-ledger",
+                "migration ledger",
+            ),
+        ];
+        let mut slugs = Vec::new();
+
+        for (class, expected_slug, expected_label) in cases {
+            let slug = class.slug();
+            let label = class.label();
+
+            assert_eq!(slug, expected_slug);
+            assert_eq!(label, expected_label);
+            assert!(!slug.is_empty());
+            assert!(!label.is_empty());
+            assert_eq!(slug, sanitize_component(slug));
+            slugs.push(slug);
+        }
+
+        slugs.sort_unstable();
+        slugs.dedup();
+        assert_eq!(slugs.len(), cases.len());
+    }
+
+    #[test]
     fn missing_metadata_returns_default_without_diagnostic() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("session.json");
@@ -1207,6 +1286,28 @@ mod tests {
             }
         );
         assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn valid_metadata_loads_at_exact_size_limit() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("session.json");
+        let bytes = br#"{"name":"exact","count":8}"#;
+        fixture::write_bytes(&path, bytes);
+
+        let result: RecoveryLoad<TestMetadata> =
+            load_json_or_default(&config(dir.path(), &path).with_max_bytes(bytes.len() as u64));
+
+        assert_eq!(result.outcome, RecoveryLoadOutcome::Loaded);
+        assert_eq!(
+            result.value,
+            TestMetadata {
+                name: "exact".to_string(),
+                count: 8
+            }
+        );
+        assert!(result.diagnostics.is_empty());
+        assert!(result.replacement_allowed());
     }
 
     #[test]
@@ -1314,6 +1415,29 @@ mod tests {
     }
 
     #[test]
+    fn enveloped_metadata_loads_at_exact_size_limit() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("session.json");
+        let value = TestMetadata {
+            name: "enveloped".to_string(),
+            count: 9,
+        };
+        let bytes = serde_json::to_vec(&JsonEnvelopeRef::new(KIND_SESSION, &value))
+            .expect("session envelope");
+        fixture::write_bytes(&path, &bytes);
+
+        let result: RecoveryLoad<TestMetadata> = load_enveloped_json_or_default(
+            &config(dir.path(), &path).with_max_bytes(bytes.len() as u64),
+            KIND_SESSION,
+        );
+
+        assert_eq!(result.outcome, RecoveryLoadOutcome::Loaded);
+        assert_eq!(result.value, value);
+        assert!(result.diagnostics.is_empty());
+        assert!(result.replacement_allowed());
+    }
+
+    #[test]
     fn repair_hook_can_return_partial_value_after_preservation() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("session.json");
@@ -1393,5 +1517,119 @@ mod tests {
         let loaded: TestMetadata =
             load_enveloped_json_or_default(&config(dir.path(), &path), KIND_SESSION).value;
         assert_eq!(loaded, value);
+    }
+
+    #[test]
+    fn prepare_enveloped_replacement_allows_file_at_exact_size_limit() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("session.json");
+        let existing = TestMetadata {
+            name: "existing".to_string(),
+            count: 5,
+        };
+        let bytes =
+            serde_json::to_vec(&JsonEnvelopeRef::new(KIND_SESSION, &existing)).expect("envelope");
+        fixture::write_bytes(&path, &bytes);
+
+        let result: RecoveryLoad<()> = prepare_enveloped_json_replacement::<TestMetadata>(
+            &config(dir.path(), &path).with_max_bytes(bytes.len() as u64),
+            KIND_SESSION,
+        );
+
+        assert_eq!(result.outcome, RecoveryLoadOutcome::Loaded);
+        assert!(result.diagnostics.is_empty());
+        assert!(result.replacement_allowed());
+    }
+
+    #[test]
+    fn save_enveloped_json_path_preserves_oversized_current_file_before_replacement() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("session.json");
+        fixture::write_text(&path, "123456789");
+        let value = TestMetadata {
+            name: "replacement".to_string(),
+            count: 6,
+        };
+
+        let diagnostics = save_enveloped_json_path(
+            &config(dir.path(), &path).with_max_bytes(4),
+            KIND_SESSION,
+            &value,
+        )
+        .expect("save replacement after preserving oversized metadata");
+
+        assert!(matches!(
+            diagnostics[0].problem,
+            RecoveryProblem::Oversized {
+                size_bytes: 9,
+                max_bytes: 4
+            }
+        ));
+        let quarantine_path = diagnostics[0]
+            .preservation
+            .quarantine_path()
+            .expect("oversized quarantine path");
+        assert_eq!(fixture::read_text(quarantine_path), "123456789");
+        let loaded: TestMetadata =
+            load_enveloped_json_or_default(&config(dir.path(), &path), KIND_SESSION).value;
+        assert_eq!(loaded, value);
+    }
+
+    #[test]
+    fn quarantine_file_names_keep_class_problem_attempt_hash_and_extension() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("session.bad ext!?");
+        let config = config(dir.path(), &path);
+        let problem = RecoveryProblem::Malformed {
+            detail: "bad json".to_string(),
+        };
+        let first = quarantine_file_name(&config, &problem, 0);
+        let retry = quarantine_file_name(&config, &problem, 2);
+
+        assert!(first.contains("-session-malformed-"));
+        assert!(first.ends_with(".bad-ext--"));
+        assert!(!first.contains("-0.bad-ext--"));
+        assert!(retry.contains("-session-malformed-"));
+        assert!(retry.ends_with("-2.bad-ext--"));
+    }
+
+    #[test]
+    fn quarantine_hash_changes_with_path_class_and_problem_category() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("session.json");
+        let other_path = dir.path().join("saved-searches.json");
+        let session_config = config(dir.path(), &path);
+        let other_path_config = config(dir.path(), &other_path);
+        let other_class_config =
+            RecoveryLoadConfig::new(dir.path(), &path, RecoveryMetadataClass::SavedSearches);
+        let malformed = RecoveryProblem::Malformed {
+            detail: "bad json".to_string(),
+        };
+        let oversized = RecoveryProblem::Oversized {
+            size_bytes: 9,
+            max_bytes: 4,
+        };
+
+        let base_hash = quarantine_hash(&session_config, &malformed);
+        assert_ne!(base_hash, quarantine_hash(&other_path_config, &malformed));
+        assert_ne!(base_hash, quarantine_hash(&other_class_config, &malformed));
+        assert_ne!(base_hash, quarantine_hash(&session_config, &oversized));
+    }
+
+    #[test]
+    fn sanitized_quarantine_extensions_preserve_safe_ascii_and_default_when_empty() {
+        assert_eq!(
+            sanitized_extension(Path::new("saved.search-json_1")),
+            "search-json_1"
+        );
+        assert_eq!(
+            sanitized_extension(Path::new("session.bad ext!?")),
+            "bad-ext--"
+        );
+        assert_eq!(sanitized_extension(Path::new("session.")), "metadata");
+        assert_eq!(
+            sanitize_component("Alpha-09_beta space.dot/slash"),
+            "Alpha-09_beta-space-dot-slash"
+        );
     }
 }

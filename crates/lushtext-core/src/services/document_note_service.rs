@@ -531,6 +531,75 @@ mod tests {
     }
 
     #[test]
+    fn merge_document_note_documents_keeps_newer_target_and_rehomes_identity() {
+        let source_identity = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/old.rs"),
+            PathBuf::from("/workspace/old.rs"),
+        );
+        let target_identity = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/new.rs"),
+            PathBuf::from("/workspace/new.rs"),
+        );
+        let source = DocumentNoteDocument {
+            identity: source_identity,
+            note: RichNoteBody {
+                text: "older source note".to_string(),
+                created_at_secs: 1,
+                updated_at_secs: 10,
+            },
+        };
+        let target = DocumentNoteDocument {
+            identity: target_identity.clone(),
+            note: RichNoteBody {
+                text: "newer target note".to_string(),
+                created_at_secs: 1,
+                updated_at_secs: 20,
+            },
+        };
+
+        let merged = merge_document_note_documents(source, target, target_identity.clone())
+            .expect("newer target should win");
+
+        assert_eq!(merged.identity, target_identity);
+        assert_eq!(merged.note.text, "newer target note");
+        assert_eq!(merged.note.updated_at_secs, 20);
+    }
+
+    #[test]
+    fn merge_document_note_documents_accepts_same_note_at_same_timestamp() {
+        let source_identity = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/old.rs"),
+            PathBuf::from("/workspace/old.rs"),
+        );
+        let target_identity = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/new.rs"),
+            PathBuf::from("/workspace/new.rs"),
+        );
+        let source = DocumentNoteDocument {
+            identity: source_identity,
+            note: RichNoteBody {
+                text: "same note".to_string(),
+                created_at_secs: 1,
+                updated_at_secs: 10,
+            },
+        };
+        let target = DocumentNoteDocument {
+            identity: target_identity.clone(),
+            note: RichNoteBody {
+                text: "same note".to_string(),
+                created_at_secs: 1,
+                updated_at_secs: 10,
+            },
+        };
+
+        let merged = merge_document_note_documents(source, target, target_identity.clone())
+            .expect("identical equal-timestamp notes should merge without conflict");
+
+        assert_eq!(merged.identity, target_identity);
+        assert_eq!(merged.note.text, "same note");
+    }
+
+    #[test]
     fn list_workspace_document_notes_filters_folders_and_sorts_rows() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let workspace = dir.path().join("workspace");

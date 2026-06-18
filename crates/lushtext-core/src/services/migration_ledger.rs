@@ -344,6 +344,14 @@ mod tests {
     }
 
     #[test]
+    fn ledger_lock_is_process_wide_singleton() {
+        assert!(
+            std::ptr::eq(ledger_lock(), ledger_lock()),
+            "ledger updates must share one mutex so load/mutate/save cycles stay serialized"
+        );
+    }
+
+    #[test]
     fn record_pending_merges_kinds_for_same_rename() {
         let dir = TempDir::new().expect("tempdir");
         let old_path = dir.path().join("old.txt");

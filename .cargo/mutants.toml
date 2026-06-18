@@ -29,6 +29,9 @@ exclude_globs = [
     # but standalone test files are excluded explicitly to keep the mutation
     # scope about production behavior.
     "crates/lushtext-core/src/services/palette/tests.rs",
+    # Shared fixture helpers live under services so production tests use the
+    # filesystem boundary, but they are not production behavior themselves.
+    "crates/lushtext-core/src/services/filesystem/fixture.rs",
 ]
 
 # `crates/lushtext-core/src/ui/window/tabs.rs` was calibrated out after the
@@ -43,6 +46,20 @@ exclude_re = [
     # Equivalent: deleting the dedicated UTF-8 BOM arm in `encode_text` falls
     # through to the generic BOM-writing branch and produces identical bytes.
     "crates/lushtext-core/src/services/editor_io\\.rs:.*delete match arm DocumentEncoding::Utf8Bom in encode_text",
+    # Property-test-only bridge: the default mutation lane intentionally omits
+    # `lushtext-core/property-tests`; the property lane covers this helper.
+    "crates/lushtext-core/src/services/mod\\.rs:.*property_testing::rebase_document_identity_paths",
+    "crates/lushtext-core/src/services/content_search/replace\\.rs:.*apply_replacements_to_text_for_property_test",
+    "crates/lushtext-core/src/services/palette/commands\\.rs:.*merge_sorted_for_property_test",
+    # Race-only branches: if metadata says a file exists but it disappears before
+    # the read, recovery treats the state as missing. This is intentionally the
+    # same user-visible fallback as startup without that metadata file.
+    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_json_file",
+    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace == with != in load_existing_json_file",
+    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file",
+    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file",
+    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file_for_replacement",
+    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file_for_replacement",
     # Equivalent for returned index state: `>=` only adds a warning when the
     # count is exactly the limit; `Vec::truncate(limit)` is otherwise a no-op.
     "crates/lushtext-core/src/services/palette/index\\.rs:.*replace > with >= in truncate_to_index_limit",
@@ -55,12 +72,67 @@ exclude_re = [
     # Equivalent on LushText's Linux target: this non-Unix advisory-lock stub is
     # not compiled or called in the mutation test target.
     "crates/lushtext-core/src/services/durable_write\\.rs:131:.*FileWriteLock::acquire -> std::io::Result<Option<Self>>",
+    # Equivalent on LushText's Linux mutation target: this non-Unix metadata
+    # shim is cfg-disabled, while the active Unix metadata probe remains in scope.
+    "crates/lushtext-core/src/services/durable_write\\.rs:504:.*MetadataPlan::probe -> std::io::Result<Self>",
+    "crates/lushtext-core/src/services/durable_write\\.rs:515:.*MetadataPlan::create_mode -> Option<u32> with Some\\(0\\)",
+    "crates/lushtext-core/src/services/durable_write\\.rs:515:.*MetadataPlan::create_mode -> Option<u32> with Some\\(1\\)",
+    # Equivalent on LushText's Linux mutation target: these non-Unix raw
+    # filesystem fallbacks are cfg-disabled, while the active Unix backend
+    # helpers remain mutation-scoped.
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:69:.*kind_from_std_metadata -> FileKind",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:102:.*create_dir -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:117:.*remove_file -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:128:.*remove_dir -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:142:.*rename -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:223:.*visit_directory_entries",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:228:.*visit_directory_entries",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:246:.*symlink",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:265:.*set_permissions_mode",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:287:.*mode",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:295:.*inode",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:309:.*descriptor_file_len",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:326:.*sync_dir_descriptor",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:346:.*create_temp_file",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:356:.*sync_file",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:409:.*copy_xattrs_best_effort",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:419:.*set_xattr",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:432:.*get_xattr",
+    # Equivalent for Unix directory traversal flags: `RDONLY` is the empty
+    # access-mode bitset and `DIRECTORY`/`CLOEXEC` are disjoint, so XOR produces
+    # the same final flags here. The flag-contract test still catches removal.
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:.*replace \\| with \\^ in directory_traversal_open_flags",
+    # Equivalent for Unix temp-file flags: `WRONLY`, `CREATE`, `EXCL`, and
+    # `CLOEXEC` occupy disjoint bits, so XOR produces the same open flags here.
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:.*replace \\| with \\^ in create_temp_file",
+    # Durability-only wrappers: deleting the fsync calls has no stable unit-test
+    # effect without crash/power-loss simulation; callers remain covered through
+    # their bytes, permissions, and namespace behavior.
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:314:.*sync_dir_descriptor -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:351:.*sync_file -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    # Ownership preservation is best-effort because ordinary users cannot
+    # reliably create different-owner fixtures; mode, xattr, and ACL metadata
+    # remain tested through observable durable-write behavior.
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:376:.*best_effort_chown",
     # Equivalent on Unix: dropping the owned `File` releases the `flock` even if
     # the explicit `LOCK_UN` syscall is removed.
     "crates/lushtext-core/src/services/durable_write\\.rs:.*replace <impl Drop for FileWriteLock>::drop with \\(\\)",
     # Equivalent for success behavior: the mutation only changes whether a
     # second parent-directory fsync is attempted after rename.
     "crates/lushtext-core/src/services/durable_write\\.rs:.*replace != with == in rename_durable",
+    # Durability-only wrapper: deleting the parent-directory fsync has no stable
+    # observable unit-test effect, while callers are covered through their bytes
+    # and namespace behavior.
+    "crates/lushtext-core/src/services/filesystem/write\\.rs:.*sync_parent_dir",
+    # Race-only diagnostic branch: if the recents file vanishes between status
+    # and read, both paths return an empty recent list; only the warning changes.
+    "crates/lushtext-core/src/services/recent_documents\\.rs:252:.*load_recent_file",
+    # Equivalent while the public JSON envelope is still v1.
+    "crates/lushtext-core/src/services/format_upgrade/diagnostics\\.rs:.*latest_format_version -> u32 with 1",
+    # Equivalent after the preceding exact-version branch in
+    # `classify_json_bytes`: latest-version envelopes return before the
+    # future-version comparison, so `>` and `>=` see the same remaining inputs.
+    "crates/lushtext-core/src/services/format_upgrade/inventory\\.rs:.*replace > with >= in classify_json_bytes",
     # Equivalent on the Unix paths used by this target: `Path::parent()` does
     # not yield the same root path, so the loop guard behaves identically.
     "crates/lushtext-core/src/services/editorconfig\\.rs:.*replace match guard parent != dir with true in resolve_for_path",
@@ -81,14 +153,37 @@ exclude_re = [
     # Equivalent: the byte scanner only branches on ASCII marker bytes and only
     # slices at ASCII delimiter offsets, so byte-by-byte UTF-8 walking is valid.
     "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace next_char_len -> usize with 1",
+    # Test-only global injector: path-scoped cleanup-failure injection is covered
+    # by local-history retry tests; the all-path hook is retained for manual tests.
+    "crates/lushtext-core/src/services/local_history_service\\.rs:.*fail_next_obsolete_lineage_cleanup_for_test",
+    # Diagnostics-only logging helper: callers keep and surface recovery
+    # diagnostics through returned values; this mutation only suppresses tracing.
+    "crates/lushtext-core/src/services/note_storage\\.rs:.*trace_recovery_diagnostics",
+    # Feature-only hooks: widget race tests and fuzz targets own these paths in
+    # their dedicated lanes, outside the default deterministic mutation scope.
+    "crates/lushtext-core/src/services/editor_io\\.rs:.*(set_load_delay_for_test|delay_load_for_test|classify_bytes_for_fuzzing)",
     # Minimap GTK adapter methods are covered by the widget harness under
     # `scripts/run-widget-tests.sh`; the deterministic policies they gather
     # inputs for stay mutation-scoped through the pure helpers below them.
     "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*LushtextEditorPage::(minimap_availability|is_minimap_visible|minimap_marker_count|minimap_marker_bounds|setup_minimap|sync_minimap_wrap_mode|refresh_minimap|schedule_minimap_refresh|apply_minimap_width_from_settings|queue_minimap_draw|set_minimap_tracking_suspended|clear_modified_line_marks|record_modified_lines|mark_entire_buffer_modified|publish_minimap_unavailable_feedback_if_needed)",
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*LushtextEditorPage::(minimap_refresh_blocks_readiness|minimap_work_pending|long_line_warning_count_for_test|minimap_viewport_bounds_relative_to|minimap_first_content_row_relative_to|minimap_native_slider_diagnostics_relative_to|minimap_viewport_bounds_for_test|minimap_first_content_row_bounds_for_test|mark_minimap_refresh_pending_for_test|minimap_reflow_settle_pending_for_test|minimap_work_pending_for_test|create_native_source_map|sync_minimap_view_geometry|schedule_minimap_reflow_settle|schedule_minimap_reflow_settle_with_freeze|schedule_minimap_reflow_settle_impl|finish_minimap_reflow_settle|minimap_reflow_freeze_visible|freeze_native_minimap_for_reflow|warm_live_minimap_under_reflow_freeze|reveal_minimap_reflow_freeze_for_user_scroll|note_minimap_height_reflow|drop_minimap_reflow_freeze|clamp_native_minimap_to_top_if_editor_at_top)",
     # Minimap wrappers that require live GtkSourceView buffers, source-map
     # layout, Cairo drawing, or search contexts stay outside the non-widget
     # mutation lane. Their pure policy/math helpers remain tested and mutated.
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*(current_availability|wrapped_minimap_layout_exceeds_budget|buffer_has_line_exceeding_char_budget|document_line_count|collect_markers|collect_search_match_lines|collect_modified_lines|collect_long_line_warnings|draw_marker_strip|projected_minimap_marker_bounds|marker_projection_space|project_marker_bounds|line_top_in_strip|line_bottom_in_strip|buffer_y_to_strip_y)",
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*(current_availability|wrapped_minimap_layout_exceeds_budget|buffer_has_line_exceeding_char_budget|document_line_count|collect_markers|collect_search_match_lines|collect_modified_lines|collect_long_line_warnings|draw_marker_strip|projected_minimap_marker_bounds|marker_projection_space|minimap_projection_space|project_marker_bounds|line_top_in_strip|line_bottom_in_strip|buffer_y_to_strip_y|minimap_viewport_bounds|visible_editor_line_iters|minimap_first_content_row_bounds)",
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*(sync_source_map_geometry|sync_wide_editor_slider_offset|source_map_editor_height_ratio|force_source_map_top_layout|minimap_native_slider_diagnostics|source_map_border|source_map_bounds_relative_to|adjustment_diagnostics)",
+    # Equivalent in `fit_native_slider_to_source_map_bounds`: equality at the
+    # lower or upper edge only applies a zero-sized adjustment and preserves the
+    # same final fitted bounds; strict outside-edge behavior remains covered.
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace < with <= in fit_native_slider_to_source_map_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace > with >= in fit_native_slider_to_source_map_bounds",
+    # Equivalent in `fit_projected_bounds`: the oversized span cap still settles
+    # to the same clamped content span, and exact-height or exact-edge
+    # expansion only applies zero-sized adjustments.
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:2046:55: replace - with \\+ in fit_projected_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:2047:21: replace < with <= in fit_projected_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:2054:16: replace < with <= in fit_projected_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:2058:19: replace > with >= in fit_projected_bounds",
     # Equivalent in `fit_marker_bounds`: these exact-boundary mutations either
     # touch unreachable post-clamp states or produce the same final clamped
     # bounds after the minimum-height expansion settles.

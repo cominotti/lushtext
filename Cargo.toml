@@ -93,6 +93,9 @@ editorconfig-parser = "0.0.4"
 # Regex (backreference expansion in Replace All)
 regex = "1"
 
+# SIMD-backed byte search for large-buffer line scanning.
+memchr = "2"
+
 # Markdown parsing (CommonMark, streaming events)
 pulldown-cmark = { version = "0.13", default-features = false }
 

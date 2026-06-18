@@ -497,6 +497,96 @@ mod tests {
     }
 
     #[test]
+    fn test_search_mode_stable_names_round_trip_exactly() {
+        let cases = [
+            (SearchMode::All, "all"),
+            (SearchMode::Files, "files"),
+            (SearchMode::Notes, "notes"),
+            (SearchMode::Commands, "commands"),
+        ];
+
+        for (mode, stable_name) in cases {
+            assert_eq!(mode.stable_name(), stable_name);
+            assert_eq!(SearchMode::from_stable_name(stable_name), Some(mode));
+            assert_eq!(
+                SearchMode::from_stable_name(&format!("  {stable_name}\t")),
+                Some(mode),
+                "stable-name parsing should trim surrounding whitespace"
+            );
+        }
+
+        assert_eq!(SearchMode::from_stable_name("All"), None);
+        assert_eq!(SearchMode::from_stable_name("unknown"), None);
+    }
+
+    #[test]
+    fn test_note_category_labels_are_stable_for_notes_and_all_modes() {
+        let cases = [
+            (PaletteNoteCategory::Bookmarks, "Bookmarks", "Bookmarks"),
+            (
+                PaletteNoteCategory::FolderNotes,
+                "Folder Notes",
+                "Folder Notes",
+            ),
+            (
+                PaletteNoteCategory::DocumentNotes,
+                "Document Notes",
+                "Document Notes",
+            ),
+            (PaletteNoteCategory::OpenTabs, "Open Tabs", "Open Tab Notes"),
+        ];
+
+        assert_eq!(
+            PaletteNoteCategory::ALL,
+            [
+                PaletteNoteCategory::Bookmarks,
+                PaletteNoteCategory::FolderNotes,
+                PaletteNoteCategory::DocumentNotes,
+                PaletteNoteCategory::OpenTabs,
+            ]
+        );
+        for (category, label, all_mode_label) in cases {
+            assert_eq!(category.label(), label);
+            assert_eq!(category.all_mode_label(), all_mode_label);
+        }
+    }
+
+    #[test]
+    fn test_note_entry_subtitle_and_search_text_preserve_detail_and_empty_bookmarks() {
+        let document_note = PaletteNoteEntry {
+            category: PaletteNoteCategory::DocumentNotes,
+            title: "main.rs".to_string(),
+            subtitle: "src/main.rs".to_string(),
+            detail: Some("Refactor reminder".to_string()),
+            note_text: Some("Remember the split adapter".to_string()),
+            target: PaletteNoteTarget::DocumentNote {
+                path: PathBuf::from("/workspace/src/main.rs"),
+                workspace_folders: vec![PathBuf::from("/workspace")],
+            },
+        };
+        let bookmark = PaletteNoteEntry {
+            category: PaletteNoteCategory::Bookmarks,
+            title: "Line 8".to_string(),
+            subtitle: "src/main.rs:8".to_string(),
+            detail: None,
+            note_text: None,
+            target: PaletteNoteTarget::Bookmark {
+                path: PathBuf::from("/workspace/src/main.rs"),
+                line: 7,
+                workspace_folders: vec![PathBuf::from("/workspace")],
+            },
+        };
+
+        assert_eq!(
+            document_note.display_subtitle(),
+            "src/main.rs · Refactor reminder"
+        );
+        assert_eq!(document_note.note_text(), "Remember the split adapter");
+        assert_eq!(bookmark.display_subtitle(), "src/main.rs:8");
+        assert_eq!(bookmark.note_text(), "");
+    }
+
+    #[test]
     fn test_indexed_file_at_workspace_folder_top_level() {
         let file = IndexedFile {
             path: "/home/user/project/Cargo.toml".into(),

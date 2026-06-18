@@ -280,6 +280,13 @@ pub fn fail_next_obsolete_lineage_cleanup_for_path_for_test(path: &Path) {
         Some(ObsoleteLineageCleanupFailure::Path(path.to_path_buf()));
 }
 
+#[cfg(test)]
+fn force_next_mismatched_reconcile_budget_elapsed_for_test() {
+    *mismatched_reconcile_budget_elapsed_for_test()
+        .lock()
+        .expect("mismatched-reconcile budget hook poisoned") = true;
+}
+
 /// Capture one snapshot for a saved document path using the default retention policy.
 ///
 /// # Errors
@@ -566,7 +573,7 @@ fn reconcile_lineages_locked(
     }
 
     for mut loaded in mismatched {
-        if budget.elapsed(started_at) {
+        if mismatched_reconcile_budget_elapsed(budget, started_at) {
             report.deferred_lineages += 1;
             break;
         }
@@ -590,6 +597,23 @@ fn reconcile_lineages_locked(
     }
 
     Ok(report)
+}
+
+/// Check the second-pass reconciliation budget, with a deterministic test seam.
+fn mismatched_reconcile_budget_elapsed(
+    budget: LocalHistoryReconcileBudget,
+    started_at: Instant,
+) -> bool {
+    if budget.elapsed(started_at) {
+        return true;
+    }
+
+    #[cfg(test)]
+    if take_mismatched_reconcile_budget_elapsed_for_test() {
+        return true;
+    }
+
+    false
 }
 
 fn load_document_for_identity(
@@ -1080,6 +1104,24 @@ fn obsolete_lineage_cleanup_failure() -> &'static Mutex<Option<ObsoleteLineageCl
     FAILURE.get_or_init(|| Mutex::new(None))
 }
 
+#[cfg(test)]
+fn take_mismatched_reconcile_budget_elapsed_for_test() -> bool {
+    let mut should_expire = mismatched_reconcile_budget_elapsed_for_test()
+        .lock()
+        .expect("mismatched-reconcile budget hook poisoned");
+    let value = *should_expire;
+    *should_expire = false;
+    value
+}
+
+#[cfg(test)]
+fn mismatched_reconcile_budget_elapsed_for_test() -> &'static Mutex<bool> {
+    // Sleeping until the wall-clock budget expires would make reconciliation
+    // tests flaky. The hook exercises the same branch without timing guesses.
+    static SHOULD_EXPIRE: OnceLock<Mutex<bool>> = OnceLock::new();
+    SHOULD_EXPIRE.get_or_init(|| Mutex::new(false))
+}
+
 #[cfg(not(any(test, feature = "test-utils")))]
 fn maybe_fail_obsolete_lineage_cleanup_for_test(_path: &Path) -> Result<()> {
     Ok(())
@@ -1207,6 +1249,71 @@ mod tests {
             },
         )
         .expect("save seeded lineage index");
+    }
+
+    #[test]
+    fn local_history_policy_constants_are_stable() {
+        assert_eq!(LOCAL_HISTORY_DIR, "local-history");
+        assert_eq!(INDEX_FILENAME, "index.json");
+        assert_eq!(SNAPSHOT_EXTENSION, "txt");
+        assert_eq!(PER_DOCUMENT_SNAPSHOT_CAP, 48);
+        assert_eq!(GLOBAL_SNAPSHOT_CAP, 240);
+        assert_eq!(DEFAULT_RECONCILE_MAX_LINEAGES, 512);
+        assert_eq!(DEFAULT_RECONCILE_MAX_MILLIS, 50);
+        assert_eq!(MAX_INDEX_REPAIR_SNAPSHOT_BYTES, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn reconcile_budget_elapsed_reports_zero_budget_or_expired_deadline() {
+        assert!(LocalHistoryReconcileBudget::new(10, Duration::ZERO).elapsed(Instant::now()));
+        assert!(
+            !LocalHistoryReconcileBudget::new(10, Duration::from_secs(60)).elapsed(Instant::now())
+        );
+        assert!(
+            LocalHistoryReconcileBudget::new(10, Duration::from_millis(1)).elapsed(
+                Instant::now()
+                    .checked_sub(Duration::from_millis(5))
+                    .expect("small test duration should fit before now"),
+            )
+        );
+    }
+
+    #[test]
+    fn reconcile_report_deferred_work_requires_positive_deferred_lineages() {
+        assert!(!LocalHistoryReconcileReport::default().has_deferred_work());
+        assert!(
+            LocalHistoryReconcileReport {
+                deferred_lineages: 1,
+                ..LocalHistoryReconcileReport::default()
+            }
+            .has_deferred_work()
+        );
+    }
+
+    #[test]
+    fn captured_millis_from_snapshot_id_requires_full_history_id_shape() {
+        let nanos = 1_234_567_890_123u128;
+        let valid = format!("history-{nanos:032x}-{:016x}", 7u64);
+
+        assert_eq!(captured_millis_from_snapshot_id(&valid), Some(1_234_567));
+        assert_eq!(
+            captured_millis_from_snapshot_id(&format!("{valid}-extra")),
+            None
+        );
+        assert_eq!(
+            captured_millis_from_snapshot_id(
+                "draft-00000000000000000000000000000000-0000000000000007"
+            ),
+            None
+        );
+        assert_eq!(
+            captured_millis_from_snapshot_id("history-abc-0000000000000007"),
+            None
+        );
+        assert_eq!(
+            captured_millis_from_snapshot_id("history-00000000000000000000011f71fb04cb-abc"),
+            None
+        );
     }
 
     #[test]
@@ -1373,6 +1480,7 @@ mod tests {
         let doc_dir = history_dir_for_path(dir.path(), &path);
         let index_path = doc_dir.join(INDEX_FILENAME);
         let snapshot_file = snapshot_path(&doc_dir, &meta.snapshot_id);
+        fixture::create_dir_all(&doc_dir.join("nested-non-snapshot"));
         fixture::write_text(&index_path, "not local-history json");
 
         let listing =
@@ -1407,6 +1515,42 @@ mod tests {
             fs_metadata::exists(&index_path),
             "a repaired index should be durably written"
         );
+    }
+
+    #[test]
+    fn corrupt_index_repair_allows_snapshot_bodies_at_exact_cumulative_budget() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "one\n");
+        let identity = resolve_document_identity(&path).expect("identity");
+        let doc_dir = document_dir(dir.path(), &identity);
+        let index_path = doc_dir.join(INDEX_FILENAME);
+        fixture::create_dir_all(&doc_dir);
+        let half_budget = MAX_INDEX_REPAIR_SNAPSHOT_BYTES / 2;
+
+        for _ in 0..2 {
+            let snapshot_id = crate::model::sidecar_identity::next_record_id("history");
+            fixture::create_sparse_file(&snapshot_path(&doc_dir, &snapshot_id), half_budget);
+        }
+
+        let repair = repair_history_index_from_snapshots(&doc_dir, &index_path, identity)
+            .expect("exact-budget repair should complete");
+
+        match repair {
+            LocalHistoryIndexRepair::Repaired(document) => {
+                assert_eq!(document.snapshots.len(), 2);
+                assert_eq!(
+                    document
+                        .snapshots
+                        .iter()
+                        .map(|snapshot| snapshot.byte_len)
+                        .sum::<u64>(),
+                    MAX_INDEX_REPAIR_SNAPSHOT_BYTES
+                );
+            }
+            LocalHistoryIndexRepair::Skipped(reason) => {
+                panic!("exact cumulative repair budget should not be skipped: {reason}");
+            }
+        }
     }
 
     #[test]
@@ -1828,6 +1972,65 @@ mod tests {
     }
 
     #[test]
+    fn move_path_tree_preserves_target_snapshot_body_on_id_collision() {
+        let dir = TempDir::new().expect("tempdir");
+        let old_path = seed_file(&dir, "workspace/old.txt", "old\n");
+        let new_path = seed_file(&dir, "workspace/new.txt", "new\n");
+        let old_identity = resolve_document_identity(&old_path).expect("old identity");
+        let new_identity = resolve_document_identity(&new_path).expect("new identity");
+        let old_doc_dir = document_dir(dir.path(), &old_identity);
+        let new_doc_dir = document_dir(dir.path(), &new_identity);
+        let snapshot_id = crate::model::sidecar_identity::next_record_id("history");
+        let target_meta = LocalHistorySnapshotMeta {
+            snapshot_id: snapshot_id.clone(),
+            captured_at_millis: 20,
+            origin: LocalHistorySnapshotOrigin::Save,
+            byte_len: "target body\n".len() as u64,
+            content_hash: stable_bytes_hash(b"target body\n"),
+        };
+        let source_meta = LocalHistorySnapshotMeta {
+            snapshot_id: snapshot_id.clone(),
+            captured_at_millis: 10,
+            origin: LocalHistorySnapshotOrigin::Baseline,
+            byte_len: "source body\n".len() as u64,
+            content_hash: stable_bytes_hash(b"source body\n"),
+        };
+        fixture::create_dir_all(&old_doc_dir);
+        fixture::create_dir_all(&new_doc_dir);
+        fixture::write_text(&snapshot_path(&old_doc_dir, &snapshot_id), "source body\n");
+        fixture::write_text(&snapshot_path(&new_doc_dir, &snapshot_id), "target body\n");
+        save_document_index(
+            &old_doc_dir,
+            &LocalHistoryDocument {
+                identity: old_identity,
+                snapshots: vec![source_meta],
+            },
+        )
+        .expect("save source lineage");
+        save_document_index(
+            &new_doc_dir,
+            &LocalHistoryDocument {
+                identity: new_identity,
+                snapshots: vec![target_meta],
+            },
+        )
+        .expect("save target lineage");
+
+        let migrated = move_path_tree(dir.path(), &old_path, &new_path).expect("move tree");
+
+        assert_eq!(migrated, 1);
+        assert!(!fs_metadata::exists(&old_doc_dir));
+        let loaded = load_snapshot_for_path(dir.path(), &new_path, &snapshot_id)
+            .expect("load merged snapshot")
+            .expect("merged snapshot should exist");
+        assert_eq!(loaded.text, "target body\n");
+        assert_eq!(
+            loaded.meta.content_hash,
+            stable_bytes_hash(b"target body\n")
+        );
+    }
+
+    #[test]
     fn reconcile_lineages_moves_mismatched_index_into_canonical_directory() {
         let dir = TempDir::new().expect("tempdir");
         let path = seed_file(&dir, "workspace/file.txt", "file\n");
@@ -1855,6 +2058,22 @@ mod tests {
             history_dir_for_path(dir.path(), &path),
             document_dir(dir.path(), &identity)
         );
+    }
+
+    #[test]
+    fn reconcile_lineages_default_wrapper_runs_reconciliation_work() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "file\n");
+        let identity = resolve_document_identity(&path).expect("identity");
+        let mismatched_dir = local_history_dir(dir.path()).join("stale-lineage");
+        seed_lineage_in_dir(&mismatched_dir, identity, "recovered body\n");
+
+        let report = reconcile_lineages(dir.path()).expect("default reconcile");
+
+        assert_eq!(report.scanned_lineages, 1);
+        assert_eq!(report.mismatched_lineages, 1);
+        assert_eq!(report.reconciled_lineages, 1);
+        assert!(!fs_metadata::exists(&mismatched_dir));
     }
 
     #[test]
@@ -1898,6 +2117,45 @@ mod tests {
     }
 
     #[test]
+    fn obsolete_lineage_cleanup_error_detection_is_narrow() {
+        let cleanup =
+            anyhow::anyhow!("failed to remove obsolete local-history lineage /tmp/example: denied");
+        let unrelated = anyhow::anyhow!("failed to load local-history lineage /tmp/example");
+
+        assert!(is_obsolete_lineage_cleanup_error(&cleanup));
+        assert!(!is_obsolete_lineage_cleanup_error(&unrelated));
+    }
+
+    #[test]
+    fn cleanup_empty_fallback_lineage_removes_only_empty_directories() {
+        let dir = TempDir::new().expect("tempdir");
+        let empty_path = dir.path().join("workspace/empty.txt");
+        let empty_identity =
+            DocumentSidecarIdentity::from_paths(empty_path.clone(), empty_path.clone());
+        let empty_dir = document_dir(dir.path(), &empty_identity);
+        fixture::create_dir_all(&empty_dir);
+
+        let removed_empty =
+            cleanup_empty_fallback_lineage(dir.path(), &empty_path).expect("cleanup empty lineage");
+
+        assert!(removed_empty);
+        assert!(!fs_metadata::exists(&empty_dir));
+
+        let preserved_path = dir.path().join("workspace/preserved.txt");
+        let preserved_identity =
+            DocumentSidecarIdentity::from_paths(preserved_path.clone(), preserved_path.clone());
+        let preserved_dir = document_dir(dir.path(), &preserved_identity);
+        fixture::create_dir_all(&preserved_dir);
+        fixture::write_text(&preserved_dir.join("snapshot.txt"), "body\n");
+
+        let removed_preserved = cleanup_empty_fallback_lineage(dir.path(), &preserved_path)
+            .expect("cleanup non-empty lineage");
+
+        assert!(!removed_preserved);
+        assert!(fs_metadata::exists(&preserved_dir));
+    }
+
+    #[test]
     fn reconcile_lineages_preserves_orphan_directory_and_reports_diagnostic() {
         let dir = TempDir::new().expect("tempdir");
         let orphan_dir = local_history_dir(dir.path()).join("orphan-lineage");
@@ -1926,6 +2184,45 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_lineages_reports_non_directory_root_entries_as_orphaned() {
+        let dir = TempDir::new().expect("tempdir");
+        let orphan_file = local_history_dir(dir.path()).join("not-a-lineage.txt");
+        fixture::create_dir_all(&local_history_dir(dir.path()));
+        fixture::write_text(&orphan_file, "not a lineage\n");
+
+        let report = reconcile_lineages_with_budget(
+            dir.path(),
+            LocalHistoryReconcileBudget::new(8, Duration::from_secs(60)),
+        )
+        .expect("reconcile non-directory root entry");
+
+        assert_eq!(report.scanned_lineages, 0);
+        assert_eq!(report.orphaned_lineages, 1);
+        assert!(fs_metadata::exists(&orphan_file));
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(
+            report.diagnostics[0].class,
+            RecoveryMetadataClass::LocalHistoryIndex
+        );
+    }
+
+    #[test]
+    fn reconcile_lineages_defers_immediately_when_elapsed_budget_is_zero() {
+        let dir = TempDir::new().expect("tempdir");
+        fixture::create_dir_all(&local_history_dir(dir.path()).join("pending-lineage"));
+
+        let report = reconcile_lineages_with_budget(
+            dir.path(),
+            LocalHistoryReconcileBudget::new(8, Duration::ZERO),
+        )
+        .expect("zero-budget reconcile");
+
+        assert_eq!(report.scanned_lineages, 0);
+        assert_eq!(report.deferred_lineages, 1);
+        assert!(report.has_deferred_work());
+    }
+
+    #[test]
     fn reconcile_lineages_defers_work_when_scan_budget_is_reached() {
         let dir = TempDir::new().expect("tempdir");
         for index in 0..3 {
@@ -1943,6 +2240,90 @@ mod tests {
 
         assert_eq!(report.scanned_lineages, 1);
         assert!(report.has_deferred_work());
+    }
+
+    #[test]
+    fn reconcile_lineages_counts_budget_defer_after_mismatch_scan() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "file\n");
+        let identity = resolve_document_identity(&path).expect("identity");
+        let mismatched_dir = local_history_dir(dir.path()).join("stale-lineage");
+        seed_lineage_in_dir(&mismatched_dir, identity, "body\n");
+        force_next_mismatched_reconcile_budget_elapsed_for_test();
+
+        let report = reconcile_lineages_with_budget(
+            dir.path(),
+            LocalHistoryReconcileBudget::new(8, Duration::from_secs(60)),
+        )
+        .expect("bounded reconcile");
+
+        assert_eq!(report.scanned_lineages, 1);
+        assert_eq!(report.mismatched_lineages, 1);
+        assert_eq!(report.deferred_lineages, 1);
+        assert_eq!(report.reconciled_lineages, 0);
+        assert!(report.has_deferred_work());
+        assert!(
+            fs_metadata::exists(&mismatched_dir),
+            "deferred stale lineage should remain available for the next pass"
+        );
+    }
+
+    #[test]
+    fn reconcile_lineages_reports_cleanup_failure_after_target_rewrite() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/file.txt", "file\n");
+        capture_snapshot_for_path(
+            dir.path(),
+            &path,
+            "target body\n",
+            LocalHistorySnapshotOrigin::Save,
+            LocalHistoryCapturePolicy::PreserveDuplicate,
+        )
+        .expect("capture target");
+        let identity = resolve_document_identity(&path).expect("identity");
+        let duplicate_dir = local_history_dir(dir.path()).join("duplicate-lineage");
+        seed_lineage_in_dir(&duplicate_dir, identity, "duplicate body\n");
+        fail_next_obsolete_lineage_cleanup_for_path_for_test(&duplicate_dir);
+
+        let report = reconcile_lineages_with_budget(
+            dir.path(),
+            LocalHistoryReconcileBudget::new(8, Duration::from_secs(60)),
+        )
+        .expect("cleanup failure should be reported, not fatal");
+
+        assert_eq!(report.mismatched_lineages, 1);
+        assert_eq!(report.cleanup_failures, 1);
+        assert!(fs_metadata::exists(&duplicate_dir));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.summary().contains("repair-skipped")),
+            "cleanup failure should stay diagnostic"
+        );
+    }
+
+    #[test]
+    fn reconcile_lineages_does_not_defer_when_scan_count_equals_budget() {
+        let dir = TempDir::new().expect("tempdir");
+        let first_orphan = local_history_dir(dir.path()).join("orphan-a");
+        let second_orphan = local_history_dir(dir.path()).join("orphan-b");
+        fixture::create_dir_all(&first_orphan);
+        fixture::create_dir_all(&second_orphan);
+
+        let report = reconcile_lineages_with_budget(
+            dir.path(),
+            LocalHistoryReconcileBudget::new(2, Duration::from_secs(60)),
+        )
+        .expect("exact-budget reconcile");
+
+        assert_eq!(report.scanned_lineages, 2);
+        assert_eq!(report.orphaned_lineages, 2);
+        assert_eq!(report.reconciled_lineages, 2);
+        assert_eq!(report.deferred_lineages, 0);
+        assert!(!report.has_deferred_work());
+        assert!(!fs_metadata::exists(&first_orphan));
+        assert!(!fs_metadata::exists(&second_orphan));
     }
 
     #[test]

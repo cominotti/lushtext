@@ -538,18 +538,17 @@ fn observe_temp_after_content_for_test(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+/// Sync the temp file after metadata has been applied but before rename.
+///
+/// A failure here is still before the destination swap, so callers must see it
+/// as recoverable without the previous bytes being replaced.
 fn sync_temp_after_metadata(file: &sys::File) -> std::io::Result<()> {
+    #[cfg(test)]
     if FAIL_FINAL_TEMP_SYNC_AFTER_METADATA.with(|fail| fail.replace(false)) {
         return Err(std::io::Error::other(
             "injected final temp sync failure after metadata",
         ));
     }
-    sys::sync_file(file)
-}
-
-#[cfg(not(test))]
-fn sync_temp_after_metadata(file: &sys::File) -> std::io::Result<()> {
     sys::sync_file(file)
 }
 
@@ -962,6 +961,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn explicit_metadata_source_must_exist_before_writing_destination() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let source = dir.path().join("missing-source.txt");
+        let destination = dir.path().join("destination.txt");
+
+        let error = atomic_write_bytes_with_metadata_source_classified(
+            &destination,
+            "copy",
+            b"new",
+            &source,
+        )
+        .expect_err("missing explicit metadata source must abort before writing");
+
+        assert!(
+            matches!(error, DurableWriteError::BeforeRename(_)),
+            "explicit metadata-source failure happens before destination rename"
+        );
+        assert!(
+            !fixture::exists(&destination),
+            "destination must not be created when source metadata is required"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn atomic_write_bytes_preserves_existing_mode_on_overwrite() {
@@ -985,6 +1008,23 @@ mod tests {
             fixture::mode(&exec) & 0o111,
             0,
             "overwrite must keep the executable bit"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_bytes_preserves_special_mode_bits_on_overwrite() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("sticky-tool");
+        fixture::write_bytes(&path, b"old");
+        fixture::set_mode(&path, 0o1755);
+
+        atomic_write_bytes(&path, "test", b"new").expect("overwrite special mode");
+
+        assert_eq!(
+            fixture::mode(&path) & 0o7777,
+            0o1755,
+            "overwrite must restore mode bits that temp-file creation cannot apply"
         );
     }
 

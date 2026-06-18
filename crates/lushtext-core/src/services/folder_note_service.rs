@@ -431,6 +431,28 @@ mod tests {
         fixture::create_dir_all(path);
     }
 
+    fn folder_note_document(folder: &Path, text: &str, updated_at_secs: u64) -> FolderNoteDocument {
+        FolderNoteDocument {
+            identity: FolderNoteIdentity::from_folders(folder.to_path_buf(), folder.to_path_buf()),
+            note: RichNoteBody {
+                text: text.to_string(),
+                created_at_secs: 1,
+                updated_at_secs,
+            },
+        }
+    }
+
+    #[test]
+    fn folder_note_sidecar_directories_keep_current_and_legacy_names() {
+        let data_dir = Path::new("/tmp/lushtext-data");
+
+        assert_eq!(folder_notes_dir(data_dir), data_dir.join("folder-notes"));
+        assert_eq!(
+            legacy_folder_notes_dir(data_dir),
+            data_dir.join("workspace-notes")
+        );
+    }
+
     #[test]
     fn save_and_load_roundtrip() {
         let dir = TempDir::new().expect("expected operation to succeed");
@@ -747,6 +769,44 @@ mod tests {
         );
         assert!(fs_metadata::exists(&old_sidecar_path));
         assert!(fs_metadata::exists(&new_sidecar_path));
+    }
+
+    #[test]
+    fn merge_folder_note_documents_keeps_newer_target_and_rehomes_identity() {
+        let source_folder = Path::new("/workspace/old");
+        let target_folder = Path::new("/workspace/new");
+        let source = folder_note_document(source_folder, "older source note", 10);
+        let target = folder_note_document(target_folder, "newer target note", 20);
+        let target_identity = FolderNoteIdentity::from_folders(
+            target_folder.to_path_buf(),
+            target_folder.to_path_buf(),
+        );
+
+        let merged = merge_folder_note_documents(source, target, target_identity.clone())
+            .expect("newer target should win");
+
+        assert_eq!(merged.identity, target_identity);
+        assert_eq!(merged.note.text, "newer target note");
+        assert_eq!(merged.note.updated_at_secs, 20);
+    }
+
+    #[test]
+    fn merge_folder_note_documents_accepts_same_note_at_same_timestamp() {
+        let source_folder = Path::new("/workspace/old");
+        let target_folder = Path::new("/workspace/new");
+        let source = folder_note_document(source_folder, "same note", 10);
+        let target = folder_note_document(target_folder, "same note", 10);
+        let target_identity = FolderNoteIdentity::from_folders(
+            target_folder.to_path_buf(),
+            target_folder.to_path_buf(),
+        );
+
+        let merged = merge_folder_note_documents(source, target, target_identity.clone())
+            .expect("identical equal-timestamp notes should merge without conflict");
+
+        assert_eq!(merged.identity, target_identity);
+        assert_eq!(merged.note.text, "same note");
+        assert_eq!(merged.note.updated_at_secs, 10);
     }
 
     #[test]

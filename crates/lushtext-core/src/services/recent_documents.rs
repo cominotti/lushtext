@@ -429,6 +429,15 @@ mod tests {
     }
 
     #[test]
+    fn recent_document_policy_constants_are_stable() {
+        assert_eq!(RECENT_DOCUMENTS_FILE, "recent-documents.json");
+        assert_eq!(MAX_RECENTS, 200);
+        assert_eq!(MAX_RECENT_DOCUMENTS_BYTES, 1024 * 1024);
+        assert_eq!(MAX_RECENT_LOAD_CANDIDATES, 400);
+        assert_eq!(MAX_RECENT_LOAD_DIAGNOSTICS, 20);
+    }
+
+    #[test]
     fn add_update_deduplicates_and_orders_newest_first() {
         let mut entries = vec![entry("/tmp/old.txt", 10), entry("/tmp/new.txt", 20)];
 
@@ -730,6 +739,127 @@ mod tests {
     }
 
     #[test]
+    fn merge_loaded_entries_deduplicates_loaded_canonical_path_against_current_display_path() {
+        let mut current = vec![RecentDocumentEntry::new(
+            PathBuf::from("/real/shared.txt"),
+            None,
+            50,
+        )];
+        let loaded = vec![RecentDocumentEntry::new(
+            PathBuf::from("/tmp/link.txt"),
+            Some(PathBuf::from("/real/shared.txt")),
+            10,
+        )];
+
+        assert!(!merge_loaded_entries(&mut current, loaded));
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].path, PathBuf::from("/real/shared.txt"));
+    }
+
+    #[test]
+    fn merge_loaded_entries_at_exact_cap_without_new_rows_is_unchanged() {
+        let mut current = (0..MAX_RECENTS)
+            .map(|idx| entry(&format!("/tmp/current-{idx}.txt"), idx as u64))
+            .collect::<Vec<_>>();
+        let loaded = vec![current[0].clone()];
+
+        let changed = merge_loaded_entries(&mut current, loaded);
+
+        assert!(!changed);
+        assert_eq!(current.len(), MAX_RECENTS);
+    }
+
+    #[test]
+    fn local_targets_and_wall_clock_seconds_return_concrete_values() {
+        let path = PathBuf::from("/tmp/local.txt");
+
+        assert_eq!(
+            local_path_from_target(RecentOpenTarget::local(path.clone())),
+            Some(path)
+        );
+        assert!(now_secs() > 1);
+    }
+
+    #[test]
+    fn exact_size_recent_file_is_parsed_or_reset_by_json_error_not_size_cap() {
+        let dir = TempDir::new().expect("recent tempdir");
+        let recent_path = dir.path().join(RECENT_DOCUMENTS_FILE);
+        fixture::write_repeated_bytes(&recent_path, b"x", MAX_RECENT_DOCUMENTS_BYTES);
+        let mut diagnostics = Vec::new();
+
+        let (_file, pruned) = load_recent_file(&recent_path, &mut diagnostics);
+
+        assert!(pruned);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("failed to parse")),
+            "exact-size malformed file should reach JSON parsing: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.contains("above the")),
+            "exact-size file should not be classified as oversized: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn dedupe_sort_prune_existing_reports_exact_and_overflow_caps() {
+        let dir = TempDir::new().expect("recent tempdir");
+        let exact_entries = (0..MAX_RECENTS)
+            .map(|idx| {
+                let path = dir.path().join(format!("exact-{idx}.txt"));
+                fixture::write_text(&path, "recent");
+                RecentDocumentEntry::new(path, None, idx as u64)
+            })
+            .collect::<Vec<_>>();
+        let mut diagnostics = Vec::new();
+
+        let (retained, pruned) = dedupe_sort_prune_existing(exact_entries, &mut diagnostics);
+
+        assert_eq!(retained.len(), MAX_RECENTS);
+        assert!(!pruned);
+        assert!(diagnostics.is_empty());
+
+        let overflow_entries = (0..=MAX_RECENTS)
+            .map(|idx| {
+                let path = dir.path().join(format!("overflow-{idx}.txt"));
+                fixture::write_text(&path, "recent");
+                RecentDocumentEntry::new(path, None, idx as u64)
+            })
+            .collect::<Vec<_>>();
+        let (retained, pruned) = dedupe_sort_prune_existing(overflow_entries, &mut diagnostics);
+
+        assert_eq!(retained.len(), MAX_RECENTS);
+        assert!(pruned);
+    }
+
+    #[test]
+    fn dedupe_sort_prune_existing_allows_exact_load_candidate_scan_without_truncation() {
+        let dir = TempDir::new().expect("recent tempdir");
+        let entries = (0..MAX_RECENT_LOAD_CANDIDATES)
+            .map(|idx| {
+                let path = dir.path().join(format!("candidate-{idx}.txt"));
+                fixture::write_text(&path, "recent");
+                RecentDocumentEntry::new(path, None, idx as u64)
+            })
+            .collect::<Vec<_>>();
+        let mut diagnostics = Vec::new();
+
+        let (retained, pruned) = dedupe_sort_prune_existing(entries, &mut diagnostics);
+
+        assert_eq!(retained.len(), MAX_RECENTS);
+        assert!(pruned, "rows above the retained recents cap are pruned");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.contains("truncated before pruning")),
+            "exact load-candidate cap should not emit scan truncation: {diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn search_ranks_prefix_substring_and_fuzzy_matches() {
         let rows = vec![
             RecentDocumentRow::from_entry(&entry("/tmp/work/src/main.rs", 30), 30),
@@ -745,6 +875,9 @@ mod tests {
 
         let results = search_rows(&rows, "absent");
         assert!(results.is_empty());
+
+        assert!(fuzzy_match("source.rs", "sr"));
+        assert!(!fuzzy_match("source.rs", "sx"));
     }
 
     #[test]

@@ -450,6 +450,171 @@ mod tests {
     }
 
     #[test]
+    fn finished_workflow_event_projects_to_ready_finish_proof_event() {
+        let event = AutomationWorkflowEvent {
+            sequence: 10,
+            workflow_id: AUTOMATION_WORKFLOW_SAVE.to_string(),
+            phase: "finished",
+            status: "settled",
+            summary: "save finished".to_string(),
+            blocker: None,
+        };
+
+        let proof_event = event.to_proof_event();
+
+        assert_eq!(proof_event.phase, WorkflowPhase::Finish);
+        assert_eq!(proof_event.status, ProofStatus::Ready);
+        assert_eq!(proof_event.detail.as_deref(), Some("save finished"));
+        assert!(proof_event.blocker.is_none());
+    }
+
+    #[test]
+    fn readiness_predicates_round_trip_stable_reference_fields() {
+        let cases = [
+            (
+                AutomationReadinessPredicate::AppStartup,
+                "app-startup",
+                "Application startup",
+                READINESS_BLOCKER_APP_STARTUP,
+            ),
+            (
+                AutomationReadinessPredicate::WindowActionsExported,
+                "window-actions-exported",
+                "active window",
+                READINESS_BLOCKER_APP_STARTUP,
+            ),
+            (
+                AutomationReadinessPredicate::FileOpenComplete,
+                "file-open-complete",
+                "File-backed editor tabs",
+                READINESS_BLOCKER_FILE_LOAD,
+            ),
+            (
+                AutomationReadinessPredicate::SearchComplete,
+                "search-complete",
+                "Editor search",
+                READINESS_BLOCKER_WORKSPACE_SEARCH,
+            ),
+            (
+                AutomationReadinessPredicate::SaveComplete,
+                "save-complete",
+                "Editor saves",
+                READINESS_BLOCKER_SAVE,
+            ),
+            (
+                AutomationReadinessPredicate::WorkspaceRefreshComplete,
+                "workspace-refresh-complete",
+                "Workspace persistence",
+                READINESS_BLOCKER_WORKSPACE_PERSIST,
+            ),
+            (
+                AutomationReadinessPredicate::SessionRestoreComplete,
+                "session-restore-complete",
+                "Session restore",
+                READINESS_BLOCKER_SESSION_RESTORE,
+            ),
+            (
+                AutomationReadinessPredicate::RecoveryRestoreComplete,
+                "recovery-restore-complete",
+                "Startup recovery restore",
+                READINESS_BLOCKER_SESSION_RESTORE,
+            ),
+            (
+                AutomationReadinessPredicate::VisualGeometrySettled,
+                "visual-geometry-settled",
+                "GTK layout",
+                READINESS_BLOCKER_MINIMAP_REFRESH,
+            ),
+            (
+                AutomationReadinessPredicate::Idle,
+                "idle",
+                "Every tracked",
+                READINESS_BLOCKER_SAVE,
+            ),
+        ];
+
+        assert_eq!(AutomationReadinessPredicate::ALL.len(), cases.len());
+        let rows = AutomationReadinessPredicate::reference_rows();
+        assert_eq!(rows.len(), cases.len());
+
+        for (index, (predicate, name, description_fragment, expected_blocker)) in
+            cases.into_iter().enumerate()
+        {
+            assert_eq!(predicate.as_str(), name);
+            assert_eq!(
+                AutomationReadinessPredicate::from_name(name),
+                Some(predicate)
+            );
+            assert_eq!(predicate.anchor(), format!("readiness-predicate-{name}"));
+            assert!(predicate.description().contains(description_fragment));
+            assert!(predicate.includes_blocker(expected_blocker));
+            assert!(!predicate.includes_blocker("not-a-real-readiness-blocker"));
+
+            let row = &rows[index];
+            assert_eq!(row.predicate, name);
+            assert_eq!(row.anchor, format!("readiness-predicate-{name}"));
+            assert!(row.description.contains(description_fragment));
+            assert!(row.blockers.contains(&expected_blocker));
+            assert_eq!(row.stability, "stable");
+        }
+
+        assert_eq!(
+            AutomationReadinessPredicate::from_name("future-ready"),
+            None
+        );
+    }
+
+    #[test]
+    fn readiness_status_strings_round_trip_to_proof_statuses() {
+        let cases = [
+            (
+                AutomationReadinessStatus::Ready,
+                "ready",
+                ProofStatus::Ready,
+            ),
+            (
+                AutomationReadinessStatus::PredicateTimeout,
+                "predicate-timeout",
+                ProofStatus::PredicateTimeout,
+            ),
+            (
+                AutomationReadinessStatus::WorkflowFailure,
+                "workflow-failure",
+                ProofStatus::ApplicationFailure,
+            ),
+            (
+                AutomationReadinessStatus::AutomationUnavailable,
+                "automation-unavailable",
+                ProofStatus::ApplicationFailure,
+            ),
+            (
+                AutomationReadinessStatus::UnsupportedHostTooling,
+                "unsupported-host-tooling",
+                ProofStatus::UnsupportedHost,
+            ),
+            (
+                AutomationReadinessStatus::UnknownPredicate,
+                "unknown-predicate",
+                ProofStatus::UnknownPredicate,
+            ),
+        ];
+
+        for (status, name, proof_status) in cases {
+            assert_eq!(status.as_str(), name);
+            assert_eq!(
+                AutomationReadinessStatus::from_status_str(name),
+                Some(status)
+            );
+            assert_eq!(status.to_proof_status(), proof_status);
+        }
+
+        assert_eq!(
+            AutomationReadinessStatus::from_status_str("future-status"),
+            None
+        );
+    }
+
+    #[test]
     fn readiness_result_projects_to_proof_spine_without_status_drift() {
         let result = AutomationReadinessResult {
             predicate: AutomationReadinessPredicate::VisualGeometrySettled

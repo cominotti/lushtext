@@ -161,6 +161,16 @@ pub(in crate::services) fn read_prefix(path: &Path, byte_limit: usize) -> io::Re
     Ok(bytes)
 }
 
+/// Return the Unix flags used to open a directory for entry traversal.
+///
+/// `DIRECTORY` keeps accidental file or special-device paths out of the raw
+/// directory reader, while `CLOEXEC` prevents traversal descriptors from leaking
+/// into helper processes spawned while a scan is still alive.
+#[cfg(unix)]
+pub(super) fn directory_traversal_open_flags() -> rustix::fs::OFlags {
+    rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC
+}
+
 #[cfg(unix)]
 pub(in crate::services) fn visit_directory_entries<F>(path: &Path, mut visit: F) -> io::Result<()>
 where
@@ -171,7 +181,7 @@ where
     let fd = rustix::fs::openat(
         rustix::fs::CWD,
         path,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        directory_traversal_open_flags(),
         rustix::fs::Mode::empty(),
     )
     .map_err(io::Error::from)?;
@@ -304,7 +314,7 @@ pub(in crate::services) fn sync_dir_descriptor(path: &Path) -> io::Result<()> {
     let fd = rustix::fs::openat(
         rustix::fs::CWD,
         path,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        directory_traversal_open_flags(),
         rustix::fs::Mode::empty(),
     )
     .map_err(io::Error::from)?;
@@ -450,4 +460,20 @@ fn get_xattr_with_name<Name: Copy + rustix::path::Arg>(
     let read = rustix::fs::getxattr(path, name, &mut value).map_err(io::Error::from)?;
     value.truncate(read);
     Ok(value)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use rustix::fs::OFlags;
+
+    use super::directory_traversal_open_flags;
+
+    #[test]
+    fn directory_traversal_open_flags_require_directory_and_close_on_exec() {
+        let flags = directory_traversal_open_flags();
+
+        assert_eq!(flags & OFlags::ACCMODE, OFlags::RDONLY);
+        assert!(flags.contains(OFlags::DIRECTORY));
+        assert!(flags.contains(OFlags::CLOEXEC));
+    }
 }

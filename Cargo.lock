@@ -1341,6 +1341,7 @@ dependencies = [
  "ignore",
  "libadwaita",
  "lushtext-build-support",
+ "memchr",
  "notify-debouncer-full",
  "nucleo-matcher",
  "pango",

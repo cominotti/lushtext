@@ -788,6 +788,199 @@ mod tests {
     }
 
     #[test]
+    fn inventory_query_helpers_report_current_and_upgradeable_items() {
+        fn convert(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+            Ok(bytes.to_vec())
+        }
+
+        let dir = TempDir::new().expect("temp dir");
+        write_json(
+            &dir.path().join("session.json"),
+            &json!({"kind": KIND_SESSION, "version": 0, "data": {"tabs": []}}),
+        );
+        let registry = ConverterRegistry::production().with_converter(KIND_SESSION, 0, 1, convert);
+
+        let inventory = scan_with_registry(dir.path(), FormatScanBounds::default(), &registry);
+
+        assert!(!inventory.is_current_or_empty());
+        let upgradeable = inventory.upgradeable_items();
+        assert_eq!(upgradeable.len(), 1);
+        assert_eq!(upgradeable[0].path.relative(), Path::new("session.json"));
+
+        let empty_inventory = scan(dir.path().join("empty").as_path());
+        assert!(empty_inventory.is_current_or_empty());
+        assert!(empty_inventory.upgradeable_items().is_empty());
+    }
+
+    #[test]
+    fn sidecar_directory_scan_keeps_json_files_and_flags_non_json_files_only() {
+        let dir = TempDir::new().expect("temp dir");
+        let bookmarks = dir.path().join("bookmarks");
+        fixture::create_dir_all(&bookmarks);
+        fixture::write_text(&bookmarks.join("broken.json"), "{ not json");
+        fixture::write_text(&bookmarks.join("readme.txt"), "not metadata");
+        fixture::create_dir(&bookmarks.join("nested"));
+
+        let inventory = scan(dir.path());
+        let bookmark_items = inventory
+            .items
+            .iter()
+            .filter(|item| item.kind == FormatMetadataKind::BookmarkSidecar)
+            .map(|item| {
+                (
+                    item.path.relative().to_path_buf(),
+                    item.classification.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(bookmark_items.len(), 2);
+        assert!(bookmark_items.iter().any(|(path, classification)| {
+            path == Path::new("bookmarks/broken.json")
+                && matches!(classification, FormatClassification::Damaged { .. })
+        }));
+        assert!(bookmark_items.iter().any(|(path, classification)| {
+            path == Path::new("bookmarks/readme.txt")
+                && matches!(classification, FormatClassification::UnsafeToReplace { .. })
+        }));
+        assert!(
+            !bookmark_items
+                .iter()
+                .any(|(path, _)| path == Path::new("bookmarks/nested"))
+        );
+    }
+
+    #[test]
+    fn draft_body_scan_keeps_only_plain_draft_files() {
+        let dir = TempDir::new().expect("temp dir");
+        let drafts = dir.path().join("drafts");
+        fixture::create_dir_all(&drafts);
+        fixture::write_text(&drafts.join("keep.draft"), "draft body");
+        fixture::write_text(&drafts.join("ignore.txt"), "not a draft");
+        fixture::create_dir(&drafts.join("folder.draft"));
+
+        let inventory = scan(dir.path());
+        let draft_bodies = inventory
+            .items
+            .iter()
+            .filter(|item| item.kind == FormatMetadataKind::DraftBody)
+            .collect::<Vec<_>>();
+
+        assert_eq!(draft_bodies.len(), 1);
+        assert_eq!(
+            draft_bodies[0].path.relative(),
+            Path::new("drafts/keep.draft")
+        );
+        assert_eq!(
+            draft_bodies[0].classification,
+            FormatClassification::Current { version: None }
+        );
+    }
+
+    #[test]
+    fn replace_journal_scan_tracks_only_json_entry_files() {
+        let dir = TempDir::new().expect("temp dir");
+        let journal = dir.path().join("replace-backup-journal");
+        fixture::create_dir_all(&journal);
+        fixture::write_text(&journal.join("manifest.json"), "{ not manifest");
+        fixture::write_text(&journal.join("cleanup-in-progress.json"), "{ not cleanup");
+        fixture::write_text(&journal.join("entry.json"), "{ not entry");
+        fixture::write_text(&journal.join("readme.txt"), "not metadata");
+        fixture::create_dir(&journal.join("nested.json"));
+
+        let inventory = scan(dir.path());
+        let entry_items = inventory
+            .items
+            .iter()
+            .filter(|item| item.kind == FormatMetadataKind::ReplaceUndoEntry)
+            .collect::<Vec<_>>();
+
+        assert_eq!(entry_items.len(), 1);
+        assert_eq!(
+            entry_items[0].path.relative(),
+            Path::new("replace-backup-journal/entry.json")
+        );
+        assert!(matches!(
+            entry_items[0].classification,
+            FormatClassification::Damaged { .. }
+        ));
+    }
+
+    #[test]
+    fn bounded_directory_scan_reports_only_when_entry_count_exceeds_limit() {
+        let dir = TempDir::new().expect("temp dir");
+        let bookmarks = dir.path().join("bookmarks");
+        fixture::create_dir_all(&bookmarks);
+        fixture::write_text(&bookmarks.join("a.json"), "{ not json");
+        fixture::write_text(&bookmarks.join("b.json"), "{ not json");
+        let bounds = FormatScanBounds {
+            max_sidecar_entries: 2,
+            ..FormatScanBounds::default()
+        };
+
+        let exact = scan_with_registry(dir.path(), bounds, &ConverterRegistry::production());
+
+        assert!(!exact.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            FormatInventoryDiagnostic::ScanLimitReached { directory, limit }
+                if directory.relative() == Path::new("bookmarks") && *limit == 2
+        )));
+
+        fixture::write_text(&bookmarks.join("c.json"), "{ not json");
+        let over = scan_with_registry(dir.path(), bounds, &ConverterRegistry::production());
+
+        assert!(over.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            FormatInventoryDiagnostic::ScanLimitReached { directory, limit }
+                if directory.relative() == Path::new("bookmarks") && *limit == 2
+        )));
+        assert_eq!(
+            over.items
+                .iter()
+                .filter(|item| item.kind == FormatMetadataKind::BookmarkSidecar)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn directory_unavailable_diagnostic_is_reported_for_known_directory_files() {
+        let dir = TempDir::new().expect("temp dir");
+        fixture::write_text(&dir.path().join("bookmarks"), "not a directory");
+
+        let inventory = scan(dir.path());
+
+        assert!(inventory.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            FormatInventoryDiagnostic::DirectoryUnavailable { directory, .. }
+                if directory.relative() == Path::new("bookmarks")
+        )));
+    }
+
+    #[test]
+    fn classify_path_allows_metadata_at_exact_byte_limit() {
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("session.json");
+        fixture::write_text(&path, "{");
+        let bounds = FormatScanBounds {
+            max_metadata_bytes: 1,
+            ..FormatScanBounds::default()
+        };
+
+        let inventory = scan_with_registry(dir.path(), bounds, &ConverterRegistry::production());
+        let session = inventory
+            .items
+            .iter()
+            .find(|item| item.path.relative() == Path::new("session.json"))
+            .expect("session item");
+
+        assert!(matches!(
+            &session.classification,
+            FormatClassification::Damaged { detail } if !detail.contains("above")
+        ));
+    }
+
+    #[test]
     fn scan_and_plan_do_not_write_app_data() {
         let dir = TempDir::new().expect("temp dir");
         write_json(

@@ -310,6 +310,12 @@ worktrees outside CI because cargo-mutants rewrites source files while testing.
 Use a clean checkout, a disposable worktree, or the default copy-based local
 mode when experimenting.
 
+For survivor triage, prefer focused proof before another broad local sweep.
+`scripts/run-mutants.sh` accepts `MUTANTS_RE` to match the exact names shown by
+`mutants-list`, plus `MUTANTS_EXCLUDE` / `MUTANTS_EXCLUDE_RE` for one-off
+calibrated exclusions. Keep `MUTANTS_JOBS=1` and small per-job thread caps when
+the user has asked to keep Rust build pressure low.
+
 cargo-mutants is serial by default, so the local Makefile targets auto-tune
 parallelism: `MUTANTS_JOBS` defaults to about `nproc / 4`, then two per-job caps
 keep `jobs x per-job-parallelism` near the logical CPU count instead of

@@ -324,3 +324,23 @@ impl From<&ActionCatalogEntry> for ActionReferenceRow {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn value_type_glib_signatures_match_gvariant_contract() {
+        let cases = [
+            (ActionValueType::None, None),
+            (ActionValueType::Bool, Some("b")),
+            (ActionValueType::String, Some("s")),
+            (ActionValueType::U32, Some("u")),
+            (ActionValueType::VariantMap, Some("a{sv}")),
+        ];
+
+        for (value_type, expected_signature) in cases {
+            assert_eq!(value_type.glib_signature(), expected_signature);
+        }
+    }
+}

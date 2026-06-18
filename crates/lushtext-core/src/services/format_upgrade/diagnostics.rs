@@ -308,3 +308,150 @@ pub enum FormatInventoryDiagnostic {
 pub const fn latest_format_version() -> u32 {
     SUPPORTED_JSON_VERSION
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_kind_labels_and_startup_policy_are_stable() {
+        let cases = [
+            (FormatMetadataKind::WorkspaceState, "workspace state", true),
+            (FormatMetadataKind::Session, "session", true),
+            (FormatMetadataKind::DraftManifest, "draft manifest", true),
+            (FormatMetadataKind::DraftBody, "draft body", true),
+            (FormatMetadataKind::SavedSearches, "saved searches", false),
+            (FormatMetadataKind::SearchHistory, "search history", false),
+            (
+                FormatMetadataKind::BookmarkSidecar,
+                "bookmark sidecar",
+                true,
+            ),
+            (
+                FormatMetadataKind::DocumentNoteSidecar,
+                "document note sidecar",
+                true,
+            ),
+            (
+                FormatMetadataKind::FolderNoteSidecar,
+                "folder note sidecar",
+                true,
+            ),
+            (
+                FormatMetadataKind::LegacyFolderNoteSidecar,
+                "legacy folder note sidecar",
+                true,
+            ),
+            (
+                FormatMetadataKind::LocalHistoryIndex,
+                "local history index",
+                true,
+            ),
+            (
+                FormatMetadataKind::MigrationLedger,
+                "migration ledger",
+                true,
+            ),
+            (
+                FormatMetadataKind::ReplaceUndoManifest,
+                "replace undo manifest",
+                true,
+            ),
+            (
+                FormatMetadataKind::ReplaceUndoEntry,
+                "replace undo entry",
+                true,
+            ),
+            (
+                FormatMetadataKind::ReplaceUndoCleanupMarker,
+                "replace undo cleanup marker",
+                true,
+            ),
+            (
+                FormatMetadataKind::RetiredReplaceUndoBackup,
+                "retired replace undo backup",
+                true,
+            ),
+        ];
+
+        for (kind, expected_label, startup_critical) in cases {
+            assert_eq!(kind.label(), expected_label);
+            assert_eq!(kind.startup_critical(), startup_critical);
+        }
+    }
+
+    #[test]
+    fn item_paths_resolve_display_and_absolute_paths() {
+        let data_dir = Path::new("/tmp/lushtext-data");
+        let path = FormatItemPath::from_relative("bookmarks/file.json");
+
+        assert_eq!(path.relative(), Path::new("bookmarks/file.json"));
+        assert_eq!(path.display(), "bookmarks/file.json");
+        assert_eq!(
+            path.absolute(data_dir),
+            PathBuf::from("/tmp/lushtext-data/bookmarks/file.json")
+        );
+    }
+
+    #[test]
+    fn classification_predicates_distinguish_upgrade_future_and_preservation() {
+        let cases = [
+            (FormatClassification::Missing, false, false, false),
+            (
+                FormatClassification::Current { version: Some(1) },
+                false,
+                false,
+                false,
+            ),
+            (
+                FormatClassification::Upgradeable {
+                    from_version: 0,
+                    to_version: 1,
+                },
+                true,
+                false,
+                true,
+            ),
+            (
+                FormatClassification::FutureVersion {
+                    version: 99,
+                    supported_version: 1,
+                },
+                false,
+                true,
+                true,
+            ),
+            (
+                FormatClassification::UnsupportedOld {
+                    version: None,
+                    detail: "old".to_string(),
+                },
+                false,
+                false,
+                true,
+            ),
+            (
+                FormatClassification::Damaged {
+                    detail: "bad".to_string(),
+                },
+                false,
+                false,
+                true,
+            ),
+            (
+                FormatClassification::UnsafeToReplace {
+                    detail: "unsafe".to_string(),
+                },
+                false,
+                false,
+                true,
+            ),
+        ];
+
+        for (classification, upgradeable, future_version, preservation) in cases {
+            assert_eq!(classification.is_upgradeable(), upgradeable);
+            assert_eq!(classification.is_future_version(), future_version);
+            assert_eq!(classification.needs_preservation(), preservation);
+        }
+    }
+}

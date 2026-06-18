@@ -249,6 +249,7 @@ mod tests {
 
         let plan = build_plan(&inventory);
 
+        assert!(!plan.has_no_action());
         assert!(!plan.offers_convert());
         assert!(plan.has_future_version_blocker());
         assert!(plan.requires_startup_decision());
@@ -319,5 +320,34 @@ mod tests {
         assert!(plan.offers_convert());
         assert!(!plan.has_future_version_blocker());
         assert!(plan.requires_startup_decision());
+    }
+
+    #[test]
+    fn group_kind_guards_multifile_session_draft_and_replace_workflows() {
+        for kind in [
+            FormatMetadataKind::Session,
+            FormatMetadataKind::DraftManifest,
+            FormatMetadataKind::DraftBody,
+            FormatMetadataKind::ReplaceUndoManifest,
+            FormatMetadataKind::ReplaceUndoEntry,
+            FormatMetadataKind::ReplaceUndoCleanupMarker,
+        ] {
+            assert_eq!(group_kind(kind), FormatPlanGroupKind::Guarded);
+        }
+
+        for kind in [
+            FormatMetadataKind::WorkspaceState,
+            FormatMetadataKind::SavedSearches,
+            FormatMetadataKind::SearchHistory,
+            FormatMetadataKind::BookmarkSidecar,
+            FormatMetadataKind::DocumentNoteSidecar,
+            FormatMetadataKind::FolderNoteSidecar,
+            FormatMetadataKind::LegacyFolderNoteSidecar,
+            FormatMetadataKind::LocalHistoryIndex,
+            FormatMetadataKind::MigrationLedger,
+            FormatMetadataKind::RetiredReplaceUndoBackup,
+        ] {
+            assert_eq!(group_kind(kind), FormatPlanGroupKind::Independent);
+        }
     }
 }

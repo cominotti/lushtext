@@ -151,6 +151,7 @@ mod tests {
         assert!(loaded.diagnostics.is_empty());
         let loaded = loaded.value;
         assert_eq!(loaded, entries);
+        assert_eq!(load(dir.path()), entries);
     }
 
     #[test]

@@ -417,19 +417,17 @@ fn line_spans(text: &str) -> Vec<std::ops::Range<usize>> {
     let bytes = text.as_bytes();
     let mut spans = Vec::new();
     let mut line_start = 0usize;
-    let mut index = 0usize;
-    while index < bytes.len() {
-        if bytes[index] == b'\n' {
-            let line_end = if index > line_start && bytes[index - 1] == b'\r' {
-                index - 1
-            } else {
-                index
-            };
-            spans.push(line_start..line_end);
-            line_start = index + 1;
-        }
-        index += 1;
+
+    for index in memchr::memchr_iter(b'\n', bytes) {
+        let line_end = if index > line_start && bytes[index - 1] == b'\r' {
+            index - 1
+        } else {
+            index
+        };
+        spans.push(line_start..line_end);
+        line_start = index + 1;
     }
+
     if line_start < bytes.len() {
         spans.push(line_start..bytes.len());
     }
@@ -644,6 +642,12 @@ mod tests {
     }
 
     #[test]
+    fn replace_all_byte_budgets_match_documented_limits() {
+        assert_eq!(MAX_REPLACE_FILE_BYTES, 10 * 1024 * 1024);
+        assert_eq!(MAX_REPLACE_UNDO_BYTES, 64 * 1024 * 1024);
+    }
+
+    #[test]
     fn test_apply_replacements_literal() {
         let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.rs");
@@ -797,6 +801,34 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_replacements_allows_file_at_exact_size_cap() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("exact.rs");
+        let original_line = "a".repeat(
+            usize::try_from(MAX_REPLACE_FILE_BYTES)
+                .expect("replace file byte cap should fit in usize"),
+        );
+        fixture::write_text(&file, &original_line);
+        let replacements = vec![make_replacement(&file, 1, &original_line, "b", 0..0)];
+        let cancel = AtomicBool::new(false);
+
+        let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
+            .expect("exact file-size cap should still be replaceable");
+
+        assert_eq!(result.files_affected, 1);
+        assert_eq!(result.replaced_count, 1);
+        assert!(result.skipped_paths.is_empty());
+        assert!(result.errors.is_empty());
+        assert_eq!(
+            fs_metadata::file_facts(&file)
+                .expect("stat replaced file")
+                .byte_size,
+            MAX_REPLACE_FILE_BYTES + 1
+        );
+        assert!(backup.contains_key(&file));
+    }
+
+    #[test]
     fn test_apply_replacements_skips_file_that_would_exceed_undo_cap() {
         let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.rs");
@@ -824,6 +856,29 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_replacements_allows_entry_at_exact_undo_cap() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("exact-undo.rs");
+        fixture::write_text(&file, "needle\n");
+        let replacements = vec![make_replacement(&file, 1, "needle", "done", 0..6)];
+        let exact_payload = u64::try_from("needle\n".len() + "done\n".len())
+            .expect("tiny undo payload should fit in u64");
+
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(exact_payload)));
+        let cancel = AtomicBool::new(false);
+        let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
+            .expect("exact undo cap should still be replaceable");
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
+
+        assert_eq!(result.files_affected, 1);
+        assert_eq!(result.replaced_count, 1);
+        assert!(result.skipped_paths.is_empty());
+        assert!(result.errors.is_empty());
+        assert_eq!(fixture::read_text(&file), "done\n");
+        assert!(backup.contains_key(&file));
+    }
+
+    #[test]
     fn test_build_replaced_text_preserves_original_line_endings() {
         let path = PathBuf::from("/mixed.txt");
         let original = "alpha needle\r\nbeta needle\n";
@@ -842,6 +897,26 @@ mod tests {
                 replacement_count: 2,
             }
         );
+    }
+
+    #[test]
+    fn test_line_spans_handles_leading_newline_without_underflow() {
+        assert_eq!(line_spans("\nnext"), vec![0..0, 1..5]);
+        assert_eq!(line_spans("\r\nnext"), vec![0..0, 2..6]);
+    }
+
+    #[test]
+    fn test_line_spans_does_not_add_empty_trailing_line() {
+        assert_eq!(line_spans("first\n"), vec![0..5]);
+        assert_eq!(line_spans("first\r\n"), vec![0..5]);
+        assert_eq!(line_spans("\n"), vec![0..0]);
+    }
+
+    #[test]
+    fn test_replaced_capacity_tracks_exact_growth_and_shrink() {
+        let edits = [(0, 5, "hi"), (8, 10, "there!")];
+
+        assert_eq!(replaced_capacity(12, &edits), 13);
     }
 
     #[test]
@@ -1064,6 +1139,56 @@ mod tests {
         assert_eq!(
             fixture::read_text(&file),
             "after plus a large external edit\n"
+        );
+    }
+
+    #[test]
+    fn test_undo_replacements_allows_current_file_at_exact_size_cap() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("exact-cap.txt");
+        let replaced_bytes = vec![
+            b'x';
+            usize::try_from(MAX_REPLACE_FILE_BYTES)
+                .expect("replace file byte cap should fit in usize")
+        ];
+        fixture::write_bytes(&file, &replaced_bytes);
+        let mut backup = ReplaceUndoBackup::new();
+        backup.insert(
+            file.clone(),
+            ReplaceUndoEntry::new(b"before\n".to_vec(), replaced_bytes),
+        );
+
+        let outcome = undo_replacements(&backup);
+
+        assert_eq!(outcome.restored_paths, vec![file.clone()]);
+        assert!(outcome.skipped_paths.is_empty());
+        assert!(outcome.failed_paths.is_empty());
+        assert!(outcome.remaining_backup.is_empty());
+        assert_eq!(fixture::read_text(&file), "before\n");
+    }
+
+    #[test]
+    fn persist_undo_backup_saves_nonempty_journals_and_deletes_empty_ones() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("test.rs");
+        let mut backup = ReplaceUndoBackup::new();
+        backup.insert(
+            file,
+            ReplaceUndoEntry::new(b"before\n".to_vec(), b"after\n".to_vec()),
+        );
+
+        persist_undo_backup(dir.path(), &backup).expect("persist nonempty undo backup");
+        assert_eq!(
+            search_backup::load(dir.path()).expect("load persisted undo backup"),
+            backup
+        );
+
+        persist_undo_backup(dir.path(), &ReplaceUndoBackup::new())
+            .expect("delete empty undo backup");
+        assert!(
+            search_backup::load(dir.path())
+                .expect("empty persisted undo backup should load")
+                .is_empty()
         );
     }
 

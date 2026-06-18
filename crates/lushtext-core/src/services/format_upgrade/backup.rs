@@ -317,3 +317,233 @@ fn classification_version(classification: &FormatClassification) -> Option<u32> 
         | FormatClassification::UnsafeToReplace { .. } => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::filesystem::fixture;
+    use crate::services::format_upgrade::diagnostics::{FormatItemPath, FormatMetadataKind};
+    use crate::services::format_upgrade::inventory::FormatItemFileFacts;
+    use tempfile::TempDir;
+
+    fn item(
+        data_dir: &Path,
+        relative: &str,
+        classification: FormatClassification,
+    ) -> FormatInventoryItem {
+        let absolute_path = data_dir.join(relative);
+        let facts = fs_metadata::file_facts(&absolute_path).expect("fixture facts");
+        FormatInventoryItem {
+            kind: FormatMetadataKind::Session,
+            path: FormatItemPath::from_relative(relative),
+            absolute_path,
+            file_facts: Some(FormatItemFileFacts {
+                byte_size: facts.byte_size,
+                modified_at_secs: facts.modified_at_secs,
+            }),
+            classification,
+        }
+    }
+
+    #[test]
+    fn backup_session_skips_existing_attempt_directory_and_records_timestamp() {
+        let dir = TempDir::new().expect("temp dir");
+        let base = dir.path().join(FORMAT_UPGRADE_BACKUP_DIR);
+        fixture::create_dir_all(&base);
+        let now = current_unix_secs();
+        for timestamp in now..=now.saturating_add(3) {
+            fixture::create_dir_all(&base.join(format!("{timestamp}-convert-00")));
+        }
+
+        let session = BackupSession::create(dir.path(), "convert").expect("create backup session");
+
+        assert!(session.created_at_unix_secs > 1);
+        assert!(
+            session
+                .root
+                .ends_with(format!("{}-convert-01", session.created_at_unix_secs)),
+            "expected attempt 01 after prefilled attempt 00, got {}",
+            session.root.display()
+        );
+        assert!(fs_metadata::exists(&session.items_dir));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_session_create_reports_non_collision_directory_errors() {
+        let dir = TempDir::new().expect("temp dir");
+        let base = dir.path().join(FORMAT_UPGRADE_BACKUP_DIR);
+        fixture::create_dir_all(&base);
+        fixture::set_mode(&base, 0o500);
+
+        let error = BackupSession::create(dir.path(), "convert")
+            .expect_err("non-collision create errors must stop backup creation");
+        fixture::set_mode(&base, 0o700);
+        let message = error.to_string();
+
+        assert!(
+            message.contains("failed to create"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !message.contains("unique format-upgrade backup directory"),
+            "permission errors must not be treated as timestamp collisions: {message}"
+        );
+    }
+
+    #[test]
+    fn backup_session_copy_item_records_backup_manifest_entry() {
+        let dir = TempDir::new().expect("temp dir");
+        fixture::write_text(&dir.path().join("session.json"), "session bytes");
+        let item = item(
+            dir.path(),
+            "session.json",
+            FormatClassification::Upgradeable {
+                from_version: 0,
+                to_version: 1,
+            },
+        );
+        let mut session = BackupSession::create(dir.path(), "convert").expect("create session");
+
+        session.copy_item(dir.path(), &item).expect("copy item");
+        let manifest = session.finish(dir.path()).expect("finish manifest");
+
+        assert_eq!(manifest.action, "convert");
+        assert_eq!(manifest.records.len(), 1);
+        let record = &manifest.records[0];
+        assert_eq!(record.original_relative_path, "session.json");
+        assert_eq!(record.metadata_kind, "session");
+        assert_eq!(record.original_classification, "upgradeable");
+        assert_eq!(record.original_version, Some(0));
+        assert_eq!(record.result, "copied-to-backup");
+        let backup_path = dir.path().join(
+            record
+                .backup_relative_path
+                .as_ref()
+                .expect("backup path recorded"),
+        );
+        fixture::assert_text(&backup_path, "session bytes");
+    }
+
+    #[test]
+    fn backup_session_record_failure_preserves_classification_detail() {
+        let dir = TempDir::new().expect("temp dir");
+        fixture::write_text(&dir.path().join("session.json"), "session bytes");
+        let item = item(
+            dir.path(),
+            "session.json",
+            FormatClassification::FutureVersion {
+                version: 99,
+                supported_version: 1,
+            },
+        );
+        let mut session = BackupSession::create(dir.path(), "start-fresh").expect("create session");
+
+        session.record_failure(&item, "permission denied".to_string());
+        let manifest = session.finish(dir.path()).expect("finish manifest");
+
+        assert_eq!(manifest.records.len(), 1);
+        let record = &manifest.records[0];
+        assert_eq!(record.original_classification, "future-version");
+        assert_eq!(record.original_version, Some(99));
+        assert_eq!(record.result, "failed");
+        assert_eq!(record.detail.as_deref(), Some("permission denied"));
+        assert!(record.backup_relative_path.is_none());
+    }
+
+    #[test]
+    fn read_preservable_item_bytes_returns_original_bytes_and_detects_stale_scan() {
+        let dir = TempDir::new().expect("temp dir");
+        fixture::write_text(&dir.path().join("session.json"), "session bytes");
+        let mut item = item(
+            dir.path(),
+            "session.json",
+            FormatClassification::Current { version: Some(1) },
+        );
+
+        assert_eq!(
+            read_preservable_item_bytes(&item).expect("read preserved bytes"),
+            b"session bytes"
+        );
+
+        let facts = item.file_facts.as_mut().expect("file facts");
+        facts.byte_size += 1;
+        let error =
+            read_preservable_item_bytes(&item).expect_err("stale scan should block backup reads");
+        assert!(
+            error.to_string().contains("changed after the format scan"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn read_preservable_item_bytes_allows_file_at_exact_backup_limit() {
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("session.json");
+        fixture::create_sparse_file(&path, MAX_BACKUP_ITEM_BYTES);
+        let item = item(
+            dir.path(),
+            "session.json",
+            FormatClassification::Current { version: Some(1) },
+        );
+
+        let bytes = read_preservable_item_bytes(&item).expect("exact-limit read should pass");
+
+        assert_eq!(bytes.len() as u64, MAX_BACKUP_ITEM_BYTES);
+    }
+
+    #[test]
+    fn classification_labels_and_versions_cover_manifest_cases() {
+        let cases = [
+            (FormatClassification::Missing, "missing", None),
+            (
+                FormatClassification::Current { version: Some(1) },
+                "current",
+                Some(1),
+            ),
+            (
+                FormatClassification::Upgradeable {
+                    from_version: 0,
+                    to_version: 1,
+                },
+                "upgradeable",
+                Some(0),
+            ),
+            (
+                FormatClassification::FutureVersion {
+                    version: 99,
+                    supported_version: 1,
+                },
+                "future-version",
+                Some(99),
+            ),
+            (
+                FormatClassification::UnsupportedOld {
+                    version: Some(0),
+                    detail: "old".to_string(),
+                },
+                "unsupported-old",
+                Some(0),
+            ),
+            (
+                FormatClassification::Damaged {
+                    detail: "bad json".to_string(),
+                },
+                "damaged",
+                None,
+            ),
+            (
+                FormatClassification::UnsafeToReplace {
+                    detail: "not a file".to_string(),
+                },
+                "unsafe-to-replace",
+                None,
+            ),
+        ];
+
+        for (classification, expected_label, expected_version) in cases {
+            assert_eq!(classification_label(&classification), expected_label);
+            assert_eq!(classification_version(&classification), expected_version);
+        }
+    }
+}

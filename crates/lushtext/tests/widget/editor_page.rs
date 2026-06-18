@@ -935,6 +935,23 @@ fn test_minimap_source_map_matches_upstream_geometry_contract() {
         .expect("source map should be created during construction");
     let baseline_map = baseline_source_map_for_view(page.source_view());
 
+    assert!(
+        source_map
+            .view()
+            .is_some_and(|view| view.as_ptr() == page.source_view().as_ptr())
+    );
+    assert!(!source_map.is_editable());
+    assert!(!source_map.is_cursor_visible());
+    assert!(!source_map.shows_line_numbers());
+    assert!(!source_map.shows_line_marks());
+    assert!(!source_map.is_highlight_current_line());
+    assert!(source_map.is_monospace());
+    assert!(source_map.has_css_class("monospace"));
+    assert!(source_map.has_css_class("minimap-view"));
+    assert!(source_map.hexpands());
+    assert!(source_map.vexpands());
+    assert_eq!(source_map.margin_start(), 13);
+    assert_eq!(source_map.margin_end(), 13);
     assert_eq!(source_map.wrap_mode(), baseline_map.wrap_mode());
     assert_eq!(source_map.top_margin(), baseline_map.top_margin());
     assert_eq!(source_map.bottom_margin(), baseline_map.bottom_margin());
@@ -942,6 +959,19 @@ fn test_minimap_source_map_matches_upstream_geometry_contract() {
     assert_eq!(source_map.right_margin(), baseline_map.right_margin());
     assert_eq!(source_map.overflow(), baseline_map.overflow());
     assert!(!source_map.can_focus());
+}
+
+#[test]
+fn test_minimap_pending_refresh_marks_work_pending() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    wait_until(std::time::Duration::from_secs(2), || {
+        !page.minimap_work_pending_for_test()
+    });
+    assert!(!page.minimap_work_pending_for_test());
+    page.mark_minimap_refresh_pending_for_test();
+    assert!(page.minimap_work_pending_for_test());
 }
 
 #[test]
