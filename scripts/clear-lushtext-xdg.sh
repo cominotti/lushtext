@@ -4,6 +4,7 @@
 set -euo pipefail
 
 app_id="dev.cominotti.lushtext"
+dev_app_id="$app_id.Devel"
 app_data_dir_name="lushtext"
 
 dry_run="${LUSHTEXT_CLEAR_DRY_RUN:-${DRY_RUN:-0}}"
@@ -136,6 +137,23 @@ reset_lushtext_gsettings() {
     gsettings reset-recursively "$app_id"
 }
 
+refresh_desktop_metadata() {
+    if truthy "$dry_run"; then
+        echo "Would refresh desktop and icon metadata."
+        return 0
+    fi
+
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q "$data_home/applications" >/dev/null 2>&1 || true
+    fi
+
+    if command -v gtk4-update-icon-cache >/dev/null 2>&1; then
+        gtk4-update-icon-cache -qtf "$data_home/icons/hicolor" >/dev/null 2>&1 || true
+    elif command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -qtf "$data_home/icons/hicolor" >/dev/null 2>&1 || true
+    fi
+}
+
 home="$(require_absolute_base "HOME" "${HOME:-}")"
 data_home="$(xdg_base "XDG_DATA_HOME" "$home/.local/share")"
 config_home="$(xdg_base "XDG_CONFIG_HOME" "$home/.config")"
@@ -146,6 +164,14 @@ queue_removal "\$XDG_DATA_HOME/$app_data_dir_name" "$data_home/$app_data_dir_nam
 queue_removal "\$XDG_CONFIG_HOME/$app_data_dir_name" "$config_home/$app_data_dir_name" "$app_data_dir_name"
 queue_removal "\$XDG_CACHE_HOME/$app_data_dir_name" "$cache_home/$app_data_dir_name" "$app_data_dir_name"
 queue_removal "\$XDG_STATE_HOME/$app_data_dir_name" "$state_home/$app_data_dir_name" "$app_data_dir_name"
+queue_removal "same-ID local desktop shadow" "$data_home/applications/$app_id.desktop" "$app_id.desktop"
+queue_removal "development desktop launcher" "$data_home/applications/$dev_app_id.desktop" "$dev_app_id.desktop"
+queue_removal "development absolute icon staging" "$data_home/icons/lushtext-dev-run" "lushtext-dev-run"
+queue_removal "development scalable icon" "$data_home/icons/hicolor/scalable/apps/$dev_app_id.svg" "$dev_app_id.svg"
+queue_removal "development symbolic icon" "$data_home/icons/hicolor/symbolic/apps/$dev_app_id-symbolic.svg" "$dev_app_id-symbolic.svg"
+queue_removal "development 32px icon" "$data_home/icons/hicolor/32x32/apps/$dev_app_id.png" "$dev_app_id.png"
+queue_removal "development 64px icon" "$data_home/icons/hicolor/64x64/apps/$dev_app_id.png" "$dev_app_id.png"
+queue_removal "development 128px icon" "$data_home/icons/hicolor/128x128/apps/$dev_app_id.png" "$dev_app_id.png"
 
 if truthy "$include_flatpak"; then
     queue_removal "Flatpak app-private XDG home" "$home/.var/app/$app_id" "$app_id"
@@ -159,4 +185,5 @@ echo "Clearing LushText-owned XDG/config state."
 for index in "${!removal_paths[@]}"; do
     remove_owned_path "${removal_labels[$index]}" "${removal_paths[$index]}" "${removal_basenames[$index]}"
 done
+refresh_desktop_metadata
 reset_lushtext_gsettings

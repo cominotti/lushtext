@@ -368,17 +368,25 @@ mod tests {
         assert!(fs_metadata::exists(&session.items_dir));
     }
 
-    #[cfg(unix)]
     #[test]
     fn backup_session_create_reports_non_collision_directory_errors() {
         let dir = TempDir::new().expect("temp dir");
         let base = dir.path().join(FORMAT_UPGRADE_BACKUP_DIR);
-        fixture::create_dir_all(&base);
-        fixture::set_mode(&base, 0o500);
+        fixture::write_text(&base, "not a directory");
 
         let error = BackupSession::create(dir.path(), "convert")
             .expect_err("non-collision create errors must stop backup creation");
-        fixture::set_mode(&base, 0o700);
+        let io_error = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<io::Error>())
+            .expect("directory creation failure should preserve the underlying I/O error");
+        assert!(
+            matches!(
+                io_error.kind(),
+                io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory
+            ),
+            "unexpected I/O error kind: {io_error:?}"
+        );
         let message = error.to_string();
 
         assert!(
