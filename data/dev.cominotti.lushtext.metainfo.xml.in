@@ -65,6 +65,34 @@
   </screenshots>
 
   <releases>
+    <release version="0.4.1" date="2026-06-18">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Folger Shakespeare Library, "Sonnet 65," final couplet.</p>
+        <p>Selection: Complete final couplet.</p>
+        <p>Complete couplet:</p>
+        <p>&gt; O, none, unless this miracle have might,</p>
+        <p>&gt; That in black ink my love may still shine bright.</p>
+        <p>William Shakespeare, "Sonnet 65"</p>
+        <p>## What's Changed</p>
+        <p>LushText now tightens minimap projection behavior so viewport, content-row anchors, and markers follow GtkSourceMap's rendered widget coordinates more directly. The result is a steadier minimap around document edges, dense layouts, and visual proof checks.</p>
+        <p>Replace All now scans line endings with a faster byte-search path and has clearer behavior at its documented file-size and undo-journal limits. The intended editing result stays the same, while leading newlines, CRLF text, and files exactly at safety caps are covered more carefully.</p>
+        <p>Startup and persistence recovery paths are more conservative around drafts, metadata quarantine, Replace All undo journals, local history reconciliation, sidecar moves, and format-upgrade backups. When evidence is ambiguous or damaged, LushText is better covered to preserve it and report diagnostics instead of cleaning it up too eagerly.</p>
+        <p>Developers get safer local desktop staging. `make run` and `scripts/run-dev-app.sh` stage the development launcher under `dev.cominotti.lushtext.Devel`, quarantine stale production-ID desktop shadows, and keep the installed Flatpak launcher visible.</p>
+        <p>Maintainers also get stronger mutation-testing controls, including focused mutant regex and exclude options plus broader coverage for filesystem, recovery, minimap, search, and persistence edge cases.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for normal users upgrading from v0.4.0.</p>
+        <p>Developers who previously staged local desktop entries and still see stale launcher behavior can run `make clear-lushtext-xdg` once. This is not needed for ordinary Flatpak upgrades.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>There are no deprecations in this release.</p>
+        <p>This release adds `memchr` as a direct dependency for Replace All line scanning. Downstream packagers should build from the release commit or regenerate vendored Cargo sources from the matching `Cargo.lock`.</p>
+        <p>## Bug Fixes</p>
+        <p>Fixed minimap projection edge cases around line-bottom calculation, reversed projected bounds, native slider fitting, and non-finite geometry inputs.</p>
+        <p>Fixed development desktop staging that could leave a local production-ID desktop file shadowing the installed Flatpak launcher.</p>
+        <p>Hardened exact-limit behavior for Replace All, draft preload, recovery metadata, and Replace All undo journals so values at the documented caps remain accepted while over-limit data stays guarded.</p>
+        <p>Improved recovery coverage for drafts, local history, sidecar metadata, migration ledgers, and format-upgrade backups so damaged or ambiguous user-data evidence is preserved more predictably.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-06-16">
       <description>
         <p>## Poetic Opening</p>
