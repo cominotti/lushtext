@@ -1978,6 +1978,30 @@ pub const BASELINE_WINDOW_ACTIONS: &[ObservedAction] = &[
     ),
     ObservedAction::new(
         ActionScope::Window,
+        "focus-workspace-tree",
+        ActionValueType::None,
+        ActionValueType::None,
+    ),
+    ObservedAction::new(
+        ActionScope::Window,
+        "focus-workspace-header",
+        ActionValueType::None,
+        ActionValueType::None,
+    ),
+    ObservedAction::new(
+        ActionScope::Window,
+        "show-workspace-tree-context-menu",
+        ActionValueType::None,
+        ActionValueType::None,
+    ),
+    ObservedAction::new(
+        ActionScope::Window,
+        "show-workspace-header-context-menu",
+        ActionValueType::None,
+        ActionValueType::None,
+    ),
+    ObservedAction::new(
+        ActionScope::Window,
         "move-tab-right",
         ActionValueType::None,
         ActionValueType::None,
