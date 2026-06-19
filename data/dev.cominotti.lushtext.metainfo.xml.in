@@ -65,6 +65,34 @@
   </screenshots>
 
   <releases>
+    <release version="0.5.0" date="2026-06-19">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Folger Shakespeare Library, "Sonnet 30," final couplet.</p>
+        <p>Selection: Complete final couplet.</p>
+        <p>Complete couplet:</p>
+        <p>&gt; But if the while I think on thee, dear friend,</p>
+        <p>&gt; All losses are restored and sorrows end.</p>
+        <p>William Shakespeare, "Sonnet 30"</p>
+        <p>## What's Changed</p>
+        <p>LushText now has a much stronger GTK accessibility spine across the app. The shell, editor, command palette, Open popover, workspace sidebar, workspace search, Markdown preview, document properties, preferences, notes, bookmarks, local history, and dialogs now expose more consistent names, roles, descriptions, state, and row metadata to GTK accessibility tools.</p>
+        <p>Keyboard access and assistive-technology behavior are better covered for the workspace tree and workspace header menus. The Menu key and common `Shift+F10` path now have clearer support for file, folder, workspace, and fallback actions that previously depended too much on pointer context.</p>
+        <p>Search and Replace All now provide more bounded accessibility feedback around result counts, progress, preview mode, completion, cancellation, and undo availability. These announcements are intentionally capped and throttled so they help describe the workflow without dumping private document content.</p>
+        <p>Accessibility validation is now a first-class maintenance surface. This release adds the accessibility guide, completion matrix, manual Orca checklist, policy check, expanded AT-SPI smoke coverage, focused smoke-case filters, assertion manifests, and visual accessibility evidence paths that make future UI work harder to regress.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for end users after upgrading. There is no data migration, settings reset, or workspace rebuild required for this release.</p>
+        <p>Maintainers making release-grade accessibility claims should still pair the automated evidence with a normal GNOME Orca pass, because screen-reader speech behavior depends on the host desktop stack.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>No user-facing behavior is deprecated in this release.</p>
+        <p>Accessibility proof remains host-sensitive. AT-SPI, Orca, the compositor, theme, text scale, high-contrast mode, reduced-motion settings, and GTK behavior can vary between environments, so the new proof lanes document caveats instead of pretending every host speaks identically.</p>
+        <p>Automation clients may observe additive accessibility and workspace action metadata in the action catalog, readiness surface, or snapshots. Existing actions remain on the normal GTK action paths.</p>
+        <p>## Bug Fixes</p>
+        <p>Workspace file and workspace-header context menus now close before their actions run, preventing stale popovers from leaking between repeated menu actions.</p>
+        <p>Recycled rows in list and tree surfaces now clear and refresh accessibility metadata more deliberately, reducing stale labels, selected state, or position information after filtering, selection changes, or model replacement.</p>
+        <p>Inline alerts avoid collapsing their controls into an inaccessible leaf, so recovery and response buttons stay reachable to assistive technology.</p>
+        <p>The automation action catalog now includes the workspace accessibility actions that the UI exposes, keeping the automation reference and runtime catalog aligned.</p>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-06-18">
       <description>
         <p>## Poetic Opening</p>
