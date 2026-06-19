@@ -834,10 +834,7 @@ fn visible_reorder_drop_target_count(section: &LushtextWorkspaceSection) -> usiz
 }
 
 fn prepare_context_menu_for_path(section: &LushtextWorkspaceSection, target_path: &Path) {
-    if let Some(popover) = section.imp().context_menu.borrow().as_ref() {
-        popover.popdown();
-        flush_events();
-    }
+    dismiss_context_popovers(section);
 
     let list_view = &section.imp().file_tree_view;
     if let Some(index) = tree_model_index_for_path(section, target_path) {
@@ -878,6 +875,16 @@ fn prepare_context_menu_for_path(section: &LushtextWorkspaceSection, target_path
             .as_ref()
             .is_some_and(gtk4::prelude::WidgetExt::is_visible)
     });
+}
+
+fn dismiss_context_popovers(section: &LushtextWorkspaceSection) {
+    if let Some(popover) = section.imp().context_menu.borrow().as_ref() {
+        popover.popdown();
+    }
+    if let Some(popover) = section.imp().header_context_menu.borrow().as_ref() {
+        popover.popdown();
+    }
+    flush_events();
 }
 
 fn current_context_menu_labels(section: &LushtextWorkspaceSection) -> Vec<String> {
@@ -1927,6 +1934,7 @@ fn test_workspace_folder_reorder_shield_is_inert_outside_drag_for_normal_interac
     let labels = current_context_menu_labels(&section);
     assert!(labels.iter().any(|label| label == "Rename"));
     assert!(labels.iter().any(|label| label == "Delete"));
+    dismiss_context_popovers(&section);
 
     select_path(&section, &file);
     assert!(section.toggle_peek_for_selection());

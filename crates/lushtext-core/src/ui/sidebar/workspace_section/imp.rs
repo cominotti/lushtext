@@ -925,9 +925,7 @@ impl LushtextWorkspaceSection {
             if let Some(path) = path
                 && is_dir
             {
-                if let Some(popover) = section.imp().context_menu.borrow().as_ref() {
-                    popover.popdown();
-                }
+                popdown_context_popovers(&section);
                 section.imp().context_expander.borrow_mut().take();
                 section.imp().context_path.borrow_mut().take();
                 section
@@ -947,6 +945,7 @@ impl LushtextWorkspaceSection {
                 && let Some(path) = section.imp().context_path.borrow().clone()
                 && !section.imp().context_is_dir.get()
             {
+                popdown_context_popovers(&section);
                 section.notify_local_history_requested(&path);
             }
         });
@@ -959,6 +958,7 @@ impl LushtextWorkspaceSection {
                 && let Some(path) = section.imp().context_path.borrow().clone()
                 && !section.imp().context_is_dir.get()
             {
+                popdown_context_popovers(&section);
                 section.notify_document_note_requested(&path);
             }
         });
@@ -971,6 +971,7 @@ impl LushtextWorkspaceSection {
                 && let Some(path) = section.imp().context_path.borrow().clone()
                 && section.imp().context_workspace_folder_id.borrow().is_some()
             {
+                popdown_context_popovers(&section);
                 section.notify_folder_note_for_folder_requested(&path);
             }
         });
@@ -982,6 +983,7 @@ impl LushtextWorkspaceSection {
             if let Some(section) = section_weak.upgrade()
                 && let Some(folder_id) = section.imp().context_workspace_folder_id.borrow().clone()
             {
+                popdown_context_popovers(&section);
                 section
                     .notify_reorder_folder_requested(&folder_id, WorkspaceFolderMoveDirection::Up);
             }
@@ -994,6 +996,7 @@ impl LushtextWorkspaceSection {
             if let Some(section) = section_weak.upgrade()
                 && let Some(folder_id) = section.imp().context_workspace_folder_id.borrow().clone()
             {
+                popdown_context_popovers(&section);
                 section.notify_reorder_folder_requested(
                     &folder_id,
                     WorkspaceFolderMoveDirection::Down,
@@ -1006,6 +1009,7 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         remove_folder_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade() {
+                popdown_context_popovers(&section);
                 section.show_remove_folder_confirmation();
             }
         });
@@ -1015,6 +1019,7 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         new_file_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade() {
+                popdown_context_popovers(&section);
                 section.create_new_item(false);
             }
         });
@@ -1024,6 +1029,7 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         new_dir_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade() {
+                popdown_context_popovers(&section);
                 section.create_new_item(true);
             }
         });
@@ -1033,6 +1039,7 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         rename_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade() {
+                popdown_context_popovers(&section);
                 section.begin_rename();
             }
         });
@@ -1042,6 +1049,7 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         delete_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade() {
+                popdown_context_popovers(&section);
                 section.show_delete_confirmation();
             }
         });
@@ -1151,6 +1159,7 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         folder_note_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade() {
+                popdown_context_popovers(&section);
                 section.notify_folder_note_requested();
             }
         });
@@ -1160,6 +1169,7 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         add_folder_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade() {
+                popdown_context_popovers(&section);
                 section.notify_add_folder_requested();
             }
         });
@@ -1169,6 +1179,7 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         rename_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade() {
+                popdown_context_popovers(&section);
                 section.notify_rename_workspace_requested();
             }
         });
@@ -1178,6 +1189,7 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         unlist_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade() {
+                popdown_context_popovers(&section);
                 section.notify_unlist_workspace_requested();
             }
         });
@@ -1430,6 +1442,15 @@ fn popover_action_button(popover: &gtk4::Popover, spec: &PopoverMenuActionSpec) 
     });
 
     button
+}
+
+fn popdown_context_popovers(section: &super::LushtextWorkspaceSection) {
+    if let Some(popover) = section.imp().context_menu.borrow().as_ref() {
+        popover.popdown();
+    }
+    if let Some(popover) = section.imp().header_context_menu.borrow().as_ref() {
+        popover.popdown();
+    }
 }
 
 fn file_tree_context_menu_key(key: gtk4::gdk::Key, state: gtk4::gdk::ModifierType) -> bool {

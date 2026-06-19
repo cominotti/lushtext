@@ -203,8 +203,13 @@ fn test_inline_alert_uses_supported_widgets() {
     );
     assert_eq!(
         page.info_bar().imp().alert_box.accessible_role(),
+        gtk4::AccessibleRole::Group,
+        "inline alert surface should keep sibling actions reachable to assistive technology"
+    );
+    assert_eq!(
+        page.info_bar().imp().alert_title.accessible_role(),
         gtk4::AccessibleRole::Alert,
-        "inline alert should keep alert semantics for assistive technology"
+        "inline alert title should keep high-priority alert semantics for assistive technology"
     );
 }
 
