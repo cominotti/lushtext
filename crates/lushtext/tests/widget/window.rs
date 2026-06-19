@@ -1974,6 +1974,20 @@ fn menu_model_labels(model: &gio::MenuModel) -> Vec<String> {
     labels
 }
 
+fn action_button_labels(menu_box: &gtk4::Box) -> Vec<String> {
+    let mut labels = Vec::new();
+    let mut child = menu_box.first_child();
+    while let Some(widget) = child {
+        if let Ok(button) = widget.clone().downcast::<gtk4::Button>()
+            && let Some(label) = button.label()
+        {
+            labels.push(label.to_string());
+        }
+        child = widget.next_sibling();
+    }
+    labels
+}
+
 fn menu_model_label_actions(model: &gio::MenuModel) -> Vec<(String, Option<String>)> {
     let mut entries = Vec::new();
     for index in 0..model.n_items() {
@@ -2713,6 +2727,39 @@ fn test_open_document_restores_bookmarks() {
         editor.bookmark_records()[0].label.as_deref(),
         Some("bookmark")
     );
+}
+
+#[test]
+fn test_stale_bookmark_sidecar_load_does_not_replace_local_edits() {
+    ensure_gtk_init();
+    let tempdir = tempfile::tempdir().expect("stale bookmark sidecar tempdir");
+    let file_path = tempdir.path().join("stale-bookmark.rs");
+    fixture::write_text(&file_path, "one\ntwo\nthree");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_startup_data_flow(&window);
+    window.open_document(&file_path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    let editor = active_editor(&window);
+    let stale_generation = editor.bookmark_change_generation();
+    let line_one = editor.buffer().iter_at_line(0).expect("line one");
+    editor.buffer().place_cursor(&line_one);
+    let _ = editor.toggle_bookmark_at_cursor();
+    let local_bookmark = editor.bookmark_at_line(0).expect("local bookmark");
+    let stale_snapshot = [lushtext_core::model::bookmark::BookmarkRecord::new(
+        2,
+        Some("stale sidecar".to_string()),
+    )];
+
+    assert!(
+        !editor.load_bookmarks_if_generation_matches(&stale_snapshot, stale_generation),
+        "sidecar loads that started before a local edit must not replace live bookmarks"
+    );
+    assert_eq!(editor.bookmark_records(), vec![local_bookmark]);
 }
 
 #[test]
@@ -3482,6 +3529,7 @@ fn test_shell_controls_expose_accessibility_roles() {
             gtk4::AccessibleProperty::KeyShortcuts,
             gtk4::AccessibleProperty::HasPopup,
         ])
+        .relations(&[gtk4::AccessibleRelation::Controls])
         .assert_on(&*window.imp().open_menu_button);
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::ToggleButton)
@@ -3491,6 +3539,7 @@ fn test_shell_controls_expose_accessibility_roles() {
             gtk4::AccessibleProperty::KeyShortcuts,
         ])
         .states(&[gtk4::AccessibleState::Pressed])
+        .relations(&[gtk4::AccessibleRelation::Controls])
         .assert_on(&*window.imp().document_properties_toggle_button);
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::Button)
@@ -3506,6 +3555,19 @@ fn test_shell_controls_expose_accessibility_roles() {
             gtk4::AccessibleProperty::Description,
         ])
         .assert_on(&*window.imp().tab_bar);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*window.imp().focus_mode_affordance);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::KeyShortcuts,
+        ])
+        .assert_on(&*window.imp().leave_focus_mode_button);
 }
 
 #[test]
@@ -4554,6 +4616,10 @@ fn test_focus_mode_entry_exit_restores_shell_surfaces() {
 
     assert!(workspace_sidebar_visible(&window));
     assert!(properties_sidebar_visible(&window));
+    assert!(gtk4::test_accessible_has_state(
+        &*window.imp().focus_mode_affordance,
+        gtk4::AccessibleState::Hidden
+    ));
 
     activate_action(&window, "toggle-focus-mode");
 
@@ -4563,6 +4629,10 @@ fn test_focus_mode_entry_exit_restores_shell_surfaces() {
     assert!(!window.imp().status_bar.property::<bool>("visible"));
     assert!(!workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
+    assert!(!gtk4::test_accessible_has_state(
+        &*window.imp().focus_mode_affordance,
+        gtk4::AccessibleState::Hidden
+    ));
 
     activate_action(&window, "toggle-focus-mode");
 
@@ -4572,6 +4642,29 @@ fn test_focus_mode_entry_exit_restores_shell_surfaces() {
     assert!(window.imp().status_bar.property::<bool>("visible"));
     assert!(workspace_sidebar_visible(&window));
     assert!(properties_sidebar_visible(&window));
+    assert!(gtk4::test_accessible_has_state(
+        &*window.imp().focus_mode_affordance,
+        gtk4::AccessibleState::Hidden
+    ));
+}
+
+#[test]
+fn test_focus_mode_affordance_stays_visible_while_leave_button_has_focus() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    activate_action(&window, "toggle-focus-mode");
+    window.imp().leave_focus_mode_button.grab_focus();
+    flush_events();
+    flush_after_delay(Duration::from_millis(1900));
+
+    assert!(window.imp().focus_mode_revealer.reveals_child());
+    assert!(!gtk4::test_accessible_has_state(
+        &*window.imp().focus_mode_affordance,
+        gtk4::AccessibleState::Hidden
+    ));
 }
 
 #[test]
@@ -10676,29 +10769,55 @@ fn test_sidebar_context_menus_include_note_entry_points() {
         .cloned()
         .expect("workspace section");
 
-    let file_menu = section
-        .imp()
-        .context_menu
-        .borrow()
-        .as_ref()
-        .and_then(gtk4::PopoverMenu::menu_model)
-        .expect("file context menu model");
+    select_sidebar_path(&section, &left_folder.join("alpha.rs"));
+    section.imp().file_tree_view.grab_focus();
+    activate_action(&window, "show-workspace-tree-context-menu");
+    wait_until(Duration::from_secs(2), || {
+        section
+            .imp()
+            .context_menu
+            .borrow()
+            .as_ref()
+            .is_some_and(gtk4::prelude::WidgetExt::is_visible)
+    });
+    let file_menu_labels = {
+        let menu_box = section.imp().context_menu_box.borrow();
+        action_button_labels(
+            menu_box
+                .as_ref()
+                .expect("file context menu action box should exist"),
+        )
+    };
     assert!(
-        menu_model_labels(&file_menu)
+        file_menu_labels
             .iter()
             .any(|label| label == "Open Document Note…"),
         "file context menu should expose document notes"
     );
+    if let Some(popover) = section.imp().context_menu.borrow().as_ref() {
+        popover.popdown();
+        flush_events();
+    }
 
-    let header_menu = section
-        .imp()
-        .header_context_menu
-        .borrow()
-        .as_ref()
-        .and_then(gtk4::PopoverMenu::menu_model)
-        .expect("workspace header context menu model");
+    activate_action(&window, "show-workspace-header-context-menu");
+    wait_until(Duration::from_secs(2), || {
+        section
+            .imp()
+            .header_context_menu
+            .borrow()
+            .as_ref()
+            .is_some_and(gtk4::prelude::WidgetExt::is_visible)
+    });
+    let header_menu_labels = {
+        let menu_box = section.imp().header_context_menu_box.borrow();
+        action_button_labels(
+            menu_box
+                .as_ref()
+                .expect("workspace header context menu action box should exist"),
+        )
+    };
     assert!(
-        menu_model_labels(&header_menu)
+        header_menu_labels
             .iter()
             .any(|label| label == "Open Folder Note…"),
         "workspace header context menu should expose folder notes"
@@ -13347,6 +13466,10 @@ fn test_preview_pane_toggle_uses_adwaita_side_by_side_shell() {
     assert_eq!(preview_layout_name(&window).as_deref(), Some("editor"));
     assert!(!window.imp().preview_split_view.shows_sidebar());
     assert!(!window.imp().markdown_preview.property::<bool>("visible"));
+    assert!(gtk4::test_accessible_has_state(
+        &*window.imp().markdown_preview,
+        gtk4::AccessibleState::Hidden
+    ));
 
     activate_action(&window, "toggle-preview-pane");
 
@@ -13367,6 +13490,10 @@ fn test_preview_pane_toggle_uses_adwaita_side_by_side_shell() {
     assert!(window.imp().preview_split_view.is_pin_sidebar());
     assert!(!window.imp().preview_split_view.enables_show_gesture());
     assert!(!window.imp().preview_split_view.enables_hide_gesture());
+    assert!(!gtk4::test_accessible_has_state(
+        &*window.imp().markdown_preview,
+        gtk4::AccessibleState::Hidden
+    ));
 }
 
 #[test]
@@ -13389,6 +13516,10 @@ fn test_preview_mode_toggle_uses_full_content_layout() {
     assert!(!window.imp().preview_visible.get());
     assert!(action_state_bool(&window, "toggle-preview-mode"));
     assert!(!action_state_bool(&window, "toggle-preview-pane"));
+    assert!(!gtk4::test_accessible_has_state(
+        &*window.imp().markdown_preview,
+        gtk4::AccessibleState::Hidden
+    ));
 }
 
 #[test]
@@ -13464,4 +13595,8 @@ fn test_preview_target_actions_keep_adwaita_shell_modes_mutually_exclusive() {
             && !window.imp().markdown_preview.property::<bool>("visible")
             && window.imp().editor_box.property::<bool>("visible")
     });
+    assert!(gtk4::test_accessible_has_state(
+        &*window.imp().markdown_preview,
+        gtk4::AccessibleState::Hidden
+    ));
 }

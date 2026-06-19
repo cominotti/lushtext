@@ -11,6 +11,14 @@ claim behavior that the current GTK, desktop, or screen-reader stack cannot
 expose. When a host-sensitive check skips, that skip is evidence about the
 host, not proof that the skipped behavior works.
 
+The completion source of truth is
+[`docs/accessibility-matrix.md`](accessibility-matrix.md). That matrix owns the
+row ids for each surface/state extreme, the mapping to smoke and visual proof
+lanes, stable AT-SPI anchors, manual Orca expectations, and any explicit gaps.
+When this guide changes a keyboard path, accessible name, announcement,
+screen-reader expectation, visual accessibility rule, or release claim, update
+the matrix in the same change.
+
 ## Keyboard Operation
 
 Most workflows are available through the menu, header controls, command
@@ -140,6 +148,13 @@ Accessibility proof is intentionally layered:
 | Visual smoke | `make visual-smoke` | Rendered desktop screenshots for representative states, compact layouts, dense rows, dialogs, dark/high-contrast/large-text/reduced-motion variants, transparency/readability, and other user-visible surfaces. |
 | Policy checks | `make check-accessibility-policy`, `make check-visual-proof-policy`, `make check-automation-docs` | Drift checks for helper use, stable AT-SPI anchors, smoke helper flags, automation docs, and current visual evidence. |
 
+Every scenario in the accessibility, visual, and visual-geometry lanes should
+declare the relevant matrix row ids from
+[`docs/accessibility-matrix.md`](accessibility-matrix.md). Focused runs are
+diagnostic evidence; release-grade accessibility coverage needs unfiltered
+current-tree summaries or an explicit scoped release note that names any matrix
+rows intentionally left uncovered.
+
 `make accessibility-smoke` writes bounded artifacts under
 `build/smoke/accessibility` by default:
 
@@ -186,10 +201,13 @@ both automated and manual evidence:
    caret/selection feedback where available, in-tab search, command palette,
    Open popover, workspace search, workspace sidebar/file tree, document
    properties, preferences, Markdown preview, notes/bookmarks, local history,
-   and destructive or close dialogs affected by the release.
+   and destructive or close dialogs affected by the release. Use
+   [`docs/accessibility-orca-checklist.md`](accessibility-orca-checklist.md)
+   as the reviewable artifact template.
 5. Record any host limitation, skipped smoke lane, or screen-reader caveat in
    the release validation notes along with the runner or manual environment
-   that covered it.
+   that covered it. Use the matrix row ids when recording coverage or caveats
+   so skipped rows cannot be mistaken for verified behavior.
 
 ## Known Platform Caveats
 

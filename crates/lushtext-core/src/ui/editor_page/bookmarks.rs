@@ -133,9 +133,37 @@ pub(super) fn bookmark_records(editor: &LushtextEditorPage) -> Vec<BookmarkRecor
     bookmarks
 }
 
+/// Return the live bookmark projection generation for async race guards.
+#[must_use]
+pub(super) fn bookmark_change_generation(editor: &LushtextEditorPage) -> u64 {
+    editor.imp().bookmarks.change_generation.get()
+}
+
+/// Apply a sidecar bookmark snapshot only when no local bookmark edit won the race.
+#[must_use]
+pub(super) fn load_bookmarks_if_generation_matches(
+    editor: &LushtextEditorPage,
+    bookmarks: &[BookmarkRecord],
+    expected_generation: u64,
+) -> bool {
+    if bookmark_change_generation(editor) != expected_generation {
+        return false;
+    }
+
+    load_bookmarks(editor, bookmarks);
+    true
+}
+
+/// Advance the live bookmark projection generation after a real mutation.
+fn bump_bookmark_change_generation(editor: &LushtextEditorPage) {
+    let generation = bookmark_change_generation(editor).wrapping_add(1);
+    editor.imp().bookmarks.change_generation.set(generation);
+}
+
 /// Replace the live bookmark projection with freshly loaded sidecar records.
 pub(super) fn load_bookmarks(editor: &LushtextEditorPage, bookmarks: &[BookmarkRecord]) {
-    clear_bookmarks(editor);
+    let previous = bookmark_records(editor);
+    clear_bookmark_projection(editor);
 
     let buffer = editor.buffer();
     let mut live_entries = Vec::with_capacity(bookmarks.len());
@@ -156,11 +184,23 @@ pub(super) fn load_bookmarks(editor: &LushtextEditorPage, bookmarks: &[BookmarkR
             .then_with(|| left.record.id.0.cmp(&right.record.id.0))
     });
     *editor.imp().bookmarks.entries.borrow_mut() = live_entries;
+    if previous != bookmark_records(editor) {
+        bump_bookmark_change_generation(editor);
+    }
     editor.schedule_minimap_refresh();
 }
 
 /// Remove all live bookmark marks for the current file identity.
 pub(super) fn clear_bookmarks(editor: &LushtextEditorPage) {
+    let had_bookmarks = !editor.imp().bookmarks.entries.borrow().is_empty();
+    clear_bookmark_projection(editor);
+    if had_bookmarks {
+        bump_bookmark_change_generation(editor);
+    }
+}
+
+/// Clear source marks and live entries without recording a semantic change.
+fn clear_bookmark_projection(editor: &LushtextEditorPage) {
     let buffer = editor.buffer();
     buffer.remove_source_marks(
         &buffer.start_iter(),
@@ -342,6 +382,7 @@ pub(super) fn navigate_bookmark(
 
 /// Emit the bookmark-changed callback when one is registered.
 pub(super) fn emit_bookmarks_changed(editor: &LushtextEditorPage) {
+    bump_bookmark_change_generation(editor);
     if let Some(callback) = editor.imp().bookmarks.changed_callback.borrow().as_ref() {
         callback();
     }

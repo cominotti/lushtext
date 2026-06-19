@@ -19,6 +19,7 @@ use std::rc::Rc;
 
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::prelude::*;
 
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
@@ -63,6 +64,59 @@ impl SidebarFileRowStateSnapshot {
     #[must_use]
     pub(crate) fn is_active(&self, path: &Path) -> bool {
         self.active_identities.contains(path)
+    }
+}
+
+impl LushtextSidebar {
+    /// Move focus to the first visible workspace file tree.
+    ///
+    /// This is a UI-adapter helper for keyboard and automation entry points.
+    /// The sidebar owns section visibility, so callers do not need to inspect
+    /// the current workspace filter before requesting focus.
+    pub(crate) fn focus_first_visible_file_tree(&self) -> bool {
+        self.imp()
+            .sections
+            .borrow()
+            .iter()
+            .find(|section| section.is_visible())
+            .is_some_and(WorkspaceSection::focus_file_tree)
+    }
+
+    /// Move focus to the first visible workspace header control.
+    ///
+    /// Header context-menu shortcuts bubble from the focused collapse button to
+    /// the header controller, giving keyboard users an equivalent menu path.
+    pub(crate) fn focus_first_visible_header_controls(&self) -> bool {
+        self.imp()
+            .sections
+            .borrow()
+            .iter()
+            .find(|section| section.is_visible())
+            .is_some_and(WorkspaceSection::focus_header_controls)
+    }
+
+    /// Open the selected row's context menu in the first visible workspace tree.
+    ///
+    /// Used by automation smoke when synthetic keyboard events are unavailable;
+    /// the section still applies the same selection and menu wiring as keyboard
+    /// or pointer activation.
+    pub(crate) fn show_first_visible_file_tree_context_menu(&self) -> bool {
+        self.imp()
+            .sections
+            .borrow()
+            .iter()
+            .find(|section| section.is_visible())
+            .is_some_and(WorkspaceSection::show_selected_file_context_menu)
+    }
+
+    /// Open the first visible workspace header's context menu.
+    pub(crate) fn show_first_visible_header_context_menu(&self) -> bool {
+        self.imp()
+            .sections
+            .borrow()
+            .iter()
+            .find(|section| section.is_visible())
+            .is_some_and(WorkspaceSection::show_header_context_menu)
     }
 }
 

@@ -319,10 +319,7 @@ impl LushtextWorkspaceSection {
             ("Collapse Workspace", "Hide this workspace's folder list")
         };
         imp.collapse_button.set_tooltip_text(Some(label));
-        imp.collapse_button.update_property(&[
-            gtk4::accessible::Property::Label(label),
-            gtk4::accessible::Property::Description(description),
-        ]);
+        accessibility::set_labelled_description(&*imp.collapse_button, label, description);
         accessibility::set_expanded(&*imp.collapse_button, Some(!collapsed));
         accessibility::set_hidden(&*imp.file_tree_view, !show_body || !has_tree_rows);
         accessibility::set_hidden(

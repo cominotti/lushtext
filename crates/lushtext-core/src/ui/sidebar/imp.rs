@@ -7,6 +7,7 @@
 
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
+use crate::ui::accessibility;
 use crate::ui::sidebar::SidebarFileRowStateSnapshot;
 use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
@@ -146,16 +147,16 @@ impl ObjectImpl for LushtextSidebar {
     fn constructed(&self) {
         self.parent_constructed();
 
-        self.workspace_filter_dropdown.update_property(&[
-            gtk4::accessible::Property::Label("Workspace scope"),
-            gtk4::accessible::Property::Description(
-                "Choose whether the sidebar shows all workspaces or one workspace",
-            ),
-        ]);
-        self.new_workspace_button.update_property(&[
-            gtk4::accessible::Property::Label("New Workspace"),
-            gtk4::accessible::Property::Description("Create a named workspace"),
-        ]);
+        accessibility::set_labelled_description(
+            &*self.workspace_filter_dropdown,
+            "Workspace scope",
+            "Choose whether the sidebar shows all workspaces or one workspace",
+        );
+        accessibility::set_labelled_description(
+            &*self.new_workspace_button,
+            "New Workspace",
+            "Create a named workspace",
+        );
 
         // Wire the fixed workspace selector row at the top of the sidebar.
         let sidebar_weak = self.obj().downgrade();

@@ -4,6 +4,13 @@ This document explains which validation lane owns each kind of end-user risk in
 LushText. The goal is not to make every test heavy; it is to put each behavior
 in the cheapest lane that can prove it honestly.
 
+Accessibility coverage is owned by
+[`docs/accessibility-matrix.md`](accessibility-matrix.md). The matrix maps
+surface/state row ids to accessibility smoke, visual smoke, visual geometry,
+widget, policy, and manual Orca evidence. Release validation should use those
+row ids when judging whether a skipped host lane is merely diagnostic or leaves
+a user-facing workflow unverified.
+
 ## Lane Ownership
 
 | Lane | Command | Owns | Default PR? |
@@ -126,8 +133,11 @@ they are not default PR gates:
   reason that does not count as coverage. It complements widget tests that
   intentionally set `NO_AT_BRIDGE=1`; action or D-Bus checks alone are not
   counted as accessibility coverage. Pair this lane with
-  [`docs/accessibility.md`](accessibility.md) when reviewing user-facing
-  behavior or release readiness.
+  [`docs/accessibility.md`](accessibility.md) and
+  [`docs/accessibility-matrix.md`](accessibility-matrix.md) when reviewing
+  user-facing behavior or release readiness. A case manifest should identify
+  the matrix row ids it covers so focused runs cannot be mistaken for full
+  release coverage.
 - `make performance-smoke` runs a small Criterion smoke filter with coarse
   timing artifacts, including worker-side Replace preview generation and
   recovery fixtures for malformed metadata, pending migrations, duplicate
@@ -174,8 +184,8 @@ surfaces, or smoke tooling, add the accessibility release reference:
 
 - Preserve and review `make accessibility-smoke` artifacts, including
   `build/smoke/accessibility/summary.json`, per-scenario manifests, assertion
-  JSONL, AT-SPI excerpts, focus artifacts, environment reports, and warning
-  scans.
+  JSONL, AT-SPI excerpts, focus artifacts, environment reports, warning scans,
+  and matrix row ids.
 - Preserve visual accessibility evidence with `make visual-geometry-smoke`,
   `make visual-smoke`, and `make check-visual-proof-policy` when focus
   indication, primary control visibility, color-not-only state, large text,
@@ -185,11 +195,14 @@ surfaces, or smoke tooling, add the accessibility release reference:
   especially editor text, caret or selection feedback, shell navigation,
   command palette, Open popover, workspace search, workspace sidebar/file tree,
   document properties, preferences, Markdown preview, notes/bookmarks, local
-  history, and destructive or close dialogs.
+  history, and destructive or close dialogs. Use
+  [`docs/accessibility-orca-checklist.md`](accessibility-orca-checklist.md) so
+  environment, Matrix rows, Automated artifacts, Outcome, and Caveats are
+  recorded consistently.
 - Treat skipped AT-SPI, compositor, visual, or screen-reader coverage as
   unverified until another runner or manual environment covers the same
-  behavior. Record the exact environment and caveat in release notes or release
-  validation artifacts.
+  behavior. Record the exact environment, matrix rows, and caveat in release
+  notes or release validation artifacts.
 - Keep the user-facing contract in [`docs/accessibility.md`](accessibility.md)
   synchronized with any changed shortcut, accessible name, announcement
   behavior, stable AT-SPI anchor, smoke scenario, or known platform caveat.

@@ -11,12 +11,25 @@ from pathlib import Path
 import pyatspi
 
 
-STATE_FLAGS = (
-    ("focused", pyatspi.STATE_FOCUSED),
-    ("enabled", pyatspi.STATE_ENABLED),
-    ("sensitive", pyatspi.STATE_SENSITIVE),
-    ("showing", pyatspi.STATE_SHOWING),
-    ("visible", pyatspi.STATE_VISIBLE),
+STATE_FLAG_NAMES = (
+    ("busy", "STATE_BUSY"),
+    ("checked", "STATE_CHECKED"),
+    ("enabled", "STATE_ENABLED"),
+    ("expanded", "STATE_EXPANDED"),
+    ("focusable", "STATE_FOCUSABLE"),
+    ("focused", "STATE_FOCUSED"),
+    ("invalid-entry", "STATE_INVALID_ENTRY"),
+    ("pressed", "STATE_PRESSED"),
+    ("read-only", "STATE_READ_ONLY"),
+    ("sensitive", "STATE_SENSITIVE"),
+    ("selected", "STATE_SELECTED"),
+    ("showing", "STATE_SHOWING"),
+    ("visible", "STATE_VISIBLE"),
+)
+STATE_FLAGS = tuple(
+    (name, value)
+    for name, const_name in STATE_FLAG_NAMES
+    if (value := getattr(pyatspi, const_name, None)) is not None
 )
 TEXT_SAMPLE_LIMIT = 120
 
@@ -175,7 +188,7 @@ def main() -> int:
     parser.add_argument("--focus-output", required=True, type=Path)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--interval", type=float, default=0.25)
-    parser.add_argument("--max-depth", type=int, default=30)
+    parser.add_argument("--max-depth", type=int, default=44)
     parser.add_argument("--max-nodes", type=int, default=20000)
     args = parser.parse_args()
 

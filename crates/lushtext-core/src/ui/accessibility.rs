@@ -306,12 +306,20 @@ pub fn set_invalid<W: IsA<gtk4::Accessible>>(widget: &W, invalid: bool) {
 
 /// Set the expanded state for collapsible controls and rows.
 pub fn set_expanded<W: IsA<gtk4::Accessible>>(widget: &W, expanded: Option<bool>) {
-    widget.update_state(&[gtk4::accessible::State::Expanded(expanded)]);
+    if expanded.is_some() {
+        widget.update_state(&[gtk4::accessible::State::Expanded(expanded)]);
+    } else {
+        reset_state(widget, gtk4::AccessibleState::Expanded);
+    }
 }
 
 /// Set the selected state for list rows and result items.
 pub fn set_selected<W: IsA<gtk4::Accessible>>(widget: &W, selected: Option<bool>) {
-    widget.update_state(&[gtk4::accessible::State::Selected(selected)]);
+    if selected.is_some() {
+        widget.update_state(&[gtk4::accessible::State::Selected(selected)]);
+    } else {
+        reset_state(widget, gtk4::AccessibleState::Selected);
+    }
 }
 
 /// Set the pressed state for toggles when the visible state is app-owned.
@@ -354,14 +362,17 @@ pub fn apply_row_accessibility<W: IsA<gtk4::Accessible>>(
     widget: &W,
     metadata: RowAccessibility<'_>,
 ) {
-    let mut properties = vec![gtk4::accessible::Property::Label(metadata.label)];
+    set_label(widget, metadata.label);
     if let Some(description) = metadata.description {
-        properties.push(gtk4::accessible::Property::Description(description));
+        set_description(widget, description);
+    } else {
+        reset_property(widget, gtk4::AccessibleProperty::Description);
     }
-    widget.update_property(&properties);
 
     if let Some(selected) = metadata.selected {
         set_selected(widget, Some(selected));
+    } else {
+        reset_state(widget, gtk4::AccessibleState::Selected);
     }
 
     if let Some(position) = metadata.position {
@@ -369,6 +380,9 @@ pub fn apply_row_accessibility<W: IsA<gtk4::Accessible>>(
             gtk4::accessible::Relation::PosInSet(position.pos_in_set),
             gtk4::accessible::Relation::SetSize(position.set_size),
         ]);
+    } else {
+        reset_relation(widget, gtk4::AccessibleRelation::PosInSet);
+        reset_relation(widget, gtk4::AccessibleRelation::SetSize);
     }
 }
 

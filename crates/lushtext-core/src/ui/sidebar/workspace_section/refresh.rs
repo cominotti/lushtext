@@ -46,6 +46,9 @@ impl LushtextWorkspaceSection {
     /// Queue a whole-section refresh from the header button.
     pub(super) fn request_manual_refresh(&self) {
         self.clear_refresh_error();
+        if !self.has_folders() {
+            return;
+        }
         self.imp()
             .refresh_runtime
             .manual_refresh_announcing

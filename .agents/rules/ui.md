@@ -151,6 +151,12 @@ Acceptance for these states:
 
 ## Accessibility Metadata And Keyboard Parity
 
+`docs/accessibility-matrix.md` is the completion source of truth for
+accessibility-sensitive UI work. When adding or changing a surface, state
+extreme, keyboard path, accessible metadata projection, announcement, stable
+AT-SPI anchor, or visual accessibility claim, update the relevant matrix row or
+add a new one before calling the work complete.
+
 - New or changed UI code should set accessible labels, descriptions, roles,
   relations, states, and announcements through `crate::ui::accessibility`.
   Direct `gtk4::accessible::Property::*`, `update_state`, `update_relation`, or

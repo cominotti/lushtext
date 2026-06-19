@@ -13,8 +13,16 @@ ACCESSIBILITY_CASES=(
     shell
     preferences
     properties-panel
+    compact-properties
     markdown-preview
+    preview-mode-transition
     editor
+    focus-mode
+    minimap-transition
+    editor-search
+    editor-save-completion
+    editor-failed-load
+    editor-too-large-policy
     workspace-search-no-workspace
     workspace-search
     workspace-search-no-results
@@ -26,10 +34,13 @@ ACCESSIBILITY_CASES=(
     workspace-tree-dense-constrained
     workspace-tree-deep-expanded
     workspace-tree-file-peek
+    workspace-tree-folder-context-menu
+    workspace-header-context-menu
     open-popover-empty
     open-popover-dense
     open-popover-filtered
     open-popover-no-match
+    open-popover-dismiss
     command-palette
     command-palette-commands
     command-palette-notes
@@ -40,9 +51,13 @@ ACCESSIBILITY_CASES=(
     notes-empty
     notes-populated
     notes-no-results
+    bookmarks-populated
     local-history-empty
     local-history
+    local-history-restore
     local-history-empty-snapshot
+    unsaved-close-dialog
+    discard-confirmation
 )
 SELECTED_CASES=()
 LIST_CASES=false
@@ -162,7 +177,7 @@ JSON
         return
     fi
 
-    /usr/bin/python3 - "$ARTIFACT_DIR" "$status" "$reason" <<'PY'
+    /usr/bin/python3 - "$ARTIFACT_DIR" "$status" "$reason" "$REPO_ROOT" <<'PY'
 import json
 import os
 import sys
@@ -171,7 +186,10 @@ from pathlib import Path
 root = Path(sys.argv[1])
 status = sys.argv[2]
 reason = sys.argv[3]
+repo_root = Path(sys.argv[4]).resolve()
 assertions_dir = root / "assertions"
+sys.path.insert(0, str(repo_root / "scripts"))
+from accessibility_source_fingerprint import source_fingerprint
 
 def rel(path: Path) -> str:
     try:
@@ -188,10 +206,27 @@ manifests = sorted(assertions_dir.glob("*-manifest.json"))
 screenshots = sorted(root.glob("*.png"))
 warning_path = root / "warnings.txt"
 warning_lines = lines(warning_path)
+
+def warning_line_is_allowlisted(line: str) -> bool:
+    if line.startswith("Gdk-Message: ") and line.endswith("Error reading events from display: Broken pipe"):
+        return True
+    return (
+        "ERROR lushtext_core::ui::editor_page::load_save: Failed to read " in line
+        and "unreadable-load-target.txt: Permission denied" in line
+    )
+
+matrix_rows = []
+for manifest_path in manifests:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        continue
+    matrix_rows.extend(manifest.get("matrix_rows", []))
+matrix_rows = sorted(set(matrix_rows))
 unexpected_warnings = [
     line
     for line in warning_lines
-    if not (line.startswith("Gdk-Message: ") and line.endswith("Error reading events from display: Broken pipe"))
+    if not warning_line_is_allowlisted(line)
 ]
 warning_status = "passed"
 if warning_lines and not unexpected_warnings:
@@ -212,6 +247,11 @@ payload = {
         "manifest_count": len(manifests),
         "manifests": [rel(path) for path in manifests],
     },
+    "matrix_coverage": {
+        "row_count": len(matrix_rows),
+        "rows": matrix_rows,
+        "focused_run": os.environ.get("ACCESSIBILITY_CASE_FILTERS", "all") != "all",
+    },
     "screenshots": [rel(path) for path in screenshots],
     "environment_report": {"artifact": "environment.txt"},
     "missing_capabilities": [reason] if status in {"skipped", "unsupported-host"} and reason else [],
@@ -228,6 +268,7 @@ payload = {
         "focus": "assertions/accessibility-focus.txt",
         "text": "assertions/accessibility-text.txt",
     },
+    "source_fingerprint": source_fingerprint(repo_root),
 }
 if reason:
     key = "skip_reason" if status in {"skipped", "unsupported-host"} else "failure_reason"
@@ -273,6 +314,57 @@ session_log = Path(sys.argv[8])
 fixture = Path(sys.argv[9])
 capture_args = sys.argv[10:]
 
+MATRIX_ROWS_BY_CASE = {
+    "shell": ["A11Y-SHELL-NO-CONTEXT", "A11Y-SHELL-REPRESENTATIVE"],
+    "preferences": ["A11Y-PREFERENCES-PAGES"],
+    "properties-panel": ["A11Y-PROPERTIES-NORMAL"],
+    "compact-properties": ["A11Y-PROPERTIES-COMPACT", "A11Y-SHELL-DENSE-CONSTRAINED"],
+    "markdown-preview": ["A11Y-MARKDOWN-REPRESENTATIVE"],
+    "preview-mode-transition": ["A11Y-EDITOR-FOCUS-PREVIEW", "A11Y-MARKDOWN-CONSTRAINED"],
+    "editor": ["A11Y-EDITOR-REPRESENTATIVE"],
+    "focus-mode": ["A11Y-EDITOR-FOCUS-PREVIEW"],
+    "minimap-transition": ["A11Y-EDITOR-MINIMAP"],
+    "editor-search": ["A11Y-EDITOR-SEARCH"],
+    "editor-save-completion": ["A11Y-EDITOR-BUSY"],
+    "editor-failed-load": ["A11Y-EDITOR-ERROR", "A11Y-ERROR-SURFACES"],
+    "editor-too-large-policy": ["A11Y-EDITOR-LARGE-READONLY", "A11Y-EDITOR-ERROR"],
+    "workspace-search-no-workspace": ["A11Y-WORKSPACE-SEARCH-NO-CONTEXT", "A11Y-WORKSPACE-NO-CONTEXT"],
+    "workspace-search": ["A11Y-WORKSPACE-SEARCH-REPRESENTATIVE"],
+    "workspace-search-no-results": ["A11Y-WORKSPACE-SEARCH-DENSE-NORESULTS"],
+    "workspace-search-dense-constrained": ["A11Y-WORKSPACE-SEARCH-DENSE-NORESULTS"],
+    "workspace-search-replace-undo": ["A11Y-WORKSPACE-SEARCH-REPLACE"],
+    "workspace-tree-no-workspace": ["A11Y-WORKSPACE-NO-CONTEXT"],
+    "workspace-tree": ["A11Y-WORKSPACE-REPRESENTATIVE"],
+    "workspace-tree-zero-folder": ["A11Y-WORKSPACE-ZERO-FOLDER"],
+    "workspace-tree-dense-constrained": ["A11Y-WORKSPACE-DENSE-DEEP"],
+    "workspace-tree-deep-expanded": ["A11Y-WORKSPACE-DENSE-DEEP"],
+    "workspace-tree-file-peek": ["A11Y-WORKSPACE-PEEK"],
+    "workspace-tree-folder-context-menu": ["A11Y-WORKSPACE-CONTEXT", "A11Y-WORKSPACE-DRAG-DROP", "A11Y-CONTEXT-MENUS-GENERAL"],
+    "workspace-header-context-menu": ["A11Y-WORKSPACE-CONTEXT", "A11Y-CONTEXT-MENUS-GENERAL"],
+    "open-popover-empty": ["A11Y-OPEN-EMPTY"],
+    "open-popover-dense": ["A11Y-OPEN-DENSE-FILTERED"],
+    "open-popover-filtered": ["A11Y-OPEN-DENSE-FILTERED"],
+    "open-popover-no-match": ["A11Y-OPEN-DENSE-FILTERED"],
+    "open-popover-dismiss": ["A11Y-OPEN-HIDDEN"],
+    "command-palette": ["A11Y-PALETTE-FILES"],
+    "command-palette-commands": ["A11Y-PALETTE-COMMANDS"],
+    "command-palette-notes": ["A11Y-PALETTE-NOTES"],
+    "command-palette-dense-files": ["A11Y-PALETTE-FILES"],
+    "command-palette-mode-changes": ["A11Y-PALETTE-NO-RESULTS"],
+    "command-palette-focus-restore": ["A11Y-PALETTE-DISMISS"],
+    "command-palette-no-results": ["A11Y-PALETTE-NO-RESULTS"],
+    "notes-empty": ["A11Y-NOTES-EMPTY"],
+    "notes-populated": ["A11Y-NOTES-POPULATED"],
+    "notes-no-results": ["A11Y-NOTES-POPULATED"],
+    "bookmarks-populated": ["A11Y-BOOKMARKS"],
+    "local-history-empty": ["A11Y-LOCAL-HISTORY-EMPTY"],
+    "local-history": ["A11Y-LOCAL-HISTORY-POPULATED"],
+    "local-history-restore": ["A11Y-LOCAL-HISTORY-POPULATED", "A11Y-DIALOG-DESTRUCTIVE"],
+    "local-history-empty-snapshot": ["A11Y-LOCAL-HISTORY-EMPTY"],
+    "unsaved-close-dialog": ["A11Y-DIALOG-SAVE-CLOSE"],
+    "discard-confirmation": ["A11Y-DIALOG-DESTRUCTIVE"],
+}
+
 def rel(path: Path) -> str:
     try:
         return path.relative_to(root).as_posix()
@@ -298,7 +390,7 @@ while index < len(capture_args):
     if flag in {"--app-action", "--window-action", "--window-string-action", "--window-bool-action"}:
         actions.append(row)
     elif flag == "--step":
-        if value and value.startswith(("app-action:", "window-action:", "window-string-action:", "window-bool-action:", "atspi-click-button:")):
+        if value and value.startswith(("app-action:", "window-action:", "window-string-action:", "window-bool-action:", "atspi-click-button:", "atspi-focus-accessible:", "atspi-activate-accessible:", "atspi-context-click-accessible:", "atspi-key:")):
             actions.append(row)
         elif value and value.startswith(("wait-window-action:", "wait-predicate:", "wait-atspi-text:")):
             waits.append(row)
@@ -311,6 +403,7 @@ payload = {
     "scenario_id": name,
     "scenario_type": "accessibility-smoke",
     "status": status,
+    "matrix_rows": MATRIX_ROWS_BY_CASE.get(name, []),
     "fixture": rel(fixture),
     "capture_args": capture_args,
     "actions": actions,
@@ -318,6 +411,27 @@ payload = {
     "screenshots": [rel(output)],
     "atspi_tree": rel(tree_output),
     "atspi_focus": rel(focus_output),
+    "assertions": [],
+    "assertion_evidence": {
+        "events": "assertions/accessibility-assertions.jsonl",
+        "anchors": "assertions/accessibility-anchors.txt",
+        "focus": "assertions/accessibility-focus.txt",
+        "text": "assertions/accessibility-text.txt",
+        "manifest_filter": name,
+    },
+    "anchor_scope": {
+        "public": "Product control, role, and region names that should remain meaningful to assistive technology users.",
+        "fixture_only": "Seeded row names, fixture file names, and synthetic paths under this smoke artifact directory.",
+    },
+    "artifact_boundary": {
+        "fixture_data": "synthetic accessibility-smoke fixtures only",
+        "private_user_data": False,
+        "text_policy": "bounded AT-SPI tree excerpts and assertion summaries only",
+    },
+    "host_caveats": [
+        "Requires a host with AT-SPI, D-Bus, Mutter, PipeWire, WirePlumber, and PyGObject.",
+        "Headless AT-SPI may omit a focused node; focus assertions may accept a visible-tree fallback for the documented target.",
+    ],
     "capture_artifacts": rel(capture_dir),
     "session_log": rel(session_log),
     "warning_scan": "warnings.txt",
@@ -369,6 +483,18 @@ row = {
 }
 with events.open("a", encoding="utf-8") as handle:
     handle.write(json.dumps(row, sort_keys=True) + "\n")
+manifest_path = root / "assertions" / f"{sys.argv[3]}-manifest.json"
+if manifest_path.is_file():
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        manifest = None
+    if isinstance(manifest, dict):
+        manifest.setdefault("assertions", []).append(row)
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 PY
 }
 
@@ -485,6 +611,31 @@ assert_anchor() {
         echo "tree=$tree"
     } >&2
     smoke_fail "accessibility anchor '${name}' missing from '${capture}'. Artifacts: $ARTIFACT_DIR"
+}
+
+assert_anchor_prefix() {
+    local capture="$1"
+    local surface="$2"
+    local role="$3"
+    local name_prefix="$4"
+    local tree="$ARTIFACT_DIR/assertions/${capture}-atspi-tree.txt"
+    local report="$ARTIFACT_DIR/assertions/accessibility-anchors.txt"
+    local pattern="role='$role' name='$name_prefix"
+
+    if grep -F "$pattern" "$tree" >"$ARTIFACT_DIR/assertions/${capture}-${role// /-}-${name_prefix// /-}.anchor.txt"; then
+        printf 'PASS surface=%s role=%s name_prefix=%s tree=%s\n' "$surface" "$role" "$name_prefix" "$tree" >>"$report"
+        record_accessibility_assertion "$capture" "anchor-prefix" "$surface" "$role" "$name_prefix" "$tree"
+        return
+    fi
+
+    {
+        echo "Missing accessibility anchor prefix:"
+        echo "surface=$surface"
+        echo "role=$role"
+        echo "name_prefix=$name_prefix"
+        echo "tree=$tree"
+    } >&2
+    smoke_fail "accessibility anchor prefix '${name_prefix}' missing from '${capture}'. Artifacts: $ARTIFACT_DIR"
 }
 
 record_focus_anchor() {
@@ -793,6 +944,71 @@ seed_recent_documents_for_capture() {
 JSON
 }
 
+seed_bookmarks_for_capture() {
+    local capture="$1"
+    local fixture_path="$2"
+    seed_workspace_for_capture "$capture"
+
+    local data_dir="$ARTIFACT_DIR/captures/$capture/data/lushtext"
+    mkdir -p "$data_dir"
+    /usr/bin/python3 - "$data_dir" "$fixture_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+FNV_OFFSET = 0xCBF29CE484222325
+FNV_PRIME = 0x00000100000001B3
+
+
+def stable_hash(data: bytes) -> str:
+    value = FNV_OFFSET
+    for byte in data:
+        value ^= byte
+        value = (value * FNV_PRIME) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
+data_dir = Path(sys.argv[1])
+display_path = Path(sys.argv[2])
+canonical_path = display_path.resolve()
+sidecar_id = stable_hash(str(canonical_path).encode())
+identity = {
+    "display_path": str(display_path),
+    "canonical_path": str(canonical_path),
+    "sidecar_id": sidecar_id,
+}
+document = {
+    "kind": "dev.cominotti.lushtext.bookmark-sidecar",
+    "version": 1,
+    "data": {
+        "identity": identity,
+        "bookmarks": [
+            {
+                "id": "bookmark-accessibility-smoke-1",
+                "line": 0,
+                "label": "Smoke Bookmark",
+                "created_at_secs": 1,
+                "updated_at_secs": 1,
+            },
+            {
+                "id": "bookmark-accessibility-smoke-2",
+                "line": 2,
+                "label": "Second Smoke Bookmark",
+                "created_at_secs": 1,
+                "updated_at_secs": 1,
+            },
+        ],
+    },
+}
+bookmarks_dir = data_dir / "bookmarks"
+bookmarks_dir.mkdir(parents=True, exist_ok=True)
+(bookmarks_dir / f"{sidecar_id}.json").write_text(
+    json.dumps(document, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
 seed_local_history_for_capture() {
     local capture="$1"
     local fixture_path="$2"
@@ -928,6 +1144,17 @@ assert_anchor "properties-panel" "document properties" "list item" "Formatting S
 assert_anchor "properties-panel" "document properties" "list item" "File Health"
 fi
 
+if case_selected "compact-properties"; then
+run_accessibility_capture "compact-properties" \
+    --width 760 \
+    --height 640 \
+    --step window-bool-action:set-properties-visible=true \
+    --step wait-atspi-text:"Document properties"
+assert_anchor "compact-properties" "compact document properties" "grouping" "Document properties"
+assert_anchor "compact-properties" "compact document properties" "list item" "Location"
+assert_anchor "compact-properties" "compact document properties" "list item" "File Size"
+fi
+
 if case_selected "markdown-preview"; then
 DEFAULT_FIXTURE="$FIXTURE"
 FIXTURE="$REPO_ROOT/samples/markdown-test.md"
@@ -948,12 +1175,101 @@ assert_anchor "markdown-preview" "markdown preview" "image" "Markdown image: Ima
 assert_anchor "markdown-preview" "markdown preview" "image" "Markdown image: Remote images are not supported"
 fi
 
+if case_selected "preview-mode-transition"; then
+DEFAULT_FIXTURE="$FIXTURE"
+FIXTURE="$REPO_ROOT/samples/markdown-test.md"
+run_accessibility_capture "preview-mode-transition" \
+    --step window-bool-action:set-preview-mode=true \
+    --step wait-atspi-text:"Rendered Markdown content"
+FIXTURE="$DEFAULT_FIXTURE"
+assert_anchor "preview-mode-transition" "markdown preview" "document text" "Markdown preview"
+assert_anchor "preview-mode-transition" "markdown preview" "scroll pane" "Markdown preview scroll area"
+assert_anchor "preview-mode-transition" "markdown preview" "text" "Rendered Markdown content"
+assert_text_interface "preview-mode-transition" "markdown preview" "text" "Rendered Markdown content" 100
+fi
+
 if case_selected "editor"; then
 run_accessibility_capture "editor" \
     --wait-atspi-text "Editor for accessibility-smoke.txt"
 assert_anchor "editor" "editor" "text" "Editor for accessibility-smoke.txt"
 record_focus_anchor "editor" "Editor for accessibility-smoke.txt"
 assert_text_interface "editor" "editor" "text" "Editor for accessibility-smoke.txt" 1
+fi
+
+if case_selected "focus-mode"; then
+run_accessibility_capture "focus-mode" \
+    --step window-bool-action:set-focus-mode=true \
+    --step wait-predicate:visual-geometry-settled \
+    --step wait-atspi-text:"Editor for accessibility-smoke.txt"
+assert_anchor "focus-mode" "focus mode" "text" "Editor for accessibility-smoke.txt"
+record_focus_anchor "focus-mode" "Editor for accessibility-smoke.txt"
+fi
+
+if case_selected "minimap-transition"; then
+run_accessibility_capture "minimap-transition" \
+    --enable-minimap \
+    --step wait-window-action:cycle-invisible-characters \
+    --step window-action:cycle-invisible-characters \
+    --step window-bool-action:set-minimap-visible=true \
+    --step wait-predicate:visual-geometry-settled \
+    --step wait-atspi-text:"Editor for accessibility-smoke.txt"
+assert_anchor "minimap-transition" "minimap transition" "text" "Editor for accessibility-smoke.txt"
+assert_text_interface "minimap-transition" "minimap transition" "text" "Editor for accessibility-smoke.txt" 1
+fi
+
+if case_selected "editor-search"; then
+run_accessibility_capture "editor-search" \
+    --search needle \
+    --expected-search-matches 3 \
+    --step wait-atspi-text:"Search match count"
+assert_anchor "editor-search" "in-tab search" "entry" "Find text"
+assert_anchor "editor-search" "in-tab search" "status bar" "Search match count"
+assert_anchor "editor-search" "in-tab search" "button" "Previous search match"
+assert_anchor "editor-search" "in-tab search" "button" "Next search match"
+assert_anchor "editor-search" "in-tab search" "button" "Close search"
+assert_text_interface "editor-search" "in-tab search" "entry" "Find text" 6
+fi
+
+if case_selected "editor-save-completion"; then
+run_accessibility_capture "editor-save-completion" \
+    --step atspi-set-editor-text:"save completion body" \
+    --step wait-window-action:save \
+    --step window-action:save \
+    --step wait-predicate:save-complete \
+    --step wait-atspi-text:"File saved"
+assert_anchor "editor-save-completion" "editor" "text" "Editor for accessibility-smoke.txt"
+assert_anchor "editor-save-completion" "status bar" "label" "File saved"
+assert_text_interface "editor-save-completion" "editor" "text" "Editor for accessibility-smoke.txt" 1
+smoke_create_text_fixture "$FIXTURE"
+fi
+
+if case_selected "editor-failed-load"; then
+DEFAULT_FIXTURE="$FIXTURE"
+FIXTURE="$ARTIFACT_DIR/fixtures/unreadable-load-target.txt"
+printf 'unreadable fixture\n' >"$FIXTURE"
+chmod 000 "$FIXTURE"
+run_accessibility_capture "editor-failed-load" \
+    --allow-file-open-failure \
+    --step wait-atspi-text:"Could Not Open File"
+chmod 600 "$FIXTURE" || true
+FIXTURE="$DEFAULT_FIXTURE"
+assert_anchor_prefix "editor-failed-load" "editor error" "alert" "Could Not Open File:"
+assert_anchor "editor-failed-load" "editor error" "button" "Retry"
+assert_anchor "editor-failed-load" "editor" "text" "Editor for Untitled"
+fi
+
+if case_selected "editor-too-large-policy"; then
+DEFAULT_FIXTURE="$FIXTURE"
+FIXTURE="$ARTIFACT_DIR/fixtures/too-large-accessibility-smoke.txt"
+rm -f "$FIXTURE"
+truncate -s 501M "$FIXTURE"
+run_accessibility_capture "editor-too-large-policy" \
+    --allow-file-open-failure \
+    --step wait-atspi-text:"Could Not Open File" \
+    --step wait-atspi-text:"too large to edit"
+FIXTURE="$DEFAULT_FIXTURE"
+assert_anchor_prefix "editor-too-large-policy" "editor error" "alert" "Could Not Open File:"
+assert_anchor "editor-too-large-policy" "editor" "text" "Editor for Untitled"
 fi
 
 if case_selected "workspace-search-no-workspace"; then
@@ -1097,6 +1413,36 @@ assert_anchor "workspace-tree-file-peek" "workspace sidebar" "list item" "Folder
 assert_anchor "workspace-tree-file-peek" "workspace sidebar" "list item" "File accessibility-peek.txt"
 fi
 
+if case_selected "workspace-tree-folder-context-menu"; then
+seed_workspace_for_capture "workspace-tree-folder-context-menu"
+run_accessibility_capture "workspace-tree-folder-context-menu" \
+    --step wait-atspi-text:"Folder fixtures" \
+    --step window-action:focus-workspace-tree \
+    --step window-action:show-workspace-tree-context-menu \
+    --step wait-atspi-text:"Move Up"
+assert_anchor "workspace-tree-folder-context-menu" "workspace context menu" "menu" "Workspace folder actions for fixtures"
+assert_anchor "workspace-tree-folder-context-menu" "workspace context menu" "menu item" "Open Folder Note…"
+assert_anchor "workspace-tree-folder-context-menu" "workspace context menu" "menu item" "Move Up"
+assert_anchor "workspace-tree-folder-context-menu" "workspace context menu" "menu item" "Move Down"
+assert_anchor "workspace-tree-folder-context-menu" "workspace context menu" "menu item" "Remove from Workspace"
+assert_anchor "workspace-tree-folder-context-menu" "workspace context menu" "menu item" "New File"
+assert_anchor "workspace-tree-folder-context-menu" "workspace context menu" "menu item" "New Folder"
+fi
+
+if case_selected "workspace-header-context-menu"; then
+seed_workspace_for_capture "workspace-header-context-menu"
+run_accessibility_capture "workspace-header-context-menu" \
+    --step wait-atspi-text:"Workspace Accessibility Smoke" \
+    --step window-action:focus-workspace-header \
+    --step window-action:show-workspace-header-context-menu \
+    --step wait-atspi-text:"Rename Workspace"
+assert_anchor "workspace-header-context-menu" "workspace context menu" "menu" "Workspace context menu"
+assert_anchor "workspace-header-context-menu" "workspace context menu" "menu item" "Add Folder…"
+assert_anchor "workspace-header-context-menu" "workspace context menu" "menu item" "Open Folder Note…"
+assert_anchor "workspace-header-context-menu" "workspace context menu" "menu item" "Rename Workspace"
+assert_anchor "workspace-header-context-menu" "workspace context menu" "menu item" "Remove Workspace"
+fi
+
 if case_selected "open-popover-empty"; then
 run_accessibility_capture "open-popover-empty" \
     --window-action open-recent \
@@ -1144,6 +1490,17 @@ run_accessibility_capture "open-popover-no-match" \
     --wait-atspi-text "No matching recent documents"
 assert_anchor "open-popover-no-match" "open popover" "entry" "Recent documents search"
 assert_anchor "open-popover-no-match" "open popover" "status bar" "No matching recent documents"
+fi
+
+if case_selected "open-popover-dismiss"; then
+seed_recent_documents_for_capture "open-popover-dismiss"
+run_accessibility_capture "open-popover-dismiss" \
+    --step window-action:open-recent \
+    --step wait-atspi-text:"Recent documents search" \
+    --step atspi-key:Escape \
+    --step wait-atspi-text:"Editor for accessibility-smoke.txt"
+assert_anchor "open-popover-dismiss" "editor" "text" "Editor for accessibility-smoke.txt"
+record_focus_anchor "open-popover-dismiss" "Editor for accessibility-smoke.txt"
 fi
 
 if case_selected "command-palette"; then
@@ -1298,6 +1655,19 @@ assert_anchor "notes-no-results" "notes browser" "status bar" "No notes match th
 assert_anchor "notes-no-results" "notes browser" "button" "Close"
 fi
 
+if case_selected "bookmarks-populated"; then
+seed_bookmarks_for_capture "bookmarks-populated" "$FIXTURE"
+run_accessibility_capture "bookmarks-populated" \
+    --step wait-window-action:show-bookmarks \
+    --step window-action:show-bookmarks \
+    --step wait-atspi-text:"Smoke Bookmark"
+assert_anchor "bookmarks-populated" "bookmarks browser" "dialog" "Bookmarks"
+assert_anchor "bookmarks-populated" "bookmarks browser" "entry" "Search bookmarks"
+assert_anchor "bookmarks-populated" "bookmarks browser" "list" "Bookmark results"
+assert_anchor "bookmarks-populated" "bookmarks browser" "button" "Open bookmark Smoke Bookmark"
+assert_anchor "bookmarks-populated" "bookmarks browser" "label" "Smoke Bookmark"
+fi
+
 if case_selected "local-history-empty"; then
 run_accessibility_capture "local-history-empty" \
     --step wait-window-action:show-local-history \
@@ -1322,6 +1692,21 @@ assert_anchor "local-history" "local history" "button" "Copy"
 assert_anchor "local-history" "local history" "button" "Restore"
 fi
 
+if case_selected "local-history-restore"; then
+seed_local_history_for_capture "local-history-restore" "$FIXTURE"
+run_accessibility_capture "local-history-restore" \
+    --step wait-window-action:show-local-history \
+    --step window-action:show-local-history \
+    --step wait-atspi-text:"local history saved snapshot" \
+    --step atspi-click-button:"^Restore$" \
+    --step wait-atspi-text:"Restored from Local History"
+assert_anchor_prefix "local-history-restore" "local history restore" "alert" "Restored from Local History"
+assert_anchor "local-history-restore" "local history restore" "button" "Undo Restore"
+assert_anchor "local-history-restore" "local history restore" "button" "Dismiss"
+assert_anchor "local-history-restore" "editor" "text" "Editor for accessibility-smoke.txt"
+assert_text_interface "local-history-restore" "editor" "text" "Editor for accessibility-smoke.txt" 1
+fi
+
 if case_selected "local-history-empty-snapshot"; then
 seed_local_history_for_capture "local-history-empty-snapshot" "$FIXTURE" empty
 run_accessibility_capture "local-history-empty-snapshot" \
@@ -1336,13 +1721,62 @@ assert_anchor "local-history-empty-snapshot" "local history" "button" "Copy"
 assert_anchor "local-history-empty-snapshot" "local history" "button" "Restore"
 fi
 
+if case_selected "unsaved-close-dialog"; then
+run_accessibility_capture "unsaved-close-dialog" \
+    --step atspi-set-editor-text:"unsaved close body" \
+    --step wait-window-action:close-tab \
+    --step window-action:close-tab \
+    --step wait-atspi-text:"Save Changes?"
+assert_anchor "unsaved-close-dialog" "save changes dialog" "alert" "Save Changes?"
+assert_anchor "unsaved-close-dialog" "save changes dialog" "label" "Open documents contain unsaved changes. Changes which are not saved will be permanently lost."
+assert_anchor "unsaved-close-dialog" "save changes dialog" "check box" "Save accessibility-smoke.txt"
+assert_anchor "unsaved-close-dialog" "save changes dialog" "button" "Cancel"
+assert_anchor "unsaved-close-dialog" "save changes dialog" "button" "Discard"
+assert_anchor "unsaved-close-dialog" "save changes dialog" "button" "Save"
+fi
+
+if case_selected "discard-confirmation"; then
+run_accessibility_capture "discard-confirmation" \
+    --step atspi-set-editor-text:"discard dialog body" \
+    --step wait-window-action:discard-changes \
+    --step window-action:discard-changes \
+    --step wait-atspi-text:"Discard Changes"
+assert_anchor "discard-confirmation" "discard confirmation" "alert" "Discard Changes to “accessibility-smoke.txt”?"
+assert_anchor "discard-confirmation" "discard confirmation" "label" "Unsaved changes will be permanently lost."
+assert_anchor "discard-confirmation" "discard confirmation" "button" "Cancel"
+assert_anchor "discard-confirmation" "discard confirmation" "button" "Discard"
+fi
+
 if ((RUN_CASE_COUNT == 0)); then
     write_accessibility_summary_json "failed" "no accessibility smoke cases matched filter '${ACCESSIBILITY_CASE_FILTERS}'"
     smoke_fail "no accessibility smoke cases matched filter '${ACCESSIBILITY_CASE_FILTERS}'"
 fi
 
 collect_accessibility_warnings "$WARNINGS_OUTPUT"
-if grep -Ev '^Gdk-Message: .*Error reading events from display: Broken pipe$' "$WARNINGS_OUTPUT" >"$ARTIFACT_DIR/assertions/unexpected-warnings.txt"; then
+if /usr/bin/python3 - "$WARNINGS_OUTPUT" "$ARTIFACT_DIR/assertions/unexpected-warnings.txt" <<'PY'
+import sys
+from pathlib import Path
+
+warnings_path = Path(sys.argv[1])
+unexpected_path = Path(sys.argv[2])
+
+def warning_line_is_allowlisted(line: str) -> bool:
+    if line.startswith("Gdk-Message: ") and line.endswith("Error reading events from display: Broken pipe"):
+        return True
+    return (
+        "ERROR lushtext_core::ui::editor_page::load_save: Failed to read " in line
+        and "unreadable-load-target.txt: Permission denied" in line
+    )
+
+lines = warnings_path.read_text(encoding="utf-8", errors="replace").splitlines()
+unexpected = [line for line in lines if not warning_line_is_allowlisted(line)]
+unexpected_path.write_text(
+    "".join(f"{line}\n" for line in unexpected),
+    encoding="utf-8",
+)
+sys.exit(0 if unexpected else 1)
+PY
+then
     write_accessibility_summary_json "failed" "unexpected accessibility warnings"
     smoke_fail "accessibility smoke found unexpected warnings. Artifacts: $ARTIFACT_DIR"
 fi

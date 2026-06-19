@@ -224,6 +224,12 @@ pub struct LiveBookmark {
 pub struct BookmarkState {
     /// Current bookmark marks projected into the source buffer.
     pub entries: RefCell<Vec<LiveBookmark>>,
+    /// Monotonic token used to reject stale async sidecar loads.
+    ///
+    /// Bookmark sidecar I/O finishes later on the GTK main loop. If the user
+    /// edits bookmarks before that completion lands, the stale load must not
+    /// replace the newer live projection.
+    pub change_generation: Cell<u64>,
     /// Callback invoked when bookmark state changes and should be persisted.
     pub changed_callback: RefCell<Option<NotesChangedCallback>>,
     /// Window callback installed after editor construction to route gutter activation

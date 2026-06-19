@@ -371,11 +371,12 @@ impl super::LushtextWindow {
         // so the close flow can block and ask the user to Save As explicitly
         // instead of silently treating them as already saved.
         let group = libadwaita::PreferencesGroup::new();
-        group.set_accessible_role(gtk4::AccessibleRole::Group);
-        group.update_property(&[
-            gtk4::accessible::Property::Label("Documents with unsaved changes"),
-            gtk4::accessible::Property::Description("Choose which modified documents to save"),
-        ]);
+        accessibility::set_role(&group, gtk4::AccessibleRole::Group);
+        accessibility::set_labelled_description(
+            &group,
+            "Documents with unsaved changes",
+            "Choose which modified documents to save",
+        );
         let checks: Rc<RefCell<Vec<(gtk4::CheckButton, LushtextEditorPage)>>> =
             Rc::new(RefCell::new(Vec::new()));
 
@@ -402,12 +403,11 @@ impl super::LushtextWindow {
                 .valign(gtk4::Align::Center)
                 .build();
             let check_label = format!("Save {row_title}");
-            check.update_property(&[
-                gtk4::accessible::Property::Label(&check_label),
-                gtk4::accessible::Property::Description(
-                    "Include this document when saving before close",
-                ),
-            ]);
+            accessibility::set_labelled_description(
+                &check,
+                &check_label,
+                "Include this document when saving before close",
+            );
             row.add_prefix(&check);
             let check_weak = check.downgrade();
             row.set_activatable(true);

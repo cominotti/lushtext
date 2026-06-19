@@ -325,6 +325,7 @@ impl LushtextWindow {
     pub(super) fn resolve_notes_for_editor(&self, editor: &LushtextEditorPage, path: &Path) {
         let path = path.to_path_buf();
         let path_for_load = path.clone();
+        let started_at_generation = editor.bookmark_change_generation();
         let window_weak = self.downgrade();
         spawn_blocking_then(
             editor.clone(),
@@ -339,13 +340,20 @@ impl LushtextWindow {
                 }
                 match result {
                     Ok(bookmarks) => {
-                        editor.load_bookmarks(&bookmarks);
+                        if !editor
+                            .load_bookmarks_if_generation_matches(&bookmarks, started_at_generation)
+                        {
+                            return;
+                        }
                         if let Some(window) = window_weak.upgrade() {
                             window.refresh_command_palette_note_source_debounced();
                             window.refresh_status_bar();
                         }
                     }
                     Err(error) => {
+                        if editor.bookmark_change_generation() != started_at_generation {
+                            return;
+                        }
                         tracing::error!("Failed to load notes for {}: {error}", path.display());
                         editor.clear_bookmarks();
                         if let Some(window) = window_weak.upgrade() {

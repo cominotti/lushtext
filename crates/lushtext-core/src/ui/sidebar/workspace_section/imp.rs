@@ -178,13 +178,16 @@ pub struct LushtextWorkspaceSection {
     pub section_body_collapsed: Cell<bool>,
 
     /// Popover for the right-click context menu on file rows.
-    pub context_menu: RefCell<Option<gtk4::PopoverMenu>>,
-    /// Context-menu model for ordinary file and descendant directory rows.
-    pub context_file_menu_model: RefCell<Option<gio::Menu>>,
-    /// Context-menu model for configured top-level workspace folder rows.
-    pub context_folder_menu_model: RefCell<Option<gio::Menu>>,
+    pub context_menu: RefCell<Option<gtk4::Popover>>,
+    /// Vertical action list inside the file-tree context popover.
+    pub context_menu_box: RefCell<Option<gtk4::Box>>,
+    /// Action/menu handles reused by pointer, keyboard, and automation-opened
+    /// file-tree context menus.
+    pub(super) context_menu_wiring: RefCell<Option<FileContextMenuWiring>>,
     /// Popover for the right-click context menu on the workspace header.
-    pub header_context_menu: RefCell<Option<gtk4::PopoverMenu>>,
+    pub header_context_menu: RefCell<Option<gtk4::Popover>>,
+    /// Vertical action list inside the workspace-header context popover.
+    pub header_context_menu_box: RefCell<Option<gtk4::Box>>,
     /// Path of the item under the right-click context menu. Set on gesture
     /// press, read by action handlers (rename, delete, new file).
     pub context_path: RefCell<Option<PathBuf>>,
@@ -305,6 +308,8 @@ impl ObjectImpl for LushtextWorkspaceSection {
             "Workspace",
             "Workspace header with folder actions and collapse control",
         );
+        accessibility::set_has_popup(&*self.header_box, true);
+        accessibility::set_key_shortcuts(&*self.header_box, "Menu, Shift+F10");
         accessibility::set_labelled_description(
             &*self.add_folder_button,
             "Add folder",
@@ -888,51 +893,20 @@ impl LushtextWorkspaceSection {
     fn setup_file_context_menu(&self) {
         let obj = self.obj();
 
-        let file_menu = gio::Menu::new();
-
-        let nav_section = gio::Menu::new();
-        nav_section.append(Some("Focus Folder"), Some("section.focus-folder"));
-        nav_section.append(Some("Local History…"), Some("section.local-history"));
-        nav_section.append(Some("Open Document Note…"), Some("section.document-note"));
-        file_menu.append_section(None, &nav_section);
-
-        let create_section = gio::Menu::new();
-        create_section.append(Some("New File"), Some("section.new-file"));
-        create_section.append(Some("New Folder"), Some("section.new-dir"));
-        file_menu.append_section(None, &create_section);
-
-        let edit_section = gio::Menu::new();
-        edit_section.append(Some("Rename"), Some("section.rename"));
-        edit_section.append(Some("Delete"), Some("section.delete"));
-        file_menu.append_section(None, &edit_section);
-
-        let folder_menu = gio::Menu::new();
-        let folder_note_section = gio::Menu::new();
-        folder_note_section.append(Some("Open Folder Note…"), Some("section.folder-note"));
-        folder_menu.append_section(None, &folder_note_section);
-
-        let membership_section = gio::Menu::new();
-        membership_section.append(Some("Move Up"), Some("section.move-folder-up"));
-        membership_section.append(Some("Move Down"), Some("section.move-folder-down"));
-        membership_section.append(Some("Remove from Workspace"), Some("section.remove-folder"));
-        folder_menu.append_section(None, &membership_section);
-
-        let folder_create_section = gio::Menu::new();
-        folder_create_section.append(Some("New File"), Some("section.new-file"));
-        folder_create_section.append(Some("New Folder"), Some("section.new-dir"));
-        folder_menu.append_section(None, &folder_create_section);
-
-        let popover = gtk4::PopoverMenu::from_model(Some(&file_menu));
+        let popover = gtk4::Popover::new();
         popover.set_parent(&*self.file_tree_view);
         popover.set_has_arrow(false);
         popover.set_halign(gtk4::Align::Start);
+        let menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        menu_box.add_css_class("context-menu");
+        popover.set_child(Some(&menu_box));
+        accessibility::set_role(&popover, gtk4::AccessibleRole::Menu);
         accessibility::set_labelled_description(
             &popover,
             "File tree context menu",
             "Actions for the selected file or folder row",
         );
-        *self.context_file_menu_model.borrow_mut() = Some(file_menu.clone());
-        *self.context_folder_menu_model.borrow_mut() = Some(folder_menu.clone());
+        *self.context_menu_box.borrow_mut() = Some(menu_box);
         *self.context_menu.borrow_mut() = Some(popover);
 
         // Register actions under the "section" prefix. Context menu items
@@ -1076,8 +1050,6 @@ impl LushtextWorkspaceSection {
         obj.insert_action_group("section", Some(&action_group));
 
         let context_menu_wiring = FileContextMenuWiring {
-            file_menu,
-            folder_menu,
             focus_folder_action,
             local_history_action,
             document_note_action,
@@ -1086,6 +1058,7 @@ impl LushtextWorkspaceSection {
             move_folder_down_action,
             remove_folder_action,
         };
+        *self.context_menu_wiring.borrow_mut() = Some(context_menu_wiring.clone());
 
         // Attach the gesture to the stable list view; press-time picking
         // resolves the current recycled row before opening the menu.
@@ -1155,24 +1128,21 @@ impl LushtextWorkspaceSection {
     fn setup_header_context_menu(&self) {
         let obj = self.obj();
 
-        let menu = gio::Menu::new();
-        menu.append(Some("Add Folder…"), Some("ws-header.add-folder"));
-        menu.append(
-            Some("Open Folder Note…"),
-            Some("ws-header.open-folder-note"),
-        );
-        menu.append(Some("Rename Workspace"), Some("ws-header.rename"));
-        menu.append(Some("Remove Workspace"), Some("ws-header.unlist"));
-
-        let popover = gtk4::PopoverMenu::from_model(Some(&menu));
+        let popover = gtk4::Popover::new();
         popover.set_parent(&*self.header_box);
         popover.set_has_arrow(false);
         popover.set_halign(gtk4::Align::Start);
+        let menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        menu_box.add_css_class("context-menu");
+        rebuild_popover_action_menu(&popover, &menu_box, &[HEADER_CONTEXT_MENU_SPECS]);
+        popover.set_child(Some(&menu_box));
+        accessibility::set_role(&popover, gtk4::AccessibleRole::Menu);
         accessibility::set_labelled_description(
             &popover,
             "Workspace context menu",
             "Actions for this workspace section",
         );
+        *self.header_context_menu_box.borrow_mut() = Some(menu_box);
         *self.header_context_menu.borrow_mut() = Some(popover.clone());
 
         let action_group = gio::SimpleActionGroup::new();
@@ -1219,7 +1189,7 @@ impl LushtextWorkspaceSection {
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(3);
 
-        let popover_ref = popover;
+        let popover_ref = popover.clone();
         gesture.connect_pressed(move |_gesture, _n_press, x, y| {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1230,6 +1200,27 @@ impl LushtextWorkspaceSection {
         });
 
         self.header_box.add_controller(gesture);
+
+        let key_controller = gtk4::EventControllerKey::new();
+        key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let popover_ref = popover;
+        key_controller.connect_key_pressed(move |controller, key, _, state| {
+            if !file_tree_context_menu_key(key, state) {
+                return glib::Propagation::Proceed;
+            }
+            let Some(header_box) = controller.widget() else {
+                return glib::Propagation::Proceed;
+            };
+            popover_ref.set_pointing_to(Some(&gdk4::Rectangle::new(
+                0,
+                0,
+                header_box.width().max(1),
+                header_box.height().max(1),
+            )));
+            popover_ref.popup();
+            glib::Propagation::Stop
+        });
+        self.header_box.add_controller(key_controller);
     }
 
     /// Set up double-click gesture on the workspace header to collapse/expand the section body.
@@ -1275,9 +1266,7 @@ fn find_ancestor_expander(widget: &gtk4::Widget) -> Option<gtk4::TreeExpander> {
 }
 
 #[derive(Clone)]
-struct FileContextMenuWiring {
-    file_menu: gio::Menu,
-    folder_menu: gio::Menu,
+pub(super) struct FileContextMenuWiring {
     focus_folder_action: gio::SimpleAction,
     local_history_action: gio::SimpleAction,
     document_note_action: gio::SimpleAction,
@@ -1285,6 +1274,162 @@ struct FileContextMenuWiring {
     move_folder_up_action: gio::SimpleAction,
     move_folder_down_action: gio::SimpleAction,
     remove_folder_action: gio::SimpleAction,
+}
+
+#[derive(Clone, Copy)]
+struct PopoverMenuActionSpec {
+    id: &'static str,
+    label: &'static str,
+    action: &'static str,
+    description: &'static str,
+}
+
+const FILE_NAV_CONTEXT_MENU_SPECS: &[PopoverMenuActionSpec] = &[
+    PopoverMenuActionSpec {
+        id: "file-focus-folder",
+        label: "Focus Folder",
+        action: "section.focus-folder",
+        description: "Temporarily show this folder as the root of the workspace tree",
+    },
+    PopoverMenuActionSpec {
+        id: "file-local-history",
+        label: "Local History…",
+        action: "section.local-history",
+        description: "Open local history for this file",
+    },
+    PopoverMenuActionSpec {
+        id: "file-document-note",
+        label: "Open Document Note…",
+        action: "section.document-note",
+        description: "Open the note attached to this document",
+    },
+];
+const FILE_CREATE_CONTEXT_MENU_SPECS: &[PopoverMenuActionSpec] = &[
+    PopoverMenuActionSpec {
+        id: "file-new-file",
+        label: "New File",
+        action: "section.new-file",
+        description: "Create a new file in this folder",
+    },
+    PopoverMenuActionSpec {
+        id: "file-new-folder",
+        label: "New Folder",
+        action: "section.new-dir",
+        description: "Create a new folder in this folder",
+    },
+];
+const FILE_EDIT_CONTEXT_MENU_SPECS: &[PopoverMenuActionSpec] = &[
+    PopoverMenuActionSpec {
+        id: "file-rename",
+        label: "Rename",
+        action: "section.rename",
+        description: "Rename the selected file or folder",
+    },
+    PopoverMenuActionSpec {
+        id: "file-delete",
+        label: "Delete",
+        action: "section.delete",
+        description: "Delete the selected file or folder after confirmation",
+    },
+];
+const FOLDER_NOTE_CONTEXT_MENU_SPECS: &[PopoverMenuActionSpec] = &[PopoverMenuActionSpec {
+    id: "folder-open-note",
+    label: "Open Folder Note…",
+    action: "section.folder-note",
+    description: "Open the note attached to this workspace folder",
+}];
+const FOLDER_MEMBERSHIP_CONTEXT_MENU_SPECS: &[PopoverMenuActionSpec] = &[
+    PopoverMenuActionSpec {
+        id: "folder-move-up",
+        label: "Move Up",
+        action: "section.move-folder-up",
+        description: "Move this folder earlier in the workspace",
+    },
+    PopoverMenuActionSpec {
+        id: "folder-move-down",
+        label: "Move Down",
+        action: "section.move-folder-down",
+        description: "Move this folder later in the workspace",
+    },
+    PopoverMenuActionSpec {
+        id: "folder-remove",
+        label: "Remove from Workspace",
+        action: "section.remove-folder",
+        description: "Remove this folder from the workspace without deleting it from disk",
+    },
+];
+const HEADER_CONTEXT_MENU_SPECS: &[PopoverMenuActionSpec] = &[
+    PopoverMenuActionSpec {
+        id: "header-add-folder",
+        label: "Add Folder…",
+        action: "ws-header.add-folder",
+        description: "Add a folder to this workspace",
+    },
+    PopoverMenuActionSpec {
+        id: "header-open-folder-note",
+        label: "Open Folder Note…",
+        action: "ws-header.open-folder-note",
+        description: "Open the note attached to this workspace",
+    },
+    PopoverMenuActionSpec {
+        id: "header-rename",
+        label: "Rename Workspace",
+        action: "ws-header.rename",
+        description: "Rename this workspace",
+    },
+    PopoverMenuActionSpec {
+        id: "header-remove",
+        label: "Remove Workspace",
+        action: "ws-header.unlist",
+        description: "Remove this workspace after confirmation",
+    },
+];
+
+fn rebuild_popover_action_menu(
+    popover: &gtk4::Popover,
+    menu_box: &gtk4::Box,
+    groups: &[&[PopoverMenuActionSpec]],
+) {
+    while let Some(child) = menu_box.first_child() {
+        menu_box.remove(&child);
+    }
+
+    for (index, specs) in groups.iter().enumerate() {
+        if index > 0 {
+            let separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+            separator.set_margin_top(4);
+            separator.set_margin_bottom(4);
+            menu_box.append(&separator);
+        }
+
+        for spec in *specs {
+            menu_box.append(&popover_action_button(popover, spec));
+        }
+    }
+}
+
+fn popover_action_button(popover: &gtk4::Popover, spec: &PopoverMenuActionSpec) -> gtk4::Button {
+    let button = gtk4::Button::with_label(spec.label);
+    button.add_css_class("flat");
+    button.add_css_class("model");
+    button.set_action_name(Some(spec.action));
+    button.set_halign(gtk4::Align::Fill);
+    button.set_hexpand(true);
+    button.set_widget_name(spec.id);
+    accessibility::set_role(&button, gtk4::AccessibleRole::MenuItem);
+    accessibility::set_labelled_description(&button, spec.label, spec.description);
+
+    let popover_weak = popover.downgrade();
+    button.connect_clicked(move |_| {
+        let popover_weak = popover_weak.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(popover) = popover_weak.upgrade() {
+                popover.popdown();
+            }
+        });
+    });
+
+    button
 }
 
 fn file_tree_context_menu_key(key: gtk4::gdk::Key, state: gtk4::gdk::ModifierType) -> bool {
@@ -1335,6 +1480,38 @@ fn show_file_context_menu_for_selection(
         wiring,
         pointing_to,
     )
+}
+
+impl super::LushtextWorkspaceSection {
+    /// Open the file-tree context menu for the current selection.
+    ///
+    /// This reuses the same menu wiring as pointer and keyboard handlers so
+    /// automation-opened menus stay behaviorally identical to user-opened ones.
+    pub(crate) fn show_selected_file_context_menu(&self) -> bool {
+        let Some(wiring) = self.imp().context_menu_wiring.borrow().clone() else {
+            return false;
+        };
+        show_file_context_menu_for_selection(self, &wiring)
+    }
+
+    /// Open the workspace-header context menu at the header bounds.
+    ///
+    /// The header can be focused through a child button, but automation also
+    /// needs a direct menu-open path when synthetic key delivery is unavailable.
+    pub(crate) fn show_header_context_menu(&self) -> bool {
+        let imp = self.imp();
+        let Some(popover) = imp.header_context_menu.borrow().clone() else {
+            return false;
+        };
+        popover.set_pointing_to(Some(&gdk4::Rectangle::new(
+            0,
+            0,
+            imp.header_box.width().max(1),
+            imp.header_box.height().max(1),
+        )));
+        popover.popup();
+        true
+    }
 }
 
 fn realized_expander_and_bounds_for_tree_row(
@@ -1411,7 +1588,8 @@ fn show_file_context_menu_for_row(
     wiring.move_folder_down_action.set_enabled(can_move_down);
 
     let popover = imp.context_menu.borrow().clone();
-    if let Some(popover) = popover {
+    let menu_box = imp.context_menu_box.borrow().clone();
+    if let (Some(popover), Some(menu_box)) = (popover, menu_box) {
         let item_kind = if is_workspace_folder {
             "Workspace folder"
         } else if file_item.is_dir() {
@@ -1425,11 +1603,27 @@ fn show_file_context_menu_for_row(
             &format!("{item_kind} actions for {display_name}"),
             "Context actions for the selected workspace file-tree row",
         );
-        popover.set_menu_model(Some(if is_workspace_folder {
-            &wiring.folder_menu
+        if is_workspace_folder {
+            rebuild_popover_action_menu(
+                &popover,
+                &menu_box,
+                &[
+                    FOLDER_NOTE_CONTEXT_MENU_SPECS,
+                    FOLDER_MEMBERSHIP_CONTEXT_MENU_SPECS,
+                    FILE_CREATE_CONTEXT_MENU_SPECS,
+                ],
+            );
         } else {
-            &wiring.file_menu
-        }));
+            rebuild_popover_action_menu(
+                &popover,
+                &menu_box,
+                &[
+                    FILE_NAV_CONTEXT_MENU_SPECS,
+                    FILE_CREATE_CONTEXT_MENU_SPECS,
+                    FILE_EDIT_CONTEXT_MENU_SPECS,
+                ],
+            );
+        }
         popover.set_pointing_to(Some(&pointing_to));
         popover.popup();
         return true;

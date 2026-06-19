@@ -109,6 +109,22 @@ impl LushtextWorkspaceSection {
         self.imp().header_label.label().to_string()
     }
 
+    /// Move keyboard focus to this section's file tree.
+    ///
+    /// Runs on the GTK main thread and exists for keyboard/automation paths
+    /// that need to open the selected row's context menu without pointer input.
+    pub(crate) fn focus_file_tree(&self) -> bool {
+        self.imp().file_tree_view.grab_focus()
+    }
+
+    /// Move keyboard focus to the workspace header's collapse button.
+    ///
+    /// The header itself owns the context-menu key controller, and GTK bubbles
+    /// key events from this focusable child through that header controller.
+    pub(crate) fn focus_header_controls(&self) -> bool {
+        self.imp().collapse_button.grab_focus()
+    }
+
     /// Return this section's stable workspace id.
     #[must_use]
     pub fn workspace_id(&self) -> WorkspaceId {

@@ -460,9 +460,25 @@ impl LushtextEditorPage {
         bookmarks::bookmark_records(self)
     }
 
+    /// Snapshot the live bookmark projection generation for async race guards.
+    #[must_use]
+    pub fn bookmark_change_generation(&self) -> u64 {
+        bookmarks::bookmark_change_generation(self)
+    }
+
     /// Replace the live bookmark projection with freshly loaded sidecar records.
     pub fn load_bookmarks(&self, bookmarks: &[BookmarkRecord]) {
         bookmarks::load_bookmarks(self, bookmarks);
+    }
+
+    /// Apply loaded sidecar bookmarks only when the live projection stayed unchanged.
+    #[must_use]
+    pub fn load_bookmarks_if_generation_matches(
+        &self,
+        bookmarks: &[BookmarkRecord],
+        expected_generation: u64,
+    ) -> bool {
+        bookmarks::load_bookmarks_if_generation_matches(self, bookmarks, expected_generation)
     }
 
     /// Clear all live bookmark marks for the current file identity.

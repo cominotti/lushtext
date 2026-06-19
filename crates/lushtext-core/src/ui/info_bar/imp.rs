@@ -42,7 +42,7 @@ pub struct LushtextInfoBar {
     /// Reveals and hides the alert row above the editor content.
     #[template_child]
     pub alert_revealer: TemplateChild<gtk4::Revealer>,
-    /// Styled alert surface that receives the `warning` or `error` class.
+    /// Styled alert surface that groups the message and recovery actions.
     #[template_child]
     pub alert_box: TemplateChild<gtk4::Box>,
     /// Wrapping container that keeps the message and action group on one line
@@ -50,7 +50,8 @@ pub struct LushtextInfoBar {
     /// row beneath the message when the column is too narrow.
     #[template_child]
     pub content_wrap: TemplateChild<libadwaita::WrapBox>,
-    /// Title text for the currently rendered inline notification.
+    /// Title text for the current notification; it carries the leaf alert role
+    /// so AT-SPI keeps the sibling action buttons reachable.
     #[template_child]
     pub alert_title: TemplateChild<gtk4::Label>,
     /// Body text for the currently rendered inline notification.
@@ -132,8 +133,11 @@ impl ObjectImpl for LushtextInfoBar {
         self.parent_constructed();
 
         self.obj().set_visible(false);
-        self.alert_box
-            .set_accessible_role(gtk4::AccessibleRole::Alert);
+        // A container with role Alert can become a leaf in AT-SPI, hiding the
+        // retry/dismiss buttons. Keep the row grouped and put Alert on the
+        // message label that actually needs high-priority announcement.
+        accessibility::set_role(&*self.alert_box, gtk4::AccessibleRole::Group);
+        accessibility::set_role(&*self.alert_title, gtk4::AccessibleRole::Alert);
 
         // GNOME Text Editor wraps its inline alert action labels so restored-file
         // banners stay readable on narrow windows. LushText follows the same

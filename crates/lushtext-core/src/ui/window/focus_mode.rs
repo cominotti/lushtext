@@ -10,7 +10,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 
 use crate::config::keys;
-use crate::ui::accessibility::AnnouncementLane;
+use crate::ui::accessibility::{self, AnnouncementLane};
 
 use super::LushtextWindow;
 
@@ -158,7 +158,7 @@ impl LushtextWindow {
 
         imp.focus_mode.active.set(false);
         let _ = imp.focus_mode.affordance_timer.invalidate();
-        imp.focus_mode_revealer.set_reveal_child(false);
+        self.set_focus_mode_affordance_revealed(false);
         self.set_preview_mode_for_focus_mode(false);
         if restore_preview {
             self.set_preview_pane_visible_for_focus_mode(true);
@@ -187,7 +187,7 @@ impl LushtextWindow {
         self.sync_tab_bar_visibility();
         imp.status_bar.set_visible(!active);
         if !active {
-            imp.focus_mode_revealer.set_reveal_child(false);
+            self.set_focus_mode_affordance_revealed(false);
         }
         self.sync_focus_mode_action_state();
     }
@@ -242,7 +242,7 @@ impl LushtextWindow {
                     && let Some(window) = window_weak.upgrade()
                     && window.is_focus_mode_active()
                 {
-                    window.imp().focus_mode_revealer.set_reveal_child(true);
+                    window.set_focus_mode_affordance_revealed(true);
                 }
             }
         });
@@ -254,18 +254,37 @@ impl LushtextWindow {
         if !imp.focus_mode.active.get() {
             return;
         }
-        imp.focus_mode_revealer.set_reveal_child(true);
+        self.set_focus_mode_affordance_revealed(true);
 
         imp.focus_mode.affordance_timer.arm(
             self,
             std::time::Duration::from_millis(1800),
             move |window, _| {
-                let imp = window.imp();
-                if !imp.focus_mode_affordance.has_focus() {
-                    imp.focus_mode_revealer.set_reveal_child(false);
+                if !window.focus_mode_affordance_contains_focus() {
+                    window.set_focus_mode_affordance_revealed(false);
                 }
             },
         );
+    }
+
+    /// Return whether keyboard focus is on the Focus Mode affordance or one of its controls.
+    fn focus_mode_affordance_contains_focus(&self) -> bool {
+        let Some(focus) = gtk4::prelude::GtkWindowExt::focus(self) else {
+            return false;
+        };
+        let affordance = self
+            .imp()
+            .focus_mode_affordance
+            .upcast_ref::<gtk4::Widget>();
+
+        focus.as_ptr() == affordance.as_ptr() || focus.is_ancestor(affordance)
+    }
+
+    /// Keep the overlay revealer and accessibility hidden state synchronized.
+    fn set_focus_mode_affordance_revealed(&self, revealed: bool) {
+        let imp = self.imp();
+        imp.focus_mode_revealer.set_reveal_child(revealed);
+        accessibility::set_hidden(&*imp.focus_mode_affordance, !revealed);
     }
 
     /// Keep active Focus Mode presentation synchronized with preference changes.

@@ -127,6 +127,14 @@ def parse_args() -> argparse.Namespace:
         help="Text that must appear in a bounded AT-SPI tree before capture; may be repeated.",
     )
     parser.add_argument(
+        "--allow-file-open-failure",
+        action="store_true",
+        help=(
+            "Continue after the initial file-open-complete wait reports a failed editor "
+            "load so negative error-surface scenarios can capture AT-SPI evidence."
+        ),
+    )
+    parser.add_argument(
         "--step",
         action="append",
         default=[],
@@ -135,7 +143,9 @@ def parse_args() -> argparse.Namespace:
             "Ordered scenario step. KIND is app-action, window-action, "
             "window-string-action, window-bool-action, wait-window-action, "
             "wait-predicate, wait-atspi-text, atspi-set-editor-text, "
-            "or atspi-click-button."
+            "atspi-click-button, atspi-focus-accessible, "
+            "atspi-activate-accessible, atspi-context-click-accessible, "
+            "or atspi-key."
         ),
     )
     parser.add_argument(
@@ -296,6 +306,8 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
         cli.extend(["--wait-window-action", action])
     for text in args.wait_atspi_text:
         cli.extend(["--wait-atspi-text", text])
+    if args.allow_file_open_failure:
+        cli.append("--allow-file-open-failure")
     for step in args.step:
         cli.extend(["--step", step])
     if args.capture_artifact_dir is not None:
@@ -808,6 +820,18 @@ def run_ordered_step(bus, artifact_dir: Path, app_env: dict[str, str], step: str
     elif kind == "atspi-click-button":
         click_atspi_button(artifact_dir, app_env, value)
         wait_for_ready(bus, artifact_dir, "accessibility-settled", 5000)
+    elif kind == "atspi-focus-accessible":
+        run_atspi_accessible_action(artifact_dir, app_env, "focus", value)
+        wait_for_ready(bus, artifact_dir, "accessibility-settled", 5000)
+    elif kind == "atspi-activate-accessible":
+        run_atspi_accessible_action(artifact_dir, app_env, "activate", value)
+        wait_for_ready(bus, artifact_dir, "accessibility-settled", 5000)
+    elif kind == "atspi-context-click-accessible":
+        run_atspi_accessible_action(artifact_dir, app_env, "context-click", value)
+        wait_for_ready(bus, artifact_dir, "accessibility-settled", 5000)
+    elif kind == "atspi-key":
+        run_atspi_key_action(artifact_dir, app_env, value)
+        wait_for_ready(bus, artifact_dir, "accessibility-settled", 5000)
     else:
         raise RuntimeError(f"unknown --step kind: {kind}")
 
@@ -951,7 +975,7 @@ def click_atspi_button(artifact_dir: Path, env: dict[str, str], name_regex: str)
             "--name-regex",
             name_regex,
             "--max-depth",
-            "30",
+            "44",
             "--timeout",
             "10",
         ],
@@ -975,6 +999,95 @@ def click_atspi_button(artifact_dir: Path, env: dict[str, str], name_regex: str)
         print(f"AT-SPI click-button stderr: {result.stderr.strip()}")
     if result.returncode != 0:
         raise RuntimeError(f"AT-SPI could not click button matching {name_regex!r}.")
+
+
+def split_accessible_descriptor(descriptor: str) -> tuple[str, str]:
+    role_regex, separator, name_regex = descriptor.partition("|")
+    if not separator:
+        return ".*", descriptor
+    if not role_regex or not name_regex:
+        raise RuntimeError(
+            "AT-SPI accessible descriptor must be ROLE_REGEX|NAME_REGEX when a role is provided."
+        )
+    return role_regex, name_regex
+
+
+def run_atspi_accessible_action(
+    artifact_dir: Path,
+    env: dict[str, str],
+    command: str,
+    descriptor: str,
+) -> None:
+    role_regex, name_regex = split_accessible_descriptor(descriptor)
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", f"{command}-{role_regex}-{name_regex}").strip("-")
+    result = subprocess.run(
+        [
+            str(SYSTEM_PYTHON),
+            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-accessible-action.py"),
+            "--application-regex",
+            "^lushtext$",
+            "--command",
+            command,
+            "--role-regex",
+            role_regex,
+            "--name-regex",
+            name_regex,
+            "--max-depth",
+            "44",
+            "--timeout",
+            "10",
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=15,
+    )
+    (artifact_dir / f"atspi-accessible-action-{slug}.stdout").write_text(
+        result.stdout,
+        encoding="utf-8",
+    )
+    (artifact_dir / f"atspi-accessible-action-{slug}.stderr").write_text(
+        result.stderr,
+        encoding="utf-8",
+    )
+    print(f"AT-SPI accessible {command} status: {result.returncode} descriptor={descriptor!r}")
+    if result.stdout.strip():
+        print(f"AT-SPI accessible {command} stdout: {result.stdout.strip()}")
+    if result.stderr.strip():
+        print(f"AT-SPI accessible {command} stderr: {result.stderr.strip()}")
+    if result.returncode != 0:
+        raise RuntimeError(f"AT-SPI could not {command} accessible matching {descriptor!r}.")
+
+
+def run_atspi_key_action(artifact_dir: Path, env: dict[str, str], key: str) -> None:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", key).strip("-") or "key"
+    result = subprocess.run(
+        [
+            str(SYSTEM_PYTHON),
+            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-accessible-action.py"),
+            "--application-regex",
+            "^lushtext$",
+            "--command",
+            "key",
+            "--key",
+            key,
+            "--timeout",
+            "10",
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=15,
+    )
+    (artifact_dir / f"atspi-key-{slug}.stdout").write_text(result.stdout, encoding="utf-8")
+    (artifact_dir / f"atspi-key-{slug}.stderr").write_text(result.stderr, encoding="utf-8")
+    print(f"AT-SPI key status: {result.returncode} key={key!r}")
+    if result.stdout.strip():
+        print(f"AT-SPI key stdout: {result.stdout.strip()}")
+    if result.stderr.strip():
+        print(f"AT-SPI key stderr: {result.stderr.strip()}")
+    if result.returncode != 0:
+        raise RuntimeError(f"AT-SPI could not send key {key!r}.")
 
 
 def set_atspi_editor_text(artifact_dir: Path, env: dict[str, str], text: str) -> None:
@@ -1217,7 +1330,16 @@ def mutter_child(args: argparse.Namespace) -> int:
         wait_for_app_actions(bus)
         wait_for_window_actions(bus)
         wait_for_automation_object(bus)
-        wait_for_ready(bus, artifact_dir, "file-open-complete", 5000)
+        try:
+            wait_for_ready(bus, artifact_dir, "file-open-complete", 5000)
+        except RuntimeError as exc:
+            if not args.allow_file_open_failure:
+                raise
+            print(
+                "Accepted file-open-complete workflow failure for negative load scenario: "
+                f"{exc}",
+                flush=True,
+            )
         if args.search is not None:
             activate_window_action(bus, "set-search-query", args.search)
             print(f"Activated window action: set-search-query({args.search!r})", flush=True)

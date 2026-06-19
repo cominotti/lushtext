@@ -158,6 +158,18 @@ impl LushtextWindow {
                     }
                 })
                 .build(),
+            gio::ActionEntry::builder("focus-workspace-tree")
+                .activate(|window: &Self, _, _| window.focus_workspace_tree())
+                .build(),
+            gio::ActionEntry::builder("focus-workspace-header")
+                .activate(|window: &Self, _, _| window.focus_workspace_header())
+                .build(),
+            gio::ActionEntry::builder("show-workspace-tree-context-menu")
+                .activate(|window: &Self, _, _| window.show_workspace_tree_context_menu())
+                .build(),
+            gio::ActionEntry::builder("show-workspace-header-context-menu")
+                .activate(|window: &Self, _, _| window.show_workspace_header_context_menu())
+                .build(),
             gio::ActionEntry::builder("set-properties-visible")
                 .parameter_type(Some(glib::VariantTy::BOOLEAN))
                 .activate(|window: &Self, _, parameter| {
@@ -484,6 +496,56 @@ impl LushtextWindow {
             },
         );
         self.start_workspace_sidebar_transition();
+    }
+
+    /// Move keyboard focus into the first visible workspace file tree.
+    ///
+    /// This keeps sidebar context-menu shortcuts reachable for keyboard and
+    /// assistive-technology users even when AT-SPI cannot focus recycled list
+    /// rows directly.
+    pub(crate) fn focus_workspace_tree(&self) {
+        self.change_boolean_action_state("toggle-sidebar", true);
+        if !self.imp().sidebar.focus_first_visible_file_tree() {
+            tracing::warn!("focus-workspace-tree: no visible workspace tree accepted focus");
+        }
+    }
+
+    /// Move keyboard focus to the first visible workspace header control.
+    ///
+    /// Header menu shortcuts are handled by the header container, but focus
+    /// lives on its collapse button so key events can bubble through GTK.
+    pub(crate) fn focus_workspace_header(&self) {
+        self.change_boolean_action_state("toggle-sidebar", true);
+        if !self.imp().sidebar.focus_first_visible_header_controls() {
+            tracing::warn!("focus-workspace-header: no visible workspace header accepted focus");
+        }
+    }
+
+    /// Open the selected workspace file-tree row's context menu.
+    ///
+    /// This is a normal GTK action path for automation and smoke proof; it uses
+    /// the same section menu state as pointer and keyboard activation.
+    pub(crate) fn show_workspace_tree_context_menu(&self) {
+        self.change_boolean_action_state("toggle-sidebar", true);
+        if !self
+            .imp()
+            .sidebar
+            .show_first_visible_file_tree_context_menu()
+        {
+            tracing::warn!(
+                "show-workspace-tree-context-menu: no selected visible workspace row had a menu"
+            );
+        }
+    }
+
+    /// Open the first visible workspace header context menu.
+    pub(crate) fn show_workspace_header_context_menu(&self) {
+        self.change_boolean_action_state("toggle-sidebar", true);
+        if !self.imp().sidebar.show_first_visible_header_context_menu() {
+            tracing::warn!(
+                "show-workspace-header-context-menu: no visible workspace header had a menu"
+            );
+        }
     }
 
     /// Persist the user's explicit document-properties preference, then let the

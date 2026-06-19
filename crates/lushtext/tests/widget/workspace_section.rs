@@ -5,10 +5,8 @@
 use crate::common::{
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_events, present_window, wait_until,
 };
-use gio::prelude::MenuModelExt;
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::gio;
 use gtk4::prelude::*;
 use lushtext_core::model::workspace::{
     FolderTreeEntry, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection,
@@ -145,6 +143,8 @@ fn test_workspace_section_header_and_empty_state_expose_accessibility_metadata()
         .properties(&[
             gtk4::AccessibleProperty::Label,
             gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::HasPopup,
+            gtk4::AccessibleProperty::KeyShortcuts,
         ])
         .assert_on(&*section.imp().header_box);
     AccessibleAudit::new()
@@ -834,6 +834,11 @@ fn visible_reorder_drop_target_count(section: &LushtextWorkspaceSection) -> usiz
 }
 
 fn prepare_context_menu_for_path(section: &LushtextWorkspaceSection, target_path: &Path) {
+    if let Some(popover) = section.imp().context_menu.borrow().as_ref() {
+        popover.popdown();
+        flush_events();
+    }
+
     let list_view = &section.imp().file_tree_view;
     if let Some(index) = tree_model_index_for_path(section, target_path) {
         list_view.scroll_to(index, gtk4::ListScrollFlags::NONE, None);
@@ -857,51 +862,56 @@ fn prepare_context_menu_for_path(section: &LushtextWorkspaceSection, target_path
         "context setup should target the requested row"
     );
 
-    let imp = section.imp();
-    let workspace_folder_id = file_item.workspace_folder_id();
-    *imp.context_path.borrow_mut() = file_item.path();
-    imp.context_is_dir.set(file_item.is_dir());
-    *imp.context_workspace_folder_id.borrow_mut() = workspace_folder_id.clone();
-    *imp.context_expander.borrow_mut() = Some(expander);
-
-    let menu = if workspace_folder_id.is_some() {
-        imp.context_folder_menu_model.borrow().as_ref().cloned()
-    } else {
-        imp.context_file_menu_model.borrow().as_ref().cloned()
-    }
-    .expect("context menu model should exist");
-    imp.context_menu
-        .borrow()
-        .as_ref()
-        .expect("context menu should exist")
-        .set_menu_model(Some(&menu));
+    select_path(section, target_path);
+    section.imp().file_tree_view.grab_focus();
+    flush_events();
+    assert_eq!(
+        emit_key_pressed_on_file_tree(section, gtk4::gdk::Key::Menu),
+        glib::Propagation::Stop,
+        "context setup should open the selected row's keyboard menu"
+    );
+    wait_until(Duration::from_secs(2), || {
+        section
+            .imp()
+            .context_menu
+            .borrow()
+            .as_ref()
+            .is_some_and(gtk4::prelude::WidgetExt::is_visible)
+    });
 }
 
 fn current_context_menu_labels(section: &LushtextWorkspaceSection) -> Vec<String> {
-    let menu = section
+    let menu_box = section
         .imp()
-        .context_menu
+        .context_menu_box
         .borrow()
         .as_ref()
-        .and_then(gtk4::PopoverMenu::menu_model)
-        .expect("context menu should expose a model");
-    menu_model_labels(&menu)
+        .expect("context menu action box should exist")
+        .clone();
+    action_button_labels(&menu_box)
 }
 
-fn menu_model_labels(model: &gio::MenuModel) -> Vec<String> {
+fn current_header_context_menu_labels(section: &LushtextWorkspaceSection) -> Vec<String> {
+    let menu_box = section
+        .imp()
+        .header_context_menu_box
+        .borrow()
+        .as_ref()
+        .expect("workspace header context menu action box should exist")
+        .clone();
+    action_button_labels(&menu_box)
+}
+
+fn action_button_labels(menu_box: &gtk4::Box) -> Vec<String> {
     let mut labels = Vec::new();
-    for index in 0..model.n_items() {
-        if let Some(label) = model
-            .item_attribute_value(index, "label", Some(glib::VariantTy::STRING))
-            .and_then(|variant| variant.get::<String>())
+    let mut child = menu_box.first_child();
+    while let Some(widget) = child {
+        if let Ok(button) = widget.clone().downcast::<gtk4::Button>()
+            && let Some(label) = button.label()
         {
-            labels.push(label);
+            labels.push(label.to_string());
         }
-        for link_name in ["section", "submenu"] {
-            if let Some(link) = model.item_link(index, link_name) {
-                labels.extend(menu_model_labels(&link));
-            }
-        }
+        child = widget.next_sibling();
     }
     labels
 }
@@ -932,6 +942,28 @@ fn emit_key_pressed_on_file_tree_with_state(
     state: gtk4::gdk::ModifierType,
 ) -> glib::Propagation {
     let controllers = section.imp().file_tree_view.observe_controllers();
+    for index in 0..controllers.n_items() {
+        if let Some(controller) = controllers
+            .item(index)
+            .and_then(|object| object.downcast::<gtk4::EventControllerKey>().ok())
+        {
+            let args: [&dyn ToValue; 3] = [&key, &0u32, &state];
+            let stopped: bool =
+                glib::object::ObjectExt::emit_by_name(&controller, "key-pressed", &args);
+            if stopped {
+                return glib::Propagation::Stop;
+            }
+        }
+    }
+    glib::Propagation::Proceed
+}
+
+fn emit_key_pressed_on_workspace_header_with_state(
+    section: &LushtextWorkspaceSection,
+    key: gtk4::gdk::Key,
+    state: gtk4::gdk::ModifierType,
+) -> glib::Propagation {
+    let controllers = section.imp().header_box.observe_controllers();
     for index in 0..controllers.n_items() {
         if let Some(controller) = controllers
             .item(index)
@@ -2389,16 +2421,16 @@ fn test_workspace_section_context_menu_no_arrow() {
 #[test]
 fn test_workspace_section_context_menu_lists_local_history() {
     ensure_gtk_init();
-    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
-    let menu = section
-        .imp()
-        .context_file_menu_model
-        .borrow()
-        .as_ref()
-        .expect("file context menu should exist")
-        .clone();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("file-menu-history"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    let file = folder.path().join("history.txt");
+    fixture::write_text(&file, "history body\n");
 
-    let labels = menu_model_labels(menu.upcast_ref());
+    section.load_folders(&[FolderTreeEntry::File { path: file.clone() }]);
+    let _window = present_section_window(&section);
+    prepare_context_menu_for_path(&section, &file);
+
+    let labels = current_context_menu_labels(&section);
     assert!(
         labels.iter().any(|label| label == "Local History…"),
         "file context menu should advertise Local History"
@@ -2408,16 +2440,16 @@ fn test_workspace_section_context_menu_lists_local_history() {
 #[test]
 fn test_workspace_section_file_context_menu_keeps_file_actions_only() {
     ensure_gtk_init();
-    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
-    let menu = section
-        .imp()
-        .context_file_menu_model
-        .borrow()
-        .as_ref()
-        .expect("file context menu should exist")
-        .clone();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("file-menu-actions"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    let file = folder.path().join("file-actions.txt");
+    fixture::write_text(&file, "file action body\n");
 
-    let labels = menu_model_labels(menu.upcast_ref());
+    section.load_folders(&[FolderTreeEntry::File { path: file.clone() }]);
+    let _window = present_section_window(&section);
+    prepare_context_menu_for_path(&section, &file);
+
+    let labels = current_context_menu_labels(&section);
 
     assert!(labels.iter().any(|label| label == "Open Document Note…"));
     assert!(labels.iter().any(|label| label == "Rename"));
@@ -2430,16 +2462,20 @@ fn test_workspace_section_file_context_menu_keeps_file_actions_only() {
 #[test]
 fn test_workspace_section_folder_context_menu_lists_membership_actions() {
     ensure_gtk_init();
-    let section = LushtextWorkspaceSection::new(WorkspaceId::default());
-    let menu = section
-        .imp()
-        .context_folder_menu_model
-        .borrow()
-        .as_ref()
-        .expect("folder context menu should exist")
-        .clone();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("folder-menu-actions"));
+    let folder = tempfile::tempdir().expect("workspace folder");
 
-    let labels = menu_model_labels(menu.upcast_ref());
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder-id"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(2), || {
+        realized_overlay_for_path(&section, folder.path()).is_some()
+    });
+    prepare_context_menu_for_path(&section, folder.path());
+
+    let labels = current_context_menu_labels(&section);
 
     assert!(labels.iter().any(|label| label == "Open Folder Note…"));
     assert!(labels.iter().any(|label| label == "Move Up"));
@@ -2658,6 +2694,79 @@ fn test_file_tree_keyboard_context_menu_exposes_workspace_folder_reorder() {
         *requested.borrow(),
         Some((second_id, WorkspaceFolderMoveDirection::Up))
     );
+}
+
+#[test]
+fn test_workspace_header_context_menu_opens_from_keyboard_for_focused_header_child() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("keyboard-header-menu"));
+    section.set_workspace_name("Keyboard Header");
+    let _window = present_section_window(&section);
+
+    section.imp().add_folder_button.grab_focus();
+    flush_events();
+    assert_eq!(
+        emit_key_pressed_on_workspace_header_with_state(
+            &section,
+            gtk4::gdk::Key::Menu,
+            gtk4::gdk::ModifierType::empty(),
+        ),
+        glib::Propagation::Stop
+    );
+    wait_until(Duration::from_secs(2), || {
+        section
+            .imp()
+            .header_context_menu
+            .borrow()
+            .as_ref()
+            .is_some_and(gtk4::prelude::WidgetExt::is_visible)
+    });
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(
+            section
+                .imp()
+                .header_context_menu
+                .borrow()
+                .as_ref()
+                .expect("workspace header context menu should exist"),
+        );
+
+    let labels = current_header_context_menu_labels(&section);
+    assert!(labels.iter().any(|label| label == "Add Folder…"));
+    assert!(labels.iter().any(|label| label == "Open Folder Note…"));
+    assert!(labels.iter().any(|label| label == "Rename Workspace"));
+    assert!(labels.iter().any(|label| label == "Remove Workspace"));
+
+    section
+        .imp()
+        .header_context_menu
+        .borrow()
+        .as_ref()
+        .expect("workspace header context menu should exist")
+        .popdown();
+    flush_events();
+    assert_eq!(
+        emit_key_pressed_on_workspace_header_with_state(
+            &section,
+            gtk4::gdk::Key::F10,
+            gtk4::gdk::ModifierType::SHIFT_MASK,
+        ),
+        glib::Propagation::Stop
+    );
+
+    let called = Rc::new(Cell::new(false));
+    let called_clone = Rc::clone(&called);
+    section.connect_rename_workspace_requested(move |_| {
+        called_clone.set(true);
+    });
+    section
+        .activate_action("ws-header.rename", None)
+        .expect("rename workspace action should be reachable from keyboard menu context");
+    assert!(called.get());
 }
 
 #[test]

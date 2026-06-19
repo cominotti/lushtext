@@ -29,7 +29,7 @@ EXPECTED_HELPER_FLAG_MARKER = (
     "cargo-gtk-proof-run --artifact-dir --binary --scenario-dir --case-filter --oracle "
     "capture-lushtext-mutter "
     "--file --output --search --expected-search-matches --enable-minimap "
-    "--enable-atspi --app-action --window-action --window-string-action --window-bool-action --wait-predicate --wait-window-action --wait-atspi-text --step "
+    "--enable-atspi --app-action --window-action --window-string-action --window-bool-action --wait-predicate --wait-window-action --wait-atspi-text --allow-file-open-failure --step "
     "--color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts "
     "run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test "
         "lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary visual-geometry-capture self-test "
@@ -41,7 +41,8 @@ REQUIRED_HELPER_TABLE_ROWS = (
     "| `scripts/run-accessibility-smoke.sh` | `--list-cases` | Prints known accessibility smoke scenario names and exits without launching LushText. |",
     "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--app-action ACTION` | Activates an application-scoped `org.gtk.Actions` action before capture; may be repeated. |",
     "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--window-bool-action ACTION=true\\|false` | Activates a window-scoped `org.gtk.Actions` action with one boolean parameter before capture; may be repeated. |",
-    "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--step KIND:VALUE` | Runs ordered app/window action, wait, AT-SPI text, AT-SPI editor-text, or AT-SPI button-click steps for workflows that need interleaved action and readiness proof. |",
+    "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--allow-file-open-failure` | Continues after the initial file-open readiness wait reports a failed editor load so negative error-surface scenarios can capture AT-SPI evidence. |",
+    "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--step KIND:VALUE` | Runs ordered app/window action, wait, AT-SPI text, AT-SPI editor-text, AT-SPI button-click, AT-SPI focus, AT-SPI activate, AT-SPI context-click, or AT-SPI key steps for workflows that need interleaved action and readiness proof. |",
 )
 
 
@@ -308,6 +309,16 @@ def atspi_anchor_anchors(source: str) -> list[str]:
             source,
         )
     ]
+    anchors.extend(
+        (
+            f"atspi-anchor-{anchor_slug(surface)}-"
+            f"{anchor_slug(role)}-{anchor_slug(name_prefix)}"
+        )
+        for _capture, surface, role, name_prefix in re.findall(
+            r'assert_anchor_prefix\s+"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"',
+            source,
+        )
+    )
     anchors.extend(
         f"atspi-focus-{anchor_slug(capture)}-{anchor_slug(name)}"
         for capture, name in re.findall(

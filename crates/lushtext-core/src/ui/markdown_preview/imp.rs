@@ -360,7 +360,8 @@ impl LushtextMarkdownPreview {
             "Markdown preview scroll area",
             "Scrollable read-only rendered Markdown content",
         );
-        accessibility::set_role(&*self.text_view, gtk4::AccessibleRole::TextBox);
+        // GtkTextView already owns GTK_ACCESSIBLE_ROLE_TEXT_BOX; keep the
+        // projection to state and names so GTK does not emit duplicate-role criticals.
         accessibility::set_labelled_description(
             &*self.text_view,
             "Rendered Markdown content",

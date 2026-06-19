@@ -33,16 +33,48 @@ fn test_value_text_helper_sets_current_accessible_value() {
     let button = gtk4::Button::new();
 
     accessibility::set_label(&button, "Choose text encoding");
+    accessibility::set_read_only(&button, true);
     accessibility::set_multi_line(&button, false);
+    accessibility::set_key_shortcuts(&button, "Ctrl+E");
+    accessibility::set_has_popup(&button, true);
     accessibility::set_value_text(&button, "UTF-16 LE");
 
     AccessibleAudit::new()
         .properties(&[
             gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::ReadOnly,
             gtk4::AccessibleProperty::MultiLine,
+            gtk4::AccessibleProperty::KeyShortcuts,
+            gtk4::AccessibleProperty::HasPopup,
             gtk4::AccessibleProperty::ValueText,
         ])
         .assert_on(&button);
+
+    accessibility::reset_property(&button, gtk4::AccessibleProperty::ReadOnly);
+    accessibility::reset_property(&button, gtk4::AccessibleProperty::MultiLine);
+    accessibility::reset_property(&button, gtk4::AccessibleProperty::KeyShortcuts);
+    accessibility::reset_property(&button, gtk4::AccessibleProperty::HasPopup);
+    accessibility::reset_property(&button, gtk4::AccessibleProperty::ValueText);
+    assert!(!gtk4::test_accessible_has_property(
+        &button,
+        gtk4::AccessibleProperty::ReadOnly
+    ));
+    assert!(!gtk4::test_accessible_has_property(
+        &button,
+        gtk4::AccessibleProperty::MultiLine
+    ));
+    assert!(!gtk4::test_accessible_has_property(
+        &button,
+        gtk4::AccessibleProperty::KeyShortcuts
+    ));
+    assert!(!gtk4::test_accessible_has_property(
+        &button,
+        gtk4::AccessibleProperty::HasPopup
+    ));
+    assert!(!gtk4::test_accessible_has_property(
+        &button,
+        gtk4::AccessibleProperty::ValueText
+    ));
 }
 
 #[test]
@@ -65,38 +97,83 @@ fn test_state_helpers_update_and_reset_accessible_state() {
     accessibility::set_disabled(&button, true);
     accessibility::set_hidden(&button, true);
     accessibility::set_invalid(&button, true);
+    accessibility::set_expanded(&button, Some(true));
+    accessibility::set_selected(&button, Some(true));
+    accessibility::set_pressed(&button, true);
     AccessibleAudit::new()
         .states(&[
             gtk4::AccessibleState::Disabled,
             gtk4::AccessibleState::Hidden,
             gtk4::AccessibleState::Invalid,
+            gtk4::AccessibleState::Expanded,
+            gtk4::AccessibleState::Selected,
+            gtk4::AccessibleState::Pressed,
         ])
         .assert_on(&button);
 
-    accessibility::reset_state(&button, gtk4::AccessibleState::Busy);
-    assert!(!gtk4::test_accessible_has_state(
-        &button,
-        gtk4::AccessibleState::Busy
-    ));
+    accessibility::set_disabled(&button, false);
+    accessibility::set_hidden(&button, false);
+    accessibility::set_invalid(&button, false);
+    accessibility::set_expanded(&button, None);
+    accessibility::set_selected(&button, None);
+    accessibility::reset_state(&button, gtk4::AccessibleState::Pressed);
+    for state in [
+        gtk4::AccessibleState::Busy,
+        gtk4::AccessibleState::Disabled,
+        gtk4::AccessibleState::Hidden,
+        gtk4::AccessibleState::Invalid,
+        gtk4::AccessibleState::Expanded,
+        gtk4::AccessibleState::Selected,
+        gtk4::AccessibleState::Pressed,
+    ] {
+        assert!(
+            !gtk4::test_accessible_has_state(&button, state),
+            "expected accessible state {state:?} to be reset"
+        );
+    }
 }
 
 #[test]
 fn test_relation_helpers_update_and_reset_accessible_relation() {
     ensure_gtk_init();
     let label = gtk4::Label::new(Some("Workspace"));
+    let description = gtk4::Label::new(Some("Current workspace filter"));
     let entry = gtk4::Entry::new();
+    let results = gtk4::ListBox::new();
     let labels = [label.upcast_ref::<gtk4::Accessible>()];
+    let descriptions = [description.upcast_ref::<gtk4::Accessible>()];
+    let controls = [results.upcast_ref::<gtk4::Accessible>()];
 
     accessibility::set_labelled_by(&entry, &labels);
+    accessibility::set_described_by(&entry, &descriptions);
+    accessibility::set_controls(&entry, &controls);
     assert!(gtk4::test_accessible_has_relation(
         &entry,
         gtk4::AccessibleRelation::LabelledBy
     ));
+    assert!(gtk4::test_accessible_has_relation(
+        &entry,
+        gtk4::AccessibleRelation::DescribedBy
+    ));
+    assert!(gtk4::test_accessible_has_relation(
+        &entry,
+        gtk4::AccessibleRelation::Controls
+    ));
 
     accessibility::reset_relation(&entry, gtk4::AccessibleRelation::LabelledBy);
+    accessibility::reset_relation(&entry, gtk4::AccessibleRelation::DescribedBy);
+    accessibility::reset_relation(&entry, gtk4::AccessibleRelation::Controls);
     assert!(!gtk4::test_accessible_has_relation(
         &entry,
         gtk4::AccessibleRelation::LabelledBy
+    ));
+    assert!(!gtk4::test_accessible_has_relation(
+        &entry,
+        gtk4::AccessibleRelation::DescribedBy
+    ));
+    assert!(!gtk4::test_accessible_has_relation(
+        &entry,
+        gtk4::AccessibleRelation::Controls
     ));
 }
 
@@ -130,6 +207,28 @@ fn test_row_accessibility_helper_applies_and_clears_recycled_metadata() {
         gtk4::AccessibleRelation::PosInSet
     ));
     assert!(gtk4::test_accessible_has_relation(
+        &row,
+        gtk4::AccessibleRelation::SetSize
+    ));
+
+    accessibility::apply_row_accessibility(&row, RowAccessibility::new("Open recent document"));
+    assert!(gtk4::test_accessible_has_property(
+        &row,
+        gtk4::AccessibleProperty::Label
+    ));
+    assert!(!gtk4::test_accessible_has_property(
+        &row,
+        gtk4::AccessibleProperty::Description
+    ));
+    assert!(!gtk4::test_accessible_has_state(
+        &row,
+        gtk4::AccessibleState::Selected
+    ));
+    assert!(!gtk4::test_accessible_has_relation(
+        &row,
+        gtk4::AccessibleRelation::PosInSet
+    ));
+    assert!(!gtk4::test_accessible_has_relation(
         &row,
         gtk4::AccessibleRelation::SetSize
     ));

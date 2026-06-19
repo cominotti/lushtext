@@ -341,11 +341,14 @@ Mutter helper, and verifies stable AT-SPI names/roles plus focus and text
 interface evidence where the host exposes it. Each capture writes a bounded
 `assertions/<scenario>-manifest.json`, the run writes
 `assertions/accessibility-assertions.jsonl`, and the root `summary.json`
-records scenario manifests, readiness waits, screenshots, warning status,
-assertion artifacts, environment metadata, and unsupported-host reasons. It
-skips only with an explicit host-runtime reason when AT-SPI support is
-unavailable, and action or D-Bus assertions do not count as accessibility
-coverage on their own. The stable anchors are documented in
+records scenario manifests, matrix row coverage, focused-run filters,
+readiness waits, screenshots, warning status, assertion artifacts, environment
+metadata, and unsupported-host reasons. Each manifest distinguishes stable
+public anchors from seeded fixture-only anchors and declares the bounded
+artifact/privacy boundary for the captured text. It skips only with an explicit
+host-runtime reason when AT-SPI support is unavailable, and action or D-Bus
+assertions do not count as accessibility coverage on their own. The stable
+anchors are documented in
 `docs/automation-reference.md` and checked by
 `make check-automation-docs`.
 

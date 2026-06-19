@@ -43,7 +43,7 @@
 #   make lint-blueprint - Advisory grouped lint triage for Blueprint templates
 #   make check-flatpak-permissions - Ensure Flatpak keeps full filesystem access
 #   make check-end-user-smoke-workflow - Ensure scheduled smoke lanes match docs
-#   make check-accessibility-policy - Enforce accessibility helper and proof guardrails
+#   make check-accessibility-policy - Enforce accessibility helper, matrix, and current-tree guardrails
 #   make check-visual-proof-policy - Require visual geometry proof for local visual-sensitive changes
 #   make check-gtk-lush-policy - Verify GTK Lush family scaffolding and constitution rails
 #   make check-gtk-lush-adoption - Run GTK Lush adoption lab, stock fixture, and matrix checks
@@ -438,7 +438,7 @@ check-end-user-smoke-workflow:
 # Guard new UI-sensitive lines against bypassing accessibility helper and proof conventions.
 check-accessibility-policy:
 	@echo "Checking accessibility policy..."
-	./scripts/check-accessibility-policy.py --self-test
+	./scripts/check-accessibility-policy.py --self-test --strict-current-tree
 
 # Guard local UI-sensitive edits against missing same-session visual proof.
 check-visual-proof-policy:
@@ -734,7 +734,7 @@ help:
 	@echo "  automation-smoke Real-process D-Bus automation smoke under headless Mutter"
 	@echo "  command-palette-notes-smoke Focused Notes palette smoke with all note kinds"
 	@echo "  check-end-user-smoke-workflow Verify scheduled/manual smoke matrix lanes"
-	@echo "  check-accessibility-policy Enforce accessibility helper and proof guardrails"
+	@echo "  check-accessibility-policy Enforce accessibility helper, matrix, and current-tree guardrails"
 	@echo "  check-visual-proof-policy Require visual geometry proof for local visual-sensitive changes"
 	@echo "  check-gtk-lush-policy Verify GTK Lush family scaffolding and dependency direction"
 	@echo "  check-gtk-lush-adoption Run adoption lab, stock fixture, and matrix checks"

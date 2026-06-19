@@ -77,11 +77,13 @@ status, exit, result-field, and artifact-summary contracts. If
 `scripts/lushtext-automation.py` changes, also run
 `make automation-client-self-test`; `make check-policy` includes both checks.
 Accessibility-sensitive UI changes should pass
-`make check-accessibility-policy`; it is a fast diff-aware guard that catches
-new icon-only controls, custom row factories, transient surfaces, hover-only
-affordances, direct GTK accessible metadata calls that bypass
-`ui::accessibility`, and malformed AT-SPI smoke anchors. The target is included
-in `make check-policy`.
+`make check-accessibility-policy`; it is a fast diff-aware and current-tree
+guard that catches new icon-only controls, custom row factories, transient
+surfaces, hover-only affordances, direct GTK accessible metadata calls that
+bypass `ui::accessibility`, missing row apply/clear coverage, stale or
+malformed AT-SPI smoke anchors, accessibility matrix/smoke crosswalk drift,
+manifest fixture-boundary drift, and missing manual Orca release-template
+links. The target is included in `make check-policy`.
 Screenshot-reported or geometry-sensitive UI fixes should also run
 `make visual-geometry-smoke` when the intended invariant is same-session pixel
 stability across a layout action. Pixel-visible effects that have a named

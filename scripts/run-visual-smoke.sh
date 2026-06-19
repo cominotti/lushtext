@@ -30,6 +30,8 @@ VISUAL_CASES=(
     workspace-dense-awkward
     workspace-constrained
     workspace-refresh
+    workspace-tree-context-menu
+    workspace-header-context-menu
     notes-empty
     notes-few
     bookmarks-few
@@ -234,6 +236,47 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 TEXT_LIMIT = 600
+MATRIX_ROWS_BY_CASE = {
+    "main-search-minimap": ["A11Y-SHELL-REPRESENTATIVE", "A11Y-EDITOR-MINIMAP"],
+    "modified-tab": ["A11Y-SHELL-REPRESENTATIVE"],
+    "destructive-close-dialog": ["A11Y-DIALOG-SAVE-CLOSE"],
+    "file-health-properties": ["A11Y-SHELL-ERROR-STATUS", "A11Y-PROPERTIES-NORMAL"],
+    "local-history-restore": ["A11Y-LOCAL-HISTORY-POPULATED"],
+    "normal-properties": ["A11Y-PROPERTIES-NORMAL"],
+    "compact-properties": ["A11Y-PROPERTIES-COMPACT"],
+    "constrained-properties": ["A11Y-PROPERTIES-COMPACT"],
+    "short-layout": ["A11Y-SHELL-DENSE-CONSTRAINED"],
+    "markdown-preview": ["A11Y-MARKDOWN-REPRESENTATIVE"],
+    "constrained-preview": ["A11Y-MARKDOWN-CONSTRAINED"],
+    "markdown-preview-side-by-side": ["A11Y-MARKDOWN-REPRESENTATIVE"],
+    "constrained-preview-side-by-side": ["A11Y-MARKDOWN-CONSTRAINED"],
+    "workspace-empty": ["A11Y-WORKSPACE-NO-CONTEXT"],
+    "workspace-representative": ["A11Y-WORKSPACE-REPRESENTATIVE"],
+    "workspace-dense-awkward": ["A11Y-WORKSPACE-DENSE-DEEP"],
+    "workspace-constrained": ["A11Y-WORKSPACE-DENSE-DEEP"],
+    "workspace-refresh": ["A11Y-WORKSPACE-BUSY-ERROR"],
+    "workspace-tree-context-menu": ["A11Y-WORKSPACE-CONTEXT", "A11Y-WORKSPACE-DRAG-DROP", "A11Y-CONTEXT-MENUS-GENERAL"],
+    "workspace-header-context-menu": ["A11Y-WORKSPACE-CONTEXT", "A11Y-CONTEXT-MENUS-GENERAL"],
+    "notes-empty": ["A11Y-NOTES-EMPTY"],
+    "notes-few": ["A11Y-NOTES-POPULATED"],
+    "bookmarks-few": ["A11Y-BOOKMARKS"],
+    "notes-dense": ["A11Y-NOTES-POPULATED"],
+    "bookmarks-dense": ["A11Y-BOOKMARKS"],
+    "notes-constrained": ["A11Y-NOTES-POPULATED"],
+    "bookmarks-constrained": ["A11Y-BOOKMARKS"],
+    "command-palette-files": ["A11Y-PALETTE-FILES"],
+    "command-palette-commands": ["A11Y-PALETTE-COMMANDS"],
+    "command-palette-notes": ["A11Y-PALETTE-NOTES"],
+    "command-palette-no-results": ["A11Y-PALETTE-NO-RESULTS"],
+    "command-palette-dense-files": ["A11Y-PALETTE-FILES"],
+    "command-palette-dismissed": ["A11Y-PALETTE-DISMISS"],
+    "dark-style": ["A11Y-EDITOR-REPRESENTATIVE"],
+    "high-contrast-style": ["A11Y-EDITOR-REPRESENTATIVE"],
+    "large-text-constrained": ["A11Y-SHELL-DENSE-CONSTRAINED", "A11Y-EDITOR-REPRESENTATIVE"],
+    "reduced-motion-command-palette": ["A11Y-PALETTE-DISMISS", "A11Y-EDITOR-FOCUS-PREVIEW"],
+    "transparency-readability": ["A11Y-EDITOR-REPRESENTATIVE", "A11Y-MARKDOWN-REPRESENTATIVE"],
+    "recovery-startup": ["A11Y-RECOVERY-STARTUP"],
+}
 
 
 def bounded(text: str) -> str:
@@ -311,6 +354,7 @@ manifest = {
     "scenario_id": f"visual-smoke/{name}",
     "description": "Headless Mutter visual smoke capture for a representative LushText UI state.",
     "status": status,
+    "matrix_rows": MATRIX_ROWS_BY_CASE.get(name, []),
     "started_at": now,
     "updated_at": now,
     "finished_at": now,
@@ -1069,6 +1113,33 @@ print(f"snapshot={snapshot_path}")
 PY
 }
 
+assert_workspace_context_menu_capture_artifacts() {
+    local name="$1"
+    local required_text="$2"
+    local tree_path="$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+    local snapshot_path="$ARTIFACT_DIR/captures/${name}/automation-snapshot.json"
+    local summary_path="$ARTIFACT_DIR/assertions/${name}-context-menu.txt"
+
+    [[ -s "$tree_path" ]] || smoke_fail "visual smoke '${name}' did not write an AT-SPI tree"
+    [[ -s "$snapshot_path" ]] || smoke_fail "visual smoke '${name}' did not write automation-snapshot.json"
+    /usr/bin/python3 - "$tree_path" "$snapshot_path" "$required_text" >"$summary_path" <<'PY'
+import json
+import sys
+
+tree_path, snapshot_path, required_text = sys.argv[1:]
+tree = open(tree_path, encoding="utf-8", errors="replace").read()
+snapshot = json.load(open(snapshot_path, encoding="utf-8"))
+assert required_text in tree, tree[:2500]
+window = snapshot["window"]
+assert window is not None, snapshot
+assert window["surfaces"]["workspace_sidebar_visible"] is True, window["surfaces"]
+print(f"required_text={required_text}")
+print("workspace_sidebar_visible=true")
+print(f"tree={tree_path}")
+print(f"snapshot={snapshot_path}")
+PY
+}
+
 run_capture() {
     local name="$1"
     local fixture="$2"
@@ -1187,6 +1258,26 @@ run_capture() {
             --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
             --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
             --wait-atspi-text "Mixed line endings"
+        )
+    fi
+    if [[ "$name" == "workspace-tree-context-menu" ]]; then
+        capture_args+=(
+            --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+            --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
+            --step "wait-atspi-text:Folder alpha-project"
+            --step "window-action:focus-workspace-tree"
+            --step "window-action:show-workspace-tree-context-menu"
+            --step "wait-atspi-text:New File"
+        )
+    fi
+    if [[ "$name" == "workspace-header-context-menu" ]]; then
+        capture_args+=(
+            --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+            --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
+            --step "wait-atspi-text:Workspace Alpha Project"
+            --step "window-action:focus-workspace-header"
+            --step "window-action:show-workspace-header-context-menu"
+            --step "wait-atspi-text:Rename Workspace"
         )
     fi
     if [[ "$name" == "local-history-restore" ]]; then
@@ -1344,6 +1435,12 @@ run_capture() {
         workspace-dense-awkward)
             assert_workspace_capture_artifacts "$name" "$capture_dir" 1 8 8 "false" "all"
             ;;
+        workspace-tree-context-menu)
+            assert_workspace_context_menu_capture_artifacts "$name" "New File"
+            ;;
+        workspace-header-context-menu)
+            assert_workspace_context_menu_capture_artifacts "$name" "Rename Workspace"
+            ;;
     esac
     case "$name" in
         notes-empty)
@@ -1421,6 +1518,8 @@ run_selected_capture "workspace-representative" "$TEXT_FIXTURE" "$ARTIFACT_DIR/s
 run_selected_capture "workspace-dense-awkward" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-dense-awkward.png" "1280" "860" "" "0" "default"
 run_selected_capture "workspace-constrained" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-constrained.png" "760" "520" "" "0" "default"
 run_selected_capture "workspace-refresh" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-refresh.png" "1280" "860" "" "0" "default"
+run_selected_capture "workspace-tree-context-menu" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-tree-context-menu.png" "1280" "860" "" "0" "default"
+run_selected_capture "workspace-header-context-menu" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-header-context-menu.png" "1280" "860" "" "0" "default"
 run_selected_capture "notes-empty" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-empty.png" "1280" "860" "" "0" "default" "show-notes"
 run_selected_capture "notes-few" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-few.png" "1280" "860" "" "0" "default" "show-notes"
 run_selected_capture "bookmarks-few" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/bookmarks-few.png" "1280" "860" "" "0" "default" "show-notes"
@@ -1453,15 +1552,18 @@ fi
     find "$ARTIFACT_DIR/assertions" -maxdepth 1 -type f -name '*-manifest.json' -print | sort
 } >"$ARTIFACT_DIR/summary.txt"
 
-/usr/bin/python3 - "$ARTIFACT_DIR" "$VISUAL_CASE_FILTERS" <<'PY'
+/usr/bin/python3 - "$ARTIFACT_DIR" "$VISUAL_CASE_FILTERS" "$REPO_ROOT" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
 case_filters = [item for item in sys.argv[2].split(",") if item]
+repo_root = Path(sys.argv[3]).resolve()
 assertions = root / "assertions"
 screenshots = root / "screenshots"
+sys.path.insert(0, str(repo_root / "scripts"))
+from accessibility_source_fingerprint import source_fingerprint
 
 def rel(path: Path) -> str:
     try:
@@ -1471,6 +1573,14 @@ def rel(path: Path) -> str:
 
 manifests = sorted(assertions.glob("*-manifest.json"))
 scenario_ids = [path.name.removesuffix("-manifest.json") for path in manifests]
+matrix_rows = []
+for manifest_path in manifests:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        continue
+    matrix_rows.extend(manifest.get("matrix_rows", []))
+matrix_rows = sorted(set(matrix_rows))
 warning_files = sorted(assertions.glob("*-warnings.txt"))
 unexpected_warning_count = 0
 for path in warning_files:
@@ -1551,6 +1661,11 @@ payload = {
         "manifest_count": len(manifests),
         "manifests": [rel(path) for path in manifests],
     },
+    "matrix_coverage": {
+        "row_count": len(matrix_rows),
+        "rows": matrix_rows,
+        "focused_run": (case_filters or ["all"]) != ["all"],
+    },
     "screenshots": [rel(path) for path in sorted(screenshots.glob("*.png"))],
     "warnings": {
         "status": "passed" if unexpected_warning_count == 0 else "found",
@@ -1559,6 +1674,7 @@ payload = {
     },
     "visual_accessibility_coverage": coverage,
     "environment_report": {"artifact": "environment.txt"},
+    "source_fingerprint": source_fingerprint(repo_root),
 }
 (root / "summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY

@@ -64,6 +64,17 @@ fn test_status_controls_expose_accessibility_roles() {
             gtk4::AccessibleProperty::ValueText,
         ])
         .assert_on(&*bar.imp().encoding_button);
+
+    bar.set_metadata_visible(false);
+    assert!(gtk4::test_accessible_has_state(
+        &*bar.imp().metadata_box,
+        gtk4::AccessibleState::Hidden
+    ));
+    bar.set_metadata_visible(true);
+    assert!(!gtk4::test_accessible_has_state(
+        &*bar.imp().metadata_box,
+        gtk4::AccessibleState::Hidden
+    ));
 }
 
 fn status_message(text: &str, severity: MessageKind) -> StatusMessage {

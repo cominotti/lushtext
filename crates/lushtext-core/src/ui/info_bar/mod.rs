@@ -83,9 +83,13 @@ impl LushtextInfoBar {
         }
 
         let announcement = inline_alert_announcement_text(notification);
-        accessibility::set_labelled_description(&*imp.alert_box, &announcement, &notification.body);
+        accessibility::set_labelled_description(
+            &*imp.alert_title,
+            &announcement,
+            &notification.body,
+        );
         imp.alert_announcement_throttler.announce_if_allowed(
-            &*imp.alert_box,
+            &*imp.alert_title,
             inline_alert_announcement_lane(notification.style),
             &inline_alert_announcement_key(notification),
             &announcement,

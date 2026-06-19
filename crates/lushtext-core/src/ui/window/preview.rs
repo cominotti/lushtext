@@ -8,7 +8,7 @@
 //! existing meanings while the implementation avoids app-owned paned animation.
 
 use crate::config::keys;
-use crate::ui::accessibility::AnnouncementLane;
+use crate::ui::accessibility::{self, AnnouncementLane};
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::MarkdownPreviewRenderContext;
@@ -185,6 +185,7 @@ impl LushtextWindow {
                 imp.preview_split_view.set_show_sidebar(side_by_side);
             }
         }
+        accessibility::set_hidden(&*imp.markdown_preview, !preview_active);
 
         if let Some(editor) = self.active_editor_for_preview() {
             editor.set_preview_only_accessibility(preview_only);

@@ -2250,7 +2250,8 @@ fn build_code_block_widget(code_block: &BufferedCodeBlock, theme: &CodeBlockThem
     source_view.set_halign(gtk4::Align::Fill);
     source_view.add_css_class("monospace");
     source_view.add_css_class("markdown-code-block-view");
-    accessibility::set_role(&source_view, gtk4::AccessibleRole::TextBox);
+    // GtkSourceView already exposes a text-box role; assigning it again is a
+    // GTK critical, so this projection only supplies the code-block name/state.
     accessibility::set_labelled_description(
         &source_view,
         &code_block_label,

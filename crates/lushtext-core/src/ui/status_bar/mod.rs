@@ -138,6 +138,7 @@ impl LushtextStatusBar {
     /// workspace toggle. Hidden when no tabs are open.
     pub fn set_metadata_visible(&self, visible: bool) {
         self.imp().metadata_box.set_visible(visible);
+        accessibility::set_hidden(&*self.imp().metadata_box, !visible);
     }
 
     /// Mirror the workspace-sidebar state into the visible toggle button.

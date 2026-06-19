@@ -51,7 +51,8 @@ impl LushtextEditorPage {
         let disabled = preview_only || failed || self.is_evicted() || too_large;
         let read_only = preview_only || loading || saving || disabled || !view.is_editable();
 
-        a11y::set_role(view, gtk4::AccessibleRole::TextBox);
+        // GtkSourceView already owns GTK_ACCESSIBLE_ROLE_TEXT_BOX; setting the
+        // same role again emits a GTK critical while adding no extra semantics.
         a11y::set_labelled_description(view, &format!("Editor for {identity}"), &description);
         a11y::set_multi_line(view, true);
         a11y::set_read_only(view, read_only);

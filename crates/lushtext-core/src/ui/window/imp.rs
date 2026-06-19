@@ -1011,6 +1011,10 @@ impl LushtextWindow {
         );
         accessibility::set_key_shortcuts(&*self.open_menu_button, "<Control>k");
         accessibility::set_has_popup(&*self.open_menu_button, true);
+        accessibility::set_controls(
+            &*self.open_menu_button,
+            &[self.open_popover.upcast_ref::<gtk4::Accessible>()],
+        );
         accessibility::set_labelled_description(
             &*self.document_properties_toggle_button,
             "Toggle document properties",
@@ -1018,6 +1022,10 @@ impl LushtextWindow {
         );
         accessibility::set_key_shortcuts(&*self.document_properties_toggle_button, "F9");
         accessibility::set_pressed(&*self.document_properties_toggle_button, false);
+        accessibility::set_controls(
+            &*self.document_properties_toggle_button,
+            &[self.properties_panel.upcast_ref::<gtk4::Accessible>()],
+        );
         accessibility::set_label(&*self.primary_menu_button, "Main menu");
         accessibility::set_has_popup(&*self.primary_menu_button, true);
         accessibility::set_label(&*self.notes_menu_button, "Notes menu");
@@ -1038,7 +1046,9 @@ impl LushtextWindow {
             "Focus mode controls",
             "Shows that focus mode is active",
         );
+        accessibility::set_hidden(&*self.focus_mode_affordance, true);
         accessibility::set_label(&*self.leave_focus_mode_button, "Leave focus mode");
+        accessibility::set_key_shortcuts(&*self.leave_focus_mode_button, "Escape");
     }
 }
 

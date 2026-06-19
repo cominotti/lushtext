@@ -44,6 +44,11 @@ and assuming GTK will re-run `connect_bind()`.
 
 ## Accessibility Wiring
 
+Use `docs/accessibility-matrix.md` to decide which state extremes, smoke cases,
+stable anchors, and manual Orca expectations a widget change must cover. The
+matrix row ids should appear in new accessibility, visual, or geometry smoke
+manifests when a widget surface gains or changes coverage.
+
 New widget metadata should go through `crate::ui::accessibility` so labels,
 descriptions, roles, relations, states, row metadata, and announcements stay
 consistent across surfaces. Use the helper's announcement lanes for debounced

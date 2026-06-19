@@ -22,7 +22,7 @@ A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text
 Keep this index in sync with `.agents/rules/*.md`. When a new rule file is added or an existing rule is materially changed, update this section in the same change.
 
 - `build.md` — build, dependency, dev-run desktop identity, property-testing, test, accessibility-policy, and smoke command rules
-- `documentation.md` — documentation maintenance requirements, including accessibility guide sync rules
+- `documentation.md` — documentation maintenance requirements, including accessibility guide, matrix, and manual Orca checklist sync rules
 - `git.md` — git workflow and commit conventions
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, module-splitting, and state-grouping conventions
